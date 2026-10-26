@@ -82,8 +82,9 @@ class ForwardSync(
         }
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
         // The store impl folds the new id into the StoreDigest, whose version change re-cues neighbors that
-        // we now hold something they may want to pull. A dead-on-arrival frame (past its frame-global expiry —
-        // a skewed-clock peer re-serving what everyone has swept) is refused, so we must not custody its blob.
+        // we now hold something they may want to pull. A frame the store refused (dead on arrival — a skewed-clock
+        // peer re-serving what everyone has swept — or a group frame whose roster is not its own) or evicted in its own
+        // write (the quotas keep it nowhere, ADR 2026-10.7mqm) is one we do not hold, so we must not custody its blob.
         if (!store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())) return
         // Asked again once the row is written: a receipt [onAck] handled while the write was in flight missed the
         // row, and the check above missed its memo. Each side writes before it reads, so one of them sees the other.
@@ -128,10 +129,11 @@ class ForwardSync(
      * away is deduped for the router's ten-minute window: the key first is what makes the park the exception.
      *
      * **And when custody holds no profile, the pin's does** (ADR 2026-09.g64k). The per-sender quota evicts a
-     * chatty sender's profile, and the TTL takes a departed sender's up to a republish period before their last
-     * posts, so a carrier often holds frames whose author's profile it no longer holds. It still pinned their
-     * key to carry them, and it keeps the signed frame that pin came from: [keylessSenders] names each sender
-     * this reply would hand the peer a backlog it has no key for, and their key goes first, point to point.
+     * chatty sender's profile, as does the global cap, which takes the largest sender's oldest frame first (ADR
+     * 2026-10.7mqm), and the TTL takes a departed sender's up to a republish period before their last posts, so a
+     * carrier often holds frames whose author's profile it no longer holds. It still pinned their key to carry them,
+     * and it keeps the signed frame that pin came from: [keylessSenders] names each sender this reply would hand the
+     * peer a backlog it has no key for, and their key goes first, point to point.
      */
     suspend fun onDigest(
         fromNodeId: String,

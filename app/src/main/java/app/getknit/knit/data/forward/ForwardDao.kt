@@ -24,6 +24,10 @@ data class ForwardIdExpiry(
  * convergent-custody rule from AGENTS.md. Expired rows are invisible to everything observable and exist only
  * until [deleteExpired] (the periodic sweep, now pure storage GC) reclaims them; the physical table is thus
  * bounded by the caps plus at most one sweep period of lapsed residue.
+ *
+ * Two eviction keys, both read off the frame and the held set alone, so every node evicts alike (ADR 006): a sender,
+ * group or room bucket over its quota keeps its newest-N by `(sentAt, id)` (`evictOldestBy*`), and the global cap
+ * takes one row at a time from the largest sender bucket ([evictFairest], ADR 2026-10.7mqm).
  */
 @Dao
 @Suppress("TooManyFunctions") // a handful of small carry-store queries; splitting them would obscure, not clarify
@@ -211,21 +215,28 @@ interface ForwardDao {
     suspend fun countBroadcast(now: Long): Int
 
     /**
-     * Drops the [n] oldest **live** rows (by [ForwardEntity.sentAt], id as tie-break) under global-cap pressure.
-     * Ordered by the frame-global sentAt rather than local receivedAt/origin so every node evicts the *same*
-     * rows and their content digests stay convergent. Live-filtered because buckets mix TTL classes: an
-     * expired-unswept short-TTL row can be *newer by sentAt* than a live long-TTL row, so counting/evicting
-     * over all rows would push a live frame out on the unswept node only — de-converging the live sets the
-     * digest now folds (work item #8).
+     * Drops **one** live row under global-cap pressure: the oldest `(sentAt, id)` frame of the sender holding the most
+     * live frames, and on a tie for most, the sender whose oldest frame is oldest (ADR 2026-10.7mqm). A
+     * sender's bucket size is read from the held set, which is the same on every node that holds the same frames, so
+     * every node evicts the same row and the content digests stay convergent (ADR 006). It is one row per call
+     * because the sizes move with every eviction: the caller repeats it once per row over the cap.
+     *
+     * Not the globally oldest frame any more: under that rule five free identities stamping a few hundred frames
+     * just inside the future window evicted every honest frame on every node at once, and every honest frame for
+     * the next five minutes in the same write that stored it (the malicious-fork review's C2). Here a flood only
+     * ever displaces the largest buckets, which are its own. Live-filtered on both sides, because buckets mix TTL
+     * classes: an expired-unswept row counted or chosen here would make the choice depend on the local sweep phase
+     * (work item #8). Grouping and ordering compare ids and sender ids bytewise (SQLite's default `BINARY`).
      */
     @Query(
-        "DELETE FROM forward_store WHERE id IN " +
-            "(SELECT id FROM forward_store WHERE expiresAt >= :now ORDER BY sentAt ASC, id ASC LIMIT :n)",
+        "DELETE FROM forward_store WHERE id = (" +
+            "SELECT f.id FROM forward_store AS f " +
+            "JOIN (SELECT senderId, COUNT(*) AS n FROM forward_store WHERE expiresAt >= :now GROUP BY senderId) AS b " +
+            "ON b.senderId = f.senderId " +
+            "WHERE f.expiresAt >= :now " +
+            "ORDER BY b.n DESC, f.sentAt ASC, f.id ASC LIMIT 1)",
     )
-    suspend fun evictOldest(
-        n: Int,
-        now: Long,
-    )
+    suspend fun evictFairest(now: Long)
 
     /** Evicts the [n] oldest-by-sentAt **live** frames from [senderId]'s bucket (keeps its newest per the quota). */
     @Query(

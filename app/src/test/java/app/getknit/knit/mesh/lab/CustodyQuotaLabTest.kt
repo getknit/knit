@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.SeenSet
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -13,12 +14,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
- * The custody store's bounds, shrunk through [LabLimits] so a handful of frames is a full store. Every bound
- * evicts the oldest frame by the frame-global `(sentAt, id)` on every node alike — ADR 006, the rule whose
- * breach (evicting by a per-node key, exempting our own sends) held one field node's digest at 117 frames
- * against its peers' 100 for good. The quota also cuts holes in a ratchet chain (the frames evicted before
- * the recipient came back), which the recipient must read past. Every node gets the same numbers: the
- * digest is folded over what these keep.
+ * The custody store's bounds, shrunk through [LabLimits] so a handful of frames is a full store. A sender, group or
+ * room bucket keeps its newest by the frame-global `(sentAt, id)`, and the global cap takes the oldest frame of the
+ * largest sender bucket (ADR 2026-10.7mqm), on every node alike — ADR 006, the rule whose breach (evicting by a
+ * per-node key, exempting our own sends) held one field node's digest at 117 frames against its peers' 100 for good.
+ * The quota also cuts holes in a ratchet chain (the frames evicted before the recipient came back), which the
+ * recipient must read past. Every node gets the same numbers: the digest is folded over what these keep.
  */
 @RunWith(RobolectricTestRunner::class)
 class CustodyQuotaLabTest {
@@ -138,20 +139,78 @@ class CustodyQuotaLabTest {
             lab.assertConverged(listOf(carol), atLeast = 4, carriers = listOf(alice, bob)) { groupId }
         }
 
-    /** A full store: twelve rows everywhere, more than that in flight, and the three evict the same oldest. */
+    /**
+     * A full store: twenty rows everywhere, and Alice posting twelve times to the others' two. The cap takes from the largest sender
+     * bucket (ADR 2026-10.7mqm), on every node alike, so Bob's and Carol's frames — their posts and their profiles, the
+     * oldest frames in the store — are all still carried, and only Alice's are gone. Under the old rule (the globally
+     * oldest frame) their profiles went first.
+     */
     @Test
-    fun aFullStoreEvictsTheOldestOnEveryNodeAlike() =
+    fun aFullStoreEvictsFromTheLargestSenderOnEveryNodeAlike() =
         runBlocking {
-            val limits = LabLimits(custodyMaxRows = 12)
+            val limits = LabLimits(custodyMaxRows = 20)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            val three = listOf(alice, bob, carol)
+
+            listOf(bob, carol).forEach { n -> (1..2).forEach { assertTrue(n.sendRoom("${n.name} $it")) } }
+            lab.assertConverged(three, atLeast = 4) { Conversations.NEARBY }
+            val before = listOf(bob, carol).associate { it.name to alice.custodiedFrom(it.nodeId) }
+            (1..12).forEach { assertTrue(alice.sendRoom("alice $it")) }
+            lab.assertConverged(three, atLeast = 16) { Conversations.NEARBY }
+            three.forEach { n ->
+                assertEquals("${n.name} holds a full store", 20, n.custodyIds().size)
+                assertEquals(
+                    "${n.name} still carries all of bob's and carol's",
+                    before,
+                    listOf(bob, carol).associate {
+                        it.name to
+                            n.custodiedFrom(it.nodeId)
+                    },
+                )
+            }
+        }
+
+    /**
+     * The room's quota and the global cap bind together, and the three stores reach them from different frames: Carol
+     * posts alone while Alice and Bob post and DM between them. When they meet, each serves the others what they lack,
+     * and a frame one store has evicted and another still holds is refused as seen for the router's ten-minute window.
+     * Past the window a re-link serves it again, and the stores converge: the rule keeps the same set whatever the
+     * order the frames came in (`ForwardRepositoryTest`'s exchange property, here through the real stacks). Messages
+     * differ by design — a post the quotas evicted before it crossed never reaches the other side — so only Carol's
+     * thread is the oracle's, and the others are carriers.
+     */
+    @Test
+    fun theRoomQuotaAndTheCapBindingTogetherConvergePastTheSeenWindow() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxRows = 12, custodyMaxBroadcast = 5)
             val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
             val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
 
-            listOf(alice, bob, carol).forEach { n -> (1..3).forEach { assertTrue(n.sendRoom("${n.name} $it")) } }
-            lab.assertConverged(listOf(alice, bob, carol), atLeast = 9) { Conversations.NEARBY }
-            assertTrue("the cap held", alice.custodyIds().size <= 12)
+            lab.unlink(alice, carol)
+            lab.unlink(bob, carol)
+            (1..3).forEach { assertTrue(alice.sendRoom("alice $it")) }
+            (1..2).forEach { assertTrue(bob.sendRoom("bob $it")) }
+            (1..2).forEach { assertTrue(alice.sendDm(bob, "dm $it")) }
+            lab.await(2) { bob.decrypted(bob.dmWith(alice)).size }
+            (1..3).forEach { assertTrue(carol.sendRoom("carol $it")) }
+
+            val bobsLast = bob.ownMessageId(Conversations.NEARBY, "bob 2")
+            lab.link(bob, carol)
+            lab.await(1) { if (bobsLast in carol.custodyIds()) 1 else 0 }
+            lab.unlink(bob, carol)
+            lab.unlink(alice, bob)
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+
+            lab.assertConverged(listOf(carol), atLeast = 3, carriers = listOf(alice, bob)) { Conversations.NEARBY }
+            listOf(alice, bob, carol).forEach { assertTrue("${it.name}: the cap held", it.custodyIds().size <= 12) }
         }
 
     /**

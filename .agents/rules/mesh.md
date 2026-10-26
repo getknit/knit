@@ -331,9 +331,16 @@ coordinated wire break; adding a nullable/defaulted field or a new `type` is add
 ## Custody must converge — the content-digest rule
 
 **Anything the content digest is folded over must be bounded by a rule that's identical on every node**
-(same key, same direction, same origins, same liveness). Evict by the **frame-global `(sentAt, id)`** on
-**every** origin (`ORIGIN_SELF` included), fold **live** ids only, and refuse a frame past its
-frame-global expiry at store time. This makes the **TTL constants
+(same key, same direction, same origins, same liveness). A sender, group or room bucket keeps its newest-N by the
+**frame-global `(sentAt, id)`**; the global cap evicts one row at a time keyed on **(sender's live count desc,
+`sentAt`, `id`)**, the oldest frame of the largest sender bucket (ADR 2026-10.7mqm), so a flood of free identities
+pays for the cap from its own buckets. Both apply on **every** origin (`ORIGIN_SELF` included); fold **live** ids
+only; refuse a frame past its frame-global expiry or past the five-minute future window at store time; and carry a
+frame naming a group only when its members and departed derive to the group's id and its sender is a member (the
+group gate, in `ForwardRepository.store`, never in `canCarry`, which is also the spool plane's delivery gate). Every
+one of these reads the frame and the held set alone. Don't make the room or group trim fair: shipped builds and
+knit-ios keep newest-N there, and a busy room at its quota would split old nodes from new ones for good. A change to
+any of them regenerates `vectors/custody-v1.json` and is a paired change with knit-ios. This makes the **TTL constants
 (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification
 convergence-critical — treat changing them like a wire change.** Two nodes that disagree hold different
 live sets continuously and churn the NDP cue plane forever. Full failure history + how to verify

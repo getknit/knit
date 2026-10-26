@@ -251,12 +251,15 @@ re-derives everything through an independent RFC 5869 HKDF and pins RFC 7748 vec
 
 The convergent-custody-quota invariant (see `.agents/rules/mesh.md` and `.agents/context/store-and-forward.md`) — every node must bound the carried set by
 the *identical* rule, or digests never match and the cue plane churns — now spans platforms. The
-custody TTLs, global cap, per-sender/per-group/broadcast quotas, the eviction key (frame-global
-`(sentAt, id)`, newest-N), `FrameType.isCustodial`'s exact membership, and the `StoreDigest` fold
+custody TTLs, global cap, per-sender/per-group/broadcast quotas, the eviction keys (frame-global
+`(sentAt, id)` newest-N for each bucket; for the global cap, the largest sender bucket's oldest frame, ADR
+2026-10.7mqm), the group gate (a group frame is carried only when its roster derives to its id and names its
+sender), `FrameType.isCustodial`'s exact membership, and the `StoreDigest` fold
 (FNV-1a 64: offset `0xCBF29CE484222325`, prime `0x100000001B3`, over the id's UTF-8 bytes; XOR
 across the set) are **protocol constants, not tuning knobs**. On the BLE plane a divergence is less
 catastrophic than on NAN (persistent links, no scarce NDI) but still means every digest exchange
-re-runs. Extract them into one clearly-marked normative object and cover them in the vectors.
+re-runs. Extract them into one clearly-marked normative object and cover them in the vectors
+(`vectors/custody-v1.json` covers the keep-and-evict rule and the group gate).
 
 ## 3. Feature-by-feature port assessment
 

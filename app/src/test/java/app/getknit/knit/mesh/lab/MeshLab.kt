@@ -1261,6 +1261,7 @@ class LabNode internal constructor(
                 maxPerSender = limits.custodyMaxPerSender,
                 maxPerGroup = limits.custodyMaxPerGroup,
                 maxBroadcast = limits.custodyMaxBroadcast,
+                metrics = metrics,
             )
         // The leaves with a hardware or UI side. Text allowed unless [flaggedText], every picture unless [picturesExplicit],
         // notifications swallowed. (A relaxed ImageModerator mock hands back a mocked verdict whose `flagged`
@@ -1701,6 +1702,15 @@ class LabNode internal constructor(
                 sentAt = now(),
                 payload = WireCodec.encodePayload(ChatContent(body = text)),
             )
+        val signed = WireCodec.encodeEnvelope(env)
+        transport.send(WireEnvelope(sig = messageCrypto.signRaw(signed), signed = signed), null)
+    }
+
+    /** Floods [frame] over this node's links as it stands, signed by whoever signed it (a [LabSybil]): a fork's radio. */
+    suspend fun flood(frame: WireEnvelope) = transport.send(frame, null)
+
+    /** Floods [env] signed by this node, whatever it says: a frame a modified client sends and no build would. */
+    suspend fun floodSigned(env: RelayEnvelope) {
         val signed = WireCodec.encodeEnvelope(env)
         transport.send(WireEnvelope(sig = messageCrypto.signRaw(signed), signed = signed), null)
     }
@@ -2290,6 +2300,9 @@ class LabNode internal constructor(
         forwardStore.liveFrames(now()).count {
             it.envelope.type == FrameType.CHAT && it.envelope.senderId == nodeId && it.envelope.recipientId == peer.nodeId
         }
+
+    /** How many live frames of any type this node's custody holds from [senderId] — a [LabSybil]'s bucket. */
+    suspend fun custodiedFrom(senderId: String): Int = forwardStore.liveFrames(now()).count { it.envelope.senderId == senderId }
 
     /** How many DM-form chat frames this node custodies from [sender] to [recipient] — what a carrier holds for an absent peer. */
     suspend fun custodiedChatsFrom(

@@ -222,6 +222,7 @@ carries; never renumber an old one.
 | [2026-10.6h2g](decisions/2026-10-6h2g-everyone-is-one-mention-per-member.md) | @everyone is one mention per member | mentions, groups |
 | [2026-10.79j9](decisions/2026-10-79j9-the-nearby-room-drops-attachments-it-cannot-screen-on-receipt.md) | The Nearby room drops attachments it cannot screen on receipt | moderation, mesh |
 | [2026-10.79yb](decisions/2026-10-79yb-a-call-with-no-live-path-is-a-walkie-talkie-over-the-mesh.md) | A call with no live path is a walkie-talkie over the mesh | calls, voice |
+| [2026-10.7mqm](decisions/2026-10-7mqm-custody-evicts-from-the-largest-sender-bucket-first.md) | Custody evicts from the largest sender bucket first | custody, convergence, security |
 | [2026-10.8hmx](decisions/2026-10-8hmx-an-animated-picture-keeps-its-frames.md) | An animated picture keeps its frames | attachments, privacy |
 | [2026-10.8jwn](decisions/2026-10-8jwn-a-bluetooth-file-feed-splits-one-pace-budget-across-the-links-it-feeds.md) | A Bluetooth file feed splits one pace budget across the links it feeds | ble, mesh |
 | [2026-10.8kfx](decisions/2026-10-8kfx-a-phone-lives-on-one-home-relay-and-a-conversation-names-its-relays.md) | A phone lives on one home relay and a conversation names its relays | spool, wire, settings |

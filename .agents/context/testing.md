@@ -221,6 +221,14 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   one) — so a link-only room scenario that ends in the full oracle still needs a triangle, not a line, or its
   tick check waits forever; and the sweep runs at boot and on the 10-min loop, so a scenario calls
   `node.sweepLocalStorage()` itself.
+- **`MaliciousForkLabTest` is the modified-client set** (the malicious-fork review): one frame no build sends per case,
+  and what the mesh must not do with it. A fork's identities are `LabSybil`s (fresh keys, a self-certifying profile,
+  frames they sign themselves), flooded by a real node with `LabNode.flood`; `LabNode.floodSigned` sends a frame the
+  node signs itself whatever it says. A crafted DM or group frame must be sealed (`LabSybil.sealedNoise`): custody
+  carries those forms only sealed (`InboundPipeline.canCarry`), so a plaintext one never reaches the rule a scenario
+  means to test. Its custody cases (ADR 2026-10.7mqm) size the stores so the cap binds the way the field's does
+  (five-plus buckets deep): a cap only one bucket deep levels honest senders too, and a node hung off one corner of a
+  triangle waits out suppressed relays until the 60 s re-offer, so link it to every corner.
 - **`RoomTickPlanesLabTest` is the long-range set** (ADR 2026-09.y5f3): a node can boot with a board on a
   shared `FakeMeshtasticAir` (`lab.node(name, air = air)` — the **real** `LoraMeshTransport`, composed with
   the radio through the real `CompositeMeshTransport`, so the covers, the election inputs and the fast-plane
@@ -422,7 +430,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `SessionLabTest` (both-initiate in both orders, a forced reset, old-era custody after a reset, the group
   key request), `RestartLabTest` (sender / carrier / recipient-with-a-park / both sides), `TopologyLabTest`
   (diamond, five-node line, ring partition, eight in a room), `CustodyQuotaLabTest` (per-sender, per-group,
-  full store), `InternetPlaneLabTest` (the two-island group + departure, a group founded while a member is relay-only
+  full store from the largest sender, the room quota and the cap converging past the seen window), `InternetPlaneLabTest` (the two-island group + departure, a group founded while a member is relay-only
   (#47, ADR 2026-09.mjaj), ADR 032's receive-only scope, spec §9.3 quarantine, ADR 042's card intro, a relay
   dropping every socket, ADR 020 over the relay) and
   `LoraPocketLabTest` (two pockets, ADR 054's gate, y8pu's backfill, the election, a DM through the bridge).

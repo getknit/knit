@@ -17,8 +17,8 @@ import org.junit.Test
  * `FakeForwardDao` — a `HashMap` that re-implements the ordering in Kotlin, so a divergence between the fake
  * and the SQLite would pass. These tests run the actual queries, and in particular exercise
  * [ForwardDao.attachmentsNeedingFetch] (the `blobs` anti-join the fake explicitly punts on) and the
- * `DELETE ... WHERE id IN (SELECT ... ORDER BY sentAt ASC, id ASC LIMIT :n)` evictions whose frame-global
- * `(sentAt, id)` ordering is what keeps every node's carried set convergent.
+ * evictions — the buckets' newest-N by `(sentAt, id)` and the global cap's largest-bucket-first (ADR 2026-10.7mqm) —
+ * whose frame-global keys are what keep every node's carried set convergent.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ForwardDaoTest : RoomDbTest() {
@@ -99,14 +99,54 @@ class ForwardDaoTest : RoomDbTest() {
         }
 
     @Test
-    fun `evictOldest trims globally by sentAt then id`() =
+    fun `evictFairest takes the oldest frame of the sender holding the most`() =
         runTest {
-            dao.insert(fwd("x2", senderId = "A", sentAt = 2L))
-            dao.insert(fwd("x1", senderId = "B", sentAt = 1L)) // globally oldest, ignores sender bucket
-            dao.insert(fwd("x3", senderId = "A", sentAt = 3L))
+            // ADR 2026-10.7mqm: not the globally oldest frame (h1), which a flood used to win every time.
+            dao.insert(fwd("h1", senderId = "honest", sentAt = 1L))
+            dao.insert(fwd("s2", senderId = "sybil", sentAt = 3L))
+            dao.insert(fwd("s1", senderId = "sybil", sentAt = 2L))
+            dao.insert(fwd("s3", senderId = "sybil", sentAt = 4L))
 
-            dao.evictOldest(2, now = 0L) // x1 (sentAt 1) then x2 (sentAt 2)
-            assertEquals(listOf("x3"), dao.allIds())
+            dao.evictFairest(now = 0L)
+            assertEquals(listOf("h1", "s2", "s3"), dao.allIds().sorted())
+            dao.evictFairest(now = 0L) // sybil still holds two to honest's one
+            assertEquals(listOf("h1", "s3"), dao.allIds().sorted())
+            dao.evictFairest(now = 0L) // one each: the bucket whose oldest frame is oldest loses it
+            assertEquals(listOf("s3"), dao.allIds())
+        }
+
+    @Test
+    fun `evictFairest breaks a tie for most by the oldest frame, then its id`() =
+        runTest {
+            dao.insert(fwd("b1", senderId = "B", sentAt = 5L))
+            dao.insert(fwd("b2", senderId = "B", sentAt = 9L))
+            dao.insert(fwd("a1", senderId = "A", sentAt = 6L))
+            dao.insert(fwd("a2", senderId = "A", sentAt = 7L))
+            dao.insert(fwd("c1", senderId = "C", sentAt = 1L)) // the oldest frame of all, in the smaller bucket
+
+            dao.evictFairest(now = 0L)
+            assertEquals("B's oldest (5) is older than A's (6)", listOf("a1", "a2", "b2", "c1"), dao.allIds().sorted())
+
+            dao.insert(fwd("d2", senderId = "D", sentAt = 3L))
+            dao.insert(fwd("d1", senderId = "D", sentAt = 3L))
+            dao.evictFairest(now = 0L) // A and D hold two each; D's oldest is older, and of its two at 3 the lower id goes
+            assertEquals(listOf("a1", "a2", "b2", "c1", "d2"), dao.allIds().sorted())
+        }
+
+    @Test
+    fun `evictFairest counts and chooses live rows only`() =
+        runTest {
+            // Expired residue would make A the largest bucket on an unswept node only (work item #8).
+            dao.insert(fwd("a_dead1", senderId = "A", sentAt = 1L, expiresAt = 100L))
+            dao.insert(fwd("a_dead2", senderId = "A", sentAt = 2L, expiresAt = 100L))
+            dao.insert(fwd("a_live", senderId = "A", sentAt = 3L, expiresAt = 9_000L))
+            dao.insert(fwd("b_old", senderId = "B", sentAt = 4L, expiresAt = 9_000L))
+            dao.insert(fwd("b_new", senderId = "B", sentAt = 5L, expiresAt = 9_000L))
+
+            dao.evictFairest(now = 1_000L)
+            assertFalse("B holds two live rows to A's one", dao.exists("b_old"))
+            assertTrue(dao.exists("a_live"))
+            assertTrue("an expired row is left for the sweep, not the eviction", dao.exists("a_dead1") && dao.exists("a_dead2"))
         }
 
     @Test
@@ -240,7 +280,7 @@ class ForwardDaoTest : RoomDbTest() {
             assertEquals("residue must not count against the quota", 2, dao.countBySender("A", now = 1_000L))
             assertEquals(2, dao.count(now = 1_000L))
 
-            dao.evictOldest(1, now = 1_000L) // oldest LIVE row globally is live_old — never dead_new
+            dao.evictOldestBySender("A", 1, now = 1_000L) // A's oldest LIVE row is live_old — never dead_new
             assertFalse(dao.exists("live_old"))
             assertTrue("an expired row is left for the sweep, not the eviction", dao.exists("dead_new"))
             assertTrue(dao.exists("live_new"))

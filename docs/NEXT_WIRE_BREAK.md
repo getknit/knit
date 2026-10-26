@@ -365,8 +365,9 @@ populations, so the lockstep comes free. The additive route would be a capabilit
 node folding a 24-hour digest for old peers). That costs scarce cue-plane bytes and only buys the transition,
 so it is not worth building unless this item has to ship without a break.
 
-**The TTL alone buys little.** Every bucket is trimmed to its newest N by `(sentAt, id)`, so a sender who
-sends more than 200 custodial frames a week loses their oldest frames to the count bound long before day 7.
+**The TTL alone buys little.** Every sender, group and room bucket is trimmed to its newest N by `(sentAt, id)`, and
+the global cap evicts from the largest sender bucket first (ADR 2026-10.7mqm), so a sender who sends more than 200
+custodial frames a week loses their oldest frames to the count bound long before day 7.
 Only quiet senders benefit unless the quotas grow too. At constant traffic, holding 7× the window needs
 roughly 7× the rows. Size the new bounds from a measured mean carried-row size and from `…debug.STORE` counts
 on the lab and field phones, not from a guess. The SQLCipher file grows with the global cap, and so does every

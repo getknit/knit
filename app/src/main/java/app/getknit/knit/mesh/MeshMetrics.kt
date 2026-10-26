@@ -300,6 +300,7 @@ class MeshMetrics {
     private val groupKeyRequestsSent = AtomicLong()
     private val groupRootsMinted = AtomicLong()
     private val groupRootsAdopted = AtomicLong()
+    private val groupCustodyRefused = AtomicLong()
 
     // Fixed key set → no allocation on the hot path, every reason always present.
     private val drops: Map<DropReason, AtomicLong> = DropReason.entries.associateWith { AtomicLong() }
@@ -697,6 +698,15 @@ class MeshMetrics {
      */
     fun onGroupRootAdopted() {
         groupRootsAdopted.incrementAndGet()
+    }
+
+    /**
+     * Custody refused a frame naming a group whose roster does not derive to the group's id, or whose sender is not
+     * one of its members (ADR 2026-10.7mqm). No current build sends one (knit-ios neither); a pre-2.3.0 build after a
+     * departure does, and a forged one fills somebody else's group quota. The frame is still delivered and relayed.
+     */
+    fun onGroupCustodyRefused() {
+        groupCustodyRefused.incrementAndGet()
     }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
@@ -1349,6 +1359,7 @@ class MeshMetrics {
             groupKeyRequestsSent = groupKeyRequestsSent.get(),
             groupRootsMinted = groupRootsMinted.get(),
             groupRootsAdopted = groupRootsAdopted.get(),
+            groupCustodyRefused = groupCustodyRefused.get(),
         )
 
     /** The [Snapshot.Files] counters alone, read now. */
@@ -1600,6 +1611,8 @@ class MeshMetrics {
             val groupKeyRequestsSent: Long = 0,
             val groupRootsMinted: Long = 0,
             val groupRootsAdopted: Long = 0,
+            // ADR 2026-10.7mqm: a group frame custody would not carry (a roster that does not derive, a non-member).
+            val groupCustodyRefused: Long = 0,
         )
 
         /** Blobs over the radio links: files sent on each plane, blob asks handled, and cut transfers resumed (#116). */

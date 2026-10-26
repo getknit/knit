@@ -27,10 +27,11 @@ interface ForwardStore {
     /**
      * Persists [frame] seen at [now], tagged [origin] ([ORIGIN_SELF]/[ORIGIN_RELAY]). The implementation
      * stamps a frame-global TTL (`sentAt + ttl`) and enforces the storage caps; a frame whose id is already
-     * held is ignored. Returns whether the frame is now (or already was) in custody — false means it was
-     * **refused as dead on arrival** (its frame-global expiry has already passed, e.g. a skewed-clock peer
-     * re-served a frame every node has swept), so the caller must skip follow-on custody work like pulling
-     * the frame's attachment blob.
+     * held is ignored. Returns whether the frame is now (or already was) in custody. False means we do not hold it,
+     * so the caller must skip follow-on custody work like pulling the frame's attachment blob: it was **refused**
+     * (dead on arrival — its frame-global expiry has passed, e.g. a skewed-clock peer re-served a frame every node
+     * has swept; dated past the future window; or a group frame whose roster is not its own, ADR 2026-10.7mqm), or
+     * the caps **evicted it in the write that stored it**, as every node holding the same frames does.
      */
     suspend fun store(
         frame: CarriedFrame,
@@ -127,10 +128,13 @@ interface ForwardStore {
     suspend fun sweepExpired(now: Long): Int
 
     companion object {
-        /** [store] origin: a frame relayed for others — shed first under cap pressure. */
+        /**
+         * [store] origin: a frame relayed for others. Diagnostic only (the Your mesh count reads it): no quota, eviction
+         * or fold reads origin, or our own outbox would hold rows no carrier can match (ADR 006).
+         */
         const val ORIGIN_RELAY = 0
 
-        /** [store] origin: a frame this device authored — kept longest. */
+        /** [store] origin: a frame this device authored. Diagnostic only, as [ORIGIN_RELAY]. */
         const val ORIGIN_SELF = 1
 
         /** `sentAt DESC, id DESC` — the Room queries' order, so a default and the database agree on a tie. */

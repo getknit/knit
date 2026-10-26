@@ -5,8 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -25,6 +28,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.random.Random
 
 /**
  * Drives [ForwardRepository] against a **real** in-memory [KnitDatabase] (finding #5 — the store/evict/digest
@@ -36,7 +40,9 @@ import org.junit.Test
  * a node that authored more than a quota's worth of custodial frames held rows a capped carrier could never accept,
  * so their digests never matched and the mesh churned NDPs forever (field-observed: a 117-frame sender vs. the 100
  * per-sender quota). The fix trims each over-quota bucket to its newest-N *by the frame-global sentAt*, applied to
- * every origin, so all nodes keep the same set.
+ * every origin, so all nodes keep the same set. The global cap evicts from the largest sender bucket instead (ADR
+ * 2026-10.7mqm), so a flood of free identities cannot displace honest custody, and a group frame is carried only under
+ * its own roster.
  *
  * The store/remove/sweep mutations now also run their DB writes in a transaction under a repo mutex so the in-memory
  * digest stays in lockstep with the committed rows — see `concurrent store and sweep keep the digest consistent`.
@@ -139,7 +145,12 @@ class ForwardRepositoryTest : RoomDbTest() {
                     id = "g1",
                     senderId = "alice",
                     sentAt = 1L,
-                    group = GroupInfo(id = "g-1", members = listOf("alice", "bob"), createdBy = "alice"),
+                    group =
+                        GroupInfo(
+                            id = Conversations.groupIdFor(listOf("alice", "bob")),
+                            members = listOf("alice", "bob"),
+                            createdBy = "alice",
+                        ),
                     payload = WireCodec.encodePayload(ChatContent(attachmentHash = "CT")),
                 )
             repo.store(CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env)), ForwardStore.ORIGIN_RELAY, now = 0L)
@@ -516,5 +527,245 @@ class ForwardRepositoryTest : RoomDbTest() {
             sweeper.join()
 
             assertEquals(StoreDigest.fingerprint(db.forwardDao().liveIds(now = 0L)), digest.current())
+        }
+
+    /** A frame of [type] from [sender] at [sentAt]: a DM to "peer" when [recipientId] is set, a group's with [group], else a room's. */
+    private fun frame(
+        id: String,
+        sender: String,
+        sentAt: Long,
+        recipientId: String? = null,
+        group: GroupInfo? = null,
+        type: String = FrameType.CHAT,
+    ): CarriedFrame {
+        val env =
+            RelayEnvelope(
+                type = type,
+                id = id,
+                senderId = sender,
+                sentAt = sentAt,
+                recipientId = recipientId,
+                group = group,
+                payload = WireCodec.encodePayload(ChatContent(body = "")),
+            )
+        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
+    /** A group's roster as a current build writes it: the members left, and who departed. */
+    private fun roster(
+        members: List<String>,
+        departed: List<String> = emptyList(),
+    ) = GroupInfo(
+        id = Conversations.groupIdFor(members + departed),
+        members = members,
+        createdBy = (members + departed).first(),
+        departed = departed.ifEmpty { null },
+    )
+
+    @Test
+    fun `a Sybil flood stamped at the edge of the future window evicts none of the honest frames`() =
+        runTest {
+            // The malicious-fork review's C2 at a fiftieth of the field numbers (cap 1,000, 200 per sender): five
+            // identities fill the cap with frames stamped just inside the future window, the newest of all. The old
+            // global rule took the globally oldest frame, so every honest frame went, on every node alike.
+            val now = 1_000_000L
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest { now }, db, maxRows = 50, maxPerSender = 10)
+            val honest = (1..4).flatMap { s -> (1..3).map { i -> dm("h$s-$i", sender = "honest$s", sentAt = now - 60_000L * (5 - i)) } }
+            honest.forEach { assertTrue(repo.store(it, ForwardStore.ORIGIN_RELAY, now)) }
+            val edge = now + Protocol.MAX_FUTURE_SKEW_MS - 1
+            (1..5).forEach { s ->
+                (1..10).forEach { i -> repo.store(dm("s$s-%02d".format(i), "sybil$s", edge - i), ForwardStore.ORIGIN_RELAY, now) }
+            }
+
+            val held = repo.liveIds(now).toSet()
+            assertTrue(
+                "every honest frame is kept: missing ${honest.map { it.envelope.id } - held}",
+                held.containsAll(honest.map { it.envelope.id }),
+            )
+            assertEquals(50, held.size)
+            val perSybil = (1..5).map { s -> held.count { it.startsWith("s$s-") } }
+            assertEquals("the flood's own buckets paid for the cap, evenly: $perSybil", 38, perSybil.sum())
+            assertTrue("$perSybil", perSybil.all { it in 7..8 })
+        }
+
+    @Test
+    fun `an honest frame stored during the flood survives the write that stores it`() =
+        runTest {
+            // The five minutes after the flood: an honest frame is the oldest in the store, and the old rule evicted it
+            // in the same write, after the router had marked it seen.
+            val now = 1_000_000L
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest { now }, db, maxRows = 50, maxPerSender = 10)
+            val edge = now + Protocol.MAX_FUTURE_SKEW_MS - 1
+            (1..5).forEach { s ->
+                (1..10).forEach { i -> repo.store(dm("s$s-%02d".format(i), "sybil$s", edge - i), ForwardStore.ORIGIN_RELAY, now) }
+            }
+
+            assertTrue("store says it holds the frame", repo.store(dm("honest", "alice", now), ForwardStore.ORIGIN_RELAY, now))
+            assertTrue(repo.has("honest"))
+            assertEquals(50, repo.liveIds(now).size)
+        }
+
+    @Test
+    fun `store answers false for a frame its own write evicted, so nothing pulls a blob for it`() =
+        runTest {
+            val repo = repo(db, StoreDigest()) // per-sender quota = 5
+            (1..5).forEach { assertTrue(repo.store(dm("f$it", sender = "peer", sentAt = 10L + it), ForwardStore.ORIGIN_RELAY, now = 0L)) }
+
+            assertFalse(
+                "older than the newest five: kept nowhere",
+                repo.store(dm("late", "peer", sentAt = 1L), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            assertFalse(repo.has("late"))
+            assertTrue(
+                "a newer one displaces the oldest and is held",
+                repo.store(dm("new", "peer", sentAt = 99L), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            assertTrue("already held reads as held", repo.store(dm("new", "peer", sentAt = 99L), ForwardStore.ORIGIN_RELAY, now = 0L))
+        }
+
+    @Test
+    fun `the room quota keeps its newest posts whoever wrote them`() =
+        runTest {
+            // Only the global cap went fair (ADR 2026-10.7mqm). Shipped builds and knit-ios keep a room's newest-N, and a
+            // fair room trim would split an old node from a new one for good at a busy room's quota.
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest(), db, maxBroadcast = 3)
+            listOf(frame("a1", "A", 1L), frame("b1", "B", 2L), frame("b2", "B", 3L), frame("c1", "C", 4L))
+                .forEach { repo.store(it, ForwardStore.ORIGIN_RELAY, now = 0L) }
+            assertEquals("A's post is the oldest, though B holds two", listOf("b1", "b2", "c1"), repo.liveIds(0L).sorted())
+        }
+
+    @Test
+    fun `the group quota keeps its newest frames whoever wrote them`() =
+        runTest {
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest(), db, maxPerGroup = 3)
+            val g = roster(listOf("alice", "bob", "carol"))
+            listOf(
+                frame("a1", "alice", 1L, group = g),
+                frame("b1", "bob", 2L, group = g),
+                frame("b2", "bob", 3L, group = g),
+                frame("c1", "carol", 4L, group = g),
+            ).forEach { repo.store(it, ForwardStore.ORIGIN_RELAY, now = 0L) }
+            assertEquals(listOf("b1", "b2", "c1"), repo.liveIds(0L).sorted())
+        }
+
+    @Test
+    fun `with one quota binding, any two arrival orders keep the same set`() =
+        runTest {
+            // The global cap alone binds (per-sender quotas far above it), then the per-sender quota alone. Each set of
+            // frames arrives in two seeded orders on two nodes; the kept sets must be equal, which is what lets two
+            // nodes holding the same frames agree on a digest.
+            for (seed in 1..8) {
+                val random = Random(seed)
+                val frames = (1..40).map { dm("f%02d".format(it), sender = "s${random.nextInt(6)}", sentAt = random.nextLong(1L, 30L)) }
+                for ((maxRows, perSender) in listOf(15 to 1_000, 1_000 to 3)) {
+                    val kept =
+                        listOf(frames.shuffled(Random(seed * 31)), frames.shuffled(Random(seed * 37))).map { order ->
+                            val database = newDb()
+                            val store =
+                                ForwardRepository(
+                                    database.forwardDao(),
+                                    StoreDigest(),
+                                    database,
+                                    maxRows = maxRows,
+                                    maxPerSender = perSender,
+                                )
+                            order.forEach { store.store(it, ForwardStore.ORIGIN_RELAY, now = 0L) }
+                            store.liveIds(0L).toSet()
+                        }
+                    assertEquals("seed $seed, cap $maxRows, per sender $perSender", kept[0], kept[1])
+                }
+            }
+        }
+
+    @Test
+    fun `stores whose quotas bind together converge by exchanging what each lacks`() =
+        runTest {
+            // The custody exchange as the mesh runs it, between two and three stores at once: each round every store
+            // serves each other one the live frames it lacks, newest-received first, and a receiver drops an id it saw
+            // inside the router's seen window (served again only once the window lapses). The room, a sender, and the
+            // global cap bind at once, so the arrival order decides what each store holds first. The bound is three
+            // windows; a simulation of the rule settled within about two, and never in a two-cycle.
+            val window = SeenSet.DEFAULT_TTL_MS
+            val step = 60_000L
+            for (seed in 1..6) {
+                for (count in listOf(2, 3)) {
+                    val random = Random(seed * 101 + count)
+                    var now = 1_000_000L
+                    val g = roster(listOf("s0", "s1", "s2"))
+                    val frames =
+                        (1..36).map { i ->
+                            val sender = "s${random.nextInt(5)}"
+                            val sentAt = now - random.nextLong(1L, 600_000L)
+                            when (random.nextInt(3)) {
+                                0 -> frame("r%02d".format(i), sender, sentAt)
+                                1 -> frame("g%02d".format(i), g.members[random.nextInt(3)], sentAt, group = g)
+                                else -> frame("d%02d".format(i), sender, sentAt, recipientId = "peer")
+                            }
+                        }
+                    val stores =
+                        (0 until count).map {
+                            val database = newDb()
+                            ForwardRepository(
+                                database.forwardDao(),
+                                StoreDigest { now },
+                                database,
+                                maxRows = 14,
+                                maxPerSender = 8,
+                                maxPerGroup = 6,
+                                maxBroadcast = 5,
+                            )
+                        }
+                    val seen = stores.map { SeenSet(ttlMillis = window, clock = { now }) }
+                    stores.forEachIndexed { n, store ->
+                        frames.filter { random.nextInt(10) < 7 }.shuffled(random).forEach {
+                            seen[n].add(it.envelope.id)
+                            store.store(it, ForwardStore.ORIGIN_RELAY, now)
+                        }
+                    }
+                    val start = now
+                    while (stores.map { it.liveIds(now).toSet() }.distinct().size > 1) {
+                        assertTrue(
+                            "seed $seed, $count stores: not converged after ${(now - start) / 60_000} min",
+                            now - start <= 3 * window,
+                        )
+                        now += step
+                        // Every store's offer is read before any is taken: the exchanges of one round cross on the air.
+                        val offers = stores.map { it.liveFrames(now) }
+                        val heldBefore = stores.map { it.liveIds(now).toSet() }
+                        stores.forEachIndexed { to, store ->
+                            offers.forEachIndexed { from, offer ->
+                                if (from == to) return@forEachIndexed
+                                offer.filter { it.envelope.id !in heldBefore[to] }.forEach {
+                                    if (seen[to].add(it.envelope.id)) store.store(it, ForwardStore.ORIGIN_RELAY, now)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `custody refuses a group frame whose roster is not its own, and counts it`() =
+        runTest {
+            val metrics = MeshMetrics()
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest(), db, metrics = metrics)
+            val g = roster(listOf("alice", "bob", "carol"))
+            assertTrue(repo.store(frame("ok", "bob", 1L, group = g), ForwardStore.ORIGIN_RELAY, now = 0L))
+            assertFalse(
+                "a stranger naming the group",
+                repo.store(frame("stranger", "mallory", 2L, group = g), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            val smuggled = g.copy(members = g.members + "mallory")
+            assertFalse(
+                "a roster with a member smuggled in",
+                repo.store(frame("smuggled", "mallory", 3L, group = smuggled), ForwardStore.ORIGIN_RELAY, now = 0L),
+            )
+            assertFalse(
+                "our own frame is held to it too",
+                repo.store(frame("own", "mallory", 4L, group = smuggled), ForwardStore.ORIGIN_SELF, now = 0L),
+            )
+            assertEquals(listOf("ok"), repo.liveIds(0L))
+            assertEquals(3L, metrics.groups().groupCustodyRefused)
         }
 }

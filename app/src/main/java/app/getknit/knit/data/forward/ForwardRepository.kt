@@ -1,14 +1,18 @@
 package app.getknit.knit.data.forward
 
+import android.util.Log
 import androidx.room3.withWriteTransaction
 import app.getknit.knit.data.KnitDatabase
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedAttachment
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.RoomAttachments
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.flow.Flow
@@ -27,7 +31,13 @@ import kotlinx.coroutines.sync.withLock
  *    the buffer with junk we'd re-offer to everyone;
  *  - a **per-group quota** ([maxPerGroup]) so one busy group can't monopolize the buffer either;
  *  - a **broadcast quota** ([maxBroadcast]) so ambient broadcast chatter can't crowd out addressed messages;
- *  - a **global cap** ([maxRows]) with oldest-first, relayed-before-our-own eviction.
+ *  - a **global cap** ([maxRows]) that evicts from the **largest sender bucket** first, one row at a time, so a
+ *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm).
+ *
+ * The sender, group and room quotas keep their newest-N by the frame-global `(sentAt, id)`. Origin plays no part in
+ * any of them: our own sends are bounded exactly like relayed traffic (ADR 006). A frame naming a group is carried
+ * only when its roster derives to the group's id and names its sender (ADR 2026-10.7mqm), so nobody outside a group
+ * can fill its quota.
  *
  * Every bound is evaluated over **live** rows only, and the digest folds only live ids — an expired-but-unswept
  * row is per-node state (sweep ticks phase independently), so letting it into any rule would de-converge the
@@ -45,6 +55,8 @@ class ForwardRepository(
     private val maxPerSender: Int = DEFAULT_MAX_PER_SENDER,
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
+    // Counts the group frames the gate in [store] refuses; null in the rigs that do not read it.
+    private val metrics: MeshMetrics? = null,
 ) : ForwardStore {
     // Serializes store/remove/sweepExpired so each in-memory [digest] update commits atomically with its
     // forward_store row write: a Room transaction can't enroll the in-memory digest, and a concurrent sweep's
@@ -84,11 +96,25 @@ class ForwardRepository(
         if (expiresAt < now) return false
         // Future-dated cap — the upper complement of the dead-on-arrival guard above. `sentAt` is the sender's
         // self-attested, unverifiable clock AND the frame-global eviction key, so a frame future-dated past a
-        // generous skew window would be un-sweepable (its expiry is far off) and the newest-by-`sentAt` in every
-        // bucket, letting a handful of Sybil identities win every quota eviction and permanently displace honest
-        // custody mesh-wide. Refuse it. Every node compares against its own `now` exactly like the DOA guard, so
-        // an honest frame (sentAt ≈ now) passes on every node and only the attacker's future window closes.
+        // generous skew window would be un-sweepable (its expiry is far off) and the newest-by-`sentAt` in its
+        // buckets. Refuse it. Every node compares against its own `now` exactly like the DOA guard, so an honest
+        // frame (sentAt ≈ now) passes on every node. The window stays at five minutes (ADR 2026-10.7mqm): since the
+        // global cap evicts from the largest sender first, a stamp inside it only orders a sender's own frames, and
+        // tightening it would refuse a fast-clocked honest frame the router has already marked seen, so the peers'
+        // digests would differ for a seen window per frame.
         if (env.sentAt > now + Protocol.MAX_FUTURE_SKEW_MS) return false
+        // A group frame is carried only for its own group's members (ADR 2026-10.7mqm). The id is the hash of the
+        // founding roster, so the frame's own members and departed must derive to it, and its sender must be one of the
+        // members. Without this any pinned identity that knew a group's id filled that group's quota on every carrier.
+        // A function of the frame alone, so every node refuses alike and the digest is unmoved; here rather than in the
+        // carry gate (`InboundPipeline.canCarry`), which is also the spool plane's delivery gate and which our own
+        // frames skip. Delivery and relay are unchanged: `vetRoster` still decides what a member reads.
+        val group = env.group
+        if (group != null && !carriesGroup(group, env.senderId)) {
+            metrics?.onGroupCustodyRefused()
+            Log.w(TAG, "custody refused ${env.id.take(ID_CHARS)} from ${env.senderId.take(ID_CHARS)}: roster of ${group.id} is not its own")
+            return false
+        }
         // Denormalize the image content hash so the carrier can pull+hold the blob and pin it against GC. This
         // decode is best-effort metadata ONLY — it must never gate the insert: a null (non-chat, no attachment,
         // or an unreadable payload) still stores the frame, so `forward_store` ids stay byte-identical mesh-wide
@@ -119,37 +145,53 @@ class ForwardRepository(
         // critical section (mutex). The digest update runs AFTER commit but still under the lock, so a rolled-back
         // transaction never leaves the digest ahead of the table and no concurrent store/sweep interleaves between
         // the commit and the update.
-        mutex.withLock {
-            val didEvict = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, now) }
-            // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
-            // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
-            if (didEvict) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
-        }
-        return true
+        val trimmed =
+            mutex.withLock {
+                val trimmed = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, now) }
+                // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
+                // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
+                if (trimmed.evicted) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
+                trimmed
+            }
+        // A frame its own write trimmed is one we do not hold: the caller must not pull its attachment for it.
+        return trimmed.kept
     }
 
+    /** What [insertAndTrim] did: whether any row went, and whether the row it inserted is still held. */
+    private class Trimmed(
+        val evicted: Boolean,
+        val kept: Boolean,
+    )
+
     /**
-     * Inserts [row] and trims each over-quota bucket to its newest-N by the frame-global sentAt, in the fixed
-     * order (sender, group, broadcast, global) so every node keeps the identical set; returns whether
-     * any eviction ran. Runs inside the caller's [db] transaction.
+     * Inserts [row] and trims each over-quota bucket in the fixed order (sender, group, room, global), so every node
+     * keeps the identical set; returns whether any eviction ran and whether [row] survived it. Runs inside the
+     * caller's [db] transaction.
      *
-     * Evict a bucket's *oldest-by-sentAt* rows rather than refusing the new one, and apply the quotas to our own
-     * sends (ORIGIN_SELF) too. sentAt is a frame-global key, so every node — originator and every carrier — keeps
-     * the identical newest-N set and their content digests converge. The old scheme (refuse-when-full, and never
-     * cap our own outbox) let an originator that authored more than a quota's worth of custodial frames hold rows
-     * a capped carrier could never accept, so the cue-plane digests never matched and the mesh churned NDPs
-     * forever — observed with a 117-frame sender against the 100 per-sender quota. A just-stored frame older than
-     * the bucket's newest-N is evicted here too, which is correct: we converge on the newest-N regardless of
-     * arrival order. Counts and evictions are live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an
-     * expired-unswept row can be newer by sentAt than a live one — counting it would evict a live frame on the
-     * unswept node only, and which rows are evicted would then depend on the local sweep phase, not a frame-global
-     * rule (work item #8).
+     * A bucket over its quota loses rows rather than refusing the new one, and the quotas apply to our own sends
+     * (ORIGIN_SELF) too (ADR 006). The old scheme (refuse-when-full, and never cap our own outbox) let an originator
+     * that authored more than a quota's worth of custodial frames hold rows a capped carrier could never accept, so
+     * the cue-plane digests never matched and the mesh churned NDPs forever — observed with a 117-frame sender against
+     * the 100 per-sender quota.
+     *
+     * The sender, group and room trims keep their newest-N by the frame-global `(sentAt, id)`. The global cap evicts
+     * one row at a time from the sender holding the most, oldest first, recounting after each
+     * ([ForwardDao.evictFairest], ADR 2026-10.7mqm): five free identities stamping a thousand frames inside the future
+     * window used to evict every honest frame on every node, and every honest frame for the next five minutes in the
+     * write that stored it. The room and group trims stay newest-N on purpose: every shipped build and knit-ios trim
+     * that way, and a busy room sitting at its quota would otherwise split an old node from a new one for good.
+     *
+     * A just-stored frame the rules put outside what is kept is evicted here too: we converge on the same set whatever
+     * the arrival order. Counts and evictions are live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an
+     * expired-unswept row can be newer by sentAt than a live one — counting it would evict a live frame on the unswept
+     * node only, and which rows are evicted would then depend on the local sweep phase, not a frame-global rule (work
+     * item #8).
      */
     private suspend fun insertAndTrim(
         row: ForwardEntity,
         isBroadcastChat: Boolean,
         now: Long,
-    ): Boolean {
+    ): Trimmed {
         dao.insert(row)
         val senderId = row.senderId
         val groupId = row.groupId
@@ -160,7 +202,8 @@ class ForwardRepository(
         if (isBroadcastChat) {
             evicted = trim(dao.countBroadcast(now) - maxBroadcast) { dao.evictOldestBroadcast(it, now) } || evicted
         }
-        return trim(dao.count(now) - maxRows) { dao.evictOldest(it, now) } || evicted
+        evicted = trim(dao.count(now) - maxRows) { over -> repeat(over) { dao.evictFairest(now) } } || evicted
+        return Trimmed(evicted, kept = !evicted || dao.exists(row.id))
     }
 
     /** Evicts [over] rows via [evict] when a bucket exceeds its quota; returns whether anything was removed. */
@@ -303,7 +346,7 @@ class ForwardRepository(
         /** Carry a broadcast-room message for a shorter window (ambient, higher-volume, no ack to purge it). */
         const val DEFAULT_BROADCAST_TTL_MS = 6 * 60 * 60_000L
 
-        /** Cap total carried frames; oldest relayed traffic is evicted first. */
+        /** Cap total carried frames; past it the largest sender bucket loses its oldest frame (ADR 2026-10.7mqm). */
         const val DEFAULT_MAX_ROWS = 1_000
 
         /** Cap carried frames per sender, so one identity can't monopolize the buffer. */
@@ -314,5 +357,22 @@ class ForwardRepository(
 
         /** Cap carried broadcast-room frames, so ambient chatter can't crowd out addressed messages. */
         const val DEFAULT_MAX_BROADCAST = 200
+
+        private const val TAG = "ForwardRepository"
+
+        // How much of a frame or node id a log line names: enough to find it in a dump, no more.
+        private const val ID_CHARS = 8
+
+        /**
+         * Whether custody carries a frame naming [group] from [senderId] (ADR 2026-10.7mqm): its members and departed
+         * together derive to the group's id ([Conversations.groupIdFor], the founding roster), and the sender is one of
+         * the members. Every group frame a current build or knit-ios sends passes: each builds the roster from a row
+         * that only ever came from a roster that derived. A pre-2.3.0 frame after a departure does not, since it lists
+         * no `departed`; it is still delivered and relayed, and only custody lets it go.
+         */
+        fun carriesGroup(
+            group: GroupInfo,
+            senderId: String,
+        ): Boolean = senderId in group.members && Conversations.groupIdFor(group.members + group.departed.orEmpty()) == group.id
     }
 }

@@ -159,20 +159,29 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   (that moves the convergent quota rule). Regression: `StrangerBacklogLabTest`, `ForwardSyncTest`'s
   `onDigestServes…Key…` cases.
 - **When touching `ForwardRepository`'s quotas or TTLs (`DEFAULT_MAX_ROWS` / `_PER_SENDER` / `_PER_GROUP` /
-  `_BROADCAST`, `DEFAULT_TTL_MS`, `DEFAULT_BROADCAST_TTL_MS`), its eviction order, `StoreDigest`, `ForwardStore`'s
-  live reads, or anything else the custody digest folds over:** READ ADR 006 and the "Bounds" and "A bounded custody
-  quota must be *convergent*" sections of `.agents/context/store-and-forward.md`. Every bound is the same on every
-  node: a full bucket keeps its newest-N by the frame-global `(sentAt, id)` on every origin, `ORIGIN_SELF` included
-  (bc4ba0a5); expiry keys off `sentAt`, never `receivedAt` (cf0b6e00); the digest folds live ids only (daffbc82) and
-  every decision site reads it through `current()` (3548c123), whose invariant is `current() == liveFingerprint`. A
+  `_BROADCAST`, `DEFAULT_TTL_MS`, `DEFAULT_BROADCAST_TTL_MS`), its eviction order (`insertAndTrim`,
+  `ForwardDao.evictFairest` / `evictOldestBy*`), its group gate (`ForwardRepository.carriesGroup`), `StoreDigest`,
+  `ForwardStore`'s live reads, or anything else the custody digest folds over:** READ ADR 006, ADR 2026-10.7mqm and
+  the "Bounds" and "A bounded custody quota must be *convergent*" sections of `.agents/context/store-and-forward.md`.
+  Every bound is the same on every node: a full sender, group or room bucket keeps its newest-N by the frame-global
+  `(sentAt, id)` on every origin, `ORIGIN_SELF` included (bc4ba0a5), and the global cap takes the oldest frame of the
+  largest sender bucket, one row at a time (7mqm: five free identities used to wipe every honest frame; don't make the
+  room or group trim fair, shipped builds and knit-ios keep newest-N there); a group frame is carried only when its
+  roster derives to its id and names its sender (7mqm), and `store` answers false for a frame its own write evicted,
+  so nothing pulls its blob; expiry keys off `sentAt`, never `receivedAt` (cf0b6e00); the digest folds live ids only
+  (daffbc82) and every decision site reads it through `current()` (3548c123), whose invariant is `current() == liveFingerprint`. A
   per-node input in the carry gate, the quota or the fold — local receive time, origin, the block list, a setting — is
   a digest no peer can match, and the cue plane re-attempts a reconcile on every cue for as long as it holds. The TTL
-  and quota constants are convergence-critical: moving one is a mesh-wide change the iOS port must mirror.
+  and quota constants are convergence-critical: moving one is a mesh-wide change the iOS port must mirror, checked by
+  `vectors/custody-v1.json` (`CustodyVectorTest`). Regression: `ForwardRepositoryTest`'s flood and exchange cases,
+  `CustodyGroupGateTest`, `CustodyQuotaLabTest`, `MaliciousForkLabTest`'s custody cases.
 - **When touching `InboundPipeline.canCarry`, `KeyExchange.want`, or anything else that decides whether a frame enters
   custody:** READ ADR 2026-09.bts9 (amending ADR 010). The carry gate is a pinned sender and a frame signature that
   verifies — authenticated, never decrypted — and nothing per-node: the block list is a delivery-path input, so a
   blocker carries, re-serves and accounts a blocked sender's frames and drops them only on delivery (e7528cb7). A
-  message sent during a block stays unseen after the unblock, by design.
+  message sent during a block stays unseen after the unblock, by design. The group gate (ADR 2026-10.7mqm) is custody's,
+  in `ForwardRepository.store`, not this gate's: `canCarry` is also `ScopeSync.acceptClaimed`'s delivery gate, and our
+  own frames skip it.
 - **When touching `ForwardSync.onAck` / `onSeen`'s `acked` tombstones, a cleartext receipt's purge, or the order a DM
   and its receipt can arrive in:** READ ADR 2026-09.adpz and the DM paragraph of
   `.agents/context/store-and-forward.md`. A sealed receipt purges nothing (a carrier cannot read it; both age out on

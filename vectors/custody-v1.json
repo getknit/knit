@@ -1,0 +1,722 @@
+{
+  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
+  "limits": {
+    "maxRows": 8,
+    "maxPerSender": 4,
+    "maxPerGroup": 3,
+    "maxBroadcast": 3,
+    "ttlMs": 100000,
+    "broadcastTtlMs": 60000,
+    "maxFutureSkewMs": 300000
+  },
+  "steps": [
+    {
+      "note": "alice's DMs fill her sender bucket",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a1",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999910000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000010000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a1"
+      ]
+    },
+    {
+      "note": "alice",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a2",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999920000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000020000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a1",
+        "a2"
+      ]
+    },
+    {
+      "note": "alice",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a3",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999930000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000030000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a1",
+        "a2",
+        "a3"
+      ]
+    },
+    {
+      "note": "alice: her bucket is full at 4",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a4",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999940000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000040000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ]
+    },
+    {
+      "note": "sender quota: alice keeps her newest 4, a1 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a5",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999950000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000050000,
+      "kept": true,
+      "evicted": [
+        "a1"
+      ],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5"
+      ]
+    },
+    {
+      "note": "older than alice's newest 4: evicted by its own write, kept=false",
+      "now": 1800000000000,
+      "frame": {
+        "id": "a0",
+        "type": "chat",
+        "senderId": "alice",
+        "recipientId": "bob",
+        "sentAt": 1799999905000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000005000,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5"
+      ]
+    },
+    {
+      "note": "room posts",
+      "now": 1800000000000,
+      "frame": {
+        "id": "r1",
+        "type": "chat",
+        "senderId": "bob",
+        "sentAt": 1799999960000
+      },
+      "isRoomChat": true,
+      "expiresAt": 1800000020000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5",
+        "r1"
+      ]
+    },
+    {
+      "note": "room",
+      "now": 1800000000000,
+      "frame": {
+        "id": "r2",
+        "type": "chat",
+        "senderId": "carol",
+        "sentAt": 1799999961000
+      },
+      "isRoomChat": true,
+      "expiresAt": 1800000021000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5",
+        "r1",
+        "r2"
+      ]
+    },
+    {
+      "note": "room: full at 3",
+      "now": 1800000000000,
+      "frame": {
+        "id": "r3",
+        "type": "chat",
+        "senderId": "bob",
+        "sentAt": 1799999962000
+      },
+      "isRoomChat": true,
+      "expiresAt": 1800000022000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5",
+        "r1",
+        "r2",
+        "r3"
+      ]
+    },
+    {
+      "note": "room quota keeps the newest 3 whoever wrote them: r1 goes though bob holds two",
+      "now": 1800000000000,
+      "frame": {
+        "id": "r4",
+        "type": "chat",
+        "senderId": "dave",
+        "sentAt": 1799999963000
+      },
+      "isRoomChat": true,
+      "expiresAt": 1800000023000,
+      "kept": true,
+      "evicted": [
+        "r1"
+      ],
+      "held": [
+        "a2",
+        "a3",
+        "a4",
+        "a5",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "a group frame counts in alice's sender bucket too: she holds 5, a2 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "g1",
+        "type": "chat",
+        "senderId": "alice",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol"
+          ]
+        },
+        "sentAt": 1799999970000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000070000,
+      "kept": true,
+      "evicted": [
+        "a2"
+      ],
+      "held": [
+        "a3",
+        "a4",
+        "a5",
+        "g1",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "a frame naming bob as departed derives and is carried; the store is at its cap of 8",
+      "now": 1800000000000,
+      "frame": {
+        "id": "g2",
+        "type": "chat",
+        "senderId": "carol",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "carol"
+          ],
+          "departed": [
+            "bob"
+          ]
+        },
+        "sentAt": 1799999971000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000071000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a3",
+        "a4",
+        "a5",
+        "g1",
+        "g2",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "over the cap: alice holds the most (4) and her oldest, a3, goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "g3",
+        "type": "chat",
+        "senderId": "bob",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol"
+          ]
+        },
+        "sentAt": 1799999972000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000072000,
+      "kept": true,
+      "evicted": [
+        "a3"
+      ],
+      "held": [
+        "a4",
+        "a5",
+        "g1",
+        "g2",
+        "g3",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "group quota keeps the group's newest 3: g1 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "g4",
+        "type": "chat",
+        "senderId": "carol",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol"
+          ]
+        },
+        "sentAt": 1799999973000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000073000,
+      "kept": true,
+      "evicted": [
+        "g1"
+      ],
+      "held": [
+        "a4",
+        "a5",
+        "g2",
+        "g3",
+        "g4",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "group gate: a sender outside the roster, refused",
+      "now": 1800000000000,
+      "frame": {
+        "id": "x1",
+        "type": "chat",
+        "senderId": "mallory",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol"
+          ]
+        },
+        "sentAt": 1799999974000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000074000,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a4",
+        "a5",
+        "g2",
+        "g3",
+        "g4",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "group gate: a roster that does not derive to the id, refused",
+      "now": 1800000000000,
+      "frame": {
+        "id": "x2",
+        "type": "chat",
+        "senderId": "mallory",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol",
+            "mallory"
+          ]
+        },
+        "sentAt": 1799999974000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000074000,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a4",
+        "a5",
+        "g2",
+        "g3",
+        "g4",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "group gate: a pre-2.3.0 roster after a departure, refused",
+      "now": 1800000000000,
+      "frame": {
+        "id": "x3",
+        "type": "chat",
+        "senderId": "alice",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "carol"
+          ]
+        },
+        "sentAt": 1799999974000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000074000,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a4",
+        "a5",
+        "g2",
+        "g3",
+        "g4",
+        "r2",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "over the cap: carol holds the most (a room post, two group frames), r2 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "e2",
+        "type": "chat",
+        "senderId": "erin",
+        "recipientId": "bob",
+        "sentAt": 1799999980000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000080000,
+      "kept": true,
+      "evicted": [
+        "r2"
+      ],
+      "held": [
+        "a4",
+        "a5",
+        "e2",
+        "g2",
+        "g3",
+        "g4",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "alice, bob, carol and erin hold two each: alice's oldest frame is the oldest, a4 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "e1",
+        "type": "chat",
+        "senderId": "erin",
+        "recipientId": "bob",
+        "sentAt": 1799999980000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000080000,
+      "kept": true,
+      "evicted": [
+        "a4"
+      ],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "g2",
+        "g3",
+        "g4",
+        "r3",
+        "r4"
+      ]
+    },
+    {
+      "note": "bob, carol and erin hold two each: bob's r3 is the oldest of their frames",
+      "now": 1800000000000,
+      "frame": {
+        "id": "f1",
+        "type": "chat",
+        "senderId": "frank",
+        "recipientId": "bob",
+        "sentAt": 1799999980000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000080000,
+      "kept": true,
+      "evicted": [
+        "r3"
+      ],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "f1",
+        "g2",
+        "g3",
+        "g4",
+        "r4"
+      ]
+    },
+    {
+      "note": "dead on arrival: past its frame-global expiry, refused",
+      "now": 1800000000000,
+      "frame": {
+        "id": "z1",
+        "type": "chat",
+        "senderId": "zed",
+        "recipientId": "bob",
+        "sentAt": 1799999899999
+      },
+      "isRoomChat": false,
+      "expiresAt": 1799999999999,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "f1",
+        "g2",
+        "g3",
+        "g4",
+        "r4"
+      ]
+    },
+    {
+      "note": "past the future window, refused",
+      "now": 1800000000000,
+      "frame": {
+        "id": "z2",
+        "type": "chat",
+        "senderId": "zed",
+        "recipientId": "bob",
+        "sentAt": 1800000300001
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000400001,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "f1",
+        "g2",
+        "g3",
+        "g4",
+        "r4"
+      ]
+    },
+    {
+      "note": "at the window's edge, stored; carol's oldest is older than erin's, g2 goes",
+      "now": 1800000000000,
+      "frame": {
+        "id": "z3",
+        "type": "chat",
+        "senderId": "zed",
+        "recipientId": "bob",
+        "sentAt": 1800000300000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000400000,
+      "kept": true,
+      "evicted": [
+        "g2"
+      ],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "r4",
+        "z3"
+      ]
+    },
+    {
+      "note": "r4 has expired: 7 live rows, so h1 fits under the cap and nothing goes",
+      "now": 1800000045000,
+      "frame": {
+        "id": "h1",
+        "type": "chat",
+        "senderId": "heidi",
+        "recipientId": "bob",
+        "sentAt": 1800000044000
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000144000,
+      "kept": true,
+      "evicted": [],
+      "held": [
+        "a5",
+        "e1",
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "z3"
+      ]
+    },
+    {
+      "note": "a flood at the window's edge: erin holds the most, two at one sentAt, the lower id goes",
+      "now": 1800000045000,
+      "frame": {
+        "id": "s1",
+        "type": "chat",
+        "senderId": "sybil",
+        "recipientId": "bob",
+        "sentAt": 1800000344997
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000444997,
+      "kept": true,
+      "evicted": [
+        "e1"
+      ],
+      "held": [
+        "a5",
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s1",
+        "z3"
+      ]
+    },
+    {
+      "note": "the flood's bucket is now the largest and pays for the cap: s1 goes",
+      "now": 1800000045000,
+      "frame": {
+        "id": "s2",
+        "type": "chat",
+        "senderId": "sybil",
+        "recipientId": "bob",
+        "sentAt": 1800000344998
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000444998,
+      "kept": true,
+      "evicted": [
+        "s1"
+      ],
+      "held": [
+        "a5",
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s2",
+        "z3"
+      ]
+    },
+    {
+      "note": "and again: s2 goes, the honest frames stay",
+      "now": 1800000045000,
+      "frame": {
+        "id": "s3",
+        "type": "chat",
+        "senderId": "sybil",
+        "recipientId": "bob",
+        "sentAt": 1800000344999
+      },
+      "isRoomChat": false,
+      "expiresAt": 1800000444999,
+      "kept": true,
+      "evicted": [
+        "s2"
+      ],
+      "held": [
+        "a5",
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s3",
+        "z3"
+      ]
+    }
+  ]
+}

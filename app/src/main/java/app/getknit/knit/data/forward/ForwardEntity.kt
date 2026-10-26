@@ -24,7 +24,8 @@ import androidx.room3.PrimaryKey
  * reaction/receipt/profile frames that share its null recipient/group shape. [origin] records whether we
  * relayed a frame for others (`ORIGIN_RELAY`) or authored it (`ORIGIN_SELF`) — diagnostic only, now that quota
  * eviction is origin-agnostic. [sentAt] is the originator's envelope clock (identical on every node), so
- * trimming each over-quota bucket to its newest-N *by [sentAt]* keeps every node's carried set — and hence its
+ * trimming each over-quota sender, group or room bucket to its newest-N *by [sentAt]*, and the global cap from the
+ * largest sender bucket's oldest frame (ADR 2026-10.7mqm), keeps every node's carried set — and hence its
  * content digest — convergent; without it a chatty originator (which used to bypass the quota outright) held
  * frames a capped carrier could never accept, so the digests never matched. [receivedAt] records local arrival
  * (diagnostic + `ForwardDao.liveRows` ordering only). [expiresAt] drives the TTL sweep and is

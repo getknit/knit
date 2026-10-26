@@ -226,9 +226,11 @@ Sourced; cite these by their ADR or file, and treat anything not here or in an A
   a whole file before the receiver's header lands. `LinkCrossings` writes a frame to one link at most once per
   `SeenSet` window, so a receiver-side reopen cannot re-pull it on Bluetooth (nxfb, 9xuu, tjfb).
 - `SeenSet.DEFAULT_TTL_MS` is 10 min, and the router marks an id seen before custody runs; custody's TTL is 24 h (6 h
-  for the room), the cleartext-ack tombstone 24 h, each quota 200 per sender / group / room and 1,000 rows overall,
-  evicted newest-N by `(sentAt, id)` (`ForwardRepository`, ADR 006). A frame served to a full bucket is the oldest
-  row and is trimmed on arrival.
+  for the room), the cleartext-ack tombstone 24 h, each quota 200 per sender / group / room, evicted newest-N by
+  `(sentAt, id)`, and 1,000 rows overall, evicted one at a time from the sender holding the most live frames, oldest
+  first (`ForwardRepository`, ADR 006, ADR 2026-10.7mqm). A frame served to a full bucket is the oldest row and is
+  trimmed on arrival, and `store` then answers false. A frame naming a group is carried only when its roster derives
+  to the id and names its sender (7mqm).
 - `BlobExchange`: a round every 45 s (`ROUND_MS`, the serve memo's window), a first-ask grace of 5 s counted from the
   first look that finds the holder no longer streaming to us, a 30-min `FETCH_TTL_MS` sweep of the memo; a carrier's
   DM pull waits ≤ 10 min (`CarrierPullPolicy.DEFER_MS`); a receiver reports every 2 s by its own clock, a feed stalls
@@ -260,4 +262,6 @@ One line per invariant, with the ADR to read. Not exhaustive and not authoritati
   (006, bts9); a profile is custodied wherever delivered (7bu7); a digest serves profiles first and the park holds a
   whole quota (9xuu); a carrier keeps the signed profile it pinned from and sends a key point to point only to a peer
   holding none of that sender's frames (g64k); a receipt that lands first vaccinates its DM (adpz); an own frame is
-  custodied before it floods (#141); one queued digest per link (tjfb).
+  custodied before it floods (#141); one queued digest per link (tjfb); the global cap evicts from the largest sender
+  bucket, the others keep their newest-N, and a group frame is carried only under its own roster, all functions of
+  the frame and the held set (7mqm).

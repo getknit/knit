@@ -12,8 +12,9 @@ only briefly backfill each other's ambient history (the festival case). The subs
 chat cases (the delivery-critical ones); the metadata types ride the same custody path
 (`FrameType.isCustodial`). A node persists the messages it originates (`ORIGIN_SELF`) or relays
 (`ORIGIN_RELAY`) into the encrypted `forward_store` table, and when a neighbor joins (`watchNeighbors`
-newcomers → `ForwardSync.onNeighborAdded`) **unicasts** the carried ones to it (skipping a
-per-peer-per-session memo + the message's own author). Re-served frames re-enter the existing
+newcomers → `ForwardSync.onNeighborAdded`) advertises the ids it holds, and the neighbor's digest reply
+(`ForwardSync.onDigest`) **unicasts** every carried frame the other lacks — the set difference, with no per-session
+memo and no author skip (a node's own sends re-converge that way after a wipe). Re-served frames re-enter the existing
 `handleInbound` path — deliver + relay, no separate delivery code. A stored frame keeps only its immutable
 signed blob + signature (`CarriedFrame`); a fresh `WireEnvelope` (full `ttl`, `hops=0`) is stamped around
 it on re-serve, so it re-floods with a full hop budget when re-served much later (the signature covers
@@ -84,10 +85,39 @@ not only the one-hop peers that happened to be present when each first flooded.
 ## Bounds (`ForwardRepository`)
 
 A per-message **TTL** sweep (startup + a 10-min loop + the heartbeat `heal()`; broadcast gets a shorter
-TTL than DMs/groups), a **global cap**, a **per-sender quota**, a **per-group quota**, and a **broadcast
-quota** — each enforced by evicting its **oldest frame by `sentAt`** (a frame-global key, so every node
-keeps the identical newest-N and their content digests converge) rather than refusing the new one, and
-applied to **our own sends too** (not just relayed traffic). Ordering by a per-node key (`receivedAt`) or
+TTL than DMs/groups), a **per-sender quota**, a **per-group quota**, a **broadcast quota** and a **global cap**,
+each enforced by evicting rather than refusing the new frame, and applied to **our own sends too** (not just relayed
+traffic). The three buckets keep their **newest-N by the frame-global `(sentAt, id)`**. The global cap evicts **one
+row at a time from the largest sender bucket**: the oldest `(sentAt, id)` frame of the sender holding the most live
+frames, and on a tie for most, the sender whose oldest frame is oldest (`ForwardDao.evictFairest`, ADR 2026-10.7mqm).
+Both keys read only the frame and the held set, so every node holding the same frames keeps the same ones and their
+content digests converge. A frame its own write evicts is one `store` answers false for, so nothing pulls its blob.
+
+The global cap was newest-N too until the malicious-fork review (C2): five free identities × 200 frames stamped just
+inside the five-minute future window were the newest frames in every store, evicted every honest frame on every node
+at once, and for the next five minutes evicted each honest frame in the write that stored it. Under the fair cap a
+flood displaces only the largest buckets, its own; it now takes about as many pinned identities as the cap has rows,
+less the honest senders, to reach an honest frame. Identities are free, so bounding how fast a link can introduce them
+is the remaining fix (H5, link authentication). The room and group trims stay newest-N on purpose: every shipped build
+and knit-ios trim that way, and a fair room trim would split an old node from a new one for good whenever a busy room
+sits at its quota (a simulation split 917 of 1,000 such cases; with only the global cap fair, none). A mixed fleet
+still holds different sets while the global cap binds, which honest traffic rarely reaches, until the fleet has
+updated. The future window stays at five minutes (`Protocol.MAX_FUTURE_SKEW_MS`): under the fair cap a stamp inside
+it only orders a sender's own frames, and a tighter one would refuse a fast-clocked honest frame after the router had
+marked it seen, so two nodes' digests would differ for a seen window per frame. Still open: 200 room posts from Sybils (the per-link `IngressBudget` is keyed by a claimed id), and a group's
+own member flooding its group (an insider).
+
+**The group gate** (same ADR). A frame naming a group (`RelayEnvelope.group`) is custodied only when its `members` and
+`departed` derive to the group's id (`Conversations.groupIdFor`, the founding roster) and its sender is one of the
+`members` (`ForwardRepository.carriesGroup`). Without it any pinned identity that knew a group's id filled that
+group's quota on every carrier. It sits in `ForwardRepository.store`, beside the dead-on-arrival and future-window
+refusals, so it covers every origin, and never in `canCarry`, which is also the spool plane's delivery gate. It changes
+nothing about delivery or relay: `vetRoster` still decides what a member reads. Every current Android and knit-ios
+group frame passes, because each builds its roster from a row that only came from a roster that derived; a `groupleave`,
+a receipt, a tick or a seed names no group on the envelope. A pre-2.3.0 frame after a departure lists no `departed`
+and is refused here (still delivered, through `vetRoster`'s within-pin arm), and so is a frame from a device still
+holding a group row pinned on a pre-2.3.0 build from such a frame, until a current member's frame repairs the pin. A
+refusal counts `groupCustodyRefused`. Ordering by a per-node key (`receivedAt`) or
 exempting `ORIGIN_SELF` breaks convergence and churns the cue plane forever — see the convergent-quota
 section below. A carrier stores a message only when its sender is **pinned and its frame signature
 verifies** (`InboundPipeline.canCarry` → `MessageCrypto.verify` over the received `signed` bytes,
@@ -114,7 +144,10 @@ permanently and the radio never idled (a slow drip of NDP setup/teardown + re-at
 never emptying); and (2) it **refused the new frame** when full and evicted by local `receivedAt`/origin —
 both per-node, so even matched counts kept *different* sets. The fix: trim each over-quota bucket to its
 newest-N by the **frame-global `(sentAt, id)`** on **every** origin, so all nodes keep the identical set
-and the digests converge. A third breakage of the same rule was TTL expiry (work item #8): the digest
+and the digests converge. (The global cap's key has since become the largest sender bucket's oldest frame, ADR
+2026-10.7mqm, which is just as frame-global: a bucket's size is read off the held set, the same on every node holding
+the same frames. Convergent is not the same as fair, though: a rule every node applies alike also applies an
+attacker's win everywhere at once, which is how five Sybils wiped custody mesh-wide under the old cap.) A third breakage of the same rule was TTL expiry (work item #8): the digest
 folded **all** rows while a sync exchanges only live ones, so an expired-but-unswept row (sweep ticks
 phase per-node) opened a divergence window of up to a sweep period at every TTL boundary. Now **expired
 rows are invisible everywhere observable**: the digest folds live ids only (`StoreDigest.current()` folds
@@ -128,7 +161,9 @@ Rule of thumb: **anything the content digest is folded over must be bounded by a
 every node** (same key, same direction, same origins, same liveness) — which makes the **TTL constants
 (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification
 convergence-critical**: two app versions that disagree hold different live sets *continuously* for the
-whole TTL delta, so treat changing them like a wire change. Verify with `…debug.STORE`:
+whole TTL delta, so treat changing them like a wire change. The eviction keys and the group gate are pinned for every
+port by `vectors/custody-v1.json` (`CustodyVectorTest`); a change to any of them regenerates it and is a paired change
+with knit-ios. Verify with `…debug.STORE`:
 **`liveFingerprint` must match across devices** (`digestVersion == liveFingerprint` is the local
 invariant; `allFingerprint` legitimately lags by expired residue until the sweep and is NOT
 fleet-comparable at a TTL boundary) and every sender's carried count must be ≤ its quota. (Aside: the

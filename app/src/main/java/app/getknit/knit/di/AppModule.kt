@@ -345,11 +345,12 @@ val appModule =
         single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         single { GroupRepository(get(), get(), get(), get(), get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
-        // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync,
+        // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync, and the
+        // MeshMetrics (from meshModule too) its group gate counts refusals on (ADR 2026-10.7mqm),
         // plus the KnitDatabase so store/remove/sweep run their DB writes in a transaction under the repo mutex.
         // The concrete class is registered too: YourMeshViewModel reads its "carrying for others" projection,
         // which is a UI read and deliberately not on the seam (the seam's fakes model custody, not counts).
-        single { ForwardRepository(get(), get(), get()) }
+        single { ForwardRepository(get(), get(), get(), metrics = get()) }
         single<ForwardStore> { get<ForwardRepository>() }
         // DM epoch-ratchet session state (docs/FORWARD_SECRECY_RATCHET.md), in the encrypted DB so the
         // ratchet advance commits in the same transaction as the message row it decrypted/sealed.

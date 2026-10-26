@@ -21,18 +21,26 @@ internal object VectorFiles {
 
     fun read(name: String): JsonObject = Json.parseToJsonElement(locate(name).readText()).jsonObject
 
-    @OptIn(ExperimentalSerializationApi::class)
     fun write(
         name: String,
         content: JsonElement,
     ) {
+        locate(name).writeText(render(content))
+    }
+
+    /** The file's text for [content], byte for byte what [write] puts there; a test comparing a regeneration reads this. */
+    @OptIn(ExperimentalSerializationApi::class)
+    fun render(content: JsonElement): String {
         val json =
             Json {
                 prettyPrint = true
                 prettyPrintIndent = "  "
             }
-        locate(name).writeText(json.encodeToString(JsonElement.serializer(), content) + "\n")
+        return json.encodeToString(JsonElement.serializer(), content) + "\n"
     }
+
+    /** The file's text as it stands. */
+    fun text(name: String): String = locate(name).readText()
 
     private fun locate(name: String): File {
         val candidates = listOf("../vectors", "vectors").map(::File)
