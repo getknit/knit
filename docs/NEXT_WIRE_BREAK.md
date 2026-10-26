@@ -152,6 +152,9 @@ Bump `EncEnvelope.MAX_SUPPORTED_VERSION` behaviour deliberately (a *minimum* sup
 concept here — see item 6) and keep the unknown-version rule intact: drop locally, count, still relay and
 carry (`canCarry` never looks at `v`).
 
+**Requested (getknit/knit#47).** Users have asked for forward secrecy with no legacy fallback. Retiring v1
+is that: once no peer is left to demote for, every DM and group message is ratcheted.
+
 ### 5. Retire the cleartext `receipt` / `reaction` frame types
 
 **What.** Stop accepting `FrameType.RECEIPT` / `FrameType.REACTION` inbound, and remove the cleartext
