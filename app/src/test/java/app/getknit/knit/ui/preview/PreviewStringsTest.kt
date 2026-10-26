@@ -57,7 +57,7 @@ class PreviewStringsTest(
             runCatching {
                 compose.setContent {
                     val base = LocalContext.current
-                    val resources = RecordingResources(base.resources, read)
+                    val resources = RecordingResources(LocalResources.current, read)
                     val context =
                         object : ContextWrapper(base) {
                             override fun getResources(): Resources = resources
