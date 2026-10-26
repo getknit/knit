@@ -9,7 +9,7 @@ topics: [wifi-aware, ble, battery, reliability]
 # ADR 2026-10.2t49 — Wi-Fi Aware sleeps while no Aware phone is near, and the person can switch it off
 
 Status: Accepted (2026-10-24; `mesh/wifiaware/NanDormancyPolicy`, `data/settings/AwareSwitch`; device trials F–O owed,
-see the end)
+see the end). Amended 2026-10-24 (deep idle) and 2026-10-26 (the on-screen probe, draft)
 
 **What was observed.** GitHub getknit/knit#44: on a Pixel 8a, Wi-Fi throughput fell from about 250 to about 50 Mbps
 while Knit ran, and Bluetooth A2DP audio cut out on public transit. ADR 2026-10.486r took Instant Communication Mode for
@@ -30,9 +30,10 @@ one thing an app controls is whether it is attached.
    only battery. A dormant plane closes its own sessions through a close of its own, never the NAN-down branch and never
    `sessionCycleWithSettle`: it refunds nothing of the attach budget (ADR 055; a refund the dormancy cycle could drive is
    the #9 binder leak), writes no `lastAvailable`, stamps no `lastReattachAt`, and records no `nan_cycle`. It wakes on a
-   rising edge of the Aware candidates **near**, a bulk transfer for a candidate, the app coming on screen (which also
-   keeps ADR 2026-09.535d's API 31–32 retry), the Bluetooth plane going blind, or a duty attach: 30 s from `onAttached`
-   every 12 min, so an Aware-only peer whose Bluetooth is off is found within that time. It never wakes on `heal()`: the
+   rising edge of the Aware candidates **near**, a bulk transfer for a candidate, the Bluetooth plane going blind, or a
+   duty attach that finds someone: 30 s from `onAttached` every 12 min, so an Aware-only peer whose Bluetooth is off is
+   found within that time. The app coming on screen no longer wakes it: it runs one floored probe window instead (the
+   2026-10-26 amendment, which also corrects what this list once said about ADR 2026-09.535d). It never wakes on `heal()`: the
    motion heal fires about once a minute on transit and would undo it. A wake re-attaches only through the loop's settle
    after the close (the `role=1 state=104` ghost race, 7e457907). While dormant the plane reads Healthy unless real
    evidence says otherwise (Unavailable on Wi-Fi off, deep Doze, or an `isAvailable` false held 30 s outside the close's
@@ -77,7 +78,8 @@ which the duty attach also bounds.
 and a budget walk pinning that the attach streak and `attachAbandoned` survive dormant → duty → dormant),
 `CompositeMeshTransportTest` (the push, and dormancy never firing with no Bluetooth plane), `AwareSwitchTest` (the key,
 the migration), `RadioWarningTest` (no banner while dormant and available), `DiagnosticsAwareRowTest`. Logs: `aware
-dormant: …`, `aware awake: <WHY> …`, `aware duty attach: …`; field log `nan_dormant` and `aware_switch`; the bridge's
+dormant: …`, `aware awake: <WHY> …`, `aware duty attach: …` (`aware duty attach: probe (on screen) — …` for a probe,
+`aware probe skipped: <VERDICT> …` for a refused one, since the 2026-10-26 amendment); field log `nan_dormant` and `aware_switch`; the bridge's
 `…debug.NANDORM` (hold awake, force dormant, shorten the duty) and `…debug.AWARE`.
 
 **Device trials owed.** Never toggle Wi-Fi on a network-adb lab phone. Oracles: the log lines above, `NANDORM`, the
@@ -207,3 +209,68 @@ Accepted costs. On these Pixels deep idle holds until unlock, so a lit lock scre
 maintenance window reads not-idle, so its start begins the bit's 60 s clear (`NoAwareFlag`): a window shorter than
 that leaves the bit set, and a longer one clears it until idle resumes and sets it again. No debounce is added beyond
 `NoAwareFlag`'s.
+
+## Amendment 2026-10-26 — Knit coming on screen runs a probe, not a wake (GitHub getknit/knit#44)
+
+**What was observed.** The #44 reporter is alone on transit and opens Knit often. Each open woke a dormant plane
+(`Why.VISIBLE`), which then stayed attached with the screen on for at least `DORMANT_AFTER_MS` (3 min): the state this
+ADR's trials measured at about 250 against 750 Mbit/s of STA throughput, with A2DP choppy events. So every open brought
+the slowdown back.
+
+**Why the wake is not needed.** Resume runs `meshManager.heal()` (`KnitApp`), which wakes the Bluetooth scan loop; a
+candidate it sights wakes Aware through `SIGHTING`, and older builds are candidates because `FLAG_NO_AWARE` has inverted
+polarity. The one Aware peer Bluetooth cannot find is one with Bluetooth off, which the duty attach finds within
+`DUTY_INTERVAL_MS`.
+
+**What changed.**
+
+1. **Opening Knit wakes nothing.** `Why.VISIBLE` is retired. The rising edge of `appVisible` runs
+   `NanDormancyPolicy.probe` on the handler thread instead, in one block with every write, then pokes the loop.
+2. **The probe is one duty window, now.** It runs only while dormant between duties (no window running, no session,
+   not paused), never while a candidate is already near (its rising edge lost to a queued close: the dormant tick's
+   `nearWhileDormant` self-heal, FORCED exempt, so the open wakes `SIGHTING` instead of probing), never within
+   `PROBE_FLOOR_MS` (5 min) of the later of the last window's start (a duty's or a probe's,
+   `lastWindowStartedAt`, never reset by a wake or a close) and the last dormancy close (`dormantClosedAt`), both on
+   `elapsedRealtime`, and only when the attach budget lets a duty run now (`attachBudgetAllows`: not given up, past the
+   streak's backoff). Counting from the close too means a reopen right after an IDLE close, the plane just attached
+   three minutes and found nobody, does not attach again. Any other verdict drops the probe (`aware probe skipped:
+   <VERDICT> …`): nothing is armed, so a backed-off probe never fires later off screen and never pulls the duty
+   schedule in. The window started is a duty window in every way: 30 s from `onAttached`, the same ICM demand stamp
+   (`NanIcmPolicy` still refuses under Bluetooth audio), a wake on a find keeping the session, otherwise a `DUTY_EMPTY`
+   close that refunds nothing (ADR 052, 055; getknit/Knit#9), and the next duty scheduled from that close. It leaves
+   `dutyDueAt` as it was until that close.
+3. **Telling a probe from a duty.** No new close reason: `closeStands` accepts only IDLE, DUTY_EMPTY and FORCED, so any
+   other would be refused on every tick and leave the plane attached with a window running for good. The start logs
+   `aware duty attach: probe (on screen) — …` (the `aware duty attach: ` prefix byte-identical), and a probe that finds
+   someone wakes as `PROBE` (a wake reason only), which the `nan_dormant` field line carries. `probeActive` is cleared
+   wherever `dutyActive` is (the close, a wake, `pause`, a stop), so a later duty or a plane woken by a sighting is never
+   labelled a probe. `…debug.NANDORM` reports `probeActive` and `nextProbeAllowedInMs` (the floor alone).
+
+**A correction.** Item 1 above said the screen-on wake "keeps ADR 2026-09.535d's API 31–32 retry". It never was that
+retry. 535d's cure is `KnitApp`'s ON_RESUME `MeshService.start` from a visible activity, plus `heal()` →
+`retryOffScreenBlocked`, and both still run on every resume; an awake plane blocked off screen stays awake through the
+`offScreenBlocked` stay reason. A probe attaches while the app is visible, so on API 29–32 it publishes as that retry
+needs.
+
+**What it costs.** A peer in deep idle advertises `FLAG_NO_AWARE` (the 2026-10-24 amendment), so it is not a candidate
+and its sighting wakes nothing; a photo to it rides Bluetooth until the next probe or duty, up to 12 min, where the
+screen-on wake used to attach at once. A person who opens Knit often pays one 30 s attached window per 5 min at most,
+not three minutes per open. A probe pushes the next scheduled duty out to 12 min after its own close.
+
+**What keeps it true.** `NanDormancyPolicyTest`: the verdict table (first open, again inside 5 min, after it, a
+scheduled duty or an IDLE close inside it, awake, mid-duty, paused, the budget, a candidate already near), a day of opens every minute (at most one
+window per floor, the schedule never pulled in) and a week's budget walk with opens every 5 min (no window inside the
+backoff, none after the give-up). Removing the floor fails three of them, removing the budget gate two, and removing the near check one.
+
+**Device trials owed.** On the P9, alone and dormant: open Knit → one `aware duty attach: probe` window, then `aware
+dormant: DUTY_EMPTY` and no client in `dumpsys wifiaware`; reopen within 5 min → `aware probe skipped: FLOOR`, no
+attach; reopen after 5 min → a probe. Beside a Bluetooth-off Aware peer, an open finds it through a probe (`aware awake:
+PROBE`). Beside an Aware peer with Bluetooth on, an open wakes through `SIGHTING` within a scan. And:
+
+- **Re-open after an IDLE close:** reopen within 5 min of it → no `aware duty attach` line.
+- **Budget:** `NANFAIL --ei count 40`, force dormant, open Knit 3× over 15 min → the streak never drops, no probe starts
+  while backed off (`aware probe skipped: BUDGET`), and none fires later off screen.
+- **Stale label:** wake on `SIGHTING` before the probe starts → `NANDORM` shows `probeActive: false`, and the next
+  scheduled window logs as a plain duty.
+- **Pixel 3 (API 31) dormant, reopen:** the probe publishes with no `publish refused off screen` line.
+- **Oracles:** `aware dormant: DUTY_EMPTY` after each empty probe, and `dumpsys wifiaware` shows no client after it.

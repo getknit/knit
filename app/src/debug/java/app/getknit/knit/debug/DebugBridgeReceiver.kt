@@ -323,7 +323,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * - [ACTION_NANDORM] — Wi-Fi Aware **dormancy** (`NanDormancyPolicy`, GitHub #44). `--ez hold true` pins the plane
  *   awake (a dormant one wakes, why FORCED), `--ez hold false` lets the policy decide again; `--ez now true` closes the
  *   session for dormancy now; `--el duty <ms>` sets the duty interval for a trial (0 hands it back). No extras reads.
- *   The reply carries `dormant`, `why`, `dormantForMs`, `nextDutyInMs`, `dutyActive`, `idleForMs`, `stayReason`,
+ *   The reply carries `dormant`, `why`, `dormantForMs`, `nextDutyInMs`, `dutyActive`, `probeActive`,
+ *   `nextProbeAllowedInMs` (the on-screen probe's 5-min floor; null while awake), `idleForMs`, `stayReason`,
  *   `candidatesNear`, `candidatesHeard`, `seesNewcomers`, `held`, `dutyIntervalMs` and the radio evidence (`available`,
  *   `wifiEnabled`, `deviceIdle`, `radioOff`, `wontRun`). Hold, interval and dormancy all go with the transport's stop.
  * - [ACTION_LOWPOWER] — **low-power mode** (ADR 2026-10.d44b), the user's switch (`LowPowerSwitch`). `--ez
@@ -3949,6 +3950,8 @@ class DebugBridgeReceiver :
             .put("dormantForMs", s.dormantForMs)
             .put("nextDutyInMs", s.nextDutyInMs ?: JSONObject.NULL)
             .put("dutyActive", s.dutyActive)
+            .put("probeActive", s.probeActive)
+            .put("nextProbeAllowedInMs", s.nextProbeAllowedInMs ?: JSONObject.NULL)
             .put("idleForMs", s.idleForMs)
             .put("stayReason", s.stayReason ?: JSONObject.NULL)
             .put("candidatesNear", JSONArray(s.candidatesNear.sorted()))

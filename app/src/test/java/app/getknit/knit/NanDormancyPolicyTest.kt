@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.wifiaware.NanAttachPolicy
 import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy
 import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy.Duty
+import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy.Probe
 import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy.RadioFacts
 import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy.StayFacts
 import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy.Why
@@ -386,5 +387,227 @@ class NanDormancyPolicyTest {
         assertEquals(NanAttachPolicy.MAX_FAILURES, streak)
         assertEquals(NanAttachPolicy.MAX_FAILURES, duties)
         assertEquals(0, dutiesAfterGiveUp)
+    }
+
+    // --- The on-screen probe (2t49's 2026-10-26 amendment) ---
+
+    private val floor = NanDormancyPolicy.PROBE_FLOOR_MS
+
+    // Dormant between duties, detached, unpaused, the budget clear: everything the probe asks but its two floor stamps.
+    @Suppress("LongParameterList")
+    private fun probe(
+        now: Long,
+        lastWindowStartedAt: Long = 0L,
+        closedAt: Long = 1_000L,
+        dormant: Boolean = true,
+        dutyActive: Boolean = false,
+        attached: Boolean = false,
+        near: Boolean = false,
+        paused: Boolean = false,
+        abandoned: Boolean = false,
+        retryAfter: Long = 0L,
+        settle: Long = 2_000L,
+        floorMs: Long = floor,
+    ) = NanDormancyPolicy.probe(
+        now = now,
+        dormant = dormant,
+        dutyActive = dutyActive,
+        attached = attached,
+        nearCandidate = near,
+        paused = paused,
+        lastWindowStartedAt = lastWindowStartedAt,
+        closedAt = closedAt,
+        attachAbandoned = abandoned,
+        attachRetryAfter = retryAfter,
+        settleMs = settle,
+        floorMs = floorMs,
+    )
+
+    @Test
+    fun theFirstOpenWhileDormantProbesAndAnotherInsideFiveMinutesDoesNot() {
+        val closedAt = 1_000L
+        val opened = closedAt + floor + 60_000L
+        assertEquals("first open, long after the close", Probe.RUN, probe(opened, closedAt = closedAt))
+        // That probe started a window; its DUTY_EMPTY close lands about 40 s later and stamps the close too.
+        val probeClose = opened + 40_000L
+        assertEquals(Probe.FLOOR, probe(opened + 60_000L, lastWindowStartedAt = opened, closedAt = probeClose))
+        assertEquals(Probe.FLOOR, probe(opened + floor - 1, lastWindowStartedAt = opened, closedAt = opened))
+        // The floor counts from the later stamp, so the empty close's 40 s push it out to there.
+        assertEquals(Probe.FLOOR, probe(opened + floor, lastWindowStartedAt = opened, closedAt = probeClose))
+        assertEquals(Probe.RUN, probe(probeClose + floor, lastWindowStartedAt = opened, closedAt = probeClose))
+    }
+
+    @Test
+    fun theFloorCountsFromAWindowStartLaterThanTheClose() {
+        // A pause() mid-window ends it with no close stamp: the last close is the one 10 min before the window began.
+        val start = 40_000_000L
+        val closedAt = start - 600_000L
+        assertEquals(Probe.FLOOR, probe(start + floor - 1, lastWindowStartedAt = start, closedAt = closedAt))
+        assertEquals(Probe.RUN, probe(start + floor, lastWindowStartedAt = start, closedAt = closedAt))
+    }
+
+    @Test
+    fun aScheduledDutyOrAnIdleCloseInsideFiveMinutesSuppressesTheProbe() {
+        // A scheduled duty started 2 min ago (it found nobody; the close is its own, 40 s later).
+        val dutyAt = 20_000_000L
+        assertEquals(
+            "a duty inside the floor",
+            Probe.FLOOR,
+            probe(
+                dutyAt + 120_000L,
+                lastWindowStartedAt = dutyAt,
+                closedAt =
+                    dutyAt + 40_000L,
+            ),
+        )
+        // The plane was just attached three minutes and found nobody: an IDLE close 1 min ago, no window ever.
+        val idleClose = 30_000_000L
+        assertEquals("an IDLE close inside the floor", Probe.FLOOR, probe(idleClose + 60_000L, closedAt = idleClose))
+        assertEquals(Probe.RUN, probe(idleClose + floor, closedAt = idleClose))
+        // 0 is "never" for both stamps: the floor never holds a plane that has no history.
+        assertEquals(0L, NanDormancyPolicy.probeFloorLeftMs(5_000L, lastWindowStartedAt = 0L, closedAt = 0L))
+        assertEquals(floor - 60_000L, NanDormancyPolicy.probeFloorLeftMs(idleClose + 60_000L, 0L, idleClose))
+        assertEquals(0L, NanDormancyPolicy.probeFloorLeftMs(idleClose + floor + 1, 0L, idleClose))
+    }
+
+    @Test
+    fun anAwakePlaneARunningWindowOrAPauseProbesNothing() {
+        val now = 50_000_000L
+        assertEquals(Probe.AWAKE, probe(now, dormant = false))
+        assertEquals(Probe.AWAKE, probe(now, dormant = false, attached = true))
+        assertEquals("mid-duty: that window is the probe", Probe.WINDOW_RUNNING, probe(now, dutyActive = true))
+        assertEquals(Probe.WINDOW_RUNNING, probe(now, dutyActive = true, attached = true))
+        assertEquals(Probe.WINDOW_RUNNING, probe(now, attached = true))
+        assertEquals(Probe.PAUSED, probe(now, paused = true))
+    }
+
+    @Test
+    fun aProbeIsNeverACloseReason() {
+        for (dormant in listOf(false, true)) {
+            for (dutyActive in listOf(false, true)) {
+                for (stay in listOf(false, true)) {
+                    assertFalse(
+                        "closeStands(PROBE, dormant=$dormant, dutyActive=$dutyActive, stay=$stay)",
+                        NanDormancyPolicy.closeStands(Why.PROBE, dormant, dutyActive, stay),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aCandidateAlreadyNearWakesSightingInsteadOfAProbe() {
+        val now = 50_000_000L
+        assertEquals("a lost rising edge wakes, not a 30 s probe", Probe.NEAR, probe(now, near = true))
+        // Ahead of the floor, the budget and the pause, as the dormant tick's self-heal is.
+        assertEquals(Probe.NEAR, probe(now, near = true, lastWindowStartedAt = now - 1_000L))
+        assertEquals(Probe.NEAR, probe(now, near = true, abandoned = true))
+        assertEquals(Probe.NEAR, probe(now, near = true, paused = true))
+        // Never for an awake plane or a running window.
+        assertEquals(Probe.AWAKE, probe(now, near = true, dormant = false))
+        assertEquals(Probe.WINDOW_RUNNING, probe(now, near = true, dutyActive = true))
+        // The transport feeds nearWhileDormant, so a FORCED spell's near candidate probes as usual.
+        assertEquals(Probe.RUN, probe(now, near = NanDormancyPolicy.nearWhileDormant(true, Why.FORCED)))
+        assertEquals(Probe.NEAR, probe(now, near = NanDormancyPolicy.nearWhileDormant(true, Why.IDLE)))
+    }
+
+    @Test
+    fun theAttachBudgetStillGatesTheProbe() {
+        val now = 50_000_000L
+        assertEquals(Probe.RUN, probe(now))
+        assertEquals("given up", Probe.BUDGET, probe(now, abandoned = true))
+        assertEquals("inside the streak's backoff", Probe.BUDGET, probe(now, retryAfter = now + 1))
+        assertEquals("the backoff ends", Probe.RUN, probe(now, retryAfter = now))
+        assertTrue(NanDormancyPolicy.attachBudgetAllows(now, attachAbandoned = false, attachRetryAfter = now))
+        assertFalse(NanDormancyPolicy.attachBudgetAllows(now, attachAbandoned = true, attachRetryAfter = 0L))
+        // The close's settle, reachable only with a floor shorter than it: dropped, never armed.
+        assertEquals(Probe.SETTLE, probe(now, closedAt = now - 1_000L, floorMs = 0L))
+    }
+
+    /**
+     * A person opening Knit every minute for a day, alone and dormant, with the regular duty every 12 min on a radio
+     * that attaches fine, the model rescheduling each duty from its window's close as the transport does: probes are at
+     * most one per [NanDormancyPolicy.PROBE_FLOOR_MS] and none starts within the floor of any window or close. That the
+     * transport's probe never writes the schedule or refunds the budget is [NanDormancyWiringTest]'s to pin.
+     */
+    @Test
+    fun opensEveryMinuteForADayProbeAtMostOncePerFloor() {
+        val settle = 2_000L
+        var now = 0L
+        var closedAt = 0L
+        var lastWindow = 0L
+        var dueAt = NanDormancyPolicy.DUTY_INTERVAL_MS
+        val starts = mutableListOf<Long>()
+        var probes = 0
+        val day = 24L * 3_600_000
+        while (now < day) {
+            // Each window runs 40 s and closes DUTY_EMPTY, rescheduling the duty from its close.
+            fun window(probe: Boolean) {
+                if (probe) {
+                    probes++
+                    if (starts.isNotEmpty()) assertTrue("a probe inside the floor", now - maxOf(starts.last(), closedAt) >= floor)
+                }
+                starts += now
+                lastWindow = now
+                closedAt = now + 40_000L
+                dueAt = closedAt + NanDormancyPolicy.DUTY_INTERVAL_MS
+                now = closedAt
+            }
+            if (NanDormancyPolicy.dutyDue(now, dueAt, false, 0L, closedAt, settle)) {
+                window(probe = false)
+            } else if (probe(now, lastWindowStartedAt = lastWindow, closedAt = closedAt) == Probe.RUN) {
+                window(probe = true)
+            }
+            now += 60_000L
+        }
+        assertTrue("probes ran", probes > 0)
+        assertTrue("at most one per floor", probes <= day / floor)
+        // Every window, duty or probe, sits at least a floor's worth after the previous one's close or start.
+        starts.zipWithNext().forEach { (a, b) -> assertTrue("windows $a and $b", b - a >= floor) }
+    }
+
+    /**
+     * The budget walk with the person opening Knit every 5 min: a chipset whose every attach fails, the model charging
+     * each window to the streak with no refund. No probe starts while the streak's backoff or the give-up says no, and
+     * once the budget has given up no window of either kind runs again (getknit/Knit#9). That the transport refunds
+     * nothing at a probe is [NanDormancyWiringTest]'s to pin.
+     */
+    @Test
+    fun aProbeNeverRunsWhileTheAttachBudgetSaysNo() {
+        var now = 0L
+        var streak = 0
+        var total = 0
+        var retryAfter = 0L
+        var abandoned = false
+        var closedAt = 0L
+        var lastWindow = 0L
+        var dueAt = NanDormancyPolicy.DUTY_INTERVAL_MS
+        var refusedForBudget = 0
+        var windowsAfterGiveUp = 0
+        val settle = 2_000L
+        val week = 7L * 24 * 3_600_000
+        while (now < week) {
+            val duty = NanDormancyPolicy.dutyDue(now, dueAt, abandoned, retryAfter, closedAt, settle)
+            val verdict = probe(now, lastWindowStartedAt = lastWindow, closedAt = closedAt, abandoned = abandoned, retryAfter = retryAfter)
+            if (verdict == Probe.BUDGET) refusedForBudget++
+            if (duty || verdict == Probe.RUN) {
+                if (abandoned) windowsAfterGiveUp++
+                assertTrue("a window inside the backoff", now >= retryAfter)
+                streak++
+                total++
+                if (NanAttachPolicy.giveUp(streak) || NanAttachPolicy.leakBudgetSpent(total)) {
+                    abandoned = true
+                } else {
+                    retryAfter = now + NanAttachPolicy.backoffMs(streak) { 0.5 }
+                }
+                lastWindow = now
+                closedAt = now + NanDormancyPolicy.DUTY_WINDOW_MS + 10_000
+                dueAt = closedAt + NanDormancyPolicy.DUTY_INTERVAL_MS
+            }
+            now += floor
+        }
+        assertTrue("the backoff refused probes", refusedForBudget > 0)
+        assertTrue("the give-up is reached and holds", abandoned)
+        assertEquals(0, windowsAfterGiveUp)
     }
 }

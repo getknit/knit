@@ -421,9 +421,10 @@ sealed interface FieldEvent {
     /**
      * Wi-Fi Aware went dormant ([on]) or woke (`NanDormancyPolicy`, GitHub #44): with nothing to do it closes its
      * session, and NAN goes down with it, until a phone that can use it is near. [why] is `NanDormancyPolicy.Why`: IDLE
-     * (went dormant), DUTY_EMPTY (dormant again after a duty attach found nobody), SIGHTING / BULK / VISIBLE / DUTY /
-     * BLIND (woke), FORCED (the debug bridge). Written on each transition; a duty attach that wakes nothing writes one
-     * DUTY_EMPTY line at its end.
+     * (went dormant), DUTY_EMPTY (dormant again after a duty or probe window found nobody), SIGHTING / BULK / DUTY /
+     * PROBE / BLIND (woke; PROBE is the on-screen probe finding someone, and VISIBLE, retired, appears only in older
+     * logs), FORCED (the debug bridge). Written on each transition; a window that wakes nothing writes one DUTY_EMPTY
+     * line at its end.
      */
     data class NanDormant(
         val on: Boolean,

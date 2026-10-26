@@ -92,12 +92,18 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   nothing; a band change pushes one `updatePublish` per demand-lit window, never under `icmKeepaliveBroken` or a live
   link. The frequency map lives in the callback object's own callbacks, never in `onStaLost` / `onStaAvailable`, and
   an unregistered or unsettled watch is unknown, never "no Wi-Fi". Tests: `NanIcmPolicyTest`.
-- **When touching `NanDormancyPolicy`, `dormancyTick` / `goDormant` / `wake` / `startDuty` / `refreshAwareEvidence`,
+- **When touching `NanDormancyPolicy`, `dormancyTick` / `goDormant` / `wake` / `startDuty` / `beginDutyWindow` /
+  `onCameOnScreen` / `probeActive` / `lastWindowStartedAt` / `PROBE_FLOOR_MS`, `refreshAwareEvidence`,
   `MeshTransport.dormant` / `seesNewcomers` / `awareCandidatesNear` / `awareCandidatesHeard`, `onForeignAwareCandidates`,
   `TransportStatus.dormant`, `AwareSwitch`, `awareSwitchedOff` / `awareWontRun`, `LOW_POWER_OFFERED`, or
   `…debug.NANDORM` / `AWARE`:** READ ADR 2026-10.2t49 (and d44b's 2026-10-24 amendment). A started plane with nothing to
-  do and no Aware candidate heard over Bluetooth sleeps after 3 min and wakes on a candidate near, a bulk transfer, the
-  app on screen, a blind Bluetooth plane or the 12-min duty attach — never on `heal()`. The dormancy close is its own:
+  do and no Aware candidate heard over Bluetooth sleeps after 3 min and wakes on a candidate near, a bulk transfer, a
+  blind Bluetooth plane or a duty window that finds someone — never on `heal()`, and never on the app coming on screen,
+  which instead runs one probe (`NanDormancyPolicy.probe`, `onCameOnScreen`, the ADR's 2026-10-26 amendment): a duty
+  window now, dormant between duties only (a candidate already near wakes `SIGHTING` instead, `nearWhileDormant`), floored `PROBE_FLOOR_MS` (5 min) from the later of `lastWindowStartedAt` and
+  `dormantClosedAt`, and dropped (never armed) unless the attach budget allows it now. A probe is a duty window in every
+  way and closes `DUTY_EMPTY` (never a close reason of its own: `closeStands` would refuse it); it wakes as `PROBE`,
+  logs `aware duty attach: probe …`, and `probeActive` is cleared wherever `dutyActive` is. The dormancy close is its own:
   it refunds nothing of the attach budget (ADR 055), records no `nan_cycle`, and a wake re-attaches only after its
   settle. Dormant reads Healthy unless real evidence (Wi-Fi off, or `isAvailable` false 30 s outside the close's beat)
   says otherwise (`radioOff`); deep idle alone never does, but it sets the advert's "won't run" (`wontRun`: that

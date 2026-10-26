@@ -14,7 +14,9 @@ import org.junit.Test
  * - a duty window is never judged empty while a session cycle settles in it (the reviewer's wedge);
  * - the responder's give-up cycle never runs, nor spends its budget, while dormant;
  * - deep idle's edges re-read the evidence through a receiver of their own, registered and unregistered beside the
- *   availability receiver, and never through [handleAvailabilityChanged]'s refunds and teardown.
+ *   availability receiver, and never through [handleAvailabilityChanged]'s refunds and teardown;
+ * - Knit coming on screen runs the floored probe, never a wake, arms nothing for later, and the probe's label is
+ *   cleared wherever a window ends (ADR 2026-10.2t49's 2026-10-26 amendment).
  */
 class NanDormancyWiringTest {
     private val source = repoFile("app/src/main/java/app/getknit/knit/mesh/wifiaware/WifiAwareTransport.kt").readText()
@@ -33,13 +35,37 @@ class NanDormancyWiringTest {
         error("unbalanced braces after `$signature`")
     }
 
+    private val refunds = listOf("clearAttachBackoff", "noteAttachSucceeded", "lastAvailable =", "lastReattachAt =", "responderCycles =")
+
     @Test
     fun theDormancyCloseRefundsNothing() {
         val close = body("private fun goDormant(")
-        for (refund in listOf("clearAttachBackoff", "noteAttachSucceeded", "lastAvailable =", "lastReattachAt =", "responderCycles =")) {
+        for (refund in refunds) {
             assertFalse("goDormant must not touch `$refund`", refund in close)
         }
         assertFalse("never recorded as a session cycle", "FieldEvent.NanCycle" in close)
+    }
+
+    @Test
+    fun aDutyOrProbeWindowRefundsNothingAndNeverMovesTheSchedule() {
+        // getknit/Knit#9: a refund the dormancy cycle could drive, a probe on every open, is the binder leak. And a
+        // window that pulled the due time in would fire again later, off screen.
+        for (site in listOf("private fun beginDutyWindow(", "private fun onCameOnScreen(")) {
+            val b = body(site)
+            for (refund in refunds) {
+                assertFalse("`$site` must not touch `$refund`", refund in b)
+            }
+            assertFalse("`$site` must not write the duty schedule", "dutyDueAt =" in b)
+        }
+    }
+
+    @Test
+    fun aProbesFindWakesAsProbe() {
+        val tick = body("private fun dormancyTick(")
+        assertTrue(
+            "a window's find wakes PROBE for a probe, DUTY otherwise",
+            "wake(if (probeActive) NanDormancyPolicy.Why.PROBE else NanDormancyPolicy.Why.DUTY)" in tick,
+        )
     }
 
     @Test
@@ -103,5 +129,42 @@ class NanDormancyWiringTest {
             "the availability path's health helper never sees deep idle either",
             "NanDormancyPolicy.dormantHealth(NanDormancyPolicy.radioOff(radioFacts(now))" in helper,
         )
+    }
+
+    @Test
+    fun comingOnScreenRunsTheProbeNeverAWake() {
+        val start = body("override fun start(")
+        val collector = start.lines().first { "appVisible.drop(1).collect" in it }
+        assertTrue("the visible edge runs the probe", "onCameOnScreen()" in collector)
+        assertFalse("the visible edge never wakes", "wake(" in collector)
+        val probe = body("private fun onCameOnScreen(")
+        assertTrue("decided by the policy", "NanDormancyPolicy.probe(" in probe)
+        assertTrue("floored from the close too", "closedAt = dormantClosedAt" in probe)
+        assertTrue("floored from the last window's start", "lastWindowStartedAt = lastWindowStartedAt" in probe)
+        assertTrue("budget-gated", "attachAbandoned = attachAbandoned" in probe && "attachRetryAfter = attachRetryAfter" in probe)
+        assertTrue("the loop is poked", "healSignal.trySend(Unit)" in probe)
+        assertTrue(
+            "a near candidate is the dormant tick's self-heal, FORCED exempt",
+            "nearCandidate = NanDormancyPolicy.nearWhileDormant(candidatesNear.isNotEmpty(), lastDormancyWhy)" in probe,
+        )
+        assertTrue("and wakes SIGHTING", "wake(NanDormancyPolicy.Why.SIGHTING)" in probe)
+    }
+
+    @Test
+    fun theProbeLabelIsClearedWhereverAWindowEndsAndItsFloorStampIsNot() {
+        for (site in listOf("private fun goDormant(", "private fun wake(", "override fun pause(", "private fun forgetDormancy(")) {
+            val b = body(site)
+            assertTrue("`$site` clears dutyActive", "dutyActive = false" in b)
+            assertTrue("`$site` clears probeActive with it", "probeActive = false" in b)
+        }
+        for (site in listOf("private fun goDormant(", "private fun wake(")) {
+            assertFalse("`$site` must not reset the probe's floor", "lastWindowStartedAt =" in body(site))
+        }
+        val window = body("private fun beginDutyWindow(")
+        assertTrue("every window stamps the floor", "lastWindowStartedAt = now" in window)
+        assertTrue("a probe stamps the ICM demand as a duty does", "wakeIcmDemandAt = now" in window)
+        assertTrue("the start line's prefix is the duty's", "\"aware duty attach: \${kind}" in window)
+        // A probe never closes on a reason of its own: closeStands would refuse it on every tick.
+        assertFalse("never goDormant(PROBE)", "goDormant(NanDormancyPolicy.Why.PROBE)" in source)
     }
 }

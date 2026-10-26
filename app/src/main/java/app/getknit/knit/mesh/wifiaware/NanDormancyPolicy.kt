@@ -17,10 +17,14 @@ import app.getknit.knit.mesh.TransportHealth
  *   observed on the loop tick. One reason is positive evidence that another plane watches for newcomers
  *   ([StayFacts.seesNewcomers]): a phone whose short-range scan is not demonstrably working never goes dormant.
  * - **Wake** ([risingSighting]): a new Aware candidate in the near set; the transport adds a bulk transfer to a
- *   candidate, the app coming on screen, the scan going blind and the duty attach. Never `heal()`: the motion heal
- *   fires about once a minute on transit and would undo dormancy.
+ *   candidate, the scan going blind and a duty or probe window that finds someone. Never `heal()`: the motion heal
+ *   fires about once a minute on transit and would undo dormancy, and never the app coming on screen (2t49's
+ *   2026-10-26 amendment: that runs a [probe] instead).
  * - **Duty** ([dutyDue], [duty]): while dormant, one attach every [DUTY_INTERVAL_MS] held for [DUTY_WINDOW_MS] from
  *   `onAttached`, so a peer whose Bluetooth is off is still found. Skipped while the attach budget says no.
+ * - **Probe** ([probe]): Knit coming on screen while dormant runs one duty window now, at most once per
+ *   [PROBE_FLOOR_MS] counted from the last window's start or the last dormancy close, and only when the attach budget
+ *   would let a duty run now. It is a duty window in every other way, and leaves the duty schedule as it was.
  * - **Health** ([radioOff], [dormantHealth]): while dormant the plane reads Healthy unless there is evidence the radio
  *   is off — Wi-Fi off, or `isAvailable` false held [UNAVAILABLE_HOLD_MS] outside the beat after our own close
  *   ([OWN_CLOSE_BEAT_MS]) — so our own NAN-down never reads as "Wi-Fi off". Deep idle is not that evidence: the API 37
@@ -44,11 +48,15 @@ object NanDormancyPolicy {
         /** A bulk transfer to an Aware candidate is about to start: woke (that send rides Bluetooth). */
         BULK,
 
-        /** Knit came on screen: woke (and ADR 2026-09.535d's API 31–32 retry needs a visible app). */
-        VISIBLE,
-
         /** The duty attach found someone: woke, keeping its session. */
         DUTY,
+
+        /**
+         * The on-screen probe ([probe]) found someone: woke, keeping its session. A wake reason only, never a close:
+         * an empty probe closes DUTY_EMPTY, as any duty window does, because [closeStands] refuses every other reason.
+         * (`VISIBLE`, Knit coming on screen as a wake of its own, was retired by 2t49's 2026-10-26 amendment.)
+         */
+        PROBE,
 
         /** The duty attach found nobody in its window: dormant again. */
         DUTY_EMPTY,
@@ -204,9 +212,99 @@ object NanDormancyPolicy {
             now >= dueAt &&
             // Skipped entirely while the attach budget says no: a duty is an attach, and each failed one strands two
             // binder objects in system_server (ADR 052).
-            !attachAbandoned &&
-            now >= attachRetryAfter &&
+            attachBudgetAllows(now, attachAbandoned, attachRetryAfter) &&
             now - closedAt >= settleMs
+
+    /** Whether the attach budget lets a duty or a probe attach now: not given up, and past the streak's backoff. */
+    fun attachBudgetAllows(
+        now: Long,
+        attachAbandoned: Boolean,
+        attachRetryAfter: Long,
+    ): Boolean = !attachAbandoned && now >= attachRetryAfter
+
+    /** What Knit coming on screen does to the plane ([probe]); [RUN] alone starts a window. */
+    enum class Probe {
+        /** Start one duty window now, as a probe. */
+        RUN,
+
+        /** Awake: nothing to probe for (ADR 2026-09.535d's retry runs from `heal()` on resume, not from here). */
+        AWAKE,
+
+        /** A duty or probe window is already running, or a session is up: that window is the probe. */
+        WINDOW_RUNNING,
+
+        /**
+         * A candidate is near under a dormant plane ([nearWhileDormant]: its rising edge was lost to a queued close):
+         * wake SIGHTING now, as the dormant tick would, rather than probe for 30 s and then re-attach on that sighting.
+         */
+        NEAR,
+
+        /** Lent to a Wi-Fi Direct group: no attach until `resume()`. */
+        PAUSED,
+
+        /** A window started, or the plane closed, within [PROBE_FLOOR_MS]: the probe is dropped, not deferred. */
+        FLOOR,
+
+        /** The attach budget says no ([attachBudgetAllows]): dropped, so it never fires later off screen. */
+        BUDGET,
+
+        /** Our own close's settle has not run (unreachable while the floor exceeds the settle): dropped. */
+        SETTLE,
+    }
+
+    /**
+     * Knit came on screen ([now] is the rising edge): whether a dormant plane runs a probe — one duty window, now, to
+     * find an Aware peer whose Bluetooth is off sooner than the next duty (2t49's 2026-10-26 amendment). Only between
+     * duties with no session and not [paused]; never within [floorMs] of the later of the last window's start
+     * ([lastWindowStartedAt], a duty's or a probe's) and the last dormancy close ([closedAt]), so a reopen right after
+     * an IDLE close (attached three minutes, nobody found) or after a duty does not attach again; and only when a duty
+     * due now would pass [dutyDue]: the attach budget ([attachBudgetAllows]), then the close's [settleMs]. Anything but
+     * [Probe.RUN] drops the probe: nothing is armed for later, so a backed-off probe can never fire off screen or pull
+     * the duty schedule in.
+     * Both stamps are `elapsedRealtime`; 0 is "never". [nearCandidate] is [nearWhileDormant]'s answer (FORCED exempt):
+     * a candidate already near wakes the plane instead ([Probe.NEAR]), ahead of the pause, the floor and the budget, as
+     * the dormant tick's self-heal is.
+     */
+    @Suppress("LongParameterList") // the dormant state, the two floor stamps and the budget, each its own input
+    fun probe(
+        now: Long,
+        dormant: Boolean,
+        dutyActive: Boolean,
+        attached: Boolean,
+        nearCandidate: Boolean,
+        paused: Boolean,
+        lastWindowStartedAt: Long,
+        closedAt: Long,
+        attachAbandoned: Boolean,
+        attachRetryAfter: Long,
+        settleMs: Long,
+        floorMs: Long = PROBE_FLOOR_MS,
+    ): Probe =
+        when {
+            !dormant -> Probe.AWAKE
+            dutyActive || attached -> Probe.WINDOW_RUNNING
+            nearCandidate -> Probe.NEAR
+            paused -> Probe.PAUSED
+            probeFloorLeftMs(now, lastWindowStartedAt, closedAt, floorMs) > 0L -> Probe.FLOOR
+            !attachBudgetAllows(now, attachAbandoned, attachRetryAfter) -> Probe.BUDGET
+            now - closedAt < settleMs -> Probe.SETTLE
+            else -> Probe.RUN
+        }
+
+    /**
+     * How long until [probe]'s floor lets a probe run: [floorMs] from the later of [lastWindowStartedAt] and
+     * [closedAt] (0 is "never"), 0 once it has run. `…debug.NANDORM`'s `nextProbeAllowedInMs`.
+     */
+    fun probeFloorLeftMs(
+        now: Long,
+        lastWindowStartedAt: Long,
+        closedAt: Long,
+        floorMs: Long = PROBE_FLOOR_MS,
+    ): Long {
+        val from = maxOf(lastWindowStartedAt, closedAt)
+        if (from == 0L) return 0L
+        return (from + floorMs - now).coerceAtLeast(0L)
+    }
 
     /** What a duty window does on this tick. */
     enum class Duty { CONTINUE, WAKE, EMPTY }
@@ -376,6 +474,12 @@ object NanDormancyPolicy {
 
     /** How often a dormant plane runs its duty attach (a shorter value through `…debug.NANDORM --el duty`). */
     const val DUTY_INTERVAL_MS = 720_000L
+
+    /**
+     * The least time between an on-screen probe and the last duty or probe window's start, or the last dormancy close
+     * ([probe]): a person who opens Knit often re-pays the attached-screen-on cost once per this, not once per open.
+     */
+    const val PROBE_FLOOR_MS = 300_000L
 
     /** How long `isAvailable` must read false before it counts as the radio off. */
     const val UNAVAILABLE_HOLD_MS = 30_000L

@@ -626,15 +626,21 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.NANDORM` — Wi-Fi Aware **dormancy** (`NanDormancyPolicy`, GitHub #44): with nothing to do for 3 min (no cue
   target, no link, nothing owed, no Aware candidate heard by Bluetooth, and Bluetooth demonstrably watching for
   newcomers) the plane closes its session, and NAN goes down with it (`aware dormant: IDLE — …`); a new candidate near,
-  a bulk transfer to one, Knit coming on screen, Bluetooth going blind or a duty attach that finds someone wakes it
-  (`aware awake: <why>`), and every 12 min it attaches for 30 s (`aware duty attach: …`, then `aware dormant:
-  DUTY_EMPTY` or `aware awake: DUTY`). `heal()` never wakes it. `--ez hold true` pins the plane awake (a dormant one
+  a bulk transfer to one, Bluetooth going blind or a duty attach that finds someone wakes it (`aware awake: <why>`),
+  and every 12 min it attaches for 30 s (`aware duty attach: …`, then `aware dormant: DUTY_EMPTY` or `aware awake:
+  DUTY`). `heal()` never wakes it, nor does Knit coming on screen: that runs one probe window (`aware duty attach: probe
+  (on screen) — …`, then `DUTY_EMPTY` or `aware awake: PROBE`) at most once per 5 min from the later of the last
+  window's start and the last dormancy close, and only when the attach budget allows it now; a refused one logs `aware
+  probe skipped: <FLOOR|BUDGET|PAUSED|WINDOW_RUNNING|SETTLE> …` and arms nothing, and a candidate already near wakes
+  the plane `SIGHTING` instead (ADR 2026-10.2t49's 2026-10-26
+  amendment). `--ez hold true` pins the plane awake (a dormant one
   wakes, why `FORCED`), `--ez hold false` lets the policy decide again; `--ez now true` closes the session for dormancy
   now (an error string in `message` — `link activity in progress`, `paused …`, `already dormant` — when it will not);
   `--el duty <ms>` sets the duty interval for a trial (`0` hands it back; a dormant plane reschedules from its close).
   With several extras: hold, then duty, then now. No extras reads. The reply carries `dormant`, `why` (the last
-  transition's: IDLE/SIGHTING/BULK/VISIBLE/DUTY/DUTY_EMPTY/BLIND/FORCED), `dormantForMs`, `nextDutyInMs` (null unless
-  dormant between duties), `dutyActive`, `idleForMs` and `stayReason` (awake: what holds it attached, null when the idle
+  transition's: IDLE/SIGHTING/BULK/DUTY/PROBE/DUTY_EMPTY/BLIND/FORCED; VISIBLE is retired), `dormantForMs`,
+  `nextDutyInMs` (null unless dormant between duties), `dutyActive`, `probeActive` (the running window is the on-screen
+  probe), `nextProbeAllowedInMs` (the probe's floor alone, 0 once it has run; null while awake), `idleForMs` and `stayReason` (awake: what holds it attached, null when the idle
   clock runs), `candidatesNear` / `candidatesHeard` / `seesNewcomers` (what Bluetooth pushed), `held`,
   `dutyIntervalMs`, and the radio evidence the dormant health and the advert's `FLAG_NO_AWARE` read: `available`
   (`isAvailable` now — trial F samples it beside `dumpsys wifiaware`'s `mUsageEnabled`), `wifiEnabled`, `deviceIdle`,

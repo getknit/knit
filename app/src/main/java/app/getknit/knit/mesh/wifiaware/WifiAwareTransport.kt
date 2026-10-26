@@ -650,9 +650,21 @@ class WifiAwareTransport(
 
     @Volatile private var dutyAttachedAt = 0L
 
-    // A duty attach or a sighting wake is demand for one ICM window, as a Tier-1 cure is (the post-cure window): the
-    // peer it hunts is lonely too, and screen-off both wake for one 2.4 GHz window in eight. Stamped at the wake,
-    // consumed by the next onAttached within [POST_CURE_ATTACH_WITHIN_MS]. Never by a VISIBLE wake. Handler thread.
+    // The running duty window is the on-screen probe ([NanDormancyPolicy.probe], 2t49's 2026-10-26 amendment), for its
+    // log lines and its wake's reason (PROBE, not DUTY). Cleared wherever [dutyActive] is: [goDormant], [wake], [pause]
+    // and [forgetDormancy], so a later duty, or the plane after a sighting wake, is never labelled a probe.
+    @Volatile private var probeActive = false
+
+    // When the last duty or probe window started: [NanDormancyPolicy.probe]'s floor counts from the later of this and
+    // [dormantClosedAt]. Never reset by a wake or a close, so a reopen soon after a window that woke still waits;
+    // 0 is "never". Handler-thread writes.
+    @Volatile private var lastWindowStartedAt = 0L
+
+    // A duty or probe attach, or a sighting wake, is demand for one ICM window, as a Tier-1 cure is (the post-cure
+    // window): the peer it hunts is lonely too, and screen-off both wake for one 2.4 GHz window in eight. Stamped at the
+    // wake or the window's start, consumed by the next onAttached within [POST_CURE_ATTACH_WITHIN_MS]. A probe stamps it
+    // as any duty does ([NanIcmPolicy] still refuses under Bluetooth audio); Knit coming on screen alone never does.
+    // Handler thread.
     @Volatile private var wakeIcmDemandAt = 0L
 
     // What the other short-range planes report about phones that can wake this plane, pushed by the composite
@@ -861,9 +873,10 @@ class WifiAwareTransport(
             loopJob = scope.launch { discoveryLoop() }
             powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
             audioJob = scope.launch { followAudio() }
-            // The person opening Knit wakes a dormant plane (and is ADR 2026-09.535d's API 31–32 retry, which needs a
-            // visible app): the rising edge only, never the first value, never heal() (the motion heal would undo it).
-            appVisibleJob = scope.launch { appVisible.drop(1).collect { visible -> if (visible) wake(NanDormancyPolicy.Why.VISIBLE) } }
+            // The person opening Knit no longer wakes a dormant plane (attached with the screen on is the cost #44
+            // measured); it runs one probe window, floored and budget-gated ([onCameOnScreen], 2t49's 2026-10-26
+            // amendment). The rising edge only, never the first value, never heal() (the motion heal would undo it).
+            appVisibleJob = scope.launch { appVisible.drop(1).collect { visible -> if (visible) onCameOnScreen() } }
             // Re-cue neighbors and wake the loop the moment our carried set changes, so a peer that now wants
             // our new data can pull it.
             cueJob =
@@ -1377,8 +1390,10 @@ class WifiAwareTransport(
             offScreenBlocked = false
             postCureCycledAt = 0L // the attach after a hand-over is not a cure's
             postCureSince = 0L
-            // A duty window's session went with the rest; its due time stays, so a due duty runs after the resume.
+            // A duty window's session went with the rest; its due time stays, so a due duty runs after the resume. A
+            // probe's never moved it, so nothing runs after the resume that the schedule did not already owe.
             dutyActive = false
+            probeActive = false
             dutyAttachedAt = 0L
             // A dormant plane stays dormant through a hand-over and reads as it did (trial N): the radio is on.
             _health.value = if (_dormant.value) dormantHealth() else TransportHealth.Degraded
@@ -2292,7 +2307,7 @@ class WifiAwareTransport(
 
                 // the duty's own session: attach, discover, link as usual
                 NanDormancyPolicy.Duty.WAKE -> {
-                    wake(NanDormancyPolicy.Why.DUTY)
+                    wake(if (probeActive) NanDormancyPolicy.Why.PROBE else NanDormancyPolicy.Why.DUTY)
                     false
                 }
 
@@ -2407,6 +2422,7 @@ class WifiAwareTransport(
             dormantClosedAt = now
             lastOwnCloseAt = now
             dutyActive = false
+            probeActive = false
             dutyStartedAt = 0L
             dutyAttachedAt = 0L
             dutyDueAt = now + dutyIntervalMs()
@@ -2424,7 +2440,8 @@ class WifiAwareTransport(
      * settle ([attachAfterCycleSettle]); a duty window's session, when [why] is the duty's, is kept. As [start] does,
      * the message-plane watchdog's and the wedge watchdog's clocks run from now, so the session that just found its
      * peer is not cycled on counters from before the dormant spell. A sighting opens one ICM window on the attach
-     * ([wakeIcmDemandAt]); the app coming on screen does not. Never from [heal]. Handler thread.
+     * ([wakeIcmDemandAt]); the app coming on screen wakes nothing (it runs a probe, [onCameOnScreen]). Never from
+     * [heal]. Handler thread.
      */
     private fun wake(why: NanDormancyPolicy.Why) =
         onHandler {
@@ -2433,6 +2450,7 @@ class WifiAwareTransport(
             val kept = session != null
             _dormant.value = false
             dutyActive = false
+            probeActive = false
             dutyStartedAt = 0L
             dutyAttachedAt = 0L
             dutyDueAt = 0L
@@ -2460,13 +2478,96 @@ class WifiAwareTransport(
         onHandler {
             if (!_dormant.value || dutyActive) return@onHandler
             if (session != null || !started || paused) return@onHandler
+            beginDutyWindow(SystemClock.elapsedRealtime(), probe = false)
+        }
+
+    /**
+     * Open a duty window now, a scheduled one or the on-screen [probe]: the same window either way (30 s from
+     * `onAttached`, a WAKE on a find, a DUTY_EMPTY close otherwise, one ICM window), told apart only by the log line and
+     * the wake's reason. Stamps [lastWindowStartedAt] for the probe's floor. Leaves [dutyDueAt] as it is: the close
+     * reschedules from itself. Handler thread; the caller has checked dormant, no window, no session, started, unpaused.
+     */
+    private fun beginDutyWindow(
+        now: Long,
+        probe: Boolean,
+    ) {
+        dutyActive = true
+        probeActive = probe
+        dutyStartedAt = now
+        lastWindowStartedAt = now
+        dutyAttachedAt = 0L
+        wakeIcmDemandAt = now
+        // `aware duty attach: ` stays the prefix for both, so a reader counting windows still counts the probe.
+        val kind = if (probe) "probe (on screen) — " else ""
+        Log.i(
+            TAG,
+            "aware duty attach: ${kind}dormant ${now - dormantSince}ms — holding ${NanDormancyPolicy.DUTY_WINDOW_MS}ms from the attach",
+        )
+        attach()
+    }
+
+    /**
+     * Knit came on screen ([appVisible]'s rising edge): a dormant plane between duties runs one probe window now, at
+     * most once per [NanDormancyPolicy.PROBE_FLOOR_MS] and only when the attach budget would let a duty run now
+     * ([NanDormancyPolicy.probe]); otherwise nothing happens and nothing is armed for later. The decision and every
+     * write sit in one handler block (the collector runs on [scope]), then the loop is poked so it re-derives its sleep
+     * on the window's cadence rather than the dormant one. ADR 2026-09.535d's API 31–32 retry is not this: it runs from
+     * `heal()` on resume, and the probe, attaching while the app is visible, publishes as that retry needs.
+     */
+    private fun onCameOnScreen() =
+        onHandler {
+            if (!started || !hasHardware) return@onHandler
             val now = SystemClock.elapsedRealtime()
-            dutyActive = true
-            dutyStartedAt = now
-            dutyAttachedAt = 0L
-            wakeIcmDemandAt = now
-            Log.i(TAG, "aware duty attach: dormant ${now - dormantSince}ms — holding ${NanDormancyPolicy.DUTY_WINDOW_MS}ms from the attach")
-            attach()
+            val verdict =
+                NanDormancyPolicy.probe(
+                    now = now,
+                    dormant = _dormant.value,
+                    dutyActive = dutyActive,
+                    attached = session != null,
+                    // The dormant tick's self-heal, FORCED exempt: a near candidate wakes SIGHTING, not a probe.
+                    nearCandidate = NanDormancyPolicy.nearWhileDormant(candidatesNear.isNotEmpty(), lastDormancyWhy),
+                    paused = paused,
+                    lastWindowStartedAt = lastWindowStartedAt,
+                    closedAt = dormantClosedAt,
+                    attachAbandoned = attachAbandoned,
+                    attachRetryAfter = attachRetryAfter,
+                    settleMs = SESSION_CYCLE_SETTLE_MS,
+                )
+            when (verdict) {
+                NanDormancyPolicy.Probe.RUN -> {
+                    beginDutyWindow(now, probe = true)
+                    healSignal.trySend(Unit)
+                }
+
+                NanDormancyPolicy.Probe.NEAR -> {
+                    wake(NanDormancyPolicy.Why.SIGHTING)
+                }
+
+                NanDormancyPolicy.Probe.AWAKE -> {}
+
+                else -> {
+                    // Its own line, carrying only the field its verdict reads; no harness text (`streak=`) rides it.
+                    val detail =
+                        when (verdict) {
+                            NanDormancyPolicy.Probe.FLOOR -> {
+                                " (floor ${NanDormancyPolicy.probeFloorLeftMs(now, lastWindowStartedAt, dormantClosedAt)}ms left)"
+                            }
+
+                            NanDormancyPolicy.Probe.BUDGET -> {
+                                " (backoff ${(attachRetryAfter - now).coerceAtLeast(0L)}ms, abandoned $attachAbandoned)"
+                            }
+
+                            NanDormancyPolicy.Probe.SETTLE -> {
+                                " (closed ${now - dormantClosedAt}ms ago)"
+                            }
+
+                            else -> {
+                                ""
+                            }
+                        }
+                    Log.i(TAG, "aware probe skipped: $verdict$detail")
+                }
+            }
         }
 
     /** How long the running duty window has left: from `onAttached`, or from its start while the attach is pending. */
@@ -2487,6 +2588,7 @@ class WifiAwareTransport(
         dormantIdleSince = 0L
         dormantSince = 0L
         dutyActive = false
+        probeActive = false
         dutyStartedAt = 0L
         dutyAttachedAt = 0L
         dutyDueAt = 0L
@@ -2593,6 +2695,9 @@ class WifiAwareTransport(
             dormantForMs = if (dormant && dormantSince != 0L) now - dormantSince else 0L,
             nextDutyInMs = if (dormant && !dutyActive && dutyDueAt != 0L) (dutyDueAt - now).coerceAtLeast(0L) else null,
             dutyActive = dutyActive,
+            probeActive = probeActive,
+            nextProbeAllowedInMs =
+                if (dormant) NanDormancyPolicy.probeFloorLeftMs(now, lastWindowStartedAt, dormantClosedAt) else null,
             idleForMs = if (dormantIdleSince == 0L) 0L else now - dormantIdleSince,
             stayReason = if (dormant) null else NanDormancyPolicy.stayReason(stayFacts()),
             candidatesNear = candidatesNear,

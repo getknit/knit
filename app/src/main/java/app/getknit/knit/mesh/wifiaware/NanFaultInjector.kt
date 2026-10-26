@@ -78,8 +78,10 @@ internal data class NanIcmHooks(
 /**
  * What `…debug.NANDORM` reads back about dormancy ([NanDormancyPolicy], GitHub #44): whether the plane is [dormant] and
  * the last transition's [why]; how long it has been ([dormantForMs]) and when the next duty attach may run
- * ([nextDutyInMs], null unless dormant between duties), a duty running ([dutyActive]); awake, how long the idle clock
- * has run ([idleForMs]) and what holds it attached ([stayReason], null when nothing does); the other planes' candidate
+ * ([nextDutyInMs], null unless dormant between duties), a duty running ([dutyActive]) and whether it is the on-screen
+ * probe ([probeActive]), how long until a probe may run ([nextProbeAllowedInMs]: the floor alone, null while awake);
+ * awake, how long the idle clock has run ([idleForMs]) and what holds it attached ([stayReason], null when nothing
+ * does); the other planes' candidate
  * sets and newcomer watch; the debug [held] and the [dutyIntervalMs] in force; and the radio evidence the health and
  * the advert's flag read ([available] is `isAvailable` now — trial F samples it — [wifiEnabled], [deviceIdle];
  * [radioOff] is the health's reader, never deep idle; [wontRun] the advert's, which deep idle sets).
@@ -90,6 +92,8 @@ internal data class NanDormancySnapshot(
     val dormantForMs: Long,
     val nextDutyInMs: Long?,
     val dutyActive: Boolean,
+    val probeActive: Boolean,
+    val nextProbeAllowedInMs: Long?,
     val idleForMs: Long,
     val stayReason: String?,
     val candidatesNear: Set<String>,
