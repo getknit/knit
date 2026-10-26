@@ -1200,7 +1200,7 @@ room included, and no room can opt in or out on its own (B-7.4-20).
 A spool MAY hand its members short-lived credentials for a TURN server its operator runs, so that two
 members whose networks block a direct path can still hold a call. The spool never relays media itself
 (S-7.6-10): it signs a credential that the TURN server checks against a secret the two share, the TURN
-REST shared-secret scheme coturn's `use-auth-secret` verifies. An operator that sells TURN, or other
+REST shared-secret scheme coturn's `use-auth-secret` verifies. An operator that gates TURN, or other
 capabilities, may also require an **entitlement ticket** and advertise **STUN**. The reference daemon
 exposes these as `SPOOL_TURN_*`, `SPOOL_TICKET_*` and `SPOOL_STUN_URLS` (knit-spool ADR 2026-10.bxsg,
 knit-spool ADR 2026-10.h6pt).
@@ -1329,7 +1329,7 @@ Three terms, each read from a server's URLs:
 #### Entitlement tickets
 
 A **ticket** is an Ed25519 grant that an issuer signs and the spool checks with only the public half, so
-the spool can tell a paying member from anyone else without holding an account. Which capabilities need
+the spool can tell a ticket holder from anyone else without holding an account. Which capabilities need
 a ticket is the operator's choice, advertised in HELLO as `entGates`. How a client obtains a ticket is
 between it and the issuer the operator names: the spool sees only the ticket.
 
@@ -1387,7 +1387,7 @@ section takes the next number neither document uses.
 > (`docs/VOICE_CALLS.md` §2.6), and installed apps keep dialling a spool's old name until each one moves. So a
 > rename cannot happen in one step: for a while the spool sees tickets for both names, and refusing either would
 > cut off the members still on it. An issuer that derives `ps` from `aud`, as the reference one does (knit-spool
-> ADR 2026-10.bxsg), gives one account a pseudonym per name, so every bound kept per pseudonym (S-7.6-17's TURN
+> ADR 2026-10.bxsg), gives one ticket key a pseudonym per name, so every bound kept per pseudonym (S-7.6-17's TURN
 > quota, S-7.6-22's budget) counts that holder twice until the old name is dropped. Drop it before the old name
 > reaches another spool, or that spool's tickets are good here too.
 >
@@ -1400,7 +1400,7 @@ section takes the next number neither document uses.
 > (4.18.0, `get_real_username`), so a stable suffix per pseudonym is what makes a quota per holder
 > possible. Hashing it keeps the spool-side pseudonym out of the TURN server's logs.
 >
-> **Why only the uploader's ticket admits an upload.** TURN and casts let one payer unlock a
+> **Why only the uploader's ticket admits an upload.** TURN and casts let one ticket holder unlock a
 > conversation, because a call or a walkie-talkie that only one side can use is broken. Attachments are
 > not: a member without a ticket still receives every one. A rule under which sending works in some
 > conversations and not others, for reasons the sender cannot see, would need explaining in every client.
@@ -1501,8 +1501,8 @@ its plaintext pads to 768 and its cast is 797 bytes: about 1.7 KB/s at two a sec
 > Internet carries is checked against the pinned key before any ratchet work. The 64 bytes land only on
 > the spool's copy, which has no radio airtime budget to keep.
 >
-> **Why one payer unlocks the scope.** As one payer is enough for TURN. A ticket on every caster would make
-> a free member's walkie-talkie one-way. It ties the payer's pseudonym to nothing the spool had not already
+> **Why one ticket holder unlocks the scope.** As one holder is enough for TURN. A ticket on every caster would make
+> a free member's walkie-talkie one-way. It ties the holder's pseudonym to nothing the spool had not already
 > tied it to.
 >
 > **Why `push` with a marker was rejected.** An older spool ignores an unknown key (B-2-2) and stores the
@@ -1865,8 +1865,8 @@ a relay.
 - With casts (§7.7), live and never on disk: that a DM scope is in a walkie-talkie session, which side
   talks when and for how long (about two casts a second per talking side), and both subscribers' IPs.
   Padding (C-7.7-12) and a constant-bitrate encoder keep a chunk's size from saying what was said; nothing
-  hides that something was. On a spool that gates casts, the ticket rule (S-7.7-6) ties the payer's
-  pseudonym to that timing, which the spool could already tie to the payer's subscriptions.
+  hides that something was. On a spool that gates casts, the ticket rule (S-7.7-6) ties the ticket
+  holder's pseudonym to that timing, which the spool could already tie to the holder's subscriptions.
 - With the commons (§7.4), the spool's HELLO is a **directory** of its rooms: whoever completes a HELLO
   learns how many rooms it runs, each one's pinned bounds and whether it takes attachments, and the names
   the operator chose to advertise. On a spool with no token that is anyone, which is why S-7.4-19 keeps names

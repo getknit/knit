@@ -43,6 +43,9 @@ document:
 - When an internet relay runs more than one server for calls, Knit now relays each call through the one
   nearest you, checked whenever your network changes. If that server is full as the call starts, Knit tries
   the next one.
+- The Support Knit screen now says Knit is funded by its supporters and is its developer's full-time job. The
+  relay screen and your profile now name your ticket key where they used to say Knit Anywhere ended or needed
+  renewing.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

@@ -633,7 +633,7 @@
     <string name="message_requests_delete_confirm_title">Excluir solicitação?</string>
     <string name="message_requests_delete_confirm_body">Esta conversa será removida só deste dispositivo.</string>
     <string name="donate_title">Apoie o Knit</string>
-    <string name="donate_blurb">O Knit é gratuito e mantido só por contribuições — sem anúncios, sem servidores, sem rastreamento. Se ele é útil para você, uma pequena doação ajuda a manter o desenvolvimento.</string>
+    <string name="donate_blurb">O Knit é gratuito, sem anúncios e sem rastreamento, e é mantido por seus apoiadores. Desenvolver o Knit é o trabalho em tempo integral de uma pessoa, e os apoiadores ajudam a pagar as despesas dela e a manter os servidores do Knit funcionando.</string>
     <string name="donate_kofi">Ko-fi</string>
     <string name="donate_liberapay">Liberapay</string>
     <string name="donate_github_sponsors">GitHub Sponsors</string>
@@ -687,7 +687,7 @@
     <string name="whats_new_2_10_video_title">Vídeos curtos</string>
     <string name="whats_new_2_10_video_body">Envie um vídeo em qualquer conversa, inclusive em Por perto. O Knit reduz o vídeo para cerca de 3 MB e mantém até 61 segundos. Um vídeo que só o Bluetooth pode trazer espera você tocar.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
-    <string name="whats_new_2_10_anywhere_body">Apoiar o Knit no Ko-fi ou no GitHub Sponsors dá acesso ao Knit Anywhere, que permite ao seu retransmissor de internet levar suas chamadas, fotos e arquivos a pessoas que nenhum celular por perto alcança. Abra o link de convite que você receber para adicioná-lo.</string>
+    <string name="whats_new_2_10_anywhere_body">Com o Knit Anywhere, o próprio retransmissor do Knit leva suas chamadas, fotos e arquivos a pessoas que nenhum celular por perto alcança. Para adicioná-lo, abra o link de convite que você receber.</string>
     <string name="whats_new_2_10_wifi_aware_title">O Wi-Fi Aware descansa, e você pode desligá-lo</string>
     <string name="whats_new_2_10_wifi_aware_body">Agora o Wi-Fi Aware descansa enquanto nenhum celular por perto pode usá-lo, para que seu Wi-Fi e o áudio Bluetooth funcionem em velocidade total. As Configurações também têm uma opção para desligá-lo. As mensagens continuam chegando pelo Bluetooth, mas fotos e arquivos demoram mais.</string>
     <string name="whats_new_2_9_headline">Bluetooth com mais alcance e progresso das fotos recebidas</string>
@@ -1470,7 +1470,7 @@
     <string name="relays_move_done">O Knit Anywhere agora funciona neste celular</string>
     <string name="relays_move_failed">Não foi possível mover. Tente de novo mais tarde.</string>
     <string name="relays_move_unknown_key">O emissor não reconhece esta chave</string>
-    <string name="relays_move_ended">Seu Knit Anywhere terminou</string>
+    <string name="relays_move_ended">Esta chave de passes terminou</string>
     <string name="relays_calls_files_each">Até %1$s cada</string>
     <string name="relays_calls_files_day">%1$s por dia</string>
     <string name="relays_free_key_waiting">%1$s · pedindo um passe</string>
@@ -1692,7 +1692,7 @@
     <string name="badge_supporter_sheet">%1$s apoia o Knit.</string>
     <string name="profile_badge_toggle">Mostrar meu selo de apoiador</string>
     <string name="profile_badge_toggle_summary">Adiciona uma pequena marca à sua foto para as pessoas que seu perfil alcança.</string>
-    <string name="profile_badge_lapsed">Seu selo expirou, por isso não está aparecendo. Ele volta assim que for renovado.</string>
+    <string name="profile_badge_lapsed">Seu selo expirou, por isso não está aparecendo. Ele volta a aparecer quando sua chave de passes estiver válida.</string>
     <string name="chat_action_translate">Traduzir</string>
     <string name="translate_lang_en">Inglês</string>
     <string name="translate_lang_es">Espanhol</string>

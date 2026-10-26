@@ -28,7 +28,8 @@ A 1:1 audio call has three paths:
   media keys (§3.7).
 - **TURN credentials** (§2) and **casts** (§2.7) are the only new spool-side behaviours. The spool hands out
   short-lived credentials for a TURN server its operator runs, and never carries a live call's media. It does carry a
-  walkie's chunks, unstored, between two phones with no radio path, on a spool that sells that to the pair (§2.7).
+  walkie's chunks, unstored, between two phones with no radio path, on a spool whose tickets grant that to the pair
+  (§2.7).
 - **Between neighbours** the media can skip the Internet altogether: the two phones raise a Wi-Fi Direct group and
   ICE prefers its pair to any other (§3.10). That needs no spool and no STUN, and with them it still wins.
 
@@ -220,17 +221,18 @@ Proposed §10.1 bullet:
 - **Casts** (§2.7) show the spool, live and never on disk, that a DM scope is in a walkie session, which side talks
   when and for how long (about two casts a second per talking side), and both subscribers' IPs. Padding (C-7.7-12) and
   a constant-bitrate encoder keep a chunk's size from saying what was said; nothing hides that something was. On a
-  spool that sells casts, the ticket rule (S-7.7-6) ties the payer's daily pseudonym to that timing, which the spool
-  could already tie to the payer's subscriptions.
+  spool that gates casts, the ticket rule (S-7.7-6) ties the ticket holder's daily pseudonym to that timing, which the
+  spool could already tie to the holder's subscriptions.
 
 ### 2.6 Entitlement tickets and STUN (experimental)
 
-Two additions for a spool whose operator sells TURN (Knit Anywhere; knit-spool ADR 2026-10.bxsg).
+Two additions for a spool whose operator gates TURN behind a ticket (Knit Anywhere, Knit's thank-you to its
+supporters; knit-spool ADR 2026-10.bxsg).
 Which capabilities need a ticket is the operator's choice, advertised in HELLO (knit-spool ADR 2026-10.h6pt).
 A **ticket** is an Ed25519 grant an issuer signs and the spool checks with only the public half, so
-the spool can tell a paying caller from anyone else without holding an account. A **STUN list** lets
-any client, paying or not, learn its own public address — without which a free phone offers only
-private addresses, and a paying peer's relay cannot permit it (coturn keys permissions on IP alone).
+the spool can tell a ticket holder from anyone else without holding an account. A **STUN list** lets
+any client, ticketed or not, learn its own public address — without which a free phone offers only
+private addresses, and a ticket holder's relay cannot permit it (coturn keys permissions on IP alone).
 
 The `ent` record, the ticket's claims (`am` included), the spool's rules and the client's rules at the spool
 (S-7.6-13 to C-7.6-32) are normative in `docs/SPOOL_PROTOCOL.md` §7.6, and their vectors in its §13. This section
@@ -260,17 +262,17 @@ here.
 | **C-7.6-29** | A customer key goes only to the issuer origin it arrived with, only in the `Authorization` header, only over `https://` (`http://` in a debug build). It is stored beside the relay's `?k=` token, under the protection ADR 2026-09.66cw gives that token, and never minted into an invite. Removing the relay forgets its key, issuer and ticket. |
 
 > **The key swap (C-7.6-27 to C-7.6-29).** A ticket is a day's grant, so something has to fetch the next one. An
-> issuer's operator hands a customer a relay invite (`docs/RELAY_INVITE.md` §2) that carries, beside the relay, the
-> issuer's origin `i` and a customer key `k` (`kak1_…`). Accepting it holds the key for the relay's host name, and
-> the client trades it at `POST <i>/api/v1/ticket` with `Authorization: Bearer <k>` and no body (knit-spool-coordinator
-> ADR 2026-10.ukvm, as amended by knit-spool-coordinator ADR 2026-10.mrnm). The answers are 200
-> `{ ticket, aud, nbf, exp, flags: { turn, files, cast }, endsAt }`, 401
-> `{ error: "unknown-key" }` and 403 `{ error: "ended", endsAt }`, all `no-store`; a free account's swap may also
-> answer 503 (below). The client acts on the claims inside `ticket`, never the JSON copies, and puts it through the
-> same import door as a pasted one, so a ticket whose `aud` is not that relay's host is never held; the connection
-> then presents it at once (C-7.6-19). A phone never re-mints a key into an invite: it lends out the customer's own
-> quota. Client: knit-next ADR 2026-10.3sk7. Every request with a customer key also carries a device proof, which adds
-> the 400 `bad-proof`, 409 `bound-elsewhere` and 426 `upgrade-required` answers ("Device binding", below).
+> issuer's operator hands a supporter a relay invite (`docs/RELAY_INVITE.md` §2) that carries, beside the relay, the
+> issuer's origin `i` and a ticket key `k` (`kak1_…`, called the customer key in the requirements). Accepting it holds
+> the key for the relay's host name, and the client trades it at `POST <i>/api/v1/ticket` with `Authorization: Bearer
+> <k>` and no body (knit-spool-coordinator ADR 2026-10.ukvm, as amended by knit-spool-coordinator ADR 2026-10.mrnm).
+> The answers are 200 `{ ticket, aud, nbf, exp, flags: { turn, files, cast }, endsAt }`, 401 `{ error: "unknown-key"
+> }` and 403 `{ error: "ended", endsAt }`, all `no-store`; a free account's swap may also answer 503 (below). The
+> client acts on the claims inside `ticket`, never the JSON copies, and puts it through the same import door as a
+> pasted one, so a ticket whose `aud` is not that relay's host is never held; the connection then presents it at once
+> (C-7.6-19). A phone never re-mints a key into an invite: it lends out the ticket holder's own quota. Client:
+> knit-next ADR 2026-10.3sk7. Every request with a customer key also carries a device proof, which adds the 400
+> `bad-proof`, 409 `bound-elsewhere` and 426 `upgrade-required` answers ("Device binding", below).
 >
 > **Why a waiting upload asks.** Without it a phone with a key asks only on its schedule, so a photo sent in the hour
 > a ticket lapsed, or before the first one arrived, waits for the next scheduled ask. A locked upload is held and
@@ -286,10 +288,11 @@ here.
 
 #### Device binding
 
-A customer key is for one phone (knit-spool-coordinator ADR 2026-10.473c). The phone proves each request comes from
-the same phone with a **device key**: a key pair it makes for that one customer key, which never leaves the phone and
-names nobody. The issuer binds the account to the first device key it sees, and refuses another until the person
-moves the account. A free key (C-7.6-37) is made on the phone and never leaves it, so it carries no proof.
+A ticket key (the requirements' customer key) is for one phone (knit-spool-coordinator ADR 2026-10.473c). The phone
+proves each request comes from the same phone with a **device key**: a key pair it makes for that one ticket key,
+which never leaves the phone and names nobody. The issuer binds the ticket key to the first device key it sees, and
+refuses another until the person moves it. A free key (C-7.6-37) is made on the phone and never leaves it, so it
+carries no proof.
 
 | ID           | Requirement |
 |--------------|-------------|
@@ -304,16 +307,16 @@ moves the account. A free key (C-7.6-37) is made on the phone and never leaves i
 
 > **Why a device key and not the Node ID.** A Node ID is public: it is the hash of the identity key bundle and rides
 > every Bluetooth advert, so a bare one proves nothing. Proving the identity key would fix that, but the issuer would
-> then hold the person's Node ID against a paid account, and so against the email Polar keeps, which is the link this
-> protocol keeps out of every server's hands (§2.5, `docs/SPOOL_PROTOCOL.md` §1, `docs/SUPPORTER_BADGE.md` §1). A
-> device key is random and per customer key: the issuer learns that a request comes from the same phone as the last
-> one, and nothing about which phone, nor that two accounts share one.
+> then hold the person's Node ID against their ticket key, and so against the email the issuer keeps, which is the
+> link this protocol keeps out of every server's hands (§2.5, `docs/SPOOL_PROTOCOL.md` §1, `docs/SUPPORTER_BADGE.md`
+> §1). A device key is random and per customer key: the issuer learns that a request comes from the same phone as the
+> last one, and nothing about which phone, nor that two ticket keys share one.
 >
 > **Why the path and the key are signed.** The path stops a swap's proof from being replayed as a move, and the key's
-> hash stops a proof for one account from being replayed against another. A timestamp keeps the swap at one round
+> hash stops a proof for one ticket key from being replayed against another. A timestamp keeps the swap at one round
 > trip; the issuer accepts it within ±300 s, the ticket's own skew (`docs/SPOOL_PROTOCOL.md` S-7.6-14).
 >
-> **Why moving is the person's act and has a cooldown.** A move takes the account from the other phone, so only the
+> **Why moving is the person's act and has a cooldown.** A move takes the ticket key from the other phone, so only the
 > person may start it. The issuer's cooldown, which the client reads from `movableAt` and never hardcodes, stops two
 > people from taking turns with one key. A lost phone inside the cooldown goes through the issuer's support, which
 > reissues the key.
@@ -329,15 +332,15 @@ moves the account. A free key (C-7.6-37) is made on the phone and never leaves i
 > **What it does not stop.** A rooted phone, or software that can drive the first phone's Keystore, can still use the
 > key there. It stops a forwarded invite and a second phone scanning the QR code.
 >
-> **Records.** Issuer: knit-spool-coordinator ADR 2026-10.473c, which holds the cooldown, the two phases
-> (`optional`, then `required` before the issuer sells) and the privacy policy's wording. Client: knit-next ADR
+> **Records.** Issuer: knit-spool-coordinator ADR 2026-10.473c, which holds the cooldown, the two phases (`optional`,
+> then `required` before the issuer opens to supporters) and the privacy policy's wording. Client: knit-next ADR
 > 2026-10.wk3m.
 
 #### Free accounts
 
 A phone with no key can still send small files through a relay whose `entGates` has bit 1, if the client knows a
-**free issuer** for that relay. It makes an anonymous **free account** there, paid for with a proof-of-work stamp,
-and swaps its key for tickets exactly as a customer key is swapped. A free account's ticket grants files only
+**free issuer** for that relay. It makes an anonymous **free account** there, behind a proof-of-work stamp,
+and swaps its key for tickets exactly as a ticket key is swapped. A free account's ticket grants files only
 (`fl` 2), with the issuer's own `ab` and `am` for that audience, so what a free phone may send is bounded by those
 claims and by the spool (S-7.6-22, S-7.6-31). The issuer keeps no per-request log, and keeps an address only as a
 daily-keyed hash in its per-address counter, dropped each day.
@@ -393,7 +396,7 @@ the address's count.
 > the issuer hears from a free phone only on a day it sends something through that relay.
 >
 > **Why a stamp.** The account route is unauthenticated, so creating many accounts is the attack, and that is where
-> it is paid for: a few seconds of hashing on a phone, beside the issuer's per-address limit and its daily cap. It
+> it costs something: a few seconds of hashing on a phone, beside the issuer's per-address limit and its daily cap. It
 > is a speed bump, not a wall. It reuses §8's hashcash family under its own label, and binds the issuer's day, so a
 > stamp cannot be mined ahead or spent twice.
 >
@@ -463,8 +466,8 @@ A 480 ms walkie chunk's frame is about 693 bytes, so its plaintext pads to 768 a
 > is checked against the pinned key before any ratchet work. The 64 bytes land only on the spool's copy, which has no
 > Coded PHY budget to keep.
 >
-> **Why one payer unlocks the scope.** As one payer is enough for TURN (§2.6). A ticket on every caster would make a
-> free friend's walkie one-way. It ties the payer's pseudonym to nothing the spool had not already tied it to.
+> **Why one ticket holder unlocks the scope.** As one holder is enough for TURN (§2.6). A ticket on every caster would
+> make a free friend's walkie one-way. It ties the holder's pseudonym to nothing the spool had not already tied it to.
 >
 > **Why `push` with a marker was rejected.** An older spool ignores an unknown key (B-2-2) and stores the chunk. The
 > HELLO gate is what makes an unstored lane safe to add.

@@ -93,14 +93,14 @@ without a sheet, and the sheet is built around one question — *do you trust th
   `rooms`).
 - A build with the commons dark (`BuildConfig.COMMONS` off) applies the relay half and ignores the room
   half without mentioning it.
-- **A customer key is a lent quota.** The sheet names the issuer's host and says what the key does: this phone
-  will contact that host about once a day to fetch this relay's tickets. No price, no product name, no link.
-  Confirming holds the key for the relay's host name in the same apply sequence. The same key again is a no-op; a
-  different key for the same relay replaces the held one, and the sheet says so (an `account rotate-key`); an invite
+- **A ticket key (the customer key) is a lent quota.** The sheet names the issuer's host and says what the key does:
+  this phone will contact that host about once a day to fetch this relay's tickets. No price, no product name, no
+  link. Confirming holds the key for the relay's host name in the same apply sequence. The same key again is a no-op;
+  a different key for the same relay replaces the held one, and the sheet says so (an `account rotate-key`); an invite
   without `i` and `k` over a relay that holds a key keeps the key, as an untokened invite never downgrades a stored
   token. The key goes only to the origin it arrived with, only in an `Authorization` header (C-7.6-29).
-- A build without tickets (release today: no Knit Anywhere, `ANYWHERE_WIRED` off) applies the relay and room halves and
-  ignores `i` and `k` without mentioning them.
+- A build without tickets (one made with `-PknitAnywhere=false`: no Knit Anywhere, `ANYWHERE_WIRED` off) applies the
+  relay and room halves and ignores `i` and `k` without mentioning them.
 
 ## 4. Minting
 
@@ -108,7 +108,7 @@ without a sheet, and the sheet is built around one question — *do you trust th
   room's `c`/`n` when this device has joined exactly one room there; each joined room's own Share / Copy mints `u`
   plus that room. One link names one room, so with two or more joined the relay's own link carries the relay
   alone. The phone **never** writes `i` or `k`, whatever key it
-  holds: a forwarded customer key lends out the customer's own quota, so `RelayInvite.mint` has no way to.
+  holds: a forwarded ticket key lends out its holder's own quota, so `RelayInvite.mint` has no way to.
 - **By the issuer's operator** (knit-spool-coordinator, out of repo): `npm run anywhere -- account create` (and
   `rotate-key`) prints an invite with `u` the account's relay (its host must be the account's `spool_host`), `i` the
   issuer's origin and `k` the new key. Its encoder refuses what this parser refuses (`bad-issuer`, `bad-key`) and a

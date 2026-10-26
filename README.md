@@ -511,8 +511,8 @@ it. An iPhone port, [Knit for iOS](https://github.com/getknit/knit-ios), speaks 
 links with Android phones over Bluetooth LE; it is headed for the App Store and not released yet.
 
 **Is it free and open source?**
-Yes — Knit is free software under the **GNU General Public License v3.0 or later**. There are no ads,
-paid tiers, or subscriptions; development is funded entirely by optional tips (see [Support Knit](#-support-knit)).
+Yes — Knit is free software under the **GNU General Public License v3.0 or later**. There are no ads and no
+tracking, and Knit is funded by its supporters (see [Support Knit](#-support-knit)).
 
 **How is it different from Bridgefy / Briar / Meshtastic?**
 Knit runs **two radios at once** (Wi-Fi Aware + Bluetooth LE) behind a single transport seam, has **no
@@ -633,8 +633,8 @@ security problems.
 
 ## 💛 Support Knit
 
-Knit is free and open source, with no ads, no tracking, and nothing to sell you. Most of the help it
-needs costs nothing:
+Knit is free and open source, with no ads and no tracking. Most of the help it needs
+costs nothing:
 
 - **Bring the people around you.** Every phone running Knit carries messages for the others, so the mesh
   you're on reaches further with each friend who installs it. Add each other with a QR code or a contact
@@ -653,17 +653,24 @@ needs costs nothing:
   language there: suggest a better word, fix a string, or ask for your language.
   [#43](https://github.com/getknit/knit/issues/43) tracks where each one stands.
 
-If you'd also like to chip in money, Knit is funded entirely by tips. You can leave a one-off tip on
-Ko-fi or set up a recurring one on Liberapay or GitHub Sponsors. Supporting Knit on Ko-fi or GitHub Sponsors
-comes with **[Knit Anywhere](https://anywhere.getknit.app)**, which lets your internet relay carry your calls,
-photos and files to people no phone nearby can reach, and a supporter badge you can show on your profile
-photo. Knit works phone to phone without it.
+Knit is also funded by its supporters, through GitHub Sponsors and Ko-fi. Knit is its developer's full-time job.
+Supporters help pay their bills and keep Knit's servers running.
 
-[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-leave%20a%20tip-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/knit)
-[![Support on Liberapay](https://img.shields.io/badge/Liberapay-give%20recurring-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/zaventh/)
 [![Sponsor on GitHub](https://img.shields.io/badge/GitHub%20Sponsors-sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/getknit)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-leave%20a%20tip-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/knit)
 
-Beyond Knit Anywhere, tips buy no special treatment. Knit is GPLv3 and stays that way.
+[Liberapay](https://liberapay.com/zaventh/) supports the developer directly, and carries no supporter perks.
+
+Knit thanks its supporters with a supporter badge in the app and with
+**[Knit Anywhere](https://anywhere.getknit.app/sponsor)**: calls through Knit's own call relay (a TURN server),
+and larger files in chats over Knit's free public relay. Relaying calls and storing files costs real money for
+every person who uses them, so Knit offers them as a thank-you to the people who pay for them. The level that
+comes with them is on [the supporter page](https://anywhere.getknit.app/sponsor).
+
+Everything else is free for everyone: the app, nearby messaging, messages over the internet, and calls wherever
+a direct path exists. Anyone can also run [knit-spool](https://github.com/getknit/knit-spool)
+(AGPL-3.0-or-later), the software behind Knit's own relay, with any attachment size and their own TURN server,
+unrestricted. Knit is GPLv3 and stays that way.
 
 ## 📄 License
 

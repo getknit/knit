@@ -763,9 +763,10 @@
     <string name="message_requests_delete_confirm_title">Delete request?</string>
     <string name="message_requests_delete_confirm_body">This conversation will be removed from this device only.</string>
 
-    <!-- Donate -->
+    <!-- Support Knit. People who give money are supporters: never "donate" or "donation". This screen names no
+         badge, relay or file size, and the supporter perks never sit beside these links (ADR 2026-10.fm8z). -->
     <string name="donate_title">Support Knit</string>
-    <string name="donate_blurb">Knit is free and funded entirely by tips — no ads, no servers, no tracking. If it\'s useful to you, a small donation helps keep development going.</string>
+    <string name="donate_blurb">Knit is free, with no ads and no tracking, and it\'s funded by its supporters. Knit is its developer\'s full-time job. Supporters help pay their bills and keep Knit\'s servers running.</string>
     <string name="donate_kofi">Ko-fi</string>
     <string name="donate_liberapay">Liberapay</string>
     <string name="donate_github_sponsors">GitHub Sponsors</string>
@@ -835,7 +836,8 @@
     <string name="whats_new_2_10_video_title">Short videos</string>
     <string name="whats_new_2_10_video_body">Send a video in any chat, Nearby included. Knit shrinks it to about 3 MB and keeps up to 61 seconds. A video only Bluetooth can bring waits for your tap.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
-    <string name="whats_new_2_10_anywhere_body">Supporting Knit on Ko-fi or GitHub Sponsors comes with Knit Anywhere, which lets your internet relay carry your calls, photos and files to people no phone nearby can reach. Open the invite link you\'re sent to add it.</string>
+    <!-- Knit Anywhere is a thank-you to supporters, not a product, plan or account: no "get", "buy" or "subscribe". -->
+    <string name="whats_new_2_10_anywhere_body">With Knit Anywhere, Knit\'s own relay carries your calls, photos and files to people no phone nearby can reach. To add it, open the invite link you\'re sent.</string>
     <string name="whats_new_2_10_wifi_aware_title">Wi-Fi Aware rests, and you can switch it off</string>
     <string name="whats_new_2_10_wifi_aware_body">Wi-Fi Aware now rests while no phone nearby can use it, so your Wi-Fi and Bluetooth audio run at full speed. Settings also has a switch to turn it off. Messages still arrive over Bluetooth, but photos and files take longer.</string>
     <string name="whats_new_2_9_headline">Farther Bluetooth, and progress on incoming photos</string>
@@ -1736,7 +1738,7 @@
     <string name="relays_move_done">Knit Anywhere now works on this phone</string>
     <string name="relays_move_failed">Couldn\'t move it. Try again later.</string>
     <string name="relays_move_unknown_key">The issuer doesn\'t recognise this key</string>
-    <string name="relays_move_ended">Your Knit Anywhere has ended</string>
+    <string name="relays_move_ended">This ticket key has ended</string>
     <!-- A ticket's own limits (S-7.6-22, S-7.6-31) after its grants: %1$s is a size such as "256 kB". -->
     <string name="relays_calls_files_each">Up to %1$s each</string>
     <string name="relays_calls_files_day">%1$s a day</string>
@@ -2007,7 +2009,7 @@
     <string name="badge_supporter_sheet">%1$s supports Knit.</string>
     <string name="profile_badge_toggle">Show my supporter badge</string>
     <string name="profile_badge_toggle_summary">Adds a small mark to your photo for the people your profile reaches.</string>
-    <string name="profile_badge_lapsed">Your badge has lapsed, so it isn\'t showing. It returns once it\'s renewed.</string>
+    <string name="profile_badge_lapsed">Your badge has lapsed, so it isn\'t showing. It comes back once your ticket key is current.</string>
     <!-- The offline translation spike (ADR 2026-10.t2h6): debug builds made with -Ptranslate=true only. -->
     <string name="chat_action_translate">Translate</string>
     <string name="translate_lang_en">English</string>

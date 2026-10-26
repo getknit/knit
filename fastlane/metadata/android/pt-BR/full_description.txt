@@ -42,7 +42,7 @@ RECURSOS
 ESPAÇOS MAIS SEGUROS
 Um filtro no aparelho barra textos abusivos e imagens explícitas, offline, sem enviar nada. Conteúdo sensível fica desfocado até você tocar, e qualquer remetente está a um toque de ser bloqueado.
 
-O Knit vive de doações e não vende nada. Apoie em ko-fi.com/knit, liberapay.com/zaventh ou github.com/sponsors/getknit.
+Apoiadores mantêm o Knit: github.com/sponsors/getknit, ko-fi.com/knit. O liberapay.com/zaventh apoia só quem o desenvolve.
 
 COMO FUNCIONA
 O Knit usa Wi-Fi Aware e Bluetooth Low Energy ao mesmo tempo, então funciona em celulares que só têm um. Deixe rodando em segundo plano. Requer Android 10 ou superior.

@@ -14,7 +14,7 @@ carries it and shows it. Requirement ids are `C-<section>-<n>`.
 
 ## 1. What it is for
 
-A person who supports Knit — today, anyone with a live account at a Knit issuer — can turn on a small mark on their
+A person who supports Knit — today, anyone with a live ticket key at a Knit issuer — can turn on a small mark on their
 avatar. Every phone their sealed profile reaches checks it itself, offline, against keys built into the app: a modified build cannot
 forge one, and a copied one verifies for nobody else. The issuer signs a commitment, never the person's node id, so it
 cannot tell who in Knit holds the badge. The credential names a badge id (`b`), so other badges are a client release,
