@@ -316,7 +316,10 @@ test:screenshots:
     GIT_LFS_SKIP_SMUDGE: "0"
   script:
     - ./gradlew :app:compileDebugScreenshotTestJavaWithJavac :app:packageDebugScreenshotTestForScreenshotTest :app:bundleDebugClassesToRuntimeJar :app:mergeDebugAssets :app:processDebugResources --stacktrace --console=plain
-    - ./gradlew :app:validateDebugScreenshotTest --stacktrace --console=plain
+    # Four shards, four forks: one fork over every preview outgrows the 8 GiB job container on layoutlib's native
+    # leak (see app/build.gradle.kts). Each shard overwrites the last one's results, so a failing shard's report is
+    # the one left for the artifacts below.
+    - for shard in 0 1 2 3; do ./gradlew :app:validateDebugScreenshotTest -Pknit.screenshotShard=$shard/4 --stacktrace --console=plain || exit 1; done
   artifacts:
     when: on_failure
     reports:

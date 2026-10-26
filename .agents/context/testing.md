@@ -751,6 +751,10 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   `app/build/outputs/screenshotTest-results/preview/debug/`). After an intended UI change,
   `./gradlew :app:updateDebugScreenshotTest` re-renders the references — review the PNG diff before committing
   it, because that is the review the test exists for. Never edit a PNG by hand.
+- **Memory:** layoutlib leaks native memory the heap cap can't bound (~6 MiB RSS a preview; the full run peaks near
+  8 GiB). GitLab's `test:screenshots` therefore runs `-Pknit.screenshotShard=<i>/<n>` shards, one `./gradlew` and
+  one fork each; the shards split the preview files by `@PreviewTest` count (`app/build.gradle.kts`). Raise the shard
+  count, not the heap, when a shard nears the runner's container limit.
 - **Every public `@Preview` in main is a test, generated.** `python3 scripts/gen-screenshot-tests.py` writes
   one file per UI package (`ui.chat` -> `ChatScreenshots.kt`) of one-line `@PreviewTest` wrappers that call the
   main `*Preview()` — the plugin only runs previews in the `screenshotTest` source set, and calling main's keeps

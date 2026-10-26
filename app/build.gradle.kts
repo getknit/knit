@@ -828,14 +828,44 @@ tasks.named("preBuild") { dependsOn(checkModerationModels) }
 // ~130-byte pointer files there, and every comparison would fail as an unreadable image — or an `update` would
 // write real PNGs that commit as plain blobs. So both tasks refuse up front and say what is missing. The tree is
 // resolved here, at configuration time, and captured by value (configuration cache; see checkModerationModels).
+//
+// The renderer leaks native memory too, outside anything the heap cap bounds: layoutlib's JNI side grows the fork's
+// RSS by ~6 MiB a preview and never gives it back, so the full 1 013 renders peak near 8 GiB RSS on a 2 GiB heap
+// (NMT, 2026-10-25) and skuld's 8 GiB job container killed the fork with SIGKILL (jobs 10277, 10303, 10352).
+// `-Pknit.screenshotShard=<i>/<n>` runs one shard of the preview files, each in its own `./gradlew` and so its own
+// fork. Files go to the lightest shard by their `@PreviewTest` count, heaviest first, so a new file joins a shard
+// without anyone listing it. A file's previews are top-level functions, so its test class is `<File>Kt`.
 val screenshotReferences =
     fileTree(layout.projectDirectory.dir("src")) { include("screenshotTest*/reference/**/*.png") }
+val screenshotShardClasses: List<String>? =
+    providers.gradleProperty("knit.screenshotShard").orNull?.let { spec ->
+        val (index, count) = spec.split('/').map(String::toInt)
+        require(count > 0 && index in 0 until count) { "knit.screenshotShard is <index>/<count>, got $spec" }
+        val weighted =
+            fileTree(layout.projectDirectory.dir("src/screenshotTest/kotlin")) { include("**/*.kt") }
+                .files
+                .mapNotNull { file ->
+                    val text = file.readText()
+                    val previews = Regex("^@PreviewTest", RegexOption.MULTILINE).findAll(text).count()
+                    val pkg = Regex("^package (\\S+)", RegexOption.MULTILINE).find(text)?.groupValues?.get(1)
+                    if (previews == 0 || pkg == null) null else "$pkg.${file.nameWithoutExtension}Kt" to previews
+                }.sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first })
+        val shards = List(count) { mutableListOf<String>() }
+        val loads = IntArray(count)
+        for ((cls, previews) in weighted) {
+            val lightest = loads.indices.minBy { loads[it] }
+            shards[lightest] += cls
+            loads[lightest] += previews
+        }
+        shards[index]
+    }
 tasks.withType<Test>().configureEach {
     if (name.endsWith("ScreenshotTest")) {
         maxHeapSize = "2g"
         systemProperty("user.timezone", "UTC")
         systemProperty("user.language", "en")
         systemProperty("user.country", "US")
+        screenshotShardClasses?.let { classes -> filter { classes.forEach(::includeTestsMatching) } }
         val references = screenshotReferences
         doFirst {
             val pointer =
