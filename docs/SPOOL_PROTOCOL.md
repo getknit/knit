@@ -7,7 +7,7 @@
 | Protocol version   | 1                                                                                                                                                                       |
 | Status             | Normative. Implemented and shipping (see Appendix A)                                                                                                                    |
 | This revision      | 2026-10-25                                                                                                                                                              |
-| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp, ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4                                                                                                              |
+| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2, ADR 2026-10.dn2a; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp, ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4                                                                                                              |
 | Client reference   | `mesh/crypto/scope/` (`ScopeCrypto`, `SpoolPow`), `mesh/spool/` (`SpoolRecords`, `ScopeFrames`, `ScopeAttachments`, `GroupRootPolicy`, `ScopeRegistry`, `ScopeSync`)    |
 | Spool reference    | [`knit-spool`](https://github.com/getknit/knit-spool) (AGPL-3.0, separate repository) + its conformance suite                                                           |
 | Executable anchors | `ScopeCryptoTest`, `ScopeVectorTest`, `SpoolPowTest`, `SpoolRecordsTest`, `ScopeAttachmentsTest`, `ScopeFramesTest`, `GroupRootPolicyTest`, `AttachmentDeferPolicyTest` |
@@ -946,7 +946,9 @@ index. Chunks are opaque, exactly like frame blobs.
 | **S-7.1-10** | A spool at its connection cap MAY refuse the upgrade at the transport layer with `503`, and SHOULD send `Retry-After`. It MUST NOT use a close code to say so.                                                                              |
 | **C-7.1-11** | A client MUST treat a refused upgrade as a transient transport failure and keep its own reconnect backoff. It SHOULD apply a `Retry-After` as a *floor* on the next wait, and MUST keep its jitter on top.                                  |
 
-WS close codes: `4000` malformed pre-hello traffic · `4001` auth · `4002` version · `4003` abuse.
+WS close codes: `4000` malformed pre-hello traffic · `4001` auth · `4002` version · `4003` abuse. A spool
+going away closes with the standard `1001`, and so does one closing the members of a room it stopped running
+or changed (S-7.4-21). Neither is a refusal: a client reconnects under its own backoff.
 
 *Rationale (S-7.1-10, C-7.1-11).* None of the four close codes means "come back later", and `4003`
 would tell a client it misbehaved when it did not — being full is a property of the box, not of the
@@ -1031,8 +1033,9 @@ and `stun` (§7.6), and `cast` (§7.7).
 Optional **shared scopes on a spool**, called rooms: each one a room for everyone on a private relay who holds
 its invite — a household, a team, one organisation — where the members hold the invite and the spool holds
 only its hash. A spool runs any number of rooms, each from an invite of its own; until the 2026-10-24
-revision it ran at most one (Appendix B). The reference daemon implements the spool half for one room
-(`knit-spool commons-invite`, `SPOOL_COMMONS_*`); the derivations and the client half are normative here.
+revision it ran at most one (Appendix B), and since the 2026-10-25 revision it may change them without a
+restart (S-7.4-21). The reference daemon implements the spool half (`knit-spool commons-invite`,
+`SPOOL_COMMONS_*`); the derivations and the client half are normative here.
 
 **The invite and its two halves.** The invite is `knit-commons:v1:<base64url, unpadded>` around a
 32-byte `secret`.
@@ -1045,10 +1048,11 @@ sealKey = sealOkm[0…32)        nonceKey = sealOkm[32…64)
 ```
 
 The id is a bare hash under the transport-plane prefix rather than an HKDF under `knit/scope/v1/…`
-(B-2-8) because the *spool* computes it — from `SPOOL_COMMONS_ID`'s secret, at boot — and the daemon
-owns that derivation; the seal keys follow it into the same family so the two halves read as one
-invite. A spool never learns `secret` and implements no key derivation at all, which is what makes "the
-spool cannot read its own commons" structural rather than a promise.
+(B-2-8) because the *spool's* side computes it — `knit-spool commons-invite` mints the secret and prints
+the id an operator configures — and the daemon owns that derivation; the seal keys follow it into the
+same family so the two halves read as one invite. A spool never learns `secret` and implements no key
+derivation at all, which is what makes "the spool cannot read its own commons" structural rather than a
+promise.
 
 Both halves are per secret, so two invites are two independent rooms and nothing above changes when a
 spool runs several. What a second room adds is a way for a member to find its own room in a HELLO that
@@ -1062,7 +1066,8 @@ the id itself, a tag lets nobody subscribe.
 | **S-7.4-15** | `rooms` is never empty, `commons` carries exactly the `name`, bounds and `attach` of `rooms[0]`, and no two entries share a `tag`: a spool MUST NOT run two rooms whose tags are equal.                                                                                                                                                                                                  |
 | **B-7.4-16** | A room's `tag` is `SHA-256(UTF8("knit/spool/v1/commons-tag") ‖ scopeId)[0…8)`, 8 bytes, encoded as a CBOR byte string (B-2-5). The spool computes it from the scope id it was configured with, a member from the scope id it derived from the invite.                                                                                                                                     |
 | **S-7.4-2**  | Each room's bounds are the operator's, pinned. A `sub` for a room MUST apply that room's bounds, ignoring what the client declared, and echo the applied bounds in the `digest` (S-6.2-3 unchanged).                                                                                                                                                                                      |
-| **S-7.4-3**  | Every room exists from the spool's boot, so none is ever an unknown scope: the §6.4 creation gates (proof of work, the new-scope bucket) MUST NOT apply to a room, and a spool MUST NOT shed one under the storage watermark.                                                                                                                                                              |
+| **S-7.4-3**  | Every room exists before any HELLO advertises it, so none is ever an unknown scope: the §6.4 creation gates (proof of work, the new-scope bucket) MUST NOT apply to a room, and a spool MUST NOT shed one under the storage watermark. (Amended 2026-10-25: every room existed from the spool's boot.) |
+| **S-7.4-21** | A spool MAY change the rooms it runs while it runs: start running a room, stop running one, or change one's entry. A HELLO already sent is never revised (B-7.1-5), so a spool that stops running a room, or changes the bounds or `attach` it advertised for one, MUST close every connection subscribed to that room's scope with `1001`, and SHOULD close no other connection for that change. A room it starts running exists before any HELLO advertises it (S-7.4-3). A room it stops running is an ordinary scope from then on: no longer pinned, budgeted or exempt from the creation gates, it ages out under §6.2 like any other. A change to a room's `name` alone need not close anyone: the next HELLO carries it. |
 | **S-7.4-4**  | Pushes into a room are bounded by a budget **per room** and by a **spool-wide** total over all its rooms, both in addition to the per-connection one. A refusal under either is `err rate` with `retryMs`, and MUST NOT count as a strike (§6.4) — congestion on a shared room is not evidence any one member misbehaved. A push refused under one budget MUST NOT be charged to the other. (Amended 2026-10-24: with one room, the spool-wide budget was the room's.) |
 | **S-7.4-5**  | Attachment records (§7.3) naming a room are answered `err malformed` unless that room's entry advertised `attach = true`.                                                                                                                                                                                                                                                                   |
 | **S-7.4-19** | A room's `name` is optional, entry by entry. A spool with no access token (S-7.1-3) SHOULD NOT advertise names: anyone who connects reads its HELLO.                                                                                                                                                                                                                                     |
@@ -1083,7 +1088,8 @@ the id itself, a tag lets nobody subscribe.
 > pinned peers — the closest shape in this document is a group whose roster is "whoever the operator gave the
 > invite to". Not a group either: no roster is pinned, so nothing vets membership but the invite, every member
 > shares one key, and there is no forward secrecy inside the room beyond the operator minting a new invite.
-> Removing a member *is* rotating the invite; the old scope ages out on its TTL.
+> Removing a member *is* rotating the invite. A spool can rotate a room without a restart, reaching only that
+> room's members (S-7.4-21), and the old scope, an ordinary one from then on, ages out on its TTL.
 >
 > **Why posts stay off the mesh.** A custodial frame folds into the mesh's content digest, which every node
 > must compute by identical rules — and a room only some nodes are in can never be one. So a post lives on
@@ -1143,9 +1149,21 @@ the id itself, a tag lets nobody subscribe.
 > "not this spool's room"; and a creation gate asked for it (`err pow`, `err quota`) says the same (S-7.4-3).
 > Either way the client then stops subscribing that room on that spool for the rest of the connection, so it
 > keeps no junk scope alive there, takes no new post in it, and tells its user to ask the operator for the
-> new link. Each new connection asks once more, so a slip the operator fixes (a restart without the room's
-> setting, a reverted invite) opens the room again. A HELLO that advertises no room at all reads the same way
-> for every room joined there.
+> new link. Each new connection asks once more, so a slip the operator fixes (a room dropped from the spool's
+> configuration, a reverted invite) opens the room again. A HELLO that advertises no room at all reads the
+> same way for every room joined there.
+>
+> **Changing rooms without a restart (S-7.4-21).** HELLO is sent once per connection, so a room list can
+> change only between connections. Closing every connection would be a restart by another name, reconnecting
+> every member of every room and every private conversation on the spool. Closing none would leave a rotated
+> room's members, a removed one included, talking in the old scope until each reconnects of its own accord:
+> no record ends a subscription, and the scope itself lives on. A room's members are exactly the connections
+> subscribed to its scope, since nobody else holds the id, so closing those reaches them and nobody else, and
+> their next HELLO says the room is gone or what it now is. `1001` is the close a spool going away already
+> sends, and every client already answers it by reconnecting under its own backoff, so no close code is
+> added. Adding a room closes nobody: a connection opened before the room was added learns of it when it
+> next connects, and a member handed the new room's invite meanwhile finds its tag absent from that
+> connection's HELLO, which the note above reads as for that connection only.
 >
 > **Why members are contacts (client policy, non-normative).** The invite is the trust boundary the operator
 > drew, so the reference client accepts every member it sees in the room as a contact, and bootstraps a DM
@@ -2302,7 +2320,7 @@ wire.
 | §3.1 DM scopes                                  | Shipped, C-3.1-4/5 included (2026-10-16)                                                                                                    | `ScopeCrypto`, `ScopeRegistry`, `RatchetSessions.exportedRoots`  |
 | §3.2 group root, §3.3 group scopes              | Shipped                                                                                                                                    | `GroupRootPolicy`, `GroupRootStore`, `GroupKeyPayload.gr`, DB v3 |
 | §3.5 pair scopes                                | Shipped                                                                                                                                    | `ScopeCrypto.pairSecret`, `ScopeRegistry.pairs`, `IntroSync`      |
-| §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24): client half built in the reference client, spool half in `knit-spool` to follow | `ScopeCrypto.commons*`, `CommonsAdverts`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
+| §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24): client half built in the reference client, spool half in `knit-spool` 0.6.0. Rooms changed without a restart (S-7.4-21; 2026-10-25): spool half in `knit-spool` to follow; clients need nothing new | `ScopeCrypto.commons*`, `CommonsAdverts`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
 | §7.6 TURN credentials, tickets, STUN            | Shipped both sides: off on a spool until its operator configures it, and the reference client calls through it since 2.10.0. Several TURN servers per spool (`turnHosts`, `host`, C-7.6-51 to C-7.6-54; 2026-10-25): client half built in the reference client, spool half in `knit-spool` to follow its release | `ScopeSync`, `SpoolConnection`, `call/`, `knit-spool`            |
 | §7.7 casts                                      | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
@@ -2366,3 +2384,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-24 | **A commons post may carry its body's formatting (§7.4 C-7.4-6 note; knit-next ADR 2026-10.p95v).** A `chat` gains an optional `s`, its style ranges as one byte string beside the plain body | **Spools:** none — the record is opaque to them. **Clients:** an older client skips the key and shows the text plainly; `vectors/wire-v1.json` gains `chatContentStyles` |
 | 2026-10-24 | **One spool runs several commons rooms (§7.4: S-7.4-1, S-7.4-2, S-7.4-3, S-7.4-4, S-7.4-5, C-7.4-11 amended; S-7.4-15, B-7.4-16, C-7.4-17, C-7.4-18, S-7.4-19, B-7.4-20 new; ADR 2026-10.wqu2).** A new optional HELLO field, `rooms`, lists every room a spool runs, each entry led by a `tag`, the first 8 bytes of `SHA-256("knit/spool/v1/commons-tag" ‖ scopeId)`, which a spool computes from the id it holds and a member from the id it derives; `commons` stays as the first entry. Bounds, `attach` and the push budget are per room, under a second, spool-wide budget; `moderation` stays spool-wide; a spool with no token keeps names off its HELLO. A member never leaves a room on the strength of another room's invite. Notes say what a client that predates `rooms` gets in a second room, and why the hazard is documented rather than forbidden; §1.4 and §7.5 wording, a §10.1 bullet, a §12.1 row, §12.2 rows and §13 vectors appended | **Spools:** optional; a spool running one room may keep sending `commons` alone, but SHOULD add `rooms`; one running several MUST send both and enforce both budgets. Whatever its room count, a spool with no access token SHOULD drop room names from its HELLO, `commons.name` included (S-7.4-19). **Clients:** read their room by tag where `rooms` is present, else as before; one that predates `rooms` sees the first room on every spool. No derivation or existing vector moved; §13 gains `commonsTag`, `commonsSecret2`, `commonsScopeId2`, `commonsTag2` and `helloSpoolRooms` |
 | 2026-10-25 | **A spool may name several TURN servers, and a phone relays through the one nearest it (§7.6: S-7.6-48, S-7.6-49, S-7.6-50, C-7.6-51, C-7.6-52, C-7.6-53, C-7.6-54 new; C-7.6-12 refined; ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4).** A spool names up to four TURN servers in HELLO as `turnHosts`, the `host:port` of each one's UDP listener in server order. A `turnreq` may name one in `host`, and its `turncred` carries that server's URLs alone, signed under that server's secret; an absent or unknown `host` selects server 1, under budgets shared across servers. A client measures the listed servers by STUN Binding round trip over UDP when its network changes, never during a call, names the one it ranks best, and hands its ICE agent one TURN server per call instead of up to two. A refusal with 486 or 508 marks a server for 5 minutes, and a side whose description has not yet gone out gathers once more on the next one. Four notes say why one box per call, why the phone measures, why server 1 is the fallback and why a side moves on only before its description leaves; a §10.1 sentence and §12 rows | **Spools:** optional; one with a single server sends one entry, or none if it has no UDP URL, and one that predates `turnHosts` sends none and ignores `host` (B-2-2). **Clients:** one that predates `host` sends none and gets server 1, today's box; a new client facing an older spool behaves as before. No existing record, derivation or vector moved; §13 gains `helloSpoolTurnHosts` and `turnreqHost` |
+| 2026-10-25 | **A spool changes its commons rooms without a restart (§7.4: S-7.4-3 amended; S-7.4-21 new; ADR 2026-10.dn2a, knit-spool ADR 2026-10.hs75).** A spool may start running a room, stop running one or change one's entry while it runs. A room it starts running exists before any HELLO advertises it; one it stops running is an ordinary scope from then on. Since a HELLO is never revised, the spool closes `1001` exactly the connections subscribed to a room it stopped running or whose bounds or `attach` it changed, and their next HELLO says what the room now is. A note says why those connections and no others; the §7.1 close-code line names `1001`; the §7.4 intro and the rotation notes stop saying a rotation is a restart | **Spools:** optional; one that changes its rooms only by restarting conforms as before. One that changes them live MUST create a new room before advertising it and close `1001` the subscribers of a room it retires or reshapes. **Clients:** none: a client already reconnects on any close and reads its rooms from each HELLO. No record, derivation or §13 vector changed |

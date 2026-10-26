@@ -28,7 +28,8 @@ lines.
   carries the relay URL *with* its `?k=` token and the commons secret; it is applied only through the
   sheet (host named, cost stated, the master switch's disclosure folded in), by the one applier both doors
   share — `acceptSpoolConsent()` stays the only consent write (ADR 063), a relay is matched by
-  `SpoolUrl.redact`, and a different room secret at the same relay is a rotation.
+  `SpoolUrl.redact`, and a different room secret at the same relay joins a second room beside the first,
+  never a rotation (spec C-7.4-18): only the spool's HELLO says a room is gone.
 - **When touching `data/commons/`, `mesh/spool/Commons*`, `ConversationKind.COMMONS`, `ui/commons/`, or the relay row's
   Join/Leave:** READ ADR 2026-09.wx8e and `docs/SPOOL_PROTOCOL.md` §7.4. The commons is a private relay's
   group chat: members' `profile` frames pin them through the ordinary door and make them accepted contacts,

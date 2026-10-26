@@ -236,6 +236,7 @@ carries; never renumber an old one.
 | [2026-10.d44b](decisions/2026-10-d44b-low-power-mode-makes-the-phone-a-bluetooth-leaf.md) | Low-power mode makes the phone a Bluetooth leaf | battery, mesh, bluetooth, wifi-aware, power |
 | [2026-10.d62w](decisions/2026-10-d62w-identity-slurs-are-blocked-by-a-word-list-in-every-conversation.md) | Identity slurs are blocked by a word list in every conversation, not only the Nearby room | moderation, privacy |
 | [2026-10.dmgw](decisions/2026-10-dmgw-a-reset-s-re-seal-goes-out-twice.md) | A reset's re-seal goes out twice, the second past the routers' dedup window | crypto, custody |
+| [2026-10.dn2a](decisions/2026-10-dn2a-a-spool-changes-its-commons-rooms-without-a-restart.md) | A spool changes its commons rooms without a restart, closing only a changed room's members | spool, commons |
 | [2026-10.e42d](decisions/2026-10-e42d-a-frame-records-the-phone-radio-it-arrived-on.md) | a frame records the phone radio it arrived on, not just Nearby | mesh, data, diagnostics |
 | [2026-10.f7gg](decisions/2026-10-f7gg-a-blob-is-asked-of-the-likeliest-holder-first.md) | A blob is asked of the likeliest holder first, then of every neighbour | mesh, attachments, blob-exchange, wifi-aware |
 | [2026-10.fcrd](decisions/2026-10-fcrd-a-switched-off-call-kind-is-answered-no-answer.md) | A switched-off call kind is answered no answer, and blocking already silences a call | calls, settings |
