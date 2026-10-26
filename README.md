@@ -667,10 +667,10 @@ and larger files in chats over Knit's free public relay. Relaying calls and stor
 every person who uses them, so Knit offers them as a thank-you to the people who pay for them. The level that
 comes with them is on [the supporter page](https://anywhere.getknit.app/sponsor).
 
-Everything else is free for everyone: the app, nearby messaging, messages over the internet, and calls wherever
-a direct path exists. Anyone can also run [knit-spool](https://github.com/getknit/knit-spool)
-(AGPL-3.0-or-later), the software behind Knit's own relay, with any attachment size and their own TURN server,
-unrestricted. Knit is GPLv3 and stays that way.
+Everything else is free for everyone: the app, nearby messaging, messages over the internet, calls wherever a
+direct path exists, and small files over Knit's public relay. Anyone can also run
+[knit-spool](https://github.com/getknit/knit-spool) (AGPL-3.0-or-later), the software behind Knit's own relay, with
+any attachment size and their own TURN server, unrestricted. Knit is GPLv3 and stays that way.
 
 ## 📄 License
 

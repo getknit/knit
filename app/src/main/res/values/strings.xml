@@ -837,7 +837,7 @@
     <string name="whats_new_2_10_video_body">Send a video in any chat, Nearby included. Knit shrinks it to about 3 MB and keeps up to 61 seconds. A video only Bluetooth can bring waits for your tap.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
     <!-- Knit Anywhere is a thank-you to supporters, not a product, plan or account: no "get", "buy" or "subscribe". -->
-    <string name="whats_new_2_10_anywhere_body">With Knit Anywhere, Knit\'s own relay carries your calls, photos and files to people no phone nearby can reach. To add it, open the invite link you\'re sent.</string>
+    <string name="whats_new_2_10_anywhere_body">With Knit Anywhere, Knit\'s own relay carries your calls and larger photos and files to people no phone nearby can reach. To add it, open the invite link you\'re sent.</string>
     <string name="whats_new_2_10_wifi_aware_title">Wi-Fi Aware rests, and you can switch it off</string>
     <string name="whats_new_2_10_wifi_aware_body">Wi-Fi Aware now rests while no phone nearby can use it, so your Wi-Fi and Bluetooth audio run at full speed. Settings also has a switch to turn it off. Messages still arrive over Bluetooth, but photos and files take longer.</string>
     <string name="whats_new_2_9_headline">Farther Bluetooth, and progress on incoming photos</string>
