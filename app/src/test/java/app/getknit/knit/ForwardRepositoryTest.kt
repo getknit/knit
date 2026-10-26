@@ -203,6 +203,39 @@ class ForwardRepositoryTest : RoomDbTest() {
         }
 
     @Test
+    fun `a room post's voice note or file is custodied without its hash so the re-arm never pulls it`() =
+        runTest {
+            // ADR 2026-10.79j9: no row draws a room post's voice note or file, so the carrier column leaves it out and
+            // the database re-arm (attachmentsNeedingFetch) never wants it. The frame itself is custodied as it came.
+            val dao = db.forwardDao()
+            val digest = StoreDigest()
+            val repo = repo(db, digest)
+
+            repo.store(
+                chat("r1", "peer", 1L, null, ChatContent(body = "listen", attachmentHash = "NOTE", attachmentMime = "audio/aac")),
+                ForwardStore.ORIGIN_RELAY,
+                now = 0L,
+            )
+            repo.store(
+                chat("r2", "peer", 2L, null, ChatContent(attachmentHash = "DOC", attachmentMime = "application/pdf")),
+                ForwardStore.ORIGIN_RELAY,
+                now = 0L,
+            )
+            repo.store(
+                chat("r3", "peer", 3L, null, ChatContent(attachmentHash = "PIC", attachmentMime = "image/jpeg")),
+                ForwardStore.ORIGIN_RELAY,
+                now = 0L,
+            )
+
+            assertTrue(dao.exists("r1") && dao.exists("r2"))
+            val byId = dao.allRows().associateBy { it.id }
+            assertEquals(null, byId["r1"]!!.attachmentHash)
+            assertEquals(null, byId["r2"]!!.attachmentHash)
+            assertEquals(mapOf("PIC" to "peer"), repo.attachmentsNeedingFetch(now = 0L))
+            assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
+        }
+
+    @Test
     fun `per-sender quota keeps the newest N by sentAt for our own sends`() =
         runTest {
             val dao = db.forwardDao()

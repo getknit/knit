@@ -2178,6 +2178,9 @@ class LabNode internal constructor(
     /** The custody store's live id set, as the digest exchange advertises it. */
     suspend fun custodyIds(): Set<String> = forwardStore.liveIds(now()).toSet()
 
+    /** The carried hashes the database re-arm would want now: custody's carrier column, less what is held. */
+    suspend fun carrierWants(): Set<String> = forwardStore.attachmentsNeedingFetch(now()).keys
+
     /** Every live custody row as `id:type:sender→recipient@sentAt#sigHash` — a diff of two of these names the odd frame out. */
     suspend fun custodyFrames(): List<String> =
         forwardStore

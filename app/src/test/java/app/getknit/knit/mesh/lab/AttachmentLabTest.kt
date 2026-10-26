@@ -130,6 +130,59 @@ class AttachmentLabTest {
             }
         }
 
+    /**
+     * ADR 2026-10.79j9: the room's composer offers no mic and no paperclip, but a modified client can still name a voice
+     * note or a file in a room post. Every receiver drops it from its row and custody's carrier column, so no re-arm and
+     * no re-link ever pulls it: not one copy crosses a link. The voice note's post had nothing else, so it keeps no row.
+     * The frame itself is custodied everywhere, and the picture beside it is the control, pulled by every receiver.
+     */
+    @Test
+    fun aRoomVoiceNoteOrFileFromAModifiedClientIsNeverPulled() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+
+            val note = adts(frames = 216)
+            val doc = Random(5).nextBytes(2_048)
+            val picture = Random(6).nextBytes(4_096)
+            assertTrue(alice.sendVoice(note))
+            assertTrue(alice.sendFile(doc, "menu.pdf", "application/pdf", text = "the menu"))
+            assertTrue(alice.sendImage(picture, "control"))
+            val noteId = alice.ownMessageId(Conversations.NEARBY, "")
+            val docId = alice.ownMessageId(Conversations.NEARBY, "the menu")
+            val refused = setOf(sha256Hex(note), sha256Hex(doc))
+            assertEquals(
+                refused,
+                setOfNotNull(alice.attachmentHash(Conversations.NEARBY, noteId), alice.attachmentHash(Conversations.NEARBY, docId)),
+            )
+
+            // Alice's own rows name the bytes she sent, so she is a carrier here: the receivers are what must agree.
+            lab.assertConverged(listOf(bob, carol), atLeast = 2, carriers = listOf(alice)) { Conversations.NEARBY }
+            // The re-arm's two doors: the 60 s re-offer and a fresh link-up.
+            listOf(alice, bob, carol).forEach { it.reoffer() }
+            lab.unlink(bob, carol)
+            lab.link(bob, carol)
+            lab.assertConverged(listOf(bob, carol), atLeast = 2, carriers = listOf(alice)) { Conversations.NEARBY }
+
+            listOf(bob, carol).forEach { n ->
+                assertTrue("${n.name} kept a row for the voice note", n.decrypted(Conversations.NEARBY).none { it.first == noteId })
+                assertNull("${n.name}'s row names the file", n.attachmentHash(Conversations.NEARBY, docId))
+                assertTrue("${n.name} never pulled the control", n.holdsBlob(sha256Hex(picture)))
+                assertTrue("${n.name}'s re-arm wants ${n.carrierWants()}", n.carrierWants().none { it in refused })
+                // The live carrier pull's want lives in memory only: wanted, held or column-named covers every door.
+                assertTrue("${n.name} wants a refused blob", n.manager.wantedBlobs().none { it in refused })
+                refused.forEach { hash -> assertFalse("${n.name} holds a refused blob", n.holdsBlob(hash)) }
+                assertTrue("${n.name} lost the frames from custody", n.custodyIds().containsAll(listOf(noteId, docId)))
+            }
+            listOf(alice, bob, carol).forEach { n ->
+                val copies = n.transport.files.filter { line -> refused.any { line.contains(it) } }
+                assertTrue("${n.name} served a refused blob: $copies", copies.isEmpty())
+            }
+        }
+
     @Test
     fun aGroupPhotoCrossesAsABlob() =
         runBlocking {

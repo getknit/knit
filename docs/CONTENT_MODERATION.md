@@ -299,6 +299,10 @@ What protects a recipient instead:
   bearing twice over — the receive-side skip above and `docs/NEXT_WIRE_BREAK.md`'s first parked item both
   assumed a room attachment is an image — until link-preview cards (§7.1) became the one other kind the
   room originates; both now say *image or card*, and a card is screenable where audio and files are not.
+  The composer is the sender's, though, and a room attachment's MIME is its author's claim, so the receiver
+  enforces the same rule (ADR 2026-10.79j9): `RoomAttachments.admits` takes a picture, a card or a short video,
+  and anything else a room post names is dropped from its row whole in `InboundPipeline.decryptAndDeliver`,
+  so it is never pulled, described or drawn (a post that was only that attachment keeps no row at all), and `onCarriedFrame` never carries it.
 - **App packages are never sent, and archives ask before they are saved.** `FileTypes.isInstallable`
   refuses an `.apk` at ingest — a mesh that moves app packages between strangers is a sideloading channel —
   and `FileTypes.isRisky` puts a confirmation in front of saving an archive or an executable, saying plainly

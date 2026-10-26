@@ -1107,7 +1107,14 @@ class InboundPipeline(
             return
         }
         if (enc == null) {
-            deliverChat(env, content, me, conversationId, plane, via = source?.fromNodeId)
+            // The room's composer offers no mic and no paperclip, but that is the sender's choice: a voice note or a
+            // file named in a room post would land unscreened, so the receiver drops it (RoomAttachments). A post that
+            // was only that attachment keeps no row, as a blocked sender's does not, and is acked the same way.
+            if (RoomAttachments.dropsWhole(env, content)) {
+                acknowledge(env, me, plane)
+                return
+            }
+            deliverChat(env, RoomAttachments.admitted(env, content), me, conversationId, plane, via = source?.fromNodeId)
             return
         }
         // The already-have-it gate: custody re-serves the same ciphertext routinely (the 60s re-offer
@@ -2371,6 +2378,9 @@ class InboundPipeline(
         if (env.type != FrameType.CHAT) return
         val content = WireCodec.decodeChecked<ChatContent>(env.payload) ?: return
         val hash = content.attachmentHash ?: return
+        // A room post's attachment the room does not take is dropped from its row (RoomAttachments), so no row will
+        // ever want it; carrying it would spend the carrier budget on bytes no Knit draws.
+        if (RoomAttachments.refuses(env, content)) return
         if (blobStore.has(hash)) return
         if (copyFromOwnStore(hash, env.senderId)) return
         if (blobs.carrierOnlyBlobBytes() >= CARRIER_BLOB_BUDGET_BYTES) return

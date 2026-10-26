@@ -5,6 +5,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.mesh.CarriedAttachment
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.RoomAttachments
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -91,10 +92,11 @@ class ForwardRepository(
         // Denormalize the image content hash so the carrier can pull+hold the blob and pin it against GC. This
         // decode is best-effort metadata ONLY — it must never gate the insert: a null (non-chat, no attachment,
         // or an unreadable payload) still stores the frame, so `forward_store` ids stay byte-identical mesh-wide
-        // and the content digest converges (the digest folds only `id`, never this column).
+        // and the content digest converges (the digest folds only `id`, never this column). A room post's voice note
+        // or file is left out (RoomAttachments): no row draws it, so the database re-arm must never pull it.
         val attachmentHash =
             if (env.type == FrameType.CHAT) {
-                WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash
+                WireCodec.decodePayload<ChatContent>(env.payload)?.takeUnless { RoomAttachments.refuses(env, it) }?.attachmentHash
             } else {
                 null
             }

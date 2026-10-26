@@ -618,8 +618,9 @@ doc). **Don't start a deferred item without explicit direction.**
   collapse would need no new UI. Gap recorded in `docs/CONTENT_MODERATION.md` §7.
 
 - **Voice notes and files in the Nearby room** — deliberately not built, for the reason above. Reversing it
-  is one flag each (`MessageInput`'s `voiceEnabled` / `fileEnabled`), and neither should be reversed without
-  an answer to "what screens it". The room is the *only* thing that hides the file item: gating its
+  is one flag each (`MessageInput`'s `voiceEnabled` / `fileEnabled`) plus the receiver's
+  `RoomAttachments.admits` (ADR 2026-10.79j9), which drops either kind from a room row today, and neither
+  should be reversed without an answer to "what screens it". The room is the *only* thing that hides the file item: gating its
   visibility on the recipient's `CAP_FILES` was tried and reverted, because the bit arrives with the peer's
   next profile frame and until then the feature was indistinguishable from unbuilt (ADR 2026-09.qq2r).
   Capability belongs on the send, where it can explain itself. Two other things now rest on the room carrying only images:

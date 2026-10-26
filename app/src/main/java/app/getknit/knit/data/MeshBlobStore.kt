@@ -135,8 +135,9 @@ class MeshBlobStore(
         // key on top of it is what keeps the row's own mime trustworthy: a Nearby-room attachment is not
         // re-sealed, so *its* mime rides in the clear and lands in the row verbatim, which would move
         // the spoof from any neighbour to the message's author. That costs nothing legitimate because the
-        // room offers neither the mic nor the file picker, so a room attachment is an image or — the one
-        // other kind the room originates — a link-preview card, and a card is not skipped but *opened*:
+        // room offers neither the mic nor the file picker, and a receiver drops any other kind a room post
+        // names (RoomAttachments, ADR 2026-10.79j9), so a room attachment's row says image, card or video,
+        // and a card is not skipped but *opened*:
         // `screenAttachment` screens its picture and its text into one verdict, so the mime a room author
         // claims can only route its blob into the stricter screen, never around one. A **key-less** blob —
         // a pulled avatar, a group photo, a relayed blob with no row at all — is always screened, whatever

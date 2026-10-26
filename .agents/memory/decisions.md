@@ -220,6 +220,7 @@ carries; never renumber an old one.
 | [2026-10.697m](decisions/2026-10-697m-a-bluetooth-link-this-phone-can-show-is-dead-goes-down.md) | A Bluetooth link this phone can show is dead goes down, and a peer that has sent a KEEPALIVE answers one | ble, transport, wire |
 | [2026-10.6e5t](decisions/2026-10-6e5t-a-blob-is-fetched-from-the-best-neighbour-that-says-it-holds-it.md) | A blob is fetched from the best neighbour that says it holds it | mesh, wire, blobs |
 | [2026-10.6h2g](decisions/2026-10-6h2g-everyone-is-one-mention-per-member.md) | @everyone is one mention per member | mentions, groups |
+| [2026-10.79j9](decisions/2026-10-79j9-the-nearby-room-drops-attachments-it-cannot-screen-on-receipt.md) | The Nearby room drops attachments it cannot screen on receipt | moderation, mesh |
 | [2026-10.79yb](decisions/2026-10-79yb-a-call-with-no-live-path-is-a-walkie-talkie-over-the-mesh.md) | A call with no live path is a walkie-talkie over the mesh | calls, voice |
 | [2026-10.8hmx](decisions/2026-10-8hmx-an-animated-picture-keeps-its-frames.md) | An animated picture keeps its frames | attachments, privacy |
 | [2026-10.8jwn](decisions/2026-10-8jwn-a-bluetooth-file-feed-splits-one-pace-budget-across-the-links-it-feeds.md) | A Bluetooth file feed splits one pace budget across the links it feeds | ble, mesh |

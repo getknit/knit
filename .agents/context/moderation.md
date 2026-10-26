@@ -38,3 +38,9 @@ lines.
   that arrives from someone else, over the radios or a spool, goes through `ingest` before its obtained hook runs,
   and a key-less one is always screened there, before it is stored, so "held" means "screened" (#109). A held avatar is adopted only if screening has not refused
   it: a refused avatar's bytes can stay, pinned in custody by the sealed profile that names them.
+- **When touching `RoomAttachments`, the cleartext branch of `InboundPipeline.decryptAndDeliver`, the room gate in
+  `onCarriedFrame`, or `ForwardRepository.store`'s carrier column (`attachmentHash`):** READ ADR 2026-10.79j9 and `docs/CONTENT_MODERATION.md` §7. The receiver enforces what the room's
+  composer offers: a Nearby room post may name a picture, a link-preview card or a short video, and any other
+  attachment is dropped from its row and from custody's carrier column and is never pulled or carried, because its MIME is the author's claim and nothing
+  screens audio or files. A new kind the room originates goes into `admits` in the same change. Regression:
+  `RoomAttachmentsTest`, `InboundPipelineTest.aNearbyRoomPostsVoiceNoteOrFileIsDroppedFromItsRowAndNeverPulled`.

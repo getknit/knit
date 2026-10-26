@@ -739,6 +739,30 @@ class InboundPipelineTest {
             )
         }
 
+        /**
+         * A sealed DM carrying a voice note whose stored bytes are [blob] sealed with [key]: the key rides inside the
+         * seal only. The Nearby room takes no voice notes (RoomAttachments), so a note is always one of these.
+         */
+        fun sealedVoiceDm(
+            author: Party,
+            id: String,
+            attachmentHash: String,
+            key: ByteArray = ByteArray(32),
+        ): RelayEnvelope {
+            val header = MessageCrypto.header(id, author.nodeId, 5L, self.nodeId)
+            val sealed =
+                MessageContent(body = "", attachmentHash = attachmentHash, attachmentMime = VoiceAudio.MIME, attachmentKey = b64(key))
+            val enc = author.crypto.seal(sealed.encode(), header, mapOf(self.nodeId to self.bundle))!!
+            return RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                recipientId = self.nodeId,
+                payload = WireCodec.encodePayload(ChatContent(enc = enc, attachmentHash = attachmentHash)),
+            )
+        }
+
         /** A DM whose encrypted envelope claims crypto-scheme version [v] (for the decrypt version gate). */
         fun dmWithEnvVersion(
             author: Party,
@@ -3305,7 +3329,7 @@ class InboundPipelineTest {
             coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { bodies += firstArg<NotifMessage>().body }
 
             rig.deliver(alice, rig.attachmentChat(alice, id = "p1", attachmentHash = "photo", mime = "image/jpeg"))
-            rig.deliver(alice, rig.attachmentChat(alice, id = "v1", attachmentHash = "note", mime = VoiceAudio.MIME))
+            rig.deliver(alice, rig.sealedVoiceDm(alice, id = "v1", attachmentHash = "note"))
             rig.deliver(alice, rig.attachmentChat(alice, id = "l1", attachmentHash = "card", mime = LinkPreviewBlob.MIME))
             rig.deliver(alice, rig.attachmentChat(alice, id = "u1", attachmentHash = "unknown", mime = null))
             rig.deliver(alice, rig.attachmentChat(alice, id = "g1", attachmentHash = "gif", mime = "image/gif"))
@@ -3348,34 +3372,22 @@ class InboundPipelineTest {
         }
 
     @Test
-    fun aVoiceNoteWhoseBytesLandedFirstIsDescribedWhenItsRowArrives() =
+    fun aRoomVoiceNoteWhoseBytesLandedFirstIsNeverDescribed() =
         runTest {
-            // #132: the bytes came first — carried while the frame waited for a key, or fetched off a spool ahead of
-            // it — so no onObtained follows the row, and the delivery itself has to describe the voice note.
+            // A room post that is only a voice note keeps no row at all (RoomAttachments), so even bytes already held
+            // (#132's order) are never described or drawn: no row calls them audio.
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
-            val note = adts(frames = 216)
             coEvery { rig.blobStore.has("room-note") } returns true
-            coEvery { rig.blobs.bytes("room-note") } returns note
+            coEvery { rig.blobs.bytes("room-note") } returns adts(frames = 216)
             coEvery { rig.messages.voiceMetaWanted("room-note") } returns true
 
             rig.deliver(alice, rig.attachmentChat(alice, id = "v1", attachmentHash = "room-note", mime = VoiceAudio.MIME))
 
-            coVerify(exactly = 0) {
-                rig.blobExchange.want(
-                    "room-note",
-                    any(),
-                    any(),
-                    any(),
-                    fastOnly = any(),
-                    approved = any(),
-                    pull = any(),
-                    until = any(),
-                    untilKnown = any(),
-                )
-            }
-            coVerify(exactly = 1) { rig.messages.setVoiceMeta("room-note", VoiceAudio.durationMs(note)!!, null) }
+            assertNull(rig.msgMap["v1"])
+            coVerify(exactly = 0) { rig.messages.voiceMetaWanted(any()) }
+            coVerify(exactly = 0) { rig.messages.setVoiceMeta(any(), any(), any()) }
         }
 
     @Test
@@ -3418,13 +3430,14 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
-            coEvery { rig.blobStore.has("room-note") } returns true
-            coEvery { rig.blobs.bytes("room-note") } returns adts(frames = 216)
-            coEvery { rig.messages.voiceMetaWanted("room-note") } returns false
+            val seal = AttachmentCrypto.seal(adts(frames = 216))
+            coEvery { rig.blobStore.has("dm-note") } returns true
+            coEvery { rig.blobs.bytes("dm-note") } returns seal.blob
+            coEvery { rig.messages.voiceMetaWanted("dm-note") } returns false
 
-            rig.deliver(alice, rig.attachmentChat(alice, id = "v3", attachmentHash = "room-note", mime = VoiceAudio.MIME))
+            rig.deliver(alice, rig.sealedVoiceDm(alice, id = "v3", attachmentHash = "dm-note", key = seal.key))
 
-            coVerify { rig.messages.voiceMetaWanted("room-note") }
+            coVerify { rig.messages.voiceMetaWanted("dm-note") }
             coVerify(exactly = 0) { rig.messages.setVoiceMeta(any(), any(), any()) }
         }
 
@@ -4455,6 +4468,90 @@ class InboundPipelineTest {
             val row = checkNotNull(rig.msgMap["r1"])
             assertNull(row.attachmentName)
             assertNull("the Nearby room is key-less by design", row.attachmentKey)
+        }
+
+    /**
+     * The room's composer offers no mic and no paperclip, and nothing screens a voice note or a file, so one a modified
+     * client names in a room post is dropped from the row whole: the words land, the attachment is never pulled.
+     */
+    @Test
+    fun aNearbyRoomPostsVoiceNoteOrFileIsDroppedFromItsRowAndNeverPulled() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            fun post(
+                id: String,
+                hash: String,
+                mime: String,
+            ) = RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = alice.nodeId,
+                sentAt = 5L,
+                payload =
+                    WireCodec.encodePayload(
+                        ChatContent(body = "listen", attachmentHash = hash, attachmentMime = mime, attachmentSize = 4_000L),
+                    ),
+            )
+
+            rig.deliver(alice, post("r1", "aa".repeat(32), "audio/aac"))
+            rig.deliver(alice, post("r2", "bb".repeat(32), "application/pdf"))
+            advanceUntilIdle()
+
+            for (id in listOf("r1", "r2")) {
+                val row = checkNotNull(rig.msgMap[id])
+                assertEquals("listen", row.body)
+                assertNull(row.attachmentHash)
+                assertNull(row.attachmentMime)
+                assertNull(row.attachmentSize)
+            }
+            coVerify(exactly = 0) { rig.blobExchange.want(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        }
+
+    /**
+     * A room post that was only a voice note has nothing left to draw once the note is dropped, so it keeps no row (no
+     * empty bubble), yet its author's tick still goes back, as a blocked sender's does. A post with words beside the
+     * note keeps them (the test above).
+     */
+    @Test
+    fun aRoomPostThatWasOnlyAVoiceNoteKeepsNoRowAndIsStillAcked() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, verified = true, updatedAt = 1L)
+            val acksToAlice = recordFramesSentTo(rig, alice)
+
+            rig.deliver(alice, rig.attachmentChat(alice, id = "v1", attachmentHash = "aa".repeat(32), mime = VoiceAudio.MIME))
+            rig.deliver(alice, rig.attachmentChat(alice, id = "p1", attachmentHash = "bb".repeat(32), mime = "image/jpeg"))
+            advanceUntilIdle()
+
+            assertNull(rig.msgMap["v1"])
+            assertNotNull("the control lands", rig.msgMap["p1"])
+            assertTrue(
+                "the dropped post's tick never went back",
+                acksToAlice.any { it.type == FrameType.RECEIPT && WireCodec.decodePayload<ReceiptContent>(it.payload)?.ackId == "v1" },
+            )
+            // The dropped note never reaches the shade, and is never pulled; the stripped attachment alone also holds
+            // these two, so they guard against the strip regressing rather than proving the row is gone.
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.blobExchange.want("aa".repeat(32), any(), any(), any(), any(), any(), any(), any(), any()) }
+        }
+
+    /** A carrier never pulls the voice note a room post names: no row on any Knit will want it (RoomAttachments). */
+    @Test
+    fun aCarriedRoomPostsVoiceNoteIsNeverPulled() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+
+            rig.pipeline.onCarriedFrame(rig.attachmentChat(alice, id = "a1", attachmentHash = "note", mime = "audio/aac"))
+            rig.pipeline.onCarriedFrame(rig.attachmentChat(alice, id = "a2", attachmentHash = "pic", mime = "image/jpeg"))
+
+            coVerify(exactly = 0) { rig.blobExchange.want("note", any(), any(), any(), any(), any(), any(), any(), any()) }
+            coVerify { rig.blobExchange.want("pic", alice.nodeId, null, null, until = null, untilKnown = any()) }
         }
 
     @Test
