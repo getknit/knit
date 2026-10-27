@@ -17,6 +17,10 @@ import kotlin.random.Random
 class FakeLinkNet(
     private val loss: Double = 0.0,
     private val random: Random = Random(1),
+    // A NAT forgets a mapping this long after the last datagram out through it (RFC 4787's mapping timer, refreshed by
+    // outbound traffic only); null, never. Needs [clock].
+    private val mappingTtlMs: Long? = null,
+    private val clock: () -> Long = { 0L },
 ) {
     /** How a phone's IPv4 NAT maps and filters (RFC 4787's terms). */
     enum class Nat {
@@ -39,6 +43,7 @@ class FakeLinkNet(
     ) {
         var nextPort = 40_000
         val mappings = HashMap<String, Int>() // key → external port
+        val lastOut = HashMap<Int, Long>() // external port → last datagram out
         val inbound = HashMap<Int, Pair<FakePort, String>>() // external port → (port, mapping key)
         val permitted = HashSet<String>() // "extPort|addr" or "extPort|addr|port"
     }
@@ -144,7 +149,7 @@ class FakeLinkNet(
             if (gateway.kind == Nat.NONE) {
                 ports.firstOrNull { it.gateway === gateway && it.localPort == port }
             } else {
-                gateway.inbound[port]?.takeIf { admits(gateway, port, srcAddr, srcPort) }?.first
+                gateway.inbound[port]?.takeIf { !expired(gateway, port) && admits(gateway, port, srcAddr, srcPort) }?.first
             }
         to?.let { deliver(it, Datagram(data, srcAddr, srcPort)) }
         return true
@@ -160,12 +165,23 @@ class FakeLinkNet(
         val gateway = from.gateway
         if (gateway.kind == Nat.NONE) return gateway.external to from.localPort
         val key = if (gateway.kind == Nat.SYMMETRIC) "${from.localPort}|${hex(address)}|$port" else "${from.localPort}"
+        gateway.mappings[key]?.takeIf { expired(gateway, it) }?.let { stale ->
+            gateway.mappings.remove(key)
+            gateway.inbound.remove(stale)
+            gateway.permitted.removeAll { it.startsWith("$stale|") }
+        }
         val external = gateway.mappings.getOrPut(key) { gateway.nextPort++ }
+        gateway.lastOut[external] = clock()
         gateway.inbound[external] = from to key
         gateway.permitted += "$external|${hex(address)}"
         gateway.permitted += "$external|${hex(address)}|$port"
         return gateway.external to external
     }
+
+    private fun expired(
+        gateway: Nat4,
+        external: Int,
+    ): Boolean = mappingTtlMs != null && clock() - (gateway.lastOut[external] ?: Long.MIN_VALUE / 2) >= mappingTtlMs
 
     private fun admits(
         gateway: Nat4,

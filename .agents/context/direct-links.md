@@ -13,7 +13,12 @@ and the entry is fixed.
   `LinkDatagrams`), `net/AndroidLinkDatagrams`, `AndroidInternetGate.ownAddresses`, `di/DirectLinkWiring`
   (`DIRECT_LINKS_WIRED`, `DIRECT_LINK_CAPABILITIES`), `Protocol.CAP_INET_LINK` or `BuildConfig.DIRECT_LINKS`:** READ ADR
   2026-10.a5yj and `docs/DIRECT_LINKS.md`. Contacts only, an opt-in, on demand, never standing; UDP with IPv6 first and no
-  TURN — a punch that finds no path gives up in ten seconds and the frames keep riding the spool. A peer's candidates
+  TURN — a punch that finds no path gives up in ten seconds and the frames keep riding the spool. No standing keepalive
+  (the a5yj 2026-10-27 amendment): `LinkSession.IDLE_MS` closes an idle link, and only a held one
+  (`DirectLinks.hold`, a live session) sends `HOLD_KEEPALIVE_MS` keepalives — don't add a keepalive back without new
+  mapping-life measurements. A contact is answered as often as it uses the links; only answers that came to nothing
+  (no path, or a link that carried no data) are budgeted, `DirectLinks.EMPTY_ANSWERS_PER_HOUR` per contact — never a
+  flat answer cap, which would starve a busy chat now that idle links close — and a blocked contact is never answered. A peer's candidates
   are checked before anything is sent to them (`PunchPolicy.sane`, at most eight), the reflexive address is learnt on
   the very socket that punches, and a field-log line names a candidate's kind, never its address.
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`

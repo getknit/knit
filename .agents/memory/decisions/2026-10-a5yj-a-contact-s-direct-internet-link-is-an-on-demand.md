@@ -186,3 +186,21 @@ after the open (counted `LINK_STALE`), and an ANSWER is judged by its link id al
 failed open is never reset evidence (`onRatchetFailure(authenticated = false)`): a reset racing an OFFER leaves it
 unreadable as a matter of course. Whether this person wrote to or verified the contact is the offerer's consent rule,
 asked by the link layer before it offers, never at receipt, so the rule cannot differ between the two ends.
+
+## Amendment 2026-10-27 — no standing keepalive
+
+**A link sends no keepalive; it closes when idle, and only a held link keeps itself alive.** The text above sized the
+cost of keeping a NAT mapping as "a keepalive every 15–30 s". Measured on two lab phones with the keepalive switched off
+(`…debug.LINK --es op quiet` + `gaps`: after each idle gap, one echo out, then an echo asked of the peer after the same
+silence on both ends), an idle path lived far longer: cellular ↔ home Wi-Fi over IPv6 survived 2 min both ways and was
+dead at 4 min (the home router's IPv6 firewall), and cellular ↔ cellular (T-Mobile, IPv6) survived every gap up to
+4 min. From 60 s of silence the first datagram came about 2 s late: the modem waking, not a lost path. The IPv4 path
+(home NAT ↔ NAT64) was not measured; both runs came up over IPv6.
+
+So a link that has carried no DATA either way for 60 s closes with a BYE (`LinkSession.IDLE_MS`), well inside the
+shortest life measured, and nothing needs a keepalive while there is work: the work refreshes the mappings, and the
+stream's own acks show a dead path. A live session that must outlast its pauses — a walkie, whose next burst cannot
+wait out a fresh punch — **holds** its link (`DirectLinks.hold`): a keepalive after 90 s with nothing sent, under the
+2 min the home router kept, and an end after 200 s hearing nothing. That is a quarter of the modem wake-ups a 20 s
+keepalive costs, and only while the session is open. The keepalive battery trial the text above owed is replaced by
+these measurements; the IPv4 path's mapping life is still owed before the numbers are relied on everywhere.

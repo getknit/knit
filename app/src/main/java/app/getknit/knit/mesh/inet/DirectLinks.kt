@@ -99,8 +99,12 @@ fun interface LaneKeys {
  * opens binds it; a retry is a new link id with fresh keys, never this one again (the lane's nonce rule). Two offers
  * that cross are settled by the node ids: the lower id's offer stands and the other side answers it. A contact that
  * does not answer within [ANSWER_WAIT_MS], or whose punch finds no path, waits [PunchPolicy.backoffMs] before the next
- * attempt; a contact may make this phone answer at most [ANSWERS_PER_HOUR] times an hour, so its offers cannot keep the
- * modem awake. Nothing here runs while [enabled] says no.
+ * attempt. A contact's offers are answered as often as it uses the links they make: what is budgeted is an answer that
+ * came to nothing — a punch that found no path, or a link that closed without carrying any data — at most
+ * [EMPTY_ANSWERS_PER_HOUR] an hour per contact, so a contact cannot keep this phone's modem waking for nothing, while one
+ * that writes many times an hour is answered every time. One answer per contact is in flight at once. A contact this
+ * person does not want to hear from is blocked: its signals are dropped unopened (`InboundPipeline`), never answered.
+ * Nothing here runs while [enabled] says no.
  */
 class DirectLinks(
     private val selfId: suspend () -> String,
@@ -123,7 +127,10 @@ class DirectLinks(
     private val attempts = ConcurrentHashMap<String, Attempt>()
     private val failures = ConcurrentHashMap<String, Int>()
     private val nextTryAt = ConcurrentHashMap<String, Long>()
-    private val answered = ConcurrentHashMap<String, MutableList<Long>>()
+
+    // Per contact: when each answer that came to nothing ended, and whether an answer to it is in flight now.
+    private val empties = ConcurrentHashMap<String, MutableList<Long>>()
+    private val answering: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** One attempt's result as its `link_try` line has it, kept per peer for the debug bridge and Diagnostics. */
     class Try(
@@ -140,6 +147,65 @@ class DirectLinks(
 
     /** The last attempt with each peer, offered or answered. */
     fun lastTries(): Map<String, Try> = HashMap(lastTries)
+
+    /**
+     * Debug-only (the gap measurement): links made while this is set never idle out or close for silence, and send no
+     * keepalive, so an idle gap is idle on the wire. Memory only; a restart clears it. Both ends must set it before the
+     * link is made.
+     */
+    @Volatile
+    var quiet: Boolean = false
+
+    /** One gap of [measureGaps]: the outbound echo's round trip and the asked-for inbound echo's arrival, null when lost. */
+    class Gap(
+        val gapMs: Long,
+        val outRttMs: Long?,
+        val inMs: Long?,
+        val roamed: Boolean,
+    )
+
+    private val gaps = java.util.concurrent.CopyOnWriteArrayList<Gap>()
+
+    @Volatile
+    private var measuring = false
+
+    /** The gaps measured so far, and whether a measurement is still running. */
+    fun gaps(): Pair<List<Gap>, Boolean> = gaps.toList() to measuring
+
+    /**
+     * Measures how long the up link to [peerId] survives silence (debug builds; ADR 2026-10.a5yj's keepalive question).
+     * For each gap in [gapsMs], in order: nothing for the gap, then one echo out (does the peer's side still admit us?),
+     * then one echo asked of the peer after the same silence on both ends (does ours still admit it?). Runs on its own;
+     * [gaps] reads the results. False when no quiet link to [peerId] is up, or a measurement is already running.
+     */
+    fun measureGaps(
+        peerId: String,
+        gapsMs: List<Long>,
+    ): Boolean {
+        val session = links.value[peerId]?.takeIf { it.state.value == LinkSession.State.UP } ?: return false
+        if (!quiet || measuring) return false
+        measuring = true
+        gaps.clear()
+        scope.launch {
+            try {
+                for (gap in gapsMs) {
+                    kotlinx.coroutines.delay(gap)
+                    val out = session.echo(ECHO_WAIT_MS)
+                    val inbound = session.echoAfter(gap, ECHO_WAIT_MS)
+                    gaps += Gap(gap, out, inbound?.first?.minus(gap), inbound?.second == true)
+                    log(
+                        "link gap ${gap / SECOND_MS}s out=${out ?: "lost"} in=${inbound?.first?.minus(
+                            gap,
+                        ) ?: "lost"} roamed=${inbound?.second}",
+                    )
+                    if (session.state.value != LinkSession.State.UP) break
+                }
+            } finally {
+                measuring = false
+            }
+        }
+        return true
+    }
 
     private val _links = MutableStateFlow<Map<String, LinkSession>>(emptyMap())
 
@@ -207,6 +273,19 @@ class DirectLinks(
         }
     }
 
+    /**
+     * Holds the up link to [peerId] through idle pauses (a live session such as a walkie: keepalives every
+     * [LinkSession.HOLD_KEEPALIVE_MS] instead of an idle close), or releases it to idle out. False when none is up.
+     */
+    fun hold(
+        peerId: String,
+        on: Boolean,
+    ): Boolean {
+        val session = links.value[peerId]?.takeIf { it.state.value == LinkSession.State.UP } ?: return false
+        session.hold(on)
+        return true
+    }
+
     /** Closes the link to [peerId], if one is up, with a BYE. */
     fun close(peerId: String) {
         links.value[peerId]?.close()
@@ -233,8 +312,20 @@ class DirectLinks(
         // Two offers crossed: the lower id's stands. Ours stands — theirs is dropped, and they answer ours.
         val ours = attempts[offererId]
         if (ours != null && selfId() < offererId) return
-        if (!spendAnswer(offererId)) return
-        ours?.answer?.complete(null)
+        if (!mayAnswer(offererId) || !answering.add(offererId)) return
+        try {
+            ours?.answer?.complete(null)
+            answerNow(offererId, offer)
+        } finally {
+            answering.remove(offererId)
+        }
+    }
+
+    // The answer itself, once [answer] has let it through: gather, derive, start punching, cast the ANSWER, run.
+    private suspend fun answerNow(
+        offererId: String,
+        offer: LinkSignal,
+    ) {
         links.value[offererId]?.close(LinkSession.EndReason.LOCAL, sayBye = false)
         val started = clock()
         val port = datagrams.open() ?: return
@@ -269,7 +360,8 @@ class DirectLinks(
         val lane = LinkLane(send, recv, LinkLane.aad(linkId, selfId(), peerId))
         send.fill(0)
         recv.fill(0)
-        return LinkSession(peerId, port, lane, targets, scope, clock)
+        if (!quiet) return LinkSession(peerId, port, lane, targets, scope, clock)
+        return LinkSession(peerId, port, lane, targets, scope, clock, idleMs = FOREVER_MS, silenceMs = FOREVER_MS)
     }
 
     // Punches, records the try, and on success holds the link in [links] until it closes, then records its end.
@@ -287,6 +379,7 @@ class DirectLinks(
         val outcome = session.awaitOutcome()
         if (outcome !is LinkSession.Outcome.Up) {
             record(peerId, offerer, LinkOutcome.NO_PATH, null, peerNet, clock() - startedAt, own)
+            if (!offerer) noteEmpty(peerId)
             return LinkOutcome.NO_PATH
         }
         val path = outcome.kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
@@ -300,6 +393,7 @@ class DirectLinks(
             val reason = session.endReason ?: LinkSession.EndReason.LOCAL
             log("link end ${peerId.take(SHORT)} $reason after ${clock() - upAt}ms in=$bytesIn out=$bytesOut")
             fieldLog.record(FieldEvent.LinkEnd(peerId, offerer, reason, clock() - upAt, bytesIn, bytesOut))
+            if (!offerer && !session.carriedData) noteEmpty(peerId)
         }
         return LinkOutcome.UP
     }
@@ -327,16 +421,19 @@ class DirectLinks(
         return outcome
     }
 
-    // At most [ANSWERS_PER_HOUR] answers to one contact in any hour.
-    private fun spendAnswer(peerId: String): Boolean {
+    // Whether [peerId]'s answers that came to nothing in the last hour leave room for one more.
+    private fun mayAnswer(peerId: String): Boolean {
+        val times = empties[peerId] ?: return true
         val now = clock()
-        val times = answered.getOrPut(peerId) { mutableListOf() }
         synchronized(times) {
             times.removeAll { now - it >= HOUR_MS }
-            if (times.size >= ANSWERS_PER_HOUR) return false
-            times += now
-            return true
+            return times.size < EMPTY_ANSWERS_PER_HOUR
         }
+    }
+
+    private fun noteEmpty(peerId: String) {
+        val times = empties.getOrPut(peerId) { mutableListOf() }
+        synchronized(times) { times += clock() }
     }
 
     @Suppress("LongParameterList") // one argument per column of the line
@@ -389,10 +486,17 @@ class DirectLinks(
         /** How long an offer waits for its answer: two casts and the contact's gathering, with room to spare. */
         const val ANSWER_WAIT_MS = 15_000L
 
-        /** Most offers one contact may have this phone answer in an hour. */
-        const val ANSWERS_PER_HOUR = 6
+        /** Most answers to one contact in an hour that may come to nothing (no path, or a link that carried no data). */
+        const val EMPTY_ANSWERS_PER_HOUR = 6
 
         private const val HOUR_MS = 60 * 60_000L
+        private const val SECOND_MS = 1_000L
+
+        /** How long an echo's reply, or an asked-for echo past its silence, is waited for. */
+        const val ECHO_WAIT_MS = 5_000L
+
+        // A quiet link's keepalive and silence bound: never, within any trial's life.
+        private const val FOREVER_MS = 365L * 24 * 60 * 60_000L
         private const val SHORT = 6
 
         /** [cand] as a candidate this phone may send to, or null when its kind is unknown. */

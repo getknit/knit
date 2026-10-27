@@ -13,7 +13,7 @@ demand and closed when idle. It carries the pair's own traffic only (a later pha
 | Clause | Rule |
 | --- | --- |
 | **L-1-1** | A phone offers a link only to a contact with a **confirmed** DM session (`RatchetSessions.exportedRoots()` with `confirmed`, never our own unanswered reset), whom this person wrote to or verified, whose pinned profile carries `CAP_INET_LINK`. Never to itself. |
-| **L-1-2** | A phone answers an offer only while its own switch is on, from an accepted contact whose session is confirmed, and at most six times an hour per contact. An offer it does not answer gets no reply at all. |
+| **L-1-2** | A phone answers an offer only while its own switch is on, from an accepted contact whose session is confirmed and who is not blocked (a blocked contact's signal is dropped unopened). It answers a contact as often as the contact uses the links: what is budgeted is an answer that came to nothing — a punch that found no path, or a link that closed without carrying data — at most six an hour per contact, and one answer per contact is in flight at once. An offer it does not answer gets no reply at all. |
 | **L-1-3** | Nothing about a link is sent while the cast lane cannot carry it (`ScopeSync.canCast`): no seal, no ratchet step. There is no fallback to a stored frame. |
 
 ## 2. The signal
@@ -39,7 +39,7 @@ demand and closed when idle. It carries the pair's own traffic only (a later pha
 | Clause | Rule |
 | --- | --- |
 | **L-4-1** | Both ends send a PROBE to every target every 200 ms for two seconds, then every 500 ms, and answer every PROBE that opens with an ACK to its source. The link is up at the first ACK that opens. A PROBE that opens from an address the peer never listed makes that address a target. No answer in 10 s and the attempt ends; the offerer waits 1 min, doubling to 6 h, before the next, and starts over on a new default network. |
-| **L-4-2** | Each end sends to the source of the last datagram that opened (other than a PROBE once up). A keepalive goes out after 20 s with nothing sent; a link that hears nothing that opens for 65 s ends. A BYE ends it at once. |
+| **L-4-2** | Each end sends to the source of the last datagram that opened (other than a PROBE once up). A link sends no keepalive: one that has carried no DATA either way for 60 s closes with a BYE, and one that hears nothing that opens for 65 s ends. A **held** link (a live session that must outlast its pauses) instead sends a keepalive after 90 s with nothing sent and ends after 200 s hearing nothing. A BYE ends either at once. The numbers sit inside the shortest idle-path life measured (2–4 min behind a home router's IPv6 firewall; at least 4 min cellular to cellular). |
 
 ## 5. The lane
 

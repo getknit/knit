@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicLong
 
@@ -28,9 +29,13 @@ import java.util.concurrent.atomic.AtomicLong
  * told about — so a NAT that rebinds the peer's port, or a peer that answered from an address it never listed, is
  * followed at once, and only an authenticated datagram can move it.
  *
- * **Liveness.** A keepalive goes out after [keepaliveMs] with nothing sent, which holds the NAT mappings on both
- * paths open; a link that hears nothing that opens for [silenceMs] ends [EndReason.SILENT]. A BYE ends it at once.
- * Every datagram is one [LinkLane] seal, so the counter is shared by every path and nothing is ever sealed twice.
+ * **Liveness.** A link exists to move something, so it sends no keepalive: one that has carried no DATA either way
+ * for [idleMs] closes with a BYE ([EndReason.IDLE]), well inside the shortest idle-path life measured (2–4 min behind a
+ * home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive amendment), and one that hears nothing that opens for
+ * [silenceMs] while it sends ends [EndReason.SILENT]. A **held** link ([hold]: a live session, such as a walkie, that
+ * must outlast its pauses) does not idle out: it sends a keepalive after [holdKeepaliveMs] with nothing sent and ends
+ * after [holdSilenceMs] hearing nothing. A BYE ends either at once. Every datagram is one [LinkLane] seal, so the
+ * counter is shared by every path and nothing is ever sealed twice.
  */
 class LinkSession(
     val peerId: String,
@@ -39,8 +44,10 @@ class LinkSession(
     private val targets: List<LinkCandidate>,
     private val scope: CoroutineScope,
     private val clock: () -> Long,
-    private val keepaliveMs: Long = KEEPALIVE_MS,
+    private val idleMs: Long = IDLE_MS,
     private val silenceMs: Long = SILENCE_MS,
+    private val holdKeepaliveMs: Long = HOLD_KEEPALIVE_MS,
+    private val holdSilenceMs: Long = HOLD_SILENCE_MS,
     private val onData: (ByteArray) -> Unit = {},
     private val random: java.util.Random = SecureRandom(),
 ) {
@@ -48,7 +55,7 @@ class LinkSession(
     enum class State { PUNCHING, UP, CLOSED }
 
     /** Why a session closed. */
-    enum class EndReason { NO_PATH, SILENT, BYE, LOCAL }
+    enum class EndReason { NO_PATH, IDLE, SILENT, BYE, LOCAL }
 
     /** How the punch went: up through a target of [kind] (null: an address the peer never listed), or not. */
     sealed interface Outcome {
@@ -86,8 +93,22 @@ class LinkSession(
 
     @Volatile private var lastSent = started
 
+    // The last DATA either way, or the moment the link came up: what an idle close counts from.
+    @Volatile private var lastData = started
+
+    @Volatile private var held = false
+
+    /** Whether any DATA crossed either way: a link that closes without it was answered for nothing. */
+    @Volatile
+    var carriedData = false
+        private set
+
     // Peer-reflexive targets: sources of PROBEs that opened but match no listed target. Bounded like the list itself.
     private val learnt = java.util.concurrent.CopyOnWriteArrayList<Pair<ByteArray, Int>>()
+
+    // The gap measurement's pending echoes: replies to ours by nonce, and the peer's asked-for echoes by nonce.
+    private val echoes = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<Long>>()
+    private val asked = java.util.concurrent.ConcurrentHashMap<Long, CompletableDeferred<Pair<Long, Boolean>>>()
 
     private val bytesIn = AtomicLong()
     private val bytesOut = AtomicLong()
@@ -105,7 +126,20 @@ class LinkSession(
     suspend fun awaitOutcome(): Outcome = outcome.await()
 
     /** Sends one data payload over the link; false when it is not up. */
-    fun sendData(payload: ByteArray): Boolean = state.value == State.UP && sendTo(endpoint, byteArrayOf(DATA) + payload)
+    fun sendData(payload: ByteArray): Boolean {
+        if (state.value != State.UP) return false
+        lastData = clock()
+        return sendTo(endpoint, byteArrayOf(DATA) + payload).also { if (it) carriedData = true }
+    }
+
+    /**
+     * Holds the link up through idle pauses, or ([on] false) lets it idle out again — counted from now, so a released
+     * link gets its whole [idleMs]. For a live session that cannot wait out a fresh punch after each pause.
+     */
+    fun hold(on: Boolean) {
+        if (!on && held) lastData = clock()
+        held = on
+    }
 
     /** Closes the session, telling the peer with a BYE when [sayBye] and the link is up. Idempotent. */
     fun close(
@@ -134,15 +168,25 @@ class LinkSession(
             learnt.forEach { probe(it) }
             delay(PunchPolicy.probeIntervalMs(elapsed))
         }
-        if (_state.value == State.UP) keepAlive()
+        if (_state.value == State.UP) watch()
     }
 
-    private suspend fun keepAlive() {
+    // The link's liveness while it is up: an idle close, or a held link's keepalive, and the silence bound of each.
+    private suspend fun watch() {
         while (scope.isActive && _state.value == State.UP) {
             val now = clock()
-            if (now - lastHeard >= silenceMs) return close(EndReason.SILENT, sayBye = false)
-            if (now - lastSent >= keepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
-            delay(minOf(keepaliveMs - (clock() - lastSent), silenceMs - (clock() - lastHeard)).coerceAtLeast(MIN_TICK_MS))
+            val next =
+                if (held) {
+                    if (now - lastHeard >= holdSilenceMs) return close(EndReason.SILENT, sayBye = false)
+                    if (now - lastSent >= holdKeepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
+                    minOf(holdKeepaliveMs - (clock() - lastSent), holdSilenceMs - (clock() - lastHeard))
+                } else {
+                    if (now - lastData >= idleMs) return close(EndReason.IDLE)
+                    if (now - lastHeard >= silenceMs) return close(EndReason.SILENT, sayBye = false)
+                    minOf(idleMs - (now - lastData), silenceMs - (now - lastHeard))
+                }
+            // Never past [MAX_TICK_MS], so a hold taken or released mid-wait is acted on promptly.
+            delay(next.coerceIn(MIN_TICK_MS, MAX_TICK_MS))
         }
     }
 
@@ -176,14 +220,85 @@ class LinkSession(
             }
 
             DATA -> {
-                if (_state.value == State.UP) onData(plain.copyOfRange(1, plain.size))
+                if (_state.value == State.UP) {
+                    lastData = clock()
+                    carriedData = true
+                    onData(plain.copyOfRange(1, plain.size))
+                }
             }
 
-            // A keepalive, or a type a later version sends.
-            else -> {}
+            // An echo of the gap measurement, a keepalive, or a type a later version sends.
+            else -> {
+                takeEcho(plain, from)
+            }
         }
         // A late PROBE from a candidate the peer is still trying says nothing about the path it settled on.
         if (_state.value == State.UP && plain[0] != PROBE) endpoint = from
+    }
+
+    // The gap measurement's three types (debug builds only drive them; any build answers an ECHO). An ECHO from the peer
+    // is answered at once and, when this end asked for it, noted with whether it came from another address than the
+    // path's — a NAT that rebound the peer's port while it was silent.
+    private fun takeEcho(
+        plain: ByteArray,
+        from: Pair<ByteArray, Int>,
+    ) {
+        if (_state.value != State.UP) return
+        when (plain[0]) {
+            ECHO -> {
+                if (plain.size != 1 + Long.SIZE_BYTES) return
+                val nonce = bytesLong(plain, 1)
+                val roamed = endpoint?.let { !it.first.contentEquals(from.first) || it.second != from.second } ?: false
+                sendTo(from, byteArrayOf(ECHO_REPLY) + longBytes(nonce))
+                asked.remove(nonce)?.complete(clock() to roamed)
+            }
+
+            ECHO_REPLY -> {
+                if (plain.size == 1 + Long.SIZE_BYTES) echoes.remove(bytesLong(plain, 1))?.complete(clock())
+            }
+
+            ECHO_AFTER -> {
+                if (plain.size != 1 + 2 * Long.SIZE_BYTES) return
+                val delayMs = bytesLong(plain, 1).coerceIn(0L, MAX_ECHO_DELAY_MS)
+                val nonce = bytesLong(plain, 1 + Long.SIZE_BYTES)
+                scope.launch {
+                    delay(delayMs)
+                    if (_state.value == State.UP) sendTo(endpoint, byteArrayOf(ECHO) + longBytes(nonce))
+                }
+            }
+        }
+    }
+
+    /**
+     * The gap measurement's outbound half: one ECHO to the peer now, and the round trip of its reply, or null when none
+     * came within [timeoutMs]. After an idle gap, a reply says the peer's side still admits this end's datagrams.
+     */
+    suspend fun echo(timeoutMs: Long): Long? {
+        val nonce = random.nextLong()
+        val reply = CompletableDeferred<Long>()
+        echoes[nonce] = reply
+        val sentAt = clock()
+        if (!sendTo(endpoint, byteArrayOf(ECHO) + longBytes(nonce))) return null.also { echoes.remove(nonce) }
+        return withTimeoutOrNull(timeoutMs) { reply.await() - sentAt }.also { echoes.remove(nonce) }
+    }
+
+    /**
+     * The gap measurement's inbound half: asks the peer to stay silent [delayMs] and then send an ECHO, and waits up to
+     * [delayMs] + [graceMs] for it. Its arrival (when, and whether from a new address) says this end's side still admitted
+     * the peer after [delayMs] in which this end sent nothing — the caller must send nothing meanwhile either.
+     */
+    suspend fun echoAfter(
+        delayMs: Long,
+        graceMs: Long,
+    ): Pair<Long, Boolean>? {
+        val nonce = random.nextLong()
+        val heard = CompletableDeferred<Pair<Long, Boolean>>()
+        asked[nonce] = heard
+        val sentAt = clock()
+        if (!sendTo(endpoint, byteArrayOf(ECHO_AFTER) + longBytes(delayMs) + longBytes(nonce))) return null.also { asked.remove(nonce) }
+        val got = withTimeoutOrNull(delayMs + graceMs) { heard.await() }
+        asked.remove(nonce)
+        return got?.let { (at, roamed) -> (at - sentAt) to roamed }
     }
 
     private fun probe(to: Pair<ByteArray, Int>) {
@@ -210,6 +325,7 @@ class LinkSession(
         synchronized(stateLock) {
             if (_state.value != State.PUNCHING) return
             endpoint = from
+            lastData = clock()
             _state.value = State.UP
         }
         val kind = targets.firstOrNull { it.address.contentEquals(from.first) && it.port == from.second }?.kind
@@ -229,20 +345,34 @@ class LinkSession(
     }
 
     companion object {
-        /** A keepalive after this long with nothing sent: inside the 30 s a cellular NAT is known to hold a mapping. */
-        const val KEEPALIVE_MS = 20_000L
+        /** A link that has carried no DATA either way for this long closes: well inside the 2 min an idle path lived. */
+        const val IDLE_MS = 60_000L
 
-        /** A link that hears nothing for this long is gone. */
+        /** A link that sends but hears nothing for this long is gone. */
         const val SILENCE_MS = 65_000L
+
+        /** A held link's keepalive after this long with nothing sent: under the 2–4 min a home router held an idle path. */
+        const val HOLD_KEEPALIVE_MS = 90_000L
+
+        /** A held link that hears nothing for this long — two of the peer's keepalives missed — is gone. */
+        const val HOLD_SILENCE_MS = 200_000L
 
         private const val RECEIVE_SLICE_MS = 1_000
         private const val MIN_TICK_MS = 250L
+        private const val MAX_TICK_MS = 5_000L
 
         private const val PROBE: Byte = 1
         private const val ACK: Byte = 2
         private const val KEEPALIVE: Byte = 3
         private const val BYE: Byte = 4
         private const val DATA: Byte = 5
+
+        // The gap measurement (debug builds drive it; `DirectLinks.measureGaps`): an echo, its reply, and an echo asked
+        // for after a silence. The longest silence one may ask for, so a stray request cannot park a sender for long.
+        private const val ECHO: Byte = 6
+        private const val ECHO_REPLY: Byte = 7
+        private const val ECHO_AFTER: Byte = 8
+        private const val MAX_ECHO_DELAY_MS = 10 * 60_000L
 
         private const val BITS = 8
         private const val BYTE_MASK = 0xFFL

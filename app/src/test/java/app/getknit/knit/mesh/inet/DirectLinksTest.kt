@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -179,12 +180,49 @@ class DirectLinksTest {
         }
 
     @Test
-    fun aContactCannotMakeThisPhoneAnswerMoreThanItsHourlyBudget() =
+    fun aContactWhosePunchesFindNoPathIsAnsweredAtMostItsEmptyBudgetAnHour() =
         runTest {
             val net = FakeLinkNet().withStun()
             val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
-            repeat(DirectLinks.ANSWERS_PER_HOUR + 2) { a.links.offer(b.id, force = true) }
-            assertEquals(DirectLinks.ANSWERS_PER_HOUR, tries(b).size)
+            repeat(DirectLinks.EMPTY_ANSWERS_PER_HOUR + 2) { a.links.offer(b.id, force = true) }
+            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, tries(b).size)
+        }
+
+    @Test
+    fun aContactWhoseLinksCarryDataIsAnsweredEveryTime() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            val links = DirectLinks.EMPTY_ANSWERS_PER_HOUR + 3
+            repeat(links) {
+                assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
+                b.links.links.first { a.id in it }
+                assertTrue(
+                    a.links.links.value
+                        .getValue(b.id)
+                        .sendData(byteArrayOf(it.toByte())),
+                )
+                a.links.close(b.id)
+                b.links.links.first { a.id !in it }
+            }
+            assertEquals(links, tries(b).count { it.outcome == LinkOutcome.UP })
+        }
+
+    @Test
+    fun linksThatCarryNothingCountLikeFailedPunchesAndAnHourLaterAreAnsweredAgain() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            repeat(DirectLinks.EMPTY_ANSWERS_PER_HOUR) {
+                assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
+                b.links.links.first { a.id in it }
+                a.links.close(b.id)
+                b.links.links.first { a.id !in it }
+            }
+            assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id, force = true))
+            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, tries(b).size)
+            testScheduler.advanceTimeBy(60 * 60_000L)
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
         }
 
     @Test
@@ -213,6 +251,46 @@ class DirectLinksTest {
                     .reason,
             )
         }
+
+    @Test
+    fun aQuietLinkReportsEachGapItSurvivedAndTheFirstItDidNot() =
+        runTest {
+            // NATs that forget a mapping 45 s after the last datagram out through it.
+            val net = FakeLinkNet(mappingTtlMs = 45_000L, clock = { testScheduler.currentTime }).withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            a.links.quiet = true
+            b.links.quiet = true
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            // With b's link up, the quiet guard is the only one left to refuse it.
+            b.links.quiet = false
+            assertFalse("only a quiet link is measured", b.links.measureGaps(a.id, listOf(1_000L)))
+            b.links.quiet = true
+            assertTrue(a.links.measureGaps(b.id, listOf(30_000L, 60_000L)))
+            assertFalse("one measurement at a time", a.links.measureGaps(b.id, listOf(1_000L)))
+
+            val done = withTimeout(10 * 60_000L) { a.links.awaitGaps() }
+            val (thirty, sixty) = done
+            assertEquals(30_000L, thirty.gapMs)
+            assertTrue("30 s of silence is inside the mapping's life both ways", thirty.outRttMs != null && thirty.inMs != null)
+            assertFalse(thirty.roamed)
+            assertEquals(60_000L, sixty.gapMs)
+            assertEquals("past it, the peer's NAT dropped our echo", null, sixty.outRttMs)
+            assertEquals("and the request for its echo with it", null, sixty.inMs)
+            // Quiet: nothing idled out, sent a keepalive or closed for silence.
+            assertEquals(
+                LinkSession.State.UP,
+                a.links.links.value
+                    .getValue(b.id)
+                    .state.value,
+            )
+        }
+
+    // Waits for a running gap measurement to end, and returns its gaps.
+    private suspend fun DirectLinks.awaitGaps(): List<DirectLinks.Gap> {
+        while (gaps().second) delay(1_000L)
+        return gaps().first
+    }
 
     private companion object {
         const val CAST_MS = 300L

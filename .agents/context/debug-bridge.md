@@ -304,7 +304,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     launch, on demand — the way to prove a leftover is gone without waiting out a restart.
 - `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj, the Phase 0 spike; a debug build with
   `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
-  `--es op try --es peer <nodeId>` offers that contact a link now, past its backoff, and answers once the attempt ends
+  `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (a 90 s keepalive instead
+  of the 60 s idle close) or releases it; `--es op try --es peer <nodeId>` offers that contact a link now, past its
+  backoff, and answers once the attempt ends
   with `outcome` (UP / NO_PATH / NO_ANSWER / NO_CAST / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED); `--es op close --es peer
   <nodeId>` closes one with a BYE; no op reads state. Every reply carries `enabled`, `links` (peer, state, datagram
   bytes `in`/`out`) and `tries` (the last attempt with each peer: `out` when this phone offered, `outcome`, `path`
@@ -312,7 +314,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   for a trial is `tries` on both phones plus their `link_try` / `link_end` field-log lines. Both phones need the switch
   on, a confirmed DM session, a connected spool that carries casts, and each other's `CAP_INET_LINK`; a `try` that
   answers NOT_QUALIFIED or NO_CAST names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
-  after 15 s, and the answerer's `tries` stays empty.
+  after 15 s, and the answerer's `tries` stays empty. **How long an idle path lives** (the keepalive question): `--es op
+  quiet --ez on true` on **both** phones before the link is made (memory only; links made after it never idle out, send
+  no keepalive and never close for silence), `try`, then `--es op gaps --es peer <nodeId> [--es gaps 15,30,60,120,240]` (seconds) on the
+  offerer. Per gap it stays silent for the gap, sends one echo (`outRtt`: the peer's side still admits us; null = lost),
+  then asks the peer to echo after the same silence on both ends (`inMs`: past the gap; null = our side dropped it;
+  `roamed`: it came from a new port — a NAT rebound the peer). It runs on its own: read `gaps` and `measuring` with a bare
+  `LINK`. Close the link and `quiet --ez on false` afterwards.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
   `BuildConfig.LIVE_CALLS` / `MESH_CALLS`; `op capture` and `op dropgroup` need live calls;
   `docs/VOICE_CALLS.md`). `--es op state` (the default) dumps the call, its phase, `reason` and the selected

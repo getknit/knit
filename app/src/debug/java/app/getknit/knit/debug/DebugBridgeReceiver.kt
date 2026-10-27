@@ -1817,8 +1817,11 @@ class DebugBridgeReceiver :
     /**
      * Direct links (ADR 2026-10.a5yj, the Phase 0 spike): `--es op on|off` flips this phone's switch, `--es op try --es
      * peer <id>` offers that contact a link now (past its backoff) and waits for the outcome, `--es op close --es peer
-     * <id>` closes one, and no op dumps the links up and the last attempt with each peer. A candidate is reported by its
-     * kind, never its address, as the field log does.
+     * <id>` closes one, `--es op hold --es peer <id> --ez on true|false` holds an up link through idle pauses (keepalives
+     * instead of the idle close), and no op dumps the links up and the last attempt with each peer. A candidate is reported by its
+     * kind, never its address, as the field log does. The keepalive question's measurement: `--es op quiet --ez on
+     * true|false` on both phones before a link is made (no keepalive, no silence close), then `--es op gaps --es peer <id>
+     * [--es gaps 15,30,60,120,240]` on one; `gaps` in the reply fills in as each gap ends.
      */
     private suspend fun handleLink(intent: Intent): JSONObject {
         val links = getKoin().getOrNull<DirectLinks>() ?: return reply("error", "this build wires no direct links")
@@ -1840,6 +1843,30 @@ class DebugBridgeReceiver :
                     peer ?: return reply("error", "--es peer <nodeId> required")
                     links.close(peer)
                     reply("ok", "closed")
+                }
+
+                "hold" -> {
+                    peer ?: return reply("error", "--es peer <nodeId> required")
+                    val on = intent.getBooleanExtra("on", true)
+                    if (links.hold(peer, on)) reply("ok", if (on) "held" else "released") else reply("error", "no link up to $peer")
+                }
+
+                "quiet" -> {
+                    links.quiet = intent.getBooleanExtra("on", true)
+                    reply("ok", "links made from now ${if (links.quiet) "never idle out" else "idle out"}")
+                }
+
+                "gaps" -> {
+                    peer ?: return reply("error", "--es peer <nodeId> required")
+                    val gapsMs =
+                        (intent.getStringExtra("gaps") ?: "15,30,60,120,240")
+                            .split(',')
+                            .mapNotNull { it.trim().toLongOrNull()?.times(1_000L) }
+                    if (links.measureGaps(peer, gapsMs)) {
+                        reply("ok", "measuring ${gapsMs.map { it / 1_000L }} s gaps")
+                    } else {
+                        reply("error", "no quiet link up to $peer, or a measurement already running")
+                    }
                 }
 
                 else -> {
@@ -1871,7 +1898,24 @@ class DebugBridgeReceiver :
                     .put("rtt", t.rttMs ?: JSONObject.NULL),
             )
         }
-        return reply.put("enabled", settings.directLinksEnabled.first()).put("links", up).put("tries", tries)
+        val (gaps, measuring) = links.gaps()
+        val gapJson = JSONArray()
+        gaps.forEach { g ->
+            gapJson.put(
+                JSONObject()
+                    .put("gapS", g.gapMs / 1_000L)
+                    .put("outRtt", g.outRttMs ?: JSONObject.NULL)
+                    .put("inMs", g.inMs ?: JSONObject.NULL)
+                    .put("roamed", g.roamed),
+            )
+        }
+        return reply
+            .put("enabled", settings.directLinksEnabled.first())
+            .put("quiet", links.quiet)
+            .put("links", up)
+            .put("tries", tries)
+            .put("gaps", gapJson)
+            .put("measuring", measuring)
     }
 
     /**

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -36,7 +37,6 @@ class LinkSessionTest {
         aSide: LinkDatagrams,
         bSide: LinkDatagrams,
         scope: CoroutineScope = backgroundScope,
-        silenceMs: Long = LinkSession.SILENCE_MS,
         onDataB: (ByteArray) -> Unit = {},
     ): Pair {
         net.stunServer("stun.example", stunAt)
@@ -58,7 +58,6 @@ class LinkSessionTest {
                 PunchPolicy.targets(bCands, localV6 = true, localV4 = true),
                 scope,
                 clock,
-                silenceMs = silenceMs,
             )
         val b =
             LinkSession(
@@ -68,7 +67,6 @@ class LinkSessionTest {
                 PunchPolicy.targets(aCands, localV6 = true, localV4 = true),
                 scope,
                 clock,
-                silenceMs = silenceMs,
                 onData = onDataB,
             )
         a.start()
@@ -155,31 +153,119 @@ class LinkSessionTest {
         }
 
     @Test
-    fun keepalivesHoldAnIdleLinkAndAByeEndsBothEnds() =
+    fun anIdleLinkSendsNothingAndClosesAfterAMinuteWithABye() =
         runTest {
             val net = FakeLinkNet()
             val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
-            // Five minutes with nothing to say: the keepalives alone keep both ends up.
-            testScheduler.advanceTimeBy(5 * 60_000L)
+            val sent = pair.a.bytes().second
+            testScheduler.advanceTimeBy(LinkSession.IDLE_MS - 5_000L)
             assertEquals(State.UP, pair.a.state.value)
-            assertEquals(State.UP, pair.b.state.value)
-            pair.a.close()
+            assertEquals("no keepalive while idle", sent, pair.a.bytes().second)
+            pair.a.state.first { it == State.CLOSED }
             pair.b.state.first { it == State.CLOSED }
-            assertEquals(EndReason.BYE, pair.b.endReason)
+            // Whichever end idles out first says so with a BYE, which closes the other.
+            val reasons = setOf(pair.a.endReason, pair.b.endReason)
+            assertTrue("$reasons", EndReason.IDLE in reasons && reasons.all { it == EndReason.IDLE || it == EndReason.BYE })
         }
 
     @Test
-    fun aPeerThatVanishesEndsTheLinkSilent() =
+    fun dataKeepsALinkFromIdlingOutAndItsEndStartsTheMinute() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            // Both ways, as a stream's data and its acks go: a sender that hears nothing back for a while is on a dead path.
+            repeat(6) {
+                testScheduler.advanceTimeBy(30_000L)
+                assertTrue(pair.a.sendData(byteArrayOf(it.toByte())))
+                assertTrue(pair.b.sendData(byteArrayOf(it.toByte())))
+            }
+            val lastData = testScheduler.currentTime
+            assertEquals(State.UP, pair.a.state.value)
+            assertEquals(State.UP, pair.b.state.value)
+            pair.a.state.first { it == State.CLOSED }
+            val idledAt = testScheduler.currentTime - lastData
+            assertTrue("closed ${idledAt}ms after the last data", idledAt in LinkSession.IDLE_MS..LinkSession.IDLE_MS + 6_000L)
+        }
+
+    @Test
+    fun aLinkThatSendsButHearsNothingBackEndsSilent() =
         runTest {
             val net = FakeLinkNet()
             val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
             pair.b.close(sayBye = false)
+            // Data keeps the link from idling out, but nothing comes back: past the silence bound it is gone.
+            while (pair.a.state.value == State.UP) {
+                pair.a.sendData(byteArrayOf(1))
+                testScheduler.advanceTimeBy(10_000L)
+            }
+            assertEquals(EndReason.SILENT, pair.a.endReason)
+        }
+
+    @Test
+    fun aHeldLinkOutlivesItsPausesOnKeepalivesThroughNatsThatForgetInTwoMinutes() =
+        runTest {
+            // NATs that forget a mapping 2 min after the last datagram out — the shortest idle-path life the lab measured.
+            val net = FakeLinkNet(mappingTtlMs = 120_000L, clock = { testScheduler.currentTime })
+            val got = mutableListOf<String>()
+            val pair =
+                link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7))) {
+                    got += String(it)
+                }
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            pair.a.hold(true)
+            pair.b.hold(true)
+            testScheduler.advanceTimeBy(10 * 60_000L)
+            assertEquals(State.UP, pair.a.state.value)
+            assertEquals(State.UP, pair.b.state.value)
+            assertTrue(pair.a.sendData("after ten minutes".toByteArray()))
+            testScheduler.advanceTimeBy(100)
+            assertEquals("the path is still open: the keepalives held both mappings", listOf("after ten minutes"), got)
+            // Released, it idles out a minute later.
+            pair.a.hold(false)
+            pair.b.hold(false)
+            pair.a.state.first { it == State.CLOSED }
+            pair.b.state.first { it == State.CLOSED }
+        }
+
+    @Test
+    fun aHeldLinkWhosePeerVanishesEndsSilent() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            pair.a.hold(true)
+            val vanishedAt = testScheduler.currentTime
+            pair.b.close(sayBye = false)
             pair.a.state.first { it == State.CLOSED }
             assertEquals(EndReason.SILENT, pair.a.endReason)
+            assertTrue(testScheduler.currentTime - vanishedAt <= LinkSession.HOLD_SILENCE_MS + 6_000L)
+        }
+
+    @Test
+    fun anEchoAskedForPastThePeersMappingLifeArrivesFromItsNewPortAndTheLinkFollowsIt() =
+        runTest {
+            // b's NAT forgets its mapping 15 s after b last sent; a sits on a public address that filters nothing. Every
+            // wait stays inside the link's own idle minute.
+            val net = FakeLinkNet(mappingTtlMs = 15_000L, clock = { testScheduler.currentTime })
+            val pair = link(net, net.phone(Nat.NONE, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            val inside = checkNotNull(pair.a.echoAfter(5_000L, graceMs = 5_000L)) { "5 s is inside b's mapping life" }
+            assertFalse("same mapping, same port", inside.second)
+            // 30 s of silence from b: its next datagram leaves on a fresh mapping, from a new port, which a still admits.
+            val (afterMs, roamed) = checkNotNull(pair.a.echoAfter(30_000L, graceMs = 5_000L)) { "a filters nothing" }
+            assertTrue("arrived ${afterMs}ms after the ask", afterMs >= 30_000L)
+            assertTrue("from the new port", roamed)
+            // a now sends to where b's echo came from, so the link goes on.
+            assertTrue(checkNotNull(pair.a.echo(5_000L)) >= 0L)
         }
 
     @Test
