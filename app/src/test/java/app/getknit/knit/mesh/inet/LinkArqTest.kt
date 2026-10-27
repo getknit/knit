@@ -49,6 +49,9 @@ class LinkArqTest {
     ) {
         lateinit var to: LinkArq
         var blocked: (ByteArray) -> Boolean = { false }
+
+        // Extra delay for a datagram sent now: a stall that holds datagrams back without losing them.
+        var held: () -> Long = { 0L }
         var datagrams = 0
         var largest = 0
 
@@ -59,14 +62,22 @@ class LinkArqTest {
         var overflows = 0
         private val departures = ArrayDeque<Long>()
 
+        // Each data segment's seq the first time it is sent, in the order it reached the path.
+        val firstSends = java.util.Collections.synchronizedList(ArrayList<Long>())
+        private val seen = java.util.Collections.synchronizedSet(HashSet<Long>())
+
         fun send(datagram: ByteArray): Boolean {
             datagrams++
             largest = maxOf(largest, datagram.size)
+            LinkArq.Segment
+                .decode(datagram)
+                ?.seq
+                ?.let { if (seen.add(it)) firstSends += it }
             if (blocked(datagram) || random.nextDouble() < loss) return true
             val queued = if (serviceMs > 0) queue() ?: return true else 0L
             val copies = if (random.nextDouble() < dup) 2 else 1
             repeat(copies) {
-                val at = queued + delayMs + if (jitterMs > 0) random.nextLong(jitterMs) else 0L
+                val at = queued + held() + delayMs + if (jitterMs > 0) random.nextLong(jitterMs) else 0L
                 scope.launch {
                     delay(at)
                     to.take(datagram)
@@ -261,9 +272,104 @@ class LinkArqTest {
             write.await()
             assertArrayEquals(sent, got.await())
             assertTrue(ends.a.stats().retransmits > 0)
-            // A timer doubling from ~200 ms fires ~5 times in the dark, each letting MIN_CWND segments go; one that never
-            // backed off would fire ~25 times.
-            assertTrue("$dark datagrams in the dark", dark in 1..16)
+            // A probe timer doubling from at least 100 ms fires ~6 times in 5.8 s of dark, each sending PROBES past the
+            // window; one that never backed off would fire ~58 times.
+            assertTrue("$dark datagrams in the dark", dark in 1..8 * LinkArq.PROBES)
+        }
+
+    @Test
+    fun acksThatStallForSecondsAreProbedNotTakenForLoss() =
+        runTest {
+            // A cellular path's delay spike: every ack the reader sends for one second arrives two seconds late, and none
+            // is lost. Read as loss, the stall would send the whole window again and drop it to its floor.
+            val ends = ends(delayMs = 40)
+            val sent = Random(18).nextBytes(2_000_000)
+            val started = testScheduler.currentTime
+            val got = async { ends.b.readExactly(sent.size) }
+            val write = async { ends.a.writeAll(sent) }
+            testScheduler.advanceTimeBy(500)
+            val stallFrom = testScheduler.currentTime
+            ends.ba.held = { if (testScheduler.currentTime - stallFrom < 1_000) 2_000L else 0L }
+            write.await()
+            assertArrayEquals(sent, got.await())
+            val stats = ends.a.stats()
+            assertTrue("${stats.timeouts} probe timeouts", stats.timeouts > 0)
+            // Only the probes went again, no loss was declared, and nothing was presumed lost that then arrived — read as
+            // loss, the stall presumes ~500 segments lost, ends the run with a window of ~36 and takes twice as long.
+            assertTrue("${stats.retransmits} resent", stats.retransmits <= LinkArq.PROBES * stats.timeouts)
+            assertEquals(0L, stats.lossEvents)
+            assertEquals(0L, stats.spurious)
+            val ms = testScheduler.currentTime - started
+            assertTrue("took $ms ms", ms < 3_500)
+        }
+
+    @Test
+    fun aLostTailGoesAgainWithinARoundTripNotAfterATimeout() =
+        runTest {
+            // Two segments, the first lost: the second's ack shows it, and 9/8 of a round trip after the first went it
+            // goes again (~112 ms + 50 ms to arrive), well before a probe timeout (~320 ms) would have sent it.
+            val ends = ends(delayMs = 50)
+            ends.a.seedRtt(100)
+            var sends = 0
+            ends.ab.blocked = { sends++ == 0 }
+            val sent = Random(19).nextBytes(2 * LinkArq.MAX_PAYLOAD)
+            val started = testScheduler.currentTime
+            val got = async { ends.b.readExactly(sent.size) }
+            ends.a.writeAll(sent)
+            assertArrayEquals(sent, got.await())
+            val ms = testScheduler.currentTime - started
+            assertTrue("delivered after $ms ms", ms < 250)
+            assertEquals(0L, ends.a.stats().timeouts)
+        }
+
+    // Grows a window through a slow, deep, lossless queue (so the run outlasts the blackout), blacks the path out until
+    // [expiries] probe timeouts have fired, lets the next probes through, and returns the window just before the losses
+    // the blackout caused were found and just after. The losses are found on the ack of the probe the next expiry sends,
+    // so they are found after [expiries] + 1 expiries in a row.
+    private suspend fun TestScope.windowAcrossABlackout(expiries: Int): Pair<Int, Int> {
+        val ends = ends(delayMs = 40)
+        ends.ab.serviceMs = 1
+        ends.ab.buffer = 100_000
+        ends.ab.clock = { testScheduler.currentTime }
+        val sent = Random(20).nextBytes(8_000_000)
+        val got = async { ends.b.readExactly(sent.size) }
+        val write = async { ends.a.writeAll(sent) }
+        testScheduler.advanceTimeBy(1_000)
+        val before = ends.a.stats()
+        ends.ab.blocked = { true }
+        val until = testScheduler.currentTime + 60_000
+        while (ends.a.stats().timeouts < before.timeouts + expiries && testScheduler.currentTime < until) {
+            testScheduler.advanceTimeBy(1)
+        }
+        assertEquals("probe timeouts in the dark", before.timeouts + expiries, ends.a.stats().timeouts)
+        ends.ab.blocked = { false }
+        var last = ends.a.stats().cwnd
+        while (ends.a.stats().lossEvents == before.lossEvents && testScheduler.currentTime < until) {
+            last = ends.a.stats().cwnd
+            testScheduler.advanceTimeBy(1)
+        }
+        assertTrue("the blackout's losses were found", ends.a.stats().lossEvents > before.lossEvents)
+        val after = ends.a.stats().cwnd
+        write.await()
+        assertArrayEquals(sent, got.await())
+        return last to after
+    }
+
+    @Test
+    fun lossesFoundAfterFewerProbeTimeoutsThanPersistentHalveTheWindow() =
+        runTest {
+            val (before, after) = windowAcrossABlackout(expiries = LinkArq.PERSISTENT_PTOS - 2)
+            // The ack that shows the losses also acknowledges the probes, which grow the window a little first.
+            assertTrue("window $before → $after", after in before / 2 - 2..before / 2 + 2)
+            assertTrue("window $before", before > 4 * LinkArq.MIN_CWND)
+        }
+
+    @Test
+    fun lossesFoundAfterAPersistentRunOfProbeTimeoutsTakeTheWindowToItsFloor() =
+        runTest {
+            val (before, after) = windowAcrossABlackout(expiries = LinkArq.PERSISTENT_PTOS - 1)
+            assertTrue("window $before", before > 4 * LinkArq.MIN_CWND)
+            assertEquals(LinkArq.MIN_CWND, after)
         }
 
     @Test
@@ -399,6 +505,11 @@ class LinkArqTest {
                         assertEquals(bob, reply?.nodeId)
                         assertEquals(LinkFraming.Type.FRAME, message?.type)
                         assertArrayEquals(record, message?.payload)
+                        // Two threads sent (the writer, and the reader's acks letting more go): the wire still carried
+                        // every segment first in the order it was numbered. A canary, not a proof: with sends let out of
+                        // the lock again it goes red about two runs in three on a many-core machine, almost never on one.
+                        val order = synchronized(ab.firstSends) { ab.firstSends.toList() }
+                        assertEquals(order.sorted(), order)
                     }
                 }
             } finally {

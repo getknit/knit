@@ -24,10 +24,14 @@ import java.util.TreeMap
  *
  * **Sending.** What is written is cut into segments of at most [MAX_PAYLOAD] bytes — a part-filled one goes on a flush —
  * numbered from 0. Every datagram carries the receiver's state (the next segment it lacks, the segments it holds above
- * that, and how far it will take), so an ack rides on data whenever there is any. A segment is lost once three
- * transmissions sent after it were acknowledged (QUIC's packet threshold, counted in transmissions so a retransmission
- * is judged against what went after it), or when the retransmission timer (RFC 6298, seeded from the punch's round
- * trip) expires, which presumes every segment in flight lost. The congestion window starts at [INITIAL_CWND] segments,
+ * that, and how far it will take), so an ack rides on data whenever there is any. Loss is judged only from acks, as
+ * QUIC does (RFC 9002): a segment is lost once three transmissions sent after it were acknowledged (counted in
+ * transmissions, so a retransmission is judged against what went after it), or once one sent after it was acknowledged
+ * and 9/8 of a round trip has passed since it went. A silence declares nothing lost: the probe timer (the round trip,
+ * four deviations and the peer's ack delay, doubling per expiry) sends [PROBES] segments that ask for an ack at once,
+ * and leaves the window alone — a cellular path whose acks stall for seconds is not a path that lost everything. Only
+ * losses found after [PERSISTENT_PTOS] expiries in a row (persistent congestion) take the window to its floor. The
+ * congestion window starts at [INITIAL_CWND] segments,
  * grows by one per segment acknowledged until the first loss and by one per window after, halves once per round trip of
  * losses and falls to [MIN_CWND] on a timeout (NewReno's AIMD over segments). Sends are **paced** across the round trip
  * rather than fired as a window at once (RFC 9002 §7.7): a bucket of at most [PACE_BURST] segments refills at the window
@@ -43,7 +47,8 @@ import java.util.TreeMap
  * [close] ends it here and closes the link ([onClose]). There is no half-close.
  *
  * The suspending [read], [write] and [flush] are the core; [input] and [output] block on them for `FramedLink`'s IO
- * threads. Thread-safe: one lock over the state, never held across a send or a suspension.
+ * threads. Thread-safe: one lock over the state and the sends (so the wire carries segments in the order they were
+ * numbered), never held across a suspension; [send] must not call back into the stream.
  */
 class LinkArq(
     private val send: (ByteArray) -> Boolean,
@@ -97,8 +102,14 @@ class LinkArq(
     private var recoveryStart = Long.MIN_VALUE
     private var srtt: Double? = null
     private var rttvar = 0.0
-    private var backoff = 1
-    private var rtoAt: Long? = null
+    private var latestRtt: Double? = null
+
+    // The probe timer: expiries since the last ack that acknowledged anything, when it fires, and when the last segment
+    // went (what it counts from). The time-threshold loss timer: when the oldest segment sent before an acked one is due.
+    private var ptoCount = 0
+    private var ptoAt: Long? = null
+    private var lastSendAt = 0L
+    private var lossTimeAt: Long? = null
     private var askAt: Long? = null
     private var askNow = false
 
@@ -157,16 +168,14 @@ class LinkArq(
     /** One DATA body that opened on the link. */
     fun take(body: ByteArray) {
         val segment = Segment.decode(body) ?: return
-        val out =
-            synchronized(lock) {
-                if (ended) return
-                val now = clock()
-                onAck(segment, now)
-                segment.seq?.let { onSegment(it, segment.payload, now) }
-                if (segment.ask) ackNow = true
-                pump(now)
-            }
-        out.forEach { send(it) }
+        synchronized(lock) {
+            if (ended) return
+            val now = clock()
+            onAck(segment, now)
+            segment.seq?.let { onSegment(it, segment.payload, now) }
+            if (segment.ask) ackNow = true
+            emit(pump(now))
+        }
         bump()
     }
 
@@ -191,7 +200,7 @@ class LinkArq(
     ): Int {
         if (len == 0) return 0
         tick.first { synchronized(lock) { inq.isNotEmpty() || ended } }
-        val (n, out) =
+        val n =
             synchronized(lock) {
                 if (inq.isEmpty()) return -1
                 var n = 0
@@ -208,9 +217,9 @@ class LinkArq(
                     }
                 }
                 if (consumed + window - advertised >= window / WINDOW_UPDATE_DIVISOR) ackNow = true
-                n to pump(clock())
+                emit(pump(clock()))
+                n
             }
-        out.forEach { send(it) }
         bump()
         return n
     }
@@ -225,18 +234,16 @@ class LinkArq(
         val end = off + len
         while (at < end) {
             tick.first { synchronized(lock) { ended || ready.size < SEND_BUFFER } }
-            val out =
-                synchronized(lock) {
-                    if (ended) throw IOException("link stream ended")
-                    while (at < end && ready.size < SEND_BUFFER) {
-                        val n = minOf(end - at, MAX_PAYLOAD - partial.size())
-                        partial.write(b, at, n)
-                        at += n
-                        if (partial.size() == MAX_PAYLOAD) cut()
-                    }
-                    pump(clock())
+            synchronized(lock) {
+                if (ended) throw IOException("link stream ended")
+                while (at < end && ready.size < SEND_BUFFER) {
+                    val n = minOf(end - at, MAX_PAYLOAD - partial.size())
+                    partial.write(b, at, n)
+                    at += n
+                    if (partial.size() == MAX_PAYLOAD) cut()
                 }
-            out.forEach { send(it) }
+                emit(pump(clock()))
+            }
             bump()
         }
     }
@@ -244,14 +251,19 @@ class LinkArq(
     /** Sends what was written, a part-filled segment too. */
     suspend fun flush() {
         tick.first { synchronized(lock) { ended || ready.size < SEND_BUFFER } }
-        val out =
-            synchronized(lock) {
-                if (ended) throw IOException("link stream ended")
-                if (partial.size() > 0) cut()
-                pump(clock())
-            }
-        out.forEach { send(it) }
+        synchronized(lock) {
+            if (ended) throw IOException("link stream ended")
+            if (partial.size() > 0) cut()
+            emit(pump(clock()))
+        }
         bump()
+    }
+
+    // Under the lock: the datagrams go in the order their transmission numbers were given. Sent after the lock was let go,
+    // two threads' batches could cross on the wire, and the receiver's ack for the later one would declare the earlier
+    // lost. The send is a seal and a non-blocking UDP send, and calls back into nothing here.
+    private fun emit(out: List<ByteArray>) {
+        out.forEach { send(it) }
     }
 
     // Under the lock: the written bytes become the next whole segment.
@@ -261,28 +273,47 @@ class LinkArq(
         partial.reset()
     }
 
-    // The retransmission, delayed-ack and window-probe timers, woken by every change.
+    // The loss, probe, delayed-ack, window-probe and pace timers, woken by every change.
     private suspend fun timers() {
         while (true) {
-            val (out, wait, seen) =
+            val (wait, seen) =
                 synchronized(lock) {
                     if (ended) return
                     val now = clock()
-                    if (rtoAt?.let { now >= it } == true) onTimeout(now)
-                    if (ackAt?.let { now >= it } == true) ackNow = true
-                    if (paceAt?.let { now >= it } == true) paceAt = null
-                    if (askAt?.let { now >= it } == true) {
-                        ackNow = true
-                        askNow = true
-                        askAt = null
-                    }
-                    val sends = pump(now)
-                    val next = listOfNotNull(rtoAt, ackAt, askAt, paceAt).minOrNull()?.let { (it - now).coerceAtLeast(1) }
-                    Triple(sends, next, tick.value)
+                    emit(onTimers(now))
+                    val next =
+                        listOfNotNull(ptoAt, lossTimeAt, ackAt, askAt, paceAt).minOrNull()?.let { (it - now).coerceAtLeast(1) }
+                    next to tick.value
                 }
-            out.forEach { send(it) }
             withTimeoutOrNull(wait ?: IDLE_WAIT_MS) { tick.first { it != seen } }
         }
+    }
+
+    // Under the lock: whatever timer is due acts — a loss now due, else a probe timeout — then the window sends.
+    private fun onTimers(now: Long): List<ByteArray> {
+        val probes =
+            when {
+                lossTimeAt?.let { now >= it } == true -> {
+                    detectLoss(now, persistent = false)
+                    emptyList()
+                }
+
+                ptoAt?.let { now >= it } == true -> {
+                    onProbeTimeout(now)
+                }
+
+                else -> {
+                    emptyList()
+                }
+            }
+        if (ackAt?.let { now >= it } == true) ackNow = true
+        if (paceAt?.let { now >= it } == true) paceAt = null
+        if (askAt?.let { now >= it } == true) {
+            ackNow = true
+            askNow = true
+            askAt = null
+        }
+        return probes + pump(now)
     }
 
     // Under the lock: the receiver's state in [segment] — what it holds and how far it will take.
@@ -300,9 +331,9 @@ class LinkArq(
         // Growth only for what was sent since the last reduction, so one loss event is answered once.
         repeat(acked.count { it.sentAt > recoveryStart }) { cwnd += if (cwnd < ssthresh) 1.0 else 1.0 / cwnd }
         cwnd = cwnd.coerceAtMost(window.toDouble())
-        backoff = 1
-        rtoAt = if (inFlight.isEmpty()) null else now + rto()
-        detectLoss(now)
+        val persistent = ptoCount >= PERSISTENT_PTOS
+        ptoCount = 0
+        detectLoss(now, persistent)
     }
 
     // Under the lock: the segments [segment] acknowledges, taken out of flight (or out of the lost, sent after all).
@@ -330,21 +361,47 @@ class LinkArq(
         return acked
     }
 
-    // Under the lock: three transmissions after one were acknowledged and it was not, so it is lost; the window halves
-    // once for the losses of a round.
-    private fun detectLoss(now: Long) {
-        val gone = inFlight.values.filter { it.txn + REORDER_THRESHOLD <= highestAckedTxn }
+    // Under the lock: a segment sent before an acknowledged one is lost once three transmissions after it were
+    // acknowledged or 9/8 of a round trip has passed since it went; one not yet due arms the loss timer. The window halves
+    // once for the losses of a round, or — [persistent], losses found after a run of probe timeouts — drops to its floor.
+    private fun detectLoss(
+        now: Long,
+        persistent: Boolean,
+    ) {
+        val delay = lossDelayMs()
+        val gone = ArrayList<Sent>()
+        var due: Long? = null
+        for (s in inFlight.values) {
+            if (s.txn >= highestAckedTxn) continue
+            if (s.txn + REORDER_THRESHOLD <= highestAckedTxn || now - s.sentAt >= delay) {
+                gone += s
+            } else {
+                due = minOf(due ?: Long.MAX_VALUE, s.sentAt + delay)
+            }
+        }
+        lossTimeAt = due
         if (gone.isEmpty()) return
         gone.forEach {
             inFlight.remove(it.seq)
             lost[it.seq] = it
         }
-        if (gone.any { it.sentAt > recoveryStart }) {
+        if (persistent) {
+            lossEvents++
+            ssthresh = (cwnd / 2).coerceAtLeast(MIN_CWND.toDouble())
+            cwnd = MIN_CWND.toDouble()
+            recoveryStart = now
+        } else if (gone.any { it.sentAt > recoveryStart }) {
             lossEvents++
             cwnd = (cwnd / 2).coerceAtLeast(MIN_CWND.toDouble())
             ssthresh = cwnd
             recoveryStart = now
         }
+    }
+
+    // Under the lock: how long after it went a segment sent before an acknowledged one may still be on its way.
+    private fun lossDelayMs(): Long {
+        val rtt = maxOf(srtt ?: INITIAL_PTO_MS.toDouble(), latestRtt ?: 0.0)
+        return (TIME_THRESHOLD * rtt).toLong().coerceAtLeast(GRANULARITY_MS)
     }
 
     // Under the lock: one segment of data from the peer.
@@ -386,24 +443,55 @@ class LinkArq(
         }
     }
 
-    // Under the lock: every segment presumed lost, the window down to its floor, the timer backed off.
-    private fun onTimeout(now: Long) {
+    // Under the lock: the probe timer fired. Nothing is declared lost and the window is left alone: [PROBES] segments go
+    // past the window and the pace — the oldest outstanding one again, then a new one if any waits below the peer's limit
+    // (else the next oldest) — each asking for an ack at once, and the timer doubles.
+    private fun onProbeTimeout(now: Long): List<ByteArray> {
         timeouts++
-        lost.putAll(inFlight)
-        inFlight.clear()
-        ssthresh = (cwnd / 2).coerceAtLeast(MIN_CWND.toDouble())
-        cwnd = MIN_CWND.toDouble()
-        recoveryStart = now
-        backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF)
-        rtoAt = null
+        ptoCount++
+        val oldest = inFlight.values.sortedBy { it.txn }.take(PROBES)
+        val probes = ArrayList<Sent>()
+        oldest.firstOrNull()?.let { probes += it }
+        if (ready.isNotEmpty() && nextSeq < peerLimit) {
+            probes += Sent(nextSeq++, ready.removeFirst())
+        } else if (oldest.size > 1) {
+            probes += oldest[1]
+        }
+        return probes.map { probe ->
+            if (inFlight.containsKey(probe.seq)) {
+                probe.resent = true
+                retransmits++
+            }
+            transmit(probe, now)
+            askNow = true
+            segment(probe.seq, probe.payload)
+        }
+    }
+
+    // Under the lock: one segment goes now, under the next transmission number.
+    private fun transmit(
+        next: Sent,
+        now: Long,
+    ) {
+        next.sentAt = now
+        next.txn = txn++
+        inFlight[next.seq] = next
+        segmentsSent++
+        lastSendAt = now
+    }
+
+    // Under the lock: the probe timer counts from the last segment sent, while any is outstanding and no loss timer is.
+    private fun armTimer() {
+        ptoAt = if (inFlight.isEmpty() || lossTimeAt != null) null else lastSendAt + pto()
     }
 
     // Under the lock: what the window lets go now — lost segments first, then new ones below the peer's limit — each
     // carrying the ack; else a bare ack when one is owed. Sent by the caller once the lock is released.
     private fun pump(now: Long): List<ByteArray> {
         val out = sendPaced(now)
-        askAt = if (stalledAtLimit()) askAt ?: (now + rto()) else null
+        askAt = if (stalledAtLimit()) askAt ?: (now + pto()) else null
         if (out.isEmpty() && ackNow) out += segment(null, EMPTY)
+        armTimer()
         return out
     }
 
@@ -419,12 +507,8 @@ class LinkArq(
             }
             val next = nextToSend() ?: return out
             paceTokens -= 1
-            next.sentAt = now
-            next.txn = txn++
-            inFlight[next.seq] = next
-            segmentsSent++
+            transmit(next, now)
             out += segment(next.seq, next.payload)
-            if (rtoAt == null) rtoAt = now + rto()
         }
         return out
     }
@@ -512,6 +596,7 @@ class LinkArq(
     // RFC 6298's smoothing: alpha 1/8, beta 1/4.
     private fun sample(rttMs: Long) {
         val r = rttMs.coerceAtLeast(1).toDouble()
+        latestRtt = r
         val s = srtt ?: return setRtt(r.toLong())
         rttvar = (1 - RTT_BETA) * rttvar + RTT_BETA * Math.abs(s - r)
         srtt = (1 - RTT_ALPHA) * s + RTT_ALPHA * r
@@ -522,9 +607,12 @@ class LinkArq(
         rttvar = rttMs / 2.0
     }
 
-    private fun rto(): Long {
-        val base = srtt?.let { (it + maxOf(RTO_GRANULARITY_MS.toDouble(), RTO_VAR_FACTOR * rttvar)).toLong() } ?: INITIAL_RTO_MS
-        return (base.coerceAtLeast(MIN_RTO_MS) * backoff).coerceAtMost(MAX_RTO_MS)
+    // The probe timeout: the round trip, four deviations and the peer's ack delay (RFC 9002 §6.2), doubled per expiry.
+    private fun pto(): Long {
+        val base =
+            srtt?.let { (it + maxOf(GRANULARITY_MS.toDouble(), PTO_VAR_FACTOR * rttvar)).toLong() + ACK_DELAY_MS }
+                ?: INITIAL_PTO_MS
+        return (base.coerceAtLeast(MIN_PTO_MS) shl ptoCount.coerceAtMost(MAX_PTO_DOUBLINGS)).coerceAtMost(MAX_PTO_MS)
     }
 
     private fun bump() = tick.update { it + 1 }
@@ -647,10 +735,16 @@ class LinkArq(
         /** Whole segments written but not yet sent before a writer waits. */
         const val SEND_BUFFER = 64
 
-        /** The retransmission timer before a round trip is known, and its bounds. */
-        const val INITIAL_RTO_MS = 1_000L
-        const val MIN_RTO_MS = 200L
-        const val MAX_RTO_MS = 8_000L
+        /** The probe timer before a round trip is known, and its bounds. */
+        const val INITIAL_PTO_MS = 1_000L
+        const val MIN_PTO_MS = 100L
+        const val MAX_PTO_MS = 8_000L
+
+        /** Segments a probe timeout sends past the window, each asking for an ack at once. */
+        const val PROBES = 2
+
+        /** Probe timeouts in a row after which the losses then found are persistent congestion. */
+        const val PERSISTENT_PTOS = 3
 
         /** The most segments that go back to back; the pace refills it. */
         const val PACE_BURST = 4
@@ -666,11 +760,12 @@ class LinkArq(
         private const val ACK_EVERY = 2
         private const val REORDER_THRESHOLD = 3
         private const val WINDOW_UPDATE_DIVISOR = 4
-        private const val MAX_BACKOFF = 64
+        private const val MAX_PTO_DOUBLINGS = 6
+        private const val TIME_THRESHOLD = 9.0 / 8
         private const val RTT_ALPHA = 0.125
         private const val RTT_BETA = 0.25
-        private const val RTO_VAR_FACTOR = 4
-        private const val RTO_GRANULARITY_MS = 10L
+        private const val PTO_VAR_FACTOR = 4
+        private const val GRANULARITY_MS = 10L
         private const val IDLE_WAIT_MS = 60_000L
         private const val MIN_WINDOW = 4
         private const val MAX_WINDOW = 65_535

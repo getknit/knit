@@ -21,12 +21,13 @@ and the entry is fixed.
   flat answer cap, which would starve a busy chat now that idle links close — and a blocked contact is never answered. A peer's candidates
   are checked before anything is sent to them (`PunchPolicy.sane`, at most eight), the reflexive address is learnt on
   the very socket that punches, and a field-log line names a candidate's kind, never its address.
-- **When touching `LinkArq`, `LinkStream`, `LinkSession.attach` or `DirectLinks.measureBulk` / `onStream`:** READ
-  ADR 2026-10.a5yj and `docs/DIRECT_LINKS.md` §6. The stream is our own ARQ over the link's DATA datagrams, behind
-  the `LinkStream` seam so a QUIC stream could replace it without touching `FramedLink` (which runs over it unchanged)
-  or the session; the spike's choice between them is an a5yj amendment. A retransmission is a fresh lane seal, never a
-  datagram sent twice. A segment is the link's data for the idle close, so a stream that moves nothing lets its link
-  idle out. While no transport takes a link's stream (`onStream` unset), `DirectLinks` drains it.
+- **When touching `LinkArq`, `LinkStream`, `LinkSession.attach` or `DirectLinks.measureBulk` / `onStream`:** READ ADR
+  2026-10.a5yj and `docs/DIRECT_LINKS.md` §6. The stream is our own ARQ over the link's DATA datagrams, behind the
+  `LinkStream` seam so a QUIC stream could replace it without touching `FramedLink` (which runs over it unchanged) or
+  the session; the a5yj stream amendment chose ours on the iOS port's cost and names what would reopen it. A
+  retransmission is a fresh lane seal, never a datagram sent twice. A segment is the link's data for the idle close, so
+  a stream that moves nothing lets its link idle out. While no transport takes a link's stream (`onStream` unset),
+  `DirectLinks` drains it.
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`
   arm or `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.castEligible`:** READ ADR 2026-10.a5yj
   (and its lane-key amendment once recorded), `docs/DIRECT_LINKS.md` §2 and §5 and `docs/VOICE_CALLS.md` §2.7. The

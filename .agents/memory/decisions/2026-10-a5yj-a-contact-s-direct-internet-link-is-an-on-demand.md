@@ -205,38 +205,63 @@ wait out a fresh punch — **holds** its link (`DirectLinks.hold`): a keepalive 
 keepalive costs, and only while the session is open. The keepalive battery trial the text above owed is replaced by
 these measurements; the IPv4 path's mapping life is still owed before the numbers are relied on everywhere.
 
-## Amendment 2026-10-27 — the stream is our own ARQ (draft)
+## Amendment 2026-10-27 — the stream is our own ARQ
 
-Status: draft from the Phase 0 spike; the throughput trial on the lab phones (`…debug.LINK --es op bulk`) is owed
-before it stands.
+Status: stands (2026-10-27). Measured on the lab phones over one home Wi-Fi and from Wi-Fi to T-Mobile LTE;
+cellular to cellular is still to be run.
 
 **A link's byte stream is a small ARQ of our own over the lane's DATA datagrams** (`mesh/inet/LinkArq`,
 `docs/DIRECT_LINKS.md` §6): numbered segments of at most 1096 bytes in datagrams of at most 1200, every datagram
 carrying the receiver's ack, its ranges and its window limit (512 segments), loss by three later transmissions acked or
-an RFC 6298 timer, and NewReno's AIMD over segments, paced across the round trip. A retransmission is a fresh lane
-seal. Pacing came from the first phone run: two phones on one home Wi-Fi moved 2–4 Mbit/s unpaced, losing about 1 % on
-the air (no socket-buffer drops at either end) to windows sent back to back at an access point holding frames for a
-phone in power save. It sits behind one seam,
-`LinkStream`, which yields the `LinkSocket` that `FramedLink` and `LinkHandshake` already run over unchanged, so the
-choice below can be revisited without touching the session or the framing.
+time since it went, never by a timer (RFC 9002), and NewReno's AIMD over segments, paced across the round trip. A
+retransmission is a fresh lane seal. It sits behind one seam, `LinkStream`, which yields the `LinkSocket` that
+`FramedLink` and `LinkHandshake` already run over unchanged, so the choice below can be revisited without touching the
+session or the framing.
+
+**What it moves.** Two phones on one home Wi-Fi (`…debug.LINK --es op bulk`) moved 2–4 Mbit/s unpaced, losing about 1 %
+on the air (no socket-buffer drops at either end) to windows sent back to back at an access point holding frames for a
+phone in power save. Paced, 3.5–4.3 Mbit/s, one 16 MB run with no retransmission. What caps it is random air loss
+(about 0.14 %) against a window that halves on each loss, at a round trip that rises from 14 ms idle to 70 ms under
+load: enough for the links' work, and well past what Bluetooth carries. A gentler decrease or a delay-based controller
+is the lever if a later need asks for more.
+
+**Cellular: loss is judged from acks, never from a timer.** The first build timed out the way TCP's RFC 6298 timer does:
+on expiry it presumed every segment in flight lost and dropped the window to two. P9 on Wi-Fi to P7 on T-Mobile LTE at
+poor signal (round trip 400–500 ms) moved 1 MB in 86 s and 4 MB in 574 s (0.05–0.09 Mbit/s); 165 of the 181 segments it
+sent again had not been lost, their acks only late — a cellular path's delay spikes fired the timer over and over, and
+each expiry threw the window away. The stream now follows QUIC (RFC 9002): a segment is lost only when acks show it
+(three later transmissions acknowledged, or 9/8 of a round trip since it went while a later one was), and the timer only
+sends two probes that ask for an ack, doubling, leaving the window alone; only losses found after three expiries in a
+row take it to its floor. On the JVM, acks stalled two seconds without loss now cost two probes per expiry and nothing
+else, where the old timer presumed ~500 segments lost and finished at half the speed. The same pair over the same
+carrier, the P7's reception better that afternoon (round trip 90–140 ms), then moved 1 MB at 3.4 Mbit/s and 4 MB at 4.3
+and 1.7 Mbit/s with no more than two probe timeouts a run. The phones also showed the stream had sent its datagrams
+after letting its lock go, so two threads' batches could cross on the wire and the receiver's ack for the later one
+declare the earlier lost (17–34 spurious losses a 4 MB Wi-Fi run); it now sends under the lock, in the order it numbers
+them (0–2).
 
 **Kwik was weighed and set aside.** `tech.kwik:kwik` 0.12.1 (LGPL-3.0; agent15 LGPL-3.0, hkdf Apache-2.0, siphash
-MIT) is pure Java, about 280 KB of dex after R8, and its R8 output was byte-identical across runs. It runs over a socket
-the caller punched, given a wrapper that passes it only QUIC's long/short-header datagrams, and on a desktop JVM it moved
-10 MB over loopback at 36–46 MB/s with a pinned self-signed P-256 certificate. It does not fit as published:
+MIT) is pure Java, about 280 KB of dex after R8, and its R8 output was byte-identical across runs. On a desktop JVM it
+moved 10 MB over loopback at 36–46 MB/s over a socket the caller had bound, with a pinned self-signed P-256 certificate.
+Made to work here it would need:
 
-- **Its server cannot start on Android.** Every server constructor builds a `MemoryWatcher` on `java.lang.management`,
-  which Android lacks, and its receive loop calls `Duration.toSeconds()` (API 31) that D8 does not backport. One end of
-  every link is the server, so this means a patched fork to carry.
-- **It drops a link a NAT rebinds.** Its server disables active migration and its migration code is experimental; the
-  lane already follows the peer to a new source address.
-- **Its TLS authenticates one way.** The client can pin the server's key from the signed offer; the server never asks
-  for a client certificate and takes no external PSK, so the answerer would need a MAC in the stream — a second identity
-  layer over keys the signal already seals, in a TLS stack its own readme calls unreviewed.
+- **A patched fork.** Its server, which one end of every link must be, builds a `MemoryWatcher` on
+  `java.lang.management` (absent on Android) and calls `Duration.toSeconds()` (API 31, not backported by D8). Both are
+  small patches, but an LGPL fork to carry and for F-Droid to build from source.
+- **QUIC inside the lane.** Run bare, its server turns off connection migration, so a NAT that rebinds the peer ends
+  the link, and its TLS authenticates one way: the server never asks for a client certificate and takes no external
+  PSK. Both go away if a wrapper socket seals QUIC's datagrams in the lane and shows Kwik a fixed peer address while the
+  session follows the peer underneath, but then its TLS is a second handshake round trip and a second key schedule
+  over keys the signal already seals, in a stack its own readme calls unreviewed.
 
-Its loss recovery and congestion control are the model `LinkArq` follows; the seam stays so a QUIC stream can replace it
-if a later need (many streams, path migration done by the library) outweighs these.
+On Android alone that is about the effort of `LinkArq`. **What decides it is the iOS port**: knit-ios ports §6's six
+clauses (about 600 lines), where QUIC would need a stack on iOS that interoperates with Kwik inside our lane, and
+Network.framework's QUIC owns its own UDP socket and cannot ride a punched, sealed path. Two more weigh the same way:
+Kwik also halves its window per loss, so on these phones it would meet the same ceiling, and the link's idle close and
+answer budget need to know when real traffic moved, which is a few lines in a stream we own and awkward through a
+library that runs its own threads and timers. Kwik's loss recovery is the model `LinkArq` follows; the seam stays so a
+QUIC stream can replace it if knit-ios takes up a QUIC stack anyway, or the links come to need many streams.
 
-**For Phase 1:** `FramedLink`'s HELLO and digest are DATA to the link, so once a transport runs over the stream every link
-that comes up "carried data" and none idles out while `FramedLink` sends anything. The transport child must tell the
-link when real traffic (a frame or a file) moved, and the idle close and the empty-answer budget count that instead.
+**For Phase 1:** `FramedLink`'s HELLO and digest are DATA to the link, so once a transport runs over the stream every
+link that comes up "carried data" and none idles out while `FramedLink` sends anything. The transport child must tell
+the link when real traffic (a frame or a file) moved, and the idle close and the empty-answer budget count that instead.
