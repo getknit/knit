@@ -1,0 +1,64 @@
+#!/bin/sh
+# Refuse a commit whose ADR router disagrees with the ADR files it is committing.
+#
+# The router (`<decisions dir>.md`) is generated from the decisions directory by
+# `scripts/adr.py index`. There are two ways to commit them out of sync, and this
+# catches both:
+#
+#   1. You wrote an ADR and never ran `index`.
+#   2. You ran `index`, then staged only the ADR file and left the regenerated router
+#      behind. A working-tree check cannot see this case.
+#
+# So the check runs against the INDEX, not the working tree: the staged decision files
+# and the staged router are extracted to a temp root and compared there. Editing an ADR
+# *body* changes no router row, so that commits cleanly with the router untouched.
+#
+# Cheap by construction: it exits before doing anything unless the commit touches those
+# paths, and it never starts a build tool. CI runs the same `index --check`; this just
+# moves the failure earlier. `git commit --no-verify` bypasses it for one commit.
+
+set -e
+
+repo=$(git rev-parse --show-toplevel)
+script="$repo/scripts/adr.py"
+
+if [ ! -f "$script" ]; then
+	exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+	echo "pre-commit: no python3, skipping the ADR router check (CI still runs it)." >&2
+	exit 0
+fi
+
+# Ask the vendored script where decisions live rather than restating it here.
+dir=$(python3 "$script" where --root "$repo")
+router="$dir.md"
+
+# Nothing staged under either path: not an ADR commit.
+if [ -z "$(git diff --cached --name-only -- "$router" "$dir/")" ]; then
+	exit 0
+fi
+
+# Filenames here are minted by adr.py as [a-z0-9.-]+\.md, so there is nothing to split
+# on but the newlines git prints.
+staged=$(git ls-files --cached -- "$router" "$dir/")
+if [ -z "$staged" ]; then
+	# Every decision file is staged for deletion. Nothing left to index against.
+	exit 0
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# shellcheck disable=SC2086  # $staged is a newline-separated list of safe filenames
+git checkout-index --prefix="$tmp/" -f -- $staged
+mkdir -p "$tmp/$dir"
+
+if ! python3 "$script" index --check --root "$tmp" --dir "$dir"; then
+	echo >&2
+	echo "pre-commit: the staged ADR router is out of sync with the staged ADRs." >&2
+	echo "  run:  python3 scripts/adr.py index" >&2
+	echo "  then: git add $router" >&2
+	exit 1
+fi

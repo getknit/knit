@@ -10,10 +10,6 @@ topics: [mentions, groups]
 
 Status: Accepted (2026-10-14)
 
-# ADR 2026-10.6h2g — @everyone is one mention per member
-
-Status: Accepted (2026-10-14)
-
 **What was observed.** A group's members could already be mentioned one at a time, and a receiver notifies on the
 node-id match (`List<Mention>.mention(me)` in `InboundPipeline`) on the Mentions channel, once per message, only for
 an accepted thread, never for our own message (ADR 058 for the label, ADR 2026-09.hd5n for the composer's window).

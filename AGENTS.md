@@ -91,10 +91,11 @@ Tests, devices and review:
 ## Capabilities
 
 - RUN skills in `.agents/skills/` (vendored; surfaced to Claude Code via `.claude/skills/`): `kotlin-patterns`,
-  `material-3`, `debug-bridge`, `weblate-cli`, `upgrade-notes`, `dotagents-standard`.
+  `material-3`, `debug-bridge`, `weblate-cli`, `upgrade-notes`, `dotagents-standard`, `adr`.
 - SPAWN reviewer and DELEGATE to owner personas in `.agents/personas/` as `.agents/rules/personas.md` says.
 - ADD a decision with `python3 scripts/adr.py new "<title>" --topics a,b`, then `python3 scripts/adr.py index`; never
-  hand-edit `decisions.md` or pick an ADR number. Update `.agents/memory/roadmap.md` as deferred scope ships.
+  hand-edit `decisions.md` or pick an ADR number. The `adr` skill has the format, writing and lint rules, and its own
+  copy runs `lint`. Update `.agents/memory/roadmap.md` as deferred scope ships.
 
 ## Maintenance
 
