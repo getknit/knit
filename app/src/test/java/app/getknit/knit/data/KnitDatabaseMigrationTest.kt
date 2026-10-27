@@ -964,12 +964,40 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 25 to 26 keeps every message and adds the empty pins table`() =
+        runTest {
+            helper.createDatabase(25).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(") ", ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged) ") +
+                        "VALUES ('m1','n1','peer-1','meet at the gate',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(26, listOf(KnitMigrations.MIGRATION_25_26)).use { c ->
+                c.prepare("SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM pins)").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                    // #42: nothing before this build pinned anything.
+                    assertEquals(0L, s.getLong(1))
+                }
+                // Keyed by message id alone, with a nullable pinnedBy (the unpin tombstone) and no FK to messages, so a
+                // pin naming a message this phone does not hold is a legal row.
+                c.execSQL("INSERT INTO pins (messageId, pinnedBy, updatedAt) VALUES ('m1','me',5), ('not-here',NULL,6)")
+                c.execSQL("INSERT OR REPLACE INTO pins (messageId, pinnedBy, updatedAt) VALUES ('m1',NULL,7)")
+                c.prepare("SELECT COUNT(*), SUM(pinnedBy IS NULL) FROM pins").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(2L, s.getLong(0))
+                    assertEquals(2L, s.getLong(1))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 25
+        const val CURRENT_VERSION = 26
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

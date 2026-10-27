@@ -560,6 +560,11 @@
     <string name="chat_action_details">Про повідомлення</string>
     <string name="chat_action_delete">Видалити повідомлення</string>
     <string name="chat_message_deleted">Повідомлення видалено</string>
+    <string name="chat_action_pin">Закріпити повідомлення</string>
+    <string name="chat_action_unpin">Відкріпити повідомлення</string>
+    <string name="chat_pinned_label">Закріплене повідомлення</string>
+    <string name="chat_pinned_position">Закріплене повідомлення %1$d з %2$d</string>
+    <string name="chat_pin_replaced_oldest">Закріплено. Найстаріше закріплене повідомлення в цьому чаті відкріплено, щоб звільнити місце.</string>
     <string name="chat_delete_confirm_title">Видалити повідомлення?</string>
     <string name="chat_delete_confirm_body">Його буде видалено лише з цього пристрою.</string>
     <string name="chat_delete_confirm_action">Видалити</string>

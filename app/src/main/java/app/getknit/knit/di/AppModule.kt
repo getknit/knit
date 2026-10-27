@@ -31,6 +31,7 @@ import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.backup.BackupWriter
@@ -276,6 +277,7 @@ val appModule =
         single { get<KnitDatabase>().messageDao() }
         single { get<KnitDatabase>().peerDao() }
         single { get<KnitDatabase>().reactionDao() }
+        single { get<KnitDatabase>().pinDao() }
         single { get<KnitDatabase>().blobDao() }
         single { get<KnitDatabase>().groupDao() }
         single { get<KnitDatabase>().blobVerdictDao() }
@@ -337,6 +339,7 @@ val appModule =
             )
         }
         single { ReactionRepository(get(), get()) }
+        single { PinRepository(get(), get()) }
         // Who has acked each message — the message-details screen's per-recipient delivery split. Owns the
         // delivery write (tick + acker row in one transaction), so it wraps MessageRepository.
         single { MessageReceiptRepository(get(), get(), get()) }

@@ -33,6 +33,7 @@ object BackupTables {
             "commons_outbox",
             "messages",
             "reactions",
+            "pins",
             "message_receipts",
             "drafts",
             "scope_configs",

@@ -30,6 +30,8 @@ document:
   speakers are still checking the translations on Weblate, and anyone can suggest a fix there.
 - Select words in a message you're writing to make them bold, italic, struck through or monospace. Older
   versions of Knit, and Knit for iPhone for now, show the message as plain text.
+- Long-press a message and pick Pin message to keep it in a bar under the chat's name, where a tap jumps back
+  to it. Each chat holds three pins, and for now they stay on your phone: nobody else in the chat sees them.
 
 ### Changed
 

@@ -65,6 +65,13 @@ lines.
   once, in `deliverChat`, against the clamped body, and takes a sealed message's styles only from its plaintext.
   Only the bubble draws them; every other surface reads the plain body. Markdown-lite (deferred) is a composer input
   method, so receivers never parse markdown. There is no capability bit; a spoiler (code 4, reserved) would need one.
+- **When touching `data/pin/` (`PinEntity`, `PinDao`), `PinRepository`, `ChatViewModel.pinned` / `togglePin` or
+  `ChatScreen`'s `PinnedBar`:** pinned messages (GitHub #42; no ADR yet). v1 is local to this phone: nothing is
+  framed, nothing enters custody, and the bar jumps through the quote-jump path. The table is modelled on `reactions`
+  so a shared pin can reuse it: keyed by message id, no foreign key (every read joins `messages`), an unpin is a
+  `pinnedBy IS NULL` tombstone rather than a deleted row, and `PinRepository.apply` keeps the newer `updatedAt`.
+  Carried in a backup. Shared pins are deferred — CHECK `.agents/memory/roadmap.md`. Tests: `PinDaoTest`,
+  `PinRepositoryTest`, `ChatPinnedBarTest`.
 - **When touching `saved_files` / `data/blob/SavedFileEntity`, `ChatViewModel.openAttachment` /
   `saveAttachmentTo`, or what a file bubble's tap does:** READ ADR 2026-09.7ad3. A received file opens from the
   copy the user saved it to (a persisted read grant on the picker's document, recorded by blob hash) and never

@@ -9,6 +9,7 @@ import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
@@ -94,6 +95,7 @@ val uiModule =
                 preferMeshCalls = if (LIVE_CALLS_WIRED && WALKIE_WIRED) get<CallPreferenceStore>().preferMesh else flowOf(false),
                 noteSpeech = if (STT_WIRED) get<VoiceNoteSpeech>() else null,
                 translation = if (TRANSLATE_WIRED) get<ChatTranslation>() else null,
+                pins = get<PinRepository>(),
             )
         }
         viewModel {

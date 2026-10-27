@@ -552,6 +552,11 @@
     <string name="chat_action_details">Informações da mensagem</string>
     <string name="chat_action_delete">Excluir mensagem</string>
     <string name="chat_message_deleted">Mensagem excluída</string>
+    <string name="chat_action_pin">Fixar mensagem</string>
+    <string name="chat_action_unpin">Desafixar mensagem</string>
+    <string name="chat_pinned_label">Mensagem fixada</string>
+    <string name="chat_pinned_position">Mensagem fixada %1$d de %2$d</string>
+    <string name="chat_pin_replaced_oldest">Fixada. A fixação mais antiga desta conversa foi desfeita para abrir espaço.</string>
     <string name="chat_delete_confirm_title">Excluir mensagem?</string>
     <string name="chat_delete_confirm_body">Ela será removida só deste aparelho.</string>
     <string name="chat_delete_confirm_action">Excluir</string>

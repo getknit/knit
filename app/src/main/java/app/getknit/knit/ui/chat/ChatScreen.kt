@@ -104,6 +104,7 @@ import androidx.compose.material.icons.filled.WifiCalling3
 import androidx.compose.material.icons.outlined.AddReaction
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -131,6 +132,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -331,6 +333,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val stagedAttachmentRelay by viewModel.stagedAttachmentRelay.collectAsStateWithLifecycle()
@@ -706,6 +709,8 @@ fun ChatScreen(
         onReact = viewModel::react,
         quickReactions = recentReactions,
         onDeleteMessage = viewModel::deleteMessage,
+        pinned = pinned,
+        onTogglePin = viewModel::togglePin,
         onBlock = viewModel::block,
         onUnblock = viewModel::unblock,
         onCopy = { text ->
@@ -1005,6 +1010,10 @@ internal fun ChatScreenContent(
     // the window is widened to reach it (`onRevealMessage`) and the quote-jump machinery below scrolls and
     // flashes it once the rows hold it. Defaulted so previews and the content-level tests need not name it.
     jumpToMessageId: String? = null,
+    // This thread's pinned messages, newest pin first, and the long-press Pin / Unpin (#42). Null offers no Pin;
+    // both defaulted so previews and the content-level tests need not name them.
+    pinned: List<PinnedView> = emptyList(),
+    onTogglePin: ((messageId: String) -> Unit)? = null,
 ) {
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     var fullscreenVideo by remember { mutableStateOf<ChatRow?>(null) }
@@ -1090,6 +1099,21 @@ internal fun ChatScreenContent(
             // in it: retention trimmed it, or it sits deeper than the screen reaches. Stop waiting. The seed
             // state reports no rows and no history, so it must not count as "the end".
             pendingQuoteTarget = null
+        }
+    }
+
+    // Scroll to a message and flash it: a tapped quote's original, or a pinned message from the bar. One older than the
+    // window is asked for and scrolled to once it lands, by the effect above.
+    val jumpTo: (String) -> Unit = { targetId ->
+        val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
+        if (idx >= 0) {
+            highlightedMessageId = targetId
+            scrollScope.launch { listState.animateScrollToItem(idx) }
+        } else {
+            // Older than the loaded window: grow it far enough to reach the original, and let the effect above
+            // scroll once it arrives.
+            onRevealMessage(targetId)
+            pendingQuoteTarget = targetId
         }
     }
 
@@ -1554,6 +1578,11 @@ internal fun ChatScreenContent(
             // than jumping a notice's height in one frame — and it needs no retained copy of a notice's text
             // to draw while it collapses, which is the whole reason each notice can keep its early return.
             Column(modifier = Modifier.animateContentSize(KnitMotion.spatial())) {
+                PinnedBar(
+                    pinned = pinned,
+                    onJump = jumpTo,
+                    onUnpin = { id -> onTogglePin?.invoke(id) },
+                )
                 RelayNotice(
                     reach = state.relayReach,
                     onClick = { showRelayInfo = true },
@@ -1716,18 +1745,9 @@ internal fun ChatScreenContent(
                                                 ),
                                             )
                                         },
-                                        onQuoteClick = { targetId ->
-                                            val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
-                                            if (idx >= 0) {
-                                                highlightedMessageId = targetId
-                                                scrollScope.launch { listState.animateScrollToItem(idx) }
-                                            } else {
-                                                // Older than the loaded window: grow it far enough to reach the
-                                                // original, and let the effect above scroll once it arrives.
-                                                onRevealMessage(targetId)
-                                                pendingQuoteTarget = targetId
-                                            }
-                                        },
+                                        onQuoteClick = jumpTo,
+                                        pinned = pinned.any { it.messageId == row.id },
+                                        onTogglePin = onTogglePin,
                                         onDelete = onDeleteMessage,
                                         onBlock = onBlock,
                                         onCopy = onCopy,
@@ -2086,6 +2106,97 @@ private fun RelayNotice(
                         modifier = Modifier.size(16.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * The pinned messages of this chat (#42), one at a time under the title: the shown pin's author and first line, and
+ * "Pinned message 2 of 3" once there is more than one. A tap jumps to the shown message ([onJump], the quote-jump
+ * path) and moves the bar on to the next, older pin, wrapping round, as WhatsApp's does; the trailing button unpins
+ * the shown one. Renders nothing while nothing is pinned.
+ */
+@Composable
+internal fun PinnedBar(
+    pinned: List<PinnedView>,
+    onJump: (messageId: String) -> Unit,
+    onUnpin: (messageId: String) -> Unit,
+) {
+    if (pinned.isEmpty()) return
+    // Back to the newest pin whenever the set changes, so a pin just made is the one the bar shows.
+    var index by rememberSaveable(pinned.map { it.messageId }) { mutableIntStateOf(0) }
+    val at = index.mod(pinned.size)
+    val shown = pinned[at]
+    val photoLabel = stringResource(R.string.chat_reply_photo)
+    val hiddenLabel = stringResource(R.string.moderation_preview_hidden)
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.fillMaxWidth().testTag("chat_pinned_bar"),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .clickable(role = Role.Button) {
+                            onJump(shown.messageId)
+                            index = at + 1
+                        }.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.PushPin,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text =
+                            if (pinned.size > 1) {
+                                stringResource(R.string.chat_pinned_position, at + 1, pinned.size)
+                            } else {
+                                stringResource(R.string.chat_pinned_label)
+                            },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = shown.author,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Text(
+                            text =
+                                when {
+                                    shown.hidden -> hiddenLabel
+                                    else -> shown.snippet.ifBlank { if (shown.hasAttachment) photoLabel else "" }
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
+                }
+            }
+            IconButton(
+                onClick = { onUnpin(shown.messageId) },
+                modifier = Modifier.testTag("chat_pinned_unpin"),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.chat_action_unpin),
+                    modifier = Modifier.size(18.dp),
+                )
             }
         }
     }
@@ -2484,6 +2595,9 @@ private fun MessageBubble(
     // Reply to this message / tap its quote to jump to the original; defaulted no-ops for previews.
     onReply: (ChatRow) -> Unit = {},
     onQuoteClick: (messageId: String) -> Unit = {},
+    // Whether this message is pinned, and the long-press Pin / Unpin (#42); null offers neither. Defaulted for previews.
+    pinned: Boolean = false,
+    onTogglePin: ((messageId: String) -> Unit)? = null,
     onDelete: (messageId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
     onCopy: (text: String) -> Unit,
@@ -3096,6 +3210,14 @@ private fun MessageBubble(
                             } else {
                                 null
                             },
+                        pinned = pinned,
+                        onTogglePin =
+                            onTogglePin?.let { toggle ->
+                                {
+                                    showPicker = false
+                                    toggle(row.id)
+                                }
+                            },
                         onDetails = {
                             showPicker = false
                             onOpenMessageDetails(row.id)
@@ -3273,6 +3395,9 @@ private fun ReactionPicker(
     canReact: Boolean = true,
     // Translate this message (ADR 2026-10.t2h6): null where translation is not wired or there is no text to read.
     onTranslate: (() -> Unit)? = null,
+    // Pin or unpin this message (#42), labelled by [pinned]: null where pins are not wired.
+    pinned: Boolean = false,
+    onTogglePin: (() -> Unit)? = null,
 ) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // 48 dp cells with 4 dp gaps inside 8 dp side padding, plus the "+" cell: six recents need 376 dp, past
@@ -3363,6 +3488,13 @@ private fun ReactionPicker(
                         icon = Icons.Filled.Translate,
                         label = stringResource(R.string.chat_action_translate),
                         onClick = onTranslate,
+                    )
+                }
+                if (onTogglePin != null) {
+                    PickerAction(
+                        icon = Icons.Outlined.PushPin,
+                        label = stringResource(if (pinned) R.string.chat_action_unpin else R.string.chat_action_pin),
+                        onClick = onTogglePin,
                     )
                 }
                 PickerAction(

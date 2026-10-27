@@ -21,6 +21,8 @@ import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinOutcome
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
@@ -34,6 +36,7 @@ import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.pin.PinnedMessage
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.relay.AttachmentWait
 import app.getknit.knit.data.relay.FreeUploadOffer
@@ -276,6 +279,7 @@ class ChatViewModelTest {
     private fun vm(
         conversationId: String = Conversations.NEARBY,
         preferMeshCalls: Flow<Boolean> = flowOf(false),
+        pins: PinRepository? = null,
     ) = ChatViewModel(
         conversationId,
         messages,
@@ -306,7 +310,84 @@ class ChatViewModelTest {
         calls = calls,
         freeUploads = freeUploads,
         preferMeshCalls = preferMeshCalls,
+        pins = pins,
     )
+
+    // --- Pinned messages (#42) -------------------------------------------------------------------------------------
+
+    @Test
+    fun pinnedMessagesAreNamedTheWayTheThreadNamesItsSendersAndABlockedSendersPinIsLeftOut() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(GROUP) } returns
+                flowOf(
+                    listOf(
+                        PinnedMessage(msg(senderId = "me", id = "m3", body = "I'll bring water", conversationId = GROUP), "me", 30),
+                        PinnedMessage(msg(senderId = "sam", id = "m2", body = "Meet at the\nnorth gate", conversationId = GROUP), "me", 20),
+                        PinnedMessage(msg(senderId = "mallory", id = "m1", body = "spam", conversationId = GROUP), "me", 10),
+                        PinnedMessage(
+                            msg(
+                                senderId = "sam",
+                                id = "m0",
+                                body = "rude words",
+                                conversationId = GROUP,
+                                moderation = MessageEntity.MODERATION_TEXT_FLAGGED,
+                            ),
+                            "me",
+                            5,
+                        ),
+                    ),
+                )
+            peersFlow.value = listOf(peer("sam", name = "Sam"))
+            blockedFlow.value = setOf("mallory")
+            val vm = vm(GROUP, pins = pins)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.pinned.collect {} }
+            advanceUntilIdle()
+
+            val shown = vm.pinned.value
+            assertEquals(listOf("m3", "m2", "m0"), shown.map { it.messageId })
+            assertEquals(listOf("You", "Sam", "Sam"), shown.map { it.author })
+            // A quote's rule: one line, so a multi-line message reads as its words in a row.
+            assertEquals("Meet at the north gate", shown[1].snippet)
+            // Words the content filter hides stay hidden on the bar too.
+            assertTrue(shown[2].hidden)
+            assertEquals("", shown[2].snippet)
+        }
+
+    @Test
+    fun togglingAPinGoesToTheRepositoryAndAFullChatSaysItsOldestWent() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(any()) } returns flowOf(emptyList())
+            coEvery { pins.toggle("m4", "me", any()) } returns PinOutcome.PinnedReplacingOldest
+            coEvery { pins.toggle("m1", "me", any()) } returns PinOutcome.Pinned
+            val vm = vm(GROUP, pins = pins)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.togglePin("m1")
+            advanceUntilIdle()
+            assertTrue("a plain pin says nothing", events.isEmpty())
+
+            vm.togglePin("m4")
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_pin_replaced_oldest), events)
+            coVerify(exactly = 1) { pins.toggle("m1", "me", any()) }
+            coVerify(exactly = 1) { pins.toggle("m4", "me", any()) }
+        }
+
+    @Test
+    fun deletingAMessageDropsItsPin() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(any()) } returns flowOf(emptyList())
+            val vm = vm(GROUP, pins = pins)
+
+            vm.deleteMessage("m1")
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { pins.deleteForMessage("m1") }
+        }
 
     @Test
     fun theThreadReadsAsLoadingUntilItsFlowsHaveFirstEmitted() =

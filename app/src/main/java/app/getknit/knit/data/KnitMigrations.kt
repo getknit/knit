@@ -644,6 +644,22 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v26 — one empty `pins` table: the messages pinned to the top of their chat (#42), shaped like `reactions` (keyed
+     * by message id, no foreign key, a null `pinnedBy` as the unpin tombstone). Nothing before this build pinned
+     * anything, so there is nothing to fill. The SQL must stay byte-equivalent to what Room generates for
+     * `app/schemas/**/26.json`.
+     */
+    val MIGRATION_25_26 =
+        object : Migration(25, 26) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pins` (`messageId` TEXT NOT NULL, `pinnedBy` TEXT, `updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`messageId`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -671,5 +687,6 @@ object KnitMigrations {
             MIGRATION_22_23,
             MIGRATION_23_24,
             MIGRATION_24_25,
+            MIGRATION_25_26,
         )
 }

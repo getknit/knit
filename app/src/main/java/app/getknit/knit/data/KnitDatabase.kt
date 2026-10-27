@@ -33,6 +33,8 @@ import app.getknit.knit.data.peer.PeerBadgeEntity
 import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.peer.PeerProfileEntity
+import app.getknit.knit.data.pin.PinDao
+import app.getknit.knit.data.pin.PinEntity
 import app.getknit.knit.data.ratchet.GroupKeySendEntity
 import app.getknit.knit.data.ratchet.GroupRatchetDao
 import app.getknit.knit.data.ratchet.GroupRecvChainEntity
@@ -59,7 +61,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 25
+internal const val KNIT_DB_SCHEMA_VERSION = 26
 
 @Database(
     entities = [
@@ -74,6 +76,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 25
         CommonsMemberEntity::class, MetPeerEntity::class, SavedFileEntity::class,
         PeerProfileEntity::class, GroupMemberClockEntity::class, PeerBadgeEntity::class,
         AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
+        PinEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -238,6 +241,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 25
     //     again). Migrated by KnitMigrations.MIGRATION_23_24.
     // v25: `messages.styles` and `drafts.styles` — a message's and a draft's formatting as style ranges beside the plain
     //     body (ADR 2026-10.p95v), JSON triples; null on existing rows. Migrated by KnitMigrations.MIGRATION_24_25.
+    // v26: one `pins` table — the messages pinned to the top of their chat (#42), modelled on `reactions`: keyed by
+    //     message id, no foreign key to `messages`, a null `pinnedBy` as the unpin tombstone and `updatedAt` as the
+    //     last-writer-wins clock, so a later shared pin can reuse it. Local only today: never framed, never in custody.
+    //     Carried in a backup like `reactions`. Empty on arrival; migrated by KnitMigrations.MIGRATION_25_26.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -279,6 +286,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun attachmentHolderDao(): AttachmentHolderDao
 
     abstract fun scopeConfigDao(): ScopeConfigDao
+
+    abstract fun pinDao(): PinDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

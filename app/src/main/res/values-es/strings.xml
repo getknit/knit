@@ -552,6 +552,11 @@
     <string name="chat_action_details">Información del mensaje</string>
     <string name="chat_action_delete">Eliminar mensaje</string>
     <string name="chat_message_deleted">Mensaje eliminado</string>
+    <string name="chat_action_pin">Fijar mensaje</string>
+    <string name="chat_action_unpin">Dejar de fijar mensaje</string>
+    <string name="chat_pinned_label">Mensaje fijado</string>
+    <string name="chat_pinned_position">Mensaje fijado %1$d de %2$d</string>
+    <string name="chat_pin_replaced_oldest">Fijado. Se dejó de fijar el mensaje fijado más antiguo de este chat para hacer espacio.</string>
     <string name="chat_delete_confirm_title">¿Eliminar mensaje?</string>
     <string name="chat_delete_confirm_body">Solo se eliminará de este dispositivo.</string>
     <string name="chat_delete_confirm_action">Eliminar</string>

@@ -88,7 +88,7 @@ inside SQLite (`DatabaseExport`). The mesh keeps running: the live database's wr
 
 Carried (`BackupTables.CARRIED`): `blobs`, `blob_verdicts`, `attachment_holders`, `peers`, `peer_profiles`,
 `peer_badges`, `met_peers`, `groups`, `group_member_clocks`, `group_roots`, `commons`, `commons_members`,
-`commons_outbox`, `messages`, `reactions`, `message_receipts`, `drafts`. Rebuilt on arrival: `messages_fts` (the triggers fill it as the rows land).
+`commons_outbox`, `messages`, `reactions`, `pins`, `message_receipts`, `drafts`. Rebuilt on arrival: `messages_fts` (the triggers fill it as the rows land).
 `peer_profiles` is the signed profile frame each pin came from, public by construction; carried so a restored
 phone can still prove the key of every peer whose frames it will carry again (ADR 2026-09.g64k).
 `attachment_holders` is the proof that a DM photo's recipient holds its bytes; carried because a restore is a move

@@ -671,6 +671,11 @@
     <string name="chat_action_details">Message info</string>
     <string name="chat_action_delete">Delete message</string>
     <string name="chat_message_deleted">Message deleted</string>
+    <string name="chat_action_pin">Pin message</string>
+    <string name="chat_action_unpin">Unpin message</string>
+    <string name="chat_pinned_label">Pinned message</string>
+    <string name="chat_pinned_position">Pinned message %1$d of %2$d</string>
+    <string name="chat_pin_replaced_oldest">Pinned. Your oldest pin in this chat was unpinned to make room.</string>
     <string name="chat_delete_confirm_title">Delete message?</string>
     <string name="chat_delete_confirm_body">It will be removed from this device only.</string>
     <string name="chat_delete_confirm_action">Delete</string>
