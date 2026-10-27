@@ -224,6 +224,11 @@ class RatchetSessions(
                 val outcome = engine.open(ctx, header, nonce, ct, aad, now)
                 if (outcome !is RatchetEngine.OpenOutcome.Opened) return@locked false
                 store.applyOpen(peerId, outcome.delta, headerSe = header.se, headerN = header.n)
+                // The caller's row write first, the in-memory stamps after it: a write that throws rolls the
+                // transaction back, and a stamp set ahead of it would outlive the session row it describes — a
+                // replacement floor started, or an answer recorded, for a frame that still opens as new (#141
+                // finding 11). Still under the lock, so no other open reads the session without its stamps.
+                onOpened()
                 if (outcome.delta.purgePeerRecvState) {
                     // A replacement was adopted: start its rate-limit window and clear the reset heuristic —
                     // the session is fresh, old failures are moot.
@@ -231,7 +236,6 @@ class RatchetSessions(
                     synchronized(undecryptable) { undecryptable.remove(peerId) }
                 }
                 if (answeredOurInit(ctx.session, outcome.delta.session)) synchronized(confirmedAt) { confirmedAt[peerId] = now }
-                onOpened()
                 before = scopeView(ctx.session)
                 after = scopeView(outcome.delta.session)
                 true

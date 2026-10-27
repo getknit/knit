@@ -128,8 +128,11 @@ import java.util.concurrent.ConcurrentHashMap
  *    [PendingInbound] by re-entering [onDeliver] as its **last** step, so the key + any deviceTag block are
  *    applied first. The group analogue: [reconcileGroup] commits the roster, then replays any seed ctl DM
  *    parked in [PendingGroupKeys] because it arrived for a group we did not hold yet.
- *  - **no-throw-out-of-onDeliver** — [verifyInbound]/[decrypt] are `runCatching`-wrapped so a failure drops
- *    the frame locally but never throws, letting the router still relay it (it runs after onDeliver returns).
+ *  - **no-throw-out-of-onDeliver** — [verifyInbound]/[decrypt] are [runCatchingUnlessCancelled]-wrapped so a
+ *    failure drops the frame locally but never throws, letting the router still relay it (it runs after onDeliver
+ *    returns). The one throw they let out is the caller's own cancellation, never counted as a drop. No caller
+ *    today sees it: the router runs an admitted delivery under `NonCancellable`, and so do `MeshManager`'s custody
+ *    replays for each frame. It is the rule for a caller added later (ADR 2026-10.f82h).
  *
  * [MeshManager] still **owns** the six DTN services and the outbound origination choke; this pipeline
  * receives the services by reference and reaches origination through the [originate]/[flushPending] lambdas
@@ -340,13 +343,14 @@ class InboundPipeline(
         if (wire.relay && shouldLongRangeFanout(env)) transport.longRangeFanout(wire)
         // Completes the no-throw contract: a per-type handler must NEVER throw out of onDeliver. The router
         // schedules the relay only *after* this returns, so an escape would silently stop this node forwarding
-        // the frame (a propagation black hole). verifyInbound/decrypt are already runCatching-guarded
-        // individually; this backstops every remaining handler — notably deliverChat's on-device moderation
-        // classify(), the runtime sibling of the model-load gap fixed in e18b1f4 (a corrupt/failed classify
-        // would otherwise crash both delivery and the shared block-on-send path). A swallowed error is logged
-        // (it's a should-never-happen bug path); the custody capture above already ran, so the frame still
-        // re-serves later.
-        runCatching { dispatchByType(env, wire, fromNodeId, kind) }
+        // the frame (a propagation black hole). verifyInbound/decrypt are already guarded individually; this
+        // backstops every remaining handler — notably deliverChat's on-device moderation classify(), the runtime
+        // sibling of the model-load gap fixed in e18b1f4 (a corrupt/failed classify would otherwise crash both
+        // delivery and the shared block-on-send path). A swallowed error is logged (it's a should-never-happen bug
+        // path). It is not healed by a re-serve: the custody capture above already ran, so our digest folds the
+        // frame and no peer offers it again. A caller's cancellation is rethrown rather than logged here, and the
+        // router's own deliveries never see one (ADR 2026-10.f82h).
+        runCatchingUnlessCancelled { dispatchByType(env, wire, fromNodeId, kind) }
             .onFailure { Log.w(TAG, "handler error on ${env.type} ${env.id} from ${env.senderId}: ${it.message}") }
     }
 
@@ -774,8 +778,9 @@ class InboundPipeline(
      * future type falls through to the pinned-key path: if it verifies we still don't deliver it (the
      * [onDeliver] dispatch has no handler) but the router relays it onward.
      *
-     * Wrapped in [runCatching] so it NEVER throws out of [onDeliver]: any failure returns false =
-     * "drop locally", and the router still schedules the relay (it runs after onDeliver returns).
+     * Wrapped in [runCatchingUnlessCancelled] so it NEVER throws out of [onDeliver]: any failure returns false =
+     * "drop locally", and the router still schedules the relay (it runs after onDeliver returns). Only the
+     * caller's own cancellation is rethrown (ADR 2026-10.f82h).
      */
     private suspend fun verifyInbound(
         env: RelayEnvelope,
@@ -783,7 +788,7 @@ class InboundPipeline(
         fromNodeId: String,
         kind: TransportKind,
     ): Boolean =
-        runCatching {
+        runCatchingUnlessCancelled {
             // The blob traffic is unsigned and point-to-point only: the ask, the holder query and its answer (ADR
             // 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). No build marks one
             // for relay, so a flooded copy is nobody's: an ask honoured at every hop it reached would have each holder
@@ -810,7 +815,7 @@ class InboundPipeline(
                 // pin that a request could fill), and a typing cue (ephemeral best-effort presence — with no
                 // pinned key we can't render the peer's avatar anyway, so drop it silently rather than spend a
                 // key request / park slot on a frame that's worthless a moment later). Safe inside
-                // verifyInbound's runCatching — never throws.
+                // verifyInbound's guard — never throws.
                 // … and a commons post: it never arrives here on purpose (the spool door verifies and
                 // delivers it), so one on a radio is a stray copy that no key request should be spent on.
                 if (env.type !in NO_KEY_REQUEST_TYPES) {
@@ -1139,14 +1144,24 @@ class InboundPipeline(
             // group-addressed carries the sender-key header `g`, a DM the epoch-ratchet header `r`. The
             // group form is v2 only; v3 (ADR 059) is the DM form's compact sibling and takes the same arm.
             enc.v == EncEnvelope.VERSION_RATCHET && env.group != null -> {
-                runCatching { decryptAndDeliverGroup(env, content, enc, me, conversationId, plane, source?.fromNodeId) }.getOrElse {
+                runCatchingUnlessCancelled {
+                    decryptAndDeliverGroup(
+                        env,
+                        content,
+                        enc,
+                        me,
+                        conversationId,
+                        plane,
+                        source?.fromNodeId,
+                    )
+                }.getOrElse {
                     Log.w(TAG, "drop group ratchet chat ${env.id}: ${it.message}")
                     metrics.onDropped(DropReason.DECRYPT_FAILED)
                 }
             }
 
             EncEnvelope.isDmRatchetVersion(enc.v) -> {
-                runCatching { decryptAndDeliverV2(env, content, enc, me, conversationId, plane, signed, source) }.getOrElse {
+                runCatchingUnlessCancelled { decryptAndDeliverV2(env, content, enc, me, conversationId, plane, signed, source) }.getOrElse {
                     Log.w(TAG, "drop v2 chat ${env.id}: ${it.message}")
                     metrics.onDropped(DropReason.DECRYPT_FAILED)
                 }
@@ -1154,7 +1169,7 @@ class InboundPipeline(
 
             else -> {
                 val plain =
-                    runCatching { decrypt(env, enc, me) }.getOrElse {
+                    runCatchingUnlessCancelled { decrypt(env, enc, me) }.getOrElse {
                         Log.w(TAG, "drop encrypted chat ${env.id}: ${it.message}")
                         null
                     } ?: return

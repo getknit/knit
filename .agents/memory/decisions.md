@@ -241,6 +241,7 @@ carries; never renumber an old one.
 | [2026-10.dn2a](decisions/2026-10-dn2a-a-spool-changes-its-commons-rooms-without-a-restart.md) | A spool changes its commons rooms without a restart, closing only a changed room's members | spool, commons |
 | [2026-10.e42d](decisions/2026-10-e42d-a-frame-records-the-phone-radio-it-arrived-on.md) | a frame records the phone radio it arrived on, not just Nearby | mesh, data, diagnostics |
 | [2026-10.f7gg](decisions/2026-10-f7gg-a-blob-is-asked-of-the-likeliest-holder-first.md) | A blob is asked of the likeliest holder first, then of every neighbour | mesh, attachments, blob-exchange, wifi-aware |
+| [2026-10.f82h](decisions/2026-10-f82h-no-coroutine-cancellation-cuts-a-delivery-the-router-admitted.md) | no coroutine cancellation cuts a delivery the router admitted | mesh, custody, spool |
 | [2026-10.fcrd](decisions/2026-10-fcrd-a-switched-off-call-kind-is-answered-no-answer.md) | A switched-off call kind is answered no answer, and blocking already silences a call | calls, settings |
 | [2026-10.fm8z](decisions/2026-10-fm8z-public-wording.md) | Public wording: Knit is funded by supporters, and Knit Anywhere is their thank-you | copy, spool, anywhere |
 | [2026-10.fw8g](decisions/2026-10-fw8g-relayed-radio-mesh-traffic-is-indirect-reach.md) | Relayed radio-mesh traffic is indirect reach | mesh, ui |

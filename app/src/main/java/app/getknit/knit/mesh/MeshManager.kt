@@ -138,6 +138,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
@@ -159,6 +160,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 /** What one inline ack costs inside a DM's ciphertext (a 22-char frame id plus its CBOR header), ADR 054. */
@@ -2141,12 +2143,17 @@ class MeshManager(
             }.forEach { frame ->
                 if (messages.exists(frame.envelope.id)) return@forEach
                 // Replay bypasses the router (no second flood), exactly like PendingInbound's replay;
-                // onDeliver's verify/custody/ack steps are all idempotent.
-                pipeline.onDeliver(
-                    WireEnvelope(relay = false, sig = frame.sig, signed = frame.signed),
-                    frame.envelope,
-                    frame.envelope.senderId,
-                )
+                // onDeliver's verify/custody/ack steps are all idempotent. Each frame runs to completion as a
+                // router-admitted one does (ADR 2026-10.f82h): a stop between its commit and its tick would leave
+                // the row in place, and this backstop stops at the exists-gate. The loop between frames stays
+                // cancellable, so a stop still ends the pass.
+                withContext(NonCancellable) {
+                    pipeline.onDeliver(
+                        WireEnvelope(relay = false, sig = frame.sig, signed = frame.signed),
+                        frame.envelope,
+                        frame.envelope.senderId,
+                    )
+                }
             }
     }
 
@@ -2207,11 +2214,14 @@ class MeshManager(
             }.sortedBy { it.envelope.sentAt }
             .forEach { frame ->
                 if (messages.exists(frame.envelope.id)) return@forEach
-                pipeline.onDeliver(
-                    WireEnvelope(relay = false, sig = frame.sig, signed = frame.signed),
-                    frame.envelope,
-                    frame.envelope.senderId,
-                )
+                // As in [replayCustodiedGroupFrames]: one frame runs to completion, the pass stays cancellable.
+                withContext(NonCancellable) {
+                    pipeline.onDeliver(
+                        WireEnvelope(relay = false, sig = frame.sig, signed = frame.signed),
+                        frame.envelope,
+                        frame.envelope.senderId,
+                    )
+                }
             }
     }
 

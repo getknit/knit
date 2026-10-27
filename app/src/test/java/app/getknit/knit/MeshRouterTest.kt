@@ -20,15 +20,18 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.frameIdOf
 import app.getknit.knit.mesh.spool.ScopeSync
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -719,5 +722,41 @@ class MeshRouterTest {
             assertEquals(setOf("c"), transport.sent.mapNotNull { it.second?.nodeId }.toSet())
             assertEquals(2L, metrics.frames().dropsByReason[DropReason.NONCANONICAL_ID])
             assertEquals(0L, metrics.frames().framesDeduped)
+        }
+
+    /**
+     * #141 finding 11: once the dedup has admitted a frame, its delivery is not the caller's to cut short. The Internet
+     * plane hands a pulled frame to [MeshRouter.handleInbound] on its worker's own coroutine, and a reconcile that no
+     * longer wants the relay cancels that coroutine; the frame is already seen, so the copy being delivered is the only
+     * one this node takes for a SeenSet window. The radio's copy arriving after the cut must not be all that is left.
+     */
+    @Test
+    fun aDeliveryWhoseCallerIsCancelledStillFinishes() =
+        runTest {
+            val parked = CompletableDeferred<Unit>()
+            val proceed = CompletableDeferred<Unit>()
+            val finished = mutableListOf<String>()
+            val transport = RecordingTransport(setOf("b"))
+            val router =
+                MeshRouter(transport, backgroundScope, jitter = { 0L }) { _, env, _, _ ->
+                    parked.complete(Unit)
+                    proceed.await()
+                    finished += env.id
+                }
+            val (wire, env) = frame("m1")
+            val worker = launch { router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example") }
+            parked.await()
+            worker.cancel()
+            proceed.complete(Unit)
+            advanceUntilIdle()
+            // The relay runs past the cut too: a spool source puts nobody in heardFrom, so "b" is its one target. It is
+            // launched on backgroundScope, which advanceUntilIdle leaves waiting once the foreground is idle.
+            runCurrent()
+            assertEquals("the cut delivery's relay never ran", 1, transport.sent.size)
+            // The radio's copy, after the cut: deduplicated, as it must be once the first delivery has run.
+            router.handleInbound(wire, env, fromNodeId = "b")
+            advanceUntilIdle()
+
+            assertEquals(listOf(env.id), finished)
         }
 }

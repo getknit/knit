@@ -1,18 +1,25 @@
 package app.getknit.knit.mesh
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/** [everyRound]: one round that throws costs that round, never the loop (#206). Virtual time throughout. */
+/**
+ * [everyRound]: one round that throws costs that round, never the loop (#206). [runCatchingUnlessCancelled]: the
+ * pipeline's guards count a failure and let the caller's own cancellation through (ADR 2026-10.f82h). Virtual time
+ * throughout.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MeshCoroutinesTest {
     @Test
@@ -115,6 +122,38 @@ class MeshCoroutinesTest {
             assertTrue(loop.isCancelled)
             assertEquals(1, started)
             assertEquals(emptyList<Exception>(), failures)
+        }
+
+    @Test
+    fun aGuardHandsBackAFailureAndAStrayCancellationAlike() =
+        runTest {
+            val boom = IOException("decrypt failed")
+            assertSame(boom, runCatchingUnlessCancelled { throw boom }.exceptionOrNull())
+            val stray = CancellationException("an inner withTimeout")
+            assertSame(stray, runCatchingUnlessCancelled { throw stray }.exceptionOrNull())
+            assertEquals(7, runCatchingUnlessCancelled { 7 }.getOrNull())
+        }
+
+    /** The caller cancelled mid-guard: rethrown, so the drop after the guard never runs (#141 finding 11). */
+    @Test
+    fun aGuardRethrowsItsCallersOwnCancellation() =
+        runTest {
+            val parked = CompletableDeferred<Unit>()
+            var counted = false
+            val caller =
+                launch {
+                    runCatchingUnlessCancelled {
+                        parked.complete(Unit)
+                        delay(INTERVAL)
+                    }.onFailure { counted = true }
+                }
+            parked.await()
+            caller.cancel()
+            advanceTimeBy(INTERVAL * 2)
+            runCurrent()
+
+            assertTrue(caller.isCancelled)
+            assertFalse("a cancellation is not a dropped frame", counted)
         }
 
     private companion object {

@@ -20,8 +20,11 @@ import java.util.concurrent.ConcurrentHashMap
  * custodied once), and re-acking on re-delivery is the LoRa healing channel (ADR 039 §3), so there is no
  * ledger to keep. Only the debounce shape is shared, and it is mirrored here in style rather than reused.
  *
- * In-memory only, like AckSync's ledger: a process death inside the hold loses the pending acks, and the
- * peer's next LoRa re-offer (or any custody re-serve) re-delivers the DM, which re-holds and re-ticks it.
+ * In-memory only, like AckSync's ledger: a process death inside the hold loses the pending acks. Only a
+ * re-delivery of the DM re-holds and re-ticks it, and since ADR 018 that is no longer a matter of course: we
+ * custody our own inbound DMs, so the digests agree and no carrier re-serves one we hold. It takes real
+ * divergence (our copy evicted, a wipe) or a plane that re-offers without a digest (LoRa). A cancelled caller no
+ * longer cuts the hold short (ADR 2026-10.f82h); a process death still can (#56).
  * Pure — [now] and [flushScope] are injected; the JVM tests drive it on a virtual clock.
  */
 class DmAckCoalescer(

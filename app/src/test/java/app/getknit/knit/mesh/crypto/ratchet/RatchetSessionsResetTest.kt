@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.crypto.ratchet
 
 import androidx.room3.Room
+import androidx.room3.withWriteTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.KnitDatabase
@@ -36,6 +37,8 @@ class RatchetSessionsResetTest {
 
     private inner class Side(
         val nodeId: String,
+        // Production's transactor: every locked block inside one write transaction, so a commit that throws rolls back.
+        transacted: Boolean = false,
     ) {
         val ik = RatchetCrypto.generateKeyPair()
         val spks = mutableMapOf(1 to RatchetCrypto.generateKeyPair())
@@ -49,6 +52,14 @@ class RatchetSessionsResetTest {
                 store = RatchetRepository(db.ratchetDao(), clock = { T }),
                 dhIdentityPriv = { ik.priv },
                 spkPrivFor = { spks[it]?.priv },
+                transact =
+                    if (transacted) {
+                        object : SessionTransactor {
+                            override suspend fun <R> transact(block: suspend () -> R): R = db.withWriteTransaction { block() }
+                        }
+                    } else {
+                        SessionTransactor.None
+                    },
             )
         lateinit var peer: Side
 
@@ -81,6 +92,17 @@ class RatchetSessionsResetTest {
             return outcome
         }
 
+        /** The commit phase alone, with a row write that fails: what the pipeline's persist hook does when it throws. */
+        suspend fun commitFailing(
+            env: EncEnvelope,
+            now: Long,
+        ): Throwable? {
+            val r = checkNotNull(env.r)
+            return runCatching {
+                sessions.commitOpen(nodeId, peer.nodeId, peer.ik.pub, r, env.nonce, env.ct, AAD, now) { error("the row write failed") }
+            }.exceptionOrNull()
+        }
+
         suspend fun session() = sessions.sessionFor(peer.nodeId)
 
         /** What a backup restore leaves: every ratchet row for the peer gone, identity and prekeys intact. */
@@ -89,9 +111,9 @@ class RatchetSessionsResetTest {
         }
     }
 
-    private fun pair(): Pair<Side, Side> {
-        val a = Side("aaaaaaaa")
-        val b = Side("bbbbbbbb")
+    private fun pair(transacted: Boolean = false): Pair<Side, Side> {
+        val a = Side("aaaaaaaa", transacted)
+        val b = Side("bbbbbbbb", transacted)
         a.peer = b
         b.peer = a
         sides += a
@@ -105,8 +127,8 @@ class RatchetSessionsResetTest {
     }
 
     /** A session both sides confirmed at [T], [a] the initiator — the pair before [a] restores. */
-    private suspend fun established(): Pair<Side, Side> {
-        val (a, b) = pair()
+    private suspend fun established(transacted: Boolean = false): Pair<Side, Side> {
+        val (a, b) = pair(transacted)
         assertOpened(b.open(a.seal("hello", T), T))
         assertOpened(a.open(b.seal("hello back", T + 1), T + 1))
         assertTrue(checkNotNull(a.session()).confirmed)
@@ -227,6 +249,27 @@ class RatchetSessionsResetTest {
             val reset = sealed(a.reset(T1 + 3_000 + FLOOR, ResetCause.UNREADABLE))
             assertTrue(reset.reRooted)
             assertOpened(b.open(reset.envelope, T1 + 4_000 + FLOOR))
+        }
+
+    /**
+     * A replacement whose row write throws rolls back whole, and the floor it would have started goes with it (#141
+     * finding 11). The peer's session is still the old one and the reset still opens as new, so the copy custody or
+     * the spool re-serves is adopted. A floor stamped ahead of the write outlived the rollback and refused that copy
+     * for a minute, as if the replacement had been adopted.
+     */
+    @Test
+    fun aReplacementWhoseRowWriteRollsBackStartsNoFloor() =
+        runTest {
+            val (a, b) = established(transacted = true)
+            val before = checkNotNull(b.session()).root
+            a.wipe()
+            val reset = sealed(a.reset(T1))
+            assertTrue(reset.reRooted)
+
+            assertNotNull("the row write's failure reaches the caller", b.commitFailing(reset.envelope, T1 + 1_000))
+            assertArrayEquals("rolled back: still the old root", before, checkNotNull(b.session()).root)
+            assertOpened(b.open(reset.envelope, T1 + 2_000))
+            assertArrayEquals("the replacement is adopted", checkNotNull(a.session()).root, checkNotNull(b.session()).root)
         }
 
     /** On first contact the peer *established* the session, which starts no floor: an on-demand reset goes out. */

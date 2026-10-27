@@ -599,7 +599,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   each frame handed to the router has finished `handleInbound`), not just for the departure, and so does
   `unlink` for both ends since #137 (a receipt sealed after the cut missed the re-link's digest exchange). A stack custodies its own frame
   *before* it floods it since #141 (`originateWire`): flooding first let a link raised between the two miss both;
-  `LabCustodyGate` holds a node's custody writes to stage that window. `hold`/`release`
+  `LabCustodyGate` holds a node's custody writes to stage that window. A scenario that holds it releases it before
+  it ends: an admitted delivery runs under `NonCancellable` (ADR 2026-10.f82h), so one parked at the gate outlives a
+  stop and holds the session-scope join. Stop the manager, release, then restart (`SpoolWorkerStopLabTest`);
+  `MeshLab.close` releases every gate first as a net. `hold`/`release`
   flip `holding` under the batch's lock, so a frame sent during a release is never parked into a batch
   already taken. A stranger on the pages is a stranger only while the first-sighting profile floods cannot
   reach it — they page out unawaited by `awaitAcquainted` — so make `pages.lossy` eat them. A spool scope's

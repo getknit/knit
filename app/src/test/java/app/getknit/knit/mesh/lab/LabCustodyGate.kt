@@ -13,6 +13,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * not. Only the stack's own writes go through it (`LabNode.boot` hands the manager [over]); a scenario's reads of the
  * store do not. Kept across restarts, like the rest of the node's persistent state.
  *
+ * **A scenario that holds the gate releases it before it ends.** A frame the router admitted is delivered to the end
+ * under `NonCancellable` (ADR 2026-10.f82h), so a delivery parked here outlives the node's stop: `LabNode.restart` and
+ * `MeshLab.close` join the session scope, and that join waits on it until its `SCOPE_JOIN_MS` bound runs out. To stop a
+ * node mid-delivery, stop the manager, then [release], then restart (`SpoolWorkerStopLabTest`). `MeshLab.close`
+ * releases every node's gate first, as a net under a scenario that failed while holding, never as its release.
+ *
  * It can also fail the stack's custody id read ([failLiveIds]): the digest a link-up or a re-offer round sends throws
  * with it, so a scenario can make a session loop's round fail (#206). The scenario's own reads (`LabNode.custodyIds`)
  * go to the raw repository, untouched.

@@ -15,7 +15,10 @@ chat cases (the delivery-critical ones); the metadata types ride the same custod
 newcomers → `ForwardSync.onNeighborAdded`) advertises the ids it holds, and the neighbor's digest reply
 (`ForwardSync.onDigest`) **unicasts** every carried frame the other lacks — the set difference, with no per-session
 memo and no author skip (a node's own sends re-converge that way after a wipe). Re-served frames re-enter the existing
-`handleInbound` path — deliver + relay, no separate delivery code. A stored frame keeps only its immutable
+`handleInbound` path — deliver + relay, no separate delivery code. A frame `handleInbound` admits (marked seen) is
+delivered to the end under `NonCancellable`, whoever cancels the caller (ADR 2026-10.f82h): custody runs before the
+dispatch, so a cut delivery is one our digest already folds and no peer re-serves. Process death in that window is
+#56. A stored frame keeps only its immutable
 signed blob + signature (`CarriedFrame`); a fresh `WireEnvelope` (full `ttl`, `hops=0`) is stamped around
 it on re-serve, so it re-floods with a full hop budget when re-served much later (the signature covers
 neither ttl nor hops, which live in the unsigned wrapper).

@@ -39,7 +39,11 @@ LoRa plane (2026-09.ggq4).
   mutex serves both facades because seed adoption runs inside a DM commit. Deleting a used message key is safe only
   because a persisted frame never reaches decrypt again; a frame with no message row (a ctl, a tick) has no such
   gate. A decrypt or verify failure never throws out of the inbound handler: `onDeliver` runs before the relay is
-  scheduled.
+  scheduled. The guards are `runCatchingUnlessCancelled` (`mesh/MeshCoroutines.kt`), not `runCatching`: a caller's own
+  cancellation is rethrown, never counted as `DECRYPT_FAILED` and never fed to `onRatchetFailure`, and the router runs
+  an admitted delivery under `NonCancellable` so it never sees one (ADR 2026-10.f82h). `commitOpen` sets its in-memory
+  stamps (`lastReplacementAt`, `confirmedAt`, `undecryptable`) only after `onOpened()` returns: a stamp ahead of a row
+  write that rolls back starts a replacement floor for a frame that still opens as new.
 - **When touching `RatchetEngine.touch`, `Ladder.openFresh`, `resolveSession` / `resolveRace` / `isRemnantOf` /
   `remnantCandidates`, `peerInitEphPub`, `allowReplacement`, `REPLACEMENT_MIN_INTERVAL_MS` /
   `RESET_REPLACEMENT_MIN_INTERVAL_MS`, or `IntroSync.onPeerFrameOpened`:** READ ADR 2026-09.pz9g, ADR 023 and FSR §7.

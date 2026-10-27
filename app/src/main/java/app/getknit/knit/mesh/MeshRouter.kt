@@ -8,10 +8,12 @@ import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.spool.ScopeSync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 
 /**
@@ -119,8 +121,18 @@ class MeshRouter(
             return
         }
         metrics.onDelivered()
-        onDeliver(wire, envelope, fromNodeId, kind)
-        scheduleRelay(wire, envelope, fromNodeId)
+        // Admitted means delivered to the end, whoever handed the frame in. The id is seen from here on, and
+        // `onDeliver` custodies the frame before it dispatches, so a copy cut short now is one no peer re-serves and
+        // no later copy gets past the dedup: our digest already folds it. The caller is not ours to trust with that:
+        // a spool worker delivers its pulls on its own coroutine and a reconcile that drops the relay cancels it, and
+        // `MeshManager.stop` (a pause too) cancels the radio collector. A cut inside the decrypt lost the message, or,
+        // past the ratchet+row commit, its one-shot sealed receipt (ADR 018) for good (#141 finding 11, ADR
+        // 2026-10.f82h). Nothing a delivery awaits blocks without bound: every send is an enqueue
+        // (`FramedLink.send`) or a launch. Process death is outside this (#56).
+        withContext(NonCancellable) {
+            onDeliver(wire, envelope, fromNodeId, kind)
+            scheduleRelay(wire, envelope, fromNodeId)
+        }
     }
 
     /**

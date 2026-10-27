@@ -67,3 +67,26 @@ internal suspend inline fun runRound(
         onFailure(e)
     }
 }
+
+/**
+ * [runCatching] for a guard that must never throw out of the inbound path (`InboundPipeline.onDeliver`'s dispatch
+ * backstop, `verifyInbound`, the decrypt arms) and must never swallow its caller's own cancellation either. The rule
+ * is [runRound]'s: a [CancellationException] while the caller is still active (an inner `withTimeout`, a cancelled
+ * child's await) is a failure like any other and comes back as one; the caller's own cancellation is rethrown, so it
+ * is never counted as a drop and never reaches the reset heuristic (#141 finding 11, ADR 2026-10.f82h). No caller
+ * sees the second kind today: a delivery the router admitted runs under `NonCancellable`, and so does each frame of
+ * `MeshManager`'s custody replays. It is the rule for any caller added later.
+ *
+ * Catches every [Throwable] the rest of the way, exactly as the [runCatching] it replaces did.
+ */
+internal suspend inline fun <T> runCatchingUnlessCancelled(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        currentCoroutineContext().ensureActive()
+        Result.failure(e)
+    } catch (
+        @Suppress("TooGenericExceptionCaught") e: Throwable, // the drop it guards counts any failure
+    ) {
+        Result.failure(e)
+    }

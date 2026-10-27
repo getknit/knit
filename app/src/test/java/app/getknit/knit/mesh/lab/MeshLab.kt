@@ -311,7 +311,10 @@ class MeshLab {
     /** Stops every node and drops its state. */
     fun close() {
         // Every node goes down even when one fails its shutdown: a node left running leaks its collectors into the
-        // next test class in this JVM. The first failure is rethrown, the rest ride along as suppressed.
+        // next test class in this JVM. The first failure is rethrown, the rest ride along as suppressed. A gate a failed
+        // scenario left holding is released first: the delivery parked at it cannot be cancelled (ADR 2026-10.f82h),
+        // and the scope join would wait out its bound on it and bury the scenario's own failure under that one.
+        nodes.forEach { it.custodyGate.release() }
         val failures = nodes.mapNotNull { runCatching { it.shutdown() }.exceptionOrNull() }
         dir.deleteRecursively()
         failures.firstOrNull()?.let { first -> throw first.apply { failures.drop(1).forEach(::addSuppressed) } }

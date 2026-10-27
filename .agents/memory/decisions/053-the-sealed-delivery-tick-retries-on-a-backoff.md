@@ -52,3 +52,19 @@ ambient, short-lived class — trading 332 cheap drops for real custody rows acr
 than a heartbeat tally and the corroborating counter for this drop reason. Three JVM tests in `AckSyncTest`
 pin the curve (8 sends across the 24 h TTL, the exact due steps), the live-link override, and the cleartext
 form's exemption.
+
+## Amendment 2026-10-27 — a lost tick does not self-heal by a re-serve
+
+The sentence above, "a tick lost outright still self-heals the way it always did: the message re-serves through the
+deliver path and re-`owe`s it", stopped being true with ADR 018. Since then the recipient custodies its own inbound
+DMs, and every member already custodied a group or room frame. Once we hold the frame our digest folds it, the
+carriers' digests agree with ours, and nobody re-serves it. The exists-gate re-acks only on a re-delivery, and a
+re-delivery now takes real divergence: our copy evicted by quota, a wipe, or a plane that re-offers without a digest
+(LoRa). So a tick lost before it was sealed and custodied is lost for good, and nothing in this ADR's schedule brings
+it back.
+
+#141 finding 11 is the case that showed it. A spool worker that a reconcile stopped mid-delivery cut a DM's delivery
+after the row's commit and before its one-shot sealed receipt. Every digest then agreed, and the sender never saw
+✓✓. ADR 2026-10.f82h closes the cancellation half: the router finishes a delivery it admitted, whoever cancels the
+caller. Process death inside the same window is still open (#56). `DmAckCoalescer`'s and `AckSync`'s KDocs say
+the same thing.

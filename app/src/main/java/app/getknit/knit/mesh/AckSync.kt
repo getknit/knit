@@ -64,9 +64,12 @@ import java.util.concurrent.ConcurrentHashMap
  * message has no DM recipient, so retries can never evict custody.
  *
  * In-memory and bounded (global [cap]/[PENDING_CAP]/[ESCALATED_CAP], per-entry [ttlMs]) like
- * [KeyExchange]/[PendingInbound]: an unsent owed tick self-repopulates when the message re-serves through
- * the deliver path (which re-calls [owe]), so a restart before convergence loses nothing durable — the
- * replacement entry seals fresh (worst case, one duplicate custodied batch, absorbed idempotently). Pure
+ * [KeyExchange]/[PendingInbound]: an unsent owed tick re-populates when the message re-delivers through the
+ * deliver path (which re-calls [owe]), and the replacement entry seals fresh (worst case, one duplicate
+ * custodied batch, absorbed idempotently). That re-delivery is not a matter of course: every member custodies
+ * the frame, so the digests agree and nobody re-serves it without real divergence (an evicted copy, a wipe). A
+ * restart before the tick goes out can lose it for good; the broadcast room's tick is best-effort by design (ADR
+ * 033), and the durable half is #56 (ADR 2026-10.f82h). Pure
  * (transport/identity/signer/clock injected) ⇒ unit-tested with [FakeLoopTransport] (see `AckSyncTest`).
  */
 class AckSync(
@@ -668,7 +671,9 @@ class AckSync(
      * cleared the window and landed on a consumed ratchet chain index — ~96 `RATCHET_DUPLICATE` drops at
      * the author per stuck tick, across the 24 h TTL. Doubling from one heartbeat up to [RETRY_CAP_MS]
      * holds the same horizon at ~8. Nothing here extends the entry's life: [sweep] still ages it out on
-     * [Owed.recordedAt], and the tick self-heals anyway when the message re-serves and re-[owe]s.
+     * [Owed.recordedAt]. A re-serve that re-[owe]s the tick takes real divergence (an evicted copy, a wipe) since
+     * ADR 018 has us custody our own inbound frames, so the retry here is the tick's own way back (ADR 053's
+     * 2026-10-27 amendment; a tick lost to process death is #56).
      *
      * The cleartext form used to be exempt — a fresh id per attempt costs the author only a SeenSet dedup —
      * but the cost that matters is the **sender's**: a best-effort send is a LoRa packet whenever the board

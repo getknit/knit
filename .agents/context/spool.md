@@ -55,6 +55,11 @@ lines.
   overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
   `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default
   when it is introduced.
+- **When touching `ScopeSync.reconcile`, `Worker.stop`, or the worker coroutine that hands a pull to `deliver`:**
+  READ ADR 2026-10.f82h. A reconcile that drops a relay cancels its worker mid-delivery as a matter of course; the
+  delivery survives only because `MeshRouter.handleInbound` finishes what it admitted under `NonCancellable`. Don't
+  move a delivery off that door, and don't bound it with a timeout that fires before custody, commit and receipt
+  (`SpoolWorkerStopLabTest`).
 - **When touching `mesh/crypto/scope/`, `mesh/spool/`, or the spool/internet-relay plane:** READ
   `docs/SPOOL_PROTOCOL.md` (the normative public spec; its §13 vectors are pinned by
   `ScopeVectorTest`/`SpoolRecordsTest` — change them only together), then the `ScopeSync` invariants in
