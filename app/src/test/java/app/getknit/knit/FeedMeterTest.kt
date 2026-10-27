@@ -1,6 +1,7 @@
 package app.getknit.knit
 
 import app.getknit.knit.mesh.link.FeedMeter
+import app.getknit.knit.mesh.link.FeedWindow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,16 +11,20 @@ import org.junit.Test
 class FeedMeterTest {
     private var t = 0L
 
-    // The arithmetic with no sample floor: these cases report a second or less apart.
-    private val meter = FeedMeter({ t }, minSampleMs = 0)
+    // The arithmetic with no sample floor and no ceiling: these cases report a second or less apart, at rates past it.
+    private val meter = FeedMeter({ t }, minSampleMs = 0, ceiling = Int.MAX_VALUE)
 
+    // A stream whose writer has already handed [written] bytes to the stack (all of it unless a case says), so a report
+    // is clamped by what was written only where the case means it to be.
     private fun streaming(
         key: String = KEY,
         offset: Long = 0,
         length: Long = MIB,
+        written: Long = length,
     ) {
         meter.start(key)
         meter.sized(offset, length)
+        meter.wrote(written.toInt())
     }
 
     @Test
@@ -183,9 +188,10 @@ class FeedMeterTest {
         // ADR 2026-10.5buf: a windowed sender's receiver reports on every chunk, and a reader catching up a burst reports
         // bytes ms apart. The meter's settle, smoothing and first-rate deadline count samples tuned to two-second reports,
         // so a report sooner than that after the last sample takes none.
-        val meter = FeedMeter({ t })
+        val meter = FeedMeter({ t }, ceiling = Int.MAX_VALUE)
         meter.start(KEY)
         meter.sized(0, MIB)
+        meter.wrote(MIB.toInt())
         meter.paced(8_192)
         meter.report(KEY, 4_096, 250)
         meter.report(KEY, 1_000_000, 253) // a burst: 2.7 GB/s for 3 ms
@@ -193,6 +199,49 @@ class FeedMeterTest {
         meter.report(KEY, 1_016_384, FeedMeter.MIN_SAMPLE_MS)
         assertTrue(meter.measured)
         assertEquals("one sample over two seconds", (MIB - 1_016_384) * 1_000 / 508_192, meter.feed(0, t, 8_192, settled = true).etaMs)
+    }
+
+    @Test
+    fun aReportOfMoreThanEverWasWrittenReadsAsWhatWasAndStillCounts() {
+        // #158: a `held` past the stream once read the feed as about to end. Clamped to the writer's own bytes, and never
+        // refused: the owner feeds the window only from a report the meter took.
+        streaming(length = 1_000_000, written = 10_000)
+        assertTrue("clamped, not refused", meter.report(KEY, 50_000, 1_000))
+        assertEquals("990 kB left at the 10 kB/s written, not 950 kB at 50", 99_000L, meter.feed(0, t, 4_096, true).etaMs)
+    }
+
+    @Test
+    fun aHeldNearLongMaxLeavesTheRateAtTheWritersAndTheEtaAboveZero() {
+        // #158: `(held - fromHeld) * 1000` overflowed, and any `held` past the length left nothing to deliver: ETA 0.
+        streaming(length = 1_000_000, written = 20_000)
+        meter.report(KEY, 20_000, 1_000) // honest: 20 kB/s
+        assertEquals(49_000L, meter.feed(0, t, 4_096, true).etaMs)
+        meter.wrote(20_000) // the writer keeps its rate; the receiver claims everything
+        meter.report(KEY, Long.MAX_VALUE, 2_000)
+        val f = meter.feed(0, t, 4_096, true)
+        assertTrue(f.live)
+        assertEquals("960 kB left, still at 20 kB/s", 48_000L, f.etaMs)
+    }
+
+    @Test
+    fun aHeldBelowTheOffsetReadsAsTheOffset() {
+        streaming(offset = 1_000, length = 100_000)
+        assertTrue(meter.report(KEY, 0, 1_000))
+        assertEquals("nothing delivered: 100 kB at the pace, not 101", 25_000L, meter.feed(0, t, 4_000, true).etaMs)
+    }
+
+    @Test
+    fun aSilentReceiverClaimingTheWholeStreamInOneReportSetsNoRatePastTheCeiling() {
+        // #158's design pass: `ms` is the peer's clock, so a clamp to what was written alone does not bound the rate. A
+        // receiver silent through the feed, then "all of it, two seconds in", read a MiB at 512 KiB/s into [lastRate].
+        val meter = FeedMeter({ t })
+        meter.start(KEY)
+        meter.sized(0, MIB)
+        meter.wrote(MIB.toInt())
+        t = 60_000
+        assertTrue(meter.report(KEY, MIB, FeedMeter.MIN_SAMPLE_MS))
+        meter.end()
+        assertTrue("lastRate ${meter.lastRate}", meter.lastRate in 1..FeedWindow.CEILING_BYTES_PER_SEC)
     }
 
     private companion object {

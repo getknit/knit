@@ -56,7 +56,7 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `FramedLink.feedChunks` / `awaitReport`, `RxReports`, or `BuildConfig.BLE_FEED_WINDOW`:** READ ADR
   2026-10.5buf — a file to a peer that reports (an iPhone too since its 2026-10-09 amendment, paired with the iOS half) is clocked by those reports on any PHY (written and not yet held kept under
   the measured drain over the round trip plus a quarter second, BBR-style, no split, no earned budget; on Coded in 1 KiB
-  chunks, its amendment of 2026-10-08 (2)), the old pace only for a silent receiver or an older build; on in release since 2026-10-08 (its A/B still owed), switched on a debug build by `…debug.LINKTUNE --es feed window|pace`. A Bluetooth file is fed below what the air drains, from one budget split evenly among the 1M/2M links
+  chunks, its amendment of 2026-10-08 (2)), the old pace only for a silent receiver or an older build (silent: no report that lands a new whole chunk, its #149 amendment of 2026-10-27); on in release since 2026-10-08 (its A/B still owed), switched on a debug build by `…debug.LINKTUNE --es feed window|pace`. A Bluetooth file is fed below what the air drains, from one budget split evenly among the 1M/2M links
   feeding a file at once (`txInProgress`), in chunks of two seconds of the share; a paced Coded link keeps its own pace outside the
   split (yvn6's #114 amendment). The stack's queue hides the drain from the sender, so tune against the receiver's
   `rx … in <ms>ms` line — never the sender's `file … in`, which reads size ÷ pace. No wire change.

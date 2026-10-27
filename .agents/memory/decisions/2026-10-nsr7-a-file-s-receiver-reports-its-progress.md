@@ -9,7 +9,7 @@ topics: [ble, mesh, blobs]
 # ADR 2026-10.nsr7 — A file's receiver reports its progress, and the holder times parked asks by it
 
 Status: Accepted (2026-10-07). Amends ADR 2026-10.g24x (item 4, one Bluetooth copy of a blob at a time, and its
-settling-pace amendment). Phase 1 is built; phase 2 is recorded here and not built. A wire addition under the existing
+settling-pace amendment). Phase 1 is built; phase 2 is built as ADR 2026-10.5buf. A wire addition under the existing
 `Protocol.CAP_BLOB_HAVE` bit (ADR 2026-10.6e5t), with no new bit: none of 6e5t, g24x or this has been pushed. The iOS port
 owes the receiving half as a companion change.
 
@@ -183,6 +183,10 @@ latency during a feed and the snoop's queue depth.
 - **A promise that may break:** a SENDING answer's `eta` is a promise the holder may break (a deadline passed, a link
   cut). The asker then falls back as before, after the promise plus 30 s.
 - **A liar:** a holder lying about `eta` can hold an asker for up to 15 min, where a lie used to cost one grace.
+- **A lying receiver:** since the amendment of 2026-10-27, a receiver's `held` is clamped to what its sender wrote and
+  each sample capped at 64 KiB/s, so a liar can still pin its own link's `lastRate` at that ceiling, and with it the
+  next feed's `expectedFileRate` to it, so its next ask is ordered as the fastest and may be fed beside a live feed.
+  It cannot read a feed as ended early, nor overflow the rate.
 - **Release:** none of this is behind a build flag. `CAP_BLOB_HAVE` is in every build's capabilities, so release builds
   report progress and park without a bound of their own, with the boost off (`BLE_LINK_BOOST`): the pace's base share
   and the feeds' measured rates decide everything.
@@ -221,3 +225,16 @@ treats the frame as signed and may ask an unpinned sender for its key, so a lab 
 this build meets it. A new capability bit is still not taken, for the reason above. Device trial owed: the iPhone
 feeding a photo to a P9. Pass: the iPhone counts about 4 `blobprog`/s and acts on them (its meter or ETA in its log),
 with no key requests and no rings on the P9's state line.
+
+**Amendment (2026-10-27): a report is held to what was written (#158).** `FeedMeter.report` took a receiver's `held`
+as it came: a value past the stream overflowed `(held - fromHeld) * 1000` near `Long.MAX_VALUE`, and any `held` past
+the length left nothing to deliver, so the feed read as live with an ETA of 0, a third asker parked behind it, and its
+rate became the link's `lastRate`. `FramedLink.feedChunk` now counts each chunk into the meter (`FeedMeter.wrote`)
+beside the window's, under the same lock, and `report` clamps `held` into the stream's offset … offset + written,
+as `FeedWindow.report` already did. Clamped, never refused: `report` still returns true for the stream going now,
+since `FramedLink.onProgress` feeds the window only then. The clamp alone did not bound the rate, because a report's
+`ms` is the peer's clock (silent through a feed, then one report of everything at 2 s); so each sample is also capped,
+before smoothing, at `FeedWindow.CEILING_BYTES_PER_SEC`. Honest feeds never reach it: the meter is fed only by a
+Bluetooth link's reports, a paced feed's budget tops out at `BOOST_PACE_BYTES_PER_SEC` (18 KiB/s), and a windowed
+feed's rate is already held under the same ceiling. The residual is in the costs above. No wire, vector or schema
+change; an Android-only bound, so nothing to pair.

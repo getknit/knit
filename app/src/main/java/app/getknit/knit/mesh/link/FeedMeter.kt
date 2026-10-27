@@ -13,6 +13,11 @@ import app.getknit.knit.mesh.FileFeed
  * anything about the link. The shortfall is read only from reports whose window ran at one pace with the writer awake:
  * a pace that rose mid-window, or a `delay` the CPU slept through, would read as a slow air.
  *
+ * A report is the receiver's word, so it is held to what this side can prove (#158): what it holds is never more than
+ * was written ([wrote]) nor less than the stream's offset, and no sample is believed past [ceiling]. Unclamped, a
+ * `held` past the stream read the feed as about to end, parked a third asker behind it, and set the link's [lastRate]
+ * for the next feed; since the clock a report's `ms` is on is the peer's too, the clamp alone did not bound the rate.
+ *
  * Not thread-safe: its owner ([FramedLink]) calls it under one lock. Pure, on an injected clock.
  */
 internal class FeedMeter(
@@ -20,6 +25,9 @@ internal class FeedMeter(
     // The shortest span, on the receiver's clock, a sample is measured over ([MIN_SAMPLE_MS]); a test of the arithmetic
     // alone sets it lower.
     private val minSampleMs: Long = MIN_SAMPLE_MS,
+    // The fastest drain a sample is believed at, as [FeedWindow]'s: the meter is fed only by a Bluetooth link's reports,
+    // where no honest feed comes near it. A test of the arithmetic alone sets it higher.
+    private val ceiling: Int = FeedWindow.CEILING_BYTES_PER_SEC,
 ) {
     /**
      * The share of its pace the last measured stream on this link drained, when that fell short of the pace: 1.0 when
@@ -41,6 +49,9 @@ internal class FeedMeter(
     private var key: String? = null
     private var offset = 0L
     private var length = -1L
+
+    // The stream's bytes written so far (stream-relative): the most a report can prove the receiver holds.
+    private var written = 0L
     private var startedAt = 0L
     private var lastHeld = -1L
     private var lastMs = 0L
@@ -80,6 +91,7 @@ internal class FeedMeter(
         this.key = key
         offset = 0L
         length = -1L
+        written = 0L
         startedAt = now()
         lastHeld = -1L
         lastMs = 0L
@@ -104,6 +116,11 @@ internal class FeedMeter(
     ) {
         this.offset = offset
         this.length = length
+    }
+
+    /** The writer handed the stream's next [bytes] to the stack: a report can hold that much more. */
+    fun wrote(bytes: Int) {
+        written += bytes
     }
 
     /**
@@ -159,15 +176,21 @@ internal class FeedMeter(
     }
 
     /**
-     * The peer holds [held] bytes of [key] (the whole length so far), [ms] after its header arrived. True when it named
-     * the stream going now; a report of any other is stale and ignored.
+     * The peer holds [reported] bytes of [key] (the whole length so far), [ms] after its header arrived. True when it
+     * named the stream going now; a report of any other is stale and ignored.
+     *
+     * [reported] is read clamped into the stream's offset … what was written, and each sample capped at [ceiling] before it
+     * is smoothed (#158): a liar's report reads as at most the sender's own writes, at no more than the fastest drain
+     * believed. Clamped, never refused: a report of the stream going now still returns true, since the owner feeds the
+     * window only then.
      */
     fun report(
         key: String,
-        held: Long,
+        reported: Long,
         ms: Long,
     ): Boolean {
         if (key != this.key || length < 0) return false
+        val held = reported.coerceIn(offset, offset + written)
         val (fromHeld, fromMs) = if (sampleHeld < 0) offset to 0L else sampleHeld to sampleMs
         if (paceMoved) {
             paceMoved = false
@@ -175,7 +198,7 @@ internal class FeedMeter(
             sampleHeld = held
             sampleMs = ms
         } else if (ms - fromMs >= minSampleMs && held >= fromHeld) {
-            val sample = ((held - fromHeld) * MS_PER_SECOND / (ms - fromMs)).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+            val sample = ((held - fromHeld) * MS_PER_SECOND / (ms - fromMs)).coerceIn(0L, ceiling.toLong()).toInt()
             rate = if (rate == 0) sample else (rate * (SMOOTHING - 1) + sample) / SMOOTHING
             if (steadyReports >= STEADY_REPORTS && pace > 0) {
                 val r = minOf(1.0, sample.toDouble() / pace)

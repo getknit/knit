@@ -411,3 +411,26 @@ base.
 second Android link feeding. Pass: the window holds (`back`, no `paced` past the start), the receiver's drain is at
 least the paced base, texts behind it within 5 s. Then lock the iPhone mid-file. Pass: `paced: receiver silent`, the
 link survives, and the file completes after the next ring.
+
+## Amendment 2026-10-27: only a report that lands a chunk is heard
+
+**What changed.** `FeedWindow.report` counts as hearing from the receiver (`heardAt`, which `pacing`'s silence counts
+from) only when the report holds a chunk whole for the first time (`landed > 0`), and only such a report may reset the
+drain filter on a standing queue or a slowed round trip. Everything else a report moves is unchanged.
+
+**Why.** `blobprog` is unsigned and point to point, so any linked peer can send any `held`. A peer repeating one value,
+or adding a byte to it, every 3 s or less kept the silence fresh and the window full: the feed waited on `awaitReport`
+for the link's life, holding `txInProgress`, the stash behind it and the link boost (#149). Now it is paced after the
+silence and the file finishes. A whole chunk, not just more bytes, because a byte-at-a-time trickle would still hold the
+window shut. An honest report always lands one: Android (this build and 2.9.0) and iOS report only after a whole
+`FILE_CHUNK` record landed and the bytes grew, and the sender writes one record per chunk, so an honest `held` always
+ends on a chunk boundary. The one honest report that lands none races the sender's `wrote` after a returned write; its
+ack was already lost, and its near-zero sample would have reset the drain on a standing queue.
+
+**Deferred.** The slowest a peer can now hold a feed is one acknowledged chunk per silence, which is also how an honest
+slow Coded receiver looks. Bounding a stream overall (#149's option 2, the meter's deadline times a small factor) is
+left for its own change.
+
+**Device trial owed.** A debug-bridge or knit-ios harness peer answering a photo's stream with a fixed
+`blobprog held=0` every 1 s, a P9 sending. Pass: `bt file window paced: receiver silent` within about 3 s, and the
+sender's `file <KIND>/<hash> … window` line completes.

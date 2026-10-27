@@ -30,7 +30,9 @@ package app.getknit.knit.mesh.link
  *   stands as the queue. No timer drains the estimate: a sender whose CPU sleeps (a dark phone) is woken by the reports
  *   it waits on.
  * - **Silence:** before the first report the window is [INITIAL_WINDOW] (four smallest chunks). With no report for [NO_REPORT_MS] — a peer
- *   that never reports, or whose reports stopped — the owner paces the feed the old way ([pacing]) until one comes.
+ *   that never reports, or whose reports stopped — the owner paces the feed the old way ([pacing]) until one comes. A
+ *   report that lands no new whole chunk is not hearing from the receiver ([report]): one repeating its `held`, or
+ *   adding a byte at a time, held the window shut for the link's life (#149).
  * - **Two-second reporter:** a receiver whose reports come [SLOW_REPORT_MS] apart, each covering several chunks, is
  *   paced too ([slowReporter]), in chunks small enough ([pacedChunkBytes]) that a receiver reporting every chunk answers
  *   each well inside that gap. [RECOVER_REPORTS] such answers in a row, each one chunk at the paced spacing, give the
@@ -83,7 +85,7 @@ internal class FeedWindow(
     private var written = 0L
     private var lastHeld = -1L
 
-    // When the stream began or a report last came, on the sender's clock: [pacing]'s silence counts from it.
+    // When the stream began or a report last landed a chunk, on the sender's clock: [pacing]'s silence counts from it.
     private var heardAt = 0L
 
     // Where the next drain sample is measured from: the last report a sample was taken at (or the stream's start).
@@ -200,7 +202,11 @@ internal class FeedWindow(
     /**
      * The receiver holds [held] bytes of the blob (its whole length so far, a resume's prefix included), [ms] after the
      * stream's header reached it, and the report came at [now]. A report older than the last, or naming more than was
-     * written, moves nothing past what it can prove.
+     * written, moves nothing past what it can prove. One that lands no new whole chunk is not hearing from the receiver,
+     * and takes no sample that resets the drain: a receiver reports only once a whole record landed and its bytes grew,
+     * and a record is one chunk, so an honest report always lands one. A peer repeating one `held`, or adding a byte to
+     * it, every few seconds kept [pacing] off and the window shut for the link's life (#149, ADR 2026-10.5buf's
+     * amendment of 2026-10-27); now it is paced after [silenceMs] and the file finishes.
      */
     fun report(
         held: Long,
@@ -228,9 +234,9 @@ internal class FeedWindow(
             probingRtt = true
             probeFrom = written
         }
-        sampleDrain(proven, ms, reset = standing || slowed)
+        sampleDrain(proven, ms, reset = landed > 0 && (standing || slowed))
         lastHeld = proven
-        heardAt = now
+        if (landed > 0) heardAt = now
     }
 
     /**

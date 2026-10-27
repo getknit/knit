@@ -12,6 +12,7 @@ import org.junit.Test
  * queued, on any link speed, and finds a faster link by itself. The simulated link drains at a set rate from one queue
  * (the stack's and the air's), and its receiver reports as `RxReports` does for a windowed sender.
  */
+@Suppress("LargeClass") // one window's whole contract over one shared Sim harness: it grows by a test a finding, by design
 class FeedWindowTest {
     /**
      * One simulated stream: the sender follows the window, the air drains [drain] B/s, and the receiver reports as
@@ -386,6 +387,61 @@ class FeedWindowTest {
         w.report(held = 12_288, ms = 7_000, now = 7_100)
         w.report(held = 12_288, ms = 7_500, now = 7_600)
         assertTrue("three reports holding nothing new: still paced", w.pacing(7_600))
+    }
+
+    @Test
+    fun aReceiverRepeatingOneHeldIsPacedOnceTheSilenceRunsFromItsLastChunk() {
+        // #149: a report repeating its `held` every two seconds kept the silence fresh, the window shut and the feed
+        // waiting for the link's life. Only a report that lands a chunk is heard from the receiver.
+        val w = FeedWindow().apply { start(offset = 0, now = 0) }
+        repeat(4) { w.wrote(2_048, 0) }
+        w.report(held = 2_048, ms = 500, now = 600)
+        assertFalse("not before the silence from its last chunk", w.pacing(600 + FeedWindow.NO_REPORT_MS - 1))
+        for (i in 1..6) {
+            val now = 600 + i * 2_000L
+            w.report(held = 2_048, ms = 500 + i * 2_000L, now = now)
+            if (now - 600 >= FeedWindow.NO_REPORT_MS) assertTrue("a repeat at $now is not heard", w.pacing(now))
+        }
+    }
+
+    @Test
+    fun aSubChunkTrickleIsNotHeardEither() {
+        // Option 1 of #149 made stricter: a byte more each report, under the silence apart, is not a chunk landed.
+        val w = FeedWindow().apply { start(offset = 0, now = 0) }
+        repeat(4) { w.wrote(2_048, 0) }
+        w.report(held = 2_048, ms = 500, now = 600)
+        for (i in 1..4) {
+            val now = 600 + i * 2_900L
+            w.report(held = 2_048L + i, ms = 500 + i * 2_900L, now = now)
+            if (now - 600 >= FeedWindow.NO_REPORT_MS) assertTrue("a trickle at $now is not heard", w.pacing(now))
+        }
+    }
+
+    @Test
+    fun aRepeatWhileTheQueueStandsKeepsTheDrain() {
+        // A standing queue resets the drain's filter to the report's sample: a repeat's is about nothing, and it took
+        // the window to its start. Only a report that lands a chunk is the air's measure.
+        val w = FeedWindow().apply { start(offset = 0, now = 0) }
+        repeat(20) { w.wrote(2_048, 0) }
+        w.report(held = 4_096, ms = 500, now = 600)
+        val rate = w.rate
+        val target = w.target()
+        assertTrue("the queue stands", w.queued() > 2 * target)
+        w.report(held = 4_096, ms = 1_000, now = 1_100)
+        assertEquals("the drain is kept", rate, w.rate)
+        assertEquals("and so is the window", target, w.target())
+    }
+
+    @Test
+    fun aReportThatLandsAChunkGivesTheWindowBack() {
+        val w = FeedWindow().apply { start(offset = 0, now = 0) }
+        repeat(4) { w.wrote(2_048, 0) }
+        w.report(held = 2_048, ms = 500, now = 600)
+        w.report(held = 2_048, ms = 2_500, now = 2_600)
+        w.report(held = 2_048, ms = 4_500, now = 4_600)
+        assertTrue("repeats only: paced", w.pacing(4_600))
+        w.report(held = 4_096, ms = 5_000, now = 5_100)
+        assertFalse("a chunk landed: windowed again", w.pacing(5_100))
     }
 
     @Test

@@ -443,23 +443,71 @@ class FramedLinkTest {
                 now = { t.get() },
             )
         val key = "c".repeat(64)
-        val file = tmp.newFile("measured.bin").apply { writeBytes(ByteArray(4 * 1024 * 1024)) }
+        val size = 4L * 1024 * 1024
+        val file = tmp.newFile("measured.bin").apply { writeBytes(ByteArray(size.toInt())) }
         assertTrue(h.link.sendFile(file, FileMeta(FileKind.ATTACHMENT, key, "image/jpeg")))
         assertEquals(LinkFraming.Type.FILE_HEADER, LinkFraming.read(h.fromLink)!!.type)
         assertTrue(awaitUntil { h.link.feed(key)?.etaMs != null })
+        // The third chunk on the pipe means the first two were written: a report of them is one the meter can prove (#158).
+        val chunks = List(3) { chunkBytes(h.fromLink) }
+        val held = chunks[0] + chunks[1]
 
         h.link.onProgress("d".repeat(64), 1_000_000, 1_000) // another file's: ignored
         assertFalse(h.link.feed(key)!!.measured)
-        h.link.onProgress(key, 2 * 1024 * 1024, 2_000) // 2 MiB in its first two seconds (the meter samples over two)
+        h.link.onProgress(key, held, 2_000) // its first two chunks in its first two seconds (the meter samples over two)
         val measured = h.link.feed(key)!!
         assertTrue(measured.measured)
-        assertEquals("2 MiB left at 1 MiB/s", 2_000L, measured.etaMs)
+        assertEquals("the rest at what it held over two seconds", (size - held) * 1_000 / (held / 2), measured.etaMs)
 
+        // Past its pace wait and blocked on the fourth chunk's write: a writer waiting out its pace counts no stall.
+        assertTrue(awaitUntil { h.fromLink.available() > 0 })
         t.addAndGet(FeedMeter.STALL_MS + 1) // no report moved
         assertFalse("stalled: it holds nobody", h.link.feed(key)!!.live)
-        h.link.onProgress(key, 3 * 1024 * 1024, 4_000)
+        LinkFraming.read(h.fromLink) // the fourth: the third was written
+        h.link.onProgress(key, held + chunks[2], 4_000)
         assertTrue("moving again", h.link.feed(key)!!.live)
         h.link.close()
+    }
+
+    @Test
+    fun aReportOfMoreThanWasWrittenIsMeteredAsWhatWas() {
+        // #158: the meter holds a report to the bytes this side wrote ([FeedMeter.wrote], counted beside the window's). A
+        // receiver claiming the whole file reads as what was written, not a feed about to end; an honest one as it says.
+        val t = AtomicLong(0)
+        val pace = 32 * 1024
+        val h =
+            harness(
+                fromLinkBuffer = 1024,
+                pace = { PaceConfig(bytesPerSec = pace, chunkBytes = 2048) },
+                now = { t.get() },
+            )
+        val key = "e".repeat(64)
+        val size = 4L * 1024 * 1024
+        val file = tmp.newFile("clamped.bin").apply { writeBytes(ByteArray(size.toInt())) }
+        assertTrue(h.link.sendFile(file, FileMeta(FileKind.ATTACHMENT, key, "image/jpeg")))
+        assertEquals(LinkFraming.Type.FILE_HEADER, LinkFraming.read(h.fromLink)!!.type)
+        val first = chunkBytes(h.fromLink)
+        val written = first + chunkBytes(h.fromLink)
+        // The third chunk's write cannot complete into the small pipe: written stays at two once the pace's ETA shows it.
+        assertTrue(awaitUntil { h.link.feed(key)?.etaMs == (size - written) * 1_000 / pace })
+
+        h.link.onProgress(key, first, 2_000) // honest: the first chunk
+        val rate = first * 1_000 / 2_000
+        assertEquals("an honest report reads as it says", (size - first) * 1_000 / rate, h.link.feed(key)!!.etaMs)
+
+        h.link.onProgress(key, size, 4_000) // all of it: only two chunks were ever written
+        val clamped = (rate * 3 + (written - first) * 1_000 / 2_000) / 4
+        val feed = h.link.feed(key)!!
+        assertTrue(feed.live)
+        assertEquals("read as what was written, not a feed about to end", (size - written) * 1_000 / clamped, feed.etaMs)
+        h.link.close()
+    }
+
+    /** Reads the next record, a FILE_CHUNK, and returns its size. */
+    private fun chunkBytes(fromLink: PipedInputStream): Long {
+        val rec = LinkFraming.read(fromLink)!!
+        assertEquals(LinkFraming.Type.FILE_CHUNK, rec.type)
+        return rec.payload.size.toLong()
     }
 
     /** Reads the FILE_CHUNK records that arrive within [quietMs] of each other, and returns their sizes. */

@@ -770,7 +770,10 @@ class FramedLink(
         val n = input.read(buf, 0, chunk.coerceIn(1, buf.size))
         if (n == -1) return false
         LinkFraming.write(out, LinkFraming.Type.FILE_CHUNK, if (n == buf.size) buf else buf.copyOf(n))
-        synchronized(pendingLock) { inFlight.wrote(n, now()) }
+        synchronized(pendingLock) {
+            inFlight.wrote(n, now())
+            meter.wrote(n)
+        }
         txLeft -= n
         txWroteAt = now()
         outAt = txWroteAt
