@@ -63,7 +63,7 @@ re-delivery now takes real divergence: our copy evicted by quota, a wipe, or a p
 (LoRa). So a tick lost before it was sealed and custodied is lost for good, and nothing in this ADR's schedule brings
 it back.
 
-#141 finding 11 is the case that showed it. A spool worker that a reconcile stopped mid-delivery cut a DM's delivery
+Finding 11 of #141 is the case that showed it. A spool worker that a reconcile stopped mid-delivery cut a DM's delivery
 after the row's commit and before its one-shot sealed receipt. Every digest then agreed, and the sender never saw
 ✓✓. ADR 2026-10.f82h closes the cancellation half: the router finishes a delivery it admitted, whoever cancels the
 caller. Process death inside the same window is still open (#56). `DmAckCoalescer`'s and `AckSync`'s KDocs say
