@@ -178,14 +178,14 @@ class CustodyQuotaLabTest {
      * The room's quota and the global cap bind together, and the three stores reach them from different frames: Carol
      * posts alone while Alice and Bob post and DM between them. When they meet, each serves the others what they lack,
      * and a frame one store has evicted and another still holds is refused as seen for the router's ten-minute window.
-     * Past the window a re-link serves it again. With both bounds binding, what the fair cap keeps depends on the order
-     * the frames came in and not only on which (ADR 2026-10.7mqm): it can take a sender's DM while a post of theirs still
-     * counts in their bucket, and a newer post's room trim then drops that post as well. So the exchange past one window
-     * can itself leave two stores a frame apart, each refusing the other's as seen, and only the next window settles it.
-     * The ADR's simulation settled within about two windows and `ForwardRepositoryTest`'s exchange case bounds it at
-     * three, as [pastSeenWindowsUntilCustodyAgrees] does here through the real stacks. Messages differ by design — a post
-     * the quotas evicted before it crossed never reaches the other side — so only Carol's thread is the oracle's, and
-     * the others are carriers.
+     * Past the window the next exchange serves it again. With both bounds binding, what the fair cap keeps depends on
+     * the order the frames came in and not only on which (ADR 2026-10.7mqm): it can take a sender's DM while a post of
+     * theirs still counts in their bucket, and a newer post's room trim then drops that post as well. So the exchange
+     * past one window can itself leave two stores a frame apart, each refusing the other's as seen, and only the next
+     * window settles it. The ADR's simulation settled within about two windows and `ForwardRepositoryTest`'s exchange
+     * case bounds it at three, as [pastSeenWindowsUntilCustodyAgrees] does here through the real stacks. Messages differ
+     * by design — a post the quotas evicted before it crossed never reaches the other side — so only Carol's thread is
+     * the oracle's, and the others are carriers.
      */
     @Test
     fun theRoomQuotaAndTheCapBindingTogetherConvergePastTheSeenWindow() =
@@ -217,14 +217,13 @@ class CustodyQuotaLabTest {
         }
 
     /**
-     * Lets the router's seen window lapse and re-links the three, up to [windows] times, until their custody agrees:
-     * each pass serves again what the last one refused as seen. A re-link and not the 60 s re-offer, because the lab's
-     * pipes remember what crossed them on the wall clock (`LinkCrossings`), which a calendar jump does not move: a frame
-     * that came in over a link would never be served back over it. A fresh link forgets them, as a phone's does. A pass
-     * waits for agreement as long as any oracle waits. One that never agrees has run its exchange, each store refusing
-     * the other's leftovers as seen and each pipe keeping a frame from going back the way it came; ending it early only
-     * cuts frames the next link's digest exchange serves again. The oracle after this fails with every store's listing
-     * if the last pass did not agree.
+     * Lets the router's seen window lapse, up to [windows] times, until the three stores agree. The first pass is the
+     * meeting; the rest are the 60 s re-offer on the links they kept, which a calendar jump never wakes. Each pass
+     * serves again what the last one refused as seen. The pipes' crossing memo (`LinkCrossings`) runs on the routers'
+     * calendar, so a frame that came in over a link can go back over it once the window has lapsed. A pass waits for
+     * agreement as long as any oracle waits. One that never agrees has run its exchange, each store refusing the
+     * other's leftovers as seen and each pipe keeping a frame from going back the way it came; the next pass serves
+     * them again. The oracle after this fails with every store's listing if the last pass did not agree.
      */
     private suspend fun pastSeenWindowsUntilCustodyAgrees(
         alice: LabNode,
@@ -234,13 +233,8 @@ class CustodyQuotaLabTest {
     ) {
         val three = listOf(alice, bob, carol)
         repeat(windows) { pass ->
-            if (pass > 0) {
-                lab.unlink(alice, bob)
-                lab.unlink(bob, carol)
-                lab.unlink(alice, carol)
-            }
             lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
-            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            if (pass == 0) lab.linkAll(alice to bob, bob to carol, alice to carol) else three.forEach { it.reoffer() }
             if (lab.tryAwait(1) { if (three.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }) return
         }
     }

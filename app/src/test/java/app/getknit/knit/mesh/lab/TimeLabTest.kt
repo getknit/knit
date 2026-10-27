@@ -17,9 +17,9 @@ import org.robolectric.RobolectricTestRunner
 /**
  * The clock tier: what the field waits minutes or days for, moved with [LabClock.advance] and then poked —
  * a re-link for the digest exchange, `heal()` for the heartbeat basket — because the jump moves decisions,
- * never schedulers. The router's 10-minute seen window (the self-pin loop, a DM received while its sender
- * was blocked — which stays unseen past it), the 24 h custody TTL, the 12 h profile republish, and the
- * ratchet's retention sweeps after a reset (ADR 027).
+ * never schedulers. The router's 10-minute seen window (the self-pin loop, a frame served back over the live
+ * link it came by, a DM received while its sender was blocked — which stays unseen past it), the 24 h custody
+ * TTL, the 12 h profile republish, and the ratchet's retention sweeps after a reset (ADR 027).
  */
 @RunWith(RobolectricTestRunner::class)
 class TimeLabTest {
@@ -65,6 +65,44 @@ class TimeLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
             assertTrue("alice re-carries her own profile", alice.custodyIds().any { it.startsWith("profile-${alice.nodeId}-") })
             assertNull("and never pinned herself", alice.peer(alice))
+        }
+
+    /**
+     * A frame that crossed a live link crosses it again once the router's seen window has lapsed, with no re-link.
+     * The pipes' crossing memo (`LinkCrossings`) keeps the router's window on the router's clock, as the phone's does,
+     * so one calendar jump lapses both. Bob's post reaches Alice over their link, then leaves her store (a quota
+     * evicted it, say) while the link stays up. Inside the window her digest exchange has Bob serve it and his pipe
+     * skips the write: her router would drop it as seen. Past the window the same exchange brings it back over the
+     * same pipe. While the memo read the wall clock, which a jump does not move, the post never went back.
+     */
+    @Test
+    fun aFrameThatCrossedALiveLinkCrossesItAgainPastTheSeenWindow() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(bob.sendRoom("hello"))
+            val post = bob.ownMessageId(Conversations.NEARBY, "hello")
+            lab.await(1) { if (post in alice.custodyIds()) 1 else 0 }
+            val key = checkNotNull(bob.crossingKey(post))
+            val skipsBefore = bob.transport.skipsToward(alice.nodeId, key)
+
+            alice.forgetCustody { it == post }
+            alice.reoffer()
+            assertTrue(
+                "inside the window bob's pipe never skipped serving the post back",
+                lab.tryAwait(skipsBefore + 1) { bob.transport.skipsToward(alice.nodeId, key) },
+            )
+            assertFalse("inside the window the post stays out of alice's store", post in alice.custodyIds())
+
+            lab.clock.advance(SEEN_WINDOW_LAPSED_MS)
+            alice.reoffer()
+            assertTrue(
+                "past the window the post never crossed the live link back to alice",
+                lab.tryAwait(1) { if (post in alice.custodyIds()) 1 else 0 },
+            )
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { Conversations.NEARBY }
         }
 
     /**

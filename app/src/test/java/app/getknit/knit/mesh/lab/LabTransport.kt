@@ -462,8 +462,22 @@ class LabTransport(
     /** Every write [crossings] skipped, as `to key via`: the second copy of a frame for one pipe, or an echo. */
     val dupSkipped = CopyOnWriteArrayList<String>()
 
-    /** One write per pipe per frame, either way, as `BluetoothMeshTransport` keeps it. */
-    private val crossings = LinkCrossings()
+    /** How many writes of [key] (`FrameKey`) toward [nodeId] [crossings] has skipped, by either path. */
+    fun skipsToward(
+        nodeId: String,
+        key: String,
+    ): Int = dupSkipped.count { it.startsWith("${nodeId.take(NODE_ID_CHARS)} $key ") }
+
+    /**
+     * One write per pipe per frame, either way, as `BluetoothMeshTransport` keeps it, and on the node's [clock], which
+     * its router's seen window reads too. `LinkCrossings` holds a frame back only while the far end's router would drop
+     * it as seen, so the two windows must lapse together. On a phone they are two clocks that run together (the memo's
+     * `elapsedRealtime`, the router's wall clock); in the lab a calendar jump is time passing for both. On the wall
+     * clock, which a jump does not move, a frame that crossed a live pipe could never cross it again past the window.
+     * The memo stamps on this node's clock and the far router reads its own, so they lapse together only while the two
+     * nodes' skews hold still: a `LabClock.skew` changed with links up needs a re-link before the jump.
+     */
+    private val crossings = LinkCrossings(clock = { clock() })
 
     /**
      * Links both ways so the two become neighbors, as a data path coming up does. With [publish] false the
@@ -699,7 +713,10 @@ class LabTransport(
         key: String,
     ): Boolean = pipes[nodeId]?.let { p -> synchronized(p.heldFiles) { p.heldFiles.any { it.key == key && it.inFlight } } } ?: false
 
-    /** The lab's clock, for how long a held pipe's feed has gone unfed ([fileFeed]); [MeshLab] sets the node's. */
+    /**
+     * The lab's clock, for [crossings]' window and for how long a held pipe's feed has gone unfed ([fileFeed]); [MeshLab]
+     * sets the node's.
+     */
     var clock: () -> Long = System::currentTimeMillis
 
     /**

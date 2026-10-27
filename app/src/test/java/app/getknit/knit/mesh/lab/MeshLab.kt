@@ -86,6 +86,7 @@ import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
+import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
 import app.getknit.knit.mesh.lora.LoraConfig
@@ -2200,6 +2201,16 @@ class LabNode internal constructor(
                     6,
                 )}→${it.envelope.recipientId?.take(6)}@${it.envelope.sentAt}#${it.sig.contentHashCode()}/${it.signed.contentHashCode()}"
             }.sorted()
+
+    /**
+     * The key [messageId]'s custodied frame crosses a pipe under (`FrameKey`, what [LabTransport.skipsToward] counts),
+     * or null while this node does not carry it.
+     */
+    suspend fun crossingKey(messageId: String): String? =
+        forwardStore
+            .liveFrames(now())
+            .firstOrNull { it.envelope.id == messageId }
+            ?.let { FrameKey.ofSigned(WireEnvelope(sig = it.sig, signed = it.signed)) }
 
     /** `liveFingerprint`: the digest recomputed over the live rows — what two converged stores share. */
     suspend fun custodyFingerprint(): Long = StoreDigest.fingerprint(custodyIds())

@@ -178,7 +178,8 @@ repositories over Robolectric's in-memory SQLite, a real `IdentityKeyStore` over
 DataStore-backed `SettingsStore` — linked through `LabTransport`, an in-process `MeshTransport` with no radio.
 Bare, it is a link plane with no fast plane (one flood copy per link); with `pages = LabPages()` it is the
 Bluetooth plane as shipped, side channel included (below). Either way a pipe carries a frame once, through
-the same `LinkCrossings` memo the phone keeps (`dupSkipped` on the transport lists what it refused).
+the same `LinkCrossings` memo the phone keeps (`dupSkipped` on the transport lists what it refused), on the
+node's lab clock: its window is the router's seen window, so the two lapse together under a calendar jump.
 The only doubles are the leaves with a hardware or UI side (notifier, tflite text moderators, image moderator).
 The wiring mirrors `di/AppModule` + `di/MeshModule` by hand, so a constructor change is a compile error here
 rather than a silently narrower rig.
@@ -480,11 +481,13 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   and `lab.clock.advance(ms)` moves it for all of them at once — so nodes still agree with each other (the
   property `spaced {}` and ADR 2026-09.gdhp rely on) while a scenario steps past the router's 10-min seen
   window, the 24 h custody TTL, the 12 h profile republish or the 48 h intro grace (`TimeLabTest`). A jump
-  moves *decisions* (expiry, floors, LWW, tombstones, presence), never *schedulers* — every periodic loop is
-  `delay()`-based and blind to it — so the scenario pokes the work itself: `node.heal()` (fire-and-forget:
-  await the effect), `sweepLocalStorage()`, `manager.refreshRelays()`, a re-link for the digest exchange, or
-  a fresh send. Where no poke reaches the timer, the node boots with it shortened instead of the scenario
-  sitting it out in real time: `LabLimits.calendarRounds()` cuts the Internet plane's timed round (60 s) and
+  moves *decisions* (expiry, floors, LWW, tombstones, presence, the pipes' crossing memo), never *schedulers* —
+  every periodic loop is `delay()`-based and blind to it — so the scenario pokes the work itself: `node.heal()`
+  (fire-and-forget: await the effect), `sweepLocalStorage()`, `manager.refreshRelays()`, a re-link or
+  `reoffer()` for the digest exchange, or a fresh send. A frame that crossed a live link goes back over it
+  past a jump (`TimeLabTest.aFrameThatCrossedALiveLinkCrossesItAgainPastTheSeenWindow`), as long as no node's
+  `LabClock.skew` changed with its links up. Where no poke reaches the timer, the node boots with it shortened
+  instead of the scenario sitting it out in real time: `LabLimits.calendarRounds()` cuts the Internet plane's timed round (60 s) and
   attachment re-look (15 s) to a second, `dmAckHoldMs` the LoRa DM ✓✓ hold (45 s, ADR 054). Both stay at the
   field values by default, so the other spool scenarios still converge on the events, and a lost wake shows as
   a slow scenario rather than a pass. An oracle that needs the jump goes after it: `assertConverged`'s

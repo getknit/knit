@@ -8,9 +8,10 @@ import java.util.concurrent.ConcurrentHashMap
  * shares") — while a scenario can move the date past a floor the field waits minutes or days for (the
  * router's 10-min seen window, the 15-min seed floor, the 24 h custody TTL, the 48 h intro grace).
  *
- * A jump moves *decisions* — expiry, floors, last-writer-wins, tombstones, presence — never *schedulers*:
- * every periodic loop is `delay()`-based and blind to it, so a scenario that jumped pokes the work itself
- * (`LabNode.heal()`, `sweepLocalStorage()`, a re-link for the digest exchange, a fresh send). Forward only:
+ * A jump moves *decisions* — expiry, floors, last-writer-wins, tombstones, presence, the pipes' crossing memo —
+ * never *schedulers*: every periodic loop is `delay()`-based and blind to it, so a scenario that jumped pokes the
+ * work itself (`LabNode.heal()`, `sweepLocalStorage()`, a re-link or `reoffer()` for the digest exchange, a fresh
+ * send). Forward only:
  * `SeenSet`, the LoRa plane's restored state and the profile reflood floor all assume time never runs back.
  *
  * [skew] is the one seam to a *disagreeing* clock, for a scenario that originates a far-future frame: a
@@ -33,7 +34,11 @@ class LabClock {
     /** A node's own reading: [now] plus whatever [skew] gave it (nothing, for every node by default). */
     fun forNode(name: String): () -> Long = { now() + (skews[name] ?: 0L) }
 
-    /** Puts one node's clock [ms] ahead of everyone else's. */
+    /**
+     * Puts one node's clock [ms] ahead of everyone else's. A skew changed while the node's links are up moves its
+     * pipes' crossing memo apart from the far routers' seen windows: re-link it before a jump that relies on the two
+     * lapsing together.
+     */
     fun skew(
         name: String,
         ms: Long,
