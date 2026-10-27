@@ -16,6 +16,7 @@ import com.google.crypto.tink.hybrid.HpkePrivateKey
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromByteArray
+import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.encodeToByteArray
 
 /** This device's long-term E2E private keysets plus the public bundle it advertises. */
@@ -53,11 +54,15 @@ class SignedPrekey(
  * Mirrors [DatabaseKey]'s "generate once, transparently load thereafter" lifecycle, and its rule for a failed
  * unwrap (ADR 2026-10.47rw): a new identity is minted only when there is no file or the old one is proven lost
  * (kept aside first); a Keystore refusal throws [KeystoreUnavailableException] and caches nothing, so the next
- * call tries again and finds the same identity. A wrap that opens but does not parse is a code or version
- * mismatch, never a reason to mint: every peer pins the node id this file certifies.
+ * call tries again and finds the same identity. A wrap that opens but does not parse is never a reason to mint: every
+ * peer pins the node id this file certifies. It is unwrapped again first, over [rereadDelaysMs], since a Keystore can
+ * hand back other bytes than it sealed with its tag verified, and what still fails is a crash whose message carries
+ * each read's [CborShape] (never a key byte).
  */
 class IdentityKeyStore(
     private val secret: KeystoreSecret,
+    private val rereadDelaysMs: List<Long> = KeystoreSecret.RETRY_DELAYS_MS,
+    private val sleep: (Long) -> Unit = Thread::sleep,
 ) {
     @Volatile
     private var cached: Loaded? = null
@@ -133,8 +138,7 @@ class IdentityKeyStore(
         val state =
             when (val read = secret.read()) {
                 is Unwrapped.Present -> {
-                    runCatching { parse(read.bytes) }
-                        .getOrElse { throw IllegalStateException("identity keys unwrapped but do not parse; not minting over them", it) }
+                    parseOrReread(read.bytes)
                 }
 
                 Unwrapped.Absent -> {
@@ -153,6 +157,41 @@ class IdentityKeyStore(
             }
         cached = state
         return state
+    }
+
+    /**
+     * Parses [first], unwrapping again after each of [rereadDelaysMs] while what opens does not parse. A verified tag
+     * vouches for the bytes, so a parse failure is a bad build or a Keystore handing back other bytes than it sealed:
+     * on Play, 2.9.0, one Redmi Note 14 Pro+ (API 36) opened its identity and failed mid-array, which no build writes.
+     * A glitch on the way out reads right a moment later. A bad build, or bytes altered on the way in, fail every
+     * read; the exception then says whether the reads agreed and what each one looked like, and nothing is minted.
+     */
+    private fun parseOrReread(first: ByteArray): Loaded {
+        val reads = mutableListOf(first)
+        var firstFailure: Throwable? = null
+        var stoppedBy: String? = null
+        for (attempt in 0..rereadDelaysMs.size) {
+            if (attempt > 0) {
+                sleep(rereadDelaysMs[attempt - 1])
+                when (val again = secret.read()) {
+                    is Unwrapped.Present -> reads += again.bytes
+                    else -> stoppedBy = "read ${attempt + 1} ${again.verdict()}"
+                }
+                if (stoppedBy != null) break
+            }
+            val parsed = runCatching { parse(reads.last()) }
+            parsed.getOrNull()?.let { loaded ->
+                if (attempt > 0) Log.w(TAG, "identity parsed on read ${attempt + 1}; the Keystore handed back other bytes before")
+                return loaded
+            }
+            val failure = checkNotNull(parsed.exceptionOrNull())
+            Log.w(TAG, "identity read ${attempt + 1} opened but does not parse", failure)
+            if (firstFailure == null) firstFailure = failure
+        }
+        throw IllegalStateException(
+            "identity keys unwrapped but do not parse; not minting over them. ${describeReads(reads, stoppedBy)}",
+            firstFailure,
+        )
     }
 
     @OptIn(ExperimentalSerializationApi::class)
@@ -216,6 +255,14 @@ class IdentityKeyStore(
         )
     }
 
+    private fun Unwrapped.verdict(): String =
+        when (this) {
+            is Unwrapped.Lost -> "lost ($reason)"
+            is Unwrapped.Unavailable -> "refused (${cause.javaClass.simpleName})"
+            Unwrapped.Absent -> "found no file"
+            is Unwrapped.Present -> "opened"
+        }
+
     private fun signer(): PublicKeySign = loaded().keys.sigPrivate.getPrimitive(RegistryConfiguration.get(), PublicKeySign::class.java)
 
     private class Loaded(
@@ -246,6 +293,32 @@ class IdentityKeyStore(
         /** The AndroidKeyStore alias the identity file is wrapped under, and the file's name in `filesDir`. */
         const val KEYSTORE_ALIAS = "knit_identity_key"
         const val FILE_NAME = "identity.key"
+
+        /** Every field name the identity file holds: the only text [CborShape] may print from it. */
+        private val FIELD_NAMES: Set<String> =
+            (Stored.serializer().descriptor.elementNames + StoredPrekey.serializer().descriptor.elementNames).toSet()
+
+        /**
+         * Whether the unparsed [reads] were the same bytes, and the shape of each different one: `3 reads, the same
+         * bytes every time: 1043 B {hybridPriv:[i×92 t7@203 …` says the Keystore keeps answering what it sealed.
+         */
+        private fun describeReads(
+            reads: List<ByteArray>,
+            stoppedBy: String?,
+        ): String {
+            val distinct = mutableListOf<IndexedValue<ByteArray>>()
+            reads.withIndex().forEach { read -> if (distinct.none { it.value.contentEquals(read.value) }) distinct += read }
+            val count = if (reads.size == 1) "1 read" else "${reads.size} reads"
+            val shapes =
+                if (distinct.size == 1) {
+                    val agreement = if (reads.size == 1) "" else ", the same bytes every time"
+                    "$count$agreement: ${CborShape.describe(reads.first(), FIELD_NAMES)}"
+                } else {
+                    "$count, ${distinct.size} different: " +
+                        distinct.joinToString("; ") { (index, bytes) -> "read ${index + 1} ${CborShape.describe(bytes, FIELD_NAMES)}" }
+                }
+            return if (stoppedBy == null) shapes else "$shapes; $stoppedBy"
+        }
 
         /**
          * The node id the identity in [blob] (a [KeystoreSecret]'s plaintext, as [keys] would load it)
