@@ -15,8 +15,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -283,6 +285,36 @@ class DirectLinksTest {
                 a.links.links.value
                     .getValue(b.id)
                     .state.value,
+            )
+        }
+
+    @Test
+    fun aLinksStreamCarriesABulkRunThatThePeerDrains() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.ADDRESS_RESTRICTED, v4(91, 5, 6, 7)))
+            assertFalse("no link up yet", a.links.measureBulk(b.id, 1))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            // More than the peer's window and our send buffer hold: the run ends only if the peer's end drains.
+            val bytes = 1_000_000
+            assertTrue(a.links.measureBulk(b.id, bytes))
+            assertFalse("one measurement at a time", a.links.measureBulk(b.id, 1))
+            val run =
+                withTimeoutOrNull(60_000L) {
+                    while (a.links.bulk().first == null) delay(100L)
+                    a.links.bulk().first
+                }
+            assertNotNull("the run never ended: ${a.links.bulk()}", run)
+            assertTrue(run!!.done)
+            assertEquals(bytes.toLong(), run.bytes)
+            val drained = withTimeoutOrNull(60_000L) { while (b.links.bulk().second[a.id] != bytes.toLong()) delay(100L) }
+            assertNotNull("the peer drained ${b.links.bulk().second[a.id]}", drained)
+            // The stream's segments are the link's data: neither end's answer came to nothing.
+            assertTrue(
+                b.links.links.value
+                    .getValue(a.id)
+                    .carriedData,
             )
         }
 

@@ -48,7 +48,7 @@ class LinkSession(
     private val silenceMs: Long = SILENCE_MS,
     private val holdKeepaliveMs: Long = HOLD_KEEPALIVE_MS,
     private val holdSilenceMs: Long = HOLD_SILENCE_MS,
-    private val onData: (ByteArray) -> Unit = {},
+    onData: (ByteArray) -> Unit = {},
     private val random: java.util.Random = SecureRandom(),
 ) {
     /** Where a session stands. */
@@ -98,6 +98,9 @@ class LinkSession(
 
     @Volatile private var held = false
 
+    // Where a DATA body that opened goes: the constructor's, until a stream [attach]es.
+    @Volatile private var sink = onData
+
     /** Whether any DATA crossed either way: a link that closes without it was answered for nothing. */
     @Volatile
     var carriedData = false
@@ -124,6 +127,11 @@ class LinkSession(
 
     /** How the punch went: [Outcome.Up] on the first ACK, [Outcome.Failed] once it gave up or the session closed. */
     suspend fun awaitOutcome(): Outcome = outcome.await()
+
+    /** Hands every DATA body that opens from now on to [sink] — the stream over the link ([LinkStream]). */
+    fun attach(sink: (ByteArray) -> Unit) {
+        this.sink = sink
+    }
 
     /** Sends one data payload over the link; false when it is not up. */
     fun sendData(payload: ByteArray): Boolean {
@@ -223,7 +231,7 @@ class LinkSession(
                 if (_state.value == State.UP) {
                     lastData = clock()
                     carriedData = true
-                    onData(plain.copyOfRange(1, plain.size))
+                    sink(plain.copyOfRange(1, plain.size))
                 }
             }
 

@@ -204,3 +204,39 @@ wait out a fresh punch — **holds** its link (`DirectLinks.hold`): a keepalive 
 2 min the home router kept, and an end after 200 s hearing nothing. That is a quarter of the modem wake-ups a 20 s
 keepalive costs, and only while the session is open. The keepalive battery trial the text above owed is replaced by
 these measurements; the IPv4 path's mapping life is still owed before the numbers are relied on everywhere.
+
+## Amendment 2026-10-27 — the stream is our own ARQ (draft)
+
+Status: draft from the Phase 0 spike; the throughput trial on the lab phones (`…debug.LINK --es op bulk`) is owed
+before it stands.
+
+**A link's byte stream is a small ARQ of our own over the lane's DATA datagrams** (`mesh/inet/LinkArq`,
+`docs/DIRECT_LINKS.md` §6): numbered segments of at most 1096 bytes in datagrams of at most 1200, every datagram
+carrying the receiver's ack, its ranges and its window limit (512 segments), loss by three later transmissions acked or
+an RFC 6298 timer, and NewReno's AIMD over segments, paced across the round trip. A retransmission is a fresh lane
+seal. Pacing came from the first phone run: two phones on one home Wi-Fi moved 2–4 Mbit/s unpaced, losing about 1 % on
+the air (no socket-buffer drops at either end) to windows sent back to back at an access point holding frames for a
+phone in power save. It sits behind one seam,
+`LinkStream`, which yields the `LinkSocket` that `FramedLink` and `LinkHandshake` already run over unchanged, so the
+choice below can be revisited without touching the session or the framing.
+
+**Kwik was weighed and set aside.** `tech.kwik:kwik` 0.12.1 (LGPL-3.0; agent15 LGPL-3.0, hkdf Apache-2.0, siphash
+MIT) is pure Java, about 280 KB of dex after R8, and its R8 output was byte-identical across runs. It runs over a socket
+the caller punched, given a wrapper that passes it only QUIC's long/short-header datagrams, and on a desktop JVM it moved
+10 MB over loopback at 36–46 MB/s with a pinned self-signed P-256 certificate. It does not fit as published:
+
+- **Its server cannot start on Android.** Every server constructor builds a `MemoryWatcher` on `java.lang.management`,
+  which Android lacks, and its receive loop calls `Duration.toSeconds()` (API 31) that D8 does not backport. One end of
+  every link is the server, so this means a patched fork to carry.
+- **It drops a link a NAT rebinds.** Its server disables active migration and its migration code is experimental; the
+  lane already follows the peer to a new source address.
+- **Its TLS authenticates one way.** The client can pin the server's key from the signed offer; the server never asks
+  for a client certificate and takes no external PSK, so the answerer would need a MAC in the stream — a second identity
+  layer over keys the signal already seals, in a TLS stack its own readme calls unreviewed.
+
+Its loss recovery and congestion control are the model `LinkArq` follows; the seam stays so a QUIC stream can replace it
+if a later need (many streams, path migration done by the library) outweighs these.
+
+**For Phase 1:** `FramedLink`'s HELLO and digest are DATA to the link, so once a transport runs over the stream every link
+that comes up "carried data" and none idles out while `FramedLink` sends anything. The transport child must tell the
+link when real traffic (a frame or a file) moved, and the idle close and the empty-answer budget count that instead.

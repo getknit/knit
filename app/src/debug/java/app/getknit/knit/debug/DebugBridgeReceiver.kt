@@ -1821,7 +1821,9 @@ class DebugBridgeReceiver :
      * instead of the idle close), and no op dumps the links up and the last attempt with each peer. A candidate is reported by its
      * kind, never its address, as the field log does. The keepalive question's measurement: `--es op quiet --ez on
      * true|false` on both phones before a link is made (no keepalive, no silence close), then `--es op gaps --es peer <id>
-     * [--es gaps 15,30,60,120,240]` on one; `gaps` in the reply fills in as each gap ends.
+     * [--es gaps 15,30,60,120,240]` on one; `gaps` in the reply fills in as each gap ends. The stream's trial: `--es op bulk
+     * --es peer <id> [--ei bytes 4194304]` writes that much noise down the up link's stream and times it until all of it is
+     * acknowledged; `bulk` in the reply fills in when it ends, and `drained` is what each peer's stream delivered here.
      */
     private suspend fun handleLink(intent: Intent): JSONObject {
         val links = getKoin().getOrNull<DirectLinks>() ?: return reply("error", "this build wires no direct links")
@@ -1869,6 +1871,16 @@ class DebugBridgeReceiver :
                     }
                 }
 
+                "bulk" -> {
+                    peer ?: return reply("error", "--es peer <nodeId> required")
+                    val bytes = intent.getIntExtra("bytes", BULK_DEFAULT_BYTES).coerceIn(1, BULK_MAX_BYTES)
+                    if (links.measureBulk(peer, bytes)) {
+                        reply("ok", "writing $bytes bytes")
+                    } else {
+                        reply("error", "no link up to $peer, or a measurement already running")
+                    }
+                }
+
                 else -> {
                     reply("ok", "direct links")
                 }
@@ -1909,12 +1921,30 @@ class DebugBridgeReceiver :
                     .put("roamed", g.roamed),
             )
         }
+        val (bulk, drained) = links.bulk()
+        val bulkJson =
+            bulk?.let { b ->
+                JSONObject()
+                    .put("bytes", b.bytes)
+                    .put("ms", b.ms)
+                    .put("done", b.done)
+                    .put("mbps", if (b.ms > 0) b.bytes * BITS_PER_BYTE / (b.ms * 1_000.0) else JSONObject.NULL)
+                    .put("segments", b.segments)
+                    .put("retransmits", b.retransmits)
+                    .put("srtt", b.srttMs ?: JSONObject.NULL)
+                    .put("cwnd", b.cwnd)
+                    .put("lossEvents", b.lossEvents)
+                    .put("timeouts", b.timeouts)
+                    .put("spurious", b.spurious)
+            } ?: JSONObject.NULL
         return reply
             .put("enabled", settings.directLinksEnabled.first())
             .put("quiet", links.quiet)
             .put("links", up)
             .put("tries", tries)
             .put("gaps", gapJson)
+            .put("bulk", bulkJson)
+            .put("drained", JSONObject(drained.mapValues { it.value }))
             .put("measuring", measuring)
     }
 
@@ -4401,6 +4431,11 @@ class DebugBridgeReceiver :
         const val EXTRA_RESET_PEER = "reset"
         const val EXTRA_OP = "op"
         const val EXTRA_PEER = "peer"
+
+        // The LINK bulk trial: what a run writes unless told, and the most it may.
+        private const val BULK_DEFAULT_BYTES = 4 * 1024 * 1024
+        private const val BULK_MAX_BYTES = 256 * 1024 * 1024
+        private const val BITS_PER_BYTE = 8
         const val EXTRA_PREFIX = "prefix"
         const val EXTRA_DRY = "dry"
         const val EXTRA_GROUP = "group"

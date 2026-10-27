@@ -50,7 +50,23 @@ demand and closed when idle. It carries the pair's own traffic only (a later pha
 | **L-5-3** | A sender's counter starts at 0 and only rises, shared by every path of the attempt; it never seals two datagrams under one counter. A receiver opens a counter once, and refuses one more than 1024 below the highest it opened. A datagram that fails is dropped silently. |
 | **L-5-4** | Plaintext: one type byte, then its body — 1 PROBE (8-byte nonce), 2 ACK (the nonce echoed), 3 KEEPALIVE, 4 BYE, 5 DATA. An unknown type is read as a keepalive. |
 
-## 6. Vectors
+## 6. The stream
+
+A link carries one ordered byte stream, the one `FramedLink` runs over on a radio's socket, in DATA bodies (L-5-4).
+It is our own ARQ, the spike's candidate: Kwik was weighed and set aside in ADR 2026-10.a5yj's draft stream amendment,
+which stands only after the phones' throughput trial, and `LinkStream` is the seam either sits on. Until then these
+clauses are not frozen for the iOS port.
+
+| Clause | Rule |
+| --- | --- |
+| **L-6-1** | A DATA body is one segment: `flags(1) ‖ ack(4) ‖ limit(4) ‖ n(1) ‖ n × (start(4) ‖ end(4)) ‖ [seq(4) ‖ payload]`, integers unsigned big-endian. Flag `0x01` SEQ: the segment carries `seq` and a payload of 1 to 1096 bytes; without it the segment is a bare ack and ends after its ranges. Flag `0x02` ASK: answer with an ack at once. Other flag bits are ignored. `n` is at most 8. A malformed segment is dropped. |
+| **L-6-2** | Every segment carries its sender's receive state: `ack`, the lowest `seq` it lacks; the `n` ranges `[start, end)` it holds above `ack`, highest first; and `limit`, the `seq` it will not take at or beyond. `limit` is the next `seq` the reader has not consumed plus 512, and a sender assumes 512 before it hears one. A sender takes the largest `limit` it has heard. |
+| **L-6-3** | `seq` numbers whole segments from 0 for the link's life and never wraps: at 2³² the stream ends. A retransmission carries its first `seq`, sealed under a fresh lane counter (L-5-3). A whole datagram never exceeds 1200 bytes. |
+| **L-6-4** | A receiver takes a segment below its `limit`, holds it until the segments before it arrive, and delivers in order. It acks at once a segment out of order, a duplicate or an ASK, else every second segment, or 20 ms after the first unacknowledged one. A bare ack is never acked. Reading a quarter of the window advertises the new `limit`. |
+| **L-6-5** | A sender keeps at most its congestion window of segments in flight, and none at or past the peer's `limit`. A segment is lost once three transmissions sent after it are acknowledged, or when the retransmission timer (RFC 6298, from 1 s or the punch's round trip, 200 ms to 8 s, doubling per timeout) expires, which presumes every segment in flight lost. Lost segments go first. The window starts at 10 segments, grows by one per segment acknowledged up to the first loss and by one per window after, halves once per round of losses, and falls to 2 on a timeout. Sends are paced: at most 4 back to back (or 2 ms of the pace, if more), refilled at the window per smoothed round trip, ×2 while the window grows from its start and ×1.25 after. A sender stopped at the peer's `limit` with nothing in flight sends an ASK each timer period. |
+| **L-6-6** | The stream is the link's: it ends when the link closes (a BYE, idle or silence), after what arrived is read. There is no half-close; closing the stream closes the link with a BYE. A segment counts as the link's data (L-4-2). |
+
+## 7. Vectors
 
 `vectors/wire-v1.json` carries a `LinkSignal` OFFER; the keyed vectors carry an L-5-1 derivation. Change them only
 together with this file.

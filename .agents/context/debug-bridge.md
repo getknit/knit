@@ -320,7 +320,12 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   offerer. Per gap it stays silent for the gap, sends one echo (`outRtt`: the peer's side still admits us; null = lost),
   then asks the peer to echo after the same silence on both ends (`inMs`: past the gap; null = our side dropped it;
   `roamed`: it came from a new port — a NAT rebound the peer). It runs on its own: read `gaps` and `measuring` with a bare
-  `LINK`. Close the link and `quiet --ez on false` afterwards.
+  `LINK`. Close the link and `quiet --ez on false` afterwards. **The stream's throughput** (the reliability layer):
+  with a link up, `--es op bulk --es peer <nodeId> [--ei bytes 4194304]` on one phone writes that much noise down the
+  link's stream (`LinkArq`) and times it until every byte is acknowledged; read `bulk` (`bytes`, `ms`, `mbps`, `done`,
+  `segments`, `retransmits`, `srtt`, `cwnd`, and `lossEvents` / `timeouts` / `spurious`: window halvings, timer expiries,
+  and segments presumed lost that were acknowledged before going again) with a bare `LINK` once `measuring` is false. The peer's `drained` (bytes its
+  end of each peer's stream read) must reach the same count. A link idles out 60 s after the run.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
   `BuildConfig.LIVE_CALLS` / `MESH_CALLS`; `op capture` and `op dropgroup` need live calls;
   `docs/VOICE_CALLS.md`). `--es op state` (the default) dumps the call, its phase, `reason` and the selected

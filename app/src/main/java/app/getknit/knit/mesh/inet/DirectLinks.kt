@@ -3,16 +3,19 @@ package app.getknit.knit.mesh.inet
 import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.mesh.crypto.LinkKeys
+import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.protocol.LinkCand
 import app.getknit.knit.mesh.protocol.LinkSignal
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -114,6 +117,8 @@ class DirectLinks(
     private val enabled: () -> Boolean,
     private val scope: CoroutineScope,
     private val clock: () -> Long,
+    private val streams: LinkStream = LinkStream.arq(scope, clock),
+    private val onStream: ((peerId: String, socket: LinkSocket) -> Unit)? = null,
     private val fieldLog: FieldRecorder = FieldRecorder { },
     private val log: (String) -> Unit = {},
     private val random: java.util.Random = SecureRandom(),
@@ -207,6 +212,82 @@ class DirectLinks(
         return true
     }
 
+    /** One [measureBulk] run: [bytes] written and acknowledged in [ms], and the stream's counters at its end. */
+    class Bulk(
+        val bytes: Long,
+        val ms: Long,
+        val done: Boolean,
+        val segments: Long,
+        val retransmits: Long,
+        val srttMs: Long?,
+        val cwnd: Int,
+        val lossEvents: Long = 0,
+        val timeouts: Long = 0,
+        val spurious: Long = 0,
+    )
+
+    @Volatile
+    private var lastBulk: Bulk? = null
+
+    /** The last [measureBulk] result, and what each link's stream has delivered here ([onStream] unset), by peer. */
+    fun bulk(): Pair<Bulk?, Map<String, Long>> = lastBulk to HashMap(drained)
+
+    private val drained = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Measures the stream over the up link to [peerId] (debug builds; the reliability layer's trial): writes [bytes] of
+     * noise, waits until all of it is acknowledged, and keeps the time with the stream's counters for [bulk]. The peer's
+     * end must drain what it reads, as it does while no transport takes its streams. False when no link to [peerId] is up
+     * on our own stream, or a measurement is already running.
+     */
+    fun measureBulk(
+        peerId: String,
+        bytes: Int,
+    ): Boolean {
+        val arq = sockets[peerId] as? LinkArq ?: return false
+        if (measuring) return false
+        measuring = true
+        lastBulk = null
+        scope.launch {
+            try {
+                val before = arq.stats()
+                val started = clock()
+                val noise = ByteArray(BULK_CHUNK).also(random::nextBytes)
+                var left = bytes
+                while (left > 0) {
+                    val n = minOf(left, noise.size)
+                    arq.write(noise, 0, n)
+                    left -= n
+                }
+                arq.flush()
+                val done = arq.awaitDrained()
+                val after = arq.stats()
+                lastBulk =
+                    Bulk(
+                        bytes = after.bytesAcked - before.bytesAcked,
+                        ms = clock() - started,
+                        done = done,
+                        segments = after.segmentsSent - before.segmentsSent,
+                        retransmits = after.retransmits - before.retransmits,
+                        srttMs = after.srttMs,
+                        cwnd = after.cwnd,
+                        lossEvents = after.lossEvents - before.lossEvents,
+                        timeouts = after.timeouts - before.timeouts,
+                        spurious = after.spurious - before.spurious,
+                    )
+                log("link bulk ${peerId.take(SHORT)} ${lastBulk?.bytes}B in ${lastBulk?.ms}ms done=$done")
+            } catch (e: java.io.IOException) {
+                log("link bulk ${peerId.take(SHORT)} ended: ${e.message}")
+            } finally {
+                measuring = false
+            }
+        }
+        return true
+    }
+
+    // The stream of each link up now, by peer.
+    private val sockets = ConcurrentHashMap<String, LinkSocket>()
+
     private val _links = MutableStateFlow<Map<String, LinkSession>>(emptyMap())
 
     /** The links up now, by peer. */
@@ -242,8 +323,8 @@ class DirectLinks(
         val (send, recv) = keys.derive(true, attempt.kOffer, answer.k, attempt.linkId, selfId(), peerId)
         attempt.kOffer.fill(0)
         answer.k.fill(0)
-        val session = session(peerId, port, send, recv, attempt.linkId, answer, own)
-        val outcome = run(peerId, session, offerer = true, started, LinkNet.of(answer.nt), own)
+        val (session, socket) = session(peerId, port, send, recv, attempt.linkId, answer, own)
+        val outcome = run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own)
         return finish(peerId, attempt, outcome)
     }
 
@@ -333,7 +414,7 @@ class DirectLinks(
         val kAnswer = bytes(LinkSignal.KEY_BYTES)
         val (send, recv) = keys.derive(false, offer.k, kAnswer, offer.id, offererId, selfId())
         offer.k.fill(0)
-        val session = session(offererId, port, send, recv, offer.id, offer, own)
+        val (session, socket) = session(offererId, port, send, recv, offer.id, offer, own)
         val reply = signal(LinkSignal.PHASE_ANSWER, offer.id, kAnswer, own)
         kAnswer.fill(0)
         session.start()
@@ -342,7 +423,7 @@ class DirectLinks(
             record(offererId, false, LinkOutcome.NO_CAST, null, LinkNet.of(offer.nt), clock() - started, own)
             return
         }
-        run(offererId, session, offerer = false, started, LinkNet.of(offer.nt), own, alreadyStarted = true)
+        run(offererId, session, socket, offerer = false, started, LinkNet.of(offer.nt), own, alreadyStarted = true)
     }
 
     @Suppress("LongParameterList") // the attempt's parts, each from a different step of it
@@ -354,14 +435,36 @@ class DirectLinks(
         linkId: ByteArray,
         peerSignal: LinkSignal,
         own: List<LinkCandidate>,
-    ): LinkSession {
+    ): Pair<LinkSession, LinkSocket> {
         val theirs = peerSignal.c.mapNotNull(::candidate)
         val targets = PunchPolicy.targets(theirs, localV6 = own.any { it.v6 }, localV4 = own.any { !it.v6 })
         val lane = LinkLane(send, recv, LinkLane.aad(linkId, selfId(), peerId))
         send.fill(0)
         recv.fill(0)
-        if (!quiet) return LinkSession(peerId, port, lane, targets, scope, clock)
-        return LinkSession(peerId, port, lane, targets, scope, clock, idleMs = FOREVER_MS, silenceMs = FOREVER_MS)
+        val session =
+            if (quiet) {
+                LinkSession(peerId, port, lane, targets, scope, clock, idleMs = FOREVER_MS, silenceMs = FOREVER_MS)
+            } else {
+                LinkSession(peerId, port, lane, targets, scope, clock)
+            }
+        // Before the session starts, so nothing the peer sends once the path is up is missed.
+        return session to streams.open(session)
+    }
+
+    // A stream no transport takes yet (Phase 0): read and counted, so the peer's writes are never held at the window.
+    private fun drain(
+        peerId: String,
+        socket: LinkSocket,
+    ) {
+        val arq = socket as? LinkArq
+        scope.launch {
+            val buf = ByteArray(BULK_CHUNK)
+            while (true) {
+                val n = arq?.read(buf, 0, buf.size) ?: withContext(Dispatchers.IO) { socket.input.read(buf) }
+                if (n < 0) break
+                drained.merge(peerId, n.toLong(), Long::plus)
+            }
+        }
     }
 
     // Punches, records the try, and on success holds the link in [links] until it closes, then records its end.
@@ -369,6 +472,7 @@ class DirectLinks(
     private suspend fun run(
         peerId: String,
         session: LinkSession,
+        socket: LinkSocket,
         offerer: Boolean,
         startedAt: Long,
         peerNet: LinkNet,
@@ -385,9 +489,12 @@ class DirectLinks(
         val path = outcome.kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
         record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs)
         val upAt = clock()
+        sockets[peerId] = socket
         _links.update { it + (peerId to session) }
+        onStream?.invoke(peerId, socket) ?: drain(peerId, socket)
         scope.launch {
             session.state.first { it == LinkSession.State.CLOSED }
+            sockets.remove(peerId, socket)
             _links.update { if (it[peerId] === session) it - peerId else it }
             val (bytesIn, bytesOut) = session.bytes()
             val reason = session.endReason ?: LinkSession.EndReason.LOCAL
@@ -491,6 +598,9 @@ class DirectLinks(
 
         private const val HOUR_MS = 60 * 60_000L
         private const val SECOND_MS = 1_000L
+
+        // A bulk measurement's write, and a drain's read, at a time.
+        private const val BULK_CHUNK = 64 * 1024
 
         /** How long an echo's reply, or an asked-for echo past its silence, is waited for. */
         const val ECHO_WAIT_MS = 5_000L
