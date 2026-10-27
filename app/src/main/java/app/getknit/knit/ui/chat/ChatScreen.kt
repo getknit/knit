@@ -781,19 +781,19 @@ fun ChatScreen(
             onDismiss = { translateMetered = null },
         )
     }
-    when (val step = draftTranslation) {
+    when (draftTranslation) {
         is ChatViewModel.DraftTranslation.AskFrom -> {
             TranslateFromDialog(
-                onPick = { lang -> viewModel.translateDraft(step.draft, step.mentions, lang) },
+                onPick = { lang -> viewModel.translateDraft(draftTranslation.draft, draftTranslation.mentions, lang) },
                 onDismiss = viewModel::dismissDraftTranslation,
             )
         }
 
         is ChatViewModel.DraftTranslation.NeedsModel -> {
             TranslateModelOfferDialog(
-                direction = step.direction,
-                metered = remember(step) { viewModel.translateDownloadMetered() },
-                onDownload = { viewModel.downloadDraftModel(step.direction) },
+                direction = draftTranslation.direction,
+                metered = remember(draftTranslation) { viewModel.translateDownloadMetered() },
+                onDownload = { viewModel.downloadDraftModel(draftTranslation.direction) },
                 onDismiss = viewModel::dismissDraftTranslation,
             )
         }
@@ -5261,13 +5261,13 @@ private fun AttachmentPreview(
     onClear: () -> Unit,
 ) {
     val caption =
-        when {
-            relay == AttachmentRelay.TooLarge && commons -> R.string.chat_relay_commons_staged_too_large
-            relay == AttachmentRelay.Unsupported && commons -> R.string.chat_relay_commons_staged_unsupported
-            relay == AttachmentRelay.Locked && commons -> R.string.chat_relay_commons_staged_locked
-            relay == AttachmentRelay.TooLarge -> R.string.chat_relay_staged_too_large
-            relay == AttachmentRelay.Unsupported -> R.string.chat_relay_staged_unsupported
-            relay == AttachmentRelay.Locked -> R.string.chat_relay_staged_locked
+        when (relay) {
+            AttachmentRelay.TooLarge if commons -> R.string.chat_relay_commons_staged_too_large
+            AttachmentRelay.Unsupported if commons -> R.string.chat_relay_commons_staged_unsupported
+            AttachmentRelay.Locked if commons -> R.string.chat_relay_commons_staged_locked
+            AttachmentRelay.TooLarge -> R.string.chat_relay_staged_too_large
+            AttachmentRelay.Unsupported -> R.string.chat_relay_staged_unsupported
+            AttachmentRelay.Locked -> R.string.chat_relay_staged_locked
             else -> null
         }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

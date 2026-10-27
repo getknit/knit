@@ -110,8 +110,7 @@ internal fun sideBySide(
 ): Boolean {
     if (rowWidth == null) return true
     val taken = trailingWidth + gapPx
-    if (contentMaxWidth + taken <= rowWidth) return true
-    return taken <= rowWidth * maxTrailingShare && contentMinWidth <= rowWidth - taken
+    return contentMaxWidth + taken <= rowWidth || (taken <= rowWidth * maxTrailingShare && contentMinWidth <= rowWidth - taken)
 }
 
 /** Up to two fifths of the row: a short status or a button beside a title, and no more. */

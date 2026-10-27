@@ -463,7 +463,7 @@ object NanDormancyPolicy {
         beatMs: Long = OWN_CLOSE_BEAT_MS,
     ): Edge {
         if (closedAt != 0L && now - closedAt < beatMs) return Edge(record = false, refund = false)
-        return Edge(record = true, refund = if (available) wasAvailable == false else true)
+        return Edge(record = true, refund = !available || wasAvailable == false)
     }
 
     /** How long a started plane with nothing to do stays attached before it detaches. */

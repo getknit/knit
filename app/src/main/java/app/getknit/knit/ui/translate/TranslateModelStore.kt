@@ -44,7 +44,7 @@ class TranslateModelStore(
     private val root = File(context.noBackupFilesDir, "translate")
 
     private inner class Slot(
-        val direction: TranslateDirection,
+        direction: TranslateDirection,
     ) {
         val installer = SttModelInstaller(direction.id, direction.files, File(root, direction.id))
         val state = MutableStateFlow<SttModelState>(SttModelState.Absent)

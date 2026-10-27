@@ -266,9 +266,9 @@ class DemoDirector(
                 byCaller: Boolean,
                 delayMs: Long,
             ): Beat =
-                when {
-                    byCaller == out && scene.walkie -> Beat.Talk(line, delayMs)
-                    byCaller == out -> Beat.Pause(delayMs)
+                when (byCaller) {
+                    out if scene.walkie -> Beat.Talk(line, delayMs)
+                    out -> Beat.Pause(delayMs)
                     else -> Beat.PeerSays(line, delayMs)
                 }
             val hangUp = Beat.HangUp(peer = !out, delayMs = if (scene.walkie) 7_000 else 8_000)

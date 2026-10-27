@@ -185,10 +185,10 @@ internal fun fitsSegment(
 ): Boolean {
     if (widthPx <= 0) return false
     val wrapped = measurer.measure(label, style, constraints = Constraints(maxWidth = widthPx))
-    if (wrapped.lineCount > MAX_SEGMENT_LINES) return false
-    return label.split(' ').filter { it.isNotEmpty() }.all { word ->
-        measurer.measure(word, style, softWrap = false).size.width <= widthPx
-    }
+    return wrapped.lineCount <= MAX_SEGMENT_LINES &&
+        label.split(' ').filter { it.isNotEmpty() }.all { word ->
+            measurer.measure(word, style, softWrap = false).size.width <= widthPx
+        }
 }
 
 /** A segment's label may take two lines; past that the control reads better as a list. */

@@ -42,7 +42,7 @@ data class NotifMessage(
         result = 31 * result + sentAt.hashCode()
         result = 31 * result + conversationId.hashCode()
         result = 31 * result + (avatarBytes?.contentHashCode() ?: 0)
-        result = 31 * result + (key?.hashCode() ?: 0)
+        result = 31 * result + key.hashCode()
         return result
     }
 }

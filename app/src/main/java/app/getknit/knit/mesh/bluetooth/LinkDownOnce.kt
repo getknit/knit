@@ -28,7 +28,6 @@ internal class LinkDownOnce {
     ): Boolean {
         if (!reported.compareAndSet(false, true)) return false
         val released = teardown()
-        if (!released && ownClose()) return false
-        return ConnectBackoffs.flapped(released, replaced())
+        return (released || !ownClose()) && ConnectBackoffs.flapped(released, replaced())
     }
 }

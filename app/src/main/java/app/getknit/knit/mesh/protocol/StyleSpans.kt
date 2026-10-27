@@ -1,8 +1,5 @@
-@file:OptIn(ExperimentalSerializationApi::class) // the CBOR byte string of a custom serializer is an experimental API
-
 package app.getknit.knit.mesh.protocol
 
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ByteArraySerializer
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -158,7 +155,7 @@ object StyleSpans {
         val length = body.length
         val bounded =
             spans.mapNotNull { span ->
-                if (span.start < 0 || span.start >= length || span.end <= span.start) return@mapNotNull null
+                if (span.start !in 0..<length || span.end <= span.start) return@mapNotNull null
                 val end = minOf(span.end, length)
                 StyleSpan(snapStart(body, span.start), snapEnd(body, end), span.style)
             }

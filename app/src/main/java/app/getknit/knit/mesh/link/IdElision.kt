@@ -193,9 +193,9 @@ internal object IdElision {
         /** `sentAt` in either schema-1 form: the 6-byte compact clock or the canonical integer it left alone. */
         fun sentAt(): Long? {
             val h = value(LABEL_SENT_AT) ?: return null
-            return when {
-                h.major == MAJOR_BSTR && h.arg == MILLIS_BYTES.toLong() -> CborItems.readBigEndian(src, h.contentStart, MILLIS_BYTES)
-                h.major == MAJOR_UINT -> h.arg
+            return when (h.major) {
+                MAJOR_BSTR if h.arg == MILLIS_BYTES.toLong() -> CborItems.readBigEndian(src, h.contentStart, MILLIS_BYTES)
+                MAJOR_UINT -> h.arg
                 else -> null
             }
         }

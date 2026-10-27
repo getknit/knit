@@ -619,8 +619,8 @@ private fun StackedFace(
         )
         // One slot for the reason or the route, held empty otherwise so the face doesn't jump as the call moves on.
         Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
-            when {
-                phase == CallPhase.Calling && (state.unreachable || state.unproven) -> {
+            when (phase) {
+                CallPhase.Calling if (state.unreachable || state.unproven) -> {
                     Text(
                         callingNote(state, name),
                         style = MaterialTheme.typography.bodyMedium,
@@ -629,7 +629,7 @@ private fun StackedFace(
                     )
                 }
 
-                phase == CallPhase.Ended -> {
+                CallPhase.Ended -> {
                     (if (state.dropped) stringResource(R.string.call_ended_connection_lost) else endedNote(state, name))?.let {
                         Text(
                             it,
@@ -640,13 +640,15 @@ private fun StackedFace(
                     }
                 }
 
-                phase == CallPhase.Connected && state.walkie -> {
+                CallPhase.Connected if state.walkie -> {
                     WalkiePill()
                 }
 
-                phase == CallPhase.Connected && route != null -> {
+                CallPhase.Connected if route != null -> {
                     RoutePill(route)
                 }
+
+                else -> {}
             }
         }
         // The note's own line under the pill, held while connected so a warning coming and going moves nothing.
@@ -692,8 +694,8 @@ private fun InlineFace(
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            when {
-                state?.phase == CallPhase.Calling && (state.unreachable || state.unproven) -> {
+            when (state?.phase) {
+                CallPhase.Calling if (state.unreachable || state.unproven) -> {
                     Text(
                         callingNote(state, name),
                         style = MaterialTheme.typography.bodySmall,
@@ -703,13 +705,15 @@ private fun InlineFace(
                     )
                 }
 
-                state?.phase == CallPhase.Connected && state.walkie -> {
+                CallPhase.Connected if state.walkie -> {
                     WalkiePill()
                 }
 
-                state?.phase == CallPhase.Connected && route != null -> {
+                CallPhase.Connected if route != null -> {
                     RoutePill(route)
                 }
+
+                else -> {}
             }
             note?.let { NoteLine(it) }
         }

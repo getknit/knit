@@ -1050,7 +1050,7 @@ class CallManager(
         }
         val ice = servers(l.peerId)
         val opened = openFor(l, ice) ?: return
-        val (session, gathered) = afterRefusal(l, ice, opened, opened.offer()) { it.offer() } ?: return
+        val (_, gathered) = afterRefusal(l, ice, opened, opened.offer()) { it.offer() } ?: return
         val sdp = l.toPeer(gathered)
         val offer =
             mutex.withLock {

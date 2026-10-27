@@ -243,7 +243,7 @@ object DemoCalls {
         val manager =
             CallManager(
                 signals =
-                    CallSignals { _, payload ->
+                    { _, payload ->
                         post { screen.onSignal(id, payload, System.currentTimeMillis()) }
                         true
                     },
@@ -260,11 +260,11 @@ object DemoCalls {
         private val heard = ConcurrentHashMap<Int, Int>()
 
         fun start() {
-            scope.launch {
+            scope.launch collector@{
                 manager.state.distinctUntilChangedBy { it?.id to it?.phase }.collect { state ->
                     if (state?.phase != CallPhase.Alerting) return@collect
                     val after = answerAfterMs ?: return@collect
-                    launch {
+                    this@collector.launch {
                         delay(after)
                         manager.answer(state.id)
                     }

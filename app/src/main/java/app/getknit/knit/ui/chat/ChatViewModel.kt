@@ -1844,7 +1844,7 @@ class ChatViewModel(
      * fetch the moment the link or the epoch changes, so a card can only ever land on the draft it was
      * fetched for.
      */
-    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    @OptIn(FlowPreview::class)
     private fun watchDraftForLinks() {
         viewModelScope.launch {
             combine(

@@ -135,6 +135,20 @@ exclude:
   - name: ConvertLongToDuration
   # Room entities and wire DTOs hold ByteArray by necessity; they are never compared by value.
   - name: ArrayInDataClass
+  # Wants `for ((start, end) in spans)` wherever a loop reads a data class's leading fields. Positional
+  # destructuring binds by declaration order, so reordering a data class's fields (StyleSpan, a wire DTO)
+  # silently swaps two same-typed values at every such site; `span.start` cannot.
+  - name: DestructuringDeclaration
+  # `generateLocaleConfig` (the per-app language list, .agents/context/translations.md) is AGP @Incubating
+  # and has no stable replacement; the toolchain is deliberately bleeding-edge (.agents/context/toolchain.md).
+  - name: UnstableApiUsage
+    paths:
+      - app/build.gradle.kts
+  # UdpTurnProbe's socket calls sit in private suspend helpers that only `measure` calls, inside its
+  # withContext(Dispatchers.IO); the inspection judges each function alone and cannot see the caller's dispatcher.
+  - name: BlockingMethodInNonBlockingContext
+    paths:
+      - app/src/main/java/app/getknit/knit/ui/call/UdpTurnProbe.kt
   # `val MaterialTheme.knitColors` reads beside `MaterialTheme.colorScheme.x` on purpose, so a call site
   # changes by one word — the receiver is the discovery surface, not an input. Scoped to ui/theme so a
   # genuinely dead receiver anywhere else still reports.

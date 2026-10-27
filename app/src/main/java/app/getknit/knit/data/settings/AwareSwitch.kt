@@ -47,6 +47,6 @@ class AwareSwitch(
         private val LOW_POWER = booleanPreferencesKey(SettingsKeys.LOW_POWER_MODE)
 
         /** The switch as stored, or, before the move has been journaled, low-power mode's answer for it. */
-        fun readOn(prefs: Preferences): Boolean = prefs[KEY] ?: if (prefs[MIGRATED] != true && prefs[LOW_POWER] == true) false else true
+        fun readOn(prefs: Preferences): Boolean = prefs[KEY] ?: (prefs[MIGRATED] == true || prefs[LOW_POWER] != true)
     }
 }

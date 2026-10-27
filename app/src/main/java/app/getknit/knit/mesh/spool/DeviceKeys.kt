@@ -200,7 +200,7 @@ class DeviceKeys(
         if (listed.isEmpty() && accepted != null && !emptyForLong(slot)) return DeviceKey.Refused
         if (listed.isNotEmpty()) refusals.remove(EMPTY_RUN + slot)
         // The accepted pair first, then by age: the oldest is the first this phone ever signed with.
-        val ordered = listed.sortedWith(compareBy<String>({ idOf(it) != accepted }, { ageOf(it) }))
+        val ordered = listed.sortedWith(compareBy({ idOf(it) != accepted }, { ageOf(it) }))
         return when (val pick = pick(ordered, avoid)) {
             is Pick.Sign -> DeviceKey.Ready(Signer(pick.alias, pick.pair), idOf(pick.alias))
             Pick.Wait -> DeviceKey.Refused

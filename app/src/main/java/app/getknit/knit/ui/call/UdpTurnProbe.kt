@@ -6,6 +6,7 @@ import app.getknit.knit.linkpreview.PublicAddressPolicy
 import app.getknit.knit.mesh.spool.TurnHosts
 import app.getknit.knit.net.AndroidInternetGate
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -14,7 +15,6 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
-import kotlin.coroutines.coroutineContext
 
 /**
  * [TurnProbe] over Android (C-7.6-52): a UDP socket bound to the validated default network the gate hands out, never
@@ -75,7 +75,7 @@ class UdpTurnProbe(
         val packet = DatagramPacket(buffer, buffer.size)
         var best: Long? = null
         while (true) {
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             val wait = until - nowMs()
             if (wait <= 0) return best
             socket.soTimeout = wait.coerceIn(1L, SLICE_MS).toInt()

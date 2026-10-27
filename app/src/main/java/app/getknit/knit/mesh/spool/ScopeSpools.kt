@@ -178,7 +178,7 @@ class ScopePlacement(
     private val configs: Map<String, ScopeConfig>,
     private val declared: Set<String>,
     private val home: String?,
-    private val active: Set<String>,
+    active: Set<String>,
     private val parked: Set<String>,
     directory: List<PublicSpool>,
 ) {

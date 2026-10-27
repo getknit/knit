@@ -42,7 +42,7 @@ class ReactionRepository(
             ).map { rows ->
                 rows
                     .groupBy { it.target.conversationId }
-                    .mapValues { (_, tied) -> tied.maxWith(compareBy<ReactionHead>({ it.target.id }, { it.reactorNodeId })) }
+                    .mapValues { (_, tied) -> tied.maxWith(compareBy({ it.target.id }, { it.reactorNodeId })) }
             }
 
     /**
