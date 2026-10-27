@@ -28,7 +28,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # manual trigger; the qodana job below runs only on this
+  workflow_dispatch: # manual trigger
 
 permissions:
   contents: read
@@ -130,16 +130,14 @@ jobs:
           if-no-files-found: ignore
 
   screenshot-tests:
-    name: Compose preview screenshots (advisory)
+    name: Compose preview screenshots
     runs-on: ubuntu-latest
     # Every @Preview rendered through layoutlib and diffed against the committed references
-    # (app/src/screenshotTest/, ADR 2026-10.gtmm, .agents/context/testing.md). Advisory until it has rendered
-    # green here a few times: the references were rendered on a workstation without AVX-512, and Skia's CPU
-    # rasterizer can take another SIMD path on a runner that has it. On a failure the artifact holds the
-    # report (self-contained, every image inlined), the renders and the diffs — enough to tell a real
-    # regression from a runner rendering differently. Then make it enforced, like mesh-lab.
-    continue-on-error: true
-    # A job-level continue-on-error reports the job a success either way, so weblate-screenshots reads the step.
+    # (app/src/screenshotTest/, ADR 2026-10.gtmm, .agents/context/testing.md). Enforced since 2026-10-26: the
+    # references come from a workstation without AVX-512, and Skia's CPU rasterizer could have taken another SIMD
+    # path on a runner, but 15 runs here rendered them byte-for-byte and the one failure was a stale reference
+    # (80e8ab8a0). On a failure the artifact holds the report (self-contained, every image inlined), the renders
+    # and the diffs — enough to tell a real regression from a runner rendering differently.
     outputs:
       validated: ${{ steps.validate.outcome }}
     steps:
@@ -367,10 +365,13 @@ jobs:
     #
     # This is the job that actually runs on every push: hosted runners are 4 vCPU / 16 GB, whereas
     # the internal GitLab runner is 1 vCPU / 2 GB and would OOM, so verify:qodana there is manual.
+    #
+    # On a pull request it posts nothing itself: a fork's token is read-only, so the comment and the annotations
+    # would fail there. qodana-report.yml posts them from the uploaded results instead, for every pull request, and
+    # reports only what the pull request introduces against main's own run.
     permissions:
       contents: read
-      pull-requests: write # post-pr-comment
-      checks: write # use-annotations
+      checks: write # use-annotations, on a push
     steps:
       - uses: actions/checkout@v7
         with:
@@ -386,7 +387,11 @@ jobs:
           # reporting nothing (measured: 38 -> 0, no warning). Correct-but-slower beats
           # quietly-wrong, so the cache is off; the bootstrap re-fetches the SDK and JDK each run.
           use-caches: false
+          # The `qodana-report` artifact qodana-report.yml reads, on a pull request and on main alike (main's run is
+          # what a pull request's findings are compared with).
           upload-result: true
+          post-pr-comment: false # qodana-report.yml's job, see above
+          use-annotations: ${{ github.event_name != 'pull_request' }}
           # --baseline holds the committed qodana.sarif.json, so the run reports what is NEW rather
           # than re-reporting the accepted backlog (which includes the @Preview blind spot the
           # AGP forward-compat property leaves behind — see qodana.yaml's banner).
@@ -450,9 +455,8 @@ jobs:
     runs-on: ubuntu-latest
     # No JDK, no Gradle: scripts/translation-check.py pairs each values-<locale>/strings.xml with the English and names
     # a missing or extra string, a placeholder that moved, an unescaped apostrophe or a plural the language doesn't
-    # use, plus warnings for text left in English and glossary drift. Advisory while the first locales settle: lint's
-    # MissingTranslation in build-test is the gate, and nothing needs this job.
-    continue-on-error: true
+    # use, plus warnings for text left in English and glossary drift. Enforced since 2026-10-26 (only the errors fail
+    # it; the warnings are for the reader), beside lint's MissingTranslation in build-test.
     steps:
       - uses: actions/checkout@v7
       - name: Checker unit tests
@@ -481,6 +485,16 @@ jobs:
       - uses: actions/checkout@v7
       - name: Reader unit tests
         run: python3 -m unittest scripts/test_fieldlog.py
+
+  qodana-pr-report:
+    name: Qodana report script tests
+    runs-on: ubuntu-latest
+    # scripts/qodana-pr-report.py turns a pull request's Qodana results into qodana-report.yml's comment, and it is
+    # the only thing between a fork's results and that comment. Stdlib only.
+    steps:
+      - uses: actions/checkout@v7
+      - name: Script unit tests
+        run: python3 -m unittest scripts/test_qodana_pr_report.py
 
   generated-assets:
     name: Generated assets are in sync

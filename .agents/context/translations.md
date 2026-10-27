@@ -28,8 +28,9 @@ later override only the strings it says differently. Progress per language is Gi
   reader notices first: a missing or extra string, a placeholder that moved, an unescaped apostrophe, a plural the
   language doesn't use (errors), and text left in English, a short label more than twice its English length, a
   glossary term with none of its renderings (warnings). Run it before `lint`; a new language needs its plural
-  categories in the script's `PLURALS` table. Both CIs run it as an advisory job (`translation-check`,
-  `verify:translation-check`) until the first locales settle; lint stays the gate.
+  categories in the script's `PLURALS` table. GitHub's `translation-check` is enforced and a required check
+  (since 2026-10-26; only the errors fail it); GitLab's `verify:translation-check` is still advisory. Lint's
+  `MissingTranslation` gates beside it.
 - **The language picker** is Android 13+'s per-app setting (Settings › Apps › Knit › Language). AGP generates the
   locale config from the `res/values-<locale>/` directories (`androidResources.generateLocaleConfig` in
   `app/build.gradle.kts`, the default's language in `app/src/main/res/resources.properties`). It is derived from the

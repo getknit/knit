@@ -820,13 +820,13 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   preview reachable, so a heap too small for the run dies with an OutOfMemoryError (as a few failed renders) near
   its end. 1 GiB held 467 images and ran out at 929. Raise the heap if the preview count outgrows it; don't reach
   for `forkEvery`, which leaves only the last fork's results in the report.
-- **CI runs it on both mirrors, advisory for now:** GitHub's `screenshot-tests` job and GitLab's
-  `test:screenshots` (on skuld). Each is the only job that fetches the LFS objects — GitHub through an
-  `actions/cache` keyed on their ids, then `git lfs pull`; GitLab by setting `GIT_LFS_SKIP_SMUDGE` back to
-  `0` against the pipeline-wide `1`, so `build:release` there builds from pointers as F-Droid does. A failure
-  uploads the report, renders and diffs. They are advisory because the references come from a workstation
-  without AVX-512 and Skia's rasterizer can take another SIMD path on a runner CPU; once each has rendered
-  green a few times, make them enforced. The wrapper check (`gen-screenshot-tests.py --check`) is enforced
+- **CI runs it on both mirrors:** GitHub's `screenshot-tests` job (enforced and a required check since
+  2026-10-26) and GitLab's `test:screenshots` (on skuld, still advisory). Each is the only job that fetches the LFS
+  objects — GitHub through an `actions/cache` keyed on their ids, then `git lfs pull`; GitLab by setting
+  `GIT_LFS_SKIP_SMUDGE` back to `0` against the pipeline-wide `1`, so `build:release` there builds from pointers as
+  F-Droid does. A failure uploads the report, renders and diffs. The worry was that the references come from a
+  workstation without AVX-512 and Skia's rasterizer can take another SIMD path on a runner CPU; GitHub's runners
+  rendered them identically 15 times, and the one failure was a stale reference. The wrapper check (`gen-screenshot-tests.py --check`) is enforced
   already: GitHub's `generated-assets`, GitLab's `verify:screenshot-wrappers`.
 
 ## Seeded UI instrumentation suite + Firebase Test Lab

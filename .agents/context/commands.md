@@ -44,7 +44,9 @@ bash scripts/egress-check.sh --variant debug --control  # ...the debug build, th
     script header explains why, and says not to rebuild it.
   - `qodana.sh` — the same engine over the **whole tree** in a container that syncs Gradle itself, so the
     global findings do land (228 accepted at the 2026-09-02 baseline, `qodana.sarif.json`; a run reports
-    only what is NEW against it). `--baseline` re-adopts the current result. Two traps, both already
+    only what is NEW against it). `--baseline` re-adopts the current result. On a GitHub pull request,
+    `.github/workflows/qodana-report.yml` posts the findings (`scripts/qodana-pr-report.py`): only those that
+    main's own latest run lacks too, because the baseline drifts behind main between re-adoptions. Two traps, both already
     handled and both worth knowing before you touch the config:
     - Qodana 2026.2 refuses AGP > 9.1.0 and this project is on 9.4.1. `qodana.yaml` sets
       `gradle.ide.support.future.agp.versions` to suppress that check — load-bearing, and its banner

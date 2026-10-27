@@ -1,0 +1,153 @@
+name: Qodana report
+
+# Posts a pull request's Qodana findings: one comment, kept up to date, and a `Qodana` check run whose annotations
+# mark the lines. ci.yml's Qodana job cannot do it itself on a fork's pull request, which gets a read-only token, so
+# on every pull request it only uploads its results (the `qodana-report` artifact) and this starts when CI completes.
+#
+# WHAT IT REPORTS: the findings the pull request introduces, which is neither the committed baseline's view (it drifts
+# behind main between `scripts/qodana.sh --baseline` runs, so it would hand a contributor main's own new findings) nor
+# the whole run. scripts/qodana-pr-report.py compares the pull request's results with main's latest run's, preferring
+# the run on the pull request's base. A pull request with nothing new gets no comment, unless it had one, which is
+# then updated to say so. Advisory, like the job: the check run is neutral or success, never failure.
+#
+# TRUST: this job holds a token that can comment and write check runs, so nothing from the pull request runs here.
+# Its results are data: the script that reads them is the default branch's, checked out alone, and it caps their size
+# and sanitises every string that reaches the comment (.github/workflows/review-gates-report.yml is the same shape).
+#
+# PINNING: by commit SHA, as triage.yml does, because this job holds a write token.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qodana-report-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Post Qodana findings
+    # `cancelled` is a run a newer push superseded; its successor reports.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      contains(fromJSON('["success", "failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # both runs' artifacts
+      checks: write # the check run and its annotations
+      issues: write # the comment (a pull request's comments are the issue's)
+      pull-requests: read
+    steps:
+      # The pull request is the open one whose head is the commit CI ran on, read from the API. Main's run is the one
+      # on the pull request's base when it still has its results, else the newest that does.
+      - name: Find the pull request and main's results
+        id: find
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const pulls = await github.paginate(github.rest.pulls.list, { owner, repo, state: 'open', per_page: 100 });
+            const pr = pulls.find((p) => p.head.sha === run.head_sha);
+            if (!pr) {
+              core.notice(`No open pull request has ${run.head_sha} as its head; nothing to report.`);
+              return;
+            }
+            const hasResults = async (id) => {
+              const { data } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: id, name: 'qodana-report' });
+              return data.artifacts.some((a) => !a.expired);
+            };
+            if (!(await hasResults(run.id))) {
+              core.notice('The Qodana job uploaded no results (it failed before the scan, or was skipped).');
+              return;
+            }
+            const { data: mains } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: run.workflow_id, branch: 'main', event: 'push', status: 'completed', per_page: 20,
+            });
+            const ordered = [...mains.workflow_runs.filter((r) => r.head_sha === pr.base.sha),
+                             ...mains.workflow_runs.filter((r) => r.head_sha !== pr.base.sha)];
+            for (const r of ordered) {
+              if (await hasResults(r.id)) {
+                core.setOutput('main_run', r.id);
+                core.setOutput('main_sha', r.head_sha);
+                break;
+              }
+            }
+            core.setOutput('number', pr.number);
+
+      - name: Check out the report script (default branch)
+        if: steps.find.outputs.number
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: scripts/qodana-pr-report.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download the pull request's results
+        if: steps.find.outputs.number
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qodana-report
+          path: pr-results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Download main's results
+        if: steps.find.outputs.main_run
+        continue-on-error: true # the script falls back to the baseline and says so
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qodana-report
+          path: main-results
+          run-id: ${{ steps.find.outputs.main_run }}
+          github-token: ${{ github.token }}
+
+      - name: Build the comment and annotations
+        id: build
+        if: steps.find.outputs.number
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN_SHA: ${{ steps.find.outputs.main_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          main=()
+          [ ! -d main-results ] || main=(--main main-results --main-sha "$MAIN_SHA")
+          python3 -I trusted/scripts/qodana-pr-report.py --pr pr-results "${main[@]}" \
+            --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA" --run-url "$RUN_URL" --out report
+          cat report/comment.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Post the comment and the check run
+        if: steps.build.outcome == 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR: ${{ steps.find.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const body = fs.readFileSync('report/comment.md', 'utf8');
+            const annotations = JSON.parse(fs.readFileSync('report/annotations.json', 'utf8'));
+            const summary = JSON.parse(fs.readFileSync('report/summary.json', 'utf8'));
+            const marker = body.split('\n', 1)[0];
+
+            const issue_number = Number(process.env.PR);
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find((c) => c.user.type === 'Bot' && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else if (summary.new > 0) await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+            const title = summary.new ? `${summary.new} new finding${summary.new === 1 ? '' : 's'}` : 'No new findings';
+            await github.rest.checks.create({
+              owner, repo, name: 'Qodana', head_sha: process.env.HEAD_SHA, status: 'completed',
+              conclusion: summary.new ? 'neutral' : 'success',
+              output: { title, summary: body.slice(0, 65000), annotations },
+            });
