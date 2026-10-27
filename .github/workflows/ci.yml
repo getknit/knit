@@ -273,6 +273,14 @@ jobs:
         with:
           packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
       - uses: gradle/actions/setup-gradle@v5
+      # This daemon dexes the app and its androidTest APK side by side with the in-process Kotlin compile, and at the
+      # repo's 2 GB default D8 ran out of heap in :app:mergeExtDexDebug (run 40462339664). The runner has 16 GB; the
+      # user-home gradle.properties overrides the project's.
+      - name: Gradle heap for two variants
+        run: |
+          home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          mkdir -p "$home"
+          echo 'org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8' >> "$home/gradle.properties"
       # The hosted runner has KVM, but /dev/kvm is not open to the runner user until a udev rule says so; without
       # it the emulator falls back to software and the boot outlasts Gradle's setup timeout.
       - name: Enable KVM

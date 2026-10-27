@@ -58,6 +58,8 @@ class TransferListenerTest {
                 listOf(v4, v6).map { address ->
                     Socket().apply {
                         connect(InetSocketAddress(address, port), 1_000)
+                        // Set here, not in its reader: a reader first dispatched after `finally` meets a closed socket.
+                        soTimeout = 5_000
                         getOutputStream().apply {
                             write(TransferStream.clientProof(key, "t1"))
                             flush()
@@ -70,7 +72,6 @@ class TransferListenerTest {
                 val reset = CompletableDeferred<Unit>()
                 clients.forEach { client ->
                     launch(Dispatchers.IO) {
-                        client.soTimeout = 5_000
                         runCatching { client.getInputStream().read() }
                         reset.complete(Unit)
                     }
