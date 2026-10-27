@@ -27,7 +27,9 @@ lines.
   answers null for a busy backend there); never generate under an alias a live wrap depends on without
   confirmed absence; read a mint back before using it; and a live reader (the backup writer) uses `current()` /
   `read()`, never `getOrCreate()`. Debug builds refuse on cue while `files/keystore-fault` holds a count.
-  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`,
+  An identity that opens but does not parse is unwrapped again over the same waits before it fails, and the failure
+  names each read's `CborShape`, never a value byte (the 2026-10-27 amendment).
+  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`, `CborShapeTest`,
   `BackupWriterKeystoreTest`, `StorageGateTest`; on a device `DatabaseKeyTest`.
 - **When touching `data/backup/`, `ui/backup/`, `RestartActivity`, `KnitApplication.onCreate`'s pre-Koin
   block, `MeshManager.finishRestore`, `SeenSet.reopen`, `SettingsKeys.TRANSIENT_PREFIXES`, or adding a table

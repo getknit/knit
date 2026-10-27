@@ -107,3 +107,18 @@ proven loss costs two seconds of retries before the wipe, and a first run costs 
 `StorageUnavailableScreenContentTest`; on a device, `DatabaseKeyTest` (`aKeystoreRefusalNeverWipes`, through the
 debug injector over the real Keystore). The trap: never read a null or an exception from the Keystore as "gone"
 without a row of the table above that says so, and never generate under an alias a live wrap depends on.
+
+## Amendment (2026-10-27): an identity that opens but does not parse is read again first
+
+On Play, 2.9.0, one Redmi Note 14 Pro+ 5G (HyperOS, API 36) unwrapped its identity with the tag verified and failed
+partway through `hybridPriv`'s array, on a header no build writes there. The format has only grown additively since
+2.0.0 and the restore stager parses with the same code before it wraps, so a verified tag no longer proves the bytes
+are the ones sealed: a vendor Keystore can hand back others. `IdentityKeyStore.loaded` now unwraps again after each
+of the retry waits (500 ms, 1500 ms) before it fails, and a later read that parses is used as it stands. One that
+never parses is still the `IllegalStateException` above, nothing minted or moved, and its message now says whether the
+reads agreed and gives each one's `CborShape`: major types, counts, lengths and the identity's own field names, never
+a value byte (`567 B {hybridPriv:[i×149 t7@276 [i×154]@284 !@567` is a span gone mid-array). A re-read the Keystore
+refuses or calls lost ends the re-reads and is named in the message; it is never a reason to mint. Reads that agree
+point to bytes altered on the way in, or a bad build; reads that differ, to the way out. Play strips exception
+messages, so the shape reaches the local crash log and a field log, not the console. `DatabaseKey`'s wrong-length
+check is unchanged. Regression: `IdentityKeyStoreRecoveryTest`, `CborShapeTest`.

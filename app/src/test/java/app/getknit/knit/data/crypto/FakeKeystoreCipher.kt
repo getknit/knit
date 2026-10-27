@@ -20,6 +20,9 @@ class FakeKeystoreCipher : KeystoreCipher {
     /** What the next [open] calls throw instead of unwrapping. */
     val openScript = ArrayDeque<Throwable>()
 
+    /** What the next [open] calls do to the bytes they unwrapped: a Keystore handing back other bytes, its tag verified. */
+    val alterScript = ArrayDeque<(ByteArray) -> ByteArray>()
+
     var lookups = 0
         private set
     var opens = 0
@@ -58,7 +61,8 @@ class FakeKeystoreCipher : KeystoreCipher {
             Cipher.getInstance(TRANSFORMATION).apply {
                 init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(KeystoreCipher.GCM_TAG_BITS, iv))
             }
-        return cipher.doFinal(wrapped, KeystoreCipher.IV_LENGTH, wrapped.size - KeystoreCipher.IV_LENGTH)
+        val plain = cipher.doFinal(wrapped, KeystoreCipher.IV_LENGTH, wrapped.size - KeystoreCipher.IV_LENGTH)
+        return alterScript.removeFirstOrNull()?.invoke(plain) ?: plain
     }
 
     companion object {
