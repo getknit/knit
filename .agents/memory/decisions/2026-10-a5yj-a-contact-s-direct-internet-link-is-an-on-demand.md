@@ -164,3 +164,25 @@ license and its reproducibility.
 - **The tests owed.** A pure open/close policy with JVM tests. A mesh-lab scenario in which two radio islands with
   no spool path converge through one lab Internet link and end in `assertConverged`. A scenario in which the room and
   a stranger's frames stay on their island.
+
+## Amendment 2026-10-27 — the signal's seal and the lane's keys (draft)
+
+Status: draft from the crypto design pass on the Phase 0 spike; the caller decides whether it stands.
+
+**The lane keys come from both signals, not from the pairwise root.** Each signal carries `k`, 32 bytes drawn fresh for
+that attempt, and `key(dir) = HKDF-SHA256(ikm = kOffer ‖ kAnswer, salt = linkId, info = label ‖ offererId ‖
+answererId, L = 32)` with the label `knit/link/v1/lane/o2a` or `…/a2o` and both node ids as canonical bytes in role
+order (`mesh/crypto/LinkKeys`, `docs/DIRECT_LINKS.md` L-5-1). The text above said "HKDF over the pairwise root and both
+offers' nonces". A drain window can hold two roots and the ends need not agree which one cast the signal, so naming a
+root would have needed a rule for it; two fresh `k`s sealed under the pair's ratchet are already secret to the pair, and
+no root or scope id means a lane key proves nothing about a call, a transfer, a scope or the session.
+
+**The signal is sealed only under a confirmed session, and opened only over one.** The sender seals with
+`RatchetSessions.sealDm(confirmedOnly = true)` and asks `ScopeSync.canCast` first, so a cast nobody takes and our own
+unanswered init or reset never move the ratchet; a null seal is no attempt, never a fallback. The receiver takes a
+signal only from a spool's cast, signed, from an accepted, unblocked sender whose session it holds confirmed, and only
+in a build that wires links; an OFFER whose stamp is more than `MAX_FUTURE_SKEW_MS` from its own clock is dropped
+after the open (counted `LINK_STALE`), and an ANSWER is judged by its link id alone (`docs/DIRECT_LINKS.md` L-2-4). A
+failed open is never reset evidence (`onRatchetFailure(authenticated = false)`): a reset racing an OFFER leaves it
+unreadable as a matter of course. Whether this person wrote to or verified the contact is the offerer's consent rule,
+asked by the link layer before it offers, never at receipt, so the rule cannot differ between the two ends.

@@ -150,6 +150,13 @@ enum class DropReason {
      * repair that the peer's next frame will not show again on the ordinary path.
      */
     LORA_DIRECT_RATCHET_MISSED,
+
+    /**
+     * A direct link's OFFER that opened but whose stamp is more than `Protocol.MAX_FUTURE_SKEW_MS` from this phone's
+     * clock (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-2-4). Its offerer sees only a missing answer, so a count climbing
+     * here is how a pair stuck dark by a drifted clock shows apart from a pair with no UDP path.
+     */
+    LINK_STALE,
 }
 
 /**

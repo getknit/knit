@@ -6,6 +6,7 @@ import app.getknit.knit.crash.CrashEnvironment
 import app.getknit.knit.crash.CrashIssueUrl
 import app.getknit.knit.crash.currentCrashEnvironment
 import app.getknit.knit.di.CALL_CAPABILITIES
+import app.getknit.knit.di.DIRECT_LINK_CAPABILITIES
 import app.getknit.knit.legal.InstallSource
 import app.getknit.knit.legal.installSourceOf
 import app.getknit.knit.legal.installerPackage
@@ -69,7 +70,7 @@ fun currentAboutBuildInfo(context: Context): AboutBuildInfo =
         installSource = installSourceOf(installerPackage(context)),
         commit = BuildConfig.GIT_SHA.ifEmpty { null },
         flags = enabledBuildFlags(),
-        capabilities = Protocol.LOCAL_CAPABILITIES or CALL_CAPABILITIES,
+        capabilities = Protocol.LOCAL_CAPABILITIES or CALL_CAPABILITIES or DIRECT_LINK_CAPABILITIES,
     )
 
 /**
@@ -91,6 +92,7 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
         "BLE_LINK_BOOST" to BuildConfig.BLE_LINK_BOOST,
         "BLE_FEED_WINDOW" to BuildConfig.BLE_FEED_WINDOW,
         "WEAR_STATUS" to BuildConfig.WEAR_STATUS,
+        "DIRECT_LINKS" to BuildConfig.DIRECT_LINKS,
         "LIVE_CALLS" to BuildConfig.LIVE_CALLS,
         "MESH_CALLS" to BuildConfig.MESH_CALLS,
         "STT" to BuildConfig.STT,
@@ -127,6 +129,7 @@ internal val CAPABILITY_BITS: List<Pair<String, Long>> =
         "CAP_CALL" to Protocol.CAP_CALL,
         "CAP_WALKIE" to Protocol.CAP_WALKIE,
         "CAP_LORA_DIRECT" to Protocol.CAP_LORA_DIRECT,
+        "CAP_INET_LINK" to Protocol.CAP_INET_LINK,
     )
 
 /** The bits [mask] holds with their names, lowest first; a bit with no name is named by its hex value. */

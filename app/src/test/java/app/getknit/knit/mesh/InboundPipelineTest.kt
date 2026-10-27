@@ -78,7 +78,9 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRatchetHeader
 import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.KeyReqContent
+import app.getknit.knit.mesh.protocol.LinkCand
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
+import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
@@ -294,6 +296,8 @@ class InboundPipelineTest {
         ratchetEngine: RatchetEngine = RatchetEngine(),
         // False wires no DM ✓✓ coalescer, as a pipeline with no LoRa plane runs: a LoRa DM's ✓✓ is sealed at once.
         withDmAcks: Boolean = true,
+        // Whether the build takes direct links (ADR 2026-10.a5yj); only the `link` frames read it.
+        linksWired: Boolean = true,
     ) {
         val transport = FakeLoopTransport(self.nodeId)
         val metrics = MeshMetrics()
@@ -341,6 +345,9 @@ class InboundPipelineTest {
 
         // What the walkie hook saw (handleTalk): each chunk's author, the hop it named and the link's transport.
         val talkHops = mutableListOf<Triple<String, String?, TransportKind>>()
+
+        // What the direct-link hook saw (handleLink): each signal's author, the signal and its stamp.
+        val linkSignals = mutableListOf<Triple<String, LinkSignal, Long>>()
 
         // The publish stamps of our own profile looping back — what the clone watch is handed (ADR 2026-09.ypcc).
         val selfProfileStamps = mutableListOf<Long>()
@@ -614,6 +621,8 @@ class InboundPipelineTest {
                     },
                     onCallCtl = { sender, cl, at -> callSignals += Triple(sender, cl, at) },
                     onCallTalk = { sender, _, _, _, hop, kind -> talkHops += Triple(sender, hop, kind) },
+                    linksWired = linksWired,
+                    onLinkSignal = { sender, signal, at -> linkSignals += Triple(sender, signal, at) },
                     onSelfProfile = { selfProfileStamps += it },
                 )
         }
@@ -6804,6 +6813,42 @@ class InboundPipelineTest {
                     ),
             )
         }
+
+        /**
+         * A direct link's signal frame (ADR 2026-10.a5yj) sealed raw on this author's chain, in a [ChatContent]. This
+         * author is an initiator nobody answered, so the header still carries its init — the frame a confirmed sender
+         * never seals ([LinkAuthor] is that sender), here for the refusal of exactly that shape.
+         */
+        fun link(
+            id: String,
+            signal: LinkSignal,
+            sentAt: Long,
+            plaintext: ByteArray = WireCodec.encodePayload(signal),
+        ): RelayEnvelope {
+            val to = rig.self.nodeId
+            val aad = MessageCrypto.header(id, party.nodeId, sentAt, to)
+            val sealed = checkNotNull(engine.seal(session, plaintext, aad, rig.selfSpk.pub, now = 5L))
+            session = sealed.session
+            val h = sealed.header
+            val init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) }
+            val header = RatchetHeader(se = h.se, ek = h.ek, pe = h.pe, n = h.n, init = init, flags = h.flags)
+            val enc =
+                EncEnvelope(
+                    v = EncEnvelope.VERSION_RATCHET,
+                    nonce = sealed.nonce ?: ByteArray(0),
+                    ct = sealed.ct,
+                    keys = emptyList(),
+                    r = header,
+                )
+            return RelayEnvelope(
+                type = FrameType.LINK,
+                id = id,
+                senderId = party.nodeId,
+                sentAt = sentAt,
+                recipientId = to,
+                payload = WireCodec.encodePayload(ChatContent(enc = enc)),
+            )
+        }
     }
 
     @Test
@@ -7761,6 +7806,298 @@ class InboundPipelineTest {
                 ),
                 rig.talkHops,
             )
+        }
+
+    // --- direct-link signals (ADR 2026-10.a5yj): cast-only, signed, sealed on a confirmed session ---
+
+    private val linkSpool = ScopeSync.SPOOL_SOURCE_PREFIX + "wss://spool.test/spool/v1"
+
+    private fun linkOffer(k: Byte = 2) =
+        LinkSignal(
+            ph = LinkSignal.PHASE_OFFER,
+            id = ByteArray(LinkSignal.ID_BYTES) { 1 },
+            k = ByteArray(LinkSignal.KEY_BYTES) { k },
+            c = listOf(LinkCand(ByteArray(16) { 0x20 }, 40_000, 0)),
+            nt = LinkSignal.NET_CELLULAR,
+        )
+
+    /**
+     * A contact's phone as a link sender is: the session layer over its own database, holding a session with the rig that
+     * it has heard back on, so its seals carry no init — what `MeshManager.linkSignalFrame` seals under `confirmedOnly`.
+     */
+    private inner class LinkAuthor(
+        val party: Party,
+        private val rig: Rig,
+    ) {
+        private val db =
+            Room
+                .inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), KnitDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+        val sessions =
+            RatchetSessions(
+                store = RatchetRepository(db.ratchetDao(), clock = { LINK_NOW }),
+                dhIdentityPriv = { party.dhPriv },
+                spkPrivFor = { null },
+            )
+
+        /** The author's first-contact DM to the rig, then the rig's sealed answer, opened here: both ends confirmed. */
+        suspend fun meet() {
+            val to = rig.self.nodeId
+            val helloAt = LINK_NOW - 60_000L
+            val aad = MessageCrypto.header("hello-${party.nodeId.take(4)}", party.nodeId, helloAt, to)
+            val prekey = RatchetEngine.PeerPrekey(id = SPK_ID, pub = rig.selfSpk.pub)
+            val body = MessageContent(body = "hello").encode()
+            val hello = checkNotNull(sessions.sealDm(to, rig.self.bundle.dhPublicKey(), prekey, body, aad, helloAt))
+            rig.deliver(party, dmFrame("hello-${party.nodeId.take(4)}", helloAt, hello))
+            assertTrue("the rig's session must be confirmed", checkNotNull(rig.ratchetStore.session(party.nodeId)).confirmed)
+
+            val replyAad = MessageCrypto.header("reply", to, LINK_NOW, party.nodeId)
+            val reply =
+                checkNotNull(rig.ratchet.sealDm(party.nodeId, party.bundle.dhPublicKey(), null, "hi".toByteArray(), replyAad, LINK_NOW))
+            val r = checkNotNull(reply.r)
+            val rigIk = rig.self.bundle.dhPublicKey()
+            val peek = sessions.peekOpen(party.nodeId, to, rigIk, r, reply.nonce, reply.ct, replyAad, LINK_NOW)
+            assertTrue("the author opens the rig's answer: $peek", peek is RatchetEngine.OpenOutcome.Opened)
+            assertTrue(sessions.commitOpen(party.nodeId, to, rigIk, r, reply.nonce, reply.ct, replyAad, LINK_NOW) {})
+            assertTrue("the author's session must be confirmed", checkNotNull(sessions.sessionFor(to)).confirmed)
+        }
+
+        /** A `link` frame sealed under the confirmed session: [plaintext] is [signal]'s CBOR unless a test hands other bytes. */
+        suspend fun link(
+            id: String,
+            signal: LinkSignal,
+            sentAt: Long,
+            plaintext: ByteArray = WireCodec.encodePayload(signal),
+        ): RelayEnvelope {
+            val to = rig.self.nodeId
+            val aad = MessageCrypto.header(id, party.nodeId, sentAt, to)
+            val prekey = RatchetEngine.PeerPrekey(id = SPK_ID, pub = rig.selfSpk.pub)
+            val sealed =
+                checkNotNull(sessions.sealDm(to, rig.self.bundle.dhPublicKey(), prekey, plaintext, aad, sentAt, confirmedOnly = true))
+            val header = checkNotNull(sealed.r)
+            check(header.init == null && header.flags == 0) { "a confirmed sender's seal carries no init and no flag" }
+            return RelayEnvelope(
+                type = FrameType.LINK,
+                id = id,
+                senderId = party.nodeId,
+                sentAt = sentAt,
+                recipientId = to,
+                payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+            )
+        }
+
+        private fun dmFrame(
+            id: String,
+            sentAt: Long,
+            enc: EncEnvelope,
+        ) = RelayEnvelope(
+            type = FrameType.CHAT,
+            id = id,
+            senderId = party.nodeId,
+            sentAt = sentAt,
+            recipientId = rig.self.nodeId,
+            payload = WireCodec.encodePayload(ChatContent(enc = enc)),
+        )
+    }
+
+    /** [peer] as an accepted contact this rig and [peer]'s phone each hold a confirmed session with, and [peer]'s phone. */
+    private suspend fun Rig.confirmedContact(peer: Party): LinkAuthor {
+        nowMs = LINK_NOW
+        pinRatchetCapable(peer, RatchetCrypto.generateKeyPair().pub)
+        peerMap[peer.nodeId] = peerMap.getValue(peer.nodeId).copy(verified = true)
+        return LinkAuthor(peer, this).also { it.meet() }
+    }
+
+    @Test
+    fun aCastLinkOfferFromAConfirmedContactReachesTheLinkLayer() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val author = rig.confirmedContact(alice)
+
+            rig.deliver(alice, author.link("l-1", linkOffer(), sentAt = LINK_NOW - 30_000L), from = linkSpool)
+
+            val (sender, signal, sentAt) = rig.linkSignals.single()
+            assertEquals(alice.nodeId, sender)
+            assertEquals(LinkSignal.PHASE_OFFER, signal.ph)
+            assertArrayEquals(ByteArray(LinkSignal.KEY_BYTES) { 2 }, signal.k)
+            assertEquals(LINK_NOW - 30_000L, sentAt)
+            assertFalse("a link signal is never a message", rig.msgMap.containsKey("l-1"))
+            assertFalse("and never custodied", rig.forwardStore.has("l-1"))
+        }
+
+    /**
+     * Every refusal ahead of the hand-off: a radio copy (no build sends one), an unsigned copy (the unsigned door is
+     * `talk`'s alone), an OFFER stamped outside the skew bound either way, and a plaintext that is not a signal. The first two are
+     * dropped unopened, so the sender's chain has a hole there — and the well-formed signal after them still opens.
+     */
+    @Test
+    fun aLinkSignalOffTheSpoolUnsignedStaleOrMalformedNeverReachesTheLinkLayer() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val author = rig.confirmedContact(alice)
+
+            rig.deliver(alice, author.link("l-radio", linkOffer(), sentAt = LINK_NOW), from = alice.nodeId, kind = TransportKind.WifiAware)
+            val unsigned = author.link("l-unsigned", linkOffer(), sentAt = LINK_NOW)
+            rig.pipeline.onDeliver(
+                WireEnvelope(ttl = 0, relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(unsigned)),
+                unsigned,
+                linkSpool,
+            )
+            assertEquals(1L, rig.drops(DropReason.UNSIGNED_REFUSED))
+            val skew = Protocol.MAX_FUTURE_SKEW_MS
+            rig.deliver(alice, author.link("l-old", linkOffer(), sentAt = LINK_NOW - skew - 1), from = linkSpool)
+            rig.deliver(alice, author.link("l-ahead", linkOffer(), sentAt = LINK_NOW + skew + 1), from = linkSpool)
+            // Counted, so a pair kept dark by a drifted clock shows apart from one with no UDP path.
+            assertEquals(2L, rig.drops(DropReason.LINK_STALE))
+            val decodeDrops = rig.drops(DropReason.PAYLOAD_DECODE_FAILED)
+            rig.deliver(alice, author.link("l-junk", linkOffer(), sentAt = LINK_NOW, plaintext = byteArrayOf(1, 2, 3)), from = linkSpool)
+            assertEquals(decodeDrops + 1, rig.drops(DropReason.PAYLOAD_DECODE_FAILED))
+            val shortId = LinkSignal(ph = LinkSignal.PHASE_ANSWER, id = ByteArray(15), k = ByteArray(LinkSignal.KEY_BYTES))
+            rig.deliver(alice, author.link("l-short", shortId, sentAt = LINK_NOW), from = linkSpool)
+            assertTrue(rig.linkSignals.isEmpty())
+
+            rig.deliver(alice, author.link("l-good", linkOffer(k = 9), sentAt = LINK_NOW), from = linkSpool)
+            val (_, signal, _) = rig.linkSignals.single()
+            assertArrayEquals(ByteArray(LinkSignal.KEY_BYTES) { 9 }, signal.k)
+
+            // An ANSWER is judged by its link id against the offerer's own attempt (L-2-4), never by its stamp.
+            val staleAnswer =
+                LinkSignal(ph = LinkSignal.PHASE_ANSWER, id = ByteArray(LinkSignal.ID_BYTES), k = ByteArray(LinkSignal.KEY_BYTES))
+            rig.deliver(alice, author.link("l-answer", staleAnswer, sentAt = LINK_NOW - skew - 1), from = linkSpool)
+            val (_, answer, _) = rig.linkSignals.last()
+            assertEquals(LinkSignal.PHASE_ANSWER, answer.ph)
+        }
+
+    /** Who may: an accepted, unblocked sender, over a session confirmed on this side, in a build that wires links. */
+    @Test
+    fun aLinkSignalFromAStrangerABlockedContactOrOverAnUnconfirmedSessionIsDroppedUnopened() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val author = rig.confirmedContact(alice)
+
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(verified = false)
+            rig.deliver(alice, author.link("l-stranger", linkOffer(), sentAt = LINK_NOW), from = linkSpool)
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(verified = true)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            rig.deliver(alice, author.link("l-blocked", linkOffer(), sentAt = LINK_NOW), from = linkSpool)
+            rig.settings.blocked.value = emptySet()
+            assertTrue(rig.linkSignals.isEmpty())
+
+            // Our own reset, unanswered: the session is no longer confirmed, so nothing is opened, nothing fails and
+            // nothing counts toward a second reset.
+            val resets = rig.resetsSent()
+            assertNull(rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, LINK_NOW))
+            assertFalse(checkNotNull(rig.ratchetStore.session(alice.nodeId)).confirmed)
+            rig.deliver(alice, author.link("l-pending", linkOffer(), sentAt = LINK_NOW), from = linkSpool)
+            assertTrue(rig.linkSignals.isEmpty())
+            assertEquals(0L, rig.drops(DropReason.RATCHET_AEAD_FAIL) + rig.drops(DropReason.RATCHET_NO_SESSION))
+            assertEquals(resets + 1, rig.resetsSent())
+
+            // And a build without links opens none, however good the frame.
+            val unwired = Rig(backgroundScope, linksWired = false)
+            val bob = party()
+            val bobAuthor = unwired.confirmedContact(bob)
+            unwired.deliver(bob, bobAuthor.link("l-unwired", linkOffer(), sentAt = LINK_NOW), from = linkSpool)
+            assertTrue(unwired.linkSignals.isEmpty())
+        }
+
+    /**
+     * A signal that fails to open is never reset evidence, though the spool's copy is signed: a reset racing an OFFER
+     * leaves it unreadable as a matter of course, and must not buy the pair a second reset. The same unreadable frames as
+     * `chat` are the control: they do.
+     */
+    @Test
+    fun aLinkSignalThatFailsToOpenIsNeverResetEvidence() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val author = rig.confirmedContact(alice)
+            val before = rig.resetsSent()
+
+            suspend fun tampered(
+                id: String,
+                type: String,
+            ): RelayEnvelope {
+                val frame = author.link(id, linkOffer(), sentAt = LINK_NOW)
+                val chat = checkNotNull(WireCodec.decodePayload<ChatContent>(frame.payload))
+                val enc = checkNotNull(chat.enc)
+                val ct = enc.ct.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+                val broken = EncEnvelope(v = enc.v, nonce = enc.nonce, ct = ct, keys = enc.keys, r = enc.r)
+                return RelayEnvelope(
+                    type = type,
+                    id = id,
+                    senderId = frame.senderId,
+                    sentAt = frame.sentAt,
+                    recipientId = frame.recipientId,
+                    payload = WireCodec.encodePayload(ChatContent(enc = broken)),
+                )
+            }
+
+            repeat(RatchetSessions.RESET_DISTINCT_FRAMES) { i ->
+                rig.deliver(alice, tampered("l-bad-$i", FrameType.LINK), from = linkSpool)
+            }
+            assertEquals(RatchetSessions.RESET_DISTINCT_FRAMES.toLong(), rig.drops(DropReason.RATCHET_AEAD_FAIL))
+            assertEquals("a link signal that fails to open is not reset evidence", before, rig.resetsSent())
+            assertTrue(rig.linkSignals.isEmpty())
+
+            repeat(RatchetSessions.RESET_DISTINCT_FRAMES) { i -> rig.deliver(alice, tampered("c-bad-$i", FrameType.CHAT)) }
+            assertEquals("the same frames as chat do prove the session broken", before + 1, rig.resetsSent())
+        }
+
+    /**
+     * A sender under `confirmedOnly` never seals an init or a reset flag into a signal, so a signed cast `link` whose
+     * header carries either is refused before the open as `RATCHET_BAD_HEADER`: it can neither race nor replace the
+     * session, nor count toward a reset. The init case is a first-contact author's frame; the flag is set on a confirmed
+     * sender's header, which no open reaches.
+     */
+    @Test
+    fun aLinkSignalWhoseHeaderCarriesAnInitOrTheResetFlagIsDroppedUnopened() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val author = rig.confirmedContact(alice)
+            val root = checkNotNull(rig.ratchetStore.session(alice.nodeId)).root.copyOf()
+            val resets = rig.resetsSent()
+            val badHeaders = rig.drops(DropReason.RATCHET_BAD_HEADER)
+
+            // Another session's opening frame: an init a fresh initiator still attaches.
+            val initiator = V2Author(alice, rig, at = LINK_NOW)
+            rig.deliver(alice, initiator.link("l-init", linkOffer(), sentAt = LINK_NOW), from = linkSpool)
+
+            val good = author.link("l-flagged", linkOffer(), sentAt = LINK_NOW)
+            val enc = checkNotNull(WireCodec.decodePayload<ChatContent>(good.payload)?.enc)
+            val h = checkNotNull(enc.r)
+            val flagged = RatchetHeader(se = h.se, ek = h.ek, pe = h.pe, n = h.n, init = h.init, flags = RatchetHeader.FLAG_RESET)
+            val payload = ChatContent(enc = EncEnvelope(v = enc.v, nonce = enc.nonce, ct = enc.ct, keys = enc.keys, r = flagged))
+            rig.deliver(
+                alice,
+                RelayEnvelope(
+                    type = FrameType.LINK,
+                    id = good.id,
+                    senderId = good.senderId,
+                    sentAt = good.sentAt,
+                    recipientId = good.recipientId,
+                    payload = WireCodec.encodePayload(payload),
+                ),
+                from = linkSpool,
+            )
+
+            assertEquals(badHeaders + 2, rig.drops(DropReason.RATCHET_BAD_HEADER))
+            assertTrue(rig.linkSignals.isEmpty())
+            val openFailures = rig.drops(DropReason.RATCHET_AEAD_FAIL) + rig.drops(DropReason.RATCHET_NO_SESSION)
+            assertEquals("nothing opened, so nothing failed", 0L, openFailures)
+            assertEquals("no reset requested", resets, rig.resetsSent())
+            val session = checkNotNull(rig.ratchetStore.session(alice.nodeId))
+            assertTrue("the session was neither raced nor replaced", session.confirmed && session.root.contentEquals(root))
+
+            // The confirmed sender's next signal still opens past the hole the refused one left.
+            rig.deliver(alice, author.link("l-after", linkOffer(k = 7), sentAt = LINK_NOW), from = linkSpool)
+            val (_, after, _) = rig.linkSignals.single()
+            assertArrayEquals(ByteArray(LinkSignal.KEY_BYTES) { 7 }, after.k)
         }
 
     @Test
@@ -11727,6 +12064,9 @@ class InboundPipelineTest {
 
         /** The prekey id the Rig's fake identity serves (mirrors IdentityKeyStore.prekeyPrivFor). */
         const val SPK_ID = 1
+
+        /** The rig clock in the direct-link cases: far enough from zero that a stamp outside the skew bound is positive. */
+        const val LINK_NOW = 1_700_000_000_000L
 
         /** How far [assertRigState] looks for receive chains and skipped keys: past anything a vector scenario holds. */
         const val STATE_EPOCHS = 8

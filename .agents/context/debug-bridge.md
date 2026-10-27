@@ -302,6 +302,17 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   - A force-stop mid-transfer really does strand a group on air (`dumpsys wifip2p` shows
     `curState=GroupCreatedState` with the app dead). `--ez sweep true` is the same sweep the app runs 8 s into
     launch, on demand — the way to prove a leftover is gone without waiting out a restart.
+- `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj, the Phase 0 spike; a debug build with
+  `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
+  `--es op try --es peer <nodeId>` offers that contact a link now, past its backoff, and answers once the attempt ends
+  with `outcome` (UP / NO_PATH / NO_ANSWER / NO_CAST / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED); `--es op close --es peer
+  <nodeId>` closes one with a BYE; no op reads state. Every reply carries `enabled`, `links` (peer, state, datagram
+  bytes `in`/`out`) and `tries` (the last attempt with each peer: `out` when this phone offered, `outcome`, `path`
+  V6_TEMPORARY / V6 / HOST / V4_REFLEXIVE / PEER_REFLEXIVE, `peerNet`, `ms`, `rtt`). Never an address: the oracle
+  for a trial is `tries` on both phones plus their `link_try` / `link_end` field-log lines. Both phones need the switch
+  on, a confirmed DM session, a connected spool that carries casts, and each other's `CAP_INET_LINK`; a `try` that
+  answers NOT_QUALIFIED or NO_CAST names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
+  after 15 s, and the answerer's `tries` stays empty.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
   `BuildConfig.LIVE_CALLS` / `MESH_CALLS`; `op capture` and `op dropgroup` need live calls;
   `docs/VOICE_CALLS.md`). `--es op state` (the default) dumps the call, its phase, `reason` and the selected

@@ -92,6 +92,18 @@ object FrameType {
     const val TALK = "talk"
 
     /**
+     * A direct link's OFFER or ANSWER between two contacts (experimental, ADR 2026-10.a5yj): a [LinkSignal] sealed on
+     * the DM ratchet, the payload laid out as a [TALK]'s is ([TalkSeal], or a [ChatContent] for a header that form cannot
+     * carry). Cast-only: it is signed, cast through a spool in the pair's DM scope (`ScopeFrames.castEligible`) and
+     * never sent over the radios, custodied, parked or relayed, since what it carries — the sender's addresses — is
+     * for the one contact and for the next ten seconds. Never in the unsigned door (`isTalkShape` stays `talk` alone):
+     * the ratchet's AAD does not bind the frame type, so only the signature keeps a `link` from passing as a `talk`.
+     * An older build's cast door drops it unanswered; an offer goes only toward a profile carrying
+     * `Protocol.CAP_INET_LINK`.
+     */
+    const val LINK = "link"
+
+    /**
      * Whether a frame of [type] is worth parking for replay when it's dropped for a missing sender key
      * (see `app.getknit.knit.mesh.PendingInbound`): the locally-delivered types only. PROFILE and KEY_REQ
      * are excluded (they bootstrap keys, never wait on one), as are the point-to-point BLOB_REQ and any
@@ -979,6 +991,51 @@ data class CallPayload(
         const val DIRECT_JOINING = 1
     }
 }
+
+/**
+ * One direct-link signal (ADR 2026-10.a5yj), the plaintext a [FrameType.LINK] frame seals on the DM ratchet. The
+ * offerer casts an OFFER ([ph] = [PHASE_OFFER]) under a fresh link id [id]; the contact casts back one ANSWER under the
+ * same [id], and both punch toward each other's candidates [c]. Each side's [k] is 32 bytes drawn fresh for that link
+ * id: the lane's keys come from both (`LinkKeys`), so only the two who opened both seals can derive them. [nt] is the
+ * sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the spike's field log; [ct] says the sender holds
+ * a cast ticket on a connected spool, so a free peer's ANSWER is carried by a gated one (the walkie's
+ * `CallPayload.ct`, S-7.7-6).
+ *
+ * A class with raw byte strings, not a `data class` ([RelayEnvelope]'s reason). Every field a reader acts on is
+ * validated before it is: [id] is [ID_BYTES], [k] is [KEY_BYTES], and each candidate passes `PunchPolicy.sane`.
+ */
+@Serializable
+class LinkSignal(
+    val ph: Int,
+    @ByteString val id: ByteArray,
+    @ByteString val k: ByteArray,
+    val c: List<LinkCand> = emptyList(),
+    val nt: Int = NET_OTHER,
+    val ct: Boolean = false,
+) {
+    companion object {
+        const val PHASE_OFFER = 1
+        const val PHASE_ANSWER = 2
+
+        const val NET_OTHER = 0
+        const val NET_WIFI = 1
+        const val NET_CELLULAR = 2
+
+        const val ID_BYTES = 16
+        const val KEY_BYTES = 32
+    }
+}
+
+/**
+ * One address in a [LinkSignal]: [a] is 4 bytes (IPv4) or 16 (IPv6), [p] the UDP port, [t] the candidate's kind code
+ * (`LinkCandidate.Kind`, frozen: 0 IPv6 temporary, 1 IPv6, 2 host, 3 IPv4 reflexive).
+ */
+@Serializable
+class LinkCand(
+    @ByteString val a: ByteArray,
+    val p: Int,
+    val t: Int,
+)
 
 /**
  * The Wi-Fi Direct group a caller offers to host for a call between neighbours (`CallPayload.dw`, §3.10): the group's

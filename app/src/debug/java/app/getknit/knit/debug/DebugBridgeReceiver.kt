@@ -111,6 +111,7 @@ import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.scope.SpoolPow
 import app.getknit.knit.mesh.indirectPeers
+import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.link.FeedWindow
 import app.getknit.knit.mesh.link.LinkFraming
 import app.getknit.knit.mesh.lora.BoardOwner
@@ -490,6 +491,10 @@ class DebugBridgeReceiver :
 
                         ACTION_CALL -> {
                             handleCall(context, intent)
+                        }
+
+                        ACTION_LINK -> {
+                            handleLink(intent)
                         }
 
                         ACTION_STT -> {
@@ -1808,6 +1813,66 @@ class DebugBridgeReceiver :
             .put("autoReplyHeard", snap.meshtastic.autoReplyHeard)
             .put("autoReplySent", snap.meshtastic.autoReplySent)
             .put("autoReplyRefusedByReason", JSONObject(snap.meshtastic.autoReplyRefusedByReason))
+
+    /**
+     * Direct links (ADR 2026-10.a5yj, the Phase 0 spike): `--es op on|off` flips this phone's switch, `--es op try --es
+     * peer <id>` offers that contact a link now (past its backoff) and waits for the outcome, `--es op close --es peer
+     * <id>` closes one, and no op dumps the links up and the last attempt with each peer. A candidate is reported by its
+     * kind, never its address, as the field log does.
+     */
+    private suspend fun handleLink(intent: Intent): JSONObject {
+        val links = getKoin().getOrNull<DirectLinks>() ?: return reply("error", "this build wires no direct links")
+        val peer = intent.getStringExtra(EXTRA_PEER)?.trim()?.takeIf { it.isNotEmpty() }
+        val reply =
+            when (intent.getStringExtra(EXTRA_OP)) {
+                "on", "off" -> {
+                    val on = intent.getStringExtra(EXTRA_OP) == "on"
+                    settings.setDirectLinksEnabled(on)
+                    reply("ok", "direct links ${if (on) "on" else "off"}")
+                }
+
+                "try" -> {
+                    peer ?: return reply("error", "--es peer <nodeId> required")
+                    reply("ok", "offered").put("outcome", links.offer(peer, force = true).name)
+                }
+
+                "close" -> {
+                    peer ?: return reply("error", "--es peer <nodeId> required")
+                    links.close(peer)
+                    reply("ok", "closed")
+                }
+
+                else -> {
+                    reply("ok", "direct links")
+                }
+            }
+        val up = JSONArray()
+        links.links.value.forEach { (id, session) ->
+            val (bytesIn, bytesOut) = session.bytes()
+            up.put(
+                JSONObject()
+                    .put("peer", id)
+                    .put("state", session.state.value.name)
+                    .put("in", bytesIn)
+                    .put("out", bytesOut),
+            )
+        }
+        val tries = JSONArray()
+        links.lastTries().forEach { (id, t) ->
+            tries.put(
+                JSONObject()
+                    .put("peer", id)
+                    .put("at", t.at)
+                    .put("out", t.offerer)
+                    .put("outcome", t.outcome.name)
+                    .put("path", t.path?.name ?: JSONObject.NULL)
+                    .put("peerNet", t.peerNet?.name ?: JSONObject.NULL)
+                    .put("ms", t.ms)
+                    .put("rtt", t.rttMs ?: JSONObject.NULL),
+            )
+        }
+        return reply.put("enabled", settings.directLinksEnabled.first()).put("links", up).put("tries", tries)
+    }
 
     /**
      * Dumps the DM ratchet's per-peer state and, with `--es reset <peerNodeId>`, forces a session reset
@@ -4240,6 +4305,7 @@ class DebugBridgeReceiver :
         const val ACTION_LORAPROV = "app.getknit.knit.debug.LORAPROV"
         const val ACTION_XFER = "app.getknit.knit.debug.XFER"
         const val ACTION_CALL = "app.getknit.knit.debug.CALL"
+        const val ACTION_LINK = "app.getknit.knit.debug.LINK"
         const val ACTION_STT = "app.getknit.knit.debug.STT"
         const val ACTION_TRANSLATE = "app.getknit.knit.debug.TRANSLATE"
         const val ACTION_DEMOCALL = "app.getknit.knit.debug.DEMOCALL"
@@ -4289,6 +4355,8 @@ class DebugBridgeReceiver :
         const val EXTRA_MINE = "mine"
         const val EXTRA_FIT = "fit"
         const val EXTRA_RESET_PEER = "reset"
+        const val EXTRA_OP = "op"
+        const val EXTRA_PEER = "peer"
         const val EXTRA_PREFIX = "prefix"
         const val EXTRA_DRY = "dry"
         const val EXTRA_GROUP = "group"

@@ -16,6 +16,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.appModule
 import app.getknit.knit.di.callModule
 import app.getknit.knit.di.devViewModule
+import app.getknit.knit.di.directLinkModule
 import app.getknit.knit.di.meshModule
 import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.seedDemoIfEnabled
@@ -81,7 +82,7 @@ class KnitApplication :
                 // spike's only in a debug build made with -Ptranslate=true (di/TranslateWiring).
                 modules(
                     listOf(appModule, meshModule, moderationModule, uiModule) +
-                        listOfNotNull(callModule(), translateModule(), devViewModule()),
+                        listOfNotNull(callModule(), translateModule(), devViewModule(), directLinkModule()),
                 )
             }
         // Register the message notification channel up front so it appears in system settings.

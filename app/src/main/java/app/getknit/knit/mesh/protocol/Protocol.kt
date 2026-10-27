@@ -191,6 +191,16 @@ object Protocol {
      */
     const val CAP_LORA_DIRECT = 0x10000L
 
+    /**
+     * Direct Internet links (experimental, ADR 2026-10.a5yj): this build reads a `link` signal cast through a spool and
+     * can answer it with a direct UDP link. Like [CAP_CALL], never in [LOCAL_CAPABILITIES] — OR-ed in by a build that
+     * wires links (`di/DirectLinkWiring`, `BuildConfig.DIRECT_LINKS`) — and a send-time input only: an offer goes only
+     * toward a pinned profile carrying it, since an older build's cast door drops a `link` frame without an answer. It
+     * says the build takes links, not that the person switched them on: a phone with the switch off never answers.
+     * It took `0x10000` first on `exp/dht-links` and moved to `0x20000` when [CAP_LORA_DIRECT] reached `main` with that bit.
+     */
+    const val CAP_INET_LINK = 0x20000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or

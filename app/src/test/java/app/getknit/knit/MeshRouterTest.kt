@@ -263,6 +263,27 @@ class MeshRouterTest {
         }
 
     /**
+     * A direct link's signal is cast-only (ADR 2026-10.a5yj): a copy that reaches the router anyway is delivered and
+     * handed on to nobody — not flooded when marked for relay, and not handed its last hop to a linked addressee.
+     */
+    @Test
+    fun neverHandsOnALinkSignalWhateverItsWrapperSays() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c", "z"))
+            val delivered = mutableListOf<String>()
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _ -> delivered += env.id }
+
+            val (flooded, floodedEnv) = frame("link-flood", relay = true, type = FrameType.LINK)
+            router.handleInbound(flooded, floodedEnv, fromNodeId = "b")
+            val (direct, directEnv) = frame("link-hop", recipientId = "z", relay = false, type = FrameType.LINK)
+            router.handleInbound(direct, directEnv, fromNodeId = "b")
+            advanceUntilIdle()
+
+            assertEquals(listOf(frameIdOf("link-flood"), frameIdOf("link-hop")), delivered)
+            assertEquals(0, transport.sent.size)
+        }
+
+    /**
      * Issue #48: a point-to-point frame is never flooded, but it is not finished either. Addressed to a peer
      * this node holds a **live link** to, it takes that one hop — which is how a far pocket's ✓✓ reaches a
      * board-less author sitting behind the gateway that heard it off the air.

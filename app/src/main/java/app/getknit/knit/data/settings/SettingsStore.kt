@@ -437,6 +437,14 @@ class SettingsStore(
         dataStore.data.map { BuildConfig.LORA_PLANE && (it[KEY_LORA_ENABLED] ?: false) }
 
     /**
+     * Whether this phone takes direct Internet links with its contacts (experimental, ADR 2026-10.a5yj) — **default
+     * off**, per phone (its key is backup-transient), and false whatever is stored in a build without
+     * `BuildConfig.DIRECT_LINKS`. Off, no link is offered or answered and every link up is closed.
+     */
+    val directLinksEnabled: Flow<Boolean> =
+        dataStore.data.map { BuildConfig.DIRECT_LINKS && (it[KEY_DIRECT_LINKS] ?: false) }
+
+    /**
      * Whether sealed 1:1 DMs may ride the LoRa plane (ADR 039) — **default on** whenever the plane is on. The
      * content stays end-to-end encrypted either way; what this controls is metadata exposure: on a public-PSK
      * rendezvous channel a DM's sender/recipient ids, timing and size are visible to any LoRa radio in range
@@ -738,6 +746,8 @@ class SettingsStore(
     suspend fun setSpoolEnabled(value: Boolean) = dataStore.edit { it[KEY_SPOOL_ENABLED] = value }
 
     suspend fun setLoraEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_ENABLED] = value }
+
+    suspend fun setDirectLinksEnabled(value: Boolean) = dataStore.edit { it[KEY_DIRECT_LINKS] = value }
 
     suspend fun setLoraDmEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_DM_ENABLED] = value }
 
@@ -1104,6 +1114,7 @@ class SettingsStore(
         val KEY_WHATS_NEW_SHOWN_AT = longPreferencesKey("whats_new_shown_at")
         val KEY_WHATS_NEW_OPENS = intPreferencesKey("whats_new_opens")
         val KEY_LORA_ENABLED = booleanPreferencesKey("lora_enabled")
+        val KEY_DIRECT_LINKS = booleanPreferencesKey("direct_links_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")
         val KEY_LORA_ROOM_ENABLED = booleanPreferencesKey("lora_room_enabled")
         val KEY_LORA_ADDRESS = stringPreferencesKey("lora_device_address")

@@ -5,6 +5,7 @@ import app.getknit.knit.identity.DeviceTag
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
+import app.getknit.knit.mesh.crypto.LinkKeys
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.SafetyNumber
@@ -181,6 +182,13 @@ class KeyedVectorTest {
             ),
         )
 
+    // A direct link's lane keys (ADR 2026-10.a5yj, experimental): Alice offered, Bob answered.
+    private val linkKOffer = fixtureBytes(32, 31)
+    private val linkKAnswer = fixtureBytes(32, 32)
+    private val linkId = fixtureBytes(16, 33)
+
+    private fun linkLane(role: LinkKeys.Role) = LinkKeys.lane(role, linkKOffer, linkKAnswer, linkId, alice.nodeId, bob.nodeId)
+
     private fun safetyNumber(): String = SafetyNumber.compute(alice.nodeId, alice.bundle.encoded, bob.nodeId, bob.bundle.encoded)
 
     private val file: JsonObject by lazy { VectorFiles.read(FILE) }
@@ -292,6 +300,21 @@ class KeyedVectorTest {
     }
 
     @Test
+    fun `the link lane keys are pinned and both ends derive them`() {
+        assumeFalse(VectorFiles.writing)
+        val pinned = file.getValue("linkKeys").jsonObject
+        assertEquals(linkKOffer.toHex(), pinned.getValue("kOffer").jsonPrimitive.content)
+        assertEquals(linkKAnswer.toHex(), pinned.getValue("kAnswer").jsonPrimitive.content)
+        assertEquals(linkId.toHex(), pinned.getValue("linkId").jsonPrimitive.content)
+        val (o2a, a2o) = linkLane(LinkKeys.Role.OFFERER)
+        assertEquals(pinned.getValue("o2a").jsonPrimitive.content, o2a.toHex())
+        assertEquals(pinned.getValue("a2o").jsonPrimitive.content, a2o.toHex())
+        val (answerSend, answerRecv) = linkLane(LinkKeys.Role.ANSWERER)
+        assertArrayEquals(a2o, answerSend)
+        assertArrayEquals(o2a, answerRecv)
+    }
+
+    @Test
     fun `KNIT_WRITE_VECTORS=1 rewrites the keyed vectors`() {
         assumeTrue(VectorFiles.writing)
         val previousDm = runCatching { frameHex("aliceDmToBob") }.getOrNull()
@@ -314,9 +337,22 @@ class KeyedVectorTest {
                 }
                 put("frames", framesJson(dm))
                 put("link", linkJson())
+                put("linkKeys", linkKeysJson())
             },
         )
     }
+
+    private fun linkKeysJson(): JsonObject =
+        buildJsonObject {
+            val (o2a, a2o) = linkLane(LinkKeys.Role.OFFERER)
+            put("offerer", "alice")
+            put("answerer", "bob")
+            put("kOffer", linkKOffer.toHex())
+            put("kAnswer", linkKAnswer.toHex())
+            put("linkId", linkId.toHex())
+            put("o2a", o2a.toHex())
+            put("a2o", a2o.toHex())
+        }
 
     private fun framesJson(dm: String): JsonObject =
         buildJsonObject {

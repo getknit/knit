@@ -168,6 +168,13 @@ val bleFeedWindow = (project.findProperty("bleFeedWindow") as? String)?.toBoolea
 // `if (WEAR_STATUS)` branch), and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 
+// Direct Internet links between contacts (ADR 2026-10.a5yj, Proposed): an on-demand UDP link to one contact, the
+// rendezvous cast through a spool. A spike: ON in debug, OFF in a shipped artifact, overridable with
+// `-PdirectLinks=true|false`. Read once, as `DIRECT_LINKS_WIRED` in `di/`; off, nothing of the link is wired, no
+// capability bit is advertised and no `link` signal is sent or answered. Not a code strip (R8 prunes the branches),
+// and the defaults live in source so F-Droid's -P-free rebuild stays identical.
+val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean()
+
 // Voice calls (docs/VOICE_CALLS.md), speech and Knit Anywhere — four flags, each overridable on its own (ADR
 // 2026-10.swvp). Live calls, mesh calls and Knit Anywhere are introduced: ON in every build since 2.10.0-beta.0 (the
 // ADR's 2026-10-22 amendment). Speech is still an experiment: ON in debug, OFF in a shipped artifact.
@@ -376,6 +383,8 @@ android {
         buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
         // The Wear OS status service is ON in debug so a lab phone serves a paired watch; see `wearStatus` above.
         buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: true).toString())
+        // Direct links are ON in debug so the unit suite, the lab and a lab phone run them; see `directLinks` above.
+        buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
         // Live calls, mesh calls, speech and Knit Anywhere are ON in debug so a lab build runs them; see `calls` above.
         buildConfigField("boolean", "LIVE_CALLS", liveCallsInDebug.toString())
         buildConfigField("boolean", "MESH_CALLS", meshCallsInDebug.toString())
@@ -494,6 +503,8 @@ android {
             buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
             // The Wear OS status service is a prototype: dark in a shipped artifact.
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
+            // Direct links are a spike (ADR 2026-10.a5yj, Proposed): dark in a shipped artifact.
+            buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: false).toString())
             // Live calls, mesh calls and Knit Anywhere are introduced: on in a shipped artifact, which packages WebRTC and
             // core-telecom. Speech is an experiment: dark there, and Moonshine is not packaged (see `calls` above).
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())

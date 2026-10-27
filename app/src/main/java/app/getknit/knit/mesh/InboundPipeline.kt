@@ -51,6 +51,7 @@ import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.crypto.AesGcm
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -86,6 +87,7 @@ import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
+import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -120,6 +122,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 
 /**
  * The inbound half of the mesh, extracted from [MeshManager]: it owns delivery of every frame the router
@@ -282,6 +285,13 @@ class InboundPipeline(
         kind: TransportKind,
     ) -> Unit =
         { _, _, _, _, _, _ -> },
+    // Whether this build takes direct links (ADR 2026-10.a5yj; `di/DirectLinkWiring`, `BuildConfig.DIRECT_LINKS`):
+    // without it a `link` frame is dropped before it is opened. False by default, so every rig chooses.
+    private val linksWired: Boolean = false,
+    // A direct link's OFFER or ANSWER ([handleLink]) from an accepted contact over a confirmed session, once its seal
+    // opened and its shape and clock passed. The link layer decides what to do with it; the hook returns without
+    // waiting, since it runs on this frame's inbound path.
+    private val onLinkSignal: (senderId: String, signal: LinkSignal, sentAt: Long) -> Unit = { _, _, _ -> },
     // A commons' advertised name for its notification title (`CommonsStore.find`), null when the operator
     // set none — the notifier then uses the generic room title.
     commonsTitle: suspend (conversationId: String) -> String? = { null },
@@ -498,11 +508,29 @@ class InboundPipeline(
             // for types nobody has minted yet.
             FrameType.COMMONS -> {}
 
-            FrameType.TALK -> {
-                handleTalk(env, frameBytes = wire.signed.size, hop = fromNodeId.takeIf { plane.shortRange }, kind = kind)
+            FrameType.TALK, FrameType.LINK -> {
+                handleRawSealed(env, wire, fromNodeId, plane, kind)
             }
 
             else -> {}
+        }
+    }
+
+    /**
+     * The two types sealed raw on the DM ratchet and never custodied: a walkie chunk ([handleTalk]) and a direct link's
+     * signal ([handleLink]).
+     */
+    private suspend fun handleRawSealed(
+        env: RelayEnvelope,
+        wire: WireEnvelope,
+        fromNodeId: String,
+        plane: DeliveryPlane,
+        kind: TransportKind,
+    ) {
+        if (env.type == FrameType.LINK) {
+            handleLink(env, fromNodeId)
+        } else {
+            handleTalk(env, frameBytes = wire.signed.size, hop = fromNodeId.takeIf { plane.shortRange }, kind = kind)
         }
     }
 
@@ -559,6 +587,88 @@ class InboundPipeline(
         val r = enc?.r ?: return null
         return TalkSealed(r, enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }, enc.ct)
     }
+
+    /**
+     * A direct link's OFFER or ANSWER (ADR 2026-10.a5yj, experimental): a signed [FrameType.LINK] frame cast to us
+     * through a spool, its payload a [LinkSignal] sealed on the DM ratchet in a [TalkSeal] (or a [ChatContent]). What it
+     * carries is the sender's network addresses and half of a lane's key material, for this phone and the next ten
+     * seconds, so it is taken only from where it can come from and only from whom it may:
+     *  - **A spool's cast alone** ([ScopeSync.isSpoolSource]). No build sends one over the radios and the router never
+     *    relays one, so a radio copy is a stray, dropped unopened. Unsigned, [verifyInbound] has refused it already
+     *    (`UNSIGNED_REFUSED`): the unsigned door is `talk`'s alone, and the ratchet's AAD does not bind the type.
+     *  - **Before opening:** addressed to us by someone else, not blocked, an accepted thread ([isAccepted]), a session
+     *    with the sender that is confirmed — what `ExportedRoots.confirmed` reports, so never our own first contact or
+     *    our own unanswered reset — and a build that wires links. A sender seals one only under its own confirmed
+     *    session (`MeshManager.sendLinkSignal`), so a frame refused here moved no chain worth keeping: the next frame
+     *    of the sender's chain reads past the hole as any lost walkie chunk does. Whether this person *authored* in
+     *    the thread or verified the contact is the sender's consent rule, the link layer's, and is not asked here: a
+     *    gate on it at receipt would make the rule differ between the two ends.
+     *  - **The header:** a plain one — no init, no reset flag — since a signal is sealed only under a confirmed session and
+     *    never opens, adopts or resets one (`RATCHET_BAD_HEADER` otherwise, unopened).
+     *  - **After opening:** the plaintext is a well-formed signal ([LinkSignals.decode], else
+     *    `PAYLOAD_DECODE_FAILED`), and an OFFER's `sentAt` — authenticated by the AEAD, on the sender's clock — is within
+     *    [Protocol.MAX_FUTURE_SKEW_MS] of ours either way: an OFFER older than that names a punch the sender gave up
+     *    long ago, and the skew bound is all two clocks may disagree by (ADR 026). An ANSWER is judged by its link id
+     *    alone, by the offerer's own attempt table. A refused signal is still committed, so its chain step is spent as
+     *    the sender's was.
+     *
+     * A failed open is never reset evidence, though the signature has authenticated the frame: a signal is live or
+     * lost, cast at most once, and one sealed under an era we no longer hold (a reset racing the OFFER) must not buy the
+     * pair a second reset. Never custodied, parked, acked, relayed, and never a message.
+     */
+    @Suppress("ReturnCount") // a ladder of refusals ahead of the one hand-off
+    private suspend fun handleLink(
+        env: RelayEnvelope,
+        fromNodeId: String,
+    ) {
+        val me = identity.nodeId()
+        if (!mayOpenLink(env, fromNodeId, me)) return
+        val sealed = talkSealOf(env.payload)
+        // A sender seals a signal under its confirmed session alone (`confirmedOnly`), so a header that carries an init or
+        // the reset flag is not one of ours: a signal never opens, adopts or resets a session.
+        if (sealed == null || sealed.header.init != null || sealed.header.flags and RatchetHeader.FLAG_RESET != 0) {
+            metrics.onDropped(DropReason.RATCHET_BAD_HEADER)
+            return
+        }
+        val peerIkPub = pinnedDhKey(env.senderId) ?: return
+        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, me)
+        val now = clock()
+        val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now)
+        if (peek !is RatchetEngine.OpenOutcome.Opened) return onRatchetFailure(env, peek, me, now, authenticated = false)
+        val committed =
+            db.withWriteTransaction { ratchet.commitOpen(me, env.senderId, peerIkPub, sealed.header, sealed.nonce, sealed.ct, aad, now) {} }
+        if (!committed) return
+        onPeerFrameOpened(env.senderId, sealed.header.init?.eph, sealed.header.flags and RatchetHeader.FLAG_RESET != 0)
+        val signal = LinkSignals.decode(peek.plaintext)
+        if (signal == null) {
+            metrics.onDropped(DropReason.PAYLOAD_DECODE_FAILED)
+            Log.w(TAG, "drop link ${env.id} from ${env.senderId}: not a link signal")
+            return
+        }
+        // An OFFER names a punch its sender starts now; an ANSWER is judged by its link id against the offerer's own
+        // pending attempt (docs/DIRECT_LINKS.md L-2-4), so a stamp near the bound never splits the two ends.
+        if (signal.ph == LinkSignal.PHASE_OFFER && abs(now - env.sentAt) > Protocol.MAX_FUTURE_SKEW_MS) {
+            metrics.onDropped(DropReason.LINK_STALE)
+            Log.w(TAG, "drop link ${env.id} from ${env.senderId}: sent ${now - env.sentAt} ms from our clock")
+            return
+        }
+        onLinkSignal(env.senderId, signal, env.sentAt)
+    }
+
+    /** [handleLink]'s gate ahead of the open: who may cast this phone a link signal, and from where. */
+    private suspend fun mayOpenLink(
+        env: RelayEnvelope,
+        fromNodeId: String,
+        me: String,
+    ): Boolean =
+        linksWired &&
+            ScopeSync.isSpoolSource(fromNodeId) &&
+            env.group == null &&
+            env.recipientId == me &&
+            env.senderId != me &&
+            env.senderId !in settings.blockedNodeIds.first() &&
+            isAccepted(env.senderId, me) &&
+            ratchet.sessionFor(env.senderId)?.confirmed == true
 
     /**
      * The commons door's dispatch (spec §7.4): a [CommonsPost] carries exactly one content (`ScopeFrames` refused
@@ -4887,6 +4997,7 @@ class InboundPipeline(
                 FrameType.TYPING,
                 FrameType.COMMONS,
                 FrameType.TALK,
+                FrameType.LINK,
                 FrameType.BLOB_HAVE,
                 FrameType.BLOB_HAS,
                 FrameType.BLOB_PROGRESS,

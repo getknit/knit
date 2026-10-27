@@ -563,12 +563,14 @@ class ScopeFramesTest {
         assertEquals("00ff7f80", hex(byteArrayOf(0, -1, 127, -128)))
     }
 
-    // The cast set (docs/VOICE_CALLS.md §2.7): a walkie's `talk` frame, on a pair's own DM scope, never stored.
+    // The cast set (docs/VOICE_CALLS.md §2.7): a walkie's `talk` frame or a direct link's `link` signal (ADR
+    // 2026-10.a5yj), on a pair's own DM scope, never stored.
     private fun talk(
         from: String,
         to: String,
         id: String = "t1",
-    ) = RelayEnvelope(type = FrameType.TALK, id = id, senderId = from, recipientId = to, payload = ByteArray(24) { it.toByte() })
+        type: String = FrameType.TALK,
+    ) = RelayEnvelope(type = type, id = id, senderId = from, recipientId = to, payload = ByteArray(24) { it.toByte() })
 
     private fun pairScope() =
         Scope(
@@ -591,6 +593,21 @@ class ScopeFramesTest {
         assertFalse(ScopeFrames.castEligible(talk(from = bob, to = alice), alice, scope(), inbound = false))
         assertFalse(ScopeFrames.castEligible(talk(from = mallory, to = alice), alice, scope(), inbound = true))
         assertFalse(ScopeFrames.castEligible(talk(from = bob, to = carol), alice, scope(), inbound = true))
+    }
+
+    @Test
+    fun `the cast set takes a link signal under the same rules as a talk frame`() {
+        val link = { from: String, to: String -> talk(from = from, to = to, type = FrameType.LINK) }
+        assertTrue(ScopeFrames.castEligible(link(bob, alice), alice, scope(), inbound = true))
+        assertTrue(ScopeFrames.castEligible(link(alice, bob), alice, scope(), inbound = false))
+        assertFalse(ScopeFrames.castEligible(link(alice, bob), alice, scope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(mallory, alice), alice, scope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, pairScope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, groupScope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, commonsScope(), inbound = true))
+        val sig = ByteArray(ScopeCrypto.SIG_BYTES) { 3 }
+        val signed = WireCodec.encodeEnvelope(link(bob, alice))
+        assertEquals(FrameType.LINK, ScopeFrames.openCast(scope(), alice, ScopeFrames.sealCast(scope(), sig, signed))!!.env.type)
     }
 
     @Test

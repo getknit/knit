@@ -92,5 +92,14 @@
       "flags": 0,
       "serviceData": "09e08d0d3da73f9fb4ec05b4a84d88f17a6066bfcb008100"
     }
+  },
+  "linkKeys": {
+    "offerer": "alice",
+    "answerer": "bob",
+    "kOffer": "1f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8",
+    "kAnswer": "20272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f9",
+    "linkId": "21282f363d444b525960676e757c838a",
+    "o2a": "e04bcfe6379a056a08df3e27724fe86a151c322d29647d160b6a2c9042541144",
+    "a2o": "7edb0fc4d409c5e5243d651fb46fcfffdb00d37ff1cf9504bf55cca33c383840"
   }
 }

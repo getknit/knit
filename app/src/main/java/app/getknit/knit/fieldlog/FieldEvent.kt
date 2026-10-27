@@ -718,6 +718,65 @@ sealed interface FieldEvent {
     }
 
     /**
+     * A direct link attempt's punch ended (ADR 2026-10.a5yj): [out] when this phone offered. [outcome] is a
+     * `LinkOutcome`; [path] the `LinkPath` the link came up on (none unless it did); [net] and [peerNet] the `LinkNet`
+     * both ends were on; [ms] from the attempt's start (the offer, or the answer's) to the outcome, [rtt] the first
+     * probe's round trip. [v6], [reflexive] and [host] say which kinds of candidate this phone offered. Never an
+     * address: a candidate is named by its kind alone.
+     */
+    @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
+    data class LinkTry(
+        val peer: String,
+        val out: Boolean,
+        val outcome: Enum<*>,
+        val path: Enum<*>?,
+        val net: Enum<*>,
+        val peerNet: Enum<*>?,
+        val ms: Long,
+        val rttMs: Long? = null,
+        val v6: Boolean,
+        val reflexive: Boolean,
+        val host: Boolean,
+    ) : FieldEvent {
+        override val kind get() = "link_try"
+
+        override fun write(out: FieldWriter) {
+            out.peer("peer", peer)
+            out.flag("out", this.out)
+            out.enum("outcome", outcome)
+            path?.let { out.enum("path", it) }
+            out.enum("net", net)
+            peerNet?.let { out.enum("peerNet", it) }
+            out.num("ms", ms)
+            rttMs?.let { out.num("rtt", it) }
+            out.flag("v6", v6)
+            out.flag("reflexive", reflexive)
+            out.flag("host", host)
+        }
+    }
+
+    /** A direct link that came up has ended (ADR 2026-10.a5yj): its `LinkSession.EndReason`, life and bytes each way. */
+    data class LinkEnd(
+        val peer: String,
+        val out: Boolean,
+        val reason: Enum<*>,
+        val lifeMs: Long,
+        val bytesIn: Long,
+        val bytesOut: Long,
+    ) : FieldEvent {
+        override val kind get() = "link_end"
+
+        override fun write(out: FieldWriter) {
+            out.peer("peer", peer)
+            out.flag("out", this.out)
+            out.enum("reason", reason)
+            out.num("life", lifeMs)
+            out.num("in", bytesIn)
+            out.num("outBytes", bytesOut)
+        }
+    }
+
+    /**
      * A voice call began on this phone (docs/VOICE_CALLS.md §3): dialled, or an offer that alerts (or a glare offer
      * answered at once). With no [CallEnd] after it, the process died in the call.
      */

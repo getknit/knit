@@ -36,6 +36,7 @@ import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
@@ -65,7 +66,9 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupSeed
+import app.getknit.knit.mesh.protocol.LinkCand
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
+import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
@@ -75,6 +78,7 @@ import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.TalkSeal
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -83,7 +87,9 @@ import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
 import app.getknit.knit.mesh.spool.GroupRootStore
+import app.getknit.knit.mesh.spool.Scope
 import app.getknit.knit.mesh.spool.ScopeFrames
+import app.getknit.knit.mesh.spool.ScopeRegistry
 import app.getknit.knit.mesh.spool.hex
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ScopedTextModerator
@@ -561,7 +567,18 @@ class MeshManagerTest {
         }
 
         /** A manager over this rig's stores — the same phone's next build when [extraCapabilities] differs. */
-        fun build(extraCapabilities: Long = 0L): MeshManager =
+        fun build(
+            extraCapabilities: Long = 0L,
+            ratchet: RatchetSessions =
+                RatchetSessions(
+                    store = RatchetRepository(db.ratchetDao(), clock = { now }),
+                    dhIdentityPriv = { ByteArray(32) { 1 } }, // send-path tests never derive
+                    spkPrivFor = { null },
+                ).let { real ->
+                    val tap = rootChanges ?: return@let real
+                    spyk(real).also { every { it.rootChanges } returns tap }
+                },
+        ): MeshManager =
             MeshManager(
                 transport = transport,
                 messages = messages,
@@ -581,15 +598,7 @@ class MeshManagerTest {
                 notifier = notifier,
                 textModeration = textModeration,
                 messageCrypto = me.crypto,
-                ratchet =
-                    RatchetSessions(
-                        store = RatchetRepository(db.ratchetDao(), clock = { now }),
-                        dhIdentityPriv = { ByteArray(32) { 1 } }, // send-path tests never derive
-                        spkPrivFor = { null },
-                    ).let { real ->
-                        val tap = rootChanges ?: return@let real
-                        spyk(real).also { every { it.rootChanges } returns tap }
-                    },
+                ratchet = ratchet,
                 groupRatchet = groupRatchet,
                 groupRoots = groupRoots,
                 scope = scope,
@@ -2715,6 +2724,198 @@ class MeshManagerTest {
                 updatedAt = 1L,
             )
     }
+
+    // --- direct-link signals (ADR 2026-10.a5yj) ---
+
+    private fun linkOffer() =
+        LinkSignal(
+            ph = LinkSignal.PHASE_OFFER,
+            id = ByteArray(LinkSignal.ID_BYTES) { 4 },
+            k = ByteArray(LinkSignal.KEY_BYTES) { 5 },
+            c = listOf(LinkCand(byteArrayOf(203.toByte(), 0, 113, 9), 40_000, 3)),
+        )
+
+    /**
+     * A link-wired manager over [rig]'s stores and Bob's phone, stood in for by the session layer over its own database:
+     * Bob initiates, so this phone holds the session as its confirmed responder.
+     */
+    private inner class LinkPair(
+        val rig: Rig,
+    ) {
+        val myIk = RatchetCrypto.generateKeyPair()
+        private val mySpk = RatchetCrypto.generateKeyPair()
+        val ratchet =
+            RatchetSessions(
+                store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }),
+                dhIdentityPriv = { myIk.priv },
+                spkPrivFor = { if (it == 1) mySpk.priv else null },
+            )
+        val manager = rig.build(extraCapabilities = Protocol.CAP_INET_LINK, ratchet = ratchet)
+        val me = rig.me.nodeId
+        val bob = rig.bob.nodeId
+        private val bobDb =
+            Room
+                .inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), KnitDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+        private val bobIk = RatchetCrypto.generateKeyPair()
+        val bobSide =
+            RatchetSessions(
+                store = RatchetRepository(bobDb.ratchetDao(), clock = { rig.now }),
+                dhIdentityPriv = { bobIk.priv },
+                spkPrivFor = { null },
+            )
+
+        fun pinBob(capabilities: Long = Protocol.LOCAL_CAPABILITIES or Protocol.CAP_INET_LINK) =
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, capabilities)
+
+        /** Bob's opening DM, opened and committed here: this phone's session is the confirmed responder's. */
+        suspend fun confirm() {
+            val aad = MessageCrypto.header("hello", bob, rig.now, me)
+            val hello = checkNotNull(bobSide.sealDm(me, myIk.pub, RatchetEngine.PeerPrekey(1, mySpk.pub), "hi".toByteArray(), aad, rig.now))
+            val r = checkNotNull(hello.r)
+            assertTrue(ratchet.peekOpen(me, bob, bobIk.pub, r, hello.nonce, hello.ct, aad, rig.now) is RatchetEngine.OpenOutcome.Opened)
+            assertTrue(ratchet.commitOpen(me, bob, bobIk.pub, r, hello.nonce, hello.ct, aad, rig.now) {})
+            assertTrue(checkNotNull(ratchet.sessionFor(bob)).confirmed)
+        }
+
+        suspend fun sendCount(): Int = checkNotNull(ratchet.sessionFor(bob)).sendCount
+
+        fun close() = bobDb.close()
+    }
+
+    private val linkSecret = ByteArray(32) { 7 }
+
+    private fun dmScope(
+        self: String,
+        peer: String,
+    ) = Scope(
+        id = ScopeCrypto.dmScopeId(linkSecret, self, peer),
+        keys = ScopeCrypto.dmSealKeys(linkSecret, self, peer),
+        bounds = ScopeRegistry.DEFAULT_BOUNDS,
+        peerId = peer,
+    )
+
+    /**
+     * A link signal is sealed only under a session this phone holds confirmed (`confirmedOnly`), never by opening one,
+     * and only when a spool would take the cast: without one nothing is sealed and the chain does not move. What it
+     * seals is a signed `link` frame for its addressee alone, which the pair's DM scope casts and the peer opens to the
+     * signal.
+     */
+    @Test
+    fun aLinkSignalIsSealedOnlyUnderAConfirmedSessionAndOnlyForACastASpoolWouldTake() =
+        runTest(UnconfinedTestDispatcher()) {
+            val pair = LinkPair(Rig(backgroundScope))
+            val (me, bob) = pair.me to pair.bob
+            pair.pinBob()
+
+            // No session: nothing is sealed, and none is opened for the signal.
+            assertNull(pair.manager.linkSignalFrame(bob, linkOffer()))
+            assertNull(pair.ratchet.sessionFor(bob))
+            pair.confirm()
+
+            // No spool plane in this rig, so sendLinkSignal refuses before anything is sealed. (That a connected spool
+            // refusing the cast is asked before the seal is sendLinkSignal's order; this rig has no spool to refuse it.)
+            val before = pair.sendCount()
+            assertFalse(pair.manager.sendLinkSignal(bob, linkOffer(), peerTicketed = true))
+            assertEquals("with no spool plane nothing is sealed", before, pair.sendCount())
+
+            // The frame itself: signed, ttl 0, for Bob alone, the pair's DM scope casts it, and it opens to the signal.
+            val (env, wire) = checkNotNull(pair.manager.linkSignalFrame(bob, linkOffer()))
+            assertEquals(FrameType.LINK, env.type)
+            assertEquals(bob, env.recipientId)
+            assertEquals(0, wire.ttl)
+            assertFalse(wire.relay)
+            assertTrue(MessageCrypto.verify(pair.rig.me.bundle, wire.sig, wire.signed))
+            assertTrue(ScopeFrames.castEligible(env, me, dmScope(me, bob), inbound = false))
+            val cast = ScopeFrames.sealCast(dmScope(me, bob), wire.sig, wire.signed)
+            assertEquals(FrameType.LINK, checkNotNull(ScopeFrames.openCast(dmScope(bob, me), bob, cast)).env.type)
+            val (header, ct) = checkNotNull(TalkSeal.decode(env.payload)) { "a v3 peer gets the compact seal" }
+            val aad = MessageCrypto.header(env.id, me, env.sentAt, bob)
+            val read = pair.bobSide.peekOpen(bob, me, pair.myIk.pub, header, null, ct, aad, pair.rig.now)
+            assertTrue("bob opens it: $read", read is RatchetEngine.OpenOutcome.Opened)
+            val signal = checkNotNull(LinkSignals.decode((read as RatchetEngine.OpenOutcome.Opened).plaintext))
+            assertArrayEquals(ByteArray(LinkSignal.KEY_BYTES) { 5 }, signal.k)
+            pair.close()
+        }
+
+    /** An OFFER toward a profile without the link bit is never sealed, nor anything by a build that does not wire links. */
+    @Test
+    fun aLinkOfferNeedsThePeersLinkBitAndEverySignalNeedsALinkWiredBuild() =
+        runTest(UnconfinedTestDispatcher()) {
+            val pair = LinkPair(Rig(backgroundScope))
+            pair.pinBob(capabilities = Protocol.LOCAL_CAPABILITIES)
+            pair.confirm()
+            val answer = LinkSignal(LinkSignal.PHASE_ANSWER, ByteArray(LinkSignal.ID_BYTES), ByteArray(LinkSignal.KEY_BYTES))
+
+            val held = pair.sendCount()
+            assertNull(pair.manager.linkSignalFrame(pair.bob, linkOffer()))
+            assertEquals(held, pair.sendCount())
+            // An ANSWER goes back on the OFFER's word, whatever profile this phone holds.
+            assertNotNull(pair.manager.linkSignalFrame(pair.bob, answer))
+
+            val unwired = pair.rig.build(ratchet = pair.ratchet)
+            val sent = pair.sendCount()
+            assertNull(unwired.linkSignalFrame(pair.bob, answer))
+            assertEquals(sent, pair.sendCount())
+            pair.close()
+        }
+
+    /**
+     * The offerer's consent rule (docs/DIRECT_LINKS.md L-1-1, `mayOfferLink`): a confirmed session with a contact this
+     * person wrote to or verified, whose pinned profile carries the link bit — never a blocked contact, never ourselves,
+     * never in a build without links.
+     */
+    @Test
+    fun aLinkIsOfferedOnlyToAConfirmedContactWrittenToOrVerifiedWithTheLinkBit() =
+        runTest(UnconfinedTestDispatcher()) {
+            val pair = LinkPair(Rig(backgroundScope))
+            val (rig, me, bob) = Triple(pair.rig, pair.me, pair.bob)
+            pair.pinBob()
+            coEvery { rig.messages.conversationsIAuthoredIn(me) } returns listOf(bob)
+            assertFalse("no session yet", pair.manager.mayOfferLink(bob))
+            pair.confirm()
+            assertTrue(pair.manager.mayOfferLink(bob))
+
+            assertFalse("never ourselves", pair.manager.mayOfferLink(me))
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf(bob))
+            assertFalse("never a blocked contact", pair.manager.mayOfferLink(bob))
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(emptySet())
+
+            // Neither written to nor verified — a member met only through the commons — then verified.
+            coEvery { rig.messages.conversationsIAuthoredIn(me) } returns emptyList()
+            assertFalse(pair.manager.mayOfferLink(bob))
+            val pinned = checkNotNull(rig.peers.find(bob))
+            coEvery { rig.peers.find(bob) } returns pinned.copy(verified = true)
+            assertTrue(pair.manager.mayOfferLink(bob))
+
+            coEvery { rig.peers.find(bob) } returns pinned.copy(verified = true, capabilities = Protocol.LOCAL_CAPABILITIES)
+            assertFalse("no link bit on the peer's profile", pair.manager.mayOfferLink(bob))
+            coEvery { rig.peers.find(bob) } returns pinned.copy(verified = true)
+            assertFalse("a build without links", rig.build(ratchet = pair.ratchet).mayOfferLink(bob))
+            pair.close()
+        }
+
+    /** Our own first contact, still unanswered, is not a confirmed session: the signal waits for the answer, unsealed. */
+    @Test
+    fun aLinkSignalIsNeverSealedOverOurOwnUnansweredInit() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val ratchet =
+                RatchetSessions(
+                    store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }),
+                    dhIdentityPriv = { ByteArray(32) { 1 } },
+                    spkPrivFor = { null },
+                )
+            val manager = rig.build(extraCapabilities = Protocol.CAP_INET_LINK, ratchet = ratchet)
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES or Protocol.CAP_INET_LINK)
+            // A first-contact DM opens our side of the session: an init the peer has not answered.
+            assertTrue(manager.sendChat("hello", recipientId = rig.bob.nodeId))
+            val session = checkNotNull(ratchet.sessionFor(rig.bob.nodeId))
+            assertFalse(session.confirmed)
+            assertNull(manager.linkSignalFrame(rig.bob.nodeId, linkOffer()))
+            assertEquals(session.sendCount, checkNotNull(ratchet.sessionFor(rig.bob.nodeId)).sendCount)
+        }
 
     /**
      * ADR 054: LoRa-held receipts flush as ONE originated sealed tick, counted as coalesced — and, toward a peer whose

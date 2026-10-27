@@ -375,8 +375,9 @@ object ScopeFrames {
 
     /**
      * The cast set (docs/VOICE_CALLS.md §2.7), the §4.4 analogue for the lane a spool never stores. Only a walkie's
-     * `talk` frame, only on a pair's own DM scope — never a pair scope, a group or the commons — and only between the
-     * scope's two members in the direction [inbound] names: peer to us on the way in, us to the peer on the way out.
+     * `talk` frame or a direct link's `link` signal (ADR 2026-10.a5yj), only on a pair's own DM scope — never a pair
+     * scope, a group or the commons — and only between the scope's two members in the direction [inbound] names: peer
+     * to us on the way in, us to the peer on the way out.
      * `isCustodial` is checked as well, belt and braces, so a later amendment that widens the set can never admit a
      * custodial type by accident and let it dodge custody and the digest.
      *
@@ -390,11 +391,13 @@ object ScopeFrames {
     ): Boolean {
         val peerId = scope.peerId ?: return false
         if (scope.pair || env.group != null) return false
-        if (env.type != FrameType.TALK || FrameType.isCustodial(env.type)) return false
+        if (env.type !in CAST_TYPES || FrameType.isCustodial(env.type)) return false
         val from = if (inbound) peerId else selfId
         val to = if (inbound) selfId else peerId
         return env.senderId == from && env.recipientId == to
     }
+
+    private val CAST_TYPES = setOf(FrameType.TALK, FrameType.LINK)
 
     /** Seals one signed frame as a cast for [scope] (docs/VOICE_CALLS.md §2.7). */
     fun sealCast(

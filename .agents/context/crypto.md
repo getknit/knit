@@ -236,6 +236,15 @@ LoRa plane (2026-09.ggq4).
   Every other unconfirmed session exports nothing; a caller that wants confirmed peers reads `ExportedRoots.confirmed`
   (`broadcastSealedProfile`). Regression: `RatchetSessionsExportTest`, `ScopeSyncTest`'s carrier push,
   `ResetOverRelayLabTest.aResetToAPeerOnlyTheRelayReaches…`.
+- **When touching `mesh/crypto/LinkKeys` / `LinkSignals`, `MeshManager.sendLinkSignal` / `linkSignalFrame`, or
+  `InboundPipeline.handleLink` / `mayOpenLink`:** READ ADR 2026-10.a5yj and its 2026-10-27 amendment (draft), then
+  `docs/DIRECT_LINKS.md` §2 and §5 (`.agents/context/direct-links.md` routes the rest of the link). A `link` signal is a
+  raw `LinkSignal` sealed on the DM ratchet with `confirmedOnly`, after `ScopeSync.canCast` says a spool would take it —
+  never by opening a session, never over our own unanswered reset, and no fallback. It is taken only from a spool's
+  signed cast, from an accepted, unblocked sender over a session confirmed here, in a build that wires links; a failed
+  open is never reset evidence. Lane keys come from both sides' fresh `k`, salted by the link id and bound to both ids
+  in role order — never the pairwise root. Regression: `LinkKeysTest`, `LinkSignalsTest`, `InboundPipelineTest`'s link
+  cases, `MeshManagerTest.aLinkSignalIsSealedOnly…`, `KeyedVectorTest`'s `linkKeys`.
 - **When touching the self branch of `InboundPipeline.handleProfile` / `handleChat`, `PeerRepository.forgetSelf`,
   `RatchetSessions.forget`, or `GroupRepository.forgetSelf`:** a node never pins its own key and never holds a session
   with itself — a re-served copy of our own profile once pinned `peers[me]` and sealed every group's seed to self in a

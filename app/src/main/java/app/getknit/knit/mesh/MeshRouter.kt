@@ -190,6 +190,9 @@ class MeshRouter(
         // flooded ask would have every node it reached serve or pull the blob for the neighbour that handed it on
         // (`InboundPipeline.verifyInbound` refuses that copy). The iOS port's router does the same.
         if (FrameType.isUnsignedPointToPoint(envelope.type)) return
+        // A direct link's signal is cast-only (ADR 2026-10.a5yj): it carries its sender's addresses for one contact, so
+        // a copy met anywhere is delivered or dropped here and never handed on, whatever its wrapper says.
+        if (envelope.type == FrameType.LINK) return
         // Point-to-point control frames are never flooded; they propagate hop-by-hop, and [handOn] is the
         // one hop this node can take on their behalf.
         if (!wire.relay) return handOn(wire, envelope, fromNodeId)

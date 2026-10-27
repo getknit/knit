@@ -50,6 +50,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
@@ -92,6 +93,7 @@ import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRootPayload
 import app.getknit.knit.mesh.protocol.GroupSeed
+import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
@@ -344,6 +346,10 @@ class MeshManager(
     // bound to return at once the same way; viaRelay is whether a spool cast it. The default drops it.
     onCallTalk: suspend (senderId: String, chunk: ByteArray, sentAt: Long, frameBytes: Int, viaRelay: Boolean) -> Unit =
         { _, _, _, _, _ -> },
+    // A direct link's OFFER or ANSWER from an accepted contact over a confirmed session (a `link` frame cast through a
+    // spool, ADR 2026-10.a5yj), late-bound and bound to return at once the same way. Taken only where
+    // [extraCapabilities] carries [Protocol.CAP_INET_LINK]; the default drops it.
+    onLinkSignal: (senderId: String, signal: LinkSignal, sentAt: Long) -> Unit = { _, _, _ -> },
     // Capability bits this build advertises beyond [Protocol.LOCAL_CAPABILITIES] — [Protocol.CAP_CALL] when the call
     // media is wired (di/CallWiring). OR-ed into our own profile; a change republishes it at the next start.
     private val extraCapabilities: Long = 0L,
@@ -763,6 +769,8 @@ class MeshManager(
                 if (hop != null) talkRadioPaths.note(senderId, hop, kind, sentAt)
                 onCallTalk(senderId, chunk, sentAt, frameBytes, hop == null)
             },
+            linksWired = extraCapabilities and Protocol.CAP_INET_LINK != 0L,
+            onLinkSignal = onLinkSignal,
             commonsTitle = { commons?.find(it)?.name },
             noteVerified = ::noteVerified,
             scopeConfigs = scopeConfigs,
@@ -4272,6 +4280,90 @@ class MeshManager(
 
     /** Whether this phone holds a cast ticket on a connected spool that carries casts — what its walkie signal says. */
     fun castTicketed(): Boolean = scopeSync?.castTicketed() == true
+
+    /**
+     * Casts one direct-link [signal] (an OFFER or an ANSWER, ADR 2026-10.a5yj, experimental) to [peerId] through the
+     * spools, with the peer's ticket flag [peerTicketed] as [sendCallTalk] reads it. True when at least one spool took
+     * the cast. Cast-only by design: what the signal carries — this phone's addresses and half a lane's key — is for
+     * the one contact and the next ten seconds, so it never rides the radios, custody or a chat ctl, and a spool that
+     * will not carry it means no attempt, never a fallback.
+     *
+     * Nothing is sealed unless it can go, so the ratchet moves only for a cast a spool would take: links wired here,
+     * never to ourselves, a cast available now ([ScopeSync.canCast], asked before the seal), and then [linkSignalFrame]'s
+     * refusals. The window between the ask and the cast (a spool dropping in between) spends one chain key on nothing,
+     * a hole the peer's chain reads past. Each call is one frame under a fresh id, sealed once and never re-sent: a
+     * retry is a new attempt the link layer paces.
+     */
+    suspend fun sendLinkSignal(
+        peerId: String,
+        signal: LinkSignal,
+        peerTicketed: Boolean,
+    ): Boolean {
+        val sync = scopeSync ?: return false
+        if (peerId == identity.nodeId() || !sync.canCast(peerId, peerTicketed)) return false
+        val (env, wire) = linkSignalFrame(peerId, signal) ?: return false
+        return sync.cast(peerId, peerTicketed, env, wire.sig, wire.signed) > 0
+    }
+
+    /**
+     * The signed `link` frame [sendLinkSignal] casts, or null with nothing sealed. The payload is [signal]'s CBOR
+     * ([LinkSignals]) sealed on the DM ratchet, laid out as a walkie chunk's ([TalkSeal] under v3, else a [ChatContent]),
+     * the AAD binding the frame id, both ends and the stamp. Refused, before any seal:
+     *  - when this build does not wire links ([Protocol.CAP_INET_LINK] absent from [extraCapabilities]), or the
+     *    signal is not one the peer's [InboundPipeline] would take ([LinkSignals.encode]);
+     *  - an OFFER toward a pinned profile without [Protocol.CAP_INET_LINK]: an older build drops it unanswered. An
+     *    ANSWER goes back on the OFFER's word, whatever profile we hold.
+     *
+     * And by the seal itself, which runs **under a confirmed session only** (`confirmedOnly`, judged under the ratchet
+     * lock): never a first-contact X3DH and never our own unanswered reset, whose init an unflagged copy would carry
+     * into the peer's hour-long incidental floor (#90, ADR 2026-10.j67x), and which the peer's inbound path refuses
+     * unopened anyway. A null seal is no attempt — there is no v1 and no cleartext form of a signal.
+     *
+     * Signed like every frame the Internet plane carries, `ttl = 0` and `relay = false`: a frame for its addressee alone.
+     */
+    @Suppress("ReturnCount") // a ladder of refusals ahead of the one seal
+    internal suspend fun linkSignalFrame(
+        peerId: String,
+        signal: LinkSignal,
+    ): Pair<RelayEnvelope, WireEnvelope>? {
+        if (extraCapabilities and Protocol.CAP_INET_LINK == 0L) return null
+        val plaintext = LinkSignals.encode(signal) ?: return null
+        val peer = peers.find(peerId) ?: return null
+        if (signal.ph == LinkSignal.PHASE_OFFER && (peer.capabilities ?: 0L) and Protocol.CAP_INET_LINK == 0L) return null
+        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return null
+        val me = identity.nodeId()
+        if (peerId == me) return null
+        val id = FrameId.new()
+        val now = clock()
+        val aad = MessageCrypto.header(id, me, now, peerId)
+        val scheme = if (peer.readsCryptoV3()) EncEnvelope.VERSION_DM_V3 else EncEnvelope.VERSION_RATCHET
+        val sealed =
+            ratchet.sealDm(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme, confirmedOnly = true)
+                ?: return null
+        val compact = sealed.r?.takeIf { sealed.v == EncEnvelope.VERSION_DM_V3 }?.let { TalkSeal.encode(it, sealed.ct) }
+        val payload = compact ?: WireCodec.encodePayload(ChatContent(enc = sealed))
+        val env = RelayEnvelope(type = FrameType.LINK, id = id, senderId = me, sentAt = now, recipientId = peerId, payload = payload)
+        val signed = WireCodec.encodeEnvelope(env)
+        return env to WireEnvelope(ttl = 0, relay = false, sig = messageCrypto.signRaw(signed), signed = signed)
+    }
+
+    /**
+     * Whether this phone may offer [peerId] a direct link now (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-1-1): links
+     * wired here, never ourselves or a blocked contact, a session with the peer that is confirmed (never our own first
+     * contact or unanswered reset — the seal would refuse it anyway, `confirmedOnly`), a contact this person wrote to
+     * or verified (a member met only through the commons is neither), and a pinned profile carrying
+     * [Protocol.CAP_INET_LINK]. The sender's consent rule: the receiver asks only for an accepted contact.
+     */
+    @Suppress("ReturnCount") // a ladder of refusals
+    suspend fun mayOfferLink(peerId: String): Boolean {
+        if (extraCapabilities and Protocol.CAP_INET_LINK == 0L) return false
+        val me = identity.nodeId()
+        if (peerId == me || peerId in settings.blockedNodeIds.first()) return false
+        val peer = peers.find(peerId) ?: return false
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_INET_LINK == 0L) return false
+        if (ratchet.sessionFor(peerId)?.confirmed != true) return false
+        return peer.verified || peerId in messages.conversationsIAuthoredIn(me)
+    }
 
     /**
      * [TurnSource]: TURN credentials from the connected spools carrying [peerId]'s DM scope, or holding a ticket of

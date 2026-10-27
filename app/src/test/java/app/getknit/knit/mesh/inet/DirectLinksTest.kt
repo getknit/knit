@@ -1,0 +1,220 @@
+package app.getknit.knit.mesh.inet
+
+import app.getknit.knit.fieldlog.FieldEvent
+import app.getknit.knit.fieldlog.FieldRecorder
+import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.LinkSignals
+import app.getknit.knit.mesh.inet.FakeLinkNet.Nat
+import app.getknit.knit.mesh.protocol.LinkSignal
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.random.Random
+
+/**
+ * Two phones' direct links against each other (ADR 2026-10.a5yj, Phase 0): the offer and answer cast between them (a
+ * CBOR round trip after a cast's delay), the punch over [FakeLinkNet], the backoff, crossing offers and the answer
+ * budget, on virtual time.
+ */
+@OptIn(ExperimentalCoroutinesApi::class) // the test scheduler's clock and advanceTimeBy
+class DirectLinksTest {
+    private val stunAt = byteArrayOf(198.toByte(), 51, 100, 7)
+    private val aliceId = NodeId.derive("alice")
+    private val bobId = NodeId.derive("bob")
+
+    private class Phone(
+        val id: String,
+        val net: LinkDatagrams,
+    ) {
+        lateinit var links: DirectLinks
+        val lines = mutableListOf<FieldEvent>()
+        var enabled = true
+        var qualifies = true
+        var castOk = true
+        var casts = 0
+    }
+
+    private fun TestScope.pair(
+        aNet: LinkDatagrams,
+        bNet: LinkDatagrams,
+        scope: CoroutineScope = backgroundScope,
+    ): Pair<Phone, Phone> {
+        val a = Phone(aliceId, aNet)
+        val b = Phone(bobId, bNet)
+        for ((me, them) in listOf(a to b, b to a)) {
+            val peers =
+                object : LinkPeers {
+                    override suspend fun mayOffer(peerId: String) = me.qualifies
+
+                    override fun canCast(
+                        peerId: String,
+                        peerTicketed: Boolean,
+                    ) = me.castOk
+
+                    override fun castTicketed() = false
+
+                    override fun stunUrls() = listOf("stun:stun.example")
+
+                    override suspend fun send(
+                        peerId: String,
+                        signal: LinkSignal,
+                        peerTicketed: Boolean,
+                    ): Boolean {
+                        if (!me.castOk) return false
+                        me.casts++
+                        val bytes = checkNotNull(LinkSignals.encode(signal)) { "a well-formed signal" }
+                        scope.launch {
+                            delay(CAST_MS)
+                            them.links.onSignal(me.id, checkNotNull(LinkSignals.decode(bytes)))
+                        }
+                        return true
+                    }
+                }
+            me.links =
+                DirectLinks(
+                    selfId = { me.id },
+                    datagrams = me.net,
+                    peers = peers,
+                    enabled = { me.enabled },
+                    scope = scope,
+                    clock = { testScheduler.currentTime },
+                    fieldLog = FieldRecorder { me.lines += it },
+                    random = java.util.Random(me.id.hashCode().toLong()),
+                )
+        }
+        return a to b
+    }
+
+    private fun v4(
+        a: Int,
+        b: Int,
+        c: Int,
+        d: Int,
+    ) = byteArrayOf(a.toByte(), b.toByte(), c.toByte(), d.toByte())
+
+    private fun FakeLinkNet.withStun() = also { it.stunServer("stun.example", stunAt) }
+
+    private fun tries(phone: Phone) = phone.lines.filterIsInstance<FieldEvent.LinkTry>()
+
+    @Test
+    fun anOfferIsAnsweredAndBothEndsHoldTheLink() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.ADDRESS_RESTRICTED, v4(91, 5, 6, 7)))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            assertTrue(b.id in a.links.links.value)
+            val aTry = tries(a).single()
+            assertEquals(LinkOutcome.UP, aTry.outcome)
+            assertEquals(LinkPath.V4_REFLEXIVE, aTry.path)
+            assertTrue(aTry.out && aTry.reflexive && !aTry.v6)
+            assertEquals(LinkOutcome.UP, tries(b).single().outcome)
+            assertFalse(tries(b).single().out)
+        }
+
+    @Test
+    fun aContactWithLinksOffIsNeverAnsweredAndWaitsOutItsBackoff() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            b.enabled = false
+            assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id))
+            assertEquals(LinkOutcome.BACKOFF, a.links.offer(b.id))
+            assertEquals(1, a.casts)
+            testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
+            assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id))
+            assertEquals(2, a.casts)
+            assertTrue(tries(b).isEmpty())
+        }
+
+    @Test
+    fun twoSymmetricNatsFindNoPathAndBackOff() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
+            assertEquals(LinkOutcome.NO_PATH, a.links.offer(b.id))
+            assertEquals(LinkOutcome.BACKOFF, a.links.offer(b.id))
+            assertEquals(LinkOutcome.NO_PATH, tries(a).single().outcome)
+        }
+
+    @Test
+    fun nothingIsCastToAContactThatDoesNotQualifyOrWithNoSpoolToCarryIt() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            a.qualifies = false
+            assertEquals(LinkOutcome.NOT_QUALIFIED, a.links.offer(b.id))
+            a.qualifies = true
+            a.castOk = false
+            assertEquals(LinkOutcome.NO_CAST, a.links.offer(b.id))
+            assertEquals(0, a.casts)
+            assertEquals(LinkOutcome.OFF, a.links.offer(a.id))
+        }
+
+    @Test
+    fun crossingOffersEndInOneLinkOnTheLowerIdsOffer() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            val fromA = async { a.links.offer(b.id) }
+            val fromB = async { b.links.offer(a.id) }
+            val outcomes = setOf(fromA.await(), fromB.await())
+            assertEquals(setOf(LinkOutcome.UP, LinkOutcome.SUPERSEDED), outcomes)
+            val lower = if (a.id < b.id) a else b
+            assertEquals(LinkOutcome.UP, if (lower === a) fromA.await() else fromB.await())
+            // The answering end registers its link in its own coroutine, so wait for both rather than read them.
+            a.links.links.first { b.id in it }
+            b.links.links.first { a.id in it }
+            assertEquals(1, tries(a).count { it.outcome == LinkOutcome.UP })
+            assertEquals(1, tries(b).count { it.outcome == LinkOutcome.UP })
+        }
+
+    @Test
+    fun aContactCannotMakeThisPhoneAnswerMoreThanItsHourlyBudget() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
+            repeat(DirectLinks.ANSWERS_PER_HOUR + 2) { a.links.offer(b.id, force = true) }
+            assertEquals(DirectLinks.ANSWERS_PER_HOUR, tries(b).size)
+        }
+
+    @Test
+    fun aClosedLinkLeavesBothEndsAndRecordsItsEnd() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            a.links.close(b.id)
+            a.links.links.first { it.isEmpty() }
+            b.links.links.first { it.isEmpty() }
+            testScheduler.advanceTimeBy(10)
+            assertEquals(
+                LinkSession.EndReason.LOCAL,
+                a.lines
+                    .filterIsInstance<FieldEvent.LinkEnd>()
+                    .single()
+                    .reason,
+            )
+            assertEquals(
+                LinkSession.EndReason.BYE,
+                b.lines
+                    .filterIsInstance<FieldEvent.LinkEnd>()
+                    .single()
+                    .reason,
+            )
+        }
+
+    private companion object {
+        const val CAST_MS = 300L
+    }
+}

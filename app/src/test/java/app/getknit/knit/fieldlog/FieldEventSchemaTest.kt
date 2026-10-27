@@ -14,6 +14,10 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.LinkPhy
+import app.getknit.knit.mesh.inet.LinkNet
+import app.getknit.knit.mesh.inet.LinkOutcome
+import app.getknit.knit.mesh.inet.LinkPath
+import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.lora.LoraLinkEnd
 import app.getknit.knit.mesh.lora.LoraRegion
 import app.getknit.knit.mesh.lora.ModemPreset
@@ -167,6 +171,53 @@ class FieldEventSchemaTest {
             """{"t":42,"e":"lora","snr10":-75,"rssi":-118,"queued":2,"heard":9,"boards":3,""" +
                 """"airUsed":4100,"airBudget":36000}""",
             line(FieldEvent.Lora(-75, -118, 2, 9, 3, 4_100, 36_000)),
+        )
+    }
+
+    @Test
+    fun aDirectLinksTryAndEndKeepTheirLines() {
+        val peer = "abcdefghijklmnopqrstuvwxyz"
+        val p = names.of(peer)
+        assertEquals(
+            """{"t":42,"e":"link_try","peer":"$p","out":true,"outcome":"UP","path":"V6_TEMPORARY","net":"CELLULAR",""" +
+                """"peerNet":"WIFI","ms":1800,"rtt":95,"v6":true,"reflexive":true,"host":false}""",
+            line(
+                FieldEvent.LinkTry(
+                    peer,
+                    out = true,
+                    outcome = LinkOutcome.UP,
+                    path = LinkPath.V6_TEMPORARY,
+                    net = LinkNet.CELLULAR,
+                    peerNet = LinkNet.WIFI,
+                    ms = 1_800,
+                    rttMs = 95,
+                    v6 = true,
+                    reflexive = true,
+                    host = false,
+                ),
+            ),
+        )
+        assertEquals(
+            """{"t":42,"e":"link_try","peer":"$p","out":false,"outcome":"NO_PATH","net":"WIFI","ms":10200,"v6":false,""" +
+                """"reflexive":true,"host":true}""",
+            line(
+                FieldEvent.LinkTry(
+                    peer,
+                    out = false,
+                    outcome = LinkOutcome.NO_PATH,
+                    path = null,
+                    net = LinkNet.WIFI,
+                    peerNet = null,
+                    ms = 10_200,
+                    v6 = false,
+                    reflexive = true,
+                    host = true,
+                ),
+            ),
+        )
+        assertEquals(
+            """{"t":42,"e":"link_end","peer":"$p","out":true,"reason":"SILENT","life":300000,"in":4096,"outBytes":5120}""",
+            line(FieldEvent.LinkEnd(peer, out = true, LinkSession.EndReason.SILENT, 300_000, 4_096, 5_120)),
         )
     }
 

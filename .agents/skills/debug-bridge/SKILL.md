@@ -104,7 +104,8 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
   alone), `AWARE` (the person's Settings › Wi-Fi Aware switch), `LOWPOWER` (low-power mode's switch and posture; not
   offered since #44), `PHY` (the Coded PHY experiment), `LINKTUNE` (ask a Bluetooth link for a PHY, priority or MTU; the 1M/2M
   file budget and the link boost's A/B switch on any debug build — the #120 drain trial).
-- **Planes:** `SPOOL`, `COMMONS`, `LORA`, `LORATX`, `LORAPROV`, `XFER`, `CALL` (experimental voice calls), `STT`
+- **Planes:** `SPOOL`, `COMMONS`, `LORA`, `LORATX`, `LORAPROV`, `XFER`, `CALL` (experimental voice calls), `LINK`
+  (direct Internet links with a contact, the a5yj spike), `STT`
   (the walkie transcript's model and lines), `TRANSLATE` (the offline translation spike's models and bench;
   `-Ptranslate=true` builds only).
 - **Identity, crypto, data:** `INTRO` (contact cards), `RATCHET`, `BACKUP`.

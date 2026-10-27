@@ -158,5 +158,7 @@ object SettingsKeys {
             BADGE_HELD,
             "low_power_",
             "wifi_aware_",
+            // Direct links are a per-phone choice (ADR 2026-10.a5yj): a restored phone starts with them off.
+            "direct_links_",
         )
 }

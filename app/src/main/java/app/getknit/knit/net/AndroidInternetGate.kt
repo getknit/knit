@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.system.OsConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -50,6 +51,24 @@ class AndroidInternetGate(
     }
 
     override fun isOnline(): Boolean = currentNetwork() != null
+
+    /** One address this phone holds on a network: its raw bytes (4 or 16), and whether it is an IPv6 temporary one. */
+    class OwnAddress(
+        val bytes: ByteArray,
+        val temporary: Boolean,
+    )
+
+    /**
+     * This phone's own addresses on [network] (a direct link's host candidates, ADR 2026-10.a5yj), read off its link
+     * properties: every address but a deprecated one, which the kernel is already phasing out. Empty when the network
+     * is gone. Classifying them — which are global, which are a LAN's — is the caller's (`PunchPolicy.sane`).
+     */
+    fun ownAddresses(network: Network): List<OwnAddress> {
+        val properties = connectivity?.getLinkProperties(network) ?: return emptyList()
+        return properties.linkAddresses
+            .filter { it.flags and OsConstants.IFA_F_DEPRECATED == 0 }
+            .map { OwnAddress(it.address.address, temporary = it.flags and OsConstants.IFA_F_TEMPORARY != 0) }
+    }
 
     override fun routeKind(): InternetGate.RouteKind {
         val cm = connectivity ?: return InternetGate.RouteKind.NONE
