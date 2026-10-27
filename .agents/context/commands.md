@@ -28,6 +28,7 @@ bash scripts/ide-diagnostics.sh --list          # changed .kt/.kts/.java files â
 bash scripts/ide-diagnostics.sh <file>          # ...focus one in the RUNNING Studio, then read it via getDiagnostics
 bash scripts/qodana.sh                          # the SAME engine over the whole tree, headless in Docker (~14 GB, slow)
 bash scripts/qodana.sh --baseline               # ...accept today's findings as qodana.sarif.json, so later runs show only new ones
+docker run --rm -v "$PWD":/code zaventh/lintorama:9  # YAML/shell/Markdown/Python/workflow/editorconfig lint, as the Stop hook and CI's `lintorama` jobs run it
 bash scripts/egress-check.sh                    # fresh install, default settings, emulator only: fail on any byte over IP
 bash scripts/egress-check.sh --variant debug --control  # ...the debug build, then prove the check sees Knit's own dial
 # Accessibility (ATF) suite â€” same checks as the Play pre-launch report; needs API 34+ (@SdkSuppress skips below):

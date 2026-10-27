@@ -486,6 +486,19 @@ jobs:
       - name: Reader unit tests
         run: python3 -m unittest scripts/test_fieldlog.py
 
+  lintorama:
+    name: Supporting files lint clean
+    runs-on: ubuntu-latest
+    # The lintorama container the Stop hook runs (.claude/hooks/lintorama-stop.sh): yamllint, shellcheck, hadolint,
+    # markdownlint, ruff, actionlint, check-jsonschema and editorconfig-checker over every tracked file they cover,
+    # the Kotlin aside (detekt and ktlint are verify's). Same image tag as the hook, so CI and a local session agree
+    # on what is clean; bump both together. Mounted at /code, the one path the image marks as a safe Git directory,
+    # because the runner owns the checkout and the container runs as root.
+    steps:
+      - uses: actions/checkout@v7
+      - name: lintorama
+        run: docker run --rm -v "$PWD":/code zaventh/lintorama:9
+
   qodana-pr-report:
     name: Qodana report script tests
     runs-on: ubuntu-latest

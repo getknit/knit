@@ -416,6 +416,20 @@ verify:fieldlog:
   script:
     - python3 -m unittest scripts/test_fieldlog.py
 
+# The supporting files lint clean: the lintorama container the Stop hook runs (.claude/hooks/lintorama-stop.sh) —
+# yamllint, shellcheck, hadolint, markdownlint, ruff, actionlint, check-jsonschema, editorconfig-checker — over every
+# tracked file they cover. Same tag as the hook; bump both together. Multi-arch, so the Apple Silicon runner is fine.
+# The image marks only /code a safe Git directory, hence the safe.directory line. Mirrors GitHub's `lintorama` job.
+verify:lintorama:
+  image:
+    name: zaventh/lintorama:9
+    entrypoint: [""]
+  stage: verify
+  needs: []
+  script:
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - lint-extras
+
 # --------------- verify (advisory) -------
 # detekt/ktlint run as Gradle plugins now (was: a downloaded detekt-cli jar). Both are advisory
 # (allow_failure) to mirror the prior detekt job and keep the pass/fail test signal clean; locally they
