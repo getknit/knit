@@ -274,3 +274,37 @@ PROBE`). Beside an Aware peer with Bluetooth on, an open wakes through `SIGHTING
   scheduled window logs as a plain duty.
 - **Pixel 3 (API 31) dormant, reopen:** the probe publishes with no `publish refused off screen` line.
 - **Oracles:** `aware dormant: DUTY_EMPTY` after each empty probe, and `dumpsys wifiaware` shows no client after it.
+
+### Probe trial results 2026-10-26 — P9 (API 37), P8 (API 37), P3 (API 31), all on 263c771d
+
+The other phones' Aware was switched off with `NANOFF` (the P7 too, on the same build) so the subject was alone. No
+walking. Every subject went dormant by itself (`IDLE` after 180 s once the last candidate had lapsed).
+
+- **Probe and floor, passed (P9).** An open 25 s after an IDLE close logged `aware probe skipped: FLOOR`, with no attach.
+  An open after `nextProbeAllowedInMs` read 0 ran `aware duty attach: probe (on screen)`, then `aware dormant:
+  DUTY_EMPTY` 30 s later; `dumpsys wifiaware` showed a configuration during the window and `null` after it. An open
+  75 s after that probe's close skipped on `FLOOR`, with 255 s left, counted from the close.
+- **Behind a password keyguard (P8).** An open behind the lock screen still raises the visible edge and is judged
+  like any other.
+- **Budget (P8), partly.** With `NANFAIL --ei count 40`, the probe's attaches failed at streak 1–4. The `DUTY_EMPTY`
+  close refunded nothing, the next probe failed at streak 5, and nothing attached after either close. The `BUDGET` skip
+  itself was not reached: the backoff (44 s at most here) is always over before the 5-min floor ends, so on a phone
+  it needs a streak long enough to give up. The table tests cover it.
+- **Bluetooth-off peer, passed (P8 beside the P3 with Bluetooth off).** The probe discovered the P3 within 1.2 s
+  (`aware awake: PROBE`, keeping the session). The NDP then failed its handshake repeatedly (`stale=true`). No Aware
+  link had formed between any of the lab phones before the install either, so this is not the probe's doing.
+- **Label after a wake, passed (P8).** After the `PROBE` wake, the next scheduled duty (interval 90 s) logged a
+  plain `aware duty attach: dormant …` and woke `DUTY`.
+- **API 31, passed (P3, screen on, Doze held off).** The probe re-filed the responder and the publish (`publish config
+  updated`) with no off-screen refusal, then closed `DUTY_EMPTY`.
+- **Bluetooth-on peer (P3 beside the P8).** The P8 dozing with its screen off, and then with it on but locked,
+  stayed in deep idle (on these Pixels deep idle holds until unlock), so its advert kept `FLAG_NO_AWARE` and the
+  dormant P3 never woke for it: the cost named above. With deep idle lifted (`dumpsys deviceidle disable deep`), the
+  bit cleared, and the P3 woke `SIGHTING` about two minutes later, one or two of its scan gaps.
+- **Heavy opener, passed (P3, one open a minute for 30 min).** Five probe windows ran, at 18:00:01, 18:05:51,
+  18:11:41, 18:17:51 and 18:23:38: one every 5 min 50 s to 6 min, each closing `DUTY_EMPTY` after 30 s, so the plane was
+  attached about 9% of the time. Every other open skipped on `FLOOR`. `nextDutyInMs` only ever counted down
+  between windows, and the scheduled duty never ran, being pushed out by each probe's close. STA throughput was not
+  measured.
+- **Not run:** the lost-edge `NEAR` wake (it needs a candidate's rising edge lost to a queued close), and its repeats
+  under a Wi-Fi Direct pause and under backoff.
