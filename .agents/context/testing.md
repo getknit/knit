@@ -430,7 +430,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `SessionLabTest` (both-initiate in both orders, a forced reset, old-era custody after a reset, the group
   key request), `RestartLabTest` (sender / carrier / recipient-with-a-park / both sides), `TopologyLabTest`
   (diamond, five-node line, ring partition, eight in a room), `CustodyQuotaLabTest` (per-sender, per-group,
-  full store from the largest sender, the room quota and the cap converging past the seen window), `InternetPlaneLabTest` (the two-island group + departure, a group founded while a member is relay-only
+  full store from the largest sender, the room quota and the cap converging within three seen windows), `InternetPlaneLabTest` (the two-island group + departure, a group founded while a member is relay-only
   (#47, ADR 2026-09.mjaj), ADR 032's receive-only scope, spec §9.3 quarantine, ADR 042's card intro, a relay
   dropping every socket, ADR 020 over the relay) and
   `LoraPocketLabTest` (two pockets, ADR 054's gate, y8pu's backfill, the election, a DM through the bridge).
