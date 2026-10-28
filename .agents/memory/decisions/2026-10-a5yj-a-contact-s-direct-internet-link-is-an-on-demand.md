@@ -265,3 +265,104 @@ QUIC stream can replace it if knit-ios takes up a QUIC stack anyway, or the link
 **For Phase 1:** `FramedLink`'s HELLO and digest are DATA to the link, so once a transport runs over the stream every
 link that comes up "carried data" and none idles out while `FramedLink` sends anything. The transport child must tell
 the link when real traffic (a frame or a file) moved, and the idle close and the empty-answer budget count that instead.
+
+## Amendment 2026-10-27 — custody and blobs over a link
+
+Status: stands (2026-10-27); the owner made a link delivery proof (ADR 2026-10.vy27).
+
+A link is in `MeshTransport.neighbors` (a link to send on) and never in the radio set (`MeshTransport.radioLinked`,
+`CompositeMeshTransport.shortRangeNeighbors`). Every blob and custody rule that meant *near* now reads the radio set, and
+every answer to something that crossed a link stays inside the link's rule (`PairView`, `docs/DIRECT_LINKS.md` L-7-2):
+
+- **A digest is answered by the plane it crossed.** `ForwardSync.onDigest` answers one stamped `TransportKind.DirectLink`
+  through that link's `PairView`: only frames its view admits, a key only for a sender whose profile it would admit,
+  `onServed` only for a frame sent, and nothing at all when the link went between the digest and the answer. Never by
+  which plane holds the peer at reply time: the peer filtered its digest by the same rule, so an unfiltered answer pushes
+  everything outside it as a gap, and a radio dropping mid-answer would carry it out over the link.
+- **A link round that moves nothing pushes nothing** (`LinkPushRounds`). Two filtered views can differ for good — the
+  per-sender quota, the global cap, a frame dead on arrival, a receipt's tombstone — and an answer to an unchanged digest
+  pushed the same frames each re-offer, each one link use, so a link that only kept itself in sync never idled out. Keyed
+  on the pair (their digest, our pushed ids), never on a reason; ended by either set moving, a link-up — a newcomer, or
+  any link the link plane adopts, a replacement under a peer that stays a neighbour included
+  (`MeshManager.onDirectLinkUp`) — or the receiver's seen window (`SeenSet.DEFAULT_TTL_MS`). A memo of what we sent, never an input to custody or the digest. Radio digests
+  are untouched.
+- **A link's peer is asked last and only for what the link carries.** In `BlobExchange` a neighbour no radio holds ranks
+  after every radio rank in the blind round (`Rank.Internet`) and after every radio plane among holders (`Tier.Internet`),
+  author included — a free radio copy goes before one that costs two data plans. It is queried and asked only for a blob
+  `PairView.admitsBlob` admits, and a query that came over a link is answered for those blobs only, since the link drops
+  a whole control frame naming one it does not carry and the asker would wait out a grace on a question that never left.
+  A hash whose message row is not written yet costs one round, never a strand: the database re-arm re-reads the rows.
+  An ask that came over a link for a blob it does not carry is neither served nor echoed (`BlobEvent.LinkRefused`): the
+  link would refuse the file, and an echo would spend our radios on bytes nothing can hand on.
+- **A link's copy never parks behind a radio feed** (`MeshTransport.fileRidesInternet` in `ridesSharedBudget`): it shares
+  no radio's pace, and parked it had no rate to go beside on, idled its link out and was dropped. The link plane reports
+  no `fileFeed`, so no radio asker waits behind a link's copy either.
+- **A link's delivery is proof, as a radio's is** (ADR 2026-10.vy27; the owner's call of 2026-10-27, reversing this
+  amendment's first draft, which held that a link is never proof). The recipient holds the bytes whichever plane
+  carried them, and refusing the proof cost one more Internet copy — the author's spool upload — per DM photo sent over
+  a link. Both ends of a link opted in, so it adds no impostor or trust gap beyond the one vy27 already accepts (the
+  holder query's answer is unsigned, `docs/SPOOL_PROTOCOL.md` §10.4). One rule at both ends, `DeliveryPlane.provesHold`
+  (a radio or `DirectLink`; never LoRa or a spool): a file off a link notes `noteRadioArrival` ahead of the store and
+  records its holder row under `DeliveryPlane.DirectLink`, which `recordHolder` and `heldInPair` admit; `confirmHeld`
+  (and the deferral's `canAskHolder`) asks a link's peer too, for the hashes its link carries (`PairView.admitsBlob`),
+  since the link drops a whole control frame naming one it does not and the proof round would wait out an answer to a
+  question that never left; and an answer over the link is taken as proof and recorded under its plane. Proof is who
+  holds, never who is asked: a link's peer still ranks last for the bytes (`Rank.Internet`, `Tier.Internet`).
+  So that the proof can spare the upload at all, a live link is the §9.5 deferral's other sighting
+  (`AttachmentDeferPolicy`'s `directLinked`, wired from the neighbours no radio holds): without it a photo to a
+  recipient only a link reaches went up in the round its send woke, before the recipient could fetch it. With it the
+  send waits out the 60 s ack grace and one proof round, asking each round, and the link's answer settles it; the
+  recipient's own link arrival holds its heal rounds until its record lands. The sighting is read live and never
+  stamped into the radio window (`lastSeen`, 15 min): it ends when the link idles out or closes, and the next round
+  pushes. A link's receipt is not a radio's (`carriedByRadio` reads `shortRange`), so when the only evidence is the
+  link, nothing but proof holds the photo past the grace and the proof round. Radio evidence is another matter: a
+  receipt that came over a radio before it left (`carriedByRadio`), or bytes a radio or the link handed the recipient
+  (`arrivedOverRadio`), holds the photo for as long as the link stays up, exactly as a radio sighting would, and up to
+  last call. That hold ends by itself in the common case — the link carries the recipient's fetch and the proof query,
+  and the link idles out once nothing moves — but a recipient that never fetches over the link (a fast-only want, ADR
+  2026-10.js2p) keeps it held while the pair's chat keeps the link up. The set feeds that gate alone; presence, Your
+  mesh credit and walkie paths still read the radio set.
+- **The link's blob rule reads every conversation naming the hash** (`LinkScope.addresseeSetsOf`,
+  `MeshManager.blobAddressees`, `MessageDao.conversationsOfAttachment`). One sealed picture is named by several when it
+  is forwarded (ADR 2026-10.mptm), and reading the first row refused a picture forwarded from a group the peer is not
+  in into the pair's DM: no proof query, no ask, no file, and a deferral that held a proof round on a question that never
+  left. The deferral's `canAskHolder` is per hash for the same reason, the same test as `BlobExchange.reaches`.
+- **A carrier's pull is held back by the radio set** (`CarrierPullPolicy` via `rewantMissingBlobs` and
+  `InboundPipeline.onCarriedFrame`): a recipient only a link reaches cannot fetch a carrier's copy over it, since the
+  link carries an attachment addressed to both ends only.
+
+Left as it was: a fast-only want (ADR 2026-10.js2p) neither asks nor serves over a link, which has no Wi-Fi Aware route.
+Whether a large attachment over the user's Bluetooth limit may ride a link (cellular data) is a question for the
+link's own data policy, not decided here.
+
+## Amendment 2026-10-27 — the link as a transport
+
+Status: stands (2026-10-27); the owner confirmed the co-member rule below.
+
+**An up link's stream is one more child of the composite, last, and not a radio** (`mesh/inet/DirectLinkTransport`,
+`docs/DIRECT_LINKS.md` §7): the radios' own `LinkHandshake` and `FramedLink` run over it, the offerer writing the first
+HELLO. `TransportKind.DirectLink`, `shortRange = false`, `viaInternet = true`: the composite keeps its peer in
+`neighbors` (a link to send on) and out of every short-range set (`shortRangeNeighbors`, `radioLinked`), so a contact
+reached this way is never nearby, met, a walkie's radio path or Your mesh credit, and a live link never hides radios
+the user turned off (`health` leaves it out). What arrives over a link records `DeliveryPlane.DirectLink` (6), shown
+as over the Internet.
+
+**What crosses is filtered at the link, both ways, by one rule** (`LinkPairFilter`, one snapshot per peer in
+`LinkView`): frames addressed between the two; either one's profile or a ratcheted DM between them; a shared group's
+frames by the spool's group rule; key requests within those; blob control frames out only when every hash belongs to a
+conversation addressed to both ends; and digests by the same rule over the ids' custody envelopes. A file goes out only
+when it is an attachment addressed to both ends or our own avatar, and comes in on the same terms (or as an avatar).
+
+**Frames addressed between two members of a shared group cross too.** Without them a shared group works across a link
+only for the two ends' own posts: a third member's sender-key seed to the peer, and the peer's delivery tick back to
+that member, are DM-form frames between co-members, sealed, and a sealed frame cannot be told from the two members'
+DMs to each other. So the rule admits any frame whose sender and recipient are both in the founding roster of a group
+the pair shares — which widens "the pair's own traffic" to their shared groups' members, whose sealed DMs this phone
+already carries for them by radio. The lab's two-island scenario (`DirectLinkLabTest`) converges the group on all
+three only with it.
+
+**Use is content.** Only a content frame or a file sent or taken keeps a link from its idle close (`noteUse`;
+`LinkSession.dataIsUse` false under a transport): the handshake, digests, the stream's acks and the blob exchange's
+control frames do not, and a link moving a file is busy and never idles out mid-stream. Known gap: the 60 s re-offer
+round's key requests, owed ticks and unacknowledged group seeds are content frames, so one owed forever would keep a
+link from idling out (#225, to revisit).

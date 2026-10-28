@@ -1030,6 +1030,9 @@ class MeshMetrics {
 
             // the LoRa plane carries no files
             TransportKind.Other -> Unit
+
+            // A contact's direct link: not a radio, so not part of the NAN-vs-BLE split this counts.
+            TransportKind.DirectLink -> Unit
         }
     }
 
@@ -1584,6 +1587,7 @@ class MeshMetrics {
             blobOverCeiling = blob(BlobExchange.BlobEvent.OverCeiling),
             photosOverCeiling = photosOverCeiling.get(),
             avatarsOverCeiling = avatarsOverCeiling.get(),
+            blobLinkRefused = blob(BlobExchange.BlobEvent.LinkRefused),
             fastOnlyDropped = fastOnlyDropped.get(),
         )
 
@@ -1876,6 +1880,9 @@ class MeshMetrics {
             // name and meaning. And a photo refused from bytes held over it ([onAvatarOverCeiling]), Android's own.
             val photosOverCeiling: Long = 0,
             val avatarsOverCeiling: Long = 0,
+            // ADR 2026-10.a5yj: an ask over a contact's direct link for a blob the link does not carry, neither served
+            // nor echoed.
+            val blobLinkRefused: Long = 0,
         )
 
         /**

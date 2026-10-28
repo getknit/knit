@@ -132,6 +132,7 @@ internal fun isRelayedRadioEvidence(
     now: Long,
 ): Boolean =
     kind != TransportKind.LoRa &&
+        kind != TransportKind.DirectLink &&
         !ScopeSync.isSpoolSource(fromNodeId) &&
         env.senderId != fromNodeId &&
         wire.sig.isNotEmpty() &&

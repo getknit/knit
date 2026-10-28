@@ -161,7 +161,7 @@ fun deliveryLabel(
 private fun arrivalText(plane: DeliveryPlane): DeliveryText =
     DeliveryText(
         when (plane) {
-            DeliveryPlane.Internet -> R.string.chat_status_arrived_internet
+            DeliveryPlane.Internet, DeliveryPlane.DirectLink -> R.string.chat_status_arrived_internet
             DeliveryPlane.LoRa -> R.string.chat_status_arrived_lora
             else -> R.string.chat_status_arrived_nearby
         },
@@ -171,7 +171,7 @@ private fun arrivalText(plane: DeliveryPlane): DeliveryText =
 private fun deliveredText(plane: DeliveryPlane): DeliveryText =
     DeliveryText(
         when (plane) {
-            DeliveryPlane.Internet -> R.string.chat_status_delivered_internet
+            DeliveryPlane.Internet, DeliveryPlane.DirectLink -> R.string.chat_status_delivered_internet
             DeliveryPlane.LoRa -> R.string.chat_status_delivered_lora
             else -> R.string.chat_status_delivered
         },
@@ -179,13 +179,13 @@ private fun deliveredText(plane: DeliveryPlane): DeliveryText =
 
 /**
  * The glyph that says which plane carried a message — painted ahead of the ✓✓ on our acked sends and on
- * its own on an arrival: a globe for the Internet plane, the radio-waves mark for LoRa, and nothing for a
+ * its own on an arrival: a globe for the Internet (a relay or a contact's direct link), the radio-waves mark for LoRa, and nothing for a
  * phone radio (the plain case needs no ornament). Pair it with [deliveryLabel] — the glyph never carries
  * the words; [planeTag] names its test tag.
  */
 fun planeGlyph(plane: DeliveryPlane): ImageVector? =
     when (plane) {
-        DeliveryPlane.Internet -> Icons.Filled.Public
+        DeliveryPlane.Internet, DeliveryPlane.DirectLink -> Icons.Filled.Public
         DeliveryPlane.LoRa -> Icons.Filled.Sensors
         else -> null
     }
@@ -223,6 +223,7 @@ fun tickGlyphTag(
 fun planeTag(plane: DeliveryPlane): String? =
     when (plane) {
         DeliveryPlane.Internet -> "relay"
+        DeliveryPlane.DirectLink -> "link"
         DeliveryPlane.LoRa -> "lora"
         else -> null
     }

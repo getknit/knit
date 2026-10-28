@@ -464,12 +464,28 @@ class MeshManager(
             onEvent = metrics::onBlobEvent,
             timers = { sessionScope },
             addressees = ::addresseesOf,
-            // The recipient of a DM photo of ours said, over a live short-range link, that it holds the bytes: the proof
-            // that keeps the photo off every spool for good (ADR 2026-10.vy27). The exchange takes only a short-range
-            // answer to its own query, so the plane is a radio's.
-            onPeerHolds = { hash, peer -> blobs.recordHolder(hash, peer, DeliveryPlane.Nearby, clock()) },
+            // The recipient of a DM photo of ours said, over a live radio or direct link, that it holds the bytes: the
+            // proof that keeps the photo off every spool for good (ADR 2026-10.vy27, a5yj). Recorded under the plane the
+            // answer crossed, which the exchange took only because it `provesHold`.
+            onPeerHolds = { hash, peer, plane -> blobs.recordHolder(hash, peer, plane, clock()) },
             log = { Log.d(TAG, it) },
         )
+
+    /**
+     * Whom each conversation naming blob [hash] is addressed to, for a contact's direct link: a blob crosses one when
+     * any of them is addressed to both ends (ADR 2026-10.a5yj). Every conversation, never the first row's: a picture
+     * forwarded under its sealed identity (ADR 2026-10.mptm) from a group the peer is not in into the pair's DM is the
+     * pair's too, and reading one row refused it the link — its proof query, its ask and its file.
+     */
+    suspend fun blobAddressees(hash: String): List<Set<String>> =
+        messages.conversationsOfAttachment(hash).mapNotNull { addresseesOfConversation(it) }
+
+    /**
+     * A contact's direct link to [peerId] was adopted (ADR 2026-10.a5yj): a push answered to an earlier link of theirs may
+     * have died with it, so custody answers their next digest in full. A link replaced under a peer that stays a neighbour
+     * never shows in the neighbour set, so the newcomer pass alone would leave it to the seen window's lapse.
+     */
+    fun onDirectLinkUp(peerId: String) = forwardSync.linked(setOf(peerId))
 
     /**
      * Whom the conversations naming blob [hash] are addressed to, every one of them ([BlobExchange.addresseesAcross]): a
@@ -500,7 +516,8 @@ class MeshManager(
             // survives to a late joiner (the carrier holds ciphertext it can't read, like the frame itself).
             onCarried = { env, from -> pipeline.onCarriedFrame(env, from) },
             // A carried frame actually sent to a peer that lacked it — the ledger decides whether it counts.
-            onServed = { env, to -> ledger.onHandedOff(env, setOf(to)) },
+            // A contact's direct link earns nothing: Your mesh credits what this phone's radios carried.
+            onServed = { env, to -> if (radioLinked(to)) ledger.onHandedOff(env, setOf(to)) },
             // A sender whose backlog goes to a peer that may not hold their key, and whose profile custody no
             // longer holds: the pin store's copy goes first (ADR 2026-09.g64k).
             serveKey = { senderId, to -> keyExchange.serveKey(senderId, to) },
@@ -804,6 +821,16 @@ class MeshManager(
             // not defer a spool upload (H5). [nearbyPeers] is the one definition of that set — a lambda, so
             // reading the property here is safe however late this field is initialized.
             reachable = { nearbyPeers.value.mapTo(mutableSetOf()) { peer -> peer.nodeId } },
+            // A contact's direct link is the deferral's other sighting (ADR 2026-10.a5yj): it carries the pair's DM
+            // photos and its delivery is proof, so a photo to a recipient only it reaches waits out the ack grace and
+            // the proof round instead of going up in the send's own round. A link neighbour is a neighbour no radio
+            // holds (a board holds none). Read live, never stamped: it lapses the moment the link idles out or closes.
+            // This set feeds the deferral alone — [nearbyPeers], presence, credit and walkie paths never see it.
+            directLinked = {
+                transport.neighbors.value.mapNotNullTo(mutableSetOf()) { peer ->
+                    peer.nodeId.takeUnless(transport::radioLinked)
+                }
+            },
             // Same line drawn on the evidence: only a hop that crossed a short-range radio proves a data path
             // moved these bytes. A spool one would defer on the plane the push feeds, a LoRa one on a plane
             // that carries no blob at all. Read from whichever end of the DM we are — our send that they
@@ -815,13 +842,16 @@ class MeshManager(
             // The bytes themselves, which never lapse: the recipient's own radio arrival (written below, once the
             // store took them) or its answer to our holder query. A DM photo so proved never goes up (ADR 2026-10.vy27).
             heldByRecipient = { aHash, peerId -> blobs.heldInPair(aHash, identity.nodeId(), peerId) },
-            // Asked over a live short-range link only, and floored per (hash, peer) by the exchange; the answer lands
+            // Asked over a live radio or direct link only, and floored per (hash, peer) by the exchange; the answer lands
             // in the same table through `onPeerHolds`, never in this round. Batched per peer ([holderAsks]).
             askHolder = { aHash, peerId -> holderAsks.ask(aHash, peerId) },
-            // The same test `BlobExchange.confirmHeld` sends on — a live short-range link whose peer answers the holder
-            // query (LoRa's set is always empty) — so a pass holds its proof round only when the question really went out.
-            canAskHolder = { peerId ->
-                transport.neighbors.value.any { it.nodeId == peerId && it.capabilities and Protocol.CAP_BLOB_HAVE != 0L }
+            // The same test `BlobExchange.confirmHeld` sends on — a live link whose peer answers the holder query: a
+            // phone radio's, or a contact's direct link's for a hash that link carries (ADR 2026-10.a5yj; a board holds
+            // none) — so a pass holds its proof round only when the question really went out. Per hash: a picture
+            // forwarded under its sealed identity (ADR 2026-10.mptm) can be named by a conversation the link refuses.
+            canAskHolder = { aHash, peerId ->
+                transport.neighbors.value.any { it.nodeId == peerId && it.capabilities and Protocol.CAP_BLOB_HAVE != 0L } &&
+                    (transport.radioLinked(peerId) || transport.pairView(peerId)?.admitsBlob(aHash) == true)
             },
             custodyTtlMs = ForwardRepository.DEFAULT_TTL_MS,
             clock = clock,
@@ -1302,7 +1332,7 @@ class MeshManager(
             seen = SeenSet(clock = clock),
             metrics = metrics,
             budget = ingressBudget,
-            onRelayed = { env, to -> ledger.onHandedOff(env, to) },
+            onRelayed = { env, to -> ledger.onHandedOff(env, to.filterTo(HashSet(), ::radioLinked)) },
             onDeliver = pipeline::onDeliver,
         )
 
@@ -3220,7 +3250,9 @@ class MeshManager(
         // linked recipient is fetching now ([CarrierPullPolicy], ADR 2026-10.g24x) — this tick re-reads them, so the
         // hold ends by itself when the recipient's link goes or the window passes.
         if (carried.isNotEmpty()) {
-            val linked = transport.neighbors.value.mapTo(HashSet()) { it.nodeId }
+            // The radio set: a recipient a contact's direct link reaches cannot fetch a carrier's copy over it (the link
+            // carries an attachment addressed to both ends only), so it holds nobody's pull back (ADR 2026-10.a5yj).
+            val linked = radioLinks().mapTo(HashSet()) { it.nodeId }
             val held = heldForLinkedRecipients(carried.keys, frames, linked)
             val carriedUntil = carrierDeadlines(frames)
             carried.forEach { (hash, author) ->
@@ -3549,6 +3581,8 @@ class MeshManager(
             // A newcomer holds no ask of ours — one sent before may have died with its old link — so each round
             // may ask it again (ADR 2026-10.f7gg). Ahead of the re-arm, whose wants step at once.
             blobExchange.linked(newcomers.map { it.nodeId })
+            // Likewise a push answered to a direct link's digest: the next one is answered in full (ADR 2026-10.a5yj).
+            forwardSync.linked(newcomers.map { it.nodeId })
             if (newcomers.isNotEmpty()) rewantMissingBlobs()
             // Blobs we still need take their next step of asks, which reaches a newcomer at once in a round
             // already widened (ADR 2026-10.f7gg). Ahead of the per-newcomer hooks, so the digest stays the
@@ -3808,16 +3842,20 @@ class MeshManager(
                         }
 
                         FileKind.ATTACHMENT -> {
-                            // Noted before the bytes are stored: this channel is the radios' (a board carries no
-                            // file, the spool is not a transport), and the §9.5 deferral reads the arrival as
-                            // the evidence the row's plane only stands in for — a heal round that finds these
-                            // bytes in hand must never find them unexplained, whatever order the row lands in.
+                            // Noted before the bytes are stored: this channel is the phone-to-phone paths' (a board
+                            // carries no file, the spool is not a transport), and the §9.5 deferral reads the arrival
+                            // as the evidence the row's plane only stands in for — a heal round that finds these
+                            // bytes in hand must never find them unexplained, whatever order the row lands in. A
+                            // contact's direct link too (ADR 2026-10.a5yj): its delivery is proof below, as a
+                            // radio's is, so the memo bridges the same gap before that proof is written.
                             attachmentDefer.noteRadioArrival(file.key)
                             val stored = blobExchange.onReceived(file.key, file.mime, file.path, file.resumedFrom, from = file.fromNodeId)
                             // Hash-checked and held now, so the memo above becomes proof that outlives the process: this
-                            // phone, the photo's recipient, holds bytes a radio gave it, and never uploads them (ADR
-                            // 2026-10.vy27). After the store, never before — the memo is a deferral, this is for good.
-                            if (stored) blobs.recordHolder(file.key, identity.nodeId(), DeliveryPlane.Nearby, clock())
+                            // phone, the photo's recipient, holds bytes a radio or a direct link gave it, and never
+                            // uploads them (ADR 2026-10.vy27, a5yj). After the store, never before — the memo is a
+                            // deferral, this is for good. Recorded under the plane that carried them.
+                            val plane = if (file.via == TransportKind.DirectLink) DeliveryPlane.DirectLink else DeliveryPlane.Nearby
+                            if (stored) blobs.recordHolder(file.key, identity.nodeId(), plane, clock())
                         }
                     }
                 },
@@ -3834,7 +3872,8 @@ class MeshManager(
     private fun watchIncomingDigests(session: CoroutineScope) {
         session.launch {
             // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
-            transport.incomingDigests.collect { forwardSync.onDigest(it.fromNodeId, it.ids) }
+            // By the plane it crossed: one off a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj).
+            transport.incomingDigests.collect { forwardSync.onDigest(it.fromNodeId, it.ids, it.via) }
         }
     }
 
@@ -4237,7 +4276,7 @@ class MeshManager(
         castToo: Boolean,
     ): Boolean {
         val fading = links.any { it.nodeId == peerId } && transport.liveLinkFading(peerId)
-        return (castToo || fading || !radioPathTo(peerId, links)) && canCastTalk(peerId, peerTicketed)
+        return (castToo || fading || !radioPathTo(peerId, radioLinks())) && canCastTalk(peerId, peerTicketed)
     }
 
     /**
@@ -4250,7 +4289,13 @@ class MeshManager(
     ): Boolean = links.any { it.nodeId == peerId } || talkRadioPaths.pathTo(peerId, links.mapTo(HashSet()) { it.nodeId })
 
     /** Whether a walkie chunk to [peerId] has a radio path now ([radioPathTo]): what the call screen labels its way by. */
-    fun talkRadioPath(peerId: String): Boolean = radioPathTo(peerId, transport.neighbors.value)
+    fun talkRadioPath(peerId: String): Boolean = radioPathTo(peerId, radioLinks())
+
+    // The peers a phone radio holds a live link to: never a contact's direct Internet link (ADR 2026-10.a5yj), which is
+    // a link to send on but not a radio path, a presence or a hand-off Your mesh credits.
+    private fun radioLinks(): Set<Peer> = (transport as? CompositeMeshTransport)?.shortRangeNeighbors?.value ?: transport.neighbors.value
+
+    private fun radioLinked(peerId: String): Boolean = transport.radioLinked(peerId)
 
     /** §2.7: casts [wire]'s frame to [peerId] through the spools, signed, and returns how many took it. */
     private suspend fun castTalk(

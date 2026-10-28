@@ -327,6 +327,10 @@ val meshModule =
                         // The LoRa (Meshtastic) plane rides LAST — lowest send-preference, fast-plane only.
                         // Gated on the flag; the classes stay in the APK but are never resolved when off.
                         if (BuildConfig.LORA_PLANE) add(get<LoraMeshTransport>())
+                        // A contact's direct Internet links ride after every radio (ADR 2026-10.a5yj): the lowest
+                        // preference, so a peer a radio also links is served by the radio, and in this place the plane
+                        // is told which peers a radio links (suppressDataPath) while LoRa's election never sees it.
+                        if (DIRECT_LINKS_WIRED) add(directLinkPlane())
                     }
                 CompositeMeshTransport(children, get(), get()) { msg ->
                     Log.d("CompositeMeshTransport", msg)

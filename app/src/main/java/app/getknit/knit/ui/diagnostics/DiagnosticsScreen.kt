@@ -995,6 +995,7 @@ private fun transportName(kind: TransportKind): String =
             TransportKind.WifiAware -> R.string.diagnostics_transport_wifi_aware
             TransportKind.LoRa -> R.string.diagnostics_transport_lora
             TransportKind.Other -> R.string.diagnostics_transport_other
+            TransportKind.DirectLink -> R.string.diagnostics_transport_direct_link
         },
     )
 

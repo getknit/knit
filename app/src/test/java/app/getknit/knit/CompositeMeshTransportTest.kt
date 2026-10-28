@@ -41,6 +41,7 @@ class CompositeMeshTransportTest {
         override val kind: TransportKind = TransportKind.Other,
         override val highThroughput: Boolean = false,
         override val shortRange: Boolean = true,
+        override val viaInternet: Boolean = false,
     ) : MeshTransport {
         /** What [expectBulkTransfer] reports — i.e. whether this plane "armed" its on-demand link. */
         var armBulk = false
@@ -1084,6 +1085,24 @@ class CompositeMeshTransportTest {
                     .map { it.nodeId }
                     .toSet(),
             )
+        }
+
+    @Test
+    fun aDirectLinkIsALinkToSendOnButNeitherARadioNeighbourNorTheMeshsHealth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val link = FakeChild(hasFastPlane = true, kind = TransportKind.DirectLink, shortRange = false, viaInternet = true)
+            val composite = CompositeMeshTransport(listOf(bt, link), backgroundScope)
+            bt.setNeighbors(Peer("near"))
+            link.setNeighbors(Peer("contact"))
+            bt.setHealth(TransportHealth.Unavailable)
+            advanceUntilIdle()
+            assertEquals(setOf("near", "contact"), composite.neighbors.value.mapTo(HashSet()) { it.nodeId })
+            assertEquals(setOf("near"), composite.shortRangeNeighbors.value.mapTo(HashSet()) { it.nodeId })
+            assertTrue(composite.shortRangeLinked("near"))
+            assertFalse(composite.shortRangeLinked("contact"))
+            // The radio is off: a live link to a contact does not make the mesh healthy.
+            assertEquals(TransportHealth.Unavailable, composite.health.value)
         }
 
     @Test

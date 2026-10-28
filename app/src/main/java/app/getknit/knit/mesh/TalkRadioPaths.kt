@@ -44,7 +44,7 @@ class TalkRadioPaths(
         kind: TransportKind,
         sentAt: Long,
     ) {
-        if (kind == TransportKind.LoRa || ScopeSync.isSpoolSource(hopId)) return
+        if (kind == TransportKind.LoRa || kind == TransportKind.DirectLink || ScopeSync.isSpoolSource(hopId)) return
         // One reading for the check and the stamp, so a frame judged fresh is never stamped by a later clock.
         val now = clock()
         if (now - sentAt > windowMs) return

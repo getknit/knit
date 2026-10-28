@@ -1087,6 +1087,7 @@
     <string name="diagnostics_transport_wifi_aware">Wi-Fi Aware</string>
     <string name="diagnostics_transport_other">Outro</string>
     <string name="diagnostics_transport_lora">LoRa</string>
+    <string name="diagnostics_transport_direct_link">Link direto</string>
     <string name="diagnostics_transport_counts" tools:ignore="PluralsCandidate">%1$d por perto · %2$d conectados</string>
     <plurals name="diagnostics_transport_heard">
         <item quantity="one">%1$d ouvido</item>

@@ -97,6 +97,7 @@ enum class ConsolePlane(
     LoRa("LoRa"),
     Relay("relay"),
     Calls("calls"),
+    Link("link"),
     Mesh("mesh"),
     ;
 
@@ -110,6 +111,7 @@ enum class ConsolePlane(
                 event.kind.startsWith("lora") -> LoRa
                 event.kind.startsWith("spool") || event.kind == "net" -> Relay
                 event.kind.startsWith("call_") || event.kind == "talk" || event.kind == "walkie_end" -> Calls
+                event.kind.startsWith("link_") -> Link
                 else -> Mesh
             }
 
@@ -119,6 +121,7 @@ enum class ConsolePlane(
                 TransportKind.WifiAware -> WifiAware
                 TransportKind.LoRa -> LoRa
                 TransportKind.Other -> Mesh
+                TransportKind.DirectLink -> Link
             }
     }
 }

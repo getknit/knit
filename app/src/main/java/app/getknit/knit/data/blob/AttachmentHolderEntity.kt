@@ -5,13 +5,14 @@ import androidx.room3.Entity
 import androidx.room3.Query
 
 /**
- * Proof that [holderId] holds the bytes of the attachment [hash], learnt over a short-range radio [plane] (a
- * `DeliveryPlane` code) at [provedAt] (our clock) — the evidence `docs/SPOOL_PROTOCOL.md` C-9.5-8 names for skipping
- * a DM photo's spool upload for good (ADR 2026-10.vy27, amending ADR 021). Two writers, one per end of the DM:
+ * Proof that [holderId] holds the bytes of the attachment [hash], learnt over a short-range radio or a contact's direct
+ * link [plane] (a `DeliveryPlane` code whose `provesHold`, ADR 2026-10.a5yj) at [provedAt] (our clock) — the evidence
+ * `docs/SPOOL_PROTOCOL.md` C-9.5-8 names for skipping a DM photo's spool upload for good (ADR 2026-10.vy27, amending ADR
+ * 021). Two writers, one per end of the DM:
  *
- * - **The recipient** records itself once the bytes arrived here over BLE or Wi-Fi Aware and the store took them —
- *   hash-checked, after `AttachmentDeferPolicy.noteRadioArrival` and the store write.
- * - **The sender** records the peer once the peer, asked over a live short-range link with the holder query
+ * - **The recipient** records itself once the bytes arrived here over BLE, Wi-Fi Aware or a direct link and the store
+ *   took them — hash-checked, after `AttachmentDeferPolicy.noteRadioArrival` and the store write.
+ * - **The sender** records the peer once the peer, asked over a live radio or direct link with the holder query
  *   (`blobhave`, ADR 2026-10.6e5t), answered that it holds the hash: its responder says so only for screened,
  *   hash-checked bytes it would serve.
  *
@@ -46,8 +47,9 @@ interface AttachmentHolderDao {
     /**
      * Whether the DM between [me] and [peer] holds proof that its recipient has the bytes of [hash], read from
      * whichever end this node is: a message of ours naming it that [peer] proved it holds, or a message of [peer]'s
-     * naming it whose bytes reached us over a radio. Requiring the message keeps avatars and group pictures (no
-     * message row between the pair) uploading as they always did. Only a short-range [planes] code counts.
+     * naming it whose bytes reached us over a radio or a direct link. Requiring the message keeps avatars and group
+     * pictures (no message row between the pair) uploading as they always did. Only a [planes] code counts
+     * (`DeliveryPlane.provesHoldCodes`).
      */
     @Query(
         "SELECT EXISTS(SELECT 1 FROM attachment_holders h JOIN messages m ON m.attachmentHash = h.hash " +

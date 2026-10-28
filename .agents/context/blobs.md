@@ -53,11 +53,11 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   serves a fresh ask; there is no negative answer on the wire, so never make it one-at-a-time without one. A link-up
   clears its newcomer's asks (`BlobExchange.linked`), since an ask can die with a link. Lab: `BlobFirstAskLabTest`.
 - **Before touching the proof query — `BlobExchange.confirmHeld` / `onPeerHolds` / `PROOF_FLOOR_MS`, the proof branch
-  of `onHaveAnswer` (its `shortRange`), `onReceived`'s result, `MeshManager.askHolder` or what writes
-  `attachment_holders` (`BlobRepository.recordHolder`):** READ ADR 2026-10.vy27 (amending ADR 021). A DM photo's
-  sender asks its linked recipient with the ordinary holder query whether it holds a photo of ours; a short-range
-  `HAVE`/`SENDING` answering that query is the proof that keeps the photo off every spool for good. Proof queries
-  never touch a want, and a want's answer never proves; the recipient's own proof is written only after
+  of `onHaveAnswer` (its `plane`), `onReceived`'s result, `MeshManager.askHolder`, `DeliveryPlane.provesHold` or what
+  writes `attachment_holders` (`BlobRepository.recordHolder`):** READ ADR 2026-10.vy27 (amending ADR 021). A DM
+  photo's sender asks its linked recipient with the ordinary holder query whether it holds a photo of ours; a
+  `HAVE`/`SENDING` answering that query over a radio or a contact's direct link (`DeliveryPlane.provesHold`, ADR
+  2026-10.a5yj) is the proof that keeps the photo off every spool for good. Proof queries never touch a want, and a want's answer never proves; the recipient's own proof is written only after
   `onReceived` reports the store took the bytes, never on the arrival memo. Lab:
   `PhotoProofLabTest.aPhotoItsRecipientHoldsNeverGoesUpEvenAfterThePeersPart`; unit: `BlobHolderQueryTest`'s
   proof cases.
@@ -236,6 +236,23 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   — a delay, never a veto, and the carried sets still converge. Strangers-first eviction is the room's *message
   retention*, a local presentation bound; custody's per-sender quota and its frame-global order are untouched, and
   must stay so.
+
+- **When touching what a contact's direct Internet link does to blobs or custody — `MeshTransport.radioLinked` /
+  `pairView` / `fileRidesInternet` / `PairView`, `ReceivedDigest.via` / `ReceivedFile.via`, `ForwardSync.onDigest`'s
+  `via` / `ForwardSync.linked` / `LinkPushRounds` / `MeshManager.onDirectLinkUp` (`DirectLinkTransport`'s `onLinkUp`), `BlobExchange.reachingFor` / `Rank.Internet` / `Tier.Internet` /
+  `Candidate.radio`, or which set `CarrierPullPolicy`, `confirmHeld`, `canAskHolder` and `watchIncomingFiles` read:**
+  READ ADR 2026-10.a5yj's custody-and-blobs amendment and `docs/DIRECT_LINKS.md` §7. A link is a link to send
+  on, never a radio: everything that meant *near* reads the radio set. A digest is answered by the plane it crossed,
+  through that link's view (none: nothing); a link round that would push the same frames against the same digest
+  pushes nothing until either moves, a link-up, or the seen window. A link's peer is asked last and only for blobs its
+  link carries, and its ask for one the link does not carry is neither served nor echoed (`BlobEvent.LinkRefused`); its
+  copy never parks behind a radio feed. Its delivery is proof of a hold as a radio's is (`DeliveryPlane.provesHold`,
+  the owner's call of 2026-10-27): a file off it is written under `DeliveryPlane.DirectLink` and noted in the arrival
+  memo, and it is sent a proof query for the hashes its link carries, whose answer proves; and a live link is the §9.5
+  deferral's sighting (`AttachmentDeferPolicy`'s `directLinked`), read live, so a photo to it waits for that proof and
+  goes up the round after the link goes. Unit: `ForwardSyncTest`'s
+  direct-link cases, `BlobHolderQueryTest`'s direct-link cases, `BlobRepositoryTest`'s plane rule; lab:
+  `DirectLinkLabTest` (attachment cases owed).
 
 ## Adding an entry
 

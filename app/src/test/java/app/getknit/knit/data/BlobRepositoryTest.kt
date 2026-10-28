@@ -74,6 +74,29 @@ class BlobRepositoryTest : RoomDbTest() {
             )
         }
 
+    /**
+     * The proof table's plane rule (ADR 2026-10.vy27, a5yj): a phone radio's delivery or answer proves a hold, and so does
+     * a contact's direct link's — the recipient holds the bytes whichever carried them. A board carries no blob and the
+     * spool is the upload the proof saves, so neither writes a row, and an unknown plane proves nothing.
+     */
+    @Test
+    fun `a radio or a direct link proves a hold, and LoRa, the spool and an unknown plane do not`() =
+        runTest {
+            val repo = repo()
+            val planes =
+                listOf(DeliveryPlane.Bluetooth, DeliveryPlane.WifiAware, DeliveryPlane.DirectLink) to
+                    listOf(DeliveryPlane.LoRa, DeliveryPlane.Internet, DeliveryPlane.Unknown)
+            for (plane in planes.first + planes.second) {
+                val hash = "h-${plane.name}"
+                val row = MessageEntity(id = "m-${plane.name}", senderId = "me", body = "", sentAt = 1L, attachmentHash = hash)
+                db.messageDao().upsert(row)
+                repo.recordHolder(hash, "peer", plane, 1L)
+            }
+
+            for (plane in planes.first) assertTrue("$plane proves", repo.heldInPair("h-${plane.name}", "me", "peer"))
+            for (plane in planes.second) assertFalse("$plane does not", repo.heldInPair("h-${plane.name}", "me", "peer"))
+        }
+
     @Test
     fun `a saved copy is remembered, replaced by a later save, and forgotten on request`() =
         runTest {

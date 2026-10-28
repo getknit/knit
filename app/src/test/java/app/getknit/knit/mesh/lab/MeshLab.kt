@@ -95,6 +95,9 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
+import app.getknit.knit.mesh.inet.DirectLinkTransport
+import app.getknit.knit.mesh.inet.LinkArq
+import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.lora.DirectDm
@@ -157,6 +160,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -247,6 +251,9 @@ class MeshLab {
         // False keeps a boards-everywhere run ([boardsAir]) off this node: a scenario whose subject is a radio path the
         // compact LoRa copy would short-cut (an epoch filter on a link, a node that must read only through the ratchet).
         board: Boolean = true,
+        // A contact's direct Internet link plane beside the radio (ADR 2026-10.a5yj): the real `DirectLinkTransport`, whose
+        // links [directLink] makes over in-memory streams — no punch, no relay. False builds the node as before.
+        directLinks: Boolean = false,
     ): LabNode {
         val started = System.nanoTime()
         val board = air ?: boardsAir?.takeIf { board }
@@ -276,6 +283,7 @@ class MeshLab {
                 freeIssuer = freeIssuer,
                 publicRelays = publicRelays,
                 home = home,
+                directLinks = directLinks,
             )
         nodes += node
         node.boot()
@@ -347,8 +355,41 @@ class MeshLab {
         links.flatMap { it.toList() }.distinct().forEach { it.transport.publishNeighbors() }
     }
 
+    // The streams of every direct link made: ended at [close], which returns the IO threads `FramedLink`'s readers park in
+    // their blocking reads — cancelling a node's scope cannot reach a thread inside runBlocking.
+    private val linkStreams = java.util.Collections.synchronizedList(ArrayList<LinkArq>())
+    private val linkScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Joins two nodes built with `directLinks` by a contact's direct link (ADR 2026-10.a5yj): two in-memory streams, each
+     * datagram delivered on its own coroutine as a path would, handed to each node's link plane as `DirectLinks` hands an
+     * up link's stream over ([a] offers, so it writes the first HELLO). Returns once both managers have acted on the link.
+     */
+    suspend fun directLink(
+        a: LabNode,
+        b: LabNode,
+    ) {
+        lateinit var toB: LinkArq
+        lateinit var toA: LinkArq
+        val clock = { System.nanoTime() / 1_000_000L }
+        val aStream = LinkArq({ bytes -> true.also { linkScope.launch { toB.take(bytes) } } }, linkScope, clock, onClose = { toB.end() })
+        val bStream = LinkArq({ bytes -> true.also { linkScope.launch { toA.take(bytes) } } }, linkScope, clock, onClose = { toA.end() })
+        toB = bStream
+        toA = aStream
+        linkStreams += aStream
+        linkStreams += bStream
+        checkNotNull(a.link) { "${a.name} has no direct-link plane" }.adopt(b.nodeId, aStream, offerer = true)
+        checkNotNull(b.link) { "${b.name} has no direct-link plane" }.adopt(a.nodeId, bStream, offerer = false)
+        // The link planes themselves, never the merged set, which a radio entry left over could already satisfy.
+        await(1) { if (a.linkPlaneHolds(b) && b.linkPlaneHolds(a)) 1 else 0 }
+        a.awaitLinksActedOn()
+        b.awaitLinksActedOn()
+    }
+
     /** Stops every node and drops its state. */
     fun close() {
+        synchronized(linkStreams) { linkStreams.forEach { it.end() } }
+        linkScope.cancel()
         // Every node goes down even when one fails its shutdown: a node left running leaks its collectors into the
         // next test class in this JVM. The first failure is rethrown, the rest ride along as suppressed. A gate a failed
         // scenario left holding is released first: the delivery parked at it cannot be cancelled (ADR 2026-10.f82h),
@@ -1137,6 +1178,7 @@ class LabNode internal constructor(
     // The house relays and this node's home among them ([MeshLab.node]); null leaves the node on [spool] alone.
     private val publicRelays: LabPublicRelays? = null,
     private val home: String? = null,
+    private val directLinks: Boolean = false,
 ) {
     /** [delegate], or its chaos-lagged form when the lab runs under [chaos]. */
     private fun dispatcher(delegate: CoroutineDispatcher): CoroutineDispatcher = chaos?.dispatcher(delegate) ?: delegate
@@ -1211,8 +1253,50 @@ class LabNode internal constructor(
     internal var boardLink: FakeMeshtasticLink? = null
         private set
 
-    /** The composite the manager runs on when the node has a board ([lora] beside the radio), else null. */
+    /** The direct-link plane ([MeshLab.directLink]), for a node built with `directLinks`; else null. */
+    internal var link: DirectLinkTransport? = null
+        private set
+
+    /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
+
+    // The direct-link plane, wired as `di/DirectLinkWiring` wires it: the real lookups over this node's stores, its use and
+    // link-ups back to the manager, built late.
+    private fun directLinkPlane(scope: CoroutineScope): DirectLinkTransport? =
+        if (!directLinks) {
+            null
+        } else {
+            DirectLinkTransport(
+                selfId = { nodeId },
+                linkScope =
+                    MeshLinkScope(
+                        groups = groups,
+                        addressees = { manager.blobAddressees(it) },
+                        ownAvatar = { settings.ownAvatarHash.first() },
+                        custody = forwardStore,
+                        clock = now,
+                    ),
+                scope = scope,
+                cacheDir = File(dir, "linkrx").apply { mkdirs() },
+                partials = partials,
+                metrics = metrics,
+                now = now,
+                onLinkUp = { manager.onDirectLinkUp(it) },
+            )
+        }
+
+    // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone.
+    private fun compositeOver(scope: CoroutineScope): CompositeMeshTransport? =
+        if (lora == null && link == null) null else CompositeMeshTransport(listOfNotNull(transport, lora, link), scope)
+
+    /** Whether this node's direct-link plane has framed a link to [peer]. */
+    internal fun linkPlaneHolds(peer: LabNode): Boolean = link?.neighbors?.value?.any { it.nodeId == peer.nodeId } == true
+
+    // Every plane's links, read off the planes themselves: the radio's and a direct link plane's (a board holds none).
+    private fun planesLinks(): Set<String> =
+        transport.neighbors.value
+            .mapTo(HashSet()) { it.nodeId }
+            .apply { link?.neighbors?.value?.forEach { add(it.nodeId) } }
 
     /** Set by [MeshLab.leaveRelay] until [MeshLab.rejoinRelay]: a [restart] meanwhile boots with the relay still off. */
     @Volatile
@@ -1401,7 +1485,8 @@ class LabNode internal constructor(
         // provisioned, Knit on slot 1 as ADR 045 leaves it (a compact DM never goes from slot 0), with the plane switched on
         // so the profile names it, and reports itself bound so the profile carries its node number.
         lora = air?.let { boardOn(it, scope) }
-        composite = lora?.let { CompositeMeshTransport(listOf(transport, it), scope) }
+        link = directLinkPlane(scope)
+        composite = compositeOver(scope)
         val meshTransport: MeshTransport = composite ?: transport
         manager =
             MeshManager(
@@ -2266,7 +2351,22 @@ class LabNode internal constructor(
      * (`AttachmentLabTest`'s long-isolation picture under chaos seed 913483320, 2026-09-28).
      */
     internal suspend fun awaitLinksActedOn() {
-        val radio = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
+        // A composite merges its planes on a collector of its own: wait for it to hold what the planes hold, so the manager's
+        // copy is compared with a set that is current, never with one as stale as itself.
+        composite?.let { merged ->
+            val caughtUp =
+                withContext(Dispatchers.Default) {
+                    withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                        while (merged.neighbors.value.mapTo(HashSet()) { it.nodeId } !=
+                            planesLinks()
+                        ) {
+                            delay(1)
+                        }
+                    }
+                } != null
+            check(caughtUp) { "$name's composite never caught up with its planes' links ${planesLinks()}" }
+        }
+        val radio = ::planesLinks
         val seen =
             withContext(Dispatchers.Default) {
                 withTimeoutOrNull(MeshLab.AWAIT_MS) { while (manager.linksActedOn != radio()) delay(1) }

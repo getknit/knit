@@ -91,6 +91,16 @@ skip them — see `MeshManager.onDeliver`). Like a group they have no ack, so a 
 plus `profile` — so the whole mesh converges on the same state (reactions, receipts, renames, and keys included),
 not only the one-hop peers that happened to be present when each first flooded.
 
+**A contact's direct Internet link** (`mesh/inet/DirectLinkTransport`, ADR 2026-10.a5yj and its custody-and-blobs
+amendment) carries the pair's own custody only. Its `sendDigest` filters our ids by the link's rule over their
+custody envelopes, and `onDigest` answers a digest stamped `TransportKind.DirectLink` through the same rule
+(`MeshTransport.pairView`) — frames the view admits, a key for a sender whose profile it would admit, nothing once the
+link is gone — so the two filtered digests agree when the two views do. When they cannot (a full quota, the global cap,
+a dead-on-arrival frame, a tombstone), `LinkPushRounds` keeps an unchanged round from pushing the same frames again until
+either set moves, the peer links again (a newcomer, or any link the link plane adopts: `MeshManager.onDirectLinkUp`), or
+the seen window passes: each push is link use, and the link would never idle
+out. Custody itself, the digest's fold and the carry gate are untouched.
+
 ## Bounds (`ForwardRepository`)
 
 A per-message **TTL** sweep (startup + a 10-min loop + the heartbeat `heal()`; broadcast gets a shorter

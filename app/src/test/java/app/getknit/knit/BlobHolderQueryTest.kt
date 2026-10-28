@@ -1,5 +1,6 @@
 package app.getknit.knit
 
+import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.BulkRoute
@@ -7,6 +8,7 @@ import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.MeshRouter
+import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
@@ -111,8 +113,9 @@ class BlobHolderQueryTest {
         // While set, this node leaves queries unanswered: an answer that comes in late is the test's to deliver.
         @Volatile var mute = false
 
-        // Every (hash, peer) a proof query's answer said is held ([BlobExchange.confirmHeld]).
+        // Every (hash, peer) a proof query's answer said is held ([BlobExchange.confirmHeld]), and the plane it crossed.
         val holds = CopyOnWriteArrayList<Pair<String, String>>()
+        val holdPlanes = CopyOnWriteArrayList<DeliveryPlane>()
         val exchange =
             BlobExchange(
                 transport = transport,
@@ -125,7 +128,10 @@ class BlobHolderQueryTest {
                 onEvent = { events += it },
                 timers = { timers },
                 addressees = { to },
-                onPeerHolds = { hash, peer -> holds += hash to peer },
+                onPeerHolds = { hash, peer, plane ->
+                    holds += hash to peer
+                    holdPlanes += plane
+                },
             )
 
         // Every blob frame this node received: type, sender, payload.
@@ -147,7 +153,9 @@ class BlobHolderQueryTest {
                     }
 
                     FrameType.BLOB_HAS -> {
-                        WireCodec.decodePayload<BlobHasContent>(env.payload)?.let { exchange.onHaveAnswer(it, from) }
+                        // The plane it crossed, as the pipeline stamps it: a contact's direct link for a peer only one reaches.
+                        val plane = if (from in transport.internetOnly) DeliveryPlane.DirectLink else DeliveryPlane.Bluetooth
+                        WireCodec.decodePayload<BlobHasContent>(env.payload)?.let { exchange.onHaveAnswer(it, from, plane) }
                     }
 
                     FrameType.BLOB_CANCEL -> {
@@ -2549,9 +2557,10 @@ class BlobHolderQueryTest {
             a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, "not-ours"), "b")
             a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, null), "b")
             a.exchange.onHaveAnswer(has(other, BlobHasItem.HAVE, id), "b")
-            a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, id), "b", shortRange = false)
-            assertTrue("another peer, another query, no query, another hash, a long-range plane: none proves it", a.holds.isEmpty())
-            assertEquals(5, a.events.count { it == BlobExchange.BlobEvent.AnswerIgnored })
+            a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, id), "b", DeliveryPlane.LoRa)
+            a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, id), "b", DeliveryPlane.Internet)
+            assertTrue("another peer, another query, no query, another hash, LoRa, a spool: none proves it", a.holds.isEmpty())
+            assertEquals(6, a.events.count { it == BlobExchange.BlobEvent.AnswerIgnored })
 
             a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, id), "b")
             a.exchange.onHaveAnswer(has(hash, BlobHasItem.HAVE, id), "b")
@@ -2864,6 +2873,221 @@ class BlobHolderQueryTest {
             assertEquals("a neighbour's ask still lifts nothing", PHOTO_CEILING, a.partials.capFor(hash))
             a.exchange.want(hash, author = "c")
             assertNull("an attachment want of ours does", a.partials.capFor(hash))
+        }
+
+    /** A contact's direct link to one peer, as its [PairView] reads a blob: admitted when it is one of [blobs]. */
+    private class LinkView(
+        private val blobs: Set<String>,
+    ) : PairView {
+        override fun admits(env: RelayEnvelope): Boolean = true
+
+        override suspend fun admitsBlob(hash: String): Boolean = hash in blobs
+    }
+
+    /** [peer] is reached from [node] over a contact's direct link alone, which carries the blobs [blobs] (ADR 2026-10.a5yj). */
+    private fun overLink(
+        node: Node,
+        peer: Node,
+        vararg blobs: String,
+    ) {
+        node.transport.internetOnly += peer.id
+        node.transport.linkViews[peer.id] = LinkView(blobs.toSet())
+    }
+
+    /**
+     * ADR 2026-10.a5yj, the design pass's first finding: an asker only a direct link reaches has no route in [BulkRoute]
+     * and no slow link, so it read as a Bluetooth asker and parked behind a radio feed — its own copy never went ahead
+     * (no rate the radios measure), its link idled out, and the park dropped it. Its copy shares no radio budget: served
+     * at once, while a radio asker beside it still parks.
+     */
+    @Test
+    fun anAskerOnlyADirectLinkReachesNeverParksBehindARadioFeed() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = Node("h", backgroundScope, timers = backgroundScope)
+            val a = Node("a", backgroundScope)
+            val l = Node("l", backgroundScope)
+            val c = Node("c", backgroundScope)
+            for (n in listOf(a, l, c)) h.transport.connect(n.transport)
+            backgroundScope.recordServes(h, l, c)
+            val hash = h.store.seed(picture(3_210))
+            overLink(h, l, hash)
+            h.transport.feeds["a" to hash] = feeding(8 * 60_000) // a radio copy fed live to a
+
+            h.exchange.onRequest(hash, "l")
+            h.exchange.onRequest(hash, "c")
+
+            assertEquals("the link's copy goes at once", 1, h.served(hash, "l"))
+            assertEquals("a radio asker still waits its turn", 0, h.served(hash, "c"))
+            assertEquals(1, h.events.count { it == BlobExchange.BlobEvent.Park })
+        }
+
+    /**
+     * A contact's direct link is proof as a radio is (ADR 2026-10.vy27, a5yj; the owner's call of 2026-10-27): a proof
+     * query goes to the link's peer for the hashes its link carries, and the peer's HAVE back over the link proves the
+     * hold, recorded under the link's plane. A hash the link does not carry stays out of the frame, which the link would
+     * otherwise drop whole, so the carried one's question still goes out.
+     */
+    @Test
+    fun aProofQueryGoesOverADirectLinkForWhatItCarriesAndItsAnswerProves() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val l = Node("l", backgroundScope)
+            a.transport.connect(l.transport)
+            val hash = a.store.seed(picture())
+            val stranger = a.store.seed(picture(2_200))
+            l.store.blobs[hash] = a.store.blobs.getValue(hash)
+            l.store.blobs[stranger] = a.store.blobs.getValue(stranger)
+            overLink(a, l, hash)
+
+            a.exchange.confirmHeld(listOf(hash, stranger), "l")
+
+            assertEquals("one query, naming only what the link carries", listOf(listOf(hash)), l.queriesFrom("a"))
+            assertTrue("the link dropped nothing", a.transport.linkDropped.isEmpty())
+            assertEquals(listOf(hash to "l"), a.holds)
+            assertEquals("recorded under the link's plane", listOf(DeliveryPlane.DirectLink), a.holdPlanes)
+            assertEquals(1, a.events.count { it == BlobExchange.BlobEvent.ProofHeld })
+        }
+
+    /**
+     * A proof query naming only hashes a direct link does not carry is never sent (ADR 2026-10.a5yj): the link would drop
+     * it whole, and the deferral's proof round would wait out an answer to a question that never left. Nothing is
+     * stamped either, so the hash is asked the round its row lands.
+     */
+    @Test
+    fun aProofQueryIsNotSentOverADirectLinkForAHashItsViewDoesNotAdmit() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val l = Node("l", backgroundScope)
+            a.transport.connect(l.transport)
+            val hash = a.store.seed(picture())
+            l.store.blobs[hash] = a.store.blobs.getValue(hash)
+            overLink(a, l)
+
+            a.exchange.confirmHeld(hash, "l")
+
+            assertTrue(l.queriesFrom("a").isEmpty())
+            assertTrue("nothing went out for the link to drop", a.transport.linkDropped.isEmpty())
+            assertEquals(0, a.events.count { it == BlobExchange.BlobEvent.ProofQuerySent })
+            assertTrue(a.holds.isEmpty())
+
+            overLink(a, l, hash) // the row landed: the view admits it now
+            a.exchange.confirmHeld(hash, "l")
+            assertEquals("not floored by the round that sent nothing", listOf(listOf(hash)), l.queriesFrom("a"))
+            assertEquals(listOf(hash to "l"), a.holds)
+        }
+
+    /**
+     * Two holders say HAVE, one over a radio and one, the author, over a direct link: the radio's copy is free, the
+     * link's costs two data plans, so the radio holder is asked and the link's is not (ADR 2026-10.a5yj).
+     */
+    @Test
+    fun aRadioHolderIsAskedAheadOfAHolderOnlyADirectLinkReaches() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val l = Node("l", backgroundScope)
+            a.transport.connect(l.transport)
+            a.transport.connect(b.transport)
+            val hash = l.store.seed(picture())
+            b.store.blobs[hash] = l.store.blobs.getValue(hash)
+            overLink(a, l, hash)
+
+            a.exchange.want(hash, author = "l")
+
+            assertEquals("both are queried", listOf(listOf(hash)), l.queriesFrom("a"))
+            assertEquals(listOf("a"), b.asksFrom(hash))
+            assertTrue("the link's holder, the author, is not asked", l.asksFrom(hash).isEmpty())
+            assertTrue(a.store.has(hash))
+        }
+
+    /** The blind round (f7gg) ranks a neighbour only a direct link reaches after every radio one, its author included. */
+    @Test
+    fun theBlindRoundAsksARadioNeighbourBeforeTheAuthorOverADirectLink() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope, query = false)
+            val b = Node("b", backgroundScope, answers = false)
+            val l = Node("l", backgroundScope, answers = false)
+            a.transport.connect(l.transport)
+            a.transport.connect(b.transport)
+            val hash = sha256Hex(picture())
+            overLink(a, l, hash)
+
+            a.exchange.want(hash, author = "l")
+
+            assertEquals(listOf("a"), b.asksFrom(hash))
+            assertTrue(l.asksFrom(hash).isEmpty())
+        }
+
+    /**
+     * A direct link carries a blob's control frames only for a blob addressed to both ends, and drops the rest unanswered
+     * (`docs/DIRECT_LINKS.md` L-7-2): its peer is queried and asked only for what the link carries, so no step waits on
+     * a question that never left. A radio neighbour is queried for both.
+     */
+    @Test
+    fun aNeighbourOnlyADirectLinkReachesIsQueriedOnlyForBlobsTheLinkCarries() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val l = Node("l", backgroundScope)
+            a.transport.connect(l.transport)
+            a.transport.connect(b.transport)
+            val ours = sha256Hex(picture(2_001))
+            val theirs = sha256Hex(picture(2_002))
+            overLink(a, l, ours)
+
+            a.exchange.wantAll(listOf(ours to null, theirs to null))
+
+            assertEquals(listOf(listOf(ours)), l.queriesFrom("a"))
+            assertEquals(listOf(listOf(ours, theirs)), b.queriesFrom("a"))
+            assertTrue("nothing was sent the link would drop", a.transport.linkDropped.isEmpty())
+            assertTrue(l.asksFrom(theirs).isEmpty())
+        }
+
+    /**
+     * An ask over a direct link for a blob the link does not carry is neither served (the link would refuse the file) nor
+     * echoed (our radios would fetch bytes nothing can hand on): the rule the query's answer already follows. An ask for
+     * one it carries is served as ever.
+     */
+    @Test
+    fun anAskOverADirectLinkForABlobItDoesNotCarryIsNeitherServedNorEchoed() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = Node("h", backgroundScope)
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            h.transport.connect(a.transport)
+            h.transport.connect(b.transport)
+            val ours = h.store.seed(picture(2_005))
+            val held = h.store.seed(picture(2_006))
+            val lacked = sha256Hex(picture(2_007))
+            overLink(h, a, ours)
+
+            h.exchange.onRequest(held, "a")
+            h.exchange.onRequest(lacked, "a")
+            h.exchange.onRequest(ours, "a")
+
+            assertEquals("only the blob the link carries goes", listOf(ours), h.transport.filesSent.map { it.key })
+            assertTrue("no echo: the radio neighbour is never queried for it", b.queriesFrom("h").isEmpty())
+            assertTrue(b.asksFrom(lacked).isEmpty())
+            assertTrue(h.exchange.wantedHashes().isEmpty())
+            assertEquals(2, h.events.count { it == BlobExchange.BlobEvent.LinkRefused })
+        }
+
+    /** A query that came over a direct link is answered for the blobs that link carries only, so the link keeps the answer. */
+    @Test
+    fun aQueryOverADirectLinkIsAnsweredForTheBlobsTheLinkCarries() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope, query = false)
+            val h = Node("h", backgroundScope)
+            h.transport.connect(a.transport)
+            val ours = h.store.seed(picture(2_003))
+            val other = h.store.seed(picture(2_004))
+            overLink(h, a, ours)
+
+            h.exchange.onHaveQuery(listOf(ours, other), "a", "q1")
+            h.exchange.onHaveQuery(listOf(other), "a", "q2")
+
+            assertEquals(listOf(listOf(BlobHasItem(ours, BlobHasItem.HAVE, 2_003L))), a.answersFrom("h").map { it.items })
+            assertTrue(h.transport.linkDropped.isEmpty())
         }
 
     private companion object {

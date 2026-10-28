@@ -67,8 +67,9 @@ class BlobRepository(
 
     /**
      * Records proof, learnt over [plane] at [at] (our clock), that [holderId] holds the bytes of [hash] (ADR
-     * 2026-10.vy27). Only a short-range radio is proof — a board carries no blob, and the Internet is what the proof
-     * saves — so any other plane writes nothing. The first proof stands.
+     * 2026-10.vy27). Only a plane that [DeliveryPlane.provesHold] is proof — a short-range radio, or a contact's direct
+     * link (ADR 2026-10.a5yj): the recipient holds the bytes whichever of them carried them. A board carries no blob,
+     * and the spool is what the proof saves, so either writes nothing. The first proof stands.
      */
     suspend fun recordHolder(
         hash: String,
@@ -76,7 +77,7 @@ class BlobRepository(
         plane: DeliveryPlane,
         at: Long,
     ) {
-        if (plane.shortRange) holders.record(hash, holderId, plane.code, at)
+        if (plane.provesHold) holders.record(hash, holderId, plane.code, at)
     }
 
     /**
@@ -87,7 +88,7 @@ class BlobRepository(
         hash: String,
         me: String,
         peer: String,
-    ): Boolean = holders.heldInPair(hash, me, peer, DeliveryPlane.shortRangeCodes)
+    ): Boolean = holders.heldInPair(hash, me, peer, DeliveryPlane.provesHoldCodes)
 
     /**
      * Hash → byte length for the stored blobs among [hashes]; a hash not held is absent. The chat observes

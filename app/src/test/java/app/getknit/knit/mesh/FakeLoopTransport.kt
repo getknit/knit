@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.inet.LinkPairFilter
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -109,7 +110,21 @@ class FakeLoopTransport(
         to: Peer?,
     ) {
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
-        targets.forEach { it.deliver(wire, nodeId) }
+        targets.forEach { if (linkCarries(wire, it.nodeId)) it.deliver(wire, nodeId) else linkDropped += it.nodeId to wire }
+    }
+
+    /** Every frame a direct link of [internetOnly] dropped on the way out, as (peer, frame). */
+    val linkDropped = CopyOnWriteArrayList<Pair<String, WireEnvelope>>()
+
+    // A direct link's outbound rule for a blob control frame (L-7-2): every hash it names addressed to both ends.
+    private suspend fun linkCarries(
+        wire: WireEnvelope,
+        peer: String,
+    ): Boolean {
+        if (peer !in internetOnly) return true
+        val view = linkViews[peer] ?: return true
+        val hashes = WireCodec.decodeEnvelope(wire.signed)?.let { LinkPairFilter.blobHashes(it) } ?: return true
+        return hashes.all { view.admitsBlob(it) }
     }
 
     override suspend fun sendFile(
@@ -187,6 +202,22 @@ class FakeLoopTransport(
     override fun feedingLoad(nodeId: String): Int = feeding
 
     override fun slowLinkTo(nodeId: String): Boolean = nodeId in slowLinks
+
+    /**
+     * Peers a test declares linked over a contact's direct Internet link alone (ADR 2026-10.a5yj): never [radioLinked],
+     * a file to one rides the Internet ([fileRidesInternet]), and a blob control frame naming a hash its [linkViews]
+     * entry does not admit is dropped on the way out, as the link drops it.
+     */
+    val internetOnly = mutableSetOf<String>()
+
+    /** The [PairView] a test declares for the direct link to a peer ([pairView]). */
+    val linkViews = mutableMapOf<String, PairView>()
+
+    override fun radioLinked(nodeId: String): Boolean = nodeId in links && nodeId !in internetOnly
+
+    override fun fileRidesInternet(nodeId: String): Boolean = nodeId in internetOnly
+
+    override suspend fun pairView(nodeId: String): PairView? = linkViews[nodeId]?.takeIf { nodeId in links }
 
     override suspend fun sendDigest(
         to: Peer,

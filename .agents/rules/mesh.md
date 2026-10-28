@@ -280,6 +280,17 @@ free). Two invariants that are easy to break:
   tapped — Wi-Fi Aware only), so a swept or restarted want never asks over Bluetooth on a stale flag or stays held on one.
   It reads custody before the rows (js2p's 2026-10-19 amendment): custody's read loads a room post's declared size only
   while no row names the hash, so read after the rows it lost a row written between them, and the post went plain.
+- **A contact's direct link is a link to send on, never a radio, for blobs and custody too** (ADR 2026-10.a5yj's
+  custody-and-blobs amendment). Every blob and custody rule that means *near* — the carrier's pull deferral, a holder's
+  rank and plane tier — reads the radio set (`MeshTransport.radioLinked`), never `neighbors`. Proof of a hold is not
+  *near*: a file off a link, or a link peer's answer to the proof query, proves it as a radio's does
+  (`DeliveryPlane.provesHold`, the owner's call of 2026-10-27), and the query goes to a link's peer only for the hashes
+  its link carries. So the proof can spare the upload, a live link is the §9.5 deferral's sighting too
+  (`AttachmentDeferPolicy`'s `directLinked`), read live and never stamped into the radio window, so it ends with the
+  link. Anything answered to what crossed a link stays inside its rule (`MeshTransport.pairView`): a digest is
+  answered by the plane it crossed (`ReceivedDigest.via`), never by which plane holds the peer at reply time, and a link
+  round that would push the same frames against the same digest pushes nothing (`LinkPushRounds`). A link's peer is
+  queried and asked last, and only for blobs its link carries; its copy never parks behind a radio feed.
 - **Group-root minting is damped; group-root adoption is not** (`GroupRootPolicy`, spec §3.2). Several
   members minting version 1 at once is normal and self-healing — `(version, minter)` collapses the
   lineages. Refusing to *adopt* a strictly-greater root is the failure mode: the device keeps gossiping

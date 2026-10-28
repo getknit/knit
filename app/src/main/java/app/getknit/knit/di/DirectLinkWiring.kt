@@ -1,5 +1,6 @@
 package app.getknit.knit.di
 
+import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.settings.SettingsStore
@@ -8,9 +9,14 @@ import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshPause
+import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.SwitchableTransport
+import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.inet.LinkDatagrams
 import app.getknit.knit.mesh.inet.LinkPeers
+import app.getknit.knit.mesh.inet.MeshLinkScope
+import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.net.AndroidInternetGate
@@ -19,10 +25,13 @@ import app.getknit.knit.net.InternetGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.Module
 import org.koin.core.scope.Scope
 import org.koin.dsl.module
@@ -55,10 +64,44 @@ fun Scope.onLinkSignal(
     }
 }
 
+/**
+ * The composite's child for the links (`MeshModule`'s last): [DirectLinkTransport] behind a switch that holds it off
+ * while this phone's links are off or low-power mode is on. Only called where [DIRECT_LINKS_WIRED].
+ */
+fun Scope.directLinkPlane(): MeshTransport {
+    val off = combine(get<SettingsStore>().directLinksEnabled, get<LowPowerSource>().posture) { on, posture -> !on || posture.active }
+    return SwitchableTransport(get<DirectLinkTransport>(), off, get(), { msg -> Log.i(TAG, msg) })
+}
+
 @OptIn(ExperimentalCoroutinesApi::class) // flatMapLatest
 private fun directLinkGraph(): Module =
     module {
         single<LinkDatagrams> { AndroidLinkDatagrams(get<AndroidInternetGate>()) }
+        // The links' transport: each up link's stream, framed. Its use goes back to the links, resolved late.
+        single {
+            val identity = get<Identity>()
+            DirectLinkTransport(
+                selfId = { identity.nodeId() },
+                linkScope =
+                    MeshLinkScope(
+                        groups = get(),
+                        // The mesh resolved late, like [MeshLinkPeers]: its graph reaches the links through its hook.
+                        addressees = { hash -> getKoin().get<MeshManager>().blobAddressees(hash) },
+                        ownAvatar = { get<SettingsStore>().ownAvatarHash.first() },
+                        custody = get(),
+                        clock = System::currentTimeMillis,
+                    ),
+                scope = get(),
+                cacheDir = androidContext().cacheDir,
+                partials = get(),
+                metrics = get(),
+                now = SystemClock::elapsedRealtime,
+                onUse = { peer -> getKoin().getOrNull<DirectLinks>()?.noteUse(peer) },
+                // The mesh resolved late as above: a link adopted resets custody's push memo for its peer.
+                onLinkUp = { peer -> getKoin().getOrNull<MeshManager>()?.onDirectLinkUp(peer) },
+                log = { Log.d(TAG, it) },
+            )
+        }
         single {
             val settings = get<SettingsStore>()
             val scope = get<CoroutineScope>()
@@ -73,6 +116,9 @@ private fun directLinkGraph(): Module =
                     enabled = { on.value && MeshPause.activeDeadline(pausedUntil.value, System.currentTimeMillis()) == null },
                     scope = scope,
                     clock = System::currentTimeMillis,
+                    // Each up link's stream goes to the transport, the offerer writing the first HELLO.
+                    onStream = { peer, socket, offerer -> get<DirectLinkTransport>().adopt(peer, socket, offerer) },
+                    linkBusy = { peer -> get<DirectLinkTransport>().busy(peer) },
                     fieldLog = FieldRecorder { event -> get<FieldLog>().record(event) },
                     log = { Log.d(TAG, it) },
                 )

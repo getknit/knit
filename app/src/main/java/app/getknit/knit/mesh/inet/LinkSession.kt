@@ -30,12 +30,12 @@ import java.util.concurrent.atomic.AtomicLong
  * followed at once, and only an authenticated datagram can move it.
  *
  * **Liveness.** A link exists to move something, so it sends no keepalive: one that has carried no DATA either way
- * for [idleMs] closes with a BYE ([EndReason.IDLE]), well inside the shortest idle-path life measured (2–4 min behind a
- * home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive amendment), and one that hears nothing that opens for
- * [silenceMs] while it sends ends [EndReason.SILENT]. A **held** link ([hold]: a live session, such as a walkie, that
- * must outlast its pauses) does not idle out: it sends a keepalive after [holdKeepaliveMs] with nothing sent and ends
- * after [holdSilenceMs] hearing nothing. A BYE ends either at once. Every datagram is one [LinkLane] seal, so the
- * counter is shared by every path and nothing is ever sealed twice.
+ * (under a transport, no frame or file: [noteUse]) for [idleMs] closes with a BYE ([EndReason.IDLE]), well inside the
+ * shortest idle-path life measured (2–4 min behind a home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive
+ * amendment), and one that hears nothing that opens for [silenceMs] while it sends ends [EndReason.SILENT]. A **held**
+ * link ([hold]: a live session, such as a walkie, that must outlast its pauses) does not idle out: it sends a keepalive
+ * after [holdKeepaliveMs] with nothing sent and ends after [holdSilenceMs] hearing nothing. A BYE ends either at once.
+ * Every datagram is one [LinkLane] seal, so the counter is shared by every path and nothing is ever sealed twice.
  */
 class LinkSession(
     val peerId: String,
@@ -48,6 +48,13 @@ class LinkSession(
     private val silenceMs: Long = SILENCE_MS,
     private val holdKeepaliveMs: Long = HOLD_KEEPALIVE_MS,
     private val holdSilenceMs: Long = HOLD_SILENCE_MS,
+    // Whether every DATA datagram is use (the idle close counts from it, and [carriedData] reads it). False once a
+    // transport runs over the link's stream: its handshake, digests and acks are DATA too, so only [noteUse] — a frame or
+    // a file it moved — counts, and a link that only keeps itself in sync idles out.
+    private val dataIsUse: Boolean = true,
+    // Whether the transport over the link is moving a file now: a link mid-file is in use, though no frame crosses it for
+    // the file's whole length, so it never idles out under one.
+    private val busy: () -> Boolean = { false },
     onData: (ByteArray) -> Unit = {},
     private val random: java.util.Random = SecureRandom(),
 ) {
@@ -136,8 +143,18 @@ class LinkSession(
     /** Sends one data payload over the link; false when it is not up. */
     fun sendData(payload: ByteArray): Boolean {
         if (state.value != State.UP) return false
+        if (dataIsUse) lastData = clock()
+        return sendTo(endpoint, byteArrayOf(DATA) + payload).also { if (it && dataIsUse) carriedData = true }
+    }
+
+    /**
+     * Real traffic moved over the link, in either direction (a frame or a file a transport sent or took): the idle close
+     * counts from now, and the link carried data. What counts when [dataIsUse] is false.
+     */
+    fun noteUse() {
+        if (state.value != State.UP) return
         lastData = clock()
-        return sendTo(endpoint, byteArrayOf(DATA) + payload).also { if (it) carriedData = true }
+        carriedData = true
     }
 
     /**
@@ -189,6 +206,7 @@ class LinkSession(
                     if (now - lastSent >= holdKeepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
                     minOf(holdKeepaliveMs - (clock() - lastSent), holdSilenceMs - (clock() - lastHeard))
                 } else {
+                    if (busy()) lastData = now
                     if (now - lastData >= idleMs) return close(EndReason.IDLE)
                     if (now - lastHeard >= silenceMs) return close(EndReason.SILENT, sayBye = false)
                     minOf(idleMs - (now - lastData), silenceMs - (now - lastHeard))
@@ -229,8 +247,10 @@ class LinkSession(
 
             DATA -> {
                 if (_state.value == State.UP) {
-                    lastData = clock()
-                    carriedData = true
+                    if (dataIsUse) {
+                        lastData = clock()
+                        carriedData = true
+                    }
                     sink(plain.copyOfRange(1, plain.size))
                 }
             }

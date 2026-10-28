@@ -242,7 +242,14 @@ stateDiagram-v2
 ```
 
 The plane tiers, best first: fast link (Wi-Fi Aware linked), fast reach (Wi-Fi Aware reachable), Bluetooth link, slow
-link (Coded), sending, blind, held.
+link (Coded), internet link, sending, blind, held.
+
+**A contact's direct Internet link comes last** (ADR 2026-10.a5yj, the custody-and-blobs amendment). A neighbour that
+only such a link reaches is the last holder by plane and the last in the blind round, its author included: a radio's
+copy is free, the link's costs two data plans. It is queried and asked only for a picture whose conversation is
+addressed to both ends, which is all the link carries, and its copy to us never parks behind a Bluetooth feed. A copy
+it delivers, or its answer to the sender's proof query (asked for the pictures the link carries), proves the recipient
+holds the picture as a radio's would (ADR 2026-10.vy27), so a DM photo that crossed a link never goes up to a spool.
 
 **A large attachment is not fetched over Bluetooth until the user taps it** (ADR 2026-10.js2p). One its sender
 declared over the user's "Ask before large Bluetooth downloads" limit (1 MB by default) is wanted *fast-only*: the

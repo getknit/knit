@@ -29,7 +29,8 @@ import java.io.File
  * - [health]: Healthy if **any** child is Healthy (the node can still mesh if one radio works); otherwise
  *   ForegroundOnly if a plane is up but discovers only on screen (the API 29-32 location app-op, ADR
  *   2026-09.535d), else Degraded if any plane is on-but-failing (seized), else Unavailable when every plane
- *   is switched off/absent.
+ *   is switched off/absent. A plane that rides the Internet ([MeshTransport.viaInternet]) has no say: a contact's
+ *   live direct link must not hide radios the user turned off.
  * - [inbound]/[incomingFiles]/[incomingDigests]: merged. A frame that arrives over both planes is de-duped
  *   downstream by `MeshRouter`'s `SeenSet` (10-min TTL), so simultaneous multi-path delivery is safe and free.
  * - [send]: for a specific peer, route to the preferred child holding a live link to it; for a broadcast
@@ -109,11 +110,44 @@ class CompositeMeshTransport(
             }
         }
 
+    /**
+     * The merged [neighbors] restricted to **short-range** children: the peers a phone radio holds a live link to now,
+     * never a LoRa board's (it has none) or a contact's direct Internet link. What *a radio path to them* means — the
+     * walkie's label and route ([MeshManager.talkRadioPath]) and the hand-off credit of Your mesh — where [neighbors]
+     * is what *a link to send on* means.
+     */
+    val shortRangeNeighbors: StateFlow<Set<Peer>> =
+        run {
+            val shortRangeChildren = children.filter { it.shortRange }
+            when {
+                shortRangeChildren.isEmpty() -> {
+                    MutableStateFlow(emptySet())
+                }
+
+                shortRangeChildren.size == children.size -> {
+                    neighbors
+                }
+
+                else -> {
+                    combine(shortRangeChildren.map { it.neighbors }) { sets -> mergePeers(sets) }
+                        .stateIn(scope, SharingStarted.Eagerly, emptySet())
+                }
+            }
+        }
+
+    /** Whether a phone radio holds a live link to [nodeId] now ([shortRangeNeighbors]). */
+    fun shortRangeLinked(nodeId: String): Boolean = shortRangeNeighbors.value.any { it.nodeId == nodeId }
+
+    override fun radioLinked(nodeId: String): Boolean = shortRangeLinked(nodeId)
+
+    // The children whose health is the mesh's: every radio, never a plane that rides the Internet ([viaInternet]).
+    private val healthChildren = children.filterNot { it.viaInternet }
+
     override val health: StateFlow<TransportHealth> =
-        if (children.isEmpty()) {
+        if (healthChildren.isEmpty()) {
             MutableStateFlow(TransportHealth.Degraded)
         } else {
-            combine(children.map { it.health }) { hs ->
+            combine(healthChildren.map { it.health }) { hs ->
                 when {
                     // The node can still mesh if any radio is up.
                     hs.any { it == TransportHealth.Healthy } -> TransportHealth.Healthy
@@ -207,10 +241,10 @@ class CompositeMeshTransport(
         }
 
     override val incomingFiles: Flow<ReceivedFile> =
-        if (children.isEmpty()) emptyFlow() else children.map { it.incomingFiles }.merge()
+        if (children.isEmpty()) emptyFlow() else children.map { child -> child.incomingFiles.map { it.copy(via = child.kind) } }.merge()
 
     override val incomingDigests: Flow<ReceivedDigest> =
-        if (children.isEmpty()) emptyFlow() else children.map { it.incomingDigests }.merge()
+        if (children.isEmpty()) emptyFlow() else children.map { child -> child.incomingDigests.map { it.copy(via = child.kind) } }.merge()
 
     init {
         // Suppress the on-demand data-path sync in a lower-preference child for any peer a higher-preference
@@ -400,6 +434,10 @@ class CompositeMeshTransport(
 
     /** The link holder's answer: a frame, and a file off the high-throughput plane, ride its link. */
     override fun slowLinkTo(nodeId: String): Boolean = childHoldingLinkTo(nodeId)?.slowLinkTo(nodeId) ?: false
+
+    override suspend fun pairView(nodeId: String): PairView? = children.firstNotNullOfOrNull { it.pairView(nodeId) }
+
+    override fun fileRidesInternet(nodeId: String): Boolean = fileChildFor(nodeId)?.viaInternet ?: false
 
     /** The child an attachment to [nodeId] would go out on now: a live high-throughput link, else the link holder. */
     private fun fileChildFor(nodeId: String): MeshTransport? =

@@ -133,3 +133,14 @@ part and the sender restarts (`PhotoProofLabTest`); with only the ack it goes up
 (`InternetPlaneLabTest.aPhotoTheRadioCarriedIsNotUploadedUntilThePeersPart`). `spoolAttachProved`
 counts every pass that settles on a proof, in Diagnostics and the `SPOOL` bridge, so a skipped upload never reads like a
 broken one.
+
+## Amendment 2026-10-27 — a contact's direct link proves too
+
+Status: stands (2026-10-27); the owner's call, recorded in ADR 2026-10.a5yj's custody-and-blobs amendment.
+
+"Learnt over a short-range radio, and only that" now reads: over a phone-to-phone path that carries the bytes, a radio
+or a contact's direct Internet link between the pair (`DeliveryPlane.provesHold`). The recipient holds the bytes
+whichever carried them, and refusing the proof cost the author's spool upload of every DM photo sent over a link. A
+file off a link writes the recipient's record under `DeliveryPlane.DirectLink`, and the author's holder query goes over
+a link for the hashes the link carries, its answer recorded under the plane it crossed. LoRa and the spool still never
+prove. Spec: `docs/SPOOL_PROTOCOL.md` C-9.5-8 and §10.4, `docs/DIRECT_LINKS.md` L-7-6.

@@ -151,6 +151,7 @@ object HudLine {
             TransportKind.WifiAware -> "NAN"
             TransportKind.LoRa -> "LoRa"
             TransportKind.Other -> "other"
+            TransportKind.DirectLink -> "link"
         }
 
     /** A plane's word on the line: why it carries nothing when it does not, else linked/nearby (`!` when degraded). */

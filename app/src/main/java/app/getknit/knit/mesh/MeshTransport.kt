@@ -44,9 +44,10 @@ enum class TransportHealth { Healthy, ForegroundOnly, Degraded, Unavailable }
  * Diagnostics screen can attribute a peer/count to Bluetooth vs Wi-Fi Aware vs LoRa, and stamps it on every
  * [InboundFrame] it merges ([InboundFrame.kind]) so the delivery path can record which plane a frame arrived
  * on (`DeliveryPlane` — a presentation fact only; carry, relay and convergence never read it, ADR 019/040).
- * [Other] is the default for fakes / the demo transport, which have no real radio.
+ * [Other] is the default for fakes / the demo transport, which have no real radio. [DirectLink] is no radio at all:
+ * a contact's direct Internet link (`mesh/inet/DirectLinkTransport`, ADR 2026-10.a5yj), never nearby, never met.
  */
-enum class TransportKind { Bluetooth, WifiAware, LoRa, Other }
+enum class TransportKind { Bluetooth, WifiAware, LoRa, Other, DirectLink }
 
 /**
  * A per-radio status line for the Diagnostics screen, produced by [CompositeMeshTransport.statuses]. [linked]
@@ -161,6 +162,9 @@ data class ReceivedFile(
     val key: String,
     val mime: String,
     val resumedFrom: Long = 0,
+    // The plane the bytes crossed, stamped by the composite as on [InboundFrame.kind]: a file off a contact's direct
+    // link writes its proof of a hold under that link's plane (`MeshManager.watchIncomingFiles`, ADR 2026-10.a5yj).
+    val via: TransportKind = TransportKind.Other,
 )
 
 /**
@@ -225,7 +229,21 @@ fun Iterable<ArrivingFile>.furthestByKey(): Map<String, ArrivingFile> =
 data class ReceivedDigest(
     val fromNodeId: String,
     val ids: List<String>,
+    // The plane the digest crossed, stamped by the composite: the answer to one off a contact's direct link is filtered
+    // by that link's [PairView], whatever the radios hold by the time it is answered.
+    val via: TransportKind = TransportKind.Other,
 )
+
+/**
+ * What a contact's direct link may carry to and from one peer, as one snapshot of its rule (`mesh/inet/LinkPairFilter`,
+ * ADR 2026-10.a5yj): so a digest, the frames pushed against it and the link's own drops agree. [admits] is a frame's
+ * verdict (a blob control frame is never admitted by it); [admitsBlob] is a blob's, by its conversation's addressees.
+ */
+interface PairView {
+    fun admits(env: RelayEnvelope): Boolean
+
+    suspend fun admitsBlob(hash: String): Boolean
+}
 
 /**
  * Abstraction over the radio layer that discovers neighbors and exchanges [WireEnvelope] frames with
@@ -304,6 +322,14 @@ interface MeshTransport {
      * from [kind] (which never steers routing). Default true — only a long-range transport overrides it.
      */
     val shortRange: Boolean get() = true
+
+    /**
+     * Whether this plane rides the Internet rather than a radio — a contact's direct link (ADR 2026-10.a5yj). Such a
+     * plane is never what the "radios off" header or the mesh's health speaks for: [CompositeMeshTransport] leaves it out
+     * of [health], so a live link never hides radios the user turned off, and out of its short-range sets with
+     * [shortRange] false. Default false.
+     */
+    val viaInternet: Boolean get() = false
 
     /**
      * Whether this transport currently believes its radio is contended by another user of the same radio —
@@ -474,6 +500,26 @@ interface MeshTransport {
      * [expectBulkTransfer]: a transport whose links never idle out has nothing to hold.
      */
     fun holdLink(nodeId: String): Boolean = expectBulkTransfer(nodeId)
+
+    /**
+     * The [PairView] of the contact's direct link to [nodeId] while one is up, else null: what custody and the blob
+     * exchange filter by when they answer a digest or an ask that crossed that link (ADR 2026-10.a5yj). Default null:
+     * only the link plane has one.
+     */
+    suspend fun pairView(nodeId: String): PairView? = null
+
+    /**
+     * Whether a phone radio holds a live link to [nodeId] now — never a contact's direct Internet link: what *near*, *a
+     * radio path* and *proof a radio carried it* mean, where [neighbors] means *a link to send on*. Default: [neighbors],
+     * for a transport (a single radio, a fake) that has no other kind of link.
+     */
+    fun radioLinked(nodeId: String): Boolean = neighbors.value.any { it.nodeId == nodeId }
+
+    /**
+     * Whether a file to [nodeId] would go out over a plane that rides the Internet ([viaInternet]): such a copy shares no
+     * radio's pace budget, so it never parks behind a radio feed. Default false.
+     */
+    fun fileRidesInternet(nodeId: String): Boolean = false
 
     /**
      * How a file from [nodeId] would most likely reach us: over a live high-throughput link, over one such a plane

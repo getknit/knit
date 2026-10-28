@@ -118,7 +118,11 @@ class DirectLinks(
     private val scope: CoroutineScope,
     private val clock: () -> Long,
     private val streams: LinkStream = LinkStream.arq(scope, clock),
-    private val onStream: ((peerId: String, socket: LinkSocket) -> Unit)? = null,
+    // What takes each link's stream once the link is up — the transport that runs `FramedLink` over it, told whether
+    // this end offered (it writes the first HELLO). Null (Phase 0), the stream is drained here and every DATA is use.
+    private val onStream: ((peerId: String, socket: LinkSocket, offerer: Boolean) -> Unit)? = null,
+    // Whether that transport is moving a file over the link to a peer now: a link mid-file never idles out.
+    private val linkBusy: (peerId: String) -> Boolean = { false },
     private val fieldLog: FieldRecorder = FieldRecorder { },
     private val log: (String) -> Unit = {},
     private val random: java.util.Random = SecureRandom(),
@@ -244,6 +248,8 @@ class DirectLinks(
         peerId: String,
         bytes: Int,
     ): Boolean {
+        // Never under a transport: noise written into its stream would break the framing it reads.
+        if (onStream != null) return false
         val arq = sockets[peerId] as? LinkArq ?: return false
         if (measuring) return false
         measuring = true
@@ -367,6 +373,11 @@ class DirectLinks(
         return true
     }
 
+    /** A frame or a file moved over the link to [peerId] (its transport says so): the link is in use. */
+    fun noteUse(peerId: String) {
+        links.value[peerId]?.noteUse()
+    }
+
     /** Closes the link to [peerId], if one is up, with a BYE. */
     fun close(peerId: String) {
         links.value[peerId]?.close()
@@ -441,11 +452,24 @@ class DirectLinks(
         val lane = LinkLane(send, recv, LinkLane.aad(linkId, selfId(), peerId))
         send.fill(0)
         recv.fill(0)
+        // Under a transport only its frames and files are use ([noteUse]); drained here, every DATA is.
+        val dataIsUse = onStream == null
         val session =
             if (quiet) {
-                LinkSession(peerId, port, lane, targets, scope, clock, idleMs = FOREVER_MS, silenceMs = FOREVER_MS)
+                LinkSession(
+                    peerId,
+                    port,
+                    lane,
+                    targets,
+                    scope,
+                    clock,
+                    idleMs = FOREVER_MS,
+                    silenceMs = FOREVER_MS,
+                    dataIsUse = dataIsUse,
+                    busy = { linkBusy(peerId) },
+                )
             } else {
-                LinkSession(peerId, port, lane, targets, scope, clock)
+                LinkSession(peerId, port, lane, targets, scope, clock, dataIsUse = dataIsUse, busy = { linkBusy(peerId) })
             }
         // Before the session starts, so nothing the peer sends once the path is up is missed.
         return session to streams.open(session)
@@ -491,7 +515,7 @@ class DirectLinks(
         val upAt = clock()
         sockets[peerId] = socket
         _links.update { it + (peerId to session) }
-        onStream?.invoke(peerId, socket) ?: drain(peerId, socket)
+        onStream?.invoke(peerId, socket, offerer) ?: drain(peerId, socket)
         scope.launch {
             session.state.first { it == LinkSession.State.CLOSED }
             sockets.remove(peerId, socket)

@@ -10,10 +10,13 @@ import app.getknit.knit.mesh.ForwardSync
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -44,6 +47,7 @@ import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
 
+@Suppress("LargeClass") // one sync's whole contract: carry, digest, serve order, keys and the direct link's rounds
 @OptIn(ExperimentalCoroutinesApi::class)
 class ForwardSyncTest {
     /** In-memory [ForwardStore]; TTL/order mirror the real repository closely enough for the sync logic. */
@@ -113,6 +117,12 @@ class ForwardSyncTest {
     private class RecordingTransport : MeshTransport {
         val sent = mutableListOf<Pair<WireEnvelope, Peer?>>()
         val digestsSent = mutableListOf<Pair<Peer, List<String>>>()
+
+        // The direct link's view per peer ([pairView]): none, no link up.
+        val views = mutableMapOf<String, PairView>()
+
+        override suspend fun pairView(nodeId: String): PairView? = views[nodeId]
+
         override val neighbors = MutableStateFlow<Set<Peer>>(emptySet()).asStateFlow()
         override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
         override val inbound = MutableSharedFlow<InboundFrame>().asSharedFlow()
@@ -1104,5 +1114,128 @@ class ForwardSyncTest {
             assertEquals("c receives the carried DM", listOf(frameIdOf("dm1")), c.delivered)
             assertTrue("c pulls the custodied image from the carrier b (the sender is gone)", c.blobStore.has("H"))
             assertArrayEquals("and the bytes are intact", bytes, c.blobStore.fileFor("H")!!.readBytes())
+        }
+
+    /**
+     * A direct link's view that admits the frames of the senders in [senders], and the profiles of those in [profiles]
+     * (ADR 2026-10.a5yj).
+     */
+    private class SendersView(
+        private val senders: Set<String>,
+        private val profiles: Set<String> = senders,
+    ) : PairView {
+        override fun admits(env: RelayEnvelope): Boolean = env.senderId in if (env.type == FrameType.PROFILE) profiles else senders
+
+        override suspend fun admitsBlob(hash: String): Boolean = false
+    }
+
+    /**
+     * A digest that crossed a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj): only the
+     * frames its view admits go out, and only those are reported served — the peer's digest was filtered by the same
+     * rule, so an unfiltered answer pushed everything outside it as a gap.
+     */
+    @Test
+    fun aDigestOffADirectLinkIsAnsweredWithTheFramesTheLinkAdmits() =
+        runTest {
+            val transport = RecordingTransport()
+            val served = mutableListOf<String>()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L }, onServed = { env, _ -> served += env.id })
+            listOf(post("r1", "a"), post("r2", "b")).forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            transport.views["z"] = SendersView(setOf("a"))
+
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+
+            assertEquals(listOf("r1"), transport.sent.map { it.first.frameId() })
+            assertEquals(listOf("r1"), served)
+        }
+
+    /** The link went between the digest and its answer: no view, nothing sent — never the unfiltered set. */
+    @Test
+    fun aDigestOffADirectLinkThatIsGoneIsAnsweredWithNothing() =
+        runTest {
+            val transport = RecordingTransport()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+            post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+
+            assertTrue(transport.sent.isEmpty())
+        }
+
+    /**
+     * The plane the digest crossed decides, never which plane holds the peer at reply time: a radio's digest is answered
+     * in full even while a direct link to the same peer is up.
+     */
+    @Test
+    fun aRadioDigestIsAnsweredInFullWhateverLinkTheyAlsoHold() =
+        runTest {
+            val transport = RecordingTransport()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+            listOf(post("r1", "a"), post("r2", "b")).forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            transport.views["z"] = SendersView(emptySet())
+
+            sync.onDigest("z", emptyList(), TransportKind.Bluetooth)
+
+            assertEquals(setOf("r1", "r2"), transport.sent.map { it.first.frameId() }.toSet())
+        }
+
+    /** A key goes over a direct link only for a sender whose profile the link would carry (ADR 2026-09.g64k, a5yj). */
+    @Test
+    fun aDirectLinksAnswerServesAKeyOnlyForASenderWhoseProfileTheLinkCarries() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "a"), post("s1", "b"))
+            k.transport.views["z"] = SendersView(senders = setOf("a", "b"), profiles = setOf("a"))
+
+            k.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+
+            assertEquals(listOf(Triple("a", "z", 0)), k.keys)
+            assertEquals(
+                setOf("r1", "s1"),
+                k.transport.sent
+                    .map { it.first.frameId() }
+                    .toSet(),
+            )
+        }
+
+    /**
+     * Two filtered views can differ for good (a full quota, the global cap, a frame dead on arrival, a tombstone): a
+     * round that would push the same frames against the same digest pushes nothing, so a link that only keeps itself in
+     * sync idles out. Either set changing, the peer linking again, or the receiver's seen window passing pushes again.
+     */
+    @Test
+    fun aDirectLinksUnchangedRoundPushesNothingUntilSomethingMoves() =
+        runTest {
+            val transport = RecordingTransport()
+            var now = 0L
+            val sync = ForwardSync(transport, FakeForwardStore(ttlMs = 60 * 60_000L), clock = { now })
+            post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            transport.views["z"] = SendersView(setOf("a", "b"))
+            val pushes = { transport.sent.count { it.first.frameId() == "r1" } }
+
+            sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
+            sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
+            assertEquals("the same round again pushes nothing", 1, pushes())
+
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("their digest moved", 2, pushes())
+
+            post("r2", "b").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("ours moved", 3, pushes())
+
+            sync.linked(listOf("z"))
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("linked again: a push may have died with the old link", 4, pushes())
+
+            now += SeenSet.DEFAULT_TTL_MS - 1
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals(4, pushes())
+            now += 1
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals("past the receiver's seen window", 5, pushes())
+
+            sync.onDigest("z", listOf("x", "y"))
+            assertEquals("a radio's digest is never held back", 6, pushes())
         }
 }

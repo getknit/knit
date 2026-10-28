@@ -67,6 +67,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.quoteHasAttachment
 import app.getknit.knit.data.message.quoteSnippet
+import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.photoFitBytes
@@ -111,6 +112,7 @@ import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.scope.SpoolPow
 import app.getknit.knit.mesh.indirectPeers
+import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.link.FeedWindow
 import app.getknit.knit.mesh.link.LinkFraming
@@ -1288,6 +1290,9 @@ class DebugBridgeReceiver :
                     .put("styles", m.styles ?: JSONObject.NULL)
                     .put("sentAt", m.sentAt)
                     .put("received", m.received)
+                    // The plane it arrived over, or that our own message's delivery tick did (`receivedVia`):
+                    // `DirectLink` is a contact's direct Internet link (ADR 2026-10.a5yj).
+                    .put("via", m.receivedPlane.name)
                     .put("reactions", rx)
                     .put("replyToId", m.replyToId ?: JSONObject.NULL)
                     .put("replyToAuthor", m.replyToAuthor ?: JSONObject.NULL)
@@ -1937,9 +1942,17 @@ class DebugBridgeReceiver :
                     .put("timeouts", b.timeouts)
                     .put("spurious", b.spurious)
             } ?: JSONObject.NULL
+        // The link plane of the mesh (Phase 1): which peers' streams it adopted, and how many frames its pair rule refused.
+        val plane =
+            getKoin().getOrNull<DirectLinkTransport>()?.let { t ->
+                JSONObject()
+                    .put("adopted", JSONArray(t.neighbors.value.map { it.nodeId }))
+                    .put("refused", t.refused.get())
+            } ?: JSONObject.NULL
         return reply
             .put("enabled", settings.directLinksEnabled.first())
             .put("quiet", links.quiet)
+            .put("plane", plane)
             .put("links", up)
             .put("tries", tries)
             .put("gaps", gapJson)

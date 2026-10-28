@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
@@ -97,6 +98,14 @@ import kotlin.coroutines.cancellation.CancellationException
  * is that recipient's own HAVE: [confirmHeld] sends it the same holder query, and the answer to it reaches [onPeerHolds]
  * and nothing else. It asks, serves, wants and stamps nothing.
  *
+ * **A contact's direct Internet link (ADR 2026-10.a5yj).** A neighbour only such a link reaches ([MeshTransport.radioLinked]
+ * false) is the last holder asked, by rank and by plane ([Rank.Internet], [Tier.Internet]), so a free radio copy goes
+ * first; it is queried and asked only for a blob whose conversation is addressed to both ends ([reachingFor]), since the
+ * link drops every other control frame unanswered; and its own copy never parks behind a radio feed ([ridesSharedBudget]).
+ * It is sent a proof query ([confirmHeld]) on the same terms, and its answer proves a hold as a radio neighbour's does
+ * ([DeliveryPlane.provesHold], the owner's call of 2026-10-27): proof is who holds, never who is asked first, so a link's
+ * peer still ranks last for the bytes.
+ *
  * A transfer a link drop cut off resumes rather than restarts (work item #116, ADR 2026-10.wtyc): the link keeps
  * the prefix in [PartialBlobs], every ask names its length as the `blobreq` offset, a holder streams only the
  * rest ([onRequest]), and a spliced file that fails its hash check drops the prefix and asks from byte 0
@@ -155,9 +164,10 @@ class BlobExchange(
     private val addressees: suspend (hash: String) -> Set<String>? = { null },
     // Injected logger (the class stays Android-free): DI passes android.util.Log; tests default silent.
     private val log: (String) -> Unit = {},
-    // [peer] said, over a short-range link and in answer to a proof query of ours ([confirmHeld]), that it holds [hash]
-    // whole: the sender's end of the spool deferral's proof (docs/SPOOL_PROTOCOL.md §9.5, ADR 2026-10.vy27).
-    private val onPeerHolds: suspend (hash: String, peer: String) -> Unit = { _, _ -> },
+    // [peer] said, over [plane] — a phone radio or a contact's direct link ([DeliveryPlane.provesHold]) — and in answer
+    // to a proof query of ours ([confirmHeld]), that it holds [hash] whole: the sender's end of the spool deferral's
+    // proof (docs/SPOOL_PROTOCOL.md §9.5, ADR 2026-10.vy27, a5yj).
+    private val onPeerHolds: suspend (hash: String, peer: String, plane: DeliveryPlane) -> Unit = { _, _, _ -> },
 ) {
     /**
      * Whether this node queries capable neighbours before it asks ([enabled]), how long it waits for their answers, and
@@ -472,7 +482,8 @@ class BlobExchange(
         val kept = partials.length(hash)
         // A marked holder is not a holder for this want: gone, as far as it is concerned, so an ask on it fails over.
         val pool = if (passed.isEmpty()) linked else linked.filterNot { it.id in passed }
-        val plan = synchronized(lock) { fetching[hash]?.let { decideMarking(it, pool, kept) }?.also { queue(hash, it) } } ?: return
+        val reach = reachingFor(hash, pool)
+        val plan = synchronized(lock) { fetching[hash]?.let { decideMarking(it, reach, kept) }?.also { queue(hash, it) } } ?: return
         if (plan.asks.isNotEmpty()) {
             val req = blobRequest(selfId(), hash, plan.fastOnly, plan.pull, plan.until)
             for (ask in plan.asks) {
@@ -1139,6 +1150,7 @@ class BlobExchange(
     /** The best plane [c] could offer a copy over, before it has said what it holds: [tierOf] with the largest blob. */
     private fun bestTierFor(c: Candidate): Tier =
         when {
+            !c.radio -> Tier.Internet
             c.route == BulkRoute.Linked -> Tier.FastLink
             c.route == BulkRoute.Reachable -> Tier.FastArm
             !c.slow && !c.streaming -> Tier.Link
@@ -1158,7 +1170,8 @@ class BlobExchange(
     /**
      * The plane a holder's copy would come over, best first: a live Wi-Fi Aware link, one we can raise for a blob big
      * enough to be worth it (what is left of it past our kept prefix, against the composite's own arm gate), a
-     * full-speed Bluetooth link with nothing streaming to us, then a slow (Coded) or busy one.
+     * full-speed Bluetooth link with nothing streaming to us, then a slow (Coded) or busy one, and last a contact's direct
+     * Internet link, which no radio holds (ADR 2026-10.a5yj): its copy costs the pair's data plans, a radio's nothing.
      */
     private fun tierOf(
         w: Want,
@@ -1169,6 +1182,7 @@ class BlobExchange(
         // A fast-only copy is one the holder raises the link for whatever its size (ADR 2026-10.js2p).
         val large = w.fastOnly || (left != null && left >= CompositeMeshTransport.BULK_MIN_BYTES)
         return when {
+            !c.radio -> Tier.Internet
             c.route == BulkRoute.Linked -> Tier.FastLink
             c.route == BulkRoute.Reachable && large -> Tier.FastArm
             !c.slow && !c.streaming -> Tier.Link
@@ -1218,7 +1232,10 @@ class BlobExchange(
         want: Want,
         c: Candidate,
     ): Rank =
+        // A contact's direct link rides the Internet, cellular data as often as not: a free radio neighbour goes first,
+        // whoever the link's peer is (ADR 2026-10.a5yj).
         when {
+            !c.radio -> Rank.Internet
             c.id == want.author -> Rank.Author
             c.route == BulkRoute.Linked -> Rank.FastLink
             c.route == BulkRoute.Reachable -> Rank.FastReach
@@ -1258,7 +1275,7 @@ class BlobExchange(
 
     /**
      * The linked neighbours as a step reads them: each one's plane for a file, whether it is streaming to us, whether
-     * its link says it answers a query, and whether that link is a slow one.
+     * its link says it answers a query, whether that link is a slow one, and whether a phone radio holds it at all.
      */
     private fun linkedNow(): List<Candidate> =
         transport.neighbors.value.map {
@@ -1269,8 +1286,38 @@ class BlobExchange(
                 capable = it.capabilities and Protocol.CAP_BLOB_HAVE != 0L,
                 slow = transport.slowLinkTo(it.nodeId),
                 streamLeftMs = transport.fileArrivingEtaMs(it.nodeId),
+                radio = transport.radioLinked(it.nodeId),
             )
         }
+
+    /**
+     * [linked] less the neighbours that only a contact's direct link reaches and whose link would not carry a frame
+     * naming [hash] (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-7-2): a link takes a blob's control frames only when
+     * the blob's conversation is addressed to both ends, and drops the rest where it is, with no answer — so a query
+     * or an ask of such a neighbour never left, and a step that waited on it would wait out a grace for nothing.
+     *
+     * The verdict is this phone's rows ([PairView.admitsBlob]): a hash whose message row is not written yet (custody
+     * wants a blob before the pipeline writes the row, or the frame is still parked for a key) is not asked over the
+     * link this round, and the next step after the row lands — the tick, an answer, a link-up — asks it. One round, never
+     * a strand: the database re-arm re-reads the rows every tick.
+     */
+    private suspend fun reachingFor(
+        hash: String,
+        linked: List<Candidate>,
+    ): List<Candidate> {
+        if (linked.all { it.radio }) return linked
+        return linked.filter { it.radio || reaches(it.id, hash) }
+    }
+
+    /**
+     * Whether a blob control frame naming [hash] reaches [peer]: always over a phone radio, and over a contact's direct
+     * link only when the link's view admits the blob ([PairView.admitsBlob]). With neither a radio nor a link view the
+     * frame goes nowhere whatever this says, and the step after it finds the link gone.
+     */
+    private suspend fun reaches(
+        peer: String,
+        hash: String,
+    ): Boolean = transport.radioLinked(peer) || transport.pairView(peer)?.admitsBlob(hash) ?: true
 
     /**
      * Steps [hash] again after [ms]: when an ask's grace is up, answers are due, or a holder's stream may have ended.
@@ -1402,18 +1449,16 @@ class BlobExchange(
         queryId: String,
     ) {
         try {
-            val asked =
-                hashes
-                    .asSequence()
-                    .filter { it.isNotEmpty() && it.length <= MAX_HASH_CHARS }
-                    .distinct()
-                    .take(MAX_QUERY_HASHES)
-                    .toList()
-            if (asked.isEmpty()) return
+            val named = queriedOf(hashes)
+            if (named.isEmpty()) return
             if (!admitQuery(from)) {
                 onEvent(BlobEvent.QueryRefused)
                 return
             }
+            // Over a contact's direct link the answer names only what that link carries (L-7-2): one hash outside it
+            // and the link would drop the whole answer. The rest go unanswered, which the asker reads as silence.
+            val asked = named.filter { reaches(from, it) }
+            if (asked.isEmpty()) return
             val sending = asked.filterTo(HashSet()) { transport.fileInFlightTo(from, it) || memoHolds(it, from) || isParked(it, from) }
             val arriving = transport.arrivingFiles().keys
             val storing = asked.filterTo(HashSet()) { store.storing(it) }
@@ -1442,22 +1487,32 @@ class BlobExchange(
         }
     }
 
+    /** The hashes of a query [onHaveQuery] answers: well-formed, distinct, at most [MAX_QUERY_HASHES]. */
+    private fun queriedOf(hashes: List<String>): List<String> =
+        hashes
+            .asSequence()
+            .filter { it.isNotEmpty() && it.length <= MAX_HASH_CHARS }
+            .distinct()
+            .take(MAX_QUERY_HASHES)
+            .toList()
+
     /**
      * [from] answered a query of ours ([FrameType.BLOB_HAS]). Only a hash we still want, from a neighbour queried for it
      * this cycle, and named by the query the answer names, counts; an answer to a query older than the latest one sent
      * that neighbour for it is stale. Every hash answered takes its next step at once, so a late answer still counts.
      *
-     * An answer to a proof query ([confirmHeld]) is that query's alone: it steps no want ([takeProof]). [shortRange] is
-     * whether it came in on a phone-to-phone link (not LoRa, not a spool); only such an answer proves a hold.
+     * An answer to a proof query ([confirmHeld]) is that query's alone: it steps no want ([takeProof]). [plane] is the
+     * plane it came in on; only one that [DeliveryPlane.provesHold] — a phone radio or a contact's direct link, never
+     * LoRa or a spool — proves a hold (ADR 2026-10.vy27, a5yj).
      */
     suspend fun onHaveAnswer(
         content: BlobHasContent,
         from: String,
-        shortRange: Boolean = true,
+        plane: DeliveryPlane = DeliveryPlane.Nearby,
     ) {
-        val proof = synchronized(lock) { takeProof(content, from, shortRange) }
+        val proof = synchronized(lock) { takeProof(content, from, plane) }
         if (proof != null) {
-            onProofAnswer(proof, content, from)
+            onProofAnswer(proof, content, from, plane)
             return
         }
         val t = now()
@@ -1490,12 +1545,15 @@ class BlobExchange(
      * bytes that were hash-checked and screened before they were held. What we enqueued, the link's feed end and a
      * `blobprog`'s `held` are byte counts and prove nothing of the kind; a message ack less still.
      *
-     * Sent only to a live short-range link — a neighbour ([MeshTransport.neighbors]; a board's set is always empty) whose
-     * link carries [Protocol.CAP_BLOB_HAVE] — and at most once per (hash, peer) per [PROOF_FLOOR_MS], just under the
-     * caller's re-ask cadence, so calling it every deferred round costs one frame a round per peer at most; pass a round's hashes
-     * for one peer together and they share it. A proof query is not an ask, and not a want's query: it creates or steps
-     * no want, stamps no serve memo, parks nothing, and its answer goes to [onPeerHolds] alone ([onHaveAnswer]). No
-     * answer is no proof — a neighbour without the bit or a silent one leaves the caller's own deadline to decide.
+     * Sent only to a live link whose answer can prove a hold — a neighbour a phone radio holds
+     * ([MeshTransport.radioLinked]; never a board, which holds no link), or one a contact's direct link reaches, for
+     * the hashes that link carries ([PairView.admitsBlob], ADR 2026-10.a5yj: the link drops a whole control frame naming
+     * one it does not, and the caller's proof round would wait out its answer for nothing) — whose link carries
+     * [Protocol.CAP_BLOB_HAVE], and at most once per (hash, peer) per [PROOF_FLOOR_MS], just under the caller's re-ask
+     * cadence, so calling it every deferred round costs one frame a round per peer at most; pass a round's hashes for one
+     * peer together and they share it. A proof query is not an ask, and not a want's query: it creates or steps no want,
+     * stamps no serve memo, parks nothing, and its answer goes to [onPeerHolds] alone ([onHaveAnswer]). No answer is no
+     * proof — a neighbour without the bit or a silent one leaves the caller's own deadline to decide.
      */
     suspend fun confirmHeld(
         hashes: Collection<String>,
@@ -1503,16 +1561,15 @@ class BlobExchange(
     ) {
         val link = transport.neighbors.value.firstOrNull { it.nodeId == peer } ?: return
         if (link.capabilities and Protocol.CAP_BLOB_HAVE == 0L) return
+        val asked = carriedTo(peer, hashes) ?: return
         val t = now()
         // Chosen and stamped under one lock, so two rounds racing never send the same proof query twice.
         val batches =
             synchronized(lock) {
                 proofAsked.entries.removeAll { t - it.value >= PROOF_FLOOR_MS }
                 proofQueries.entries.removeAll { t - it.value.at >= CYCLE_MS }
-                hashes
+                asked
                     .asSequence()
-                    .filter { it.isNotEmpty() && it.length <= MAX_HASH_CHARS }
-                    .distinct()
                     .filter { "$it|$peer" !in proofAsked }
                     .toList()
                     .chunked(MAX_QUERY_HASHES)
@@ -1546,19 +1603,34 @@ class BlobExchange(
     }
 
     /**
+     * [hashes], well-formed and distinct, that a proof query to [peer] can carry: all of them over a phone radio; over a
+     * contact's direct link only those its view admits ([PairView.admitsBlob]), since the link drops a whole control
+     * frame naming one it does not carry. Null when nothing could reach [peer] — no radio and no link view (a board).
+     */
+    private suspend fun carriedTo(
+        peer: String,
+        hashes: Collection<String>,
+    ): List<String>? {
+        val wellFormed = hashes.filter { it.isNotEmpty() && it.length <= MAX_HASH_CHARS }.distinct()
+        if (transport.radioLinked(peer)) return wellFormed
+        val view = transport.pairView(peer) ?: return null
+        return wellFormed.filter { view.admitsBlob(it) }
+    }
+
+    /**
      * The items of [content] that answer a proof query of ours ([confirmHeld]), each taken off that query so it counts once;
      * null when its `re` names no proof query (a want's answer, [recordAnswers]). Empty when it names one but proves
-     * nothing: another peer's answer to it, one that came in on no short-range link, or hashes that query did not ask or
-     * that were answered already. Under [lock].
+     * nothing: another peer's answer to it, one that came in on a plane that proves no hold (LoRa, a spool), or hashes
+     * that query did not ask or that were answered already. Under [lock].
      */
     private fun takeProof(
         content: BlobHasContent,
         from: String,
-        shortRange: Boolean,
+        plane: DeliveryPlane,
     ): List<BlobHasItem>? {
         val re = content.re ?: return null
         val q = proofQueries[re] ?: return null
-        if (q.peer != from || !shortRange) return emptyList()
+        if (q.peer != from || !plane.provesHold) return emptyList()
         val taken = content.items.take(MAX_QUERY_HASHES).filter { q.open.remove(it.hash) }
         if (q.open.isEmpty()) proofQueries.remove(re)
         return taken
@@ -1569,6 +1641,7 @@ class BlobExchange(
         items: List<BlobHasItem>,
         content: BlobHasContent,
         from: String,
+        plane: DeliveryPlane,
     ) {
         if (items.isEmpty()) {
             onEvent(BlobEvent.AnswerIgnored)
@@ -1580,7 +1653,7 @@ class BlobExchange(
         // An unknown state is never HAVE (ADR 2026-10.6e5t); FETCHING is bytes still on their way in, unchecked.
         for ((hash) in items.filter { it.state in HELD }) {
             try {
-                onPeerHolds(hash, from)
+                onPeerHolds(hash, from, plane)
                 onEvent(BlobEvent.ProofHeld)
             } catch (e: CancellationException) {
                 throw e
@@ -1750,6 +1823,14 @@ class BlobExchange(
         until: Long? = null,
     ) {
         val peer = Peer(fromNodeId)
+        // An asker only a contact's direct link reaches, for a blob that link does not carry (L-7-2, ADR 2026-10.a5yj):
+        // the link refuses the file, so neither serve it nor echo it — an echo would spend our radios fetching bytes
+        // nothing can hand on. The rule [onHaveQuery] answers by; refused before the store is read, no memo stamped.
+        if (!reaches(fromNodeId, hash)) {
+            onEvent(BlobEvent.LinkRefused)
+            log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: not carried by its direct link")
+            return
+        }
         // Nothing reaches it over Wi-Fi Aware: refuse before the store is read, and stamp no memo, so a SENDING answer
         // never covers a copy that went nowhere and its next ask, once a route is up, is served at once.
         if (fastOnly && transport.bulkRouteTo(fromNodeId) == BulkRoute.None) {
@@ -1850,10 +1931,26 @@ class BlobExchange(
 
     /**
      * Whether a copy of [bytes] to [asker] would ride a Bluetooth link whose feeds share the budget: not a live Wi-Fi
-     * Aware link, not one the composite raises for a large blob ([CompositeMeshTransport.BULK_MIN_BYTES]), and not a
-     * Coded link, whose pace sits outside the split.
+     * Aware link, not one the composite raises for a large blob ([CompositeMeshTransport.BULK_MIN_BYTES]), not a
+     * Coded link, whose pace sits outside the split, and not a contact's direct Internet link
+     * ([MeshTransport.fileRidesInternet], ADR 2026-10.a5yj). That last one has no route in [BulkRoute] and is not slow,
+     * so it would read as Bluetooth here: parked behind a radio feed, its own copy never going ahead (its rate is not
+     * one the radio planes measure), it idled its link out and the parked ask was dropped with it. A link's own feeds
+     * stay out of [liveFeeds] for the same reason: the link plane reports no [MeshTransport.fileFeed], so no radio
+     * asker ever waits behind a copy going over the Internet.
      */
     private fun ridesSharedBudget(
+        asker: String,
+        bytes: Long,
+    ): Boolean =
+        if (transport.fileRidesInternet(asker)) {
+            false
+        } else {
+            sharesRadioBudget(asker, bytes)
+        }
+
+    /** [ridesSharedBudget] for a copy that rides a radio: by its plane, its size and the link's pace. */
+    private fun sharesRadioBudget(
         asker: String,
         bytes: Long,
     ): Boolean =
@@ -2786,6 +2883,8 @@ class BlobExchange(
         val slow: Boolean,
         // How long the file it is streaming to us has left, by its rate since its header; null when not known.
         val streamLeftMs: Long? = null,
+        // A phone radio holds it ([MeshTransport.radioLinked]); false for a peer only a contact's direct link reaches.
+        val radio: Boolean = true,
     ) {
         val id: String get() = peer.nodeId
     }
@@ -2837,6 +2936,9 @@ class BlobExchange(
         FastArm("fast reach"),
         Link("link"),
         SlowLink("slow link"),
+
+        // A contact's direct Internet link, no radio holding the peer (ADR 2026-10.a5yj): after every radio's.
+        Internet("internet link"),
         Sending("sending"),
         Blind("blind"),
         Pending("held"),
@@ -2851,6 +2953,9 @@ class BlobExchange(
         FastReach("fast reach"),
         SourceHop("source hop"),
         Neighbour("neighbour"),
+
+        // Reached only over a contact's direct Internet link (ADR 2026-10.a5yj): after every radio neighbour.
+        Internet("internet link"),
     }
 
     /** What a step or a query did, for the owner's counters. */
@@ -2896,6 +3001,9 @@ class BlobExchange(
         // ceiling, and a want ended because a held copy of it was over the ceiling (#234).
         HolderOverCeiling,
         OverCeiling,
+        // An ask over a contact's direct link for a blob that link does not carry, neither served nor echoed (ADR
+        // 2026-10.a5yj).
+        LinkRefused,
     }
 
     companion object {

@@ -29,6 +29,13 @@ import java.util.concurrent.ConcurrentHashMap
  *   counting that would make the gate defer on the very plane the push feeds. LoRa is excluded too — a
  *   board carries a frame and never a blob — which is the same reason [reachable] is narrowed to the
  *   short-range set upstream.
+ * - **[directLinked] is the other sighting**: a peer a contact's direct Internet link holds now (ADR
+ *   2026-10.a5yj). The link carries the pair's DM attachments, and its delivery is proof as a radio's is, so
+ *   a DM photo to a recipient only a link reaches waits out the grace and the proof round as one to a radio
+ *   neighbour does — or it went up in the very round the send woke, before the recipient could fetch it. It
+ *   is read live and never stamped into [lastSeen]: a link has no scan floor or doze to bridge, and it goes
+ *   when it idles out or closes, so the first round after that pushes rather than holding for the radio
+ *   window. Nothing here makes such a peer *near*: the set feeds this gate alone.
  *
  * [carriedByRadio] asks one question from whichever end of the DM this node is. **We authored it:** did
  * the recipient's receipt come back over a short-range radio. **They authored it:** did their message
@@ -72,16 +79,17 @@ import java.util.concurrent.ConcurrentHashMap
  * **Proof that the recipient holds the bytes is not a deferral: it settles the photo for good** ([proved], ADR
  * 2026-10.vy27, spec C-9.5-6's exception). Everything above is a delay because every signal it reads either expires
  * or stands in for the bytes — an ack says the frame arrived, never that the bytes did. [heldByRecipient] is the bytes
- * themselves, read per (hash, recipient) from a store that survives a restart: on the recipient, its own radio
- * arrival once the store took the bytes; on the sender, the recipient's answer to a holder query over a live
- * short-range link, which it gives only for hash-checked bytes it would serve. In a DM there is nobody else a spool
- * copy could reach, so such a photo never goes up — not when the peers part, not at last call. [askHolder] is how
- * the sender comes by its proof: asked each round in which an attachment of ours meets a fresh sighting, so the
- * question goes out while the peer can still answer it, and a no — or no answer — leaves the rule above in charge.
+ * themselves, read per (hash, recipient) from a store that survives a restart: on the recipient, its own radio (or
+ * direct link) arrival once the store took the bytes; on the sender, the recipient's answer to a holder query over a
+ * live radio or direct link (ADR 2026-10.a5yj), which it gives only for hash-checked bytes it would serve. In a DM
+ * there is nobody else a spool copy could reach, so such a photo never goes up — not when the peers part, not at last
+ * call. [askHolder] is how the sender comes by its proof: asked each round in which an attachment of ours meets a
+ * fresh sighting, so the question goes out while the peer can still answer it, and a no — or no answer — leaves the
+ * rule above in charge.
  *
  * **One proof round before a push.** The ask and the push it might spare are decided in the same pass, so a send of
  * ours with no evidence left to defer on — its receipt came back over a spool, and the grace has run out — would go
- * up in the very pass that asked, with the answer a round behind it. Where the peer is on a live short-range link
+ * up in the very pass that asked, with the answer a round behind it. Where the peer is on a live radio or direct link
  * that answers the holder query ([canAskHolder]), such a pass holds instead, for at most [proofWaitMs] from the
  * first time it did: a yes settles the photo on the next pass, and a no or silence lets it push on the first pass
  * after the wait. Shorter than the spool's re-look of a deferred attachment, so that is the very next one: a delay of
@@ -91,6 +99,9 @@ class AttachmentDeferPolicy(
     // Node ids on the presence plane right now, sampled per call — the smoothed `reachable` set, not the
     // ≤1 live data-path link, so an ephemeral sync rotation doesn't read as a peer leaving.
     private val reachable: () -> Set<String>,
+    // Node ids a contact's direct Internet link holds right now (ADR 2026-10.a5yj), read live per call, never
+    // remembered: a sighting exactly while the link is up.
+    private val directLinked: () -> Set<String> = { emptySet() },
     // Whether this attachment's message crossed a short-range radio between us and the scope's peer —
     // our own send acked over one, or their send that arrived over one (`MessageEntity.receivedVia`,
     // first-evidence-wins in both readings).
@@ -98,15 +109,17 @@ class AttachmentDeferPolicy(
     // Whether WE authored any message naming this attachment, acked or not — the grace's subject, and whom
     // [askHolder] is for. Read once per round that finds the peer in sight; nothing else consults it.
     private val authoredHere: suspend (aHash: String) -> Boolean,
-    // Whether the scope's recipient provably holds this attachment's bytes, learnt over a short-range radio and kept
-    // across a restart (`AttachmentHolderDao.heldInPair`): the one permanent reading, and the one that settles.
+    // Whether the scope's recipient provably holds this attachment's bytes, learnt over a short-range radio or a contact's
+    // direct link (ADR 2026-10.a5yj) and kept across a restart (`AttachmentHolderDao.heldInPair`): the one permanent
+    // reading, and the one that settles.
     private val heldByRecipient: suspend (aHash: String, peerId: String) -> Boolean = { _, _ -> false },
-    // Asks the peer whether it holds this attachment of ours (a holder query over a live short-range link, rate-floored
+    // Asks the peer whether it holds this attachment of ours (a holder query over a live radio or direct link, rate-floored
     // by the asker); a yes lands in [heldByRecipient]'s store. Fire-and-forget: the round never waits on the answer.
     private val askHolder: suspend (aHash: String, peerId: String) -> Unit = { _, _ -> },
-    // Whether [askHolder] can reach the peer right now: a live short-range link whose peer answers the holder query.
-    // Only then does a send of ours hold one proof round before it pushes.
-    private val canAskHolder: (peerId: String) -> Boolean = { false },
+    // Whether [askHolder]'s question about this attachment reaches the peer right now: a live radio, or a direct link
+    // that carries this attachment (ADR 2026-10.a5yj), whose peer answers the holder query. Per hash, since a link drops
+    // a query naming one it does not carry. Only then does a send of ours hold one proof round before it pushes.
+    private val canAskHolder: suspend (aHash: String, peerId: String) -> Boolean = { _, _ -> false },
     // The mesh custody TTL (`ForwardRepository.DEFAULT_TTL_MS`), injected rather than imported so this
     // layer keeps no dependency on the data layer. Bounds [lastCallMs] below.
     private val custodyTtlMs: Long,
@@ -131,8 +144,9 @@ class AttachmentDeferPolicy(
         }
 
     /**
-     * The bytes for [aHash] arrived over a short-range radio. Called from the transport's file channel
-     * *before* the bytes are stored, so a heal round can never find them held without this on record.
+     * The bytes for [aHash] arrived over a short-range radio, or a contact's direct link, whose delivery is proof as a
+     * radio's is (ADR 2026-10.a5yj). Called from the transport's file channel *before* the bytes are stored, so a heal
+     * round can never find them held without this on record.
      */
     fun noteRadioArrival(aHash: String) {
         synchronized(radioArrivals) { radioArrivals[aHash] = Unit }
@@ -182,7 +196,7 @@ class AttachmentDeferPolicy(
         noteReachable(now)
         val peerId = scope.peerId ?: return false
         if (ref.sentAt + custodyTtlMs - now <= lastCallMs) return false
-        if (!canAskHolder(peerId) || !authoredHere(ref.aHash)) return false
+        if (!canAskHolder(ref.aHash, peerId) || !authoredHere(ref.aHash)) return false
         askHolder(ref.aHash, peerId)
         return inProofRound(ref.aHash, peerId, now)
     }
@@ -207,8 +221,7 @@ class AttachmentDeferPolicy(
         // once it ages out, `ScopeAttachments.references` stops naming the attachment at all and the
         // chance to relay those bytes is gone for good. So stop deferring before that edge, not at it.
         if (ref.sentAt + custodyTtlMs - now <= lastCallMs) return false
-        val seen = lastSeen[peerId] ?: return false
-        if (now - seen > windowMs) return false
+        if (!sighted(peerId, now)) return false
         // The peer is in sight, so this is the round to ask it for the proof that would settle a send of ours for
         // good ([proved]). Asked whatever this round decides.
         val ours = authoredHere(ref.aHash)
@@ -222,7 +235,19 @@ class AttachmentDeferPolicy(
         if (now - ref.sentAt < ackGraceMs && ours) return true
         // Nothing left to defer on, but the question this pass just asked has an answer coming over a live link: hold
         // one proof round rather than push ahead of it (ADR 2026-10.vy27's revision 2). Bounded by [proofWaitMs].
-        return ours && canAskHolder(peerId) && inProofRound(ref.aHash, peerId, now)
+        return ours && canAskHolder(ref.aHash, peerId) && inProofRound(ref.aHash, peerId, now)
+    }
+
+    /**
+     * Whether [peerId] is in sight: seen on the presence plane inside [windowMs], or held by a direct link now
+     * ([directLinked]). The link half ends with the link, with no window after it.
+     */
+    private fun sighted(
+        peerId: String,
+        now: Long,
+    ): Boolean {
+        val seen = lastSeen[peerId]
+        return (seen != null && now - seen <= windowMs) || peerId in directLinked()
     }
 
     /** Stamps everyone currently reachable and forgets whoever can no longer justify a deferral. */

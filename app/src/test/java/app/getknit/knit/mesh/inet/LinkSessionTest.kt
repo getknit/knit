@@ -37,6 +37,9 @@ class LinkSessionTest {
         aSide: LinkDatagrams,
         bSide: LinkDatagrams,
         scope: CoroutineScope = backgroundScope,
+        // Both ends under a transport: only noteUse and a busy transport are use (L-7-4).
+        dataIsUse: Boolean = true,
+        busy: () -> Boolean = { false },
         onDataB: (ByteArray) -> Unit = {},
     ): Pair {
         net.stunServer("stun.example", stunAt)
@@ -58,6 +61,8 @@ class LinkSessionTest {
                 PunchPolicy.targets(bCands, localV6 = true, localV4 = true),
                 scope,
                 clock,
+                dataIsUse = dataIsUse,
+                busy = busy,
             )
         val b =
             LinkSession(
@@ -67,6 +72,8 @@ class LinkSessionTest {
                 PunchPolicy.targets(aCands, localV6 = true, localV4 = true),
                 scope,
                 clock,
+                dataIsUse = dataIsUse,
+                busy = busy,
                 onData = onDataB,
             )
         a.start()
@@ -168,6 +175,90 @@ class LinkSessionTest {
             // Whichever end idles out first says so with a BYE, which closes the other.
             val reasons = setOf(pair.a.endReason, pair.b.endReason)
             assertTrue("$reasons", EndReason.IDLE in reasons && reasons.all { it == EndReason.IDLE || it == EndReason.BYE })
+        }
+
+    @Test
+    fun underATransportDataAloneDoesNotKeepALinkButUseDoes() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair =
+                link(
+                    net,
+                    net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)),
+                    net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)),
+                    dataIsUse = false,
+                )
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            // A transport's digests and acks: DATA every 20 s, both ways, for well past the minute. None of it is use.
+            repeat(4) {
+                pair.a.sendData(byteArrayOf(1))
+                pair.b.sendData(byteArrayOf(2))
+                testScheduler.advanceTimeBy(20_000L)
+            }
+            assertEquals(State.CLOSED, pair.a.state.value)
+            assertFalse("a link that only kept itself in sync carried nothing", pair.a.carriedData)
+        }
+
+    @Test
+    fun underATransportAFrameOrAFileIsUseAndKeepsTheLink() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair =
+                link(
+                    net,
+                    net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)),
+                    net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)),
+                    dataIsUse = false,
+                )
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            // A frame each way every 30 s: its segments cross the link, and the transport notes it as use.
+            repeat(4) {
+                pair.a.sendData(byteArrayOf(1))
+                pair.b.sendData(byteArrayOf(2))
+                pair.a.noteUse()
+                pair.b.noteUse()
+                testScheduler.advanceTimeBy(30_000L)
+            }
+            assertEquals(State.UP, pair.a.state.value)
+            assertTrue(pair.a.carriedData)
+        }
+
+    @Test
+    fun aLinkWhoseTransportIsMovingAFileNeverIdlesOut() =
+        runTest {
+            val net = FakeLinkNet()
+            var moving = true
+            val pair =
+                link(
+                    net,
+                    net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)),
+                    net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)),
+                    dataIsUse = false,
+                    busy = { moving },
+                )
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+
+            // The stream's segments, both ways every 10 s: heard, so never silent, but not use.
+            suspend fun stream(ms: Long) =
+                repeat((ms / 10_000L).toInt()) {
+                    pair.a.sendData(byteArrayOf(1))
+                    pair.b.sendData(byteArrayOf(2))
+                    testScheduler.advanceTimeBy(10_000L)
+                }
+            // Three minutes of a file's stream, with no frame either way: the link holds.
+            stream(3 * 60_000L)
+            assertEquals(State.UP, pair.a.state.value)
+            // The file is in, the stream goes on (acks, a digest): the minute starts now, and ends the link.
+            moving = false
+            stream(LinkSession.IDLE_MS - 20_000L)
+            assertEquals(State.UP, pair.a.state.value)
+            stream(30_000L)
+            assertEquals(State.CLOSED, pair.a.state.value)
+            // Whichever end idled out first said so with a BYE.
+            assertTrue(EndReason.IDLE in setOf(pair.a.endReason, pair.b.endReason))
         }
 
     @Test

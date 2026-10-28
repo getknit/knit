@@ -45,17 +45,24 @@ class AttachmentDeferPolicyTest {
     // The holder queries the policy asked for, as (hash, peer).
     private val asked = mutableListOf<Pair<String, String>>()
 
-    // Whether bob is on a live short-range link that answers the holder query — the proof round's condition.
+    // Whether bob is on a live link that answers the holder query — the proof round's condition.
     private var linked = false
+
+    // The peers a contact's direct Internet link holds right now (ADR 2026-10.a5yj): the deferral's live sighting.
+    private var directLinked = emptySet<String>()
+
+    // Attachments the holder query cannot carry to bob now: a direct link that does not carry them (ADR 2026-10.a5yj).
+    private val unreachable = mutableSetOf<String>()
 
     private fun policy() =
         AttachmentDeferPolicy(
             reachable = { reachable },
+            directLinked = { directLinked },
             carriedByRadio = { _, _ -> ackPlane?.shortRange == true },
             authoredHere = { authored },
-            heldByRecipient = { hash, peer -> proofs[hash to peer]?.shortRange == true },
+            heldByRecipient = { hash, peer -> proofs[hash to peer]?.provesHold == true },
             askHolder = { hash, peer -> asked += hash to peer },
-            canAskHolder = { linked },
+            canAskHolder = { hash, _ -> linked && hash !in unreachable },
             custodyTtlMs = custodyTtlMs,
             clock = { clock },
         )
@@ -350,6 +357,100 @@ class AttachmentDeferPolicyTest {
             proofs[aHash to bob] = DeliveryPlane.Nearby
             assertFalse(policy().proved(groupScope(), ref()))
             assertFalse(policy().defer(groupScope(), ref()))
+        }
+
+    /**
+     * A DM photo of ours to a recipient only a contact's direct link reaches (ADR 2026-10.a5yj): no radio sighting and
+     * an ack over the link, which is no radio's. The link is the sighting, so the send waits out its ack grace and one
+     * proof round, asking each round, rather than going up in the round the send woke; the link's proof settles it.
+     */
+    @Test
+    fun `a DM photo to a recipient only a direct link reaches waits for its proof and is settled by it`() =
+        runTest {
+            reachable = emptySet()
+            directLinked = setOf(bob)
+            linked = true
+            ackPlane = DeliveryPlane.DirectLink
+            val subject = policy()
+
+            assertTrue("the send's own round waits out the grace", subject.defer(dmScope(), ref()))
+            assertEquals(listOf(aHash to bob), asked)
+            clock = start + AttachmentDeferPolicy.ACK_GRACE_MS
+            assertTrue("then one proof round", subject.defer(dmScope(), ref()))
+            proofs[aHash to bob] = DeliveryPlane.DirectLink
+            assertTrue("the link's answer settles it for good", subject.proved(dmScope(), ref()))
+
+            directLinked = emptySet()
+            assertTrue("whether or not the link stays", policy().proved(dmScope(), ref()))
+        }
+
+    /**
+     * The proof round is held per attachment, only when its question reaches the peer (ADR 2026-10.a5yj): a direct link
+     * drops a holder query naming a picture it does not carry, so a send whose query cannot cross holds no round on a
+     * question that never left, while another attachment to the same peer, whose query does cross, still holds one.
+     */
+    @Test
+    fun `a send whose holder query the link cannot carry holds no proof round`() =
+        runTest {
+            reachable = emptySet()
+            directLinked = setOf(bob)
+            linked = true
+            ackPlane = DeliveryPlane.DirectLink
+            clock = start + AttachmentDeferPolicy.ACK_GRACE_MS
+            unreachable += aHash
+
+            assertFalse("past the grace, no round on a question that never left", policy().defer(dmScope(), ref()))
+            assertFalse(policy().holdsForProof(dmScope(), ref()))
+
+            unreachable.clear()
+            assertTrue("the same send, its query now carried: one proof round", policy().defer(dmScope(), ref()))
+        }
+
+    /**
+     * The link half of the sighting lasts exactly as long as the link (ADR 2026-10.a5yj): it is read live and never
+     * remembered, so the first round after the link goes pushes, with no radio window after it, and a link's ack alone
+     * defers nothing past the grace and the proof round.
+     */
+    @Test
+    fun `a direct link's sighting ends with the link, and the photo goes up the round after`() =
+        runTest {
+            reachable = emptySet()
+            directLinked = setOf(bob)
+            linked = true
+            ackPlane = DeliveryPlane.DirectLink
+            val subject = policy()
+            assertTrue(subject.defer(dmScope(), ref()))
+
+            directLinked = emptySet()
+            linked = false
+            clock = start + 1
+            assertFalse("the link went: pushed at once, inside the grace", subject.defer(dmScope(), ref()))
+
+            directLinked = setOf(bob)
+            linked = true
+            clock = start + AttachmentDeferPolicy.ACK_GRACE_MS
+            assertTrue("back: the proof round holds", subject.defer(dmScope(), ref()))
+            clock += AttachmentDeferPolicy.PROOF_WAIT_MS
+            assertFalse("a link's ack is no radio's: past the proof round it pushes", subject.defer(dmScope(), ref()))
+        }
+
+    /**
+     * The recipient's end (ADR 2026-10.a5yj): bytes off a link are noted before the store write, so a heal round in the
+     * gap before the proof is recorded holds instead of uploading them — while the link that carried them is up.
+     */
+    @Test
+    fun `a recipient holds bytes a direct link delivered until its proof lands, while the link is up`() =
+        runTest {
+            reachable = emptySet()
+            directLinked = setOf(bob)
+            authored = false
+            ackPlane = DeliveryPlane.DirectLink
+            val subject = policy()
+            subject.noteRadioArrival(aHash)
+
+            assertTrue(subject.defer(dmScope(), settled()))
+            directLinked = emptySet()
+            assertFalse("no link, no radio: nothing to hold on", subject.defer(dmScope(), settled()))
         }
 
     @Test

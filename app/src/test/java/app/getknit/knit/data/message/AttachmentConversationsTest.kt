@@ -8,8 +8,8 @@ import org.junit.Test
 
 /**
  * [MessageDao.conversationsOfAttachment] against the real SQL: a picture forwarded under its sealed identity (ADR
- * 2026-10.mptm) — sent to a group first, then into a DM — is named by both conversations, and a holder's member-first
- * serve reads them all (ADR 2026-10.nsr7), never the first row alone.
+ * 2026-10.mptm) — sent to a group first, then into a DM — is named by both conversations, and a contact's direct link
+ * reads them all (ADR 2026-10.a5yj), never the first row alone.
  */
 class AttachmentConversationsTest : RoomDbTest() {
     private val dao get() = db.messageDao()

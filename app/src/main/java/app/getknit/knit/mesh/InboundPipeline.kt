@@ -432,8 +432,9 @@ class InboundPipeline(
             }
 
             else -> {
-                // Only an answer that came in on a phone-to-phone link proves a hold (ADR 2026-10.vy27).
-                decodeCounted<BlobHasContent>(env.payload)?.let { blobExchange.onHaveAnswer(it, fromNodeId, plane.shortRange) }
+                // Only an answer that came in on a phone radio or a contact's direct link proves a hold (ADR 2026-10.vy27,
+                // a5yj): the exchange reads the plane's `provesHold` and records the proof under it.
+                decodeCounted<BlobHasContent>(env.payload)?.let { blobExchange.onHaveAnswer(it, fromNodeId, plane) }
             }
         }
     }
@@ -756,6 +757,7 @@ class InboundPipeline(
             kind == TransportKind.LoRa -> DeliveryPlane.LoRa
             kind == TransportKind.Bluetooth -> DeliveryPlane.Bluetooth
             kind == TransportKind.WifiAware -> DeliveryPlane.WifiAware
+            kind == TransportKind.DirectLink -> DeliveryPlane.DirectLink
             else -> DeliveryPlane.Nearby
         }
 
@@ -2799,7 +2801,9 @@ class InboundPipeline(
         if (blobStore.has(hash)) return
         if (copyFromOwnStore(hash, env.senderId)) return
         if (blobs.carrierOnlyBlobBytes() >= CARRIER_BLOB_BUDGET_BYTES) return
-        val linked = transport.neighbors.value.mapTo(HashSet()) { it.nodeId }
+        // The radio set (ADR 2026-10.a5yj): a recipient only a contact's direct link reaches cannot fetch a carrier's
+        // copy over it, which carries an attachment addressed to both ends alone, so it holds no pull back.
+        val linked = transport.neighbors.value.mapNotNullTo(HashSet()) { n -> n.nodeId.takeIf(transport::radioLinked) }
         val member = env.group?.members?.contains(identity.nodeId()) == true
         val carried = CarriedAttachment(hash, env.recipientId, clock(), env.senderId, env.group?.id, member)
         if (CarrierPullPolicy.defers(listOf(carried), linked, clock())) {

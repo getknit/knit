@@ -65,7 +65,22 @@ either sits on. These clauses freeze for the iOS port with the rest of this file
 | **L-6-5** | A sender keeps at most its congestion window of segments in flight, and none at or past the peer's `limit`. Loss is judged from acks only (RFC 9002): a segment sent before an acknowledged one is lost once three transmissions sent after it are acknowledged, or once 9/8 of the larger of the smoothed and the latest round trip has passed since it went. The probe timer — the smoothed round trip, plus four deviations (at least 10 ms), plus 20 ms of ack delay, from 1 s before a round trip is known, 100 ms to 8 s, counted from the last segment sent and doubling per expiry — declares nothing lost: it sends 2 segments past the window and the pace (the oldest outstanding one again, then a new one or the next oldest), each with ASK. Lost segments go first. The window starts at 10 segments, grows by one per segment acknowledged up to the first loss and by one per window after, halves once per round of losses, and falls to 2 when losses are found after 3 probe timeouts in a row. Sends are paced: at most 4 back to back (or 2 ms of the pace, if more), refilled at the window per smoothed round trip, ×2 while the window grows from its start and ×1.25 after. A sender stopped at the peer's `limit` with nothing in flight sends an ASK each probe period. |
 | **L-6-6** | The stream is the link's: it ends when the link closes (a BYE, idle or silence), after what arrived is read. There is no half-close; closing the stream closes the link with a BYE. A segment counts as the link's data (L-4-2). |
 
-## 7. Vectors
+## 7. The link as a transport
+
+An up link's stream is one more child of the composite (`DirectLinkTransport`), last in preference, so a peer a radio
+also links is served by the radio. It is not a radio: its peers are never nearby, never met and never a radio path, it
+earns no Your mesh credit, and it has no say in the mesh's health.
+
+| Clause | Rule |
+| --- | --- |
+| **L-7-1** | Over the stream run the radios' own framing: a two-way HELLO (`LinkHandshake`), the offerer writing first, then `FramedLink`'s records. A HELLO that names anyone but the link's peer ends the link, as does a handshake not finished in 15 s. |
+| **L-7-2** | A frame crosses a link, either way, only when it is addressed between the two; or either one's profile, or a ratcheted DM between them (the spool's DM rule); or a frame of a group both are in, by the spool's group rule against its founding roster; or a frame addressed between two members of such a group (a sender-key seed, a delivery tick, and — sealed alike, never told apart — their DMs to each other); or a key request naming only the two and their shared groups' members; or (outgoing) a blob control frame whose every hash belongs to a conversation addressed to the peer. Anything else is dropped where it is, on the way out or on the way in. |
+| **L-7-3** | A file goes out over a link only when it is an attachment of a conversation addressed to the peer, or the sender's own avatar. |
+| **L-7-4** | Only a frame or a file sent or taken is use (L-4-2's DATA, under a transport): the handshake, a digest and the stream's own segments are not, so a link that only keeps itself in sync idles out, and an answer whose link moved no frame came to nothing (L-1-2). |
+| **L-7-5** | A message that arrived over a link records its plane as `DeliveryPlane.DirectLink` (6), shown as arrived or delivered over the Internet. |
+| **L-7-6** | An attachment a link delivered, hash-checked and stored, or the peer's answer over a link to the holder query for one, is proof of bytes as a radio's is (`docs/SPOOL_PROTOCOL.md` C-9.5-8, ADR 2026-10.vy27): a DM photo so proved never goes up to a spool. While the link is up its peer counts as in sight for the spool's push-half deferral (`docs/SPOOL_PROTOCOL.md` §9.5), so a DM photo sent to it waits for that proof rather than going up at once — through the ack grace and one proof round on the link's evidence alone, and for as long as the link is up when a radio already carried the message (§9.5's second half); the round after the link goes, it is pushed. A blob counts as the pair's when any conversation naming it is addressed to both ends, since a forwarded picture keeps its hash (ADR 2026-10.mptm). The query goes over a link only for an attachment it carries (L-7-2), and a link's peer is still asked for the bytes after every radio holder. |
+
+## 8. Vectors
 
 `vectors/wire-v1.json` carries a `LinkSignal` OFFER; the keyed vectors carry an L-5-1 derivation. Change them only
 together with this file.

@@ -472,12 +472,12 @@ class LinkArqTest {
         runBlocking {
             // Real threads: the blocking streams park an IO thread each, as FramedLink's reader and writer do.
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val clock = { System.nanoTime() / 1_000_000 }
+            val ab = Path(scope, delayMs = 2, jitterMs = 3, loss = 0.05, random = Random(14))
+            val ba = Path(scope, delayMs = 2, jitterMs = 3, loss = 0.05, random = Random(15))
+            val a = LinkArq(ab::send, scope, clock)
+            val b = LinkArq(ba::send, scope, clock)
             try {
-                val clock = { System.nanoTime() / 1_000_000 }
-                val ab = Path(scope, delayMs = 2, jitterMs = 3, loss = 0.05, random = Random(14))
-                val ba = Path(scope, delayMs = 2, jitterMs = 3, loss = 0.05, random = Random(15))
-                val a = LinkArq(ab::send, scope, clock)
-                val b = LinkArq(ba::send, scope, clock)
                 ab.to = b
                 ba.to = a
                 val record = Random(16).nextBytes(300_000)
@@ -513,6 +513,9 @@ class LinkArqTest {
                     }
                 }
             } finally {
+                // Ended before the scope goes, so no IO thread stays parked in a blocking read into the next class.
+                a.end()
+                b.end()
                 scope.cancel()
             }
         }

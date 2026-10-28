@@ -67,6 +67,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   is low-power mode's switch and posture (as `LOWPOWER` reports it). Add `--es conv <id>`
   to also dump that thread's latest messages (`--ei limit N`, default 20) — this is how you **verify receipt
   on the other device without a screenshot**: the body turning up in the receiver's `messages[]`. Each row
+  carries `via`, the plane it arrived over (our own message: the plane its delivery tick came over; `DirectLink` is a
+  contact's direct Internet link). Each row
   with an attachment carries `attachmentHash` (the hash the frame names), `attachmentKeyed` (sealed or not),
   `attachmentPlainHash`, `attachmentHeld` (the bytes are here) and `attachmentAnimated` — a forward trial compares
   the first across rows and reads the fourth instead of the blob store (ADR 2026-10.mptm). `attachmentFlagged` and
@@ -305,11 +307,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj, the Phase 0 spike; a debug build with
   `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
   `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (a 90 s keepalive instead
-  of the 60 s idle close) or releases it; `--es op try --es peer <nodeId>` offers that contact a link now, past its
+  of the 60 s idle close) or releases it — this phone's end only, so hold both or the other idles out and sends BYE; `--es op try --es peer <nodeId>` offers that contact a link now, past its
   backoff, and answers once the attempt ends
   with `outcome` (UP / NO_PATH / NO_ANSWER / NO_CAST / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED); `--es op close --es peer
   <nodeId>` closes one with a BYE; no op reads state. Every reply carries `enabled`, `links` (peer, state, datagram
-  bytes `in`/`out`) and `tries` (the last attempt with each peer: `out` when this phone offered, `outcome`, `path`
+  bytes `in`/`out`), `plane` (the mesh's link plane, Phase 1: `adopted`, the peers whose streams it runs, and
+  `refused`, the frames its pair rule dropped either way) and `tries` (the last attempt with each peer: `out` when this
+  phone offered, `outcome`, `path`
   V6_TEMPORARY / V6 / HOST / V4_REFLEXIVE / PEER_REFLEXIVE, `peerNet`, `ms`, `rtt`). Never an address: the oracle
   for a trial is `tries` on both phones plus their `link_try` / `link_end` field-log lines. Both phones need the switch
   on, a confirmed DM session, a connected spool that carries casts, and each other's `CAP_INET_LINK`; a `try` that

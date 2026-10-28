@@ -1106,6 +1106,7 @@
     <string name="diagnostics_transport_wifi_aware">Wi-Fi Aware</string>
     <string name="diagnostics_transport_other">Інше</string>
     <string name="diagnostics_transport_lora">LoRa</string>
+    <string name="diagnostics_transport_direct_link">Пряме з’єднання</string>
     <string name="diagnostics_transport_counts" tools:ignore="PluralsCandidate">поруч: %1$d · з’єднано: %2$d</string>
     <plurals name="diagnostics_transport_heard">
         <item quantity="one">%1$d почутий</item>

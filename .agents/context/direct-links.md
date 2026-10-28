@@ -28,6 +28,18 @@ and the entry is fixed.
   retransmission is a fresh lane seal, never a datagram sent twice. A segment is the link's data for the idle close, so
   a stream that moves nothing lets its link idle out. While no transport takes a link's stream (`onStream` unset),
   `DirectLinks` drains it.
+- **When touching `DirectLinkTransport`, `LinkPairFilter` / `LinkScope`, `TransportKind.DirectLink`,
+  `MeshTransport.viaInternet`, `CompositeMeshTransport.shortRangeNeighbors` / `shortRangeLinked`,
+  `DeliveryPlane.DirectLink`, `LinkSession.noteUse` / `dataIsUse`, `DirectLinks.noteUse` or `di/directLinkPlane`:**
+  READ ADR 2026-10.a5yj and `docs/DIRECT_LINKS.md` §7. A link is the composite's last child and not a radio: never
+  nearby, met, a radio path (`MeshManager.talkRadioPath`) or Your mesh credit, and never the mesh's health. It carries
+  the pair's own traffic only, filtered at the link in both directions — the room, a stranger's DM this phone carries
+  or a group the two do not share never cross — and a file only when it is an attachment addressed to the peer or our
+  own avatar. A blob is the pair's when ANY conversation naming it is addressed to both ends
+  (`LinkScope.addresseeSetsOf`, `MeshManager.blobAddressees`): a forwarded picture keeps its hash (ADR 2026-10.mptm),
+  so never read the first row. A refusal by shared groups read over `DirectLinkTransport.GROUPS_REREAD_MS` ago is
+  decided again on a fresh read, so a group made since never waits a re-offer round for its first post. Only frames and
+  files are use; digests and handshakes keep nothing open.
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`
   arm or `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.castEligible`:** READ ADR 2026-10.a5yj
   (and its lane-key amendment once recorded), `docs/DIRECT_LINKS.md` §2 and §5 and `docs/VOICE_CALLS.md` §2.7. The

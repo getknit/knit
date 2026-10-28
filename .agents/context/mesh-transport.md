@@ -225,6 +225,12 @@ split is different and easy to get backwards (ADR 2026-09.2ajk):
 Adding a plane is where this bites: give it `shortRange = false` unless a sighting really does mean the
 peer is in radio range, or every *nearby* surface in the app inherits the claim.
 
+A contact's direct Internet link (`mesh/inet/DirectLinkTransport`, `TransportKind.DirectLink`, ADR 2026-10.a5yj) is
+the fifth plane and the first that is no radio at all: `shortRange = false` and `viaInternet = true`, so the composite
+leaves it out of `health` and of `shortRangeNeighbors` (what *a radio path* means: the walkie's label, Your mesh's
+hand-off credit), while `neighbors` keeps it (a link to send on). It rides last. `.agents/context/direct-links.md`
+indexes it.
+
 ## Wi-Fi Aware availability flaps, and may be absent entirely
 
 `WifiAwareManager.isAvailable()` goes false when Wi-Fi is off or **another app's** Wi-Fi Direct / SoftAP /
