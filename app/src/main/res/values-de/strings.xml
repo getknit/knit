@@ -848,6 +848,8 @@
     <string name="call_settings_speech_model_cancel">Abbrechen</string>
     <string name="call_settings_speech_model_remove">Entfernen</string>
     <string name="settings_link_previews_subtitle">Wenn du einen Link eingibst, ruft Knit Titel und Bild der Seite über das Internet ab und sendet sie mit deiner Nachricht. Die Website sieht deine IP-Adresse; die Personen, an die du sendest, greifen nie selbst darauf zu.</string>
+    <string name="settings_typing_indicators_title">Tippindikatoren</string>
+    <string name="settings_typing_indicators_subtitle">Die Personen, mit denen du chattest, sehen, wenn du schreibst – in der Nähe oder über ein Relay –, und du siehst, wenn sie schreiben. Wenn aus, sendet und zeigt Knit keine Tippindikatoren.</string>
     <string name="settings_low_power_title">Stromsparmodus</string>
     <string name="settings_low_power_subtitle">Schaltet Wi-Fi Aware aus, um Akku zu sparen. Über Bluetooth bleibst du im Mesh, Nachrichten kommen also weiter an, aber Fotos und Dateien brauchen länger. Auch aktiv, solange der Energiesparmodus an ist.</string>
     <string name="settings_low_power_subtitle_saver">Jetzt aktiv, weil der Energiesparmodus an ist. Wi-Fi Aware ist aus, und über Bluetooth bleibst du im Mesh.</string>
