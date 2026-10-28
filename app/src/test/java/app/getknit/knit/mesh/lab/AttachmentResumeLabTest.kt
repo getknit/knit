@@ -50,6 +50,22 @@ class AttachmentResumeLabTest {
         hash: String,
     ): Int = if (node.blobs.exists(hash) && node.partials.length(hash) == 0L) 1 else 0
 
+    /**
+     * The offsets of [node]'s asks for [hash] that crossed, a run of equal ones counted once: the rounds' asks, not how
+     * many went. A want step that lands after a link comes up and before the node's link-up pass asks the newcomer, and
+     * the pass's `BlobExchange.linked` forgets that ask (one made before may have died with the old link) and asks it
+     * again (ADR 2026-10.f7gg). The holder's serve memo answers the repeat with nothing, so the `files` lines, not the
+     * asks, count the copies.
+     */
+    private fun askedOffsets(
+        node: LabNode,
+        hash: String,
+    ): List<Long?> =
+        node.transport.blobAsks
+            .filter { it.hash == hash }
+            .map { it.offset }
+            .fold(mutableListOf()) { runs, offset -> runs.apply { if (isEmpty() || last() != offset) add(offset) } }
+
     /** What [holder] streamed [to] [hash], as the phone's `file …` lines name it. */
     private fun served(
         holder: LabNode,
@@ -105,12 +121,7 @@ class AttachmentResumeLabTest {
                 listOf("${bob.nodeId} ATTACHMENT $hash", "${bob.nodeId} ATTACHMENT $hash from $SECOND_CUT"),
                 served(alice, bob, hash),
             )
-            assertEquals(
-                listOf(null, FIRST_CUT, SECOND_CUT),
-                bob.transport.blobAsks
-                    .filter { it.hash == hash }
-                    .map { it.offset },
-            )
+            assertEquals(listOf(null, FIRST_CUT, SECOND_CUT), askedOffsets(bob, hash))
 
             lab.link(bob, carol)
             lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
@@ -194,14 +205,11 @@ class AttachmentResumeLabTest {
                     .splicesRefused
                     .toInt()
             }
-            // The from-0 ask follows the refusal at once; the memo answers it with nothing.
-            lab.await(3) { bob.transport.blobAsks.count { it.hash == hash } }
-            assertEquals(
-                listOf(null, FIRST_CUT, null),
-                bob.transport.blobAsks
-                    .filter { it.hash == hash }
-                    .map { it.offset },
-            )
+            // The from-0 ask follows the refusal at once; the memo answers it with nothing. Awaited as the ask itself (a
+            // whole-file ask after the resume), not as a count: the link-up may have asked the resume twice, and a repeat
+            // whose send stalled can even cross after the from-0 ask (built before the drop; the memo answers it too).
+            lab.await(1) { if (askedOffsets(bob, hash).size >= 3) 1 else 0 }
+            assertEquals(listOf(null, FIRST_CUT, null), askedOffsets(bob, hash).take(3))
             assertEquals("the prefix may have been what was wrong", 0L, bob.partials.length(hash))
 
             // Alice's next round: the link-up re-ask, once her memo has lapsed.

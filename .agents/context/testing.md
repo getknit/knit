@@ -323,7 +323,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   a cut. `ignoreOffsets` makes a holder an older build (whole files, no offset in the header) and
   `corruptFiles` a holder with wrong bytes; `blobAsks` records every `blobreq` that crossed (to, hash, offset);
   `files` lines end ` from <offset>` on a resume (recorded once the send commits), so an exact match still counts
-  whole copies. A link-up's own re-ask is answered before a scenario could arm after it: arm in
+  whole copies; the asks do not. A want step that lands after a link comes up and before the node's link-up pass
+  (a late re-arm, a tick) asks the newcomer, and the pass's `BlobExchange.linked` forgets that ask and asks again,
+  which the holder's memo answers with nothing (#141, chaos seed 141714776): read `blobAsks` with a run of equal
+  offsets counted once (`AttachmentResumeLabTest.askedOffsets`), and await the ask you need, not a count. A
+  link-up's own re-ask is answered before a scenario could arm after it: arm in
   `lab.link(a, b) { … }`, which runs once the pipes exist and before either end lists the link. And a carried
   attachment's `blobreq` leaves from the custody step, before the frame is opened, so a holder serving it is no
   evidence the recipient handled the frame: await the author's receipt before the link goes.
