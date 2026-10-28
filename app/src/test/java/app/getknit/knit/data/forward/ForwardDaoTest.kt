@@ -67,6 +67,18 @@ class ForwardDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `deleteLongerThan removes only rows whose signed bytes are longer than the cap`() =
+        runTest {
+            // #227: the sweep's reclaim of rows a build without the byte cap stored. Exactly the cap stays.
+            dao.insert(fwd("over").copy(signed = ByteArray(101)))
+            dao.insert(fwd("at").copy(signed = ByteArray(100)))
+            dao.insert(fwd("under"))
+            assertEquals(1, dao.deleteLongerThan(100))
+            assertEquals(listOf("at", "under"), dao.allIds().sorted())
+            assertEquals(0, dao.deleteLongerThan(100))
+        }
+
+    @Test
     fun `evictOldestBySender trims that bucket oldest-first by sentAt then id`() =
         runTest {
             dao.insert(fwd("a0", senderId = "A", sentAt = 1L))

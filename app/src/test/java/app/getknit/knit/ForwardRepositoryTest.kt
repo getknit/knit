@@ -4,6 +4,7 @@ import androidx.room3.Room
 import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.RoomDbTest
+import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.CarriedFrame
@@ -25,6 +26,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,6 +50,7 @@ import kotlin.random.Random
  * digest stays in lockstep with the committed rows — see `concurrent store and sweep keep the digest consistent`.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass") // one store's whole contract over one real database: it grows by a test a bound, by design
 class ForwardRepositoryTest : RoomDbTest() {
     // Secondary in-memory DBs for the two-node convergence tests (RoomDbTest owns the primary `db`).
     private val extraDbs = mutableListOf<KnitDatabase>()
@@ -93,6 +96,41 @@ class ForwardRepositoryTest : RoomDbTest() {
             )
         return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
+
+    /**
+     * A frame whose `signed` is exactly [signedBytes] long: [envelope] built with a chat body of "x"s, the body's
+     * length searched upward, since CBOR's length prefixes grow at 24, 256 and 65,536 and no fixed offset holds.
+     */
+    private fun padded(
+        signedBytes: Int,
+        envelope: (ChatContent) -> RelayEnvelope,
+    ): CarriedFrame {
+        for (length in 0..signedBytes) {
+            val env = envelope(ChatContent(body = "x".repeat(length)))
+            val signed = WireCodec.encodeEnvelope(env)
+            if (signed.size == signedBytes) return CarriedFrame(env, sig = ByteArray(0), signed = signed)
+            check(signed.size < signedBytes) { "no body length makes $signedBytes signed bytes" }
+        }
+        error("no body length makes $signedBytes signed bytes")
+    }
+
+    /** [dm], padded so its `signed` is exactly [signedBytes] long. */
+    private fun paddedDm(
+        id: String,
+        sender: String,
+        sentAt: Long,
+        signedBytes: Int,
+    ): CarriedFrame =
+        padded(signedBytes) { content ->
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = sender,
+                sentAt = sentAt,
+                recipientId = "peer",
+                payload = WireCodec.encodePayload(content),
+            )
+        }
 
     /** A chat frame with caller-chosen addressing + [content] (so we can exercise attachment-hash extraction). */
     private fun chat(
@@ -768,4 +806,116 @@ class ForwardRepositoryTest : RoomDbTest() {
             assertEquals(listOf("ok"), repo.liveIds(0L))
             assertEquals(3L, metrics.groups().groupCustodyRefused)
         }
+
+    @Test
+    fun `custody keeps a frame of exactly the byte cap and refuses one byte over, even from a full store`() =
+        runTest {
+            // #227: the cap is on `signed` (the sig is not counted), and exactly the cap is kept. The refusal is a
+            // function of the frame alone: nothing is written, nothing is evicted to make room, the digest is unmoved.
+            val now = 1_000_000L
+            val metrics = MeshMetrics()
+            val digest = StoreDigest { now }
+            val dao = db.forwardDao()
+            val repo = ForwardRepository(dao, digest, db, maxRows = 3, maxSignedBytes = CAP, metrics = metrics)
+            assertTrue(repo.store(dm("a", sender = "alice", sentAt = now - 3), ForwardStore.ORIGIN_RELAY, now))
+            assertTrue(repo.store(dm("b", sender = "bob", sentAt = now - 2), ForwardStore.ORIGIN_RELAY, now))
+            val atCap = paddedDm("cap", sender = "carol", sentAt = now - 1, signedBytes = CAP)
+            assertEquals(CAP, atCap.signed.size)
+            assertTrue("exactly the cap is kept", repo.store(atCap, ForwardStore.ORIGIN_RELAY, now))
+            val full = listOf("a", "b", "cap")
+            assertEquals(full, dao.allIds().sorted())
+            val version = digest.version.value
+
+            val over = paddedDm("over", sender = "dave", sentAt = now, signedBytes = CAP + 1)
+            assertFalse("one byte over is refused", repo.store(over, ForwardStore.ORIGIN_RELAY, now))
+            assertEquals("nothing written, nothing evicted", full, dao.allIds().sorted())
+            assertEquals("a refused frame must not touch the digest", version, digest.version.value)
+            assertEquals(1L, metrics.frames().custodyOversizeRefused)
+        }
+
+    @Test
+    fun `our own oversize frame is refused like a relayed one`() =
+        runTest {
+            val now = 1_000_000L
+            val metrics = MeshMetrics()
+            val digest = StoreDigest { now }
+            val repo = ForwardRepository(db.forwardDao(), digest, db, maxSignedBytes = CAP, metrics = metrics)
+            assertFalse(repo.store(paddedDm("mine", sender = "me", sentAt = now, signedBytes = CAP + 1), ForwardStore.ORIGIN_SELF, now))
+            assertEquals(0, db.forwardDao().allIds().size)
+            assertEquals(0L, digest.version.value)
+            assertEquals(1L, metrics.frames().custodyOversizeRefused)
+        }
+
+    @Test
+    fun `an oversize frame naming a foreign roster counts as oversize, not as a group refusal`() =
+        runTest {
+            // The byte cap is checked first (#227): every refusal is a function of the frame, so the order only
+            // decides which reason is counted.
+            val now = 1_000_000L
+            val metrics = MeshMetrics()
+            val repo = ForwardRepository(db.forwardDao(), StoreDigest { now }, db, maxSignedBytes = CAP, metrics = metrics)
+            val g = roster(listOf("alice", "bob", "carol"))
+            val foreign = g.copy(members = g.members + "mallory")
+            val frame =
+                padded(CAP + 1) { content ->
+                    RelayEnvelope(
+                        type = FrameType.CHAT,
+                        id = "both",
+                        senderId = "mallory",
+                        sentAt = now,
+                        group = foreign,
+                        payload = WireCodec.encodePayload(content),
+                    )
+                }
+            assertFalse(repo.store(frame, ForwardStore.ORIGIN_RELAY, now))
+            assertEquals(1L, metrics.frames().custodyOversizeRefused)
+            assertEquals(0L, metrics.groups().groupCustodyRefused)
+        }
+
+    @Test
+    fun `the sweep deletes a row stored before the byte cap and keeps the digest on the live fold`() =
+        runTest {
+            // A build without the cap stored the long row; the upgraded sweep reclaims it, and since that moves the live
+            // set the rebuild must fold what is left.
+            val now = 1_000_000L
+            val digest = StoreDigest { now }
+            val dao = db.forwardDao()
+            val repo = ForwardRepository(dao, digest, db, maxSignedBytes = CAP)
+            assertTrue(repo.store(paddedDm("cap", sender = "carol", sentAt = now, signedBytes = CAP), ForwardStore.ORIGIN_RELAY, now))
+            val old = paddedDm("old", sender = "dave", sentAt = now, signedBytes = CAP + 1)
+            dao.insert(
+                ForwardEntity(
+                    id = "old",
+                    recipientId = "peer",
+                    groupId = null,
+                    senderId = "dave",
+                    type = FrameType.CHAT,
+                    origin = ForwardStore.ORIGIN_RELAY,
+                    signed = old.signed,
+                    sig = ByteArray(0),
+                    sentAt = now,
+                    receivedAt = now,
+                    expiresAt = now + ForwardRepository.DEFAULT_TTL_MS,
+                ),
+            )
+            // A build without the cap folded it into its digest when it stored it.
+            digest.add("old", now + ForwardRepository.DEFAULT_TTL_MS, now)
+            assertEquals(listOf("cap", "old"), repo.liveIds(now).sorted())
+            assertNotEquals(StoreDigest.fingerprint(listOf("cap")), digest.version.value)
+
+            assertEquals("the oversize row counts among what the sweep removed", 1, repo.sweepExpired(now))
+            assertEquals(listOf("cap"), repo.liveIds(now))
+            assertEquals("the sweep folds the old row out", StoreDigest.fingerprint(listOf("cap")), digest.version.value)
+            assertEquals("once the old rows are gone it finds nothing", 0, repo.sweepExpired(now))
+        }
+
+    @Test
+    fun `the byte cap is the value every port keeps`() {
+        // Convergence-critical (ADR 006, #227): knit-ios refuses the same frames, or two stores never agree.
+        assertEquals(61_440, ForwardRepository.DEFAULT_MAX_SIGNED_BYTES)
+    }
+
+    private companion object {
+        const val CAP = 1_024
+    }
 }

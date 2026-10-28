@@ -139,6 +139,131 @@ class MaliciousForkLabTest : StrandedLabBase() {
         }
 
     /**
+     * Custody's byte cap (#227): two free identities flood DMs, half just under the cap and half over it, and one posts an
+     * over-cap message in the room. Every store refuses each over-cap frame alike and counts it, keeps every frame under
+     * the cap, and still keeps Alice's DM to an absent Dave. A refusal is custody's alone: Bob relays the over-cap frames
+     * on to Alice, who counts them too, and both read the room post. The cap is scaled down with the frames, and the
+     * honest frames here are far below it, as in the field.
+     */
+    @Suppress("LongMethod") // one scenario: the flood, the refusals on each store, then Dave's return and the oracle
+    @Test
+    fun anOverCapFloodIsRefusedByEveryStoreAndStillDeliveredAndRelayed() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxSignedBytes = BYTE_CAP)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val dave = lab.node("dave", limits).apply { setDisplayName("Dave") }
+            val mallory = lab.node("mallory", limits).apply { setDisplayName("Mallory") }
+            lab.linkAll(alice to bob, bob to dave, mallory to bob)
+            lab.awaitAcquainted(alice, bob, dave, mallory)
+            lab.unlink(bob, dave)
+            assertTrue(alice.sendDm(dave, "while you were out"))
+            val dm = alice.ownMessageId(alice.dmWith(dave), "while you were out")
+            lab.await(1) { if (dm in bob.custodyIds()) 1 else 0 }
+
+            val sybils = (1..2).map { LabSybil(seed = 8_000 + it, name = "sybil $it") }
+            sybils.forEach { mallory.flood(it.profile(lab.clock.now())) }
+            val start = lab.clock.now() - 60_000L
+            val near =
+                sybils.flatMapIndexed { n, sybil ->
+                    (1..PER_SIZE).map { i ->
+                        sybil.dm(
+                            to = sybils[1 - n].nodeId,
+                            sentAt = start + n * 100 + i,
+                            signedBytes =
+                                BYTE_CAP - i + 1,
+                        )
+                    }
+                }
+            val over =
+                sybils.flatMapIndexed { n, sybil ->
+                    (1..PER_SIZE).map { i ->
+                        sybil.dm(
+                            to = sybils[1 - n].nodeId,
+                            sentAt = start + n * 100 + 50 + i,
+                            signedBytes =
+                                BYTE_CAP + i,
+                        )
+                    }
+                }
+            val post = "漢".repeat(BYTE_CAP / 3)
+            val roomPost = sybils.first().room(post, lab.clock.now())
+            (near + over + roomPost).forEach { mallory.flood(it) }
+            val nearIds = near.map { checkNotNull(WireCodec.decodeEnvelope(it.signed)).id }.toSet()
+            val overIds = (over + roomPost).map { checkNotNull(WireCodec.decodeEnvelope(it.signed)).id }.toSet()
+            assertTrue("the room post is over the cap", roomPost.signed.size > BYTE_CAP)
+
+            lab.await(overIds.size) {
+                bob.metrics
+                    .frames()
+                    .custodyOversizeRefused
+                    .toInt()
+            }
+            lab.await(overIds.size) {
+                alice.metrics
+                    .frames()
+                    .custodyOversizeRefused
+                    .toInt()
+            }
+            lab.await(nearIds.size) { nearIds.count { it in bob.custodyIds() && it in alice.custodyIds() } }
+            lab.await(2) { listOf(alice, bob).count { post in it.roomPosts()[sybils.first().nodeId].orEmpty() } }
+            lab.unlink(mallory, bob)
+
+            for (node in listOf(alice, bob)) {
+                val sizes = node.custodySignedBytes()
+                assertTrue(
+                    "${node.name} holds no over-cap frame: ${sizes.filterValues { it > BYTE_CAP }}",
+                    sizes.values.all {
+                        it <=
+                            BYTE_CAP
+                    },
+                )
+                assertTrue("${node.name} holds none of the over-cap ids", overIds.none { it in sizes })
+                assertEquals("${node.name} refused no group frame for it", 0L, node.metrics.groups().groupCustodyRefused)
+            }
+            assertTrue("bob still carries alice's DM", dm in bob.custodyIds())
+
+            bob.transport.connect(dave.transport, lossy = { it.hops > 0 })
+            lab.await(1) { dave.decrypted(dave.dmWith(alice)).count { it.second == "while you were out" } }
+            lab.await(nearIds.size) { nearIds.count { it in dave.custodyIds() } }
+            assertTrue("dave took no over-cap frame from bob", dave.custodySignedBytes().values.all { it <= BYTE_CAP })
+            lab.assertConverged(listOf(alice, dave), atLeast = 1, carriers = listOf(bob)) { it.dmWith(if (it === alice) dave else alice) }
+        }
+
+    /**
+     * A row over the byte cap that a build before it kept (#227): Bob holds it and Dave, who never did, cannot, so their
+     * stores differ for as long as Bob keeps it. Bob's sweep deletes it, a function of the row alone, and the stores
+     * converge.
+     */
+    @Test
+    fun anOverCapRowFromBeforeTheCapIsSweptAndTheStoresConverge() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxSignedBytes = BYTE_CAP)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val dave = lab.node("dave", limits).apply { setDisplayName("Dave") }
+            lab.linkAll(alice to bob, bob to dave)
+            lab.awaitAcquainted(alice, bob, dave)
+            val sybil = LabSybil(seed = 9_001, name = "sybil")
+            val old = sybil.dm(to = alice.nodeId, sentAt = lab.clock.now(), signedBytes = BYTE_CAP + 1)
+            val oldId = checkNotNull(WireCodec.decodeEnvelope(old.signed)).id
+            // A link-up digest Bob handles between the plant and the sweep is answered from the table, so it would serve
+            // the row to a peer that never pinned the Sybil, who parks it for a key that never comes. Only that serve
+            // carries a Sybil frame, so Bob's pipes drop the Sybil's frames through the oracle.
+            val sybilsOwn = { wire: WireEnvelope -> WireCodec.decodeEnvelope(wire.signed)?.senderId == sybil.nodeId }
+            bob.transport.lossy(alice.transport, sybilsOwn)
+            bob.transport.lossy(dave.transport, sybilsOwn)
+            bob.plantCustodyRow(old)
+            assertTrue("bob holds the old row", oldId in bob.custodyIds())
+            assertTrue("dave never held it", oldId !in dave.custodyIds())
+
+            bob.sweepExpired()
+            assertTrue("the sweep took it out", oldId !in bob.custodyIds())
+            assertTrue(alice.sendDm(dave, "after the sweep"))
+            lab.assertConverged(listOf(alice, dave), atLeast = 1, carriers = listOf(bob)) { it.dmWith(if (it === alice) dave else alice) }
+        }
+
+    /**
      * The group form of the wipe, from outside the group: Mallory knows a group's id and roster (both ride every group
      * frame in the clear) and floods five frames naming it, stamped at the window's edge, into stores that keep three of
      * a group. Every node used to carry them, and they were the group's newest, so Carol, away, came back to Mallory's
@@ -258,5 +383,7 @@ class MaliciousForkLabTest : StrandedLabBase() {
     private companion object {
         const val SYBILS = 10
         const val FLOOD_PER_SYBIL = 8
+        const val BYTE_CAP = 4_096
+        const val PER_SIZE = 3
     }
 }

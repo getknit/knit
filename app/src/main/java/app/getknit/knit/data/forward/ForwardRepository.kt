@@ -32,7 +32,9 @@ import kotlinx.coroutines.sync.withLock
  *  - a **per-group quota** ([maxPerGroup]) so one busy group can't monopolize the buffer either;
  *  - a **broadcast quota** ([maxBroadcast]) so ambient broadcast chatter can't crowd out addressed messages;
  *  - a **global cap** ([maxRows]) that evicts from the **largest sender bucket** first, one row at a time, so a
- *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm).
+ *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm);
+ *  - a **byte cap** ([maxSignedBytes]) on each frame's `signed` bytes, so the row cap bounds what custody holds on disk
+ *    and re-serves too (#227): without it a thousand rows of any size were a few hundred megabytes on every carrier.
  *
  * The sender, group and room quotas keep their newest-N by the frame-global `(sentAt, id)`. Origin plays no part in
  * any of them: our own sends are bounded exactly like relayed traffic (ADR 006). A frame naming a group is carried
@@ -52,10 +54,11 @@ class ForwardRepository(
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
+    private val maxSignedBytes: Int = DEFAULT_MAX_SIGNED_BYTES,
     private val maxPerSender: Int = DEFAULT_MAX_PER_SENDER,
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
-    // Counts the group frames the gate in [store] refuses; null in the rigs that do not read it.
+    // Counts the frames [store] refuses for their size or their group's roster; null in the rigs that do not read it.
     private val metrics: MeshMetrics? = null,
 ) : ForwardStore {
     // Serializes store/remove/sweepExpired so each in-memory [digest] update commits atomically with its
@@ -74,6 +77,19 @@ class ForwardRepository(
         now: Long,
     ): Boolean {
         val env = frame.envelope
+        // The byte cap (#227) comes first, before anything reads the payload. A frame whose `signed` is longer than
+        // [maxSignedBytes] is refused on every origin, our own included: no honest build authors one, and a size is a
+        // function of the frame alone, so every node refuses the same frames and the digest is unmoved. Every refusal
+        // here is such a function, so the order only decides which reason is counted: an oversize frame naming a
+        // foreign roster counts as oversize. `sig` is not counted. Delivery and relay are unchanged.
+        if (frame.signed.size > maxSignedBytes) {
+            metrics?.onCustodyOversizeRefused()
+            Log.w(
+                TAG,
+                "custody refused ${env.id.take(ID_CHARS)} (${env.type}): ${frame.signed.size} signed bytes over the cap of $maxSignedBytes",
+            )
+            return false
+        }
         val groupId = env.group?.id
         // Only broadcast-room *chat* is the ambient, higher-volume, shorter-lived class. Reactions, receipts,
         // and profiles share its null recipient/group shape but are higher-value metadata, so they must be
@@ -322,13 +338,22 @@ class ForwardRepository(
 
     override suspend fun sweepExpired(now: Long): Int =
         mutex.withLock {
-            val removed = dao.deleteExpired(now)
+            val expired = dao.deleteExpired(now)
             // Runs at startup, periodically, and on heartbeat — also our reliable point to (re)sync the digest to
-            // the table (initialises it after a restart, and reconciles any drift from eviction). Digest-neutral by
-            // construction: every row the delete reclaimed was already outside the live fold, so the sweep is pure
+            // the table (initialises it after a restart, and reconciles any drift from eviction). The expiry delete is
+            // digest-neutral by construction: every row it reclaims was already outside the live fold, so it is pure
             // storage GC and its per-node tick phase can no longer open a divergence window (work item #8).
+            //
+            // The oversize delete (#227) is the one exception to that: it removes LIVE rows, the ones a build without the
+            // byte cap stored, so it moves the live set. It is a function of the row alone, so every upgraded node deletes
+            // the same rows, and once the pre-upgrade rows are gone it finds nothing; the rebuild below folds the result.
+            // Until a node's first sweep after the upgrade an old over-cap row still counts toward the quotas, so a store
+            // in that window can evict one frame an already-swept peer keeps; that peer re-serves it, so nothing is
+            // stranded. The live, quota, digest and replay reads stay unfiltered by length on purpose.
+            val oversize = dao.deleteLongerThan(maxSignedBytes)
+            if (oversize > 0) Log.w(TAG, "custody swept $oversize rows over the cap of $maxSignedBytes signed bytes")
             rebuildDigest(now)
-            removed
+            expired + oversize
         }
 
     /** Re-syncs the digest to the table's live `(id, expiresAt)` set — the only rebuild source. */
@@ -348,6 +373,17 @@ class ForwardRepository(
 
         /** Cap total carried frames; past it the largest sender bucket loses its oldest frame (ADR 2026-10.7mqm). */
         const val DEFAULT_MAX_ROWS = 1_000
+
+        /**
+         * Cap one carried frame's `signed` bytes; custody refuses a longer one (#227). The largest honest frame
+         * measures 15,335 bytes of `signed` (an eight-member group frame at every clamp), and the one outlier, a room
+         * post binding as many mentions as 2,000 units hold, 56,144 (`CustodyHeadroomLabTest`, ADR 2026-10.mqzv). It
+         * sits below the spool's ceiling (`maxBlob` 64 KiB, and a sealed frame blob is `signed + 93`,
+         * so a spool carries `signed` up to 65,443: `ScopeCrypto`, `ScopeRegistry`), so custody admits nothing the
+         * Internet plane couldn't push. Worst case [DEFAULT_MAX_ROWS] × 60 KiB ≈ 60 MiB, down from ~500 MB. Identical
+         * on every node and in knit-ios (`vectors/custody-v1.json`).
+         */
+        const val DEFAULT_MAX_SIGNED_BYTES = 61_440
 
         /** Cap carried frames per sender, so one identity can't monopolize the buffer. */
         const val DEFAULT_MAX_PER_SENDER = 200

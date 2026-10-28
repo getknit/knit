@@ -1,7 +1,8 @@
 {
-  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
+  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted). A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; `signedBytes` is the length of the encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
   "limits": {
     "maxRows": 8,
+    "maxSignedBytes": 2048,
     "maxPerSender": 4,
     "maxPerGroup": 3,
     "maxBroadcast": 3,
@@ -20,6 +21,7 @@
         "recipientId": "bob",
         "sentAt": 1799999910000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000010000,
       "kept": true,
@@ -38,6 +40,7 @@
         "recipientId": "bob",
         "sentAt": 1799999920000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000020000,
       "kept": true,
@@ -57,6 +60,7 @@
         "recipientId": "bob",
         "sentAt": 1799999930000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000030000,
       "kept": true,
@@ -77,6 +81,7 @@
         "recipientId": "bob",
         "sentAt": 1799999940000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000040000,
       "kept": true,
@@ -98,6 +103,7 @@
         "recipientId": "bob",
         "sentAt": 1799999950000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000050000,
       "kept": true,
@@ -121,6 +127,7 @@
         "recipientId": "bob",
         "sentAt": 1799999905000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000005000,
       "kept": false,
@@ -141,6 +148,7 @@
         "senderId": "bob",
         "sentAt": 1799999960000
       },
+      "signedBytes": 56,
       "isRoomChat": true,
       "expiresAt": 1800000020000,
       "kept": true,
@@ -162,6 +170,7 @@
         "senderId": "carol",
         "sentAt": 1799999961000
       },
+      "signedBytes": 58,
       "isRoomChat": true,
       "expiresAt": 1800000021000,
       "kept": true,
@@ -184,6 +193,7 @@
         "senderId": "bob",
         "sentAt": 1799999962000
       },
+      "signedBytes": 56,
       "isRoomChat": true,
       "expiresAt": 1800000022000,
       "kept": true,
@@ -207,6 +217,7 @@
         "senderId": "dave",
         "sentAt": 1799999963000
       },
+      "signedBytes": 57,
       "isRoomChat": true,
       "expiresAt": 1800000023000,
       "kept": true,
@@ -240,6 +251,7 @@
         },
         "sentAt": 1799999970000
       },
+      "signedBytes": 137,
       "isRoomChat": false,
       "expiresAt": 1800000070000,
       "kept": true,
@@ -275,6 +287,7 @@
         },
         "sentAt": 1799999971000
       },
+      "signedBytes": 147,
       "isRoomChat": false,
       "expiresAt": 1800000071000,
       "kept": true,
@@ -307,6 +320,7 @@
         },
         "sentAt": 1799999972000
       },
+      "signedBytes": 135,
       "isRoomChat": false,
       "expiresAt": 1800000072000,
       "kept": true,
@@ -341,6 +355,7 @@
         },
         "sentAt": 1799999973000
       },
+      "signedBytes": 137,
       "isRoomChat": false,
       "expiresAt": 1800000073000,
       "kept": true,
@@ -375,6 +390,7 @@
         },
         "sentAt": 1799999974000
       },
+      "signedBytes": 139,
       "isRoomChat": false,
       "expiresAt": 1800000074000,
       "kept": false,
@@ -408,6 +424,7 @@
         },
         "sentAt": 1799999974000
       },
+      "signedBytes": 147,
       "isRoomChat": false,
       "expiresAt": 1800000074000,
       "kept": false,
@@ -439,6 +456,7 @@
         },
         "sentAt": 1799999974000
       },
+      "signedBytes": 133,
       "isRoomChat": false,
       "expiresAt": 1800000074000,
       "kept": false,
@@ -464,6 +482,7 @@
         "recipientId": "bob",
         "sentAt": 1799999980000
       },
+      "signedBytes": 73,
       "isRoomChat": false,
       "expiresAt": 1800000080000,
       "kept": true,
@@ -491,6 +510,7 @@
         "recipientId": "bob",
         "sentAt": 1799999980000
       },
+      "signedBytes": 73,
       "isRoomChat": false,
       "expiresAt": 1800000080000,
       "kept": true,
@@ -518,6 +538,7 @@
         "recipientId": "bob",
         "sentAt": 1799999980000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000080000,
       "kept": true,
@@ -545,6 +566,7 @@
         "recipientId": "bob",
         "sentAt": 1799999899999
       },
+      "signedBytes": 72,
       "isRoomChat": false,
       "expiresAt": 1799999999999,
       "kept": false,
@@ -570,6 +592,7 @@
         "recipientId": "bob",
         "sentAt": 1800000300001
       },
+      "signedBytes": 72,
       "isRoomChat": false,
       "expiresAt": 1800000400001,
       "kept": false,
@@ -595,6 +618,7 @@
         "recipientId": "bob",
         "sentAt": 1800000300000
       },
+      "signedBytes": 72,
       "isRoomChat": false,
       "expiresAt": 1800000400000,
       "kept": true,
@@ -622,6 +646,7 @@
         "recipientId": "bob",
         "sentAt": 1800000044000
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000144000,
       "kept": true,
@@ -647,6 +672,7 @@
         "recipientId": "bob",
         "sentAt": 1800000344997
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000444997,
       "kept": true,
@@ -674,6 +700,7 @@
         "recipientId": "bob",
         "sentAt": 1800000344998
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000444998,
       "kept": true,
@@ -701,6 +728,7 @@
         "recipientId": "bob",
         "sentAt": 1800000344999
       },
+      "signedBytes": 74,
       "isRoomChat": false,
       "expiresAt": 1800000444999,
       "kept": true,
@@ -715,6 +743,97 @@
         "g4",
         "h1",
         "s3",
+        "z3"
+      ]
+    },
+    {
+      "note": "byte cap: signed of exactly maxSignedBytes is kept; the full store evicts for it as for any frame, everyone holds one and alice's a5 is oldest",
+      "now": 1800000045000,
+      "frame": {
+        "id": "w1",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000044500,
+        "bodyLength": 1965
+      },
+      "signedBytes": 2048,
+      "isRoomChat": false,
+      "expiresAt": 1800000144500,
+      "kept": true,
+      "evicted": [
+        "a5"
+      ],
+      "held": [
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s3",
+        "w1",
+        "z3"
+      ]
+    },
+    {
+      "note": "byte cap: one byte over is refused, and nothing is evicted to make room",
+      "now": 1800000045000,
+      "frame": {
+        "id": "w2",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000044600,
+        "bodyLength": 1966
+      },
+      "signedBytes": 2049,
+      "isRoomChat": false,
+      "expiresAt": 1800000144600,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s3",
+        "w1",
+        "z3"
+      ]
+    },
+    {
+      "note": "byte cap: oversize and a roster that does not derive, refused, nothing evicted",
+      "now": 1800000045000,
+      "frame": {
+        "id": "w3",
+        "type": "chat",
+        "senderId": "mallory",
+        "group": {
+          "id": "g-0fcb434512afea55af84f0a5",
+          "members": [
+            "alice",
+            "bob",
+            "carol",
+            "mallory"
+          ]
+        },
+        "sentAt": 1800000044700,
+        "bodyLength": 1892
+      },
+      "signedBytes": 2049,
+      "isRoomChat": false,
+      "expiresAt": 1800000144700,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "e2",
+        "f1",
+        "g3",
+        "g4",
+        "h1",
+        "s3",
+        "w1",
         "z3"
       ]
     }

@@ -29,9 +29,10 @@ interface ForwardStore {
      * stamps a frame-global TTL (`sentAt + ttl`) and enforces the storage caps; a frame whose id is already
      * held is ignored. Returns whether the frame is now (or already was) in custody. False means we do not hold it,
      * so the caller must skip follow-on custody work like pulling the frame's attachment blob: it was **refused**
-     * (dead on arrival — its frame-global expiry has passed, e.g. a skewed-clock peer re-served a frame every node
-     * has swept; dated past the future window; or a group frame whose roster is not its own, ADR 2026-10.7mqm), or
-     * the caps **evicted it in the write that stored it**, as every node holding the same frames does.
+     * (its `signed` is over the byte cap, checked first, ADR 2026-10.mqzv; dead on arrival — its frame-global expiry
+     * has passed, e.g. a skewed-clock peer re-served a frame every node has swept; dated past the future window; or a
+     * group frame whose roster is not its own, ADR 2026-10.7mqm), or the caps **evicted it in the write that stored
+     * it**, as every node holding the same frames does.
      */
     suspend fun store(
         frame: CarriedFrame,
@@ -124,7 +125,10 @@ interface ForwardStore {
 
     suspend fun remove(id: String)
 
-    /** Drops every frame whose TTL has elapsed by [now]; returns how many were removed. */
+    /**
+     * Drops every frame whose TTL has elapsed by [now], and every frame longer than custody's byte cap (#227); returns
+     * how many were removed.
+     */
     suspend fun sweepExpired(now: Long): Int
 
     companion object {

@@ -262,6 +262,7 @@ carries; never renumber an old one.
 | [2026-10.kxnw](decisions/2026-10-kxnw-a-call-between-neighbours-carries-its-media-over-a-wi-fi-direct-group.md) | A call between neighbours carries its media over a Wi-Fi Direct group | calls, wifi-direct, transfer |
 | [2026-10.m4fk](decisions/2026-10-m4fk-a-scope-config-is-kept-per-issuer-and-sealed-only-under-a-confirmed-session.md) | A scope config is kept per issuer and sealed only under a confirmed session | crypto, spool, wire |
 | [2026-10.mptm](decisions/2026-10-mptm-an-attachment-keeps-the-identity-it-arrived-under.md) | An attachment keeps the identity it arrived under | attachments, crypto, privacy, custody |
+| [2026-10.mqzv](decisions/2026-10-mqzv-custody-refuses-a-frame-whose-signed-bytes-exceed-60-kib.md) | Custody refuses a frame whose signed bytes exceed 60 KiB | custody, security |
 | [2026-10.mr88](decisions/2026-10-mr88-own-stun-and-turn-servers-replace-the-spool-s-per-kind.md) | Own STUN and TURN servers replace the spool's per kind | calls, spool, settings |
 | [2026-10.nsr7](decisions/2026-10-nsr7-a-file-s-receiver-reports-its-progress.md) | A file's receiver reports its progress, and the holder times parked asks by it | ble, mesh, blobs |
 | [2026-10.nxfb](decisions/2026-10-nxfb-a-blob-is-not-asked-of-a-peer-streaming-to-us.md) | A blob is not asked of a peer streaming to us, and a fed file stays in flight while its link keeps feeding | mesh, attachments, blob-exchange, bluetooth |

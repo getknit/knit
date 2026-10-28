@@ -344,6 +344,7 @@ class MeshMetrics {
     private val blePhyGiveUps = AtomicLong()
     private val bleCodedAdvertDark = AtomicLong()
     private val digestsReplaced = AtomicLong()
+    private val custodyOversizeRefused = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
@@ -707,6 +708,15 @@ class MeshMetrics {
      */
     fun onGroupCustodyRefused() {
         groupCustodyRefused.incrementAndGet()
+    }
+
+    /**
+     * Custody refused a frame whose `signed` bytes are longer than its byte cap
+     * (`ForwardRepository.DEFAULT_MAX_SIGNED_BYTES`, #227). No honest build authors one; the frame is still delivered
+     * and relayed.
+     */
+    fun onCustodyOversizeRefused() {
+        custodyOversizeRefused.incrementAndGet()
     }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
@@ -1307,6 +1317,7 @@ class MeshMetrics {
             framesDropped = byReason.values.sum(),
             dropsByReason = byReason.filterValues { it > 0 },
             digestsReplaced = digestsReplaced.get(),
+            custodyOversizeRefused = custodyOversizeRefused.get(),
             healsCompleted = healsCompleted.get(),
             roundsFailedBy = roundsFailed.mapValues { it.value.get() }.filterValues { it > 0 },
         )
@@ -1546,7 +1557,8 @@ class MeshMetrics {
     ) {
         /** What the router did with frames — authored, delivered, relayed, handed on, suppressed, deduped, dropped
          * (by [DropReason]) — the bytes it put on the wire, and the sync rounds around them: heal passes, digests a
-         * newer one replaced in a link's queue, and session-loop rounds that threw (by [MeshRound]). */
+         * newer one replaced in a link's queue, frames custody refused for their size, and session-loop rounds that
+         * threw (by [MeshRound]). */
         data class Frames(
             val framesOriginated: Long = 0,
             val framesDelivered: Long = 0,
@@ -1558,6 +1570,8 @@ class MeshMetrics {
             val framesDropped: Long = 0,
             val dropsByReason: Map<DropReason, Long> = emptyMap(),
             val digestsReplaced: Long = 0,
+            // #227: a frame custody would not carry because its `signed` bytes are over the byte cap.
+            val custodyOversizeRefused: Long = 0,
             val healsCompleted: Long = 0,
             val roundsFailedBy: Map<MeshRound, Long> = emptyMap(),
         )

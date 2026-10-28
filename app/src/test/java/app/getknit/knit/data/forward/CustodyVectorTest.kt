@@ -38,7 +38,11 @@ import org.junit.Test
  * port replays the steps through its own store and must reproduce every answer, eviction and set, or two nodes holding
  * the same frames hold different custody and their digests never agree (ADR 006). The steps cover each bucket's trim
  * (sender, group, room: newest-N), the global cap's largest-bucket-first with both tie-breaks, a frame evicted by its own
- * write, expired residue that counts toward nothing, the dead-on-arrival and future-window refusals, and the group gate.
+ * write, expired residue that counts toward nothing, the dead-on-arrival and future-window refusals, the group gate, and
+ * the byte cap (#227): a frame of exactly `maxSignedBytes` kept, one byte over refused, and an oversize frame that also
+ * fails the group gate refused. Each step records the length of the `signed` bytes the store is handed (`signedBytes`),
+ * which a port reproduces before it replays the step, so a padded frame that encodes differently fails as that and not as
+ * a custody disagreement.
  *
  * Written by the real [ForwardRepository] over Room only with `KNIT_WRITE_VECTORS=1`. Checked two ways: the file's steps
  * replayed through the store, as another port reads them, and the file compared byte for byte with a regeneration, so
@@ -54,8 +58,10 @@ class CustodyVectorTest : RoomDbTest() {
             file.getValue("steps").jsonArray.forEachIndexed { n, element ->
                 val step = element.jsonObject
                 val now = step.getValue("now").jsonPrimitive.long
-                val outcome = apply(store, frameOf(step.getValue("frame").jsonObject), now)
+                val frame = frameOf(step.getValue("frame").jsonObject)
                 val label = "step ${n + 1} (${step.getValue("note").jsonPrimitive.content})"
+                assertEquals("$label: signedBytes", step.getValue("signedBytes").jsonPrimitive.int, WireCodec.encodeEnvelope(frame).size)
+                val outcome = apply(store, frame, now)
                 assertEquals("$label: kept", step.getValue("kept").jsonPrimitive.boolean, outcome.kept)
                 assertEquals("$label: evicted", step.getValue("evicted").strings(), outcome.evicted)
                 assertEquals("$label: held", step.getValue("held").strings(), outcome.held)
@@ -112,6 +118,7 @@ class CustodyVectorTest : RoomDbTest() {
             ttlMs = limits.getValue("ttlMs").jsonPrimitive.long,
             broadcastTtlMs = limits.getValue("broadcastTtlMs").jsonPrimitive.long,
             maxRows = limits.getValue("maxRows").jsonPrimitive.int,
+            maxSignedBytes = limits.getValue("maxSignedBytes").jsonPrimitive.int,
             maxPerSender = limits.getValue("maxPerSender").jsonPrimitive.int,
             maxPerGroup = limits.getValue("maxPerGroup").jsonPrimitive.int,
             maxBroadcast = limits.getValue("maxBroadcast").jsonPrimitive.int,
@@ -131,6 +138,7 @@ class CustodyVectorTest : RoomDbTest() {
                         put("note", step.note)
                         put("now", step.now)
                         put("frame", frameJson(step.frame))
+                        put("signedBytes", WireCodec.encodeEnvelope(step.frame).size)
                         put("isRoomChat", isRoomChat(step.frame))
                         put("expiresAt", step.frame.sentAt + if (isRoomChat(step.frame)) BROADCAST_TTL_MS else TTL_MS)
                         put("kept", outcome.kept)
@@ -145,6 +153,7 @@ class CustodyVectorTest : RoomDbTest() {
     private fun limitsJson(): JsonObject =
         buildJsonObject {
             put("maxRows", 8)
+            put("maxSignedBytes", MAX_SIGNED_BYTES)
             put("maxPerSender", 4)
             put("maxPerGroup", 3)
             put("maxBroadcast", 3)
@@ -169,6 +178,8 @@ class CustodyVectorTest : RoomDbTest() {
                 }
             }
             put("sentAt", frame.sentAt)
+            val bodyLength = WireCodec.decodePayload<ChatContent>(frame.payload)?.body?.length ?: 0
+            if (bodyLength > 0) put("bodyLength", bodyLength)
         }
 
     private fun frameOf(json: JsonObject): RelayEnvelope =
@@ -187,8 +198,25 @@ class CustodyVectorTest : RoomDbTest() {
                         departed = group["departed"]?.strings(),
                     )
                 },
-            payload = WireCodec.encodePayload(ChatContent(body = "")),
+            payload = body(json["bodyLength"]?.jsonPrimitive?.int ?: 0),
         )
+
+    /** A chat payload whose body is [length] "x"s: how the byte-cap steps pad a frame to an exact `signed` size. */
+    private fun body(length: Int): ByteArray = WireCodec.encodePayload(ChatContent(body = "x".repeat(length)))
+
+    /**
+     * The frame [frame] builds around a payload, padded to exactly [signedBytes] of `signed`: the body's length is
+     * searched upward, since CBOR's length prefixes grow at 24, 256 and 65,536 and no fixed offset holds.
+     */
+    private fun sized(
+        signedBytes: Int,
+        frame: (ByteArray) -> RelayEnvelope,
+    ): RelayEnvelope =
+        (0..signedBytes)
+            .asSequence()
+            .map { frame(body(it)) }
+            .first { WireCodec.encodeEnvelope(it).size >= signedBytes }
+            .also { check(WireCodec.encodeEnvelope(it).size == signedBytes) { "no body length makes $signedBytes signed bytes" } }
 
     private fun kotlinx.serialization.json.JsonElement.strings(): List<String> = (this as JsonArray).map { it.jsonPrimitive.content }
 
@@ -196,7 +224,8 @@ class CustodyVectorTest : RoomDbTest() {
         id: String,
         sender: String,
         sentAt: Long,
-    ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, recipientId = "bob", payload = EMPTY)
+        payload: ByteArray = EMPTY,
+    ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, recipientId = "bob", payload = payload)
 
     private fun room(
         id: String,
@@ -209,7 +238,8 @@ class CustodyVectorTest : RoomDbTest() {
         sender: String,
         sentAt: Long,
         roster: GroupInfo = founding,
-    ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, group = roster, payload = EMPTY)
+        payload: ByteArray = EMPTY,
+    ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, group = roster, payload = payload)
 
     /**
      * The steps, each with the reason it is here. The outcomes are the store's, never written by hand; a note that no
@@ -263,6 +293,22 @@ class CustodyVectorTest : RoomDbTest() {
                 "the flood's bucket is now the largest and pays for the cap: s1 goes",
             ),
             Step(later, dm("s3", "sybil", later + Protocol.MAX_FUTURE_SKEW_MS - 1), "and again: s2 goes, the honest frames stay"),
+            Step(
+                later,
+                sized(MAX_SIGNED_BYTES) { dm("w1", "walt", later - 500, it) },
+                "byte cap: signed of exactly maxSignedBytes is kept; the full store evicts for it as for any frame, " +
+                    "everyone holds one and alice's a5 is oldest",
+            ),
+            Step(
+                later,
+                sized(MAX_SIGNED_BYTES + 1) { dm("w2", "walt", later - 400, it) },
+                "byte cap: one byte over is refused, and nothing is evicted to make room",
+            ),
+            Step(
+                later,
+                sized(MAX_SIGNED_BYTES + 1) { group("w3", "mallory", later - 300, smuggled, it) },
+                "byte cap: oversize and a roster that does not derive, refused, nothing evicted",
+            ),
         )
     }
 
@@ -285,6 +331,7 @@ class CustodyVectorTest : RoomDbTest() {
         const val T0 = 1_800_000_000_000L
         const val TTL_MS = 100_000L
         const val BROADCAST_TTL_MS = 60_000L
+        const val MAX_SIGNED_BYTES = 2_048
         val EMPTY: ByteArray = WireCodec.encodePayload(ChatContent(body = ""))
         const val ABOUT =
             "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, " +
@@ -293,7 +340,10 @@ class CustodyVectorTest : RoomDbTest() {
                 "sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts " +
                 "and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, " +
                 "ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a " +
-                "group whose members + departed do not derive to its id or whose sender is not a member. `kept` is whether " +
+                "group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, " +
+                "refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted). A frame's " +
+                "`bodyLength` (absent means 0) pads its chat body with that many \"x\"; `signedBytes` is the length of the " +
+                "encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether " +
                 "the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set " +
                 "after it. Ids and sender ids compare bytewise."
     }

@@ -47,9 +47,38 @@ class LabSybil(
             ),
         )
 
-    /** A DM to [to] stamped [sentAt], which the fork picks: a custodial frame every carrier holds for a day. */
+    /**
+     * A DM to [to] stamped [sentAt], which the fork picks: a custodial frame every carrier holds for a day. With
+     * [signedBytes], its noise is sized so the frame's `signed` is exactly that long (custody's byte cap, #227).
+     */
     fun dm(
         to: String,
+        sentAt: Long,
+        signedBytes: Int? = null,
+    ): WireEnvelope {
+        val id = FrameId.new()
+
+        fun frame(ct: Int) =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = nodeId,
+                sentAt = sentAt,
+                recipientId = to,
+                payload = WireCodec.encodePayload(ChatContent(enc = sealedNoise(Random(sentAt), ct))),
+            )
+        if (signedBytes == null) return signed(frame(KEY_BYTES))
+        // A byte string's length prefix grows at 24 and 256, so a step can overshoot by its width: walk back to the size.
+        var ct = maxOf(0, signedBytes - WireCodec.encodeEnvelope(frame(0)).size)
+        while (ct > 0 && WireCodec.encodeEnvelope(frame(ct)).size > signedBytes) ct--
+        val env = frame(ct)
+        check(WireCodec.encodeEnvelope(env).size == signedBytes) { "no noise length makes a $signedBytes-byte frame" }
+        return signed(env)
+    }
+
+    /** A Nearby-room post of [body] stamped [sentAt]: cleartext, delivered to everyone who hears it, carried for six hours. */
+    fun room(
+        body: String,
         sentAt: Long,
     ): WireEnvelope =
         signed(
@@ -58,8 +87,7 @@ class LabSybil(
                 id = FrameId.new(),
                 senderId = nodeId,
                 sentAt = sentAt,
-                recipientId = to,
-                payload = WireCodec.encodePayload(ChatContent(enc = sealedNoise(Random(sentAt)))),
+                payload = WireCodec.encodePayload(ChatContent(body = body)),
             ),
         )
 
@@ -72,11 +100,13 @@ class LabSybil(
         private const val KEY_BYTES = 32
 
         /**
-         * A sealed body nobody can open: random bytes in a v1 envelope wrapped to no one. Custody carries a DM or group
-         * frame only sealed (`InboundPipeline.canCarry`), and a fork pays nothing to fake the seal.
+         * A sealed body nobody can open: [ctBytes] random bytes in a v1 envelope wrapped to no one. Custody carries a DM or
+         * group frame only sealed (`InboundPipeline.canCarry`), and a fork pays nothing to fake the seal.
          */
-        fun sealedNoise(random: Random): EncEnvelope =
-            EncEnvelope(nonce = random.nextBytes(NONCE_BYTES), ct = random.nextBytes(KEY_BYTES), keys = emptyList())
+        fun sealedNoise(
+            random: Random,
+            ctBytes: Int = KEY_BYTES,
+        ): EncEnvelope = EncEnvelope(nonce = random.nextBytes(NONCE_BYTES), ct = random.nextBytes(ctBytes), keys = emptyList())
 
         private const val NONCE_BYTES = 12
     }

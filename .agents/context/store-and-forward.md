@@ -110,6 +110,17 @@ it only orders a sender's own frames, and a tighter one would refuse a fast-cloc
 marked it seen, so two nodes' digests would differ for a seen window per frame. Still open: 200 room posts from Sybils (the per-link `IngressBudget` is keyed by a claimed id), and a group's
 own member flooding its group (an insider).
 
+**The byte cap** (ADR 2026-10.mqzv, #227). Custody refuses a frame whose `signed` is longer than
+`DEFAULT_MAX_SIGNED_BYTES` (61,440, 60 KiB), first among the refusals in `ForwardRepository.store`, on every origin, and
+counts `custodyOversizeRefused`; `sig` is not counted. The rows used to be bounded by count alone, so 1,000 near-512 KiB
+frames from a few pinned identities held about 500 MB, which every whole-row replay read out at once; now the worst case
+is about 60 MiB. The largest honest frame, a room post binding 1,000 mentions, measures well under it
+(`CustodyHeadroomLabTest`), and a spool carries `signed` up to 65,443, so custody admits nothing the Internet plane could
+not push. `sweepExpired` also deletes over-cap rows held from before the upgrade (`ForwardDao.deleteLongerThan`): the
+sweep's one delete of live rows, a function of the row alone. Never filter the live reads by length instead: a query
+that missed the filter would diverge for good. Like the group gate, a refusal is custody's alone; the frame is still
+delivered and relayed. The constant is shared with knit-ios through `vectors/custody-v1.json`.
+
 **The group gate** (same ADR). A frame naming a group (`RelayEnvelope.group`) is custodied only when its `members` and
 `departed` derive to the group's id (`Conversations.groupIdFor`, the founding roster) and its sender is one of the
 `members` (`ForwardRepository.carriesGroup`). Without it any pinned identity that knew a group's id filled that

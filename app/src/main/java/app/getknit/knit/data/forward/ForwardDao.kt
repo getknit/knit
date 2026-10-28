@@ -99,6 +99,10 @@ interface ForwardDao {
     @Query("DELETE FROM forward_store WHERE expiresAt < :now")
     suspend fun deleteExpired(now: Long): Int
 
+    /** Deletes every row whose `signed` is longer than [max] bytes: what a build before the byte cap stored (#227). */
+    @Query("DELETE FROM forward_store WHERE length(signed) > :max")
+    suspend fun deleteLongerThan(max: Int): Int
+
     /** Live carried frames — the global-cap count (an expired-unswept row must not push a live one out). */
     @Query("SELECT COUNT(*) FROM forward_store WHERE expiresAt >= :now")
     suspend fun count(now: Long): Int

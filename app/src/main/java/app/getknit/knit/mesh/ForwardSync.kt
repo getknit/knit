@@ -82,8 +82,9 @@ class ForwardSync(
         }
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
         // The store impl folds the new id into the StoreDigest, whose version change re-cues neighbors that
-        // we now hold something they may want to pull. A frame the store refused (dead on arrival — a skewed-clock
-        // peer re-serving what everyone has swept — or a group frame whose roster is not its own) or evicted in its own
+        // we now hold something they may want to pull. A frame the store refused (over the byte cap, ADR 2026-10.mqzv;
+        // dead on arrival — a skewed-clock peer re-serving what everyone has swept — or a group frame whose roster is not
+        // its own) or evicted in its own
         // write (the quotas keep it nowhere, ADR 2026-10.7mqm) is one we do not hold, so we must not custody its blob.
         if (!store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())) return
         // Asked again once the row is written: a receipt [onAck] handled while the write was in flight missed the

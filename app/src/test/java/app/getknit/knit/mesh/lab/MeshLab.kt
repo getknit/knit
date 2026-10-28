@@ -41,6 +41,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.draft.DraftRepository
+import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
@@ -69,6 +70,7 @@ import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
 import app.getknit.knit.mesh.DmAckCoalescer
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.IngressBudget
 import app.getknit.knit.mesh.IntroState
 import app.getknit.knit.mesh.MeshManager
@@ -980,6 +982,7 @@ data class LabLimits(
     val custodyMaxPerSender: Int = ForwardRepository.DEFAULT_MAX_PER_SENDER,
     val custodyMaxPerGroup: Int = ForwardRepository.DEFAULT_MAX_PER_GROUP,
     val custodyMaxBroadcast: Int = ForwardRepository.DEFAULT_MAX_BROADCAST,
+    val custodyMaxSignedBytes: Int = ForwardRepository.DEFAULT_MAX_SIGNED_BYTES,
     /**
      * The LoRa bridge's Trickle interval ([LoraGossipPolicy]; 5–15 min in the field). A scenario that waits
      * for an OFFER or the backfill it drives shortens it; the field numbers would never fire inside an await.
@@ -1271,6 +1274,7 @@ class LabNode internal constructor(
                 maxPerSender = limits.custodyMaxPerSender,
                 maxPerGroup = limits.custodyMaxPerGroup,
                 maxBroadcast = limits.custodyMaxBroadcast,
+                maxSignedBytes = limits.custodyMaxSignedBytes,
                 metrics = metrics,
             )
         // The leaves with a hardware or UI side. Text allowed unless [flaggedText], every picture unless [picturesExplicit],
@@ -2211,6 +2215,36 @@ class LabNode internal constructor(
 
     /** The custody store's live id set, as the digest exchange advertises it. */
     suspend fun custodyIds(): Set<String> = forwardStore.liveIds(now()).toSet()
+
+    /** Each live custody frame's `signed` length, by frame id, of [type] or every type: what the byte cap reads (#227). */
+    suspend fun custodySignedBytes(type: String? = null): Map<String, Int> =
+        forwardStore
+            .liveFrames(now())
+            .filter { type == null || it.envelope.type == type }
+            .associate { it.envelope.id to it.signed.size }
+
+    /**
+     * Writes [frame] straight into custody's table, past `store`'s refusals and the digest: a row a build before the
+     * byte cap kept (#227), which only the sweep takes out.
+     */
+    suspend fun plantCustodyRow(frame: WireEnvelope) {
+        val env = checkNotNull(WireCodec.decodeEnvelope(frame.signed))
+        db.forwardDao().insert(
+            ForwardEntity(
+                id = env.id,
+                recipientId = env.recipientId,
+                groupId = env.group?.id,
+                senderId = env.senderId,
+                type = env.type,
+                origin = ForwardStore.ORIGIN_RELAY,
+                signed = frame.signed,
+                sig = frame.sig,
+                sentAt = env.sentAt,
+                receivedAt = now(),
+                expiresAt = env.sentAt + limits.custodyTtlMs,
+            ),
+        )
+    }
 
     /** The carried hashes the database re-arm would want now: custody's carrier column, less what is held. */
     suspend fun carrierWants(): Set<String> = forwardStore.attachmentsNeedingFetch(now()).keys
