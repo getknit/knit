@@ -1519,7 +1519,10 @@ class LabNode internal constructor(
             val joined =
                 runBlocking {
                     withTimeoutOrNull(SCOPE_JOIN_MS) {
-                        job.children.filter { it.isCancelled }.toList().joinAll()
+                        job.children
+                            .filter { it.isCancelled }
+                            .toList()
+                            .joinAll()
                         job.cancelAndJoin()
                     }
                 }
