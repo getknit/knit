@@ -50,7 +50,10 @@ class RelayScreeningLabTest {
     fun aGroupPhotoOnlyTheRelayDeliversIsScreenedAndARefusedOneIsNeitherShownNorFetchedAgain() =
         runBlocking {
             val spool = FakeSpool()
-            val (alice, bob, carol) = lab.threeOnOneRelay(spool)
+            // Attachment presence is only asked (`ahave`), never pushed: a first look before alice's upload lands waits
+            // out the re-look, which no poke reaches. Only that timer is cut; the timed round stays at the field value.
+            val relooks = LabLimits().copy(spoolAttachmentRetryMs = MeshLab.CALENDAR_ROUND_MS)
+            val (alice, bob, carol) = lab.threeOnOneRelay(spool, relooks)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "founded together"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }

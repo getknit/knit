@@ -490,7 +490,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   instead of the scenario sitting it out in real time: `LabLimits.calendarRounds()` cuts the Internet plane's timed round (60 s) and
   attachment re-look (15 s) to a second, `dmAckHoldMs` the LoRa DM ✓✓ hold (45 s, ADR 054). Both stay at the
   field values by default, so the other spool scenarios still converge on the events, and a lost wake shows as
-  a slow scenario rather than a pass. An oracle that needs the jump goes after it: `assertConverged`'s
+  a slow scenario rather than a pass. A timer no poke reaches without a jump is cut alone: attachment presence is
+  only asked (`ahave`), so a first look before the upload lands waits out the re-look, and
+  `RelayScreeningLabTest` shortens `spoolAttachmentRetryMs` only, keeping the timed round at the field value. An oracle that needs the jump goes after it: `assertConverged`'s
   attachment half waits for bytes a deferral holds until the grace a jump ends (2026-10-04, a 60 s scenario
   that was waiting out `ACK_GRACE_MS` on the wall clock). Forward only. The seam is `MeshManager(clock = …)` plus the one-liners that hand the same
   clock to `ForwardSync` (load-bearing — its `now` is what `ForwardRepository.store`'s dead-on-arrival and

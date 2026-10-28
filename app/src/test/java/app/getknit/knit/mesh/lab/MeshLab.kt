@@ -711,10 +711,13 @@ class MeshLab {
      * Three nodes on one relay — alice, bob and carol — linked, acquainted and holding DM sessions both ways, so
      * every DM scope derives. Still linked on return: a scenario parts whichever radios it means to.
      */
-    internal suspend fun threeOnOneRelay(spool: FakeSpool): Triple<LabNode, LabNode, LabNode> {
-        val alice = node("alice", spool = spool).apply { setDisplayName("Alice") }
-        val bob = node("bob", spool = spool).apply { setDisplayName("Bob") }
-        val carol = node("carol", spool = spool).apply { setDisplayName("Carol") }
+    internal suspend fun threeOnOneRelay(
+        spool: FakeSpool,
+        limits: LabLimits = LabLimits(),
+    ): Triple<LabNode, LabNode, LabNode> {
+        val alice = node("alice", limits, spool = spool).apply { setDisplayName("Alice") }
+        val bob = node("bob", limits, spool = spool).apply { setDisplayName("Bob") }
+        val carol = node("carol", limits, spool = spool).apply { setDisplayName("Carol") }
         linkAll(alice to bob, bob to carol, alice to carol)
         awaitAcquainted(alice, bob, carol)
         listOf(alice to bob, alice to carol, bob to carol).forEach { (a, b) ->
@@ -1005,8 +1008,9 @@ data class LabLimits(
      * The Internet plane's timed round and attachment re-look ([ScopeSync.TICK_INTERVAL_MS],
      * [ScopeSync.ATTACHMENT_RETRY_MS]). The field values by default, so every spool scenario still converges on
      * the events and a lost wake shows as a slow scenario (`scripts/lab-chaos.sh` names those). Only a scenario
-     * whose step is a calendar transition — a [LabClock.advance] the next timed round must notice — shortens
-     * them, as [calendarRounds] does: the jump cannot move a `delay`.
+     * whose step waits on a timer no poke reaches shortens them: a calendar transition — a [LabClock.advance] the
+     * next timed round must notice, as [calendarRounds] does, since the jump cannot move a `delay` — or the spool's
+     * ask-only attachment presence, where a first look before the upload lands waits out the re-look alone.
      */
     val spoolTickMs: Long = ScopeSync.TICK_INTERVAL_MS,
     val spoolAttachmentRetryMs: Long = ScopeSync.ATTACHMENT_RETRY_MS,
