@@ -50,7 +50,8 @@ PACKAGE_DIRS = [APP_PACKAGE, "app/src/test/java/app/getknit/knit", "app/src/main
 
 # The Markdown that points into the code. ADR files are read for ADR ids only (see the module doc).
 DOC_ROOTS = ["AGENTS.md", "CLAUDE.md", ".agents/context", ".agents/rules", ".agents/personas", ".agents/memory/roadmap.md",
-             ".agents/skills/debug-bridge", ".agents/skills/upgrade-notes", "docs"]
+             ".agents/skills/debug-bridge", ".agents/skills/machine-translation", ".agents/skills/upgrade-notes",
+             "docs"]
 ADR_DIR = ".agents/memory/decisions"
 SELF = {"scripts/doc-lint.py", "scripts/test_doc_lint.py"}
 

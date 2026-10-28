@@ -31,6 +31,8 @@ Build, tooling and process:
 - **When editing any Kotlin/Compose/data code:** obey `.agents/rules/coding.md`.
 - **When adding or changing user-facing text, a string resource or a `values-<locale>/` file, or syncing Weblate's
   screenshots:** READ `.agents/context/translations.md`.
+- **When starting a machine pass for a language, a final pass over one, or translating new English strings into the
+  shipped locales:** RUN the `machine-translation` skill.
 - **When renaming/moving/removing a symbol, file or ADR, or editing `.agents/` or `docs/`:** RUN
   `python3 scripts/doc-lint.py` and fix what it names (an intended old name carries
   `<!-- doc-lint: allow <name> — <why> -->`).
@@ -91,7 +93,7 @@ Tests, devices and review:
 ## Capabilities
 
 - RUN skills in `.agents/skills/` (vendored; surfaced to Claude Code via `.claude/skills/`): `kotlin-patterns`,
-  `material-3`, `debug-bridge`, `weblate-cli`, `upgrade-notes`, `dotagents-standard`, `adr`.
+  `material-3`, `debug-bridge`, `weblate-cli`, `machine-translation`, `upgrade-notes`, `dotagents-standard`, `adr`.
 - SPAWN reviewer and DELEGATE to owner personas in `.agents/personas/` as `.agents/rules/personas.md` says.
 - ADD a decision with `python3 scripts/adr.py new "<title>" --topics a,b`, then `python3 scripts/adr.py index`; never
   hand-edit `decisions.md` or pick an ADR number. The `adr` skill has the format, writing and lint rules, and its own

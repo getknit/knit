@@ -19,16 +19,18 @@ no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». Progress per la
   `context/toolchain.md`), so a locale is added only with every translatable string in it. A new English string
   then fails lint until each shipped locale has it: that failure is the reminder, not noise. Never relax the check,
   `tools:ignore` it or mark a user-facing string `translatable="false"` to get past it; translate it.
-- **Adding a language.** The machine pass translates the whole of `values/strings.xml` into `values-<locale>/strings.xml`
-  against the glossary (`scripts/translation-glossary.tsv`, mirrored into Weblate's translator instructions),
-  skipping `translatable="false"`, in the English file's order so Weblate's first rewrite of it is small. A second
-  pass then reviews every string for meaning, glossary, agreement and fit, changing only what is wrong. Each
-  `<plurals>` carries every quantity lint names for the language (`MissingQuantity`): Portuguese, Spanish, French and
-  Italian need a `many` beside `one` and `other`, the same words as `other` (it only covers numbers like a million);
+- **Adding a language.** The `machine-translation` skill is the procedure. The machine pass translates the whole of
+  `values/strings.xml` into `values-<locale>/strings.xml` against the glossary (`scripts/translation-glossary.tsv`,
+  mirrored into Weblate's translator instructions), skipping `translatable="false"`, in the English file's order so
+  Weblate's first rewrite of it is small. A second pass then reviews every string for meaning, glossary, agreement
+  and fit, changing only what is wrong. Each `<plurals>` carries every quantity lint names for the language
+  (`MissingQuantity`): Portuguese, Spanish, French and Italian need a `many` beside `one` and `other`, the same words
+  as `other` (it only covers numbers like a million);
   Ukrainian needs `one` (1, 21), `few` (2–4), `many` (0, 5–20) and `other` (fractions, written as `many`).
   The store listing goes in `fastlane/metadata/android/<locale>/` (Play's caps: 30 characters title, 80 short, 4000
-  full); Play's copy is pasted into the Console by hand (Play has no plain `es`: the `es/` listing goes into both
-  `es-419` and `es-ES`), and F-Droid reads the folder at the built commit.
+  full). Play gets every folder at release, under Play's own code where it differs (Play has no plain `es` or `fr`:
+  `es/` goes up as `es-419` and `es-ES`, `fr/` as `fr-FR` and `fr-CA`), and F-Droid reads the folder at the built
+  commit.
 - **`scripts/translation-check.py`** reads the XML alone, in a second, and names what lint would fail and what a
   reader notices first: a missing or extra string, a placeholder that moved, an unescaped apostrophe, a plural the
   language doesn't use (errors), and text left in English, a short label more than twice its English length, a
