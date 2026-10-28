@@ -370,7 +370,9 @@
     <string name="call_diag_heard_loss_now">↓ Perte actuelle</string>
     <string name="call_diag_heard_loss_call">↓ Perte, appel</string>
     <string name="call_diag_transit">Transit</string>
-    <string name="call_diag_loss">Perte</string>
+    <string name="call_diag_heard_loss">↓ Perte</string>
+    <string name="call_diag_sent_loss">↑ Perte</string>
+    <string name="call_diag_gaps">Coupures</string>
     <string name="call_diag_path">Chemin</string>
     <string name="call_diag_relay">Relais</string>
     <string name="call_diag_prefer">Préférence</string>
@@ -552,6 +554,11 @@
     <string name="chat_action_details">Infos du message</string>
     <string name="chat_action_delete">Supprimer le message</string>
     <string name="chat_message_deleted">Message supprimé</string>
+    <string name="chat_action_pin">Épingler le message</string>
+    <string name="chat_action_unpin">Désépingler le message</string>
+    <string name="chat_pinned_label">Message épinglé</string>
+    <string name="chat_pinned_position">Message épinglé %1$d sur %2$d</string>
+    <string name="chat_pin_replaced_oldest">Épinglé. Le plus ancien message que vous aviez épinglé dans cette discussion a été désépinglé pour faire de la place.</string>
     <string name="chat_delete_confirm_title">Supprimer le message ?</string>
     <string name="chat_delete_confirm_body">Il sera supprimé de cet appareil uniquement.</string>
     <string name="chat_delete_confirm_action">Supprimer</string>
