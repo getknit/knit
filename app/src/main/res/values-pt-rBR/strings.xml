@@ -23,7 +23,7 @@
     <string name="channel_alerts_name">Conexão e alertas</string>
     <string name="channel_alerts_desc">Mudanças de conexão e erros da rede mesh</string>
     <string name="storage_alert_title">O Knit não conseguiu iniciar a rede mesh</string>
-    <string name="storage_alert_text">O armazenamento seguro deste celular não respondeu, então o Knit não conseguiu abrir suas mensagens. Nada foi apagado. Toque para tentar de novo.</string>
+    <string name="storage_alert_text">O armazenamento seguro deste celular parou de responder, por isso o Knit não conseguiu abrir suas mensagens. Nada foi apagado. Toque para tentar novamente.</string>
     <string name="storage_unavailable_title">Aguardando o armazenamento seguro</string>
     <string name="storage_unavailable_body">O armazenamento seguro deste celular não respondeu, então o Knit ainda não consegue abrir suas mensagens. Nada foi apagado. Tente de novo daqui a pouco — reiniciar o celular também pode ajudar.</string>
     <string name="storage_unavailable_retry">Tentar de novo</string>
@@ -54,7 +54,7 @@
     <string name="channel_dms_desc">Mensagens privadas 1:1</string>
     <string name="channel_meshtastic_name">Canal público Meshtastic</string>
     <string name="channel_meshtastic_desc">Publicações no canal principal do seu rádio Meshtastic</string>
-    <string name="channel_commons_name">Sala comum</string>
+    <string name="channel_commons_name">Salas comuns</string>
     <string name="channel_commons_desc">Publicações na sala compartilhada de um retransmissor</string>
     <string name="mention_channel_name">Menções</string>
     <string name="mention_channel_description">Notificações quando alguém menciona você com @</string>
@@ -84,7 +84,7 @@
         <item quantity="many">%d solicitações de mensagem</item>
         <item quantity="other">%d solicitações de mensagem</item>
     </plurals>
-    <string name="onboarding_title">Boas-vindas ao Knit</string>
+    <string name="onboarding_title">Bem-vindo ao Knit</string>
     <string name="onboarding_tagline">Converse com quem está por perto — sem conta e sem internet.</string>
     <string name="onboarding_how_hop_title">De celular para celular</string>
     <string name="onboarding_how_hop_body">Celulares ao alcance se conectam por Wi-Fi e Bluetooth. As mensagens pulam de um para o outro — sem nenhuma rede no meio.</string>
