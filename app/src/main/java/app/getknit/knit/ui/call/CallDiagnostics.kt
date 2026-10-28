@@ -103,9 +103,10 @@ internal fun CallDiagnostics(
 }
 
 /**
- * The diagnostics card of a walkie session (§3.11), laid out as [CallDiagnostics] is: the chunks' transit, jitter and
- * loss, the frames' rate each way over the latest burst and the player's start-up buffer, over the path a chunk takes,
- * the codec, the chunks and the frames. Transit is read off two phones' clocks; the rest is not.
+ * The diagnostics card of a walkie session (§3.11), laid out as [CallDiagnostics] is: the loss each way and the
+ * silences heard mid-burst, the chunks' transit and jitter and the player's start-up buffer, the frames' rate each way
+ * over the latest burst, over the path a chunk takes, the codec, the chunks, the frames and the bursts. Transit is read
+ * off two phones' clocks; the rest is not.
  */
 @Composable
 internal fun WalkieDiagnostics(
@@ -120,14 +121,19 @@ internal fun WalkieDiagnostics(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Title(stringResource(R.string.call_diag_walkie_title), stringResource(R.string.call_diag_marker_mesh))
             Row(Modifier.fillMaxWidth()) {
+                Metric(stringResource(R.string.call_diag_heard_loss), heardLossOf(stats), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_sent_loss), percent(stats.sentLossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_gaps), gapsOf(stats), Modifier.weight(1f))
+            }
+            Row(Modifier.fillMaxWidth()) {
                 Metric(stringResource(R.string.call_diag_transit), ms(stats.transitMs), Modifier.weight(1f))
                 Metric(stringResource(R.string.call_diag_jitter), ms(stats.jitterMs), Modifier.weight(1f))
-                Metric(stringResource(R.string.call_diag_loss), percent(stats.lossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_buffer), ms(stats.bufferMs), Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth()) {
                 Metric(stringResource(R.string.call_diag_send), kbps(stats.sendKbps), Modifier.weight(1f))
                 Metric(stringResource(R.string.call_diag_receive), kbps(stats.receiveKbps), Modifier.weight(1f))
-                Metric(stringResource(R.string.call_diag_buffer), ms(stats.bufferMs), Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Details(
@@ -136,7 +142,7 @@ internal fun WalkieDiagnostics(
                     DetailLine(stringResource(R.string.call_diag_codec), WALKIE_CODEC),
                     DetailLine(stringResource(R.string.call_diag_chunks), chunksOf(stats)),
                     DetailLine(stringResource(R.string.call_diag_frame), framesOf(stats)),
-                    DetailLine(stringResource(R.string.call_diag_bursts), "${stats.burstsOut} sent · ${stats.burstsIn} heard"),
+                    DetailLine(stringResource(R.string.call_diag_bursts), burstsOf(stats)),
                 ),
             )
         }
@@ -239,17 +245,50 @@ private const val FINE_BELOW = 10.0
 private const val HZ_PER_KHZ = 1_000
 private const val BPS_PER_KBPS = 1_000
 private const val WALKIE_PACKET_MS = 20
+private const val MS_PER_S = 1_000L
 
 /** "Opus · 8 kbps · 16 kHz · mono · 20 ms": what a walkie burst is recorded as (C-3.11-5). */
 private const val WALKIE_CODEC =
     "Opus · ${WalkiePolicy.BIT_RATE / BPS_PER_KBPS} kbps · ${WalkiePolicy.SAMPLE_RATE / HZ_PER_KHZ} kHz · mono · $WALKIE_PACKET_MS ms"
 
-/** "480 ms · 42 out, 1 failed · 40 in, 2 lost": the chunks' length and how many went and came. */
+/**
+ * "480 ms · 42 out, 1 failed, 3 unheard · 40 in, 2 lost": the chunks' length, how many went (the peer's reports said
+ * some never came) and how many came (some skipped as never come).
+ */
 internal fun chunksOf(stats: WalkieStats): String {
-    val out = "${stats.chunksOut} out" + if (stats.chunksFailed > 0) ", ${stats.chunksFailed} failed" else ""
+    val out =
+        "${stats.chunksOut} out" +
+            (if (stats.chunksFailed > 0) ", ${stats.chunksFailed} failed" else "") +
+            if (stats.chunksUnheard > 0) ", ${stats.chunksUnheard} unheard" else ""
     val inbound = "${stats.chunksIn} in" + if (stats.chunksLost > 0) ", ${stats.chunksLost} lost" else ""
     return "${WalkiePolicy.CHUNK_MS} ms · $out · $inbound"
 }
+
+/**
+ * "12 sent, 1 unreported · 10 heard, 2 cut short": bursts each way, the sent ones no report came back for in time, and
+ * the heard ones whose last chunk never came.
+ */
+internal fun burstsOf(stats: WalkieStats): String {
+    val out = "${stats.burstsOut} sent" + if (stats.burstsUnreported > 0) ", ${stats.burstsUnreported} unreported" else ""
+    val inbound = "${stats.burstsIn} heard" + if (stats.burstsCutShort > 0) ", ${stats.burstsCutShort} cut short" else ""
+    return "$out · $inbound"
+}
+
+/** The loss heard, "≥ 2.5 %" while a burst cut short leaves its count a floor. */
+internal fun heardLossOf(stats: WalkieStats): String {
+    val loss = percent(stats.lossPercent)
+    return if (stats.burstsCutShort > 0 && stats.lossPercent != null) "≥ $loss" else loss
+}
+
+/** "2 · 1.6 s": the silences heard mid-burst and their length in all; none before a burst has played. */
+internal fun gapsOf(stats: WalkieStats): String =
+    when {
+        stats.gaps > 0 -> "${stats.gaps} · ${seconds(stats.gapMs)}"
+        stats.burstsIn > 0 -> "0"
+        else -> NONE
+    }
+
+private fun seconds(ms: Long): String = if (ms < MS_PER_S) "$ms ms" else "%.1f s".format(Locale.ROOT, ms / MS_PER_S.toDouble())
 
 /** "712 B out · 708 B in · handed over in 12 ms": the average frame each way, and how long the radio took one. */
 internal fun framesOf(stats: WalkieStats): String =

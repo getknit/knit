@@ -370,7 +370,9 @@
     <string name="call_diag_heard_loss_now">↓ Perda agora</string>
     <string name="call_diag_heard_loss_call">↓ Perda, chamada</string>
     <string name="call_diag_transit">Trânsito</string>
-    <string name="call_diag_loss">Perda</string>
+    <string name="call_diag_heard_loss">↓ Perda</string>
+    <string name="call_diag_sent_loss">↑ Perda</string>
+    <string name="call_diag_gaps">Silêncios</string>
     <string name="call_diag_path">Caminho</string>
     <string name="call_diag_relay">Retransmissor</string>
     <string name="call_diag_prefer">Preferir</string>

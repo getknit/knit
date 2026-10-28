@@ -458,7 +458,9 @@
     <string name="call_diag_heard_loss_now">↓ Loss now</string>
     <string name="call_diag_heard_loss_call">↓ Loss, call</string>
     <string name="call_diag_transit">Transit</string>
-    <string name="call_diag_loss">Loss</string>
+    <string name="call_diag_heard_loss">↓ Loss</string>
+    <string name="call_diag_sent_loss">↑ Loss</string>
+    <string name="call_diag_gaps">Gaps</string>
     <string name="call_diag_path">Path</string>
     <string name="call_diag_relay">Relay</string>
     <string name="call_diag_prefer">Prefer</string>

@@ -378,7 +378,9 @@
     <string name="call_diag_heard_loss_now">↓ Втрати зараз</string>
     <string name="call_diag_heard_loss_call">↓ Втрати за дзвінок</string>
     <string name="call_diag_transit">Транзит</string>
-    <string name="call_diag_loss">Втрати</string>
+    <string name="call_diag_heard_loss">↓ Втрати</string>
+    <string name="call_diag_sent_loss">↑ Втрати</string>
+    <string name="call_diag_gaps">Розриви</string>
     <string name="call_diag_path">Шлях</string>
     <string name="call_diag_relay">TURN</string>
     <string name="call_diag_prefer">Перевага</string>

@@ -326,7 +326,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
       - `transitMs`: arrival less the sender's stamp, the median of the latest 16 chunks. It is read off both phones'
         clocks, so their skew is in it.
       - `jitterMs`: RFC 3550's, from the stamps' spacing, so it has no skew in it.
-      - `lossPercent`: chunks skipped of those expected.
+      - `lossPercent`: chunks heard lost of those expected: those skipped, and one for each of the `cutShort` bursts
+        whose last chunk never came (a floor while `cutShort` is above zero).
+      - `sentLossPercent`: this phone's chunks the peer's reports (C-3.11-10) say it never got (`unheard`), of those
+        reported on; the `unreported` bursts, with no report in time, count whole. Null with no report, as with a peer
+        that does not report. A burst that went over the radios and a relay both reads a floor.
+      - `gaps` and `gapMs`: silences mid-burst, where the player ran out of a burst's audio before its next chunk came,
+        and their length in all; one under 50 ms is not counted.
       - `sendKbps` and `receiveKbps`: frame bytes per second of speech over the latest burst each way.
       - `bufferMs`: the latest burst heard, from its first chunk to its playing.
       - `handMs`: a chunk's cut to the radio taking it, retries included.

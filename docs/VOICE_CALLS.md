@@ -977,6 +977,10 @@ its media (`REASON_MEDIA`).
     cast on. So does a burst with no report 7 s after its last chunk went. While the cast is on, every chunk is also
     cast beside its radio copy, and the report goes the same way. Two reports in a row with the radios whole turn it
     off. A peer that does not report leaves the chunks to C-3.11-6's evidence alone.
+  - **The card.** The speaker's walkie diagnostics read its sent loss off the same reports: the chunks a report did not
+    count on either plane, and the whole of a burst with no report in time. The listener's loss is only what it can
+    see: the chunks it skipped, and one for each burst whose last chunk never came, so it is a floor. Its gaps are the
+    silences mid-burst, where the player ran out of audio before the next chunk came.
 
 ### 3.12 Call records in the thread
 

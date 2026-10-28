@@ -174,8 +174,24 @@ class WalkieStreamTest {
         assertEquals(Step.Wait(4_000), queue.poll(0))
         val closing = queue.poll(4_000) as Step.Play
         assertTrue(closing.last)
+        assertTrue(closing.cutShort)
         assertEquals(0, closing.audio.size)
         assertEquals(Step.Idle, queue.poll(4_000))
+        // The chunks lost after the last that came are none the queue skipped: it counts the burst cut short instead.
+        assertEquals(0, queue.skipped)
+        assertEquals(1, queue.cutShort)
+    }
+
+    @Test
+    fun aBurstThatEndsOnItsLastChunkIsNotCutShort() {
+        val queue = TalkQueue(prebufferMs = 400, gapMs = 500, endMs = 4_000)
+        queue.offer(chunk(q = 0), at = 0)
+        queue.offer(chunk(q = 1, end = true), at = 0)
+        assertPlay(queue.poll(0), q = 0, first = true, last = false)
+        val last = queue.poll(0) as Step.Play
+        assertTrue(last.last)
+        assertFalse(last.cutShort)
+        assertEquals(0, queue.cutShort)
     }
 
     @Test

@@ -22,7 +22,8 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -81,6 +82,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -976,7 +978,10 @@ private fun talkLine(
         }
     }
 
-/** Held, it records; let go, it sends; a gesture the system cancels drops the burst. TalkBack gets both as actions. */
+/**
+ * Held, it records; let go, it sends, wherever the finger has wandered meanwhile; a gesture the system cancels drops
+ * the burst. TalkBack gets both as actions.
+ */
 @Composable
 private fun TalkButton(
     recording: Boolean,
@@ -1008,13 +1013,14 @@ private fun TalkButton(
                                 CustomAccessibilityAction(stop) { true.also { send() } },
                             )
                     }.pointerInput(Unit) {
-                        detectTapGestures(
-                            onPress = {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                talk()
-                                if (tryAwaitRelease()) send() else cancel()
-                            },
-                        )
+                        // Not detectTapGestures: its press ends when the finger leaves the button, and a thumb drifts
+                        // off it over a long burst while the user is still talking.
+                        awaitEachGesture {
+                            awaitFirstDown().consume()
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            talk()
+                            if (awaitLift()) send() else cancel()
+                        }
                     },
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -1022,6 +1028,17 @@ private fun TalkButton(
             }
         }
         ButtonLabel(if (recording) stringResource(R.string.call_talk_release) else hold)
+    }
+}
+
+/**
+ * Waits for every finger of the press to lift, in or out of the button; false when the system cancelled the gesture
+ * instead, which Compose hands on as an up that comes already consumed.
+ */
+private suspend fun AwaitPointerEventScope.awaitLift(): Boolean {
+    while (true) {
+        val event = awaitPointerEvent()
+        if (event.changes.none { it.pressed }) return event.changes.none { it.isConsumed }
     }
 }
 
@@ -1651,7 +1668,8 @@ fun CallScreenWalkieDiagnosticsPreview() =
             WalkieStats(
                 transitMs = 148.0,
                 jitterMs = 22.4,
-                lossPercent = 1.2,
+                lossPercent = 2.4,
+                sentLossPercent = 4.8,
                 sendKbps = 11.9,
                 receiveKbps = 11.8,
                 bufferMs = 412.0,
@@ -1661,8 +1679,12 @@ fun CallScreenWalkieDiagnosticsPreview() =
                 chunksOut = 42,
                 chunksIn = 81,
                 chunksLost = 1,
+                chunksUnheard = 2,
                 burstsOut = 3,
                 burstsIn = 6,
+                burstsCutShort = 1,
+                gaps = 2,
+                gapMs = 1_640,
                 path = "Bluetooth Coded · direct",
             ),
     )

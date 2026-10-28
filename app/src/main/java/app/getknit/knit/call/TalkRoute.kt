@@ -12,6 +12,9 @@ import java.util.TreeMap
  *  - [wholeToReturn] reports in a row with the radios whole turn it off again. The peer counts a chunk that came both
  *    ways on both planes, so a radio path that recovered while the cast ran shows here.
  *
+ * Each burst it judges goes to [judged] too: its chunks, and how many the report says came over either plane, or null
+ * when no report came in time — the diagnostics card's sent loss (`WalkieMeter.judged`).
+ *
  * Only for a peer that reports (`CallPayload.hr`); [WalkieTalk] builds none for one that does not, and its chunks go
  * by the radio evidence alone, as before. Pure (`TalkRouteTest`).
  */
@@ -19,6 +22,7 @@ class TalkRoute(
     private val waitMs: Long = WalkiePolicy.REPORT_WAIT_MS,
     private val lossMax: Double = WalkiePolicy.RADIO_LOSS_MAX,
     private val wholeToReturn: Int = WalkiePolicy.RADIO_WHOLE_TO_RETURN,
+    private val judged: (chunks: Int, heard: Int?) -> Unit = { _, _ -> },
 ) {
     private class Out(
         val chunks: Int,
@@ -50,6 +54,7 @@ class TalkRoute(
     @Synchronized
     fun report(report: TalkReport) {
         val out = waiting.remove(report.b) ?: return
+        judged(out.chunks, report.radio + report.relay)
         val lost = (out.chunks - report.radio).toDouble() / out.chunks
         if (lost > lossMax) lossy() else radioWhole()
     }
@@ -61,6 +66,7 @@ class TalkRoute(
             val first = waiting.firstEntry() ?: return
             if (now - first.value.at < waitMs) return
             waiting.pollFirstEntry()
+            judged(first.value.chunks, null)
             lossy()
         }
     }

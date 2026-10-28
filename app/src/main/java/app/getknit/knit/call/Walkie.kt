@@ -352,12 +352,16 @@ class TalkQueue(
     private val endMs: Long = WalkiePolicy.END_MS,
 ) {
     sealed interface Step {
-        /** Play [audio] (joined Opus packets, maybe none) of [burst]; [first] opens it, [last] closes it. */
+        /**
+         * Play [audio] (joined Opus packets, maybe none) of [burst]; [first] opens it, [last] closes it, and [cutShort]
+         * says it closes because its last chunk never came.
+         */
         class Play(
             val burst: Int,
             val audio: ByteArray,
             val first: Boolean,
             val last: Boolean,
+            val cutShort: Boolean = false,
         ) : Step
 
         /** Nothing to play for [ms], unless a chunk comes first. */
@@ -387,6 +391,10 @@ class TalkQueue(
 
     /** Chunks skipped over because they never came. */
     var skipped = 0
+        private set
+
+    /** Bursts given up on because their last chunk never came: each lost that chunk at least, and how many more is unknown. */
+    var cutShort = 0
         private set
 
     /** Takes a chunk that came at [at]; false when it is too late (its burst is over or past it) or a duplicate. */
@@ -430,8 +438,9 @@ class TalkQueue(
             if (now - burst.lastAt < endMs) return Step.Wait(burst.lastAt + endMs - now)
             // Its last chunk never came: close what played, and move on.
             val opened = started
+            cutShort++
             finish(id)
-            if (opened) return Step.Play(id, ByteArray(0), first = false, last = true)
+            if (opened) return Step.Play(id, ByteArray(0), first = false, last = true, cutShort = true)
         }
     }
 
@@ -472,8 +481,14 @@ data class WalkieStats(
     val transitMs: Double? = null,
     // RFC 3550's interarrival jitter over chunks, from the sender's stamps: no clock skew in it.
     val jitterMs: Double? = null,
-    // Chunks skipped as never come, of the chunks this session expected.
+    // Chunks heard lost, of the chunks this session expected: those skipped as never come, and one for each burst cut
+    // short (its last chunk never came, and how many before it went too is unknown), so a floor while [burstsCutShort]
+    // is above zero.
     val lossPercent: Double? = null,
+    // This phone's chunks the peer's reports (C-3.11-10) say it never got, of those its reports judged, a burst with no
+    // report in time counted whole; null with none judged, as with a peer that does not report. A report counts a
+    // chunk that came both ways on both planes, so a burst that went over both reads a floor.
+    val sentLossPercent: Double? = null,
     // Frame bytes per second of speech, over the latest burst each way.
     val sendKbps: Double? = null,
     val receiveKbps: Double? = null,
@@ -488,15 +503,24 @@ data class WalkieStats(
     val chunksFailed: Int = 0,
     val chunksIn: Int = 0,
     val chunksLost: Int = 0,
+    // This phone's chunks the peer's reports say it never got, and the bursts that had no report in time.
+    val chunksUnheard: Int = 0,
+    val burstsUnreported: Int = 0,
     val burstsOut: Int = 0,
     val burstsIn: Int = 0,
+    val burstsCutShort: Int = 0,
+    // Silences mid-burst: the player ran out of a burst's audio before its next chunk came, and how long they lasted.
+    val gaps: Int = 0,
+    val gapMs: Long = 0,
     val path: String? = null,
 )
 
 /**
  * Measures a walkie session for [WalkieStats]: each chunk out as the radio takes it (or refuses it), each chunk in as
- * the player's queue takes it, each burst as it starts playing, and the chunks skipped. Pure and clocked by its
- * callers (`WalkieMeterTest`); synchronized, since the burst out and the player run on their own threads.
+ * the player's queue takes it, each burst as it starts playing, the chunks skipped and the bursts cut short, the
+ * peer's reports of this phone's bursts, and each piece of audio as the player is handed it, against the burst's audio
+ * still to play, for the silences heard mid-burst. Pure and clocked by its callers (`WalkieMeterTest`); synchronized,
+ * since the burst out, the player and the reports run on their own threads.
  */
 class WalkieMeter {
     private val transits = ArrayDeque<Long>()
@@ -513,8 +537,20 @@ class WalkieMeter {
     private var failed = 0
     private var chunksIn = 0
     private var lost = 0
+    private var cutShort = 0
+    private var judged = 0
+    private var unheard = 0
+    private var unreported = 0
     private var burstsOut = 0
     private var burstsIn = 0
+    private var gaps = 0
+    private var gapMs = 0L
+
+    // The playing burst's audio handed to the player and not yet played out (ms) as of [aheadAt], and whether this
+    // phone's talking holds the player meanwhile.
+    private var ahead = 0L
+    private var aheadAt = 0L
+    private var held = false
 
     // Bytes over the audio they carried (ms), or over the frames counted.
     private class Tally(
@@ -538,8 +574,17 @@ class WalkieMeter {
         failed = 0
         chunksIn = 0
         lost = 0
+        cutShort = 0
+        judged = 0
+        unheard = 0
+        unreported = 0
         burstsOut = 0
         burstsIn = 0
+        gaps = 0
+        gapMs = 0L
+        ahead = 0L
+        aheadAt = 0L
+        held = false
     }
 
     /** A burst out begins: the send rate is this burst's from here. */
@@ -622,12 +667,79 @@ class WalkieMeter {
         lost += n
     }
 
+    /** [n] bursts given up on because their last chunk never came: each lost that chunk at least. */
+    @Synchronized
+    fun cutShort(n: Int) {
+        cutShort += n
+    }
+
+    /**
+     * The peer's word on a burst of [chunks] this phone sent (C-3.11-10): [heard] of them came, counted over both
+     * planes, or null when no report came in time, so none did as far as this phone can tell.
+     */
+    @Synchronized
+    fun judged(
+        chunks: Int,
+        heard: Int?,
+    ) {
+        if (chunks <= 0) return
+        judged += chunks
+        unheard += chunks - (heard ?: 0).coerceIn(0, chunks)
+        if (heard == null) unreported++
+    }
+
+    /** This phone's talking holds the player from [at] ([on]), or lets it go on: held, no audio plays out. */
+    @Synchronized
+    fun held(
+        on: Boolean,
+        at: Long,
+    ) {
+        drain(at)
+        held = on
+    }
+
+    /**
+     * [audio] of a burst handed to the player [at]; [first] opens the burst. Audio that comes once the player has played
+     * out all it had of the burst ends a silence the listener heard mid-burst, counted from [GAP_MIN_MS]. An empty piece
+     * (a burst given up on, or a cancelled one's end) ends none: nothing plays after it.
+     */
+    @Synchronized
+    fun played(
+        audio: ByteArray,
+        first: Boolean,
+        at: Long,
+    ) {
+        val ms = audioMs(audio)
+        if (first) {
+            ahead = 0L
+            aheadAt = at
+        } else {
+            val dry = drain(at)
+            if (dry >= GAP_MIN_MS && ms > 0) {
+                gaps++
+                gapMs += dry
+            }
+        }
+        ahead += ms
+    }
+
+    // Plays the burst's audio out up to [at], unless held: how long, of the time since, the player had none left.
+    private fun drain(at: Long): Long {
+        val elapsed = (at - aheadAt).coerceAtLeast(0L)
+        aheadAt = at
+        if (held) return 0L
+        val dry = elapsed - ahead
+        ahead = (ahead - elapsed).coerceAtLeast(0L)
+        return dry.coerceAtLeast(0L)
+    }
+
     @Synchronized
     fun snapshot(): WalkieStats =
         WalkieStats(
             transitMs = transits.median(),
             jitterMs = jitter,
-            lossPercent = (chunksIn + lost).takeIf { it > 0 }?.let { lost * PERCENT / it },
+            lossPercent = (chunksIn + lost + cutShort).takeIf { it > 0 }?.let { (lost + cutShort) * PERCENT / it },
+            sentLossPercent = judged.takeIf { it > 0 }?.let { unheard * PERCENT / it },
             sendKbps = out.rate(),
             receiveKbps = inTally.rate(),
             bufferMs = buffer?.toDouble(),
@@ -638,8 +750,13 @@ class WalkieMeter {
             chunksFailed = failed,
             chunksIn = chunksIn,
             chunksLost = lost,
+            chunksUnheard = unheard,
+            burstsUnreported = unreported,
             burstsOut = burstsOut,
             burstsIn = burstsIn,
+            burstsCutShort = cutShort,
+            gaps = gaps,
+            gapMs = gapMs,
         )
 
     // Bits per millisecond are kilobits per second.
@@ -664,6 +781,10 @@ class WalkieMeter {
     private companion object {
         // The latest chunks a median reads: about eight seconds of speech.
         const val WINDOW = 16
+
+        // A silence shorter than this is the track's own output latency, which the reckoning does not see, more than one
+        // the listener heard: about two of a chunk's 20 ms packets.
+        const val GAP_MIN_MS = 50L
         const val JITTER_GAIN = 16.0
         const val PERCENT = 100.0
         const val BITS = 8.0

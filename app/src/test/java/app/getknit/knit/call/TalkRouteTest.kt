@@ -77,6 +77,21 @@ class TalkRouteTest {
         assertFalse(route.castToo)
     }
 
+    @Test
+    fun eachBurstJudgedGoesToTheCardWithWhatItsReportCountedOrNoneWithoutOne() {
+        val judged = mutableListOf<Pair<Int, Int?>>()
+        val route = TalkRoute(waitMs = 7_000, judged = { chunks, heard -> judged += chunks to heard })
+        route.sent(b = 0, chunks = 10, at = 0)
+        route.sent(b = 1, chunks = 4, at = 1_000)
+        // Both planes' counts, as the report gives them.
+        route.report(TalkReport(b = 0, radio = 3, relay = 6))
+        route.expire(now = 8_000)
+        // A late report of a burst judged already, and a duplicate, are not judged again.
+        route.report(TalkReport(b = 1, radio = 4, relay = 0))
+        route.report(TalkReport(b = 0, radio = 3, relay = 6))
+        assertEquals(listOf(10 to 9, 4 to null), judged)
+    }
+
     // ---- HeardLedger ----
 
     private fun chunk(

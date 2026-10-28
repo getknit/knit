@@ -258,14 +258,14 @@ internal class WalkieTalk(
             if (outgoing != null) return@withLock false
             val call = calls.state.value?.takeIf(::isSession) ?: return@withLock false
             // Half duplex: what plays waits for the release.
-            player.hold(true)
+            hold(true)
             val bytes = Channel<ByteArray>(Channel.UNLIMITED)
             val b = burst
             // Open before the microphone, whose first read comes on its own thread.
             transcript?.begin(b, mine = true)
             if (!recorder.start(headset()) { bytes.trySend(it) }) {
                 transcript?.abandon(mine = true)
-                player.hold(false)
+                hold(false)
                 _talk.value = Talk.Idle(Talk.Note.NO_MIC)
                 return@withLock false
             }
@@ -306,7 +306,7 @@ internal class WalkieTalk(
         o.bytes.close()
         o.kept.complete(true)
         val note = o.streamer.await()
-        player.hold(false)
+        hold(false)
         lastActivity = clock()
         _talk.value = Talk.Idle(note)
     }
@@ -326,9 +326,15 @@ internal class WalkieTalk(
             o.bytes.close()
             o.kept.complete(false)
             o.streamer.await()
-            player.hold(false)
+            hold(false)
         }
         _talk.value = Talk.Idle()
+    }
+
+    // Talking holds the player, and the meter's reckoning of what it has left to play with it.
+    private fun hold(on: Boolean) {
+        player.hold(on)
+        meter.held(on, clock())
     }
 
     private fun isSession(state: CallState): Boolean = state.walkie && state.phase == CallPhase.Connected
@@ -437,7 +443,7 @@ internal class WalkieTalk(
         transcript?.reset()
         // C-3.11-10: reports go only to a peer that said it reads them, and only its reports judge our path.
         val reports = call.peerReportsHeard
-        route = if (reports) TalkRoute() else null
+        route = if (reports) TalkRoute(judged = meter::judged) else null
         val ledger = if (reports) HeardLedger() else null
         log("walkie: session ${call.id} with ${call.peerId}${if (call.degraded) " (degraded from a live call)" else ""}")
         try {
@@ -463,8 +469,10 @@ internal class WalkieTalk(
         val inbox = calls.talk.filter { it.callId == callId }.produceIn(this)
         val queue = TalkQueue()
         var skipped = 0
-        // Per burst, for its log line: when each chunk came, and when the burst began to play.
+        var cutShort = 0
+        // Per burst, for its log line: when each chunk came, the chunks skipped, and when the burst began to play.
         val arrivals = mutableMapOf<Int, MutableList<Long>>()
+        var burstSkipped = 0
         var playedAt = 0L
 
         fun take(t: TalkIn) {
@@ -481,24 +489,28 @@ internal class WalkieTalk(
             while (true) {
                 when (val step = queue.poll(clock())) {
                     is TalkQueue.Step.Play -> {
+                        // Skips happen only in the burst playing, so those since the last piece are this burst's.
+                        val skippedNow = queue.skipped - skipped
+                        skipped = queue.skipped
+                        burstSkipped = if (step.first) skippedNow else burstSkipped + skippedNow
                         if (step.first) {
                             playedAt = clock()
                             arrivals[step.burst]?.minOrNull()?.let { meter.started(it, playedAt) }
                             if (_talk.value is Talk.Idle) _talk.value = Talk.Hearing
                             transcript?.begin(step.burst)
                         }
+                        meter.played(step.audio, step.first, clock())
                         withContext(Dispatchers.IO) { player.play(OpusPackets.split(step.audio), step.first, step.last) }
                         if (step.last) {
                             // Played out: every sample has been through the tap, so the burst is whole.
                             transcript?.end(step.burst)
-                            logHeard(step.burst, arrivals.remove(step.burst).orEmpty(), playedAt, queue.skipped - skipped)
+                            logHeard(step.burst, arrivals.remove(step.burst).orEmpty(), playedAt, burstSkipped, step.cutShort)
                             heard.incrementAndGet()
                             meter.burstHeard()
                             if (_talk.value == Talk.Hearing) _talk.value = Talk.Idle()
                         }
-                        lost.addAndGet(queue.skipped - skipped)
-                        meter.skipped(queue.skipped - skipped)
-                        skipped = queue.skipped
+                        lost.addAndGet(skippedNow)
+                        meter.skipped(skippedNow)
                         lastActivity = clock()
                     }
 
@@ -510,6 +522,11 @@ internal class WalkieTalk(
                         take(inbox.receive())
                     }
                 }
+                // A burst given up on before it played anything is cut short too, with no step of its own.
+                if (queue.cutShort > cutShort) {
+                    meter.cutShort(queue.cutShort - cutShort)
+                    cutShort = queue.cutShort
+                }
                 // Whatever else came meanwhile goes into the queue before it is asked again.
                 while (true) take(inbox.tryReceive().getOrNull() ?: break)
             }
@@ -520,22 +537,24 @@ internal class WalkieTalk(
         }
     }
 
-    // One line per burst heard, in the log and the field log: when each chunk came after the first, and when the burst
-    // began to play.
+    // One line per burst heard, in the log and the field log: when each chunk came after the first, whether its last
+    // never came, and when the burst began to play.
     private fun logHeard(
         b: Int,
         at: List<Long>,
         playedAt: Long,
-        skippedSince: Int,
+        skipped: Int,
+        cutShort: Boolean,
     ) {
         val first = at.minOrNull() ?: return
         val offsets = at.joinToString("/") { "${it - first}" }
-        log("walkie: heard burst $b: ${at.size} chunks, $skippedSince skipped, arrivals +$offsets ms, began +${playedAt - first} ms")
+        val cut = if (cutShort) ", cut short" else ""
+        log("walkie: heard burst $b: ${at.size} chunks, $skipped skipped$cut, arrivals +$offsets ms, began +${playedAt - first} ms")
         field.record(
             FieldEvent.Talk(
                 TalkDirection.IN,
                 chunks = at.size,
-                lost = skippedSince,
+                lost = skipped,
                 waitMs = playedAt - first,
                 spreadMs = at.max() - first,
             ),
