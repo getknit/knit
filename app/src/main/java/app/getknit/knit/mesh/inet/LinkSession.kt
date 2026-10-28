@@ -33,8 +33,9 @@ import java.util.concurrent.atomic.AtomicLong
  * (under a transport, no frame or file: [noteUse]) for [idleMs] closes with a BYE ([EndReason.IDLE]), well inside the
  * shortest idle-path life measured (2–4 min behind a home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive
  * amendment), and one that hears nothing that opens for [silenceMs] while it sends ends [EndReason.SILENT]. A **held**
- * link ([hold]: a live session, such as a walkie, that must outlast its pauses) does not idle out: it sends a keepalive
- * after [holdKeepaliveMs] with nothing sent and ends after [holdSilenceMs] hearing nothing. A BYE ends either at once.
+ * link ([hold], [holdFor]: a live session, such as a walkie, that must outlast its pauses) does not idle out: it sends a
+ * keepalive after [holdKeepaliveMs] with nothing sent and ends after [holdSilenceMs] hearing nothing; once its hold ends
+ * it idles out as any link does, its idle and its silence counted from that end. A BYE ends either at once.
  * Every datagram is one [LinkLane] seal, so the counter is shared by every path and nothing is ever sealed twice.
  */
 class LinkSession(
@@ -103,7 +104,8 @@ class LinkSession(
     // The last DATA either way, or the moment the link came up: what an idle close counts from.
     @Volatile private var lastData = started
 
-    @Volatile private var held = false
+    // Until when the link is held ([hold], [holdFor]): past it, the idle close and the silence bound count from it.
+    @Volatile private var heldUntil = 0L
 
     // Where a DATA body that opened goes: the constructor's, until a stream [attach]es.
     @Volatile private var sink = onData
@@ -162,8 +164,17 @@ class LinkSession(
      * link gets its whole [idleMs]. For a live session that cannot wait out a fresh punch after each pause.
      */
     fun hold(on: Boolean) {
-        if (!on && held) lastData = clock()
-        held = on
+        val now = clock()
+        synchronized(stateLock) { heldUntil = if (on) Long.MAX_VALUE else minOf(heldUntil, now) }
+    }
+
+    /**
+     * Holds the link up for [ms] from now, never shortening a longer hold: a live session's hold, renewed while it lasts
+     * (`DirectLinks.raise`), which ends on its own once the renewals stop.
+     */
+    fun holdFor(ms: Long) {
+        val until = clock() + ms
+        synchronized(stateLock) { if (until > heldUntil) heldUntil = until }
     }
 
     /** Closes the session, telling the peer with a BYE when [sayBye] and the link is up. Idempotent. */
@@ -200,16 +211,21 @@ class LinkSession(
     private suspend fun watch() {
         while (scope.isActive && _state.value == State.UP) {
             val now = clock()
+            val until = heldUntil
             val next =
-                if (held) {
+                if (now < until) {
                     if (now - lastHeard >= holdSilenceMs) return close(EndReason.SILENT, sayBye = false)
                     if (now - lastSent >= holdKeepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
                     minOf(holdKeepaliveMs - (clock() - lastSent), holdSilenceMs - (clock() - lastHeard))
                 } else {
                     if (busy()) lastData = now
-                    if (now - lastData >= idleMs) return close(EndReason.IDLE)
-                    if (now - lastHeard >= silenceMs) return close(EndReason.SILENT, sayBye = false)
-                    minOf(idleMs - (now - lastData), silenceMs - (now - lastHeard))
+                    // A hold that ended counts as data and as heard up to its end: a released link gets its whole idle,
+                    // and a held one that heard a keepalive a minute ago is not taken for gone the moment it is let go.
+                    val dataAt = maxOf(lastData, until)
+                    val heardAt = maxOf(lastHeard, until)
+                    if (now - dataAt >= idleMs) return close(EndReason.IDLE)
+                    if (now - heardAt >= silenceMs) return close(EndReason.SILENT, sayBye = false)
+                    minOf(idleMs - (now - dataAt), silenceMs - (now - heardAt))
                 }
             // Never past [MAX_TICK_MS], so a hold taken or released mid-wait is acted on promptly.
             delay(next.coerceIn(MIN_TICK_MS, MAX_TICK_MS))

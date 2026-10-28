@@ -631,8 +631,9 @@ private fun Scope.callReach(): CallReach =
     }
 
 /**
- * The walkie's view of the mesh (§3.11): a chunk's link to a peer, from the live links, the peers heard through them
- * and whether a relay would cast to it (§2.7), and the call's hold on a Wi-Fi Aware link to it (`MeshTransport.holdLink`).
+ * The walkie's view of the mesh (§3.11): a chunk's link to a peer, from the live links (a contact's direct link among
+ * them, ADR 2026-10.a5yj), the peers heard through them and whether a relay would cast to it (§2.7), and the call's hold
+ * on a Wi-Fi Aware link to it, or a direct link (`MeshTransport.holdLink`, C-3.11-8).
  */
 private fun Scope.talkLinks(): TalkLinks =
     object : TalkLinks {
@@ -642,6 +643,7 @@ private fun Scope.talkLinks(): TalkLinks =
         ): Flow<TalkLink> {
             val mesh = get<MeshController>()
             val manager = get<MeshManager>()
+            val transport = get<MeshTransport>()
             // A relay's hello, its SUB's answer, a ticket's verdict and the peer's traffic arrive on no flow the walkie can
             // watch, and the radio path lapses on the clock alone (`TalkRadioPaths.WINDOW_MS`), so both are looked at again
             // every few seconds; the links move the moment they do. A relay counts only where the peer was lately seen: one
@@ -653,16 +655,18 @@ private fun Scope.talkLinks(): TalkLinks =
                         delay(CAST_LOOK_MS)
                     }
                 }
-            return combine(mesh.neighbors, looked) { linked, (radioPath, cast) ->
-                TalkLink.of(peerId, linked.mapTo(HashSet()) { it.nodeId }, radioPath, cast)
+            // The composite's own set holds the direct links beside the radios' (`mesh.neighbors` is the radios' alone).
+            return combine(mesh.neighbors, transport.neighbors, looked) { radio, linked, (radioPath, cast) ->
+                val direct = linked.any { it.nodeId == peerId } && !transport.radioLinked(peerId)
+                TalkLink.of(peerId, radio.mapTo(HashSet()) { it.nodeId }, radioPath, cast, directLink = direct)
             }.distinctUntilChanged()
         }
 
         override fun raise(peerId: String): Boolean = get<MeshTransport>().holdLink(peerId)
 
-        // sendCallTalk's order: the peer's own link, a Wi-Fi Aware one first (sendLive), else a flood over any link,
-        // and a cast through a relay for a peer the radios have no path to, or beside the radio copy when the peer's own
-        // link fades or the session's reports say the radios lose chunks.
+        // sendCallTalk's order: the peer's own link, a Wi-Fi Aware one first (sendLive), then the direct link, else a
+        // flood over any link, and a cast through a relay for a peer nothing here has a path to, or beside the copy over
+        // its link when that fades or the session's reports say the chunks are lost.
         override fun pathTo(
             peerId: String,
             peerTicketed: Boolean,
@@ -671,12 +675,14 @@ private fun Scope.talkLinks(): TalkLinks =
             val transport = get<MeshTransport>()
             val linked = transport.neighbors.value
             val manager = get<MeshManager>()
-            val cast = !manager.talkRadioPath(peerId) && manager.canCastTalk(peerId, peerTicketed)
+            val directLink = linked.any { it.nodeId == peerId } && !transport.radioLinked(peerId)
+            val cast = !directLink && !manager.talkRadioPath(peerId) && manager.canCastTalk(peerId, peerTicketed)
             return when {
                 cast && manager.castCoversTalk(peerId, peerTicketed) -> TalkPath.SPOOL
                 cast -> TalkPath.CAST_UNSEEN
                 linked.isEmpty() -> TalkPath.NONE
                 castToo && manager.canCastTalk(peerId, peerTicketed) -> TalkPath.LOSSY
+                directLink -> TalkPath.DIRECT_LINK
                 transport.bulkRouteTo(peerId) == BulkRoute.Linked -> TalkPath.WIFI_AWARE
                 linked.none { it.nodeId == peerId } -> TalkPath.FLOODED
                 transport.liveLinkFading(peerId) && manager.canCastTalk(peerId, peerTicketed) -> TalkPath.FADING

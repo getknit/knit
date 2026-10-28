@@ -298,6 +298,43 @@ class InternetLinkLabTest {
             assertTrue("a link signal went as a cast: ${spool.casts}", spool.casts.isEmpty())
         }
 
+    /**
+     * A walkie call between two islands (docs/VOICE_CALLS.md C-3.11-8, ADR 2026-10.a5yj's walkie amendment). The relay
+     * casts to anyone, and with no radio path and no link the first chunk goes that way. The call's hold — the ask a
+     * walkie renews from the ring to the hang-up — finds no radio path, so it raises a direct link, and holds it once up.
+     * From then on each chunk crosses the link alone: not one more cast, and each counted at Bob's end as come Alice's own
+     * way, never through a relay, so his reports never turn her cast on beside a link that delivers (C-3.11-10).
+     */
+    @Test
+    fun aWalkiesHoldRaisesALinkWhereNoRadioReachesAndItsChunksCrossItAloneUncast() =
+        runBlocking {
+            val spool =
+                FakeSpool(
+                    cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
+                    sig = SpoolSigInfo(maxBytes = 8_192, rate = 2),
+                    stun = listOf(LabInternet.STUN_URL),
+                )
+            val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
+
+            assertTrue(alice.sendTalk(bob, byteArrayOf(0)))
+            lab.await(1) { bob.talksViaRelay.size }
+            val cast = spool.casts.size
+
+            // Both ends' calls ask; the first ask finds nothing up yet to hold.
+            assertFalse(alice.holdLink(bob))
+            bob.holdLink(alice)
+            awaitLinked(alice, bob)
+            assertTrue(alice.holdLink(bob))
+            assertTrue(bob.holdLink(alice))
+
+            for (q in 1..CHUNKS) assertTrue(alice.sendTalk(bob, byteArrayOf(q.toByte())))
+            lab.await(CHUNKS + 1) { bob.talks.size }
+            assertEquals("a chunk was cast beside the link: ${spool.casts}", cast, spool.casts.size)
+            assertEquals("a chunk over the link counted as a relay's", 1, bob.talksViaRelay.size)
+            assertEquals((0..CHUNKS).toSet(), bob.talks.map { it.single().toInt() }.toSet())
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
     // A relay that carries sigs and frames but takes attachments only from a files ticket, which nobody holds yet.
     private fun filesGatedRelay() =
         FakeSpool(
@@ -467,5 +504,8 @@ class InternetLinkLabTest {
 
         // Demand rounds run after the proof, each of which would ask again were it still read as stuck.
         const val POST_PROOF_ROUNDS = 3
+
+        // A walkie burst's chunks after the first, over the link.
+        const val CHUNKS = 6
     }
 }

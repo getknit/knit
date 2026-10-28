@@ -1382,6 +1382,8 @@ class LabNode internal constructor(
                     linkUses.incrementAndGet()
                 },
                 onLinkUp = { manager.onDirectLinkUp(it) },
+                // A walkie's hold, as `di/DirectLinkWiring` decides it: a link only where the radios have no path.
+                onHold = { peer -> !manager.talkRadioPath(peer) && links?.raise(peer) == true },
             )
         }
 
@@ -1447,6 +1449,12 @@ class LabNode internal constructor(
         } else {
             CompositeMeshTransport(listOfNotNull(transport, lora, link?.let { LabLinkPlane(it, linkFiles, linkFileGate) }), scope)
         }
+
+    /**
+     * A walkie call's ask for its link to [peer] (`TalkLinks.raise`, docs/VOICE_CALLS.md C-3.11-8): the hold the manager's
+     * transport forwards to every plane; true while one holds a link.
+     */
+    fun holdLink(peer: LabNode): Boolean = (composite ?: transport).holdLink(peer.nodeId)
 
     /** Whether this node's direct-link plane has framed a link to [peer]. */
     internal fun linkPlaneHolds(peer: LabNode): Boolean = link?.neighbors?.value?.any { it.nodeId == peer.nodeId } == true

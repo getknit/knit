@@ -51,6 +51,7 @@ class FakeLinkNet(
     private val nats = ArrayList<Nat4>()
     private val ports = ArrayList<FakePort>()
     private val stun = HashMap<String, ByteArray>() // name → address
+    private val silent = HashMap<String, ByteArray>() // name → an address nothing answers at
     private var nextHost = 2
 
     /** A STUN server reachable as [name] at a public [address]. */
@@ -59,6 +60,14 @@ class FakeLinkNet(
         address: ByteArray,
     ) {
         stun[name] = address
+    }
+
+    /** A STUN server's name that resolves to [address] and never answers: a gather asking it waits out its whole wait. */
+    fun silentStunServer(
+        name: String,
+        address: ByteArray,
+    ) {
+        silent[name] = address
     }
 
     /**
@@ -125,7 +134,7 @@ class FakeLinkNet(
                 }
             }
 
-        override fun resolveV4(host: String): List<ByteArray> = listOfNotNull(net.stun[host])
+        override fun resolveV4(host: String): List<ByteArray> = listOfNotNull(net.stun[host] ?: net.silent[host])
 
         override fun close() {
             closed = true

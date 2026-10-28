@@ -289,6 +289,7 @@
     <string name="call_walkie_degraded">Sin conexión en vivo — se cambió a walkie-talkie</string>
     <string name="call_walkie_link_none">Aún sin enlace con %1$s. Enlazando…</string>
     <string name="call_walkie_link_spool">Sin enlace por radio con %1$s. Va por tu retransmisor</string>
+    <string name="call_walkie_link_direct_link">Sin enlace por radio con %1$s. Va por enlace directo</string>
     <string name="call_walkie_link_mesh">Sin enlace directo con %1$s. Va a través de otros teléfonos</string>
     <string name="call_talk_recording">Hablando %1$d:%2$02d</string>
     <string name="call_talk_sending">Enviando…</string>

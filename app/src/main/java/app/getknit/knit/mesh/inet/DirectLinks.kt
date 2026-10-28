@@ -96,7 +96,10 @@ fun interface LaneKeys {
  *
  * An attempt is one link id: the offer is sent once under it, the contact answers it once, and the first ANSWER that
  * opens binds it; a retry is a new link id with fresh keys, never this one again (the lane's nonce rule). Two offers
- * that cross are settled by the node ids: the lower id's offer stands and the other side answers it. A contact that
+ * that cross are settled by the node ids: the lower id's offer stands and the other side answers it, and an offer the
+ * lower id gets from the higher within [ANSWER_WAIT_MS] of its own link coming up crossed it too (it is dropped, never
+ * answered at the cost of that link); an offer that finds its own attempt superseded while it gathered never leaves. A
+ * walkie call's [raise] makes both ends offer at once, so the crossing is the rule there, not a rarity. A contact that
  * does not answer within [ANSWER_WAIT_MS], or whose punch finds no path, waits [PunchPolicy.backoffMs] before the next
  * attempt. A contact's offers are answered as often as it uses the links they make: what is budgeted is an answer that
  * came to nothing — a punch that found no path, or a link that closed without carrying any data — at most
@@ -136,6 +139,13 @@ class DirectLinks(
     // Per contact: when each answer that came to nothing ended, and whether an answer to it is in flight now.
     private val empties = ConcurrentHashMap<String, MutableList<Long>>()
     private val answering: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    // When the up link this end offered to each contact came up: a contact's offer soon after it crossed ours.
+    private val offeredUpAt = ConcurrentHashMap<String, Long>()
+
+    // Taken by [offer] placing its attempt and checking it before the send, and by [answer] deciding a crossing: each
+    // reads the other's half whole — an attempt placed, or an answer under way — never one half-made.
+    private val crossing = Any()
 
     /** One attempt's result as its `link_try` line has it, kept per peer for the debug bridge and Diagnostics. */
     class Try(
@@ -314,10 +324,17 @@ class DirectLinks(
     ): LinkOutcome {
         refusal(peerId, force)?.let { return it }
         val attempt = Attempt(bytes(LinkSignal.ID_BYTES), bytes(LinkSignal.KEY_BYTES))
-        if (attempts.putIfAbsent(peerId, attempt) != null) return LinkOutcome.BUSY
+        val placed = synchronized(crossing) { peerId !in answering && attempts.putIfAbsent(peerId, attempt) == null }
+        if (!placed) return LinkOutcome.BUSY
         val started = clock()
         val port = datagrams.open() ?: return finish(peerId, attempt, LinkOutcome.NO_PORT)
         val own = LinkGather.candidates(port, peers.stunUrls(), clock, random)
+        // Crossed while it gathered: the contact's own offer was answered here, which supersedes this one, or is being.
+        // Sent anyway, it would reach a contact whose link to us may be up by then, and cost it that link.
+        if (synchronized(crossing) { attempt.answer.isCompleted || peerId in answering }) {
+            port.close()
+            return finish(peerId, attempt, LinkOutcome.SUPERSEDED)
+        }
         val offer = signal(LinkSignal.PHASE_OFFER, attempt.linkId, attempt.kOffer, own)
         if (!peers.send(peerId, offer)) {
             port.close()
@@ -347,6 +364,7 @@ class DirectLinks(
     ): LinkOutcome? {
         if (!enabled() || peerId == selfId()) return LinkOutcome.OFF
         if (links.value[peerId]?.state?.value == LinkSession.State.UP) return LinkOutcome.UP
+        if (peerId in answering) return LinkOutcome.BUSY
         if (!force && clock() < (nextTryAt[peerId] ?: 0L)) return LinkOutcome.BACKOFF
         if (!peers.mayOffer(peerId)) return LinkOutcome.NOT_QUALIFIED
         if (!peers.canSignal(peerId)) return LinkOutcome.NO_SIG
@@ -378,6 +396,23 @@ class DirectLinks(
         return true
     }
 
+    /**
+     * A live session's ask for its link to [peerId] — a walkie call's, through `MeshTransport.holdLink`, renewed every
+     * few seconds from the ring to the hang-up (ADR 2026-10.a5yj's walkie amendment): an up link is held for
+     * [HOLD_TTL_MS] past this ask, so the hold ends on its own once the asks stop; with none up, an attempt starts —
+     * through [offer]'s own refusals, backoff and the contact's answer budget — unless one is under way. Never waits.
+     * True while a link is held.
+     */
+    fun raise(peerId: String): Boolean {
+        val session = links.value[peerId]?.takeIf { it.state.value == LinkSession.State.UP }
+        if (session != null) {
+            session.holdFor(HOLD_TTL_MS)
+            return true
+        }
+        if (enabled() && !attempts.containsKey(peerId)) scope.launch { offer(peerId) }
+        return false
+    }
+
     /** A frame or a file moved over the link to [peerId] (its transport says so): the link is in use. */
     fun noteUse(peerId: String) {
         links.value[peerId]?.noteUse()
@@ -405,11 +440,18 @@ class DirectLinks(
         offererId: String,
         offer: LinkSignal,
     ) {
-        if (!enabled() || offererId == selfId()) return
-        // Two offers crossed: the lower id's stands. Ours stands — theirs is dropped, and they answer ours.
-        val ours = attempts[offererId]
-        if (ours != null && selfId() < offererId) return
-        if (!mayAnswer(offererId) || !answering.add(offererId)) return
+        val me = selfId()
+        if (!enabled() || offererId == me) return
+        // Two offers crossed: the lower id's stands. Ours stands — theirs is dropped, and they answer ours — whether ours
+        // still waits or its link came up in the last [ANSWER_WAIT_MS]: theirs may have left before they answered ours,
+        // and answering it would close the link they hold. Later, an offer is a link they lost, and replaces ours.
+        val ours =
+            synchronized(crossing) {
+                val ours = attempts[offererId]
+                if (me < offererId && (ours != null || offeredLately(offererId))) return
+                if (!mayAnswer(offererId) || !answering.add(offererId)) return
+                ours
+            }
         try {
             ours?.answer?.complete(null)
             answerNow(offererId, offer)
@@ -417,6 +459,10 @@ class DirectLinks(
             answering.remove(offererId)
         }
     }
+
+    // Whether the link up to [peerId] is one this end offered, up for less than [ANSWER_WAIT_MS].
+    private fun offeredLately(peerId: String): Boolean =
+        links.value.containsKey(peerId) && offeredUpAt[peerId]?.let { clock() - it < ANSWER_WAIT_MS } == true
 
     // The answer itself, once [answer] has let it through: gather, derive, start punching, send the ANSWER, run.
     private suspend fun answerNow(
@@ -519,6 +565,7 @@ class DirectLinks(
         record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs)
         val upAt = clock()
         sockets[peerId] = socket
+        if (offerer) offeredUpAt[peerId] = upAt else offeredUpAt.remove(peerId)
         _links.update { it + (peerId to session) }
         onStream?.invoke(peerId, socket, offerer) ?: drain(peerId, socket)
         scope.launch {
@@ -624,6 +671,12 @@ class DirectLinks(
 
         /** Most answers to one contact in an hour that may come to nothing (no path, or a link that carried no data). */
         const val EMPTY_ANSWERS_PER_HOUR = 6
+
+        /**
+         * How long a live session's [raise] holds a link past the ask: the walkie's 25 s (docs/VOICE_CALLS.md C-3.11-8),
+         * two of its 10 s renewals and some, so one renewal late keeps it and a hang-up lets it go within this.
+         */
+        const val HOLD_TTL_MS = 25_000L
 
         private const val HOUR_MS = 60 * 60_000L
         private const val SECOND_MS = 1_000L

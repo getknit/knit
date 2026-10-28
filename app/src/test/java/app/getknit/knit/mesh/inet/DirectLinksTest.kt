@@ -44,6 +44,7 @@ class DirectLinksTest {
         var qualifies = true
         var signalOk = true
         var signals = 0
+        var stun = listOf("stun:stun.example")
     }
 
     private fun TestScope.pair(
@@ -60,7 +61,7 @@ class DirectLinksTest {
 
                     override fun canSignal(peerId: String) = me.signalOk
 
-                    override fun stunUrls() = listOf("stun:stun.example")
+                    override fun stunUrls() = me.stun
 
                     override suspend fun send(
                         peerId: String,
@@ -97,6 +98,13 @@ class DirectLinksTest {
         c: Int,
         d: Int,
     ) = byteArrayOf(a.toByte(), b.toByte(), c.toByte(), d.toByte())
+
+    private fun v6(last: Int) =
+        ByteArray(16).also {
+            it[0] = 0x24
+            it[1] = 0x01
+            it[15] = last.toByte()
+        }
 
     private fun FakeLinkNet.withStun() = also { it.stunServer("stun.example", stunAt) }
 
@@ -144,6 +152,57 @@ class DirectLinksTest {
         }
 
     @Test
+    fun aLiveSessionsAsksRaiseOneLinkHoldItThroughThePausesAndLetItIdleOutOnceTheyStop() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            // No link yet: the ask starts an attempt and holds nothing; asked again while it runs, it holds nothing either.
+            assertFalse(a.links.raise(b.id))
+            testScheduler.runCurrent()
+            assertFalse(a.links.raise(b.id))
+            a.links.links.first { b.id in it }
+            b.links.links.first { a.id in it }
+            assertEquals(1, a.signals)
+            // Both ends ask every 10 s, as a walkie call does from the ring to the hang-up: three silent minutes, three
+            // times the idle close, and the link stays.
+            repeat(ASKS) {
+                assertTrue(a.links.raise(b.id))
+                assertTrue(b.links.raise(a.id))
+                testScheduler.advanceTimeBy(ASK_MS)
+            }
+            assertTrue(b.id in a.links.links.value && a.id in b.links.links.value)
+            // The asks stop: the hold ends 25 s after the last, and the link idles out a whole minute after that.
+            val holdEnd = testScheduler.currentTime - ASK_MS + DirectLinks.HOLD_TTL_MS
+            val gone = withTimeoutOrNull(DirectLinks.HOLD_TTL_MS + LinkSession.IDLE_MS + 30_000L) { a.links.links.first { b.id !in it } }
+            assertNotNull("still up: ${a.links.links.value[b.id]?.state?.value}", gone)
+            val past = testScheduler.currentTime - holdEnd
+            assertTrue("closed ${past}ms past the hold's end", past >= LinkSession.IDLE_MS)
+            assertEquals(1, a.signals)
+        }
+
+    @Test
+    fun anAskStartsNothingWhileLinksAreOffOrTheContactWaitsOutItsBackoff() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
+            a.enabled = false
+            assertFalse(a.links.raise(b.id))
+            testScheduler.advanceTimeBy(ASK_MS)
+            assertEquals(0, a.signals)
+            a.enabled = true
+            // The punch finds no path, and the asks that follow inside its backoff send nothing.
+            assertFalse(a.links.raise(b.id))
+            repeat(PUNCH_WAIT_S) { if (tries(a).isEmpty()) testScheduler.advanceTimeBy(1_000L) }
+            assertEquals(LinkOutcome.NO_PATH, tries(a).single().outcome)
+            repeat(3) {
+                assertFalse(a.links.raise(b.id))
+                testScheduler.advanceTimeBy(ASK_MS)
+            }
+            assertEquals(1, a.signals)
+            assertEquals(1, tries(a).size)
+        }
+
+    @Test
     fun nothingIsSentToAContactThatDoesNotQualifyOrWithNoSigLaneToCarryIt() =
         runTest {
             val net = FakeLinkNet().withStun()
@@ -173,6 +232,57 @@ class DirectLinksTest {
             b.links.links.first { a.id in it }
             assertEquals(1, tries(a).count { it.outcome == LinkOutcome.UP })
             assertEquals(1, tries(b).count { it.outcome == LinkOutcome.UP })
+        }
+
+    @Test
+    fun anOfferSupersededWhileItGatheredIsNeverSentAndNoneStartsWhileThePeerIsAnswered() =
+        runTest {
+            val net = FakeLinkNet().withStun().also { it.silentStunServer("silent.example", v4(203, 0, 113, 9)) }
+            // IPv6 at both ends, so the answer still finds a path with no reflexive address from its silent STUN.
+            val (a, b) =
+                pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4), v6(1)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7), v6(2)))
+            val (low, high) = if (a.id < b.id) a to b else b to a
+            // The higher id's gather waits out a STUN server that never answers; the lower id's offer lands meanwhile.
+            high.stun = listOf("stun:silent.example")
+            val mine = async { high.links.offer(low.id) }
+            testScheduler.runCurrent()
+            val theirs = async { low.links.offer(high.id) }
+            assertEquals(LinkOutcome.SUPERSEDED, mine.await())
+            // Its answer to the lower id still gathers: no attempt of its own starts beside it.
+            assertEquals(LinkOutcome.BUSY, high.links.offer(low.id))
+            assertEquals(LinkOutcome.UP, theirs.await())
+            high.links.links.first { low.id in it }
+            assertEquals("the superseded offer went out beside the answer", 1, high.signals)
+            assertEquals(1, tries(high).count { it.outcome == LinkOutcome.UP })
+        }
+
+    @Test
+    fun anOfferFromTheHigherIdThatCrossedTheLowerIdsLinkNeverCostsItThatLinkButALaterOneReplacesIt() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            val (low, high) = if (a.id < b.id) a to b else b to a
+            assertEquals(LinkOutcome.UP, low.links.offer(high.id))
+            high.links.links.first { low.id in it }
+            val held =
+                low.links.links.value
+                    .getValue(high.id)
+            // The higher id's own offer, sent before it answered ours, lands once our link is up: it crossed ours.
+            val late = LinkSignal(LinkSignal.PHASE_OFFER, ByteArray(LinkSignal.ID_BYTES) { 1 }, ByteArray(LinkSignal.KEY_BYTES) { 2 })
+            low.links.onSignal(high.id, late)
+            testScheduler.advanceTimeBy(SIG_MS)
+            assertTrue("the link it crossed was replaced", low.links.links.value[high.id] === held)
+            assertEquals(LinkSession.State.UP, held.state.value)
+            assertEquals("an answer went out", 1, low.signals)
+            // Past the crossing window, the higher id's offer is a link it lost (its end closed without a word): answered,
+            // and the link it lost gives way to the new one.
+            testScheduler.advanceTimeBy(DirectLinks.ANSWER_WAIT_MS)
+            high.links.links.value
+                .getValue(low.id)
+                .close(LinkSession.EndReason.LOCAL, sayBye = false)
+            high.links.links.first { low.id !in it }
+            assertEquals(LinkOutcome.UP, high.links.offer(low.id, force = true))
+            low.links.links.first { it[high.id] !== held && high.id in it }
         }
 
     @Test
@@ -320,5 +430,12 @@ class DirectLinksTest {
 
     private companion object {
         const val SIG_MS = 300L
+
+        // A walkie call's asks for its link (`WalkiePolicy.LINK_ASK_MS`), and enough of them for three minutes.
+        const val ASK_MS = 10_000L
+        const val ASKS = 18
+
+        // Seconds an attempt is given to record its try: the punch's give-up, the answer's wait and some.
+        const val PUNCH_WAIT_S = 40
     }
 }

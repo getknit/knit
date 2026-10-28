@@ -78,7 +78,10 @@ internal interface TalkLinks {
         peerTicketed: () -> Boolean,
     ): Flow<TalkLink>
 
-    /** Holds the Wi-Fi Aware link to [peerId] open, or raises one, for a while; false when none will come now. */
+    /**
+     * Holds the Wi-Fi Aware link to [peerId] open, or raises one, for a while — and a direct link where the radios have
+     * no path (C-3.11-8); false when none will come now.
+     */
     fun raise(peerId: String): Boolean
 
     /**
@@ -102,6 +105,9 @@ internal enum class TalkPath(
     BLUETOOTH_CODED("Bluetooth Coded · direct"),
     BLUETOOTH("Bluetooth · direct"),
     FADING("Bluetooth · fading, relay too"),
+
+    // The contact's direct link (ADR 2026-10.a5yj): the peer's own link, though not a radio's.
+    DIRECT_LINK("Direct link"),
 
     // The peer's reports said the radios lose chunks (C-3.11-10): each goes over them and through the relay.
     LOSSY("Radio losing chunks, relay too"),
@@ -222,7 +228,8 @@ internal class WalkieTalk(
     /**
      * From the ring to the hang-up of a walkie call: track the link to its peer, and keep holding a Wi-Fi Aware one
      * ([WalkiePolicy.LINK_ASK_MS]), which the radio would otherwise close between bursts. Bluetooth can take minutes to
-     * link two phones that Wi-Fi Aware already sees, and with no link at all a chunk goes nowhere.
+     * link two phones that Wi-Fi Aware already sees, and with no link at all a chunk goes nowhere. Where the radios have
+     * no path, the same ask raises and holds a contact's direct link (C-3.11-8).
      */
     private suspend fun linking(call: CallState) {
         val mesh = links ?: return
@@ -231,7 +238,7 @@ internal class WalkieTalk(
             var armed: Boolean? = null
             while (true) {
                 val now = mesh.raise(call.peerId)
-                if (now != armed) log("walkie: Wi-Fi Aware link to ${call.peerId} ${if (now) "asked for" else "not available now"}")
+                if (now != armed) log("walkie: a link to ${call.peerId} ${if (now) "held or asked for" else "not available now"}")
                 armed = now
                 holding = now
                 delay(WalkiePolicy.LINK_ASK_MS)

@@ -786,7 +786,9 @@ class MeshManager(
             onCallTalk = { senderId, chunk, sentAt, frameBytes, hop, kind ->
                 // An opened chunk is the peer's own bytes over the radio, as good as a signature (C-3.11-6).
                 if (hop != null) talkRadioPaths.note(senderId, hop, kind, sentAt)
-                onCallTalk(senderId, chunk, sentAt, frameBytes, hop == null)
+                // One over the contact's direct link came the speaker's own way, not cast: it counts with the radios'
+                // in the listener's report (C-3.11-10), so the speaker never casts beside a link that delivers.
+                onCallTalk(senderId, chunk, sentAt, frameBytes, hop == null && kind != TransportKind.DirectLink)
             },
             linksWired = extraCapabilities and Protocol.CAP_INET_LINK != 0L,
             onLinkSignal = onLinkSignal,
@@ -4238,8 +4240,11 @@ class MeshManager(
      *  - its id is [FrameId.TALK_LENGTH] characters of a fresh one: it is a dedup key for minutes and nothing else.
      * No node custodies it, and it never rides LoRa. A live neighbour takes it alone, over its quickest link
      * ([MeshTransport.sendLive]), and relays it nowhere (ttl 0); anyone further gets a flood of at most [TALK_TTL] relays.
+     * A contact's direct link (ADR 2026-10.a5yj) is such a neighbour: the chunk crosses it alone, after any radio link
+     * to the peer, and needs no cast — though it is never a radio path ([talkRadioPath]) and the walkie raises one only
+     * where the radios have none (docs/VOICE_CALLS.md C-3.11-8).
      *
-     * A peer this phone has no radio path to — not a neighbour, and none of its own frames through a link of ours within
+     * A peer this phone has no path to — not a neighbour, and none of its own frames through a radio link of ours within
      * [TalkRadioPaths.WINDOW_MS] ([talkRadioPath]) — gets the chunk **cast** through the spools too (§2.7, [ScopeSync.cast]),
      * when a connected one would carry it: on an `ent`
      * spool that needs a cast ticket, ours or the peer's ([peerTicketed], from its walkie signal). The cast copy is
@@ -4282,9 +4287,9 @@ class MeshManager(
     }
 
     /**
-     * Whether a chunk to [peerId] is cast too: the radios have no path to it ([talkRadioPath]), or its own live link is
-     * near its floor ([MeshTransport.liveLinkFading]), or the walkie asked ([castToo]); and a connected spool would
-     * carry the cast.
+     * Whether a chunk to [peerId] is cast too: it is not a neighbour over any of [links] (a radio's or a contact's direct
+     * link) and the radios have no path to it ([talkRadioPath]), or its own live link is near its floor
+     * ([MeshTransport.liveLinkFading]), or the walkie asked ([castToo]); and a connected spool would carry the cast.
      */
     private fun castsTalk(
         peerId: String,
@@ -4292,8 +4297,10 @@ class MeshManager(
         peerTicketed: Boolean,
         castToo: Boolean,
     ): Boolean {
-        val fading = links.any { it.nodeId == peerId } && transport.liveLinkFading(peerId)
-        return (castToo || fading || !radioPathTo(peerId, radioLinks())) && canCastTalk(peerId, peerTicketed)
+        val linked = links.any { it.nodeId == peerId }
+        val fading = linked && transport.liveLinkFading(peerId)
+        val path = linked || radioPathTo(peerId, radioLinks())
+        return (castToo || fading || !path) && canCastTalk(peerId, peerTicketed)
     }
 
     /**

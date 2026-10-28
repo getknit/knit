@@ -10,7 +10,8 @@ topics: [mesh, spool, transport, privacy, wire]
 
 Status: Accepted (2026-10-28, the maintainer's call, after the signal-lane device run). Proposed 2026-10-18 as a draft on
 `exp/dht-links`; Phase 0 went 2026-10-27 (the go/no-go amendment below); Phases 1–2 are built and device-checked in
-debug builds. Accepted ahead of Phase 3, which still flips the release default: `BuildConfig.DIRECT_LINKS` stays off
+debug builds, and Phase 3's walkie trigger since (the walkie amendment below). Accepted ahead of the rest of Phase 3,
+which still flips the release default: `BuildConfig.DIRECT_LINKS` stays off
 in release, and the person's switch stays off by default, until then. Reads ADR 019 (the spool plane and why
 `ScopeSync` is not a transport), ADR 2026-10.3tee (call signalling over sealed spool frames), ADR 2026-09.2ajk and
 ADR 2026-10.fw8g (presence tiers), ADR 2026-10.kxnw (`CallLane`), ADR 2026-10.8t2y (the spool's gates) and ADR
@@ -487,3 +488,54 @@ with no ticket in the way, and the spool stays content-blind. So:
 
 The spool sees two sigs on the pair's DM scope per attempt (§10.1), where it saw two casts before.
 
+## Amendment 2026-10-28 — a walkie call rides the link
+
+Status: stands (2026-10-28); the maintainer's call (Phase 3's walkie trigger). Built and lab-checked
+(`InternetLinkLabTest`); a device trial over cellular is owed.
+
+The third trigger in "On demand, never standing", a walkie session with no mesh path, is built. Until now a walkie
+chunk to a contact on another island went only as a cast, which needs a spool that sells casts to the pair (S-7.7-6),
+and a ticket on an `ent` spool (`docs/DIRECT_LINKS.md` L-7-8):
+
+- **The call raises its link.** A walkie call already asks its transport to hold a link to its peer every 10 s, from
+  the ring to the hang-up (`MeshTransport.holdLink`, `docs/VOICE_CALLS.md` C-3.11-8). The link plane answers the ask
+  (`DirectLinkTransport.holdLink`, `DirectLinks.raise`) while the radios have no path to the peer
+  (`MeshManager.talkRadioPath`, `di/DirectLinkWiring`). An up link is held 25 s past each ask
+  (`DirectLinks.HOLD_TTL_MS`, `LinkSession.holdFor`), so it keeps through the pauses between bursts, lets go within
+  25 s of the hang-up and idles out a minute later. With none up, an offer starts on `offer`'s own rules: the switch,
+  low-power mode, who qualifies, the sig lane, the backoff and the contact's answer budget. Both phones ask at the
+  ring, so their offers cross as a rule, and the crossing had a hole the lab found: the higher id's offer could reach
+  the lower id after its own link was up, and answering it closed that link without a word while the higher id kept
+  sending into it. So the lower id drops an offer from the higher within 15 s of the link it offered coming up, and an
+  offer superseded while it gathered never leaves (`docs/DIRECT_LINKS.md` L-2-5). Where the radios have a path, no link is raised or held, so a link never
+  stands in for a radio.
+- **No spool-first wait.** The spool-first rule above is for stored messages, whose spool copy is durable and ticked.
+  A walkie chunk has no stored copy, and its spool form is a cast, live too and behind a ticket. So the walkie offers
+  at the ring, and its chunks are cast meanwhile where a spool would take them.
+- **A chunk crosses the link as it crosses a radio neighbour's:** alone, with `ttl = 0`, after any radio link to the
+  peer (the composite's order), and with no cast beside it (`MeshManager.castsTalk`). The link is still never a radio
+  path, so the peer's frames over it are no path evidence (`TalkRadioPaths`).
+- **The listener counts it as the speaker's own way.** A chunk over a link counts with the radios' in the report
+  (C-3.11-10), and only a cast counts as a relay's. Otherwise every burst over a link would read as lost by the radios
+  and turn the cast on beside it. A link that loses or stalls bursts shows in the reports as a radio does, and the
+  cast comes on beside it.
+- **The call screen says so:** "No radio link to {name}. Going over a direct link", under the chat's two arrows
+  (`TalkLink.DIRECT_LINK`). The diagnostics path, and the field log's `talk` line, read `Direct link`
+  (`TalkPath.DIRECT_LINK`).
+
+The link carries a chunk on its one ordered, retransmitting stream (`docs/DIRECT_LINKS.md` §6), with frames and files
+on the same stream. That is accepted for now, with two costs named:
+
+- **Head of line.** A lost datagram holds every chunk behind it until its retransmission, a round trip and a little
+  more. The stream never reorders, so the player never skips a link's chunk for a gap: C-3.11-7's 500 ms wait needs a
+  later chunk in hand. It waits instead, 400 ms prebuffered, and a burst plays late rather than torn. Audio is lost
+  only to a stall past the player's 4 s end, and the reports then turn the cast on.
+- **A file beside it.** A photo crossing the same link holds a chunk that comes after its file records.
+  `FramedLink` puts a frame between a file's records, but the stream's send buffer (`LinkArq.SEND_BUFFER`, 64 segments,
+  about 70 KB) is already written. Draining it takes about 0.15 s at the 4 Mbit/s the lab phones measured, and about
+  0.6 s at 1 Mbit/s.
+
+What would reopen it is a device trial over cellular in which either of two things happens. Bursts over a link play
+later than the 400 ms prebuffer allows, or the reports turn the cast on beside a link that is up. The fix then is a
+datagram of the lane's own for `talk`, sealed once, never retransmitted and never behind the stream, not a second
+stream.

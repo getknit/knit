@@ -63,7 +63,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * **Use.** A content frame or a file sent or taken calls [onUse] for that peer ([DirectLinks.noteUse]): what keeps a
  * link from its idle close, and what tells an answer that came to nothing from one that carried something. Digests,
  * handshakes, the stream's own acks and the blob exchange's control frames (which re-ask on their own rounds) never do,
- * so a link that only keeps itself in sync idles out; a link moving a file is [busy], which the session reads too.
+ * so a link that only keeps itself in sync idles out; a link moving a file is [busy], which the session reads too. A
+ * walkie call holds its link through the pauses between bursts, or raises one ([holdLink], [DirectLinks.raise]).
  *
  * **Digests** are filtered here by the link's [view], from the ids' custody envelopes, so a contact never learns what
  * else this phone carries; [pairView] lends the same view to custody and the blob exchange for the answers they send
@@ -82,6 +83,8 @@ class DirectLinkTransport(
     // A link to [peerId] was adopted — a first one, or one replacing an older link under the same node id, which the
     // composite's neighbour set cannot show: custody answers that peer's next digest in full (`ForwardSync.linked`).
     private val onLinkUp: (peerId: String) -> Unit = {},
+    // A live call's hold on its link to a peer (`holdLink`, a walkie's): true while one is held. The links decide it.
+    private val onHold: (peerId: String) -> Boolean = { false },
     private val handshakeMs: Long = HANDSHAKE_MS,
     private val log: (String) -> Unit = {},
 ) : MeshTransport {
@@ -352,6 +355,10 @@ class DirectLinkTransport(
 
     // A link to send on, never a radio.
     override fun radioLinked(nodeId: String): Boolean = false
+
+    // A walkie's hold (docs/VOICE_CALLS.md C-3.11-8): the link held through the call's pauses, or raised, while the plane
+    // runs; the radios' own holds are their children's, asked beside this one.
+    override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)
 
     // Only a frame that is content is use: a blob control frame is the exchange's bookkeeping, which re-asks on its own
     // rounds and would keep a link open for a blob nobody can supply.

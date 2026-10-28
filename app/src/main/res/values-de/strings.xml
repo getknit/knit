@@ -282,6 +282,7 @@
     <string name="call_walkie_degraded">Keine Live-Verbindung – auf Walkie-Talkie umgeschaltet</string>
     <string name="call_walkie_link_none">Noch nicht mit %1$s verbunden. Verbindung wird hergestellt…</string>
     <string name="call_walkie_link_spool">Keine Funkverbindung zu %1$s. Läuft über dein Relay</string>
+    <string name="call_walkie_link_direct_link">Keine Funkverbindung zu %1$s. Läuft über eine Direktverbindung</string>
     <string name="call_walkie_link_mesh">Keine direkte Verbindung zu %1$s. Läuft über andere Smartphones</string>
     <string name="call_talk_recording">Du sprichst %1$d:%2$02d</string>
     <string name="call_talk_sending">Wird gesendet…</string>

@@ -41,8 +41,8 @@ import org.koin.core.scope.Scope
 import org.koin.dsl.module
 
 /**
- * Direct Internet links between contacts (ADR 2026-10.a5yj, Proposed): an on-demand UDP link to one contact whose
- * offer and answer are cast through a spool. The one read of `BuildConfig.DIRECT_LINKS` — on in debug, off in release,
+ * Direct Internet links between contacts (ADR 2026-10.a5yj): an on-demand UDP link to one contact whose offer and
+ * answer ride a spool's sigs. The one read of `BuildConfig.DIRECT_LINKS` — on in debug, off in release,
  * `-PdirectLinks=` overrides. Off, no capability bit is advertised, no `link` signal is sent or answered and
  * [directLinkModule] is null, so nothing of the link is built.
  */
@@ -105,6 +105,8 @@ private fun directLinkGraph(): Module =
                 onUse = { peer -> getKoin().getOrNull<DirectLinks>()?.noteUse(peer) },
                 // The mesh resolved late as above: a link adopted resets custody's push memo for its peer.
                 onLinkUp = { peer -> getKoin().getOrNull<MeshManager>()?.onDirectLinkUp(peer) },
+                // A walkie's hold (C-3.11-8), resolved late like the rest: a link only for a peer the radios have no path to.
+                onHold = { peer -> walkieHold(peer) },
                 log = { Log.d(TAG, it) },
             )
         }
@@ -172,6 +174,15 @@ private fun Module.linkDemand() =
             prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
         ).also { it.start() }
     }
+
+// A walkie call's hold on its link to [peerId] (docs/VOICE_CALLS.md C-3.11-8, ADR 2026-10.a5yj's walkie amendment): held
+// or raised only while the radios have no path to the peer (`MeshManager.talkRadioPath`), so a link never stands in for a
+// radio, and a hold the radios make needless is not renewed and lapses.
+private fun Scope.walkieHold(peerId: String): Boolean {
+    val mesh = getKoin().getOrNull<MeshManager>() ?: return false
+    if (mesh.talkRadioPath(peerId)) return false
+    return getKoin().getOrNull<DirectLinks>()?.raise(peerId) ?: false
+}
 
 // The mesh's half of [LinkPeers], resolved late: the mesh graph builds MeshManager, whose inbound hook reaches the
 // links, so neither may need the other to be built first.

@@ -67,7 +67,9 @@ lines.
   unsigned, compactly sealed `talk` frames nobody custodies, sized for Coded PHY (a pin in `TalkSealTest`), so nothing
   lands in the thread; a chunk stays on the radios while `TalkRadioPaths` holds fresh, link-bound evidence of a path,
   and is cast beside them otherwise or while the listener's per-burst reports say they lose it (C-3.11-10, the twelfth
-  amendment; never `heardIndirectly`); a live call drops to one, without a frame, only when both OFFER and ANSWER carried the walkie
+  amendment; never `heardIndirectly`); a contact's direct link takes a chunk as a radio neighbour does, alone and
+  uncast, and the call's hold raises one only where the radios have no path (ADR 2026-10.a5yj's walkie amendment,
+  `TalkLink.DIRECT_LINK`; `.agents/context/direct-links.md`); a live call drops to one, without a frame, only when both OFFER and ANSWER carried the walkie
   bit (parked since 2026-10-09: `CallManager.dropToWalkie` is off, so a lost live call ends `no_route`); the flag is read once, as `CallWiring.WALKIE_WIRED`, and needs no live calls.
   A burst stops at `MAX_BURST_MS` (30 s) while a receiver takes `MAX_HEARD_BURST_MS` (60 s, an older sender's), and
   ends with a `TalkCue` on the speaker's phone alone — the call screen's haptic on the step from `Talk.Recording` to

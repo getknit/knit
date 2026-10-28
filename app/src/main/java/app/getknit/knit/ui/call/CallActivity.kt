@@ -56,6 +56,7 @@ import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material.icons.outlined.SignalCellularAlt1Bar
 import androidx.compose.material.icons.outlined.SignalCellularAlt2Bar
+import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.WifiCalling3
 import androidx.compose.material.icons.outlined.WifiTethering
 import androidx.compose.material3.FilledIconButton
@@ -936,7 +937,9 @@ private fun TalkEndHaptic(talk: Talk) {
 /**
  * Why a burst may not reach the peer (§3.11): no link this phone can see — the radios are asked for one meanwhile — or
  * only a path through other phones, which works but is slower and less sure, or no radio path at all but a relay that
- * carries the bursts (§2.7), which works while both phones stay online.
+ * carries the bursts (§2.7), which works while both phones stay online, or the contact's direct link (ADR 2026-10.a5yj),
+ * which works while both stay online and needs no relay — drawn with the chat's own face for a link (its delivery
+ * glyph's two arrows), never the relay's cloud.
  */
 @Composable
 private fun LinkNotice(
@@ -958,6 +961,7 @@ private fun LinkNotice(
                 when (link) {
                     TalkLink.NONE -> Icons.Outlined.LinkOff
                     TalkLink.SPOOL -> Icons.Outlined.Cloud
+                    TalkLink.DIRECT_LINK -> Icons.Outlined.SwapVert
                     else -> Icons.Outlined.Hub
                 }
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -966,6 +970,7 @@ private fun LinkNotice(
                     when (link) {
                         TalkLink.NONE -> R.string.call_walkie_link_none
                         TalkLink.SPOOL -> R.string.call_walkie_link_spool
+                        TalkLink.DIRECT_LINK -> R.string.call_walkie_link_direct_link
                         else -> R.string.call_walkie_link_mesh
                     },
                     name,
@@ -1693,6 +1698,10 @@ fun CallScreenWalkieUnlinkedPreview() = PreviewCall(CallPhase.Connected, walkie 
 @Preview(name = "Walkie, through the mesh", widthDp = 411, heightDp = 891)
 @Composable
 fun CallScreenWalkieMeshPreview() = PreviewCall(CallPhase.Connected, walkie = true, link = TalkLink.MESH)
+
+@Preview(name = "Walkie, over a direct link", widthDp = 411, heightDp = 891)
+@Composable
+fun CallScreenWalkieDirectLinkPreview() = PreviewCall(CallPhase.Connected, walkie = true, link = TalkLink.DIRECT_LINK)
 
 @Preview(name = "Walkie, diagnostics", widthDp = 411, heightDp = 891)
 @Preview(name = "Walkie, diagnostics, small", widthDp = 360, heightDp = 640)

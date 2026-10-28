@@ -39,14 +39,16 @@ interface CallWalkie {
 }
 
 /**
- * Where a walkie chunk to a peer would go now (§3.11), for the call screen's notice: over a live link of this phone's
- * own ([DIRECT]); through other phones, with fresh evidence a radio path exists ([MESH]: the peer's own frames reached
- * us through a link we still hold, within `TalkRadioPaths.WINDOW_MS`); with no radio path, through a spool that casts it
- * (§2.7) and the peer was lately seen on ([SPOOL]); or nowhere this phone can see ([NONE]) — a relay the peer was never
- * seen on fans a cast out to nobody we know of.
+ * Where a walkie chunk to a peer would go now (§3.11), for the call screen's notice: over a live radio link of this
+ * phone's own ([DIRECT]); over this phone's direct link to the contact ([DIRECT_LINK], ADR 2026-10.a5yj), which takes
+ * the chunk as a neighbour does; through other phones, with fresh evidence a radio path exists ([MESH]: the peer's own
+ * frames reached us through a link we still hold, within `TalkRadioPaths.WINDOW_MS`); with no radio path, through a
+ * spool that casts it (§2.7) and the peer was lately seen on ([SPOOL]); or nowhere this phone can see ([NONE]) — a
+ * relay the peer was never seen on fans a cast out to nobody we know of.
  */
 enum class TalkLink {
     DIRECT,
+    DIRECT_LINK,
     MESH,
     SPOOL,
     NONE,
@@ -54,19 +56,22 @@ enum class TalkLink {
 
     companion object {
         /**
-         * [peerId]'s link, given this phone's live [neighbours], whether the radios have a path to the peer through one
-         * of them ([radioPath], `MeshManager.talkRadioPath`), and whether a connected spool the peer was lately seen on
-         * would [cast] to it (`MeshManager.castCoversTalk`). The order is `MeshManager.sendCallTalk`'s: the spool only
-         * where the radios have no path.
+         * [peerId]'s link, given this phone's live radio [neighbours], whether a direct link to the peer is up
+         * ([directLink]), whether the radios have a path to the peer through one of them ([radioPath],
+         * `MeshManager.talkRadioPath`), and whether a connected spool the peer was lately seen on would [cast] to it
+         * (`MeshManager.castCoversTalk`). The order is `MeshManager.sendCallTalk`'s: a radio link, then the direct link,
+         * either taking the chunk alone; the spool only where nothing else has a path.
          */
         fun of(
             peerId: String,
             neighbours: Set<String>,
             radioPath: Boolean,
             cast: Boolean = false,
+            directLink: Boolean = false,
         ): TalkLink =
             when {
                 peerId in neighbours -> DIRECT
+                directLink -> DIRECT_LINK
                 radioPath -> MESH
                 cast -> SPOOL
                 else -> NONE

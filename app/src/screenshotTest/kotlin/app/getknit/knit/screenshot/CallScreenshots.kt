@@ -27,6 +27,7 @@ import app.getknit.knit.ui.call.CallScreenRingingPreview
 import app.getknit.knit.ui.call.CallScreenStrangerPreview
 import app.getknit.knit.ui.call.CallScreenUnreachablePreview
 import app.getknit.knit.ui.call.CallScreenWalkieDiagnosticsPreview
+import app.getknit.knit.ui.call.CallScreenWalkieDirectLinkPreview
 import app.getknit.knit.ui.call.CallScreenWalkieMeshPreview
 import app.getknit.knit.ui.call.CallScreenWalkiePreview
 import app.getknit.knit.ui.call.CallScreenWalkieTranscriptDownloadingPreview
@@ -136,6 +137,11 @@ fun CallScreenWalkieUnlinked() = CallScreenWalkieUnlinkedPreview()
 @ScreenShots
 @Composable
 fun CallScreenWalkieMesh() = CallScreenWalkieMeshPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun CallScreenWalkieDirectLink() = CallScreenWalkieDirectLinkPreview()
 
 @PreviewTest
 @ScreenShots

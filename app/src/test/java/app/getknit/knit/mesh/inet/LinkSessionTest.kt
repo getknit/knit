@@ -10,8 +10,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -323,6 +325,36 @@ class LinkSessionTest {
             pair.b.hold(false)
             pair.a.state.first { it == State.CLOSED }
             pair.b.state.first { it == State.CLOSED }
+        }
+
+    @Test
+    fun aTimedHoldOutlivesTheIdleCloseAndOnceItEndsTheLinkIdlesOutCountedFromThatEnd() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            // A live session's hold, renewed every 10 s for three minutes with nothing sent but the held link's keepalives:
+            // past three idle closes, neither end lets go.
+            repeat(18) {
+                pair.a.holdFor(DirectLinks.HOLD_TTL_MS)
+                pair.b.holdFor(DirectLinks.HOLD_TTL_MS)
+                testScheduler.advanceTimeBy(10_000L)
+            }
+            assertEquals(State.UP, pair.a.state.value)
+            assertEquals(State.UP, pair.b.state.value)
+            // The renewals stop. A shorter one never cuts a longer hold short.
+            pair.a.holdFor(1_000L)
+            val holdEnd = testScheduler.currentTime - 10_000L + DirectLinks.HOLD_TTL_MS
+            val bound = DirectLinks.HOLD_TTL_MS + LinkSession.IDLE_MS + 30_000L
+            val closed = withTimeoutOrNull(bound) { pair.a.state.first { it == State.CLOSED } }
+            assertNotNull("still ${pair.a.state.value}, held past its renewals", closed)
+            val past = testScheduler.currentTime - holdEnd
+            assertTrue("closed ${past}ms past the hold's end", past in LinkSession.IDLE_MS..LinkSession.IDLE_MS + 6_000L)
+            // Idle, not silent: the silence counts from the hold's end too, so the last keepalive heard before it is not
+            // read as a dead path.
+            val ends = setOf(pair.a.endReason, pair.b.endReason)
+            assertTrue("$ends", EndReason.IDLE in ends && EndReason.SILENT !in ends)
         }
 
     @Test

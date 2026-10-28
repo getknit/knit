@@ -874,7 +874,9 @@ its media (`REASON_MEDIA`).
     `ChatContent` instead, whose CBOR never begins with `0x01`.
   - **Id.** Its frame id is 11 characters.
   - **Reach.** No node custodies it, parks it, re-serves it or fans it onto the coordination plane or LoRa, and no
-    spool stores it. A neighbour of the sender gets it alone, with `ttl = 0`. A peer heard through the mesh gets a
+    spool stores it. A neighbour of the sender gets it alone, with `ttl = 0`. A contact's direct link
+    (`docs/DIRECT_LINKS.md` L-7-8, ADR 2026-10.a5yj) makes its peer such a neighbour: the chunk crosses it alone, after
+    a radio link to the peer if there is one, and is not cast, though the link is never a radio path. A peer heard through the mesh gets a
     flood of at most `ttl = 3` relays. Every other peer is one the radios have no path to, and it gets the chunk
     **cast** through every connected spool that would carry it (§2.7), signed, and beside the blind flood when this
     phone has links at all. The radios have a path to a peer that is not a neighbour only while one of the peer's own
@@ -907,6 +909,10 @@ its media (`REASON_MEDIA`).
   - **A link.** The hold keeps it open past its idle teardown (5 s for the initiator, 8 s for the responder) but not
     past its absolute window (30 s, 45 s). The window is the only way a responder can tell a dead initiator from a
     quiet one, so a held link comes round every 30 s or so, and the hold raises it again at once.
+  - **A direct link.** Where the radios have no path to the peer (C-3.11-6), the same hold raises a contact's direct
+    link where both phones have them on (`docs/DIRECT_LINKS.md` L-7-8), or holds the one that is up for 25 s past each
+    renewal (`DirectLinks.raise`), so it keeps through the pauses between bursts, and idles out a minute after the
+    hold ends. Where the radios have a path, no link is raised or held.
   - **No link at a send.** A chunk retries for up to 2.5 s, past the recycle's gap of about 1.9 s. A chunk to a neighbour goes over its
   quickest link (`MeshTransport.sendLive`): Wi-Fi Aware when that radio holds one, else Bluetooth. Every other frame
   keeps the Bluetooth-first order.
@@ -915,6 +921,8 @@ its media (`REASON_MEDIA`).
   - **direct:** over a link of this phone's own; nothing is shown. Over a fading link with a relay that would cast,
     the chunks also go through the relay; nothing more is shown, and the diagnostics path reads
     `Bluetooth · fading, relay too`;
+  - **over a direct link:** no radio link, but the contact's direct link is up; a notice says the chunks go over it,
+    under the chat's two arrows, and the diagnostics path reads `Direct link`;
   - **through the mesh:** no link of its own, but the radios have a path to the peer (C-3.11-6); a notice says the
     chunks go through other phones;
   - **through the relay:** no radio path, but a connected relay the peer was lately seen on would cast the chunks
@@ -985,7 +993,9 @@ its media (`REASON_MEDIA`).
     know the field would read a report as a chunk, so it is never sent one.
   - **The report.** A `talk` frame, sealed and sent the way a chunk is (C-3.11-6), whose plaintext is
     `flags (bit 1) · call tag · varint b · varint radio · varint relay`. `radio` and `relay` count the distinct chunks
-    of burst `b` that came over the radios and through a relay. A chunk that came both ways counts in both. A chunk
+    of burst `b` that came the speaker's own way — over the radios, or over a contact's direct link — and cast through
+    a relay. A chunk that came both ways counts in both. Counting a link's chunk as a relay's would read every burst
+    over a link as lost by the radios, and turn the cast on beside a link that delivers. A chunk
     decoder refuses bit 1, so a report never plays.
   - **When.** 500 ms after the burst's last chunk landed, or 4 s after its newest chunk when the last never came (the
     player's give-up, C-3.11-7). Once per burst, and a straggler of a reported burst is not counted.

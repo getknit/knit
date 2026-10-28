@@ -1,7 +1,7 @@
 # Direct links between contacts — which decision governs which symbol
 
 The symbol → ADR routing for direct Internet links: `mesh/inet/`, the `link` signal, the lane and the build flag. The
-normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Accepted 2026-10-28; off in release until Phase 3).
+normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Accepted 2026-10-28; off in release until Phase 3 flips it).
 
 Each entry names the symbols that trigger it and the ADRs to read (`.agents/memory/decisions.md` maps an id to its
 file, amendments included). An entry is an index into its ADRs, not a substitute: where they disagree, the ADR wins
@@ -74,6 +74,18 @@ and the entry is fixed.
   offerer's consent rule (a confirmed session, a contact written to or verified, the peer's bit, not blocked) and is
   never asked at receipt. The links' graph is resolved late from the mesh's inbound hook, and the mesh's half
   (`MeshLinkPeers`) late from the links, so neither graph needs the other built first.
+- **When touching `DirectLinks.raise` / `HOLD_TTL_MS` / `offeredLately`, `LinkSession.holdFor`, `DirectLinkTransport.holdLink`,
+  `di/DirectLinkWiring`'s `walkieHold`, `TalkLink.DIRECT_LINK`, `TalkPath.DIRECT_LINK` or the link half of
+  `MeshManager.castsTalk`:** READ ADR 2026-10.a5yj's walkie amendment, `docs/DIRECT_LINKS.md` L-7-8 and
+  `docs/VOICE_CALLS.md` C-3.11-6/8/10. A walkie call raises and holds a link only while the radios have no path to the
+  peer (`MeshManager.talkRadioPath`) — never in place of a radio, and with no spool-first wait — and the hold is a
+  deadline each 10 s ask renews, never a flag a hang-up must clear. Both ends offer at the ring, so crossing is the
+  rule: the lower id drops a higher id's offer within `ANSWER_WAIT_MS` of the link it offered coming up
+  (`DirectLinks.offeredLately`, L-2-5) — answering it would close a link the peer holds, without a BYE — and an offer
+  superseded while it gathered never leaves. A chunk crosses a link alone and uncast; the
+  listener counts it as the speaker's own way (`viaRelay` false), never a relay's, or every burst over a link would
+  turn the cast on. It rides the one ordered stream: a lane datagram for `talk` is the named fix if a cellular trial
+  shows bursts stalling, never a second stream.
 - **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
   `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28
   amendment. A link shows its own face (two arrows, "over a direct link"), never the Internet's: a link on one network

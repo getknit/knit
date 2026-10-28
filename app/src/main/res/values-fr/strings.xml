@@ -289,6 +289,7 @@
     <string name="call_walkie_degraded">Pas de connexion en direct — passage en walkie-talkie</string>
     <string name="call_walkie_link_none">Aucune liaison avec %1$s pour l’instant. Connexion…</string>
     <string name="call_walkie_link_spool">Pas de liaison radio avec %1$s. Passage par votre relais</string>
+    <string name="call_walkie_link_direct_link">Pas de liaison radio avec %1$s. Passage par une connexion directe</string>
     <string name="call_walkie_link_mesh">Pas de liaison directe avec %1$s. Passage par d’autres téléphones</string>
     <string name="call_talk_recording">Vous parlez %1$d:%2$02d</string>
     <string name="call_talk_sending">Envoi…</string>

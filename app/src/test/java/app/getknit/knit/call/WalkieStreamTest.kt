@@ -96,6 +96,17 @@ class WalkieStreamTest {
         assertEquals(TalkLink.NONE, TalkLink.of("p", neighbours = emptySet(), radioPath = false, cast = false))
     }
 
+    /**
+     * ADR 2026-10.a5yj: the contact's direct link takes the chunk as a neighbour does, after a radio link to the peer and
+     * ahead of a path through other phones or a relay, as `sendCallTalk` sends.
+     */
+    @Test
+    fun aDirectLinkIsThePeersLinkAfterARadioLinkAndAheadOfTheMeshAndARelay() {
+        assertEquals(TalkLink.DIRECT_LINK, TalkLink.of("p", neighbours = emptySet(), radioPath = false, directLink = true))
+        assertEquals(TalkLink.DIRECT_LINK, TalkLink.of("p", neighbours = setOf("r"), radioPath = true, cast = true, directLink = true))
+        assertEquals(TalkLink.DIRECT, TalkLink.of("p", neighbours = setOf("p"), radioPath = true, cast = true, directLink = true))
+    }
+
     // ---- TalkWire reports (C-3.11-10) ----
 
     @Test
