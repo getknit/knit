@@ -2,6 +2,7 @@ package app.getknit.knit.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
@@ -20,12 +21,17 @@ import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.LoraRadioReached
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -160,6 +166,9 @@ class MessageDetailsViewModel(
     identity: Identity,
     /** `MeshController.loraRadioReached`: which of our DMs their LoRa radio acked, in memory. */
     radioReached: Flow<Map<String, LoraRadioReached>>,
+    // Who a contact's direct link proved holds the message's file ([shownPlane]). Null in the screen tests' rig, where
+    // no file is the link's.
+    blobs: BlobRepository? = null,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -175,6 +184,17 @@ class MessageDetailsViewModel(
             .scan(MessageSighting()) { previous, row -> MessageSighting(row, previous.everSeen || row != null) }
             .drop(1)
 
+    // Who a contact's direct link proved holds this message's file, re-read only when the row names another file.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val linkHolders: Flow<Set<String>> =
+        messages
+            .observeMessage(messageId)
+            .map { it?.attachmentHash }
+            .distinctUntilChanged()
+            .flatMapLatest { hash ->
+                if (hash == null || blobs == null) flowOf(emptySet()) else blobs.observeLinkHolders(setOf(hash)).map { it[hash].orEmpty() }
+            }
+
     // Everything except the delivery split, which needs two more flows than `combine` has an overload for.
     // The row and the peer index ride along so the second stage doesn't have to re-derive them.
     private data class Base(
@@ -189,9 +209,9 @@ class MessageDetailsViewModel(
             sightings,
             reactions.observeReactionsFor(messageId),
             peers.observeDirectory(),
-            myNodeId,
+            combine(myNodeId, linkHolders, ::Pair),
             settings.contentFilteringEnabled,
-        ) { sighting, reacts, directory, me, hideSensitive ->
+        ) { sighting, reacts, directory, (me, link), hideSensitive ->
             val message = sighting.row
             val everSeen = sighting.everSeen
             val peersByNode = directory.byNode
@@ -231,7 +251,7 @@ class MessageDetailsViewModel(
                         sentAt = message.sentAt,
                         arrivedAt = message.arrivedAt,
                         delivery = DeliveryStatus.of(message),
-                        plane = message.receivedPlane,
+                        plane = shownPlane(message.receivedPlane, message.senderId == me, me, message.conversationId, link),
                         reactors = rows,
                         filters = filtersOf(rows),
                     ),

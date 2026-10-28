@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
@@ -161,7 +162,8 @@ fun deliveryLabel(
 private fun arrivalText(plane: DeliveryPlane): DeliveryText =
     DeliveryText(
         when (plane) {
-            DeliveryPlane.Internet, DeliveryPlane.DirectLink -> R.string.chat_status_arrived_internet
+            DeliveryPlane.Internet -> R.string.chat_status_arrived_internet
+            DeliveryPlane.DirectLink -> R.string.chat_status_arrived_link
             DeliveryPlane.LoRa -> R.string.chat_status_arrived_lora
             else -> R.string.chat_status_arrived_nearby
         },
@@ -171,7 +173,8 @@ private fun arrivalText(plane: DeliveryPlane): DeliveryText =
 private fun deliveredText(plane: DeliveryPlane): DeliveryText =
     DeliveryText(
         when (plane) {
-            DeliveryPlane.Internet, DeliveryPlane.DirectLink -> R.string.chat_status_delivered_internet
+            DeliveryPlane.Internet -> R.string.chat_status_delivered_internet
+            DeliveryPlane.DirectLink -> R.string.chat_status_delivered_link
             DeliveryPlane.LoRa -> R.string.chat_status_delivered_lora
             else -> R.string.chat_status_delivered
         },
@@ -179,13 +182,15 @@ private fun deliveredText(plane: DeliveryPlane): DeliveryText =
 
 /**
  * The glyph that says which plane carried a message — painted ahead of the ✓✓ on our acked sends and on
- * its own on an arrival: a globe for the Internet (a relay or a contact's direct link), the radio-waves mark for LoRa, and nothing for a
- * phone radio (the plain case needs no ornament). Pair it with [deliveryLabel] — the glyph never carries
+ * its own on an arrival: a globe for an Internet relay, two arrows for a contact's direct link (ADR 2026-10.a5yj — not
+ * the globe: a link between two phones on one network never leaves it), the radio-waves mark for LoRa, and nothing for
+ * a phone radio (the plain case needs no ornament). Pair it with [deliveryLabel] — the glyph never carries
  * the words; [planeTag] names its test tag.
  */
 fun planeGlyph(plane: DeliveryPlane): ImageVector? =
     when (plane) {
-        DeliveryPlane.Internet, DeliveryPlane.DirectLink -> Icons.Filled.Public
+        DeliveryPlane.Internet -> Icons.Filled.Public
+        DeliveryPlane.DirectLink -> Icons.Filled.SwapVert
         DeliveryPlane.LoRa -> Icons.Filled.Sensors
         else -> null
     }
@@ -218,6 +223,26 @@ fun tickGlyphTag(
         DeliveryStatus.RadioReached -> "chat_tick_lora_reached"
         else -> null
     }
+ * The plane a message's row shows: [DeliveryPlane.DirectLink] when a contact's direct link carried its file (ADR
+ * 2026-10.a5yj), else [messagePlane], the one its frame or its receipt crossed. [linkHolders] are who a link proved holds
+ * the file (`BlobRepository.observeLinkHolders`): for one we received, us — the bytes reached us over a link; for one of
+ * ours, the thread's [conversationId], which is the peer in a DM, once its answer to our holder query came over a link
+ * — a group sender asks no member for proof, since no member's holding speaks for another. That answer's plane is the
+ * link's for a photo no relay would take, which only the link could carry; one the peer got elsewhere and confirmed
+ * over a link reads as the link's too, the first proof standing. The proof is keyed by the file, so a picture forwarded
+ * under its sealed identity (ADR 2026-10.mptm) shows the link on every row naming it.
+ */
+fun shownPlane(
+    messagePlane: DeliveryPlane,
+    mine: Boolean,
+    me: String?,
+    conversationId: String,
+    linkHolders: Set<String>?,
+): DeliveryPlane {
+    val holders = linkHolders ?: return messagePlane
+    val viaLink = if (mine) conversationId in holders else me != null && me in holders
+    return if (viaLink) DeliveryPlane.DirectLink else messagePlane
+}
 
 /** The test-tag suffix of [plane]'s glyph (`chat_tick_<tag>` / `chat_arrived_<tag>`); null when it paints none. */
 fun planeTag(plane: DeliveryPlane): String? =

@@ -1,5 +1,6 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.data.blob.AttachmentHolderDao
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictEntity
@@ -31,19 +32,21 @@ import org.junit.Test
 class BlobRepositoryTest : RoomDbTest() {
     private val settings = mockk<SettingsStore>(relaxed = true)
 
-    private fun repo(blobs: BlobDao = db.blobDao()) =
-        BlobRepository(
-            blobs = blobs,
-            messages = db.messageDao(),
-            peers = db.peerDao(),
-            settings = settings,
-            verdicts = db.blobVerdictDao(),
-            groups = db.groupDao(),
-            forward = db.forwardDao(),
-            db = db,
-            savedFiles = db.savedFileDao(),
-            holders = db.attachmentHolderDao(),
-        )
+    private fun repo(
+        blobs: BlobDao = db.blobDao(),
+        holders: AttachmentHolderDao = db.attachmentHolderDao(),
+    ) = BlobRepository(
+        blobs = blobs,
+        messages = db.messageDao(),
+        peers = db.peerDao(),
+        settings = settings,
+        verdicts = db.blobVerdictDao(),
+        groups = db.groupDao(),
+        forward = db.forwardDao(),
+        db = db,
+        savedFiles = db.savedFileDao(),
+        holders = holders,
+    )
 
     private fun ownAvatar(hash: String?) {
         every { settings.ownAvatarHash } returns flowOf(hash)
@@ -287,5 +290,29 @@ class BlobRepositoryTest : RoomDbTest() {
             val dao = mockk<BlobDao>()
             every { dao.observeSizes(any()) } throws AssertionError("queried the blobs table for nothing")
             assertEquals(emptyMap<String, Int>(), repo(blobs = dao).observeSizes(emptySet()).first())
+        }
+
+    @Test
+    fun `observeLinkHolders names only the holders a direct link proved`() =
+        runTest {
+            // ADR 2026-10.a5yj: the chat's link mark reads the proof's plane, so a radio's proof of the same file
+            // must not read as the link's.
+            val repo = repo()
+            repo.recordHolder("h1", "me", DeliveryPlane.DirectLink, 1L)
+            repo.recordHolder("h1", "bob", DeliveryPlane.Nearby, 2L)
+            repo.recordHolder("h2", "bob", DeliveryPlane.Bluetooth, 3L)
+            repo.recordHolder("h3", "bob", DeliveryPlane.DirectLink, 4L)
+            repo.recordHolder("h4", "bob", DeliveryPlane.DirectLink, 5L)
+
+            assertEquals(mapOf("h1" to setOf("me"), "h3" to setOf("bob")), repo.observeLinkHolders(setOf("h1", "h2", "h3")).first())
+        }
+
+    @Test
+    fun `observeLinkHolders answers an empty ask without a query`() =
+        runTest {
+            // As observeSizes: a thread with no attachment holds no subscription to the holders table.
+            val dao = mockk<AttachmentHolderDao>()
+            every { dao.observeOnPlane(any(), any()) } throws AssertionError("queried the holders table for nothing")
+            assertEquals(emptyMap<String, Set<String>>(), repo(holders = dao).observeLinkHolders(emptySet()).first())
         }
 }

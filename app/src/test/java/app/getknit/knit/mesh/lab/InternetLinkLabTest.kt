@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.DeliveryPlane
+import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.inet.FakeLinkNet.Nat
 import app.getknit.knit.mesh.inet.LinkDemandPolicy
 import app.getknit.knit.mesh.inet.LinkOutcome
@@ -8,6 +9,9 @@ import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.SpoolCastInfo
 import app.getknit.knit.mesh.spool.SpoolTicket
+import app.getknit.knit.mesh.spool.SpoolTickets
+import app.getknit.knit.mesh.spool.SpoolTicketsTest
+import app.getknit.knit.mesh.spool.SpoolUrl
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -19,6 +23,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.shadows.ShadowLog
 import kotlin.random.Random
 
 /**
@@ -228,13 +233,24 @@ class InternetLinkLabTest {
             val first = alice.ownMessageId(alice.dmWith(bob), "first")
             assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), first))
 
-            // Nothing left to carry: past the idle close on the link's clock, and both ends' links end.
-            lab.clock.advance(LinkSession.IDLE_MS)
+            // Nothing left to carry: past the idle close on the link's clock, and both ends' links end. A use of the first
+            // exchange can land just after the jump — a sender notes its use once the send returns, after the far end
+            // already stored the frame this scenario saw — and moves the idle close a whole period on, which only the
+            // lab's jump makes that long. So: down, or a use after the jump, both events; a second period only for that
+            // use, and a link that stayed up without one fails at once.
             val bothDown = { checkNotNull(alice.links).links.value.isEmpty() && checkNotNull(bob.links).links.value.isEmpty() }
+            val uses = { alice.linkUses.get() + bob.linkUses.get() }
+            val atJump = uses()
+            lab.clock.advance(LinkSession.IDLE_MS)
             assertTrue(
-                "the link never idled out\n${alice.linkLog}\n${bob.linkLog}",
-                lab.tryAwait(1) { if (bothDown()) 1 else 0 },
+                "the link neither idled out nor carried a use\n${alice.linkLog}\n${bob.linkLog}",
+                lab.tryAwait(1) { if (bothDown() || uses() > atJump) 1 else 0 },
             )
+            if (!bothDown()) {
+                assertTrue("the link stayed up with no use after the jump", uses() > atJump)
+                lab.clock.advance(LinkSession.IDLE_MS)
+                assertTrue("the link never idled out\n${alice.linkLog}\n${bob.linkLog}", lab.tryAwait(1) { if (bothDown()) 1 else 0 })
+            }
             assertTrue("no idle close was logged: ${alice.linkLog + bob.linkLog}", (alice.linkLog + bob.linkLog).any { "IDLE" in it })
             lab.await(1) { if (!alice.linkPlaneHolds(bob) && !bob.linkPlaneHolds(alice)) 1 else 0 }
             alice.awaitLinksActedOn()
@@ -249,23 +265,29 @@ class InternetLinkLabTest {
             assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), second))
         }
 
+    // A relay that carries casts and frames but takes attachments only from a files ticket, which nobody holds yet.
+    private fun filesGatedRelay() =
+        FakeSpool(
+            cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
+            stun = listOf(LabInternet.STUN_URL),
+            ent = true,
+            entGates = SpoolTicket.FL_FILES,
+        )
+
     /**
      * The bulk trigger (L-7-7): the relay carries casts and frames, but gates attachments behind a files ticket Alice does
      * not hold, so her DM photo has no spool to go up to. The demand offers Bob a link at once — no tick wait, the photo's
-     * message itself still rides the relay — and the photo crosses the link, once, and Bob records it as the link's. (Alice
-     * asks no proof here: with her uploads locked the spool plane settles the photo before the link is up, and nothing
-     * goes up whatever she would learn.)
+     * message itself still rides the relay — and the photo crosses the link, once, and Bob records it as the link's.
+     *
+     * Then the sender's proof (ADR 2026-10.vy27, a5yj): the spool plane settled the photo as locked before the link was
+     * up, so its own rounds ask nothing; the demand's rounds ask Bob over the link instead, and his HAVE becomes Alice's
+     * `DirectLink` holder row. Proved, the rounds ask no more, and a files ticket granted afterwards reopens her uploads
+     * and settles the photo PROVED: it never goes up.
      */
     @Test
     fun aPhotoNoRelayWillTakeOpensALinkAtOnceAndCrossesIt() =
         runBlocking {
-            val spool =
-                FakeSpool(
-                    cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
-                    stun = listOf(LabInternet.STUN_URL),
-                    ent = true,
-                    entGates = SpoolTicket.FL_FILES,
-                )
+            val spool = filesGatedRelay()
             val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
             val demand = checkNotNull(alice.demand)
             assertTrue(alice.sendImage(Random(2_028).nextBytes(32_768), "no relay takes this", to = bob))
@@ -280,9 +302,120 @@ class InternetLinkLabTest {
                 lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 },
             )
             lab.await(1) { if (bob.holderPlane(hash, bob) == DeliveryPlane.DirectLink) 1 else 0 }
+
+            // The first round's query went before the bytes landed; past its floor, the next round asks again.
+            lab.clock.advance(BlobExchange.PROOF_FLOOR_MS)
+            demand.round()
+            assertTrue(
+                "alice never proved bob's hold over the link\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) { if (alice.holderPlane(hash, bob) == DeliveryPlane.DirectLink) 1 else 0 },
+            )
+            val queries = alice.metrics.files().blobProofQueriesSent
+            assertTrue("no proof query went out", queries > 0)
+            // Proved, the rounds ask no more: three of them, each past the floor, read nothing stuck.
+            repeat(POST_PROOF_ROUNDS) {
+                lab.clock.advance(BlobExchange.PROOF_FLOOR_MS)
+                demand.round()
+                assertTrue("a proved photo is still asked about", alice.manager.proveStuckOverLinks(setOf(bob.nodeId)).isEmpty())
+            }
+
+            // A files ticket now: uploads reopen and the locked photo is looked at again — proved, never uploaded.
+            val proved = alice.metrics.spool().spoolAttachProved
+            val ticket = SpoolTicketsTest.ticket(aud = checkNotNull(SpoolUrl.hostname(MeshLab.SPOOL_URL)), fl = SpoolTicket.FL_FILES)
+            assertTrue(SpoolTickets(alice.settings).import(MeshLab.SPOOL_URL, ticket.text) is SpoolTickets.Import.Held)
+            assertTrue(
+                "the reopened round never settled the photo as proved\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
+                    if (alice.metrics.spool().spoolAttachProved > proved) 1 else 0
+                },
+            )
+            assertTrue("chunks went up: ${spool.chunksPut}", spool.chunksPut.isEmpty())
+            // One batch queued in the round the proof overtook may still go out after it; a round asking after the proof
+            // would add one per round.
+            val after = alice.metrics.files().blobProofQueriesSent - queries
+            assertTrue("$after proof queries after the proof", after <= 1)
+            assertEquals("one copy over the link: ${alice.linkFiles}", 1, alice.linkFiles.count { hash in it && bob.nodeId in it })
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * FETCHING is no proof, and no reason to stop asking. Bob's link lands the photo but his mesh has not taken it yet
+     * (his hand-off held), so he answers Alice's proof query FETCHING and she records nothing; once his store holds it,
+     * her next demand round past the floor asks again and his HAVE proves it.
+     */
+    @Test
+    fun aFetchingAnswerIsAskedAgainAndTheHaveThatFollowsProves() =
+        runBlocking {
+            val spool = filesGatedRelay()
+            val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
+            val demand = checkNotNull(alice.demand)
+            bob.linkFileGate.hold()
+            assertTrue(alice.sendImage(Random(2_029).nextBytes(32_768), "fetching first", to = bob))
+            val id = alice.ownMessageId(alice.dmWith(bob), "fetching first")
+            val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), id))
+
+            demand.round()
+            awaitLinked(alice, bob)
+            assertTrue(
+                "the photo never reached bob's link\n${alice.linkLog}\n${bob.linkLog}",
+                lab.tryAwait(1) { bob.linkFileGate.parked },
+            )
+            lab.clock.advance(BlobExchange.PROOF_FLOOR_MS)
+            demand.round()
+            val fetching = "blob proof ← ${bob.nodeId}"
+            assertTrue(
+                "bob never answered FETCHING\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) {
+                    ShadowLog.getLogs().count { fetching in it.msg && "${hash.take(HASH_CHARS)} FETCHING" in it.msg }
+                },
+            )
+            assertEquals("a FETCHING answer proved a hold", null, alice.holderPlane(hash, bob))
+
+            bob.linkFileGate.release()
+            lab.await(1) { if (bob.holderPlane(hash, bob) == DeliveryPlane.DirectLink) 1 else 0 }
+            lab.clock.advance(BlobExchange.PROOF_FLOOR_MS)
+            demand.round()
+            assertTrue(
+                "alice never proved bob's hold after his FETCHING\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) { if (alice.holderPlane(hash, bob) == DeliveryPlane.DirectLink) 1 else 0 },
+            )
             assertEquals("one copy over the link: ${alice.linkFiles}", 1, alice.linkFiles.count { hash in it && bob.nodeId in it })
             assertTrue("chunks went up: ${spool.chunksPut}", spool.chunksPut.isEmpty())
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A group's picture gets no proof query: no member's hold speaks for another's (ADR 2026-10.vy27 is a DM's). Alice's
+     * picture to a group of two crosses the link to Bob, and her demand's rounds, run with the link up, ask him nothing
+     * and leave no holder row for him on her side.
+     */
+    @Test
+    fun aGroupPictureOverTheLinkIsNeverAskedForProof() =
+        runBlocking {
+            val spool = filesGatedRelay()
+            val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
+            val demand = checkNotNull(alice.demand)
+            val group = alice.createGroup(bob)
+            assertTrue(alice.sendGroup(group, "welcome"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { group }
+
+            assertEquals(LinkOutcome.UP, checkNotNull(alice.links).offer(bob.nodeId))
+            awaitLinked(alice, bob)
+            assertTrue(alice.sendImage(Random(2_030).nextBytes(32_768), "to the group", groupId = group))
+            val id = alice.ownMessageId(group, "to the group")
+            val hash = checkNotNull(alice.attachmentHash(group, id))
+            assertTrue(
+                "bob never held the group's picture\n${alice.linkLog}\n${bob.linkLog}",
+                lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 },
+            )
+            lab.clock.advance(BlobExchange.PROOF_FLOOR_MS)
+            demand.round()
+
+            assertTrue("a group's picture was asked about", alice.manager.proveStuckOverLinks(setOf(bob.nodeId)).isEmpty())
+            assertEquals("a proof query went out", 0L, alice.metrics.files().blobProofQueriesSent)
+            assertEquals(null, alice.holderPlane(hash, bob))
+            assertEquals("one copy over the link: ${alice.linkFiles}", 1, alice.linkFiles.count { hash in it && bob.nodeId in it })
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { group }
         }
 
     private suspend fun LabNode.holderPlane(
@@ -294,4 +427,12 @@ class InternetLinkLabTest {
             .holdersOf(hash)
             .firstOrNull { it.holderId == holder.nodeId }
             ?.let { DeliveryPlane.fromCode(it.plane) }
+
+    private companion object {
+        // The hash prefix `BlobExchange`'s log lines name.
+        const val HASH_CHARS = 8
+
+        // Demand rounds run after the proof, each of which would ask again were it still read as stuck.
+        const val POST_PROOF_ROUNDS = 3
+    }
 }

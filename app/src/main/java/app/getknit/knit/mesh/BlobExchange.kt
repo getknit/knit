@@ -104,7 +104,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * link drops every other control frame unanswered; and its own copy never parks behind a radio feed ([ridesSharedBudget]).
  * It is sent a proof query ([confirmHeld]) on the same terms, and its answer proves a hold as a radio neighbour's does
  * ([DeliveryPlane.provesHold], the owner's call of 2026-10-27): proof is who holds, never who is asked first, so a link's
- * peer still ranks last for the bytes.
+ * peer still ranks last for the bytes. A photo no spool would take, which the link was opened for, is asked about by
+ * the link demand's rounds (`LinkHolderProof`, L-7-7) rather than the spool plane's, which settled it before the link
+ * was up; they ask through [confirmHeld] all the same.
  *
  * A transfer a link drop cut off resumes rather than restarts (work item #116, ADR 2026-10.wtyc): the link keeps
  * the prefix in [PartialBlobs], every ask names its length as the `blobreq` offset, a holder streams only the

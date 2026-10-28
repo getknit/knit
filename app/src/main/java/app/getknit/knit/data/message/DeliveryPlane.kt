@@ -16,8 +16,8 @@ package app.getknit.knit.data.message
  * and for a frame whose kind names no radio. The chat has nothing different to say about the three, so a
  * reader treats them all as "arrived nearby" and asks [shortRange], never `== Nearby`. [LoRa] earns its own
  * face: a delivery over a Meshtastic board (ADR 038/039) is kilometre-range, slow, and photo-less, which the
- * tick is worth saying. [DirectLink] is a contact's direct Internet link (ADR 2026-10.a5yj): the chat paints it with
- * [Internet]'s face — it did cross the Internet — and it is never [shortRange].
+ * tick is worth saying. [DirectLink] is a contact's direct link (ADR 2026-10.a5yj): it earns its own face too, not
+ * [Internet]'s — a link between two phones on one network never leaves it — and it is never [shortRange].
  */
 @Suppress("MagicNumber") // the literals ARE the frozen stored codes; naming each one would only restate it
 enum class DeliveryPlane(
@@ -54,7 +54,7 @@ enum class DeliveryPlane(
      * [LoRa] and [Internet] are false for different reasons and both matter. A board carries a frame but
      * never a blob, so a LoRa ack proves nothing about bytes; and the Internet plane is the one an
      * attachment push *feeds*, so an ack that rode it is the opposite of evidence the radios coped. [DirectLink] is
-     * false for the second reason: it rides the Internet too. Whether a plane proves a hold of bytes is [provesHold].
+     * false because it is no radio: it is the composite's long-range child, as the spool's plane is. Whether a plane proves a hold of bytes is [provesHold].
      */
     val shortRange: Boolean get() = this == Nearby || this == Bluetooth || this == WifiAware
 

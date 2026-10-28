@@ -653,6 +653,9 @@
     <string name="chat_status_delivered_count">Delivered to %1$d of %2$d</string>
     <string name="chat_status_delivered_internet">Delivered over the Internet</string>
     <string name="chat_status_arrived_internet">Arrived over the Internet</string>
+    <!-- A contact's direct link carried the message or its file (ADR 2026-10.a5yj). Not "the Internet": a link between two phones on one network never leaves it. -->
+    <string name="chat_status_delivered_link">Delivered over a direct link</string>
+    <string name="chat_status_arrived_link">Arrived over a direct link</string>
     <string name="chat_status_arrived_nearby">Arrived nearby</string>
     <!-- LoRa plane (ADR 040): the frame, or the receipt that flipped the tick, crossed a Meshtastic board -->
     <string name="chat_status_delivered_lora">Delivered over LoRa</string>

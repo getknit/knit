@@ -91,6 +91,21 @@ class BlobRepository(
     ): Boolean = holders.heldInPair(hash, me, peer, DeliveryPlane.provesHoldCodes)
 
     /**
+     * Hash → who a contact's direct link proved holds it, for the attachments among [hashes] (ADR 2026-10.a5yj): on the
+     * recipient, itself once the bytes arrived over a link; on the sender, the peer once it answered our holder query
+     * over one. The chat marks such a file as the link's. A hash with no such proof is absent, and an empty set is
+     * answered without a query, as [observeSizes] is.
+     */
+    fun observeLinkHolders(hashes: Set<String>): Flow<Map<String, Set<String>>> =
+        if (hashes.isEmpty()) {
+            flowOf(emptyMap())
+        } else {
+            holders.observeOnPlane(hashes.toList(), DeliveryPlane.DirectLink.code).map { rows ->
+                rows.groupBy({ it.hash }, { it.holderId }).mapValues { (_, ids) -> ids.toSet() }
+            }
+        }
+
+    /**
      * Hash → byte length for the stored blobs among [hashes]; a hash not held is absent. The chat observes
      * this for the attachments in its window plus the one staged in its composer, to flip an attachment
      * from loading to shown (a hash being present at all) and to decide whether one can cross an Internet

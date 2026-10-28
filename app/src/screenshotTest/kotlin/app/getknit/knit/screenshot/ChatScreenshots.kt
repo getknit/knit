@@ -34,6 +34,7 @@ import app.getknit.knit.ui.chat.MessageBubbleTranslatedPreview
 import app.getknit.knit.ui.chat.MessageBubbleTranslationHiddenPreview
 import app.getknit.knit.ui.chat.MessageBubbleVoiceTapToDownloadPreview
 import app.getknit.knit.ui.chat.MessageBubbleWithMentionPreview
+import app.getknit.knit.ui.chat.MessageDetailsScreenDirectLinkPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenEmptyPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenPreview
@@ -261,6 +262,11 @@ fun MessageDetailsScreenLoraReached() = MessageDetailsScreenLoraReachedPreview()
 @ScreenShots
 @Composable
 fun MessageDetailsScreenEmpty() = MessageDetailsScreenEmptyPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun MessageDetailsScreenDirectLink() = MessageDetailsScreenDirectLinkPreview()
 
 @PreviewTest
 @ComponentShots

@@ -66,6 +66,7 @@ import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.crypto.sealedContent
+import app.getknit.knit.mesh.inet.LinkHolderProof
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectDm
@@ -808,6 +809,21 @@ class MeshManager(
         HolderAskBatch(
             scope = { sessionScope },
             send = { peer, hashes -> blobExchange.confirmHeld(hashes, peer) },
+        )
+
+    /**
+     * The proof of a DM photo of ours that a contact's direct link carried because no spool would take it (ADR
+     * 2026-10.a5yj L-7-7, vy27): the spool plane settled its upload before the link was up and asks no holder query for
+     * it, so the link demand's rounds ask instead ([proveStuckOverLinks]), through the same batch.
+     */
+    private val linkProof =
+        LinkHolderProof(
+            messages = messages,
+            selfId = { identity.nodeId() },
+            radioLinked = { transport.radioLinked(it) },
+            stuck = { peerId, aHash -> attachmentStuck(peerId, aHash) },
+            ask = { aHash, peerId -> holderAsks.ask(aHash, peerId) },
+            clock = clock,
         )
 
     /**
@@ -4408,6 +4424,15 @@ class MeshManager(
         val size = blobs.sizes(listOf(hash))[hash]?.toInt() ?: return false
         return sync.refusesUpload(peerId, size)
     }
+
+    /**
+     * Asks each of [linkPeers] that no radio links whether it holds our DM attachments to it that are still
+     * [attachmentStuck] (ADR 2026-10.a5yj L-7-7, vy27; [LinkHolderProof]): the sender's proof of a photo the link carried
+     * because no spool would take it. Run by the link demand's every round; the yes lands
+     * through `onPeerHolds` as a `DirectLink` holder row, which unsticks the photo and settles its upload PROVED at the
+     * spool plane's next look. Returns the (peer, hash) pairs queued, each still floored by `BlobExchange.confirmHeld`.
+     */
+    suspend fun proveStuckOverLinks(linkPeers: Collection<String>): List<Pair<String, String>> = linkProof.round(linkPeers)
 
     /**
      * Whether this phone may offer [peerId] a direct link now (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-1-1): links

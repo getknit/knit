@@ -538,6 +538,8 @@
     <string name="chat_status_delivered_count">Entregue a %1$d de %2$d</string>
     <string name="chat_status_delivered_internet">Entregue pela internet</string>
     <string name="chat_status_arrived_internet">Chegou pela internet</string>
+    <string name="chat_status_delivered_link">Entregue por link direto</string>
+    <string name="chat_status_arrived_link">Chegou por link direto</string>
     <string name="chat_status_arrived_nearby">Chegou por perto</string>
     <string name="chat_status_delivered_lora">Entregue por LoRa</string>
     <string name="chat_status_arrived_lora">Chegou por LoRa</string>

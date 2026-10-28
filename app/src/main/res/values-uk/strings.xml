@@ -546,6 +546,8 @@
     <string name="chat_status_delivered_count">Доставлено %1$d з %2$d</string>
     <string name="chat_status_delivered_internet">Доставлено через інтернет</string>
     <string name="chat_status_arrived_internet">Отримано через інтернет</string>
+    <string name="chat_status_delivered_link">Доставлено через пряме з’єднання</string>
+    <string name="chat_status_arrived_link">Отримано через пряме з’єднання</string>
     <string name="chat_status_arrived_nearby">Отримано від пристроїв поруч</string>
     <string name="chat_status_delivered_lora">Доставлено через LoRa</string>
     <string name="chat_status_arrived_lora">Отримано через LoRa</string>

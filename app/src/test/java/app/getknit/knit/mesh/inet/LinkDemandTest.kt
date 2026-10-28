@@ -18,10 +18,12 @@ import org.junit.Test
 class LinkDemandTest {
     private val offers = mutableListOf<String>()
     private val windows = mutableListOf<Pair<Long, Long>>()
+    private val proofRounds = mutableListOf<Set<String>>()
 
     private fun TestScope.demand(
         rows: List<Pending>,
         active: () -> Boolean = { true },
+        up: () -> Set<String> = { emptySet() },
         answer: suspend (String) -> LinkOutcome,
     ) = LinkDemand(
         pending = { since, until -> rows.also { windows += since to until } },
@@ -29,12 +31,13 @@ class LinkDemandTest {
             offers += peer
             answer(peer)
         },
-        up = { emptySet() },
+        up = up,
         lastUpAt = { null },
         radioLinked = { false },
         active = active,
         scope = backgroundScope,
         clock = { testScheduler.currentTime },
+        prove = { peers -> proofRounds += peers },
     )
 
     @Test
@@ -85,6 +88,49 @@ class LinkDemandTest {
             val now = testScheduler.currentTime
             // Up to now: a stuck attachment is due at once, so the policy, not the read, applies each row's wait.
             assertEquals(listOf(now - LinkDemandPolicy.WINDOW_MS to now), windows)
+        }
+
+    @Test
+    fun everyRoundAsksTheProofOverTheLinksUpEvenWithNothingToOffer() =
+        runTest {
+            var linked = emptySet<String>()
+            var running = true
+            val d = demand(emptyList(), active = { running }, up = { linked }) { LinkOutcome.UP }
+            d.round()
+            assertTrue("no link up, yet a proof round ran", proofRounds.isEmpty())
+            linked = setOf("bob")
+            d.round()
+            d.round()
+            // An up contact is never due, so the offer's early exits would have skipped it: the proof goes first.
+            assertEquals(listOf(setOf("bob"), setOf("bob")), proofRounds)
+            assertTrue(offers.isEmpty())
+            running = false
+            d.round()
+            assertEquals("low-power mode or the plane off asks nothing", 2, proofRounds.size)
+        }
+
+    @Test
+    fun aFailedProofRoundStillOffers() =
+        runTest {
+            val d =
+                LinkDemand(
+                    pending = { _, _ -> listOf(Pending("carol", 0L)) },
+                    offer = { peer ->
+                        offers += peer
+                        LinkOutcome.UP
+                    },
+                    up = { setOf("bob") },
+                    lastUpAt = { null },
+                    radioLinked = { false },
+                    active = { true },
+                    scope = backgroundScope,
+                    clock = { testScheduler.currentTime },
+                    prove = { error("the database went away") },
+                )
+            advanceTo(LinkDemandPolicy.TICK_WAIT_MS)
+            d.round()
+            runCurrent()
+            assertEquals(listOf("carol"), offers)
         }
 
     private fun TestScope.advanceTo(t: Long) {

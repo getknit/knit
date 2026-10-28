@@ -40,14 +40,20 @@ and the entry is fixed.
   so never read the first row. A refusal by shared groups read over `DirectLinkTransport.GROUPS_REREAD_MS` ago is
   decided again on a fresh read, so a group made since never waits a re-offer round for its first post. Only frames and
   files are use; digests and handshakes keep nothing open.
-- **When touching `LinkDemand`, `LinkDemandPolicy`, `MeshLinkPending`, `DirectLinks.lastUpAt`,
-  `MeshManager.attachmentStuck`, `ScopeSync.refusesUpload`, `MessageDao.unackedDmsBetween` / `ownDmAttachmentsBetween` /
+- **When touching `LinkDemand`, `LinkDemandPolicy`, `MeshLinkPending`, `LinkHolderProof`, `DirectLinks.lastUpAt`,
+  `MeshManager.attachmentStuck` / `proveStuckOverLinks`, `ScopeSync.refusesUpload`, `MessageDao.unackedDmsBetween` /
+  `ownDmAttachmentsBetween` /
   `ownGroupPostsBetween` or `MessageReceiptRepository.ackersOf`:** READ ADR 2026-10.a5yj's "spool first" amendment and
   `docs/DIRECT_LINKS.md` L-7-7. The spool goes first; a link is offered only for a message of ours a contact has not
   ticked in 20 s (last 15 min), or at once for a DM attachment no spool carrying the pair will take and not proved held,
   while no radio links them and no link has been up since it was sent — never a hold on the spool's copy (link first was
   weighed and set aside). Read only while the link plane
-  runs; low-power mode offers and answers none.
+  runs; low-power mode offers and answers none. The sender proves a stuck photo over the link: each demand round asks
+  every link-only contact (`MeshManager.proveStuckOverLinks`), through `HolderAskBatch` and `BlobExchange.confirmHeld`,
+  about our DM attachments to them that are still `attachmentStuck`, read over the custody
+  TTL rather than the 15-min window — never a memo of what was asked, never a count (FETCHING is asked again), never a
+  group's picture, and never an attachment that is not stuck, so a sender's `DirectLink` holder row means the link
+  carried it. The spool plane's next look (`reopenUploads`, the hourly recheck) then settles it PROVED (ADR 2026-10.vy27).
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`
   arm or `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.castEligible`:** READ ADR 2026-10.a5yj
   (and its lane-key amendment once recorded), `docs/DIRECT_LINKS.md` §2 and §5 and `docs/VOICE_CALLS.md` §2.7. The
@@ -66,3 +72,10 @@ and the entry is fixed.
   offerer's consent rule (a confirmed session, a contact written to or verified, the peer's bit, not blocked) and is
   never asked at receipt. The links' graph is resolved late from the mesh's inbound hook, and the mesh's half
   (`MeshLinkPeers`) late from the links, so neither graph needs the other built first.
+- **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
+  `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28
+  amendment. A link shows its own face (two arrows, "over a direct link"), never the Internet's: a link on one network
+  never leaves it. A file shows the link when the bytes' proof (ADR 2026-10.vy27) came over one — the recipient's own,
+  or on our send the DM peer's — whatever plane its message crossed; a group send of ours never does. A sender's link
+  row has two writers, `LinkHolderProof` (a photo no spool takes) and the push-half deferral's proof round (a photo held
+  back while the link is up), so it means a link confirmed the hold, not always that it carried the bytes.

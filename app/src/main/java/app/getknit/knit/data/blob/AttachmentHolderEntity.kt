@@ -3,6 +3,7 @@ package app.getknit.knit.data.blob
 import androidx.room3.Dao
 import androidx.room3.Entity
 import androidx.room3.Query
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Proof that [holderId] holds the bytes of the attachment [hash], learnt over a short-range radio or a contact's direct
@@ -62,6 +63,16 @@ interface AttachmentHolderDao {
         peer: String,
         planes: List<Int>,
     ): Boolean
+
+    /**
+     * The proofs among [hashes] learnt over [plane], live: the chat's mark on a file a contact's direct link carried
+     * (`DeliveryPlane.DirectLink`, ADR 2026-10.a5yj). Read only.
+     */
+    @Query("SELECT * FROM attachment_holders WHERE plane = :plane AND hash IN (:hashes)")
+    fun observeOnPlane(
+        hashes: List<String>,
+        plane: Int,
+    ): Flow<List<AttachmentHolderEntity>>
 
     /** Every proof held for [hash], oldest first: the developer view's holder rows (ADR 2026-10.s7wg). Read only. */
     @Query("SELECT * FROM attachment_holders WHERE hash = :hash ORDER BY provedAt ASC, holderId ASC")

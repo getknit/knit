@@ -267,8 +267,8 @@ data class ChatRow(
     val avatarHash: String?,
     val sentAt: Long,
     val received: Boolean,
-    // The plane the receipt that flipped [received] arrived on; [DeliveryPlane.Internet] paints a globe
-    // beside the tick. Only meaningful on our own delivered messages — see [MessageEntity].
+    // The plane the receipt that flipped [received] arrived on, or a contact's direct link when one carried the file
+    // ([shownPlane]); [DeliveryPlane.Internet] paints a globe beside the tick, a link two arrows. See [MessageEntity].
     val deliveredVia: DeliveryPlane = DeliveryPlane.Unknown,
     // How many of the group's other members have acked this message, out of how many there are. Both 0
     // outside a group send of ours — and [deliveredCount] is 0 for a message acked before this device
@@ -1121,6 +1121,11 @@ class ChatViewModel(
             .flatMapLatest { blobs.observeSizes(it) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    // Hash → who a contact's direct link proved holds it, for the same hashes ([shownPlane]). The holders table, not the
+    // blobs table, so [heldSizes] stays the screen's only read of the blobs.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val linkHolders: Flow<Map<String, Set<String>>> = heldHashes.flatMapLatest { blobs.observeLinkHolders(it) }
+
     // The window's attachments still on their way: shown, not held, and not a link card (a card never draws
     // progress). Read off the one shared [heldSizes] — never a second blob query (ADR 2026-09.fjcw) — and only
     // once it has answered, so a thread does not count every attachment as missing for its first frame.
@@ -1159,14 +1164,14 @@ class ChatViewModel(
     // enforced elsewhere regardless.
     private val blobState =
         combine(
-            heldSizes.filterNotNull(),
+            combine(heldSizes.filterNotNull(), linkHolders, ::Pair),
             imageScreening.observeFlaggedHashes(),
             // The download limit rides with the filter: both are settings that change how a received attachment shows.
             combine(settings.contentFilteringEnabled, settings.bluetoothDownloadLimitBytes) { hide, limit -> hide to limit },
             linkCards.cards,
             combine(transfers.states, retrySources) { live, readable -> live to readable },
-        ) { sizes, flagged, (hideSensitive, limit), cards, (live, readable) ->
-            BlobState(sizes, flagged.toSet(), hideSensitive, limit, cards, live, readable)
+        ) { (sizes, link), flagged, (hideSensitive, limit), cards, (live, readable) ->
+            BlobState(sizes, link, flagged.toSet(), hideSensitive, limit, cards, live, readable)
         }
 
     init {
@@ -1227,6 +1232,8 @@ class ChatViewModel(
         val reactions: List<ReactionEntity>,
         val blocked: Set<String>,
         val blobSizes: Map<String, Int>,
+        // blob hash -> who a contact's direct link proved holds it ([shownPlane]).
+        val linkHolders: Map<String, Set<String>>,
         val flaggedHashes: Set<String>,
         val hideSensitiveContent: Boolean,
         // "Ask before large Bluetooth downloads" in bytes, null for never (ADR 2026-10.js2p).
@@ -1248,6 +1255,7 @@ class ChatViewModel(
     // message bundle so it stays at the typed 5-flow combine overload.
     private data class BlobState(
         val sizes: Map<String, Int>,
+        val linkHolders: Map<String, Set<String>>,
         val flagged: Set<String>,
         val hideSensitive: Boolean,
         val downloadLimit: Long?,
@@ -1302,6 +1310,7 @@ class ChatViewModel(
                 reacts,
                 blocked,
                 blob.sizes,
+                blob.linkHolders,
                 blob.flagged,
                 blob.hideSensitive,
                 blob.downloadLimit,
@@ -1447,6 +1456,7 @@ class ChatViewModel(
             val reacts = bundle.reactions
             val blocked = bundle.blocked
             val blobSizes = bundle.blobSizes
+            val linkHolders = bundle.linkHolders
             val flaggedHashes = bundle.flaggedHashes
             val hideSensitive = bundle.hideSensitiveContent
             val downloadLimit = bundle.downloadLimit
@@ -1528,7 +1538,7 @@ class ChatViewModel(
                             },
                         sentAt = m.sentAt,
                         received = m.received,
-                        deliveredVia = m.receivedPlane,
+                        deliveredVia = shownPlane(m.receivedPlane, mine, me, conversationId, m.attachmentHash?.let(linkHolders::get)),
                         // Only our own group sends have a "who has it" answer; the roster excludes us,
                         // since we never ack ourselves (the details screen's rule, kept identical here).
                         deliveredCount = if (mine && isGroup) deliveredCounts[m.id] ?: 0 else 0,

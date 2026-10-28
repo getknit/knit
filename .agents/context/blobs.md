@@ -58,9 +58,12 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   photo's sender asks its linked recipient with the ordinary holder query whether it holds a photo of ours; a
   `HAVE`/`SENDING` answering that query over a radio or a contact's direct link (`DeliveryPlane.provesHold`, ADR
   2026-10.a5yj) is the proof that keeps the photo off every spool for good. Proof queries never touch a want, and a want's answer never proves; the recipient's own proof is written only after
-  `onReceived` reports the store took the bytes, never on the arrival memo. Lab:
-  `PhotoProofLabTest.aPhotoItsRecipientHoldsNeverGoesUpEvenAfterThePeersPart`; unit: `BlobHolderQueryTest`'s
-  proof cases.
+  `onReceived` reports the store took the bytes, never on the arrival memo. A DM photo no spool would take, which a
+  contact's direct link was opened for, is asked about by the link demand (`LinkHolderProof`,
+  `MeshManager.proveStuckOverLinks`, `.agents/context/direct-links.md`), since the spool plane settled it first. Lab:
+  `PhotoProofLabTest.aPhotoItsRecipientHoldsNeverGoesUpEvenAfterThePeersPart`,
+  `InternetLinkLabTest.aPhotoNoRelayWillTakeOpensALinkAtOnceAndCrossesIt`; unit: `BlobHolderQueryTest`'s proof cases,
+  `LinkHolderProofTest`.
 - **Before touching the holder query — `BlobExchange.onHaveQuery` / `onHaveAnswer` / `decide` / `wantAll`,
   `FrameType.BLOB_HAVE` / `BLOB_HAS` / `isUnsignedPointToPoint` (and its flood guard in `MeshRouter.scheduleRelay`),
   `BlobHaveContent` / `BlobHasContent`, `Protocol.CAP_BLOB_HAVE`, `BlobStore.servable`, `MeshTransport.feedingLoad` / `slowLinkTo`, or

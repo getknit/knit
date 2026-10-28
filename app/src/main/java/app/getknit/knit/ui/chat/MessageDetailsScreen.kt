@@ -624,3 +624,24 @@ fun MessageDetailsScreenEmptyPreview() =
                 ),
         )
     }
+
+@Preview(name = "Message details — photo over a direct link")
+@Composable
+fun MessageDetailsScreenDirectLinkPreview() =
+    KnitPreview {
+        MessageDetailsScreenContent(
+            state =
+                MessageDetailsUiState(
+                    messageId = "demo-dm-photo",
+                    body = "The whole trail map, full size.",
+                    hasAttachment = true,
+                    attachmentMime = "image/jpeg",
+                    senderName = "Sam Rivera",
+                    senderNodeId = "samr1v00",
+                    sentAt = PREVIEW_NOW - 3 * 60_000L,
+                    arrivedAt = PREVIEW_NOW - 3 * 60_000L + 2_000L,
+                    // A photo no relay would take, carried by a contact's direct link (ADR 2026-10.a5yj).
+                    plane = DeliveryPlane.DirectLink,
+                ),
+        )
+    }

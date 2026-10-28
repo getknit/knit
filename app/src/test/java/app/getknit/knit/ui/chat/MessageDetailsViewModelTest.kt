@@ -3,6 +3,7 @@
 package app.getknit.knit.ui.chat
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
@@ -30,6 +31,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -87,7 +89,8 @@ class MessageDetailsViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = MessageDetailsViewModel(MSG, messages, reactions, receipts, groups, peers, settings, identity, reachedFlow)
+    private fun viewModel(blobs: BlobRepository? = null) =
+        MessageDetailsViewModel(MSG, messages, reactions, receipts, groups, peers, settings, identity, reachedFlow, blobs)
 
     /** Seeds a group we're in, and points the message at it. */
     private fun inGroup(vararg members: String) {
@@ -171,6 +174,22 @@ class MessageDetailsViewModelTest {
             assertFalse(state.mine)
             assertEquals(DeliveryStatus.Delivered, state.delivery)
             assertEquals(DeliveryPlane.Internet, state.plane)
+        }
+
+    @Test
+    fun `a file a direct link carried names the link, not the relay its message crossed`() =
+        runTest {
+            // ADR 2026-10.a5yj: our DM photo whose peer proved it holds the bytes over a link.
+            messageFlow.value =
+                msg(senderId = "me", conversationId = "bob", attachmentHash = "h1", received = true, id = MSG)
+                    .copy(receivedVia = DeliveryPlane.Internet.code)
+            val blobs = mockk<BlobRepository>()
+            every { blobs.observeLinkHolders(setOf("h1")) } returns flowOf(mapOf("h1" to setOf("bob")))
+
+            assertEquals(DeliveryPlane.DirectLink, collect(viewModel(blobs)).plane)
+            // Without that proof, the message's own plane.
+            every { blobs.observeLinkHolders(setOf("h1")) } returns flowOf(emptyMap())
+            assertEquals(DeliveryPlane.Internet, collect(viewModel(blobs)).plane)
         }
 
     @Test

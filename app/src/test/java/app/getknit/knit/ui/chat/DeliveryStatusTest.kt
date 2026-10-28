@@ -5,6 +5,7 @@ import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.SwapVert
 import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
@@ -134,9 +135,45 @@ class DeliveryStatusTest {
     }
 
     @Test
-    fun `the plane glyph is painted for the Internet and LoRa only`() {
+    fun `a direct link names itself in both directions, never the Internet`() {
+        // A link between two phones on one network never leaves it (ADR 2026-10.a5yj), so it is not "the Internet".
+        assertEquals(
+            DeliveryText(R.string.chat_status_delivered_link),
+            deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.DirectLink, mine = true),
+        )
+        assertEquals(
+            DeliveryText(R.string.chat_status_arrived_link),
+            deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.DirectLink, mine = false),
+        )
+        assertEquals(
+            DeliveryText(R.string.chat_status_sent),
+            deliveryLabel(DeliveryStatus.Sent, DeliveryPlane.DirectLink, mine = true),
+        )
+    }
+
+    @Test
+    fun `a file a link carried shows the link, from whichever end`() {
+        val relay = DeliveryPlane.Internet
+        // Received: the link proved WE hold it — the bytes reached us over it.
+        assertEquals(DeliveryPlane.DirectLink, shownPlane(relay, mine = false, me = "me", conversationId = "bob", setOf("me")))
+        // Ours, in a DM: the peer's proof came over the link.
+        assertEquals(DeliveryPlane.DirectLink, shownPlane(relay, mine = true, me = "me", conversationId = "bob", setOf("bob")))
+        // Someone else's proof says nothing about this row: the message's own plane stands.
+        assertEquals(relay, shownPlane(relay, mine = false, me = "me", conversationId = "bob", setOf("bob")))
+        assertEquals(relay, shownPlane(relay, mine = true, me = "me", conversationId = "bob", setOf("me", "carol")))
+        // A group send of ours asks no member for proof, and a member's holding is not the thread's.
+        assertEquals(relay, shownPlane(relay, mine = true, me = "me", conversationId = "g-1", setOf("bob")))
+        // No proof, or no identity yet: the message's own plane.
+        assertEquals(relay, shownPlane(relay, mine = false, me = "me", conversationId = "bob", null))
+        assertEquals(relay, shownPlane(relay, mine = false, me = null, conversationId = "bob", setOf("me")))
+    }
+
+    @Test
+    fun `the plane glyph is painted for a relay, a direct link and LoRa only`() {
         assertEquals(Icons.Filled.Public, planeGlyph(DeliveryPlane.Internet))
         assertEquals("relay", planeTag(DeliveryPlane.Internet))
+        assertEquals(Icons.Filled.SwapVert, planeGlyph(DeliveryPlane.DirectLink))
+        assertEquals("link", planeTag(DeliveryPlane.DirectLink))
         assertEquals(Icons.Filled.Sensors, planeGlyph(DeliveryPlane.LoRa))
         assertEquals("lora", planeTag(DeliveryPlane.LoRa))
         // A phone radio (and an unknown plane) paints nothing — the plain case needs no ornament.

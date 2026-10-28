@@ -347,7 +347,7 @@ HELLO. `TransportKind.DirectLink`, `shortRange = false`, `viaInternet = true`: t
 `neighbors` (a link to send on) and out of every short-range set (`shortRangeNeighbors`, `radioLinked`), so a contact
 reached this way is never nearby, met, a walkie's radio path or Your mesh credit, and a live link never hides radios
 the user turned off (`health` leaves it out). What arrives over a link records `DeliveryPlane.DirectLink` (6), shown
-as over the Internet.
+as the link's own (the 2026-10-28 amendment below), never as over the Internet.
 
 **What crosses is filtered at the link, both ways, by one rule** (`LinkPairFilter`, one snapshot per peer in
 `LinkView`): frames addressed between the two; either one's profile or a ratcheted DM between them; a shared group's
@@ -422,3 +422,38 @@ the field log's `link_try` lines once testers run it, before Phase 3 flips the r
 (the seal amendment, standing now); the stream is our own ARQ; no standing keepalive; the link as a transport and its
 custody and blob rules; the spool first. Phases 1 and 2 proceed in debug builds; the release default stays off, and the
 person's switch off, until Phase 3.
+
+## Amendment 2026-10-28 — how a link shows in the chat
+
+Status: stands (2026-10-28); the owner's call.
+
+**A link has its own face, not the Internet's.** A link between two phones on one network never leaves it (the Phase
+0 trial's LAN pair came up on the host path), so "over the Internet" is wrong for it, where a spool always crosses
+the Internet. The chat paints what a link carried with two vertical arrows (`Icons.Filled.SwapVert`) in place of the
+relay's globe, and words it "Delivered over a direct link" / "Arrived over a direct link" (`planeGlyph`,
+`deliveryLabel`), the same words Diagnostics' "Direct link" row uses.
+
+**A file the link carried shows the link, whatever its message crossed** (`shownPlane`,
+`BlobRepository.observeLinkHolders`). A photo's message usually rides the spool, while its bytes may only cross the
+link: that is the bulk trigger's case, the one this feature exists for, so the person sees the link was what delivered
+it. The evidence is the bytes' proof (ADR 2026-10.vy27), read where its plane is the link's:
+
+- on the recipient, its own proof, written when the bytes arrived over a link;
+- on the sender, the DM peer's proof, written when its answer to our holder query came over a link
+  (`LinkHolderProof`, `MeshManager.proveStuckOverLinks`). Every demand round (10 s, only while the link plane runs, so
+  never in low-power mode), each contact a link holds and no radio does is asked the ordinary holder query, through
+  `BlobExchange.confirmHeld` and its gates, about each DM attachment of ours to them sent within the custody TTL that
+  every spool carrying the pair still refuses and that is not proved held, read afresh from the database each round.
+  Asking stops at proof, a gone link or the TTL, never at a count; a FETCHING answer is asked again. Never a group
+  picture, never an attachment a spool takes: those it asks about only the link could carry. The spool's push-half
+  deferral also asks a link peer, about a DM photo it holds back while the link is up (L-7-6), and that answer writes
+  the same row; there too the link usually carried the bytes. The spool
+  plane's next look (`reopenUploads`, the hourly recheck) then settles the upload proved, so a later files ticket never
+  uploads a photo the recipient already holds. Nothing is asked at link-up: the recipient fetches after the link is up,
+  so the first round, at most 10 s later, asks instead. A sender whose relay drops after the link is up stops asking
+  until it reconnects (`attachmentStuck` reads no stuck photo with no spool connected).
+
+Its limits, accepted: a group send of ours never shows the link, since no member is asked for proof (no member's
+holding speaks for another); a DM peer that got the photo another way and confirmed it over a link reads as the
+link's, the first proof standing; and the proof is the file's, so a picture forwarded under its sealed identity (ADR
+2026-10.mptm) shows the link on every received row naming it, each served from the one copy that came over the link.

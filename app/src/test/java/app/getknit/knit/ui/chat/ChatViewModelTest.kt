@@ -30,6 +30,7 @@ import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.TransferPhase
@@ -166,6 +167,7 @@ class ChatViewModelTest {
     private val recentsFlow = MutableStateFlow(RecentReactions.DEFAULTS)
     private val blockedFlow = MutableStateFlow(emptySet<String>())
     private val sizesFlow = MutableStateFlow(emptyMap<String, Int>())
+    private val linkHoldersFlow = MutableStateFlow(emptyMap<String, Set<String>>())
     private val flaggedFlow = MutableStateFlow(emptyList<String>())
     private val filteringFlow = MutableStateFlow(true)
     private val downloadLimitFlow = MutableStateFlow<Long?>(1_000_000L)
@@ -199,6 +201,8 @@ class ChatViewModelTest {
         every { settings.recentReactions } returns recentsFlow
         // Keyed by the window's hashes in production; the test map simply holds every hash a test names.
         every { blobs.observeSizes(any()) } returns sizesFlow
+        // Folded into the blob state beside the sizes: a relaxed mock's silent flow would stall every row.
+        every { blobs.observeLinkHolders(any()) } returns linkHoldersFlow
         every { imageScreening.observeFlaggedHashes() } returns flaggedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         // Combined with the filter into the blob state: a relaxed mock's silent flow would stall every row.
@@ -1679,6 +1683,33 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun aFileADirectLinkCarriedShowsTheLinkInPlaceOfTheRelay() =
+        runTest {
+            // ADR 2026-10.a5yj: the row's plane is the link's when a link proved the file held at the far end of this
+            // row — the peer for ours, us for theirs — whatever plane the message itself crossed.
+            stubDm(BOB)
+            val relay = DeliveryPlane.Internet.code
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "me", id = "ours", conversationId = BOB, attachmentHash = "h1", received = true, receivedVia = relay),
+                    msg(senderId = BOB, id = "theirs", conversationId = BOB, attachmentHash = "h2", receivedVia = relay),
+                    msg(senderId = BOB, id = "relayed", conversationId = BOB, attachmentHash = "h3", receivedVia = relay),
+                )
+            linkHoldersFlow.value = mapOf("h1" to setOf(BOB), "h2" to setOf("me"), "h3" to setOf(BOB))
+            val vm = vm(conversationId = BOB)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            val planes =
+                vm.state.value.rows
+                    .associate { it.id to it.deliveredVia }
+            assertEquals(DeliveryPlane.DirectLink, planes["ours"])
+            assertEquals(DeliveryPlane.DirectLink, planes["theirs"])
+            // Bob holding h3 says nothing of how it reached us: the relay that carried its message stands.
+            assertEquals(DeliveryPlane.Internet, planes["relayed"])
+        }
+
+    @Test
     fun blobSizesAreAskedForTheWindowsAttachmentsAndTheStagedOneOnly() =
         runTest {
             val ingested = AttachmentStore.Ingested(hash = "staged", mime = "image/jpeg")
@@ -2921,6 +2952,7 @@ class ChatViewModelTest {
     private companion object {
         const val GROUP = "g-trailhead"
         const val GONE_GROUP = "g-deleted"
+        const val BOB = "bob"
         const val PEER_CALL = "callpeer7u3xqz5w2kcmvbdyrh4a"
     }
 

@@ -178,6 +178,7 @@ import org.robolectric.shadows.ShadowLog
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * **Mesh in a box**: N complete, real Knit stacks in one JVM — the real [MeshManager] (and so the real
@@ -1338,6 +1339,12 @@ class LabNode internal constructor(
     val linkLog = CopyOnWriteArrayList<String>()
 
     /**
+     * How many uses this node's direct-link plane has noted (`DirectLinkTransport.onUse`: a frame or file sent or taken),
+     * each counted after the link took it, so a scenario that sees the count move knows the link's idle close moved too.
+     */
+    val linkUses = AtomicInteger()
+
+    /**
      * Every file this node's direct-link plane accepted to send, as `to kind key` in send order ([LabLinkPlane]) — the
      * link's half of [LabTransport.files], kept across restarts.
      */
@@ -1370,7 +1377,10 @@ class LabNode internal constructor(
                 partials = partials,
                 metrics = metrics,
                 now = now,
-                onUse = { links?.noteUse(it) },
+                onUse = {
+                    links?.noteUse(it)
+                    linkUses.incrementAndGet()
+                },
                 onLinkUp = { manager.onDirectLinkUp(it) },
             )
         }
@@ -1411,6 +1421,7 @@ class LabNode internal constructor(
                 scope = scope,
                 clock = now,
                 log = { linkLog += it },
+                prove = { manager.proveStuckOverLinks(it) },
             )
     }
 

@@ -168,6 +168,8 @@ private fun Module.linkDemand() =
             scope = get(),
             clock = System::currentTimeMillis,
             log = { Log.d(TAG, it) },
+            // The sender's proof of a photo the link carried because no spool would take it (L-7-7, ADR 2026-10.vy27).
+            prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
         ).also { it.start() }
     }
 
