@@ -20,7 +20,9 @@ and the first dies with `NoSuchFileException` though every test passed; two comp
 intermediates. Chain your own runs in one command, never one in the background and one in the foreground. Anything
 that may run beside another Gradle user — a reviewer or owner persona, `lab-chaos.sh`, `unit-stress.sh` — goes through
 `scripts/gradle-turn.sh <command>`, a per-worktree `flock` in the git dir (re-entrant, so a script holding it can nest),
-so the reviewers the Stop hook spawns at once read in parallel and take turns at Gradle.
+so the reviewers the Stop hook spawns at once read in parallel and take turns at Gradle. It also runs the command in a
+systemd scope of CPU weight 20, so the daemon it starts and that daemon's test JVMs yield the CPU to the IDE and the
+terminals.
 
 ## ktlint autocorrects; detekt doesn't
 

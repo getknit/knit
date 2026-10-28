@@ -13,6 +13,13 @@
 # not wait on itself. Waits up to GRADLE_TURN_WAIT seconds (default 3600), then fails. Without flock (macOS), the
 # command runs at once.
 #
+# The command runs in a transient systemd scope of CPU weight 20 (the default is 100). A daemon it starts lands in that
+# scope and stays there, so a test sweep that fills every core still yields to the IDE and the terminals the agents run
+# in. Nice can't do this: an agent's builds share one cgroup with the IDE or terminal it runs in, and the kernel splits
+# CPU between cgroups before nice ranks the threads inside one. A weight only splits a contended CPU, so an idle machine
+# still gives Gradle every core. A daemon started outside the turn keeps its cgroup until it exits (`./gradlew --stop`).
+# Without a systemd user manager (CI containers, macOS) the command runs unscoped.
+#
 # Usage: scripts/gradle-turn.sh <command> [args...]
 #   e.g. scripts/gradle-turn.sh timeout 900 ./gradlew :app:testDebugUnitTest -q --tests 'app.getknit.knit.FooTest'
 set -euo pipefail
@@ -28,4 +35,7 @@ if ! flock --nonblock 9; then
   flock --wait "${GRADLE_TURN_WAIT:-3600}" 9 || { echo "gradle-turn: still busy after the wait; giving up" >&2; exit 75; }
 fi
 export KNIT_GRADLE_TURN=1
+if systemd-run --user --scope --quiet -p CPUWeight=20 -- true >/dev/null 2>&1; then
+  exec systemd-run --user --scope --quiet -p CPUWeight=20 -- "$@"
+fi
 exec "$@"
