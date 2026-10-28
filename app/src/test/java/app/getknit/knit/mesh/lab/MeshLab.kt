@@ -140,6 +140,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -1510,8 +1511,18 @@ class LabNode internal constructor(
         // the database next throws on the closed pool, and that lands as an uncaught exception on whichever `runTest`
         // class this JVM runs after the scenario. Bounded and checked: a child that ignores cancellation fails the
         // scenario that owns it, by name, instead of racing the database close as before.
+        // The session goes first, the app scope after it, as on a phone: a delivery the router admitted runs on under
+        // `NonCancellable` past stop() (ADR 2026-10.f82h) and may still read what the app scope serves (the
+        // name-clash fade's shared anchors, `LabelAnchors.current`). Cancelling both at once left it waiting on a
+        // shared flow whose producer was gone, and the join below waited out its bound on it.
         scope?.coroutineContext?.job?.let { job ->
-            val joined = runBlocking { withTimeoutOrNull(SCOPE_JOIN_MS) { job.cancelAndJoin() } }
+            val joined =
+                runBlocking {
+                    withTimeoutOrNull(SCOPE_JOIN_MS) {
+                        job.children.filter { it.isCancelled }.toList().joinAll()
+                        job.cancelAndJoin()
+                    }
+                }
             check(joined != null) { "$name: session scope still running $SCOPE_JOIN_MS ms after cancel: ${job.children.toList()}" }
         }
         scope = null

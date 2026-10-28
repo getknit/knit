@@ -604,7 +604,12 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `LabCustodyGate` holds a node's custody writes to stage that window. A scenario that holds it releases it before
   it ends: an admitted delivery runs under `NonCancellable` (ADR 2026-10.f82h), so one parked at the gate outlives a
   stop and holds the session-scope join. Stop the manager, release, then restart (`SpoolWorkerStopLabTest`);
-  `MeshLab.close` releases every gate first as a net. `hold`/`release`
+  `MeshLab.close` releases every gate first as a net. Such a delivery may still read what the app scope serves (the
+  name-clash fade's `LabelAnchors.current`, a `WhileSubscribed` share), and the node's one scope stands in for both
+  the app scope and the session's parent, so `LabNode.shutdownLive` joins the session `stop()` cancelled before it
+  cancels the rest: cancelling both at once left the delivery on a share whose producer was gone, and the join
+  failed `session scope still running` (`SideChannelLabTest`, 3–7 in 80 seeds; production never cancels its app
+  scope). A fixture scope standing in for the app scope outlives every `NonCancellable` delivery. `hold`/`release`
   flip `holding` under the batch's lock, so a frame sent during a release is never parked into a batch
   already taken. A stranger on the pages is a stranger only while the first-sighting profile floods cannot
   reach it — they page out unawaited by `awaitAcquainted` — so make `pages.lossy` eat them. A spool scope's
