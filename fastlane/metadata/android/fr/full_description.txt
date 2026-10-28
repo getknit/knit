@@ -1,0 +1,56 @@
+Knit est une messagerie sans internet, sans réseau mobile et sans compte. Elle se connecte directement aux téléphones autour de vous par Wi-Fi Aware et Bluetooth, d’appareil en appareil.
+
+Chaque téléphone proche relaie le message à ses voisins : vos mots traversent une foule, un bâtiment ou un camping, bien au-delà de votre portée. Plus on est nombreux, plus ils vont loin.
+
+POURQUOI KNIT
+• Ni internet ni données mobiles
+• Ni compte, ni numéro, ni e-mail
+• Aucun serveur central : rien à couper, surveiller ou divulguer
+• Ni pubs, ni pistage, ni statistiques, ni services Google Play
+• Logiciel libre : chacun peut lire ce que fait l’appli
+
+IDÉAL POUR
+• Festivals et lieux bondés où le signal disparaît
+• Voyages, vols, bateaux, camping et pleine nature
+• Pannes de courant et urgences quand les réseaux tombent
+
+PRIVÉ PAR CONCEPTION
+Discussions directes et groupes sont chiffrés de bout en bout. Chaque message est scellé pour ses seuls destinataires : les téléphones qui le transportent, et les relais, ne voient que du texte chiffré. Les clés sont créées sur votre appareil et protégées par la sécurité matérielle d’Android. Vérifiez votre interlocuteur par numéro de sécurité ou code QR.
+
+LES AUTORISATIONS
+Knit demande les appareils à proximité (la localisation avant Android 13), dont Android a besoin pour trouver les pairs par Wi-Fi Aware et Bluetooth LE et joindre une radio associée. La position n’est lue que si vous appuyez sur Envoyer la position. INTERNET est déclaré car Android compte le socket Wi-Fi Aware local comme accès réseau, et pour les relais et aperçus de liens, une fois activés. Sans compte ni serveur, une installation neuve ne fait aucun appel réseau.
+
+LOGICIEL LIBRE
+Knit est sous licence GNU GPL v3 ou ultérieure ; le code est sur github.com/getknit/knit.
+
+FONCTIONNALITÉS
+• Salon public « À proximité » pour tous ceux à portée
+• Messages privés et groupes, chiffrés de bout en bout
+• Réponses citées, réactions emoji et @mentions
+• Photos, GIF et courtes vidéos
+• Appels vocaux, en direct à proximité ou par relais internet
+• Messages vocaux, fichiers de tout type, gros fichiers par Wi-Fi
+• Recherche dans discussions, contacts et messages
+• Sauvegarde chiffrée pour un nouveau téléphone
+• Stockage et retransmission : un message attend le retour à portée
+• Ajout d’un contact par lien, sans scan
+• Radio LoRa Meshtastic en option, pour bien plus de portée
+• Relais internet en option, désactivés par défaut
+• Partage de l’appli à un téléphone proche, sans store
+• Material 3, thème sombre et couleurs dynamiques Material You
+
+DES ESPACES PLUS SÛRS
+Un filtrage sur l’appareil écarte textes injurieux et images explicites, hors ligne, sans rien envoyer. Le contenu sensible est flouté, et tout expéditeur se bloque d’un appui.
+
+Knit est financé par ses soutiens : github.com/sponsors/getknit, ko-fi.com/knit. Liberapay.com/zaventh soutient son seul développeur.
+
+FONCTIONNEMENT
+Knit utilise Wi-Fi Aware et Bluetooth Low Energy à la fois, et marche donc avec un seul des deux. À laisser tourner en arrière-plan. Android 10 minimum.
+
+RADIO LONGUE PORTÉE EN OPTION
+Associez une radio LoRa Meshtastic en Bluetooth : le salon À proximité et vos messages directs passent aussi par elle, sur des kilomètres au lieu de mètres, toujours sans internet. La radio est un matériel à part ; Knit marche pleinement sans.
+
+RELAIS INTERNET EN OPTION
+Pour un contact jamais à portée radio, activez les relais : Knit dépose une copie scellée sur un serveur relais, qui la remet quand son téléphone se connecte. Désactivés par défaut, après une explication de ce qu’un relais voit (votre adresse IP, quand vous envoyez, à peu près combien) et ne voit pas : vos messages, vos correspondants, les membres d’un groupe. Choisissez vos relais ou hébergez le vôtre.
+
+Remarque : sans radio ni relais, Knit joint les personnes proches, ou la foule entre vous. Le salon public À proximité n’est pas chiffré, par conception (pas de destinataires fixes), et n’est jamais envoyé en ligne.

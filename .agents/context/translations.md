@@ -6,7 +6,9 @@ How Knit's text reaches other languages. English is the source; Brazilian Portug
 falls back to, written with tú and ustedes and no regional words (teléfono, not celular or móvil), so a region can
 later override only the strings it says differently. Ukrainian (`values-uk/`, machine pass 2026-10-26, awaiting
 native review) is the third, written with ви (the polite form Android's own Ukrainian uses) and the typographic
-apostrophe ’, never an escaped ASCII one. Progress per language is GitHub issue #43.
+apostrophe ’, never an escaped ASCII one. French (`values-fr/`, machine pass 2026-10-27, awaiting native review) is
+the fourth: a neutral base for every French speaker, written with vous, the typographic apostrophe ’, and a
+no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». Progress per language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
 
