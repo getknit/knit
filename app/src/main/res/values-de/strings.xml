@@ -530,6 +530,8 @@
     <string name="chat_status_delivered_count">Zugestellt an %1$d von %2$d</string>
     <string name="chat_status_delivered_internet">Über das Internet zugestellt</string>
     <string name="chat_status_arrived_internet">Über das Internet angekommen</string>
+    <string name="chat_status_delivered_link">Über Direktverbindung zugestellt</string>
+    <string name="chat_status_arrived_link">Über Direktverbindung angekommen</string>
     <string name="chat_status_arrived_nearby">Aus der Nähe angekommen</string>
     <string name="chat_status_delivered_lora">Über LoRa zugestellt</string>
     <string name="chat_status_arrived_lora">Über LoRa angekommen</string>
@@ -1068,6 +1070,7 @@
     <string name="diagnostics_transport_wifi_aware">Wi-Fi Aware</string>
     <string name="diagnostics_transport_other">Sonstige</string>
     <string name="diagnostics_transport_lora">LoRa</string>
+    <string name="diagnostics_transport_direct_link">Direktverbindung</string>
     <string name="diagnostics_transport_counts" tools:ignore="PluralsCandidate">%1$d in der Nähe · %2$d verbunden</string>
     <plurals name="diagnostics_transport_heard">
         <item quantity="one">%1$d empfangen</item>
@@ -1333,6 +1336,8 @@
     <string name="relays_summary_none_active">An · keine Relays aktiv</string>
     <string name="relays_section_list">Relays</string>
     <string name="relays_off_note">Beim Ausschalten wird nichts Neues mehr hochgeladen. Versiegelte Kopien, die schon auf einem Relay liegen, kann es nicht lesen, und sie laufen innerhalb von 48 Stunden ab.</string>
+    <string name="relays_direct_links_title">Direkt mit Kontakten verbinden</string>
+    <string name="relays_direct_links_subtitle">Wenn ein Relay langsam ist oder ein Foto nicht überträgt, kann Knit dich direkt über das Internet mit einem Kontakt verbinden, sofern ihr beide dies eingeschaltet habt. Ein Kontakt, mit dem Knit eine Verbindung versucht, erfährt die IP-Adresse deines Smartphones.</string>
     <string name="relays_empty">Keine Relays hinzugefügt. Der Weg übers Internet bleibt aus, bis du eines hinzufügst – deine Nachrichten laufen weiterhin über WLAN und Bluetooth.</string>
     <string name="relays_add">Relay hinzufügen</string>
     <string name="relays_add_title">Relay hinzufügen</string>

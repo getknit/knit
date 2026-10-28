@@ -538,6 +538,8 @@
     <string name="chat_status_delivered_count">Distribué à %1$d sur %2$d</string>
     <string name="chat_status_delivered_internet">Distribué via Internet</string>
     <string name="chat_status_arrived_internet">Reçu via Internet</string>
+    <string name="chat_status_delivered_link">Distribué via une connexion directe</string>
+    <string name="chat_status_arrived_link">Reçu via une connexion directe</string>
     <string name="chat_status_arrived_nearby">Reçu à proximité</string>
     <string name="chat_status_delivered_lora">Distribué via LoRa</string>
     <string name="chat_status_arrived_lora">Reçu via LoRa</string>
@@ -1087,6 +1089,7 @@
     <string name="diagnostics_transport_wifi_aware">Wi-Fi Aware</string>
     <string name="diagnostics_transport_other">Autre</string>
     <string name="diagnostics_transport_lora">LoRa</string>
+    <string name="diagnostics_transport_direct_link">Connexion directe</string>
     <string name="diagnostics_transport_counts" tools:ignore="PluralsCandidate">%1$d à proximité · %2$d en liaison</string>
     <plurals name="diagnostics_transport_heard">
         <item quantity="one">%1$d détecté</item>
@@ -1357,6 +1360,8 @@
     <string name="relays_summary_none_active">Activé · aucun relais utilisé</string>
     <string name="relays_section_list">Relais</string>
     <string name="relays_off_note">Désactiver cette option arrête les nouveaux envois. Les copies scellées déjà présentes sur un relais lui restent illisibles et expirent sous 48 heures.</string>
+    <string name="relays_direct_links_title">Se connecter directement aux contacts</string>
+    <string name="relays_direct_links_subtitle">Quand un relais est lent ou ne transporte pas une photo, Knit peut vous connecter directement à un contact via Internet, si vous avez tous deux activé cette option. Un contact auquel Knit tente de se connecter voit l’adresse IP de votre téléphone.</string>
     <string name="relays_empty">Aucun relais ajouté. Le canal Internet reste désactivé tant que vous n’en ajoutez pas — vos messages circulent toujours par Wi-Fi et Bluetooth.</string>
     <string name="relays_add">Ajouter un relais</string>
     <string name="relays_add_title">Ajouter un relais</string>
