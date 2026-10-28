@@ -243,3 +243,16 @@ A chat voice note can now be written out with this model on the person's tap. Th
 unlike a walkie burst's (ADR 2026-10.am8d). It shares the model, its download and the Calls screen's switch, and a
 call always comes first: no note runs while a call is up.
 
+
+## Amendment (2026-10-28): the sender's own lines are a debug tool
+
+The "You" line (the amendment of 2026-10-09) is now built only in debug builds (`WALKIE_OWN_LINES` in `di/CallWiring`).
+It was added to tell what the codec cost from what the model gets wrong, and it did that job in the 2026-10-28 source
+trial (ADR 2026-10.79yb, amendment 13). For a person on a call it misleads: it is read from the microphone before the
+codec, so a clean "You" line says nothing about what the other phone heard, and that is the line that matters. It also
+runs the model once more per burst spoken. Comparable apps differ. WhatsApp shows voice-note transcripts to the
+recipient only, and meeting captions show every speaker in a shared room, which a walkie burst is not.
+
+A release build gives the recorder no tap, so a spoken burst makes no line and no saved clip. The heard lines, live
+captions and voice notes are unchanged. Debug builds keep the own line, the `…debug.STT` `loop` op and the clips'
+`spoken` files.

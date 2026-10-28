@@ -105,7 +105,7 @@ lines.
   `SttDownloadService`), the Calls screen's transcripts section (`data/settings/TranscriptStore`), `TalkPlayer`'s `TalkPcmTap`,
   `WalkieTranscriptCard`, `ModelLoadGuard.STT`, the `moonshineVoice` pin or `scripts/stt-model.py`:** READ ADR
   2026-10.nz3g and `docs/VOICE_CALLS.md` C-3.11-9 and C-3.7-5 — the receiver writes each heard burst, and with CC on a
-  live call's peer, out as text while it plays, behind `BuildConfig.STT` (`STT_WIRED`) and never on the wire (a live call's streams
+  live call's peer, out as text while it plays, behind `BuildConfig.STT` (`STT_WIRED`) and never on the wire, the sender's own "You" line in debug builds only (`WALKIE_OWN_LINES`) (a live call's streams
   always split at pauses, stop 8 s behind, and this phone's own voice is never captioned); the model (Moonshine v2 Small Streaming alone, through
   Moonshine's own runtime, called by its `JNI` class alone and taken without its transitive dependencies) is a
   tap-to-download from getknit.app (the walkie card, whose offer can be dismissed for good, or the Calls screen, held

@@ -924,10 +924,12 @@ its media (`REASON_MEDIA`).
   - **The audio.** The player's decoded PCM (48 kHz mono s16) is tapped on its way to the track
     (`TalkPlayer`'s `TalkPcmTap`), averaged down to 16 kHz (`BurstPcm`), capped at the burst's 60 s, and fed to the
     model as it comes. A burst under 300 ms is no speech: its stream is closed unfinished.
-  - **The sender's own.** Each burst this phone speaks is transcribed the same way from the recorder's PCM before
-    the encoder (`TalkRecorder`'s tap, 16 kHz already), opened at the press and ended at the release — sent or not —
-    and shown as the user's own line. Set beside the other phone's line for the same burst, it separates what Opus
-    at 8 kbps cost the model from what the model gets wrong on clean audio. A cancelled burst drops its line.
+  - **The sender's own** *(debug builds only, `WALKIE_OWN_LINES`)*. Each burst this phone speaks is transcribed the
+    same way from the recorder's PCM before the encoder (`TalkRecorder`'s tap, 16 kHz already), opened at the press and
+    ended at the release — sent or not — and shown as the user's own line. Set beside the other phone's line for the
+    same burst, it separates what Opus at 8 kbps cost the model from what the model gets wrong on clean audio. A
+    cancelled burst drops its line. A release build transcribes only what it hears: the own line reads audio the peer
+    never got, so it does not say what they heard.
   - **The model.** Moonshine v2 Streaming, English (int8 `.ort`, MIT), through Moonshine's own runtime
     (`moonshine-voice`, `MoonshineSpeech`; its slim ONNX Runtime inside), packaged only where calls are, like
     libwebrtc: Small Streaming (142 MB; 7.84 % on the Open ASR average), the one model there is.

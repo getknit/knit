@@ -146,6 +146,15 @@ val CALL_CAPABILITIES: Long =
 const val STT_WIRED: Boolean = CALLS_WIRED && BuildConfig.STT
 
 /**
+ * The walkie transcript's own lines (C-3.11-9, ADR 2026-10.nz3g's amendment of 2026-10-28): each burst this phone speaks
+ * transcribed from the microphone before the encoder and shown as a "You" line, beside the other phone's line for the
+ * same burst. Debug builds only: it is a lab tool for telling what the codec cost from what the model gets wrong, and
+ * it reads the audio before the codec, so it does not show what the peer heard. Off, the recorder has no tap and no
+ * spoken burst is transcribed or saved as a clip. Not `const`, as [OWN_ICE_WIRED].
+ */
+val WALKIE_OWN_LINES: Boolean = STT_WIRED && BuildConfig.DEBUG
+
+/**
  * The person's own STUN and TURN servers (§3.14, ADR 2026-10.mr88): debug builds only for now, and only with live calls.
  * Off, the Calls screen shows no server rows, Test or Save, the Settings row never names an own server, and every call
  * takes the spools' servers whatever [OwnIceStore] holds — [OverridingTurnSource] is not built. Not `const`:
@@ -532,7 +541,7 @@ private fun Module.walkieGraph() {
     single {
         TalkRecorder(
             get<CoroutineScope>(),
-            tap = if (STT_WIRED) get<WalkieTranscriber>().mic else null,
+            tap = if (WALKIE_OWN_LINES) get<WalkieTranscriber>().mic else null,
             // The phone's microphone follows the live call's profile, and a dead call path teaches it (C-3.11-5).
             capture = get(),
             muted = { get<CallManager>().state.value?.muted == true },
