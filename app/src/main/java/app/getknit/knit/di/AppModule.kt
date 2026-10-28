@@ -28,6 +28,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LabelAnchors
 import app.getknit.knit.data.LabelFade
 import app.getknit.knit.data.LinkCardStore
+import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -340,6 +341,9 @@ val appModule =
         }
         single { ReactionRepository(get(), get()) }
         single { PinRepository(get(), get()) }
+        // Delete-for-me: one message's row, reactions, pin, receipt rows and unreferenced blob. The chat and the debug
+        // bridge's PURGE share it, so what a deleted message leaves behind cannot differ between them.
+        single { LocalMessageDelete(get(), get(), get(), get(), get()) }
         // Who has acked each message — the message-details screen's per-recipient delivery split. Owns the
         // delivery write (tick + acker row in one transaction), so it wraps MessageRepository.
         single { MessageReceiptRepository(get(), get(), get()) }
