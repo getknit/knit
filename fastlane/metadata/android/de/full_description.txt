@@ -1,0 +1,56 @@
+Knit ist ein Messenger ohne Internet, ohne Mobilfunk und ohne Konto. Über Wi-Fi Aware und Bluetooth reicht er Nachrichten direkt von Smartphone zu Smartphone weiter.
+
+Jedes Smartphone in der Nähe gibt eine Nachricht an seine Nachbarn weiter. So wandern deine Worte durch eine Menge, ein Gebäude oder einen Campingplatz, weit über deine Reichweite hinaus. Je mehr Menschen Knit nutzen, desto weiter.
+
+WARUM KNIT
+• Kein Internet und keine mobilen Daten nötig
+• Kein Konto, keine Telefonnummer, keine E-Mail-Adresse
+• Kein zentraler Server – nichts zum Abschalten, Überwachen oder Abgreifen
+• Keine Werbung, kein Tracking, keine Google Play-Dienste
+• Freie Software – alle können nachlesen, was die App tut
+
+IDEAL FÜR
+• Festivals und volle Orte ohne Netz
+• Reisen, Flüge, Schiffe, Camping und die Wildnis
+• Stromausfälle und Notfälle ohne Netz
+
+PRIVAT VON GRUND AUF
+Direkt- und Gruppenchats sind Ende-zu-Ende-verschlüsselt: Nur wer im Chat ist, kann eine Nachricht lesen; Smartphones, die sie weitergeben, und Relays sehen nur Chiffretext. Die Schlüssel entstehen auf deinem Gerät, geschützt durch Androids Hardware-Sicherheit. Prüfe per Sicherheitsnummer oder QR-Scan, mit wem du schreibst.
+
+ZU DEN BERECHTIGUNGEN
+Knit braucht „Geräte in der Nähe“ (vor Android 13: Standort), um Geräte über Wi-Fi Aware und Bluetooth LE und ein gekoppeltes Funkgerät zu finden. Den Standort liest Knit nur, wenn du ihn sendest. INTERNET ist deklariert, weil Android den lokalen Wi-Fi-Aware-Socket als Netzwerkzugriff zählt und Relays und Linkvorschauen es eingeschaltet nutzen. Kein Konto, kein Backend: Eine neue Installation baut keine Verbindung auf.
+
+FREIE SOFTWARE
+Knit steht unter der GNU GPL v3 oder neuer; der Quellcode liegt auf github.com/getknit/knit.
+
+FUNKTIONEN
+• Öffentlicher Raum „In der Nähe“ für alle in Reichweite
+• Private 1:1-Nachrichten und Gruppen (Ende-zu-Ende-verschlüsselt)
+• Zitierte Antworten, Emoji-Reaktionen und @-Erwähnungen
+• Fotos, GIFs und kurze Videos
+• Sprachanrufe in der Nähe oder über Internet-Relays
+• Sprachnachrichten, Dateien jeder Art, große Dateien direkt per WLAN
+• Suche in allen Chats, Kontakten und Nachrichten
+• Verschlüsseltes Backup für ein neues Smartphone
+• Store-and-Forward: Nachrichten warten, bis jemand in Reichweite ist
+• Kontakte per Link hinzufügen, auch aus der Ferne
+• Optional Meshtastic-LoRa-Funk für viel mehr Reichweite
+• Optionale Internet-Relays, anfangs aus
+• Die App direkt an Smartphones in der Nähe weitergeben
+• Material 3, dunkles Design und Material You
+
+SICHERERE RÄUME
+Filter auf dem Gerät halten beleidigende Texte und explizite Bilder fern, offline. Heikle Inhalte bleiben verschwommen, bis du tippst, und wer dir schreibt, ist mit einem Tippen blockiert.
+
+Knit wird von Unterstützenden finanziert: github.com/sponsors/getknit, ko-fi.com/knit. Liberapay.com/zaventh unterstützt nur die Person, die Knit entwickelt.
+
+SO FUNKTIONIERT ES
+Knit nutzt Wi-Fi Aware und Bluetooth Low Energy zugleich, läuft also auch auf Smartphones mit nur einem. Am besten im Hintergrund laufen lassen. Ab Android 10.
+
+OPTIONALER LANGSTRECKENFUNK
+Mit einem per Bluetooth gekoppelten Meshtastic-LoRa-Funkgerät reichen „In der Nähe“ und deine Direktnachrichten Kilometer statt Meter weit, ohne Internet und Konto. Das Gerät richtest du einmal ein; Knit funktioniert auch ohne.
+
+OPTIONALE INTERNET-RELAYS
+Für einen Kontakt, der nie in Funkreichweite ist: Knit legt eine versiegelte Kopie auf einem Relay-Server ab, bis sich das andere Smartphone verbindet. Standardmäßig aus; vorher erklärt ein Hinweis einmal, was ein Relay sieht – deine IP-Adresse, wann und ungefähr wie viel du sendest – und was nicht: deine Nachrichten, mit wem du schreibst, wer in einer Gruppe ist. Wähle deine Relays oder betreibe ein eigenes; beides ist öffentlich.
+
+Hinweis: Ohne Funkgerät und Relays erreicht Knit Menschen in der Nähe oder die Menge zwischen euch. Der öffentliche Raum „In der Nähe“ ist bewusst unverschlüsselt – ohne festen Empfängerkreis – und wird nie hochgeladen.

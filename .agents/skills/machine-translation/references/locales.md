@@ -76,3 +76,36 @@ locale's own section before adding strings to it (mode B). A new pass adds its s
 - **Final-read sweeps:** tu-forms `\b(tu|te|ton|ta|tes|toi)\b`; ASCII space before punctuation ` [:;!?»]`; a
   missing no-break space `\w[;!?»]` and `«\S`; off-glossary `\b(portable|cellulaire|cliquer|donateur)\b`.
 - **Open:** "de %1$s" does not elide before a vowel ("de Ada"), about 24 strings; Family Link and battery labels.
+
+## de: German (neutral base)
+
+- **Folder** `values-de`, listing `fastlane/metadata/android/de/`. Play has no plain `de`: it goes up as `de-DE`
+  (`gpc` dry run 2026-10-28). Machine pass 2026-10-28.
+- **Scope:** the base for Germany, Austria and Switzerland; ß kept (a `de-CH` override can write ss), no
+  regionalisms (no Handy, Jänner).
+- **Register:** du, lowercase, as Android's own German and German messengers write it; imperatives "Tippe",
+  "Öffne". "ihr" only where "you" means the user and one other person ("ihr beide"). No pronoun points at a
+  placeholder name: the name again, "diese Person", "die andere Person"; the caller is "die anrufende Person". No
+  :innen or *innen: groups take neutral forms (Unterstützende, Personen), compounds keep theirs (Nutzername).
+- **Typography:** „ “ quotes; ’ where an apostrophe is needed (geht’s); an en dash with spaces where the English
+  pauses with —; U+00A0 between a number and its unit or `%%`; Min. / Std. / Sek.; nouns capitalised; compounds
+  hyphenated through (Wi-Fi-Aware-Verbindung, LoRa-Board).
+- **Plurals:** one, other. `one` is 1 only, so it may say "eine Minute".
+- **Words:** plain Wi-Fi = WLAN (Android's name), Wi-Fi Aware / Direct kept; phone = Smartphone; mesh = das
+  Mesh-Netzwerk, short das Mesh (neuter); Nearby = In der Nähe, quoted in a sentence (der Raum „In der Nähe“); room =
+  Raum; commons = Gemeinschaftsraum; relay = das Relay; "Relay all calls" = „Alle Anrufe über Server“, route pill
+  „Über Server“; board = das Board; a LoRa radio device = Funkgerät, the link = Funk, the phone's own radio hardware
+  = Funkmodul; heard (radio) = empfangen; conversation = Unterhaltung, chat = Chat; voice note = Sprachnachricht;
+  recovery key = Wiederherstellungsschlüssel; Low-power mode = Stromsparmodus (Android's is Energiesparmodus);
+  supporter label = „Unterstützt Knit“, badge = Unterstützer-Abzeichen; Backup, Ticket, Walkie-Talkie, Forward
+  Secrecy kept as German tech writing does. "Direct file send" = „Datei direkt senden“.
+- **Lint:** the `Typos` check flags "seit dem" as a misspelling of "seitdem", even where it is correct; reword
+  ("ab dem", "nach dem") rather than ignore it.
+- **Final-read sweeps:** formal forms `(?<![.:!?–] )\b(Sie|Ihr|Ihre|Ihren|Ihnen)\b`; ihr-forms
+  `\b(ihr|euch|euer|eure|seid)\b` (each must mean the user and one other); plain Wi-Fi `Wi-Fi(?![ -](Aware|Direct))`;
+  off-glossary `(?i)\b(klick\w*|Handy\w*|Telefon|Relais|Benutzer\w*|Spende\w*)\b`; gender marks
+  `\w(:|\*|_)innen|[a-z]Innen\b`.
+- **Open:** Family Link's German path („Steuerelemente › Angemeldete Geräte › App-Berechtigungen“, "downtime" as
+  Ruhezeiten), „Vom Administrator deaktiviert“, the battery options and „Akkunutzung durch Apps“, „App-Aktivität
+  pausieren, wenn die App nicht verwendet wird“, „Vollbildbenachrichtigungen zulassen“; „Relay“ vs. a German word
+  for ordinary users.

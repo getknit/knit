@@ -8,7 +8,10 @@ later override only the strings it says differently. Ukrainian (`values-uk/`, ma
 native review) is the third, written with ви (the polite form Android's own Ukrainian uses) and the typographic
 apostrophe ’, never an escaped ASCII one. French (`values-fr/`, machine pass 2026-10-27, awaiting native review) is
 the fourth: a neutral base for every French speaker, written with vous, the typographic apostrophe ’, and a
-no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». Progress per language is GitHub issue #43.
+no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». German (`values-de/`, machine pass 2026-10-28,
+awaiting native review) is the fifth: a neutral base for Germany, Austria and Switzerland, written with du (as
+Android's own German and German messengers use it), „ “ quotes, and WLAN for plain Wi-Fi as Android names it.
+Progress per language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
 

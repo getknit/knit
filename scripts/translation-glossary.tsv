@@ -3,9 +3,9 @@
 # cell lists the renderings that count, separated by |, each matched as a case-insensitive substring (write a
 # stem, like "bloque" for bloquear / bloqueado / desbloquear). keep=yes: every locale writes the term as is, and
 # the same-as-English check ignores it. Mirror a change into the translator instructions on Weblate.
-en	keep	pt-BR	es	uk	fr	note
-Knit Anywhere	yes					product name
-Knit	yes					product name
+en	keep	pt-BR	es	uk	fr	de	note
+Knit Anywhere	yes						product name
+Knit	yes						product name
 Meshtastic	yes
 Wi-Fi Aware	yes
 Wi-Fi Direct	yes
@@ -23,39 +23,39 @@ STUN	yes
 NAN	yes
 BLE	yes
 PHY	yes
-Coded	yes					the Bluetooth PHY's name
+Coded	yes						the Bluetooth PHY's name
 walkie-talkie	yes
 backup	yes
-spool	yes					diagnostics only
-mesh	yes					pt "a rede mesh", short "a mesh"; es "la red mesh", short "la mesh"; uk "mesh-мережа", short "mesh"; fr "le réseau mesh", short "le mesh"
-Nearby room		Por perto	Cerca	Поруч	À proximité	the public room's name
-relay invite		convite de retransmissor|convites de retransmissor	invitación de retransmisor|invitaciones de retransmisor	запрошен	invitation de relais|invitations de relais
-relay		retransmissor	retransmisor	ретранслятор	relais	an Internet server that carries messages
-commons		sala comum|salas comuns	sala común|salas comunes	спільн	salon commun|salons communs	a private relay's group chat
-message request		solicitaç	solicitud	запит	demande
-contact		contato	contacto	контакт	contact
-verif		verific	verific	перевір	vérifi
-block		bloque	bloque	блок	bloqu
-group		grupo	grupo	груп	groupe
-direct message		mensagem direta|mensagens diretas	mensaje directo|mensajes directos	особист	message direct|messages directs
-chat list		lista de conversas	lista de chats	список чатів|списку чатів	liste des discussions
-phone		celular	teléfono	телефон	téléphone	a device, not a call
-board		placa	placa	плат	carte	a Meshtastic / LoRa board
-live call		ao vivo	en vivo	наживо	en direct
-mesh call		pela mesh	mesh	mesh	mesh
-voice note		mensagem de voz|mensagens de voz	nota de voz|notas de voz	голосов	vocal|vocaux
-transcri		transcri	transcri	розшифр|транскри	transcri
-attachment		anexo	adjunt	вкладен	pièce jointe|pièces jointes
-end-to-end		de ponta a ponta	de extremo a extremo	наскрізн	de bout en bout
-end to end		de ponta a ponta	de extremo a extremo	наскрізн	de bout en bout
-Diagnostics		Diagnóstico	Diagnóstico	Діагност	Diagnostic
-field log		registro de campo|registros de campo	registro de campo|registros de campo	польов	journal de terrain|journaux de terrain
-Low-power mode		baixo consumo	bajo consumo	енергозбереж	basse consommation
-Content filtering		Filtro de conteúdo	Filtro de contenido	фільтр	Filtrage du contenu
-Open to chat		a conversas	para chatear	відкрит	pour discuter
-supporter badge		selo de apoiador	insignia de colaborador	значок	badge de soutien
-supporter perks		vantagens de apoiador|vantagens para apoiadores	ventajas de colaborador|ventajas para colaboradores	переваг	avantages de soutien|avantages des soutiens	Knit Anywhere and the badge, a thank-you: never a plan, account or purchase
-supporter		apoiador|apoiadora	colabora	прихильни|підтрим	soutien	someone who gives money: never "doação" or "doador"
-ticket		passe	pase	перепуст	pass	Knit Anywhere access
-recovery key		chave de recuperação	clave de recuperación	ключ відновлення	clé de récupération
-restore		restaur	restaur	віднов	restaur
+spool	yes						diagnostics only
+mesh	yes						pt "a rede mesh", short "a mesh"; es "la red mesh", short "la mesh"; uk "mesh-мережа", short "mesh"; fr "le réseau mesh", short "le mesh"; de "das Mesh-Netzwerk", short "das Mesh"
+Nearby room		Por perto	Cerca	Поруч	À proximité	In der Nähe	the public room's name
+relay invite		convite de retransmissor|convites de retransmissor	invitación de retransmisor|invitaciones de retransmisor	запрошен	invitation de relais|invitations de relais	Relay-Einladung|Relay-Einladungen	
+relay		retransmissor	retransmisor	ретранслятор	relais	Relay	an Internet server that carries messages
+commons		sala comum|salas comuns	sala común|salas comunes	спільн	salon commun|salons communs	Gemeinschaftsr	a private relay's group chat
+message request		solicitaç	solicitud	запит	demande	Nachrichtenanfrage	
+contact		contato	contacto	контакт	contact	Kontakt	
+verif		verific	verific	перевір	vérifi	verifizier	
+block		bloque	bloque	блок	bloqu	blockier	
+group		grupo	grupo	груп	groupe	Gruppe	
+direct message		mensagem direta|mensagens diretas	mensaje directo|mensajes directos	особист	message direct|messages directs	Direktnachricht	
+chat list		lista de conversas	lista de chats	список чатів|списку чатів	liste des discussions	Chatliste	
+phone		celular	teléfono	телефон	téléphone	Smartphone	a device, not a call
+board		placa	placa	плат	carte	Board	a Meshtastic / LoRa board
+live call		ao vivo	en vivo	наживо	en direct	live	
+mesh call		pela mesh	mesh	mesh	mesh	Mesh	
+voice note		mensagem de voz|mensagens de voz	nota de voz|notas de voz	голосов	vocal|vocaux	Sprachnachricht	
+transcri		transcri	transcri	розшифр|транскри	transcri	transkri	
+attachment		anexo	adjunt	вкладен	pièce jointe|pièces jointes	Anhang|Anhäng	
+end-to-end		de ponta a ponta	de extremo a extremo	наскрізн	de bout en bout	Ende-zu-Ende	
+end to end		de ponta a ponta	de extremo a extremo	наскрізн	de bout en bout	Ende-zu-Ende	
+Diagnostics		Diagnóstico	Diagnóstico	Діагност	Diagnostic	Diagnose	
+field log		registro de campo|registros de campo	registro de campo|registros de campo	польов	journal de terrain|journaux de terrain	Feldprotokoll	
+Low-power mode		baixo consumo	bajo consumo	енергозбереж	basse consommation	Stromspar	
+Content filtering		Filtro de conteúdo	Filtro de contenido	фільтр	Filtrage du contenu	Inhaltsfilter	
+Open to chat		a conversas	para chatear	відкрит	pour discuter	offen für	
+supporter badge		selo de apoiador	insignia de colaborador	значок	badge de soutien	Unterstützer-Abzeichen	
+supporter perks		vantagens de apoiador|vantagens para apoiadores	ventajas de colaborador|ventajas para colaboradores	переваг	avantages de soutien|avantages des soutiens	Dankeschön	Knit Anywhere and the badge, a thank-you: never a plan, account or purchase
+supporter		apoiador|apoiadora	colabora	прихильни|підтрим	soutien	unterstütz	someone who gives money: never "doação" or "doador"
+ticket		passe	pase	перепуст	pass	Ticket	Knit Anywhere access
+recovery key		chave de recuperação	clave de recuperación	ключ відновлення	clé de récupération	Wiederherstellungsschlüssel	
+restore		restaur	restaur	віднов	restaur	wiederherstell	
