@@ -1613,6 +1613,8 @@ class DebugBridgeReceiver :
             // mint/adopt alternating on one device is a lineage that is not collapsing (SPOOL_PROTOCOL §3.2).
             .put("groupRootsMinted", snap.groups.groupRootsMinted)
             .put("groupRootsAdopted", snap.groups.groupRootsAdopted)
+            // Group frames custody would not carry: a roster that does not derive, or a sender outside it (ADR 2026-10.7mqm).
+            .put("groupCustodyRefused", snap.groups.groupCustodyRefused)
             .put("dmSealedV1Fallback", snap.seals.dmSealedV1Fallback)
             .put("receiptsSealed", snap.receipts.receiptsSealed)
             .put("receiptsSealedFallback", snap.receipts.receiptsSealedFallback)
@@ -1657,6 +1659,8 @@ class DebugBridgeReceiver :
             .put("blePhyGiveUps", snap.bluetooth.blePhyGiveUps)
             .put("bleCodedAdvertDark", snap.bluetooth.bleCodedAdvertDark)
             .put("digestsReplaced", snap.frames.digestsReplaced)
+            // Frames custody refused for `signed` over the byte cap (ADR 2026-10.mqzv); knit-ios reports the same key.
+            .put("custodyOversizeRefused", snap.frames.custodyOversizeRefused)
             .put("spoolTablesDerived", snap.spool.spoolTablesDerived)
             .put("spoolPushed", snap.spool.spoolPushed)
             .put("spoolPulled", snap.spool.spoolPulled)
