@@ -141,6 +141,9 @@ if one ever happens they all ride it together and no single item has to justify 
 > every shipped parser tests only the bits it knows (`Parsed.sideChannel` reads bit 0 alone) and ignores
 > the rest, so a bit a reader predates reads as nothing. Bit 1 is `FLAG_DIALS_GATT_PEERS` (companion change
 > A3, ADR 2026-09.kwq2; knit-ios ADR 2026-09.xzpt): "I read a UUID-only peer's GATT payload, so I dial it".
+> Bit 2 is `FLAG_AWARE` (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): "count on my Wi-Fi Aware now",
+> positive, so an advert from a build that predates it never makes a peer an Aware candidate. Additive like the
+> others; main builds from 2026-10-24 to 2026-10-27 wrote it with the opposite meaning, which never shipped.
 > The value that payload characteristic serves (`DoorbellPolicy.PAYLOAD_UUID`) is the same 24-byte advert
 > payload with the digest cue zeroed, so it grows under the same rules as the advert.
 

@@ -6,7 +6,9 @@ package app.getknit.knit.mesh.bluetooth
  * waking one attached. Modelled on [SideCapableTracker], and fed the same way, from every presence sighting.
  *
  * - **A candidate** is a peer whose latest **service-data** sighting (either PHY: the Coded set carries the same
- *   payload) had [BleAdvertPayload.FLAG_NO_AWARE] clear. A GATT sighting ([forget]) removes the record: an iPhone
+ *   payload) had [BleAdvertPayload.FLAG_AWARE] set (ADR 2026-10.2t49's 2026-10-27 amendment: an advert without the
+ *   flags byte, or from a released build (2.10.0 or older), which never sets it, is not one). A GATT sighting ([forget]) removes the
+ *   record: an iPhone
  *   serves no such bit and CoreBluetooth has no Aware. A link peer whose HELLO claims `Protocol.CAP_DOORBELL` (only iOS
  *   does) is never one, and a link peer never scan-sighted has no record, so it is not one either. Each rule can only
  *   exclude: a false claim in the unauthenticated HELLO or advert costs the claimer its own wake, nothing more.
@@ -56,16 +58,16 @@ internal class AwareCandidateTracker(
 
     private val entries = HashMap<String, Entry>()
 
-    /** A service-data sighting of [nodeId], on 1M ([oneM]) or Coded, whose flags said [noAware]. */
+    /** A service-data sighting of [nodeId], on 1M ([oneM]) or Coded, whose flags said [aware] ([BleAdvertPayload.FLAG_AWARE]). */
     @Synchronized
     fun note(
         nodeId: String,
-        noAware: Boolean,
+        aware: Boolean,
         oneM: Boolean,
         now: Long,
     ) {
-        val e = entries.getOrPut(nodeId) { Entry(candidate = !noAware, heard1mAt = null) }
-        e.candidate = !noAware
+        val e = entries.getOrPut(nodeId) { Entry(candidate = aware, heard1mAt = null) }
+        e.candidate = aware
         if (oneM) {
             e.heard1mAt = now
             e.missed = 0

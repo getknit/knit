@@ -131,35 +131,65 @@ class BleAdvertPayloadTest {
 
     @Test
     fun theFlagsByteClaimsOnlyWhatThisNodeRuns() {
-        assertEquals(0, BleAdvertPayload.flags(sideLive = false, gattPeers = false))
-        assertEquals(BleAdvertPayload.FLAG_SIDE_CHANNEL, BleAdvertPayload.flags(sideLive = true, gattPeers = false))
-        assertEquals(BleAdvertPayload.FLAG_DIALS_GATT_PEERS, BleAdvertPayload.flags(sideLive = false, gattPeers = true))
+        assertEquals(0, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = false))
+        assertEquals(BleAdvertPayload.FLAG_SIDE_CHANNEL, BleAdvertPayload.flags(sideLive = true, gattPeers = false, aware = false))
+        assertEquals(BleAdvertPayload.FLAG_DIALS_GATT_PEERS, BleAdvertPayload.flags(sideLive = false, gattPeers = true, aware = false))
         assertEquals(
             BleAdvertPayload.FLAG_SIDE_CHANNEL or BleAdvertPayload.FLAG_DIALS_GATT_PEERS,
-            BleAdvertPayload.flags(sideLive = true, gattPeers = true),
+            BleAdvertPayload.flags(sideLive = true, gattPeers = true, aware = false),
         )
     }
 
     @Test
-    fun theNoAwareBitIsBit2AndItsOwn() {
-        // GitHub #44: inverted polarity, set while this phone will not run Wi-Fi Aware.
-        assertEquals(0x04, BleAdvertPayload.FLAG_NO_AWARE)
-        assertEquals(BleAdvertPayload.FLAG_NO_AWARE, BleAdvertPayload.flags(sideLive = false, gattPeers = false, noAware = true))
-        val all = BleAdvertPayload.flags(sideLive = true, gattPeers = true, noAware = true)
+    fun theAwareBitIsBit2AndItsOwn() {
+        // GitHub #44, 2t49's 2026-10-27 amendment: positive polarity, set while a peer may count on this phone's Aware.
+        assertEquals(0x04, BleAdvertPayload.FLAG_AWARE)
+        assertEquals(BleAdvertPayload.FLAG_AWARE, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = true))
+        val all = BleAdvertPayload.flags(sideLive = true, gattPeers = true, aware = true)
         assertEquals(0x07, all)
         val p = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, all))!!
-        assertTrue(p.noAware)
+        assertTrue(p.aware)
         assertTrue(p.sideChannel)
         assertTrue(p.dialsGattPeers)
-        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, BleAdvertPayload.FLAG_SIDE_CHANNEL))!!
-        assertFalse("the other bits never read as it", side.noAware)
+        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0xFB))!!
+        assertFalse("the other bits never read as it", side.aware)
     }
 
     @Test
-    fun anOlderBuildsAdvertReadsAsMayRunAware() {
-        // A 23-byte advert (before the flags byte) and a flags byte from a build before bit 2 both read 0: a candidate.
+    fun theAwareBitIsSetOnlyWhenAware() {
+        // Bit layout only: aware=true adds bit 2 alone, aware=false sets neither bit 2 nor bit 3. The polarity's
+        // regression pins are AwareCandidateTrackerTest's (a clear bit is no candidate) and AwareFlagTest's.
+        for (side in listOf(false, true)) {
+            for (gatt in listOf(false, true)) {
+                val off = BleAdvertPayload.flags(sideLive = side, gattPeers = gatt, aware = false)
+                val on = BleAdvertPayload.flags(sideLive = side, gattPeers = gatt, aware = true)
+                assertEquals("flags($side, $gatt, false)", 0, off and 0x0C)
+                assertEquals("flags($side, $gatt, true)", 0x04, on xor off)
+                assertEquals("bits 3..7 stay reserved", 0, on and 0xF8)
+            }
+        }
+    }
+
+    @Test
+    fun theAdvertOnAirSaysAwareOnlyWhenAware() {
+        // The bytes BluetoothMeshTransport.readvertise puts on the presence and Coded sets.
+        for (aware in listOf(false, true)) {
+            val bytes = BleAdvertPayload.advert(nodeA, 0x7L, 42L, 0x0081, sideLive = true, gattPeers = false, aware = aware)
+            assertEquals(BleAdvertPayload.SIZE, bytes.size)
+            val flags = bytes[BleAdvertPayload.SIZE_V1].toInt() and 0xFF
+            assertEquals(if (aware) 0x05 else 0x01, flags)
+            val p = BleAdvertPayload.parse(bytes)!!
+            assertEquals(aware, p.aware)
+            assertTrue(p.sideChannel)
+        }
+    }
+
+    @Test
+    fun anOlderBuildsAdvertDoesNotSayAware() {
+        // A 23-byte advert (before the flags byte) and a released build's flags byte (bit 2 never set) read not-aware.
         val v1 = BleAdvertPayload.encode(nodeA, 0L, 0L, 1).copyOf(BleAdvertPayload.SIZE_V1)
-        assertFalse(BleAdvertPayload.parse(v1)!!.noAware)
-        assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x03))!!.noAware)
+        assertFalse(BleAdvertPayload.parse(v1)!!.aware)
+        assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x03))!!.aware)
+        assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x00))!!.aware)
     }
 }

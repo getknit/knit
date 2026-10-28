@@ -1,7 +1,9 @@
 package app.getknit.knit
 
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.bluetooth.AwareCandidateTracker
 import app.getknit.knit.mesh.bluetooth.AwareCandidateTracker.LinkFacts
+import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
 import app.getknit.knit.mesh.bluetooth.BlePresenceTracker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -41,19 +43,33 @@ class AwareCandidateTrackerTest {
     ) = tracker.sets(now, snaps, links)
 
     @Test
-    fun aClearBitSightedNearIsACandidateInBothSets() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+    fun aSetAwareBitSightedNearIsACandidateInBothSets() {
+        tracker.note("a", aware = true, oneM = true, now = 0)
         val s = sets(0, listOf(snap("a")))
         assertEquals(setOf("a"), s.near)
         assertEquals(setOf("a"), s.heard)
     }
 
     @Test
-    fun aSetBitExcludesThePeerAtOnce() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
-        tracker.note("a", noAware = true, oneM = true, now = 1)
+    fun aClearAwareBitExcludesThePeerAtOnce() {
+        tracker.note("a", aware = true, oneM = true, now = 0)
+        tracker.note("a", aware = false, oneM = true, now = 1)
         val s = sets(1, listOf(snap("a")), mapOf("a" to LinkFacts(phyNear = true, doorbell = false)))
         assertTrue("the latest service-data sighting decides, linked or not", s.near.isEmpty() && s.heard.isEmpty())
+    }
+
+    @Test
+    fun anOlderBuildsAdvertIsNotACandidate() {
+        // 2t49's 2026-10-27 amendment: a released build's advert (flags 0x03 or 0x00, bit 2 never set) and a 23-byte
+        // advert without the flags byte say nothing positive, so none is a candidate; bit 2 set is one.
+        val v210 = BleAdvertPayload.parse(BleAdvertPayload.encode(NodeId.derive("v210"), 0L, 0L, 1, 0x03))!!
+        val zero = BleAdvertPayload.parse(BleAdvertPayload.encode(NodeId.derive("zero"), 0L, 0L, 1, 0x00))!!
+        val v1 = BleAdvertPayload.parse(BleAdvertPayload.encode(NodeId.derive("v1"), 0L, 0L, 1).copyOf(BleAdvertPayload.SIZE_V1))!!
+        val now = BleAdvertPayload.parse(BleAdvertPayload.advert(NodeId.derive("now"), 0L, 0L, 1, false, false, aware = true))!!
+        listOf(v210, zero, v1, now).forEach { tracker.note(it.nodeId, it.aware, oneM = true, now = 0) }
+        val s = sets(0, listOf(v210, zero, v1, now).map { snap(it.nodeId) })
+        assertEquals(setOf(now.nodeId), s.near)
+        assertEquals(setOf(now.nodeId), s.heard)
     }
 
     @Test
@@ -65,21 +81,21 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aGattSightingRemovesTheRecord() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.forget("a") // its latest sighting came through a GATT payload (an iPhone)
         assertTrue(sets(0, listOf(snap("a"))).heard.isEmpty())
     }
 
     @Test
     fun aDoorbellLinkIsNeverACandidate() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         val s = sets(0, listOf(snap("a")), mapOf("a" to LinkFacts(phyNear = true, doorbell = true)))
         assertTrue(s.near.isEmpty() && s.heard.isEmpty())
     }
 
     @Test
     fun aWeakSightingIsHeardButNotNear() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         val s = sets(0, listOf(snap("a", rssi1m = -95.0)))
         assertTrue("under the −90 floor: no wake", s.near.isEmpty())
         assertEquals("but it keeps a waking plane attached", setOf("a"), s.heard)
@@ -87,14 +103,14 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aCodedOnlySightingIsNeitherNearNorHeard() {
-        tracker.note("a", noAware = false, oneM = false, now = 0)
+        tracker.note("a", aware = true, oneM = false, now = 0)
         val s = sets(0, listOf(snap("a", rssi1m = null, rssiCoded = -100.0, codedLagMs = 60_000)))
         assertTrue(s.near.isEmpty() && s.heard.isEmpty())
     }
 
     @Test
     fun aLinkCountsOnlyOnAPhyReadBackAs1mOr2m() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         val later = linger * 10 // presence has long pruned it: a floored scan in a settled clique
         tracker.onWindow(startedAt = 1, countsAsMiss = true)
         tracker.onWindow(startedAt = 2, countsAsMiss = true)
@@ -105,7 +121,7 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aCodedLinkFallsBackOnItsPeersOwnSightings() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         val s = sets(0, listOf(snap("a", rssi1m = -95.0)), mapOf("a" to LinkFacts(phyNear = false, doorbell = false)))
         assertTrue("never near by the link", s.near.isEmpty())
         assertEquals("heard by its 1M advert, as an unlinked peer would be", setOf("a"), s.heard)
@@ -117,7 +133,7 @@ class AwareCandidateTrackerTest {
         val gap = 20 * 60_000L
         var t = 0L
         repeat(5) {
-            tracker.note("a", noAware = false, oneM = true, now = t)
+            tracker.note("a", aware = true, oneM = true, now = t)
             tracker.onWindow(startedAt = t - 5_000, countsAsMiss = true) // the window that heard it ends
             assertEquals(setOf("a"), sets(t + gap - 1).heard) // the whole gap, presence long pruned
             t += gap
@@ -126,7 +142,7 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun theHeardSetLapsesOnlyAfterTheLingerAndTwoWholeWindowsMissed() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         assertEquals("missed no window yet, past the linger", setOf("a"), sets(linger * 5).heard)
         tracker.onWindow(startedAt = 10_000, countsAsMiss = true)
         assertEquals("one window missed, past the linger: a dark window can miss a peer that is there", setOf("a"), sets(linger * 5).heard)
@@ -137,9 +153,9 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aSightingBetweenTwoMissesStartsTheCountAgain() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.onWindow(startedAt = 10_000, countsAsMiss = true)
-        tracker.note("a", noAware = false, oneM = true, now = 30_000)
+        tracker.note("a", aware = true, oneM = true, now = 30_000)
         tracker.onWindow(startedAt = 25_000, countsAsMiss = true) // the window that heard it
         tracker.onWindow(startedAt = 40_000, countsAsMiss = true) // one miss since
         assertEquals("only one miss in a row", setOf("a"), sets(linger * 5).heard)
@@ -147,21 +163,21 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aWindowThatCouldNotHearItIsNoMiss() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.onWindow(startedAt = 10_000, countsAsMiss = false) // Coded-only, cut short, or a failed scan
         assertEquals(setOf("a"), sets(linger * 5).heard)
     }
 
     @Test
     fun aWindowThatBeganBeforeTheSightingIsNoMiss() {
-        tracker.note("a", noAware = false, oneM = true, now = 10_000)
+        tracker.note("a", aware = true, oneM = true, now = 10_000)
         tracker.onWindow(startedAt = 5_000, countsAsMiss = true) // it heard it
         assertEquals(setOf("a"), sets(linger * 5).heard)
     }
 
     @Test
     fun aCountedLinksEndRestampsThePeer() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.onWindow(startedAt = 1, countsAsMiss = true)
         val end = linger * 10
         tracker.onLinkEnded("a", counted = true, now = end)
@@ -173,7 +189,7 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun aCodedLinksEndRestampsNothing() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.onWindow(startedAt = 1, countsAsMiss = true)
         tracker.onWindow(startedAt = 2, countsAsMiss = true)
         tracker.onLinkEnded("a", counted = false, now = linger * 10)
@@ -183,7 +199,7 @@ class AwareCandidateTrackerTest {
     @Test
     fun nearIsAlwaysWithinHeard() {
         // Near on a fresh raw Coded reading ≥ −90 (ADR 2026-09.9dnk), never heard on 1M.
-        tracker.note("a", noAware = false, oneM = false, now = 0)
+        tracker.note("a", aware = true, oneM = false, now = 0)
         val s = sets(0, listOf(snap("a", rssi1m = null, rssiCoded = -80.0, codedLagMs = 0)))
         assertEquals(setOf("a"), s.near)
         assertEquals(setOf("a"), s.heard)
@@ -191,7 +207,7 @@ class AwareCandidateTrackerTest {
 
     @Test
     fun clearForgetsEveryone() {
-        tracker.note("a", noAware = false, oneM = true, now = 0)
+        tracker.note("a", aware = true, oneM = true, now = 0)
         tracker.clear()
         assertTrue(sets(0, listOf(snap("a"))).heard.isEmpty())
     }

@@ -15,15 +15,17 @@ import java.nio.ByteBuffer
  * bytes 1..16  nodeId, 16 raw bytes (NodeId.BYTES = 128 bits), decoded to the 26-char id via NodeId.fromBytes
  * bytes 17..20 digest cue = low 32 bits of StoreDigest.version (BE) — both BLE peers truncate identically
  * bytes 21..22 L2CAP PSM (unsigned 16-bit, BE) so an initiator knows which channel to connect to
- * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS], bit 2 [FLAG_NO_AWARE];
+ * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS], bit 2 [FLAG_AWARE];
  *              bits 3..7 reserved (0). Optional on the wire: a build before it advertised 23 bytes, and this parser
  *              reads a missing byte as 0. Every shipped parser tests only the bits it knows, so a new bit is additive.
  * ```
  *
- * Bit 2 has **inverted polarity** on purpose (GitHub #44): set means "this phone will not run Wi-Fi Aware". Every
- * build before it, and every advert that never had the byte, reads 0 — "may run it" — so a peer of an older build
- * still wakes a dormant Aware plane, and the only thing a false clear bit can cost is one wasted attach. knit-ios reads
- * the byte without validating it and should reserve the bit (a follow-up paired change).
+ * Wi-Fi Aware is said **positively** (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): bit 2 set means "count on
+ * my Aware now", and a peer is an Aware candidate only on it. So an advert that never had the byte, and every released
+ * build (2.10.0 and older, none of which sets bit 2), reads "don't count on it", and a false clear bit costs only a
+ * delayed wake. Main builds from 2026-10-24 until this change wrote bit 2 with the opposite meaning ("don't count on
+ * me"); that form never shipped in a release. knit-ios reads the byte without validating it and should reserve bit 2
+ * (a follow-up paired change).
  *
  * Byte 23 is the **last** byte the legacy advert can carry, and it is deliberately not a second capabilities
  * byte: `Protocol` reserves the bits from 0x100 up for the authenticated profile and the Wi-Fi Aware advert,
@@ -60,28 +62,39 @@ internal object BleAdvertPayload {
     const val FLAG_DIALS_GATT_PEERS = 0x02
 
     /**
-     * This phone **will not** run Wi-Fi Aware (GitHub #44): no Aware hardware, the person's or a debug switch off,
-     * the radio off by evidence, or attaching given up — never merely dormant or lent to a Wi-Fi Direct group. Inverted
-     * on purpose (see the class doc): a clear bit, which every older build sends, is what makes a peer an Aware
-     * candidate ([AwareCandidateTracker]), whose sighting near wakes a dormant Aware plane. Set at once and cleared only
-     * after it has held clear for a while (`BluetoothMeshTransport`'s debounce), so a Doze maintenance window does not
-     * wake dormant neighbours.
+     * Count on this phone's Wi-Fi Aware now (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): set only once "will
+     * run Aware" has held a while, cleared at once when it will not (no hardware, a switch off, the radio off by
+     * evidence, deep idle, attaching given up); never cleared for mere dormancy or a Wi-Fi Direct hand-over. A peer is an
+     * Aware candidate only on a service-data sighting with it set ([AwareCandidateTracker]), whose sighting near wakes a
+     * dormant Aware plane, so an older build's advert, without it, never does. The debounce is [AwareFlag]'s, so a Doze
+     * maintenance window does not wake dormant neighbours.
      */
-    const val FLAG_NO_AWARE = 0x04
+    const val FLAG_AWARE = 0x04
 
     /**
      * The flags byte this node advertises: [FLAG_SIDE_CHANNEL] while its side channel is [sideLive],
      * [FLAG_DIALS_GATT_PEERS] while its GATT reader runs ([gattPeers]), so it never claims a read it cannot make, and
-     * [FLAG_NO_AWARE] while this phone will not run Wi-Fi Aware ([noAware]).
+     * [FLAG_AWARE] while a peer may count on this phone's Wi-Fi Aware ([aware]).
      */
     fun flags(
         sideLive: Boolean,
         gattPeers: Boolean,
-        noAware: Boolean = false,
+        aware: Boolean,
     ): Int =
         (if (sideLive) FLAG_SIDE_CHANNEL else 0) or
             (if (gattPeers) FLAG_DIALS_GATT_PEERS else 0) or
-            (if (noAware) FLAG_NO_AWARE else 0)
+            (if (aware) FLAG_AWARE else 0)
+
+    /** This node's presence advert, [encode] over [flags]: the bytes `BluetoothMeshTransport.readvertise` puts on air. */
+    fun advert(
+        nodeId: String,
+        capabilities: Long,
+        digestVersion: Long,
+        psm: Int,
+        sideLive: Boolean,
+        gattPeers: Boolean,
+        aware: Boolean,
+    ): ByteArray = encode(nodeId, capabilities, digestVersion, psm, flags(sideLive, gattPeers, aware))
 
     private const val CAP_MASK = 0xFFL
     private const val PSM_MASK = 0xFFFF
@@ -99,8 +112,11 @@ internal object BleAdvertPayload {
         val sideChannel: Boolean get() = flags and FLAG_SIDE_CHANNEL != 0
         val dialsGattPeers: Boolean get() = flags and FLAG_DIALS_GATT_PEERS != 0
 
-        /** Whether the advert says its phone will not run Wi-Fi Aware ([FLAG_NO_AWARE]); false for an older build's. */
-        val noAware: Boolean get() = flags and FLAG_NO_AWARE != 0
+        /**
+         * Whether the advert says a peer may count on its phone's Wi-Fi Aware now ([FLAG_AWARE]); false for every
+         * released build's (2.10.0 and older).
+         */
+        val aware: Boolean get() = flags and FLAG_AWARE != 0
     }
 
     fun encode(

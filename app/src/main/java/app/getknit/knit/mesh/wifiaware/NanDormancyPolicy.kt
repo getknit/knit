@@ -407,17 +407,17 @@ object NanDormancyPolicy {
         }
 
     /**
-     * The advert's reader: don't count on this phone's Wi-Fi Aware right now — the Bluetooth advert's `FLAG_NO_AWARE`
-     * half that the plane owns (di/ ORs in the switches and the hardware). True on the health's evidence ([radioOff]),
-     * in deep idle, or with attaching given up. Never for dormancy alone or a Wi-Fi Direct pause: a dormant plane wakes
-     * for a peer that asks.
+     * The advert's reader: don't count on this phone's Wi-Fi Aware right now — the plane's half of the complement of the
+     * Bluetooth advert's `FLAG_AWARE` (di/ ORs in the switches and the hardware). True on the health's evidence
+     * ([radioOff]), in deep idle, or with attaching given up. Never for dormancy alone or a Wi-Fi Direct pause: a dormant
+     * plane wakes for a peer that asks.
      *
      * Deep idle is here and not in [radioOff] on purpose (2t49's 2026-10-24 amendment): its Aware works on the phones
      * measured, but not shown harmless on every phone, and a false "don't count on me" only delays a peer's wake, where
      * a false "Wi-Fi off" banner misleads the person. On the API 37 Pixels deep idle holds until unlock, so a lit lock
-     * screen still sets the bit. The transport re-reads this on `ACTION_DEVICE_IDLE_MODE_CHANGED`, so both edges land
-     * at once; a deep maintenance window reads not-idle and starts the bit's 60 s clear (`NoAwareFlag`), so a window
-     * shorter than that leaves the bit set, and a longer one clears it until idle resumes.
+     * screen still clears the bit. The transport re-reads this on `ACTION_DEVICE_IDLE_MODE_CHANGED`, so both edges land
+     * at once; a deep maintenance window reads not-idle and starts the 60 s wait before `FLAG_AWARE` goes up
+     * (`AwareFlag`), so a window shorter than that leaves the bit clear, and a longer one sets it until idle resumes.
      */
     fun wontRun(
         f: RadioFacts,

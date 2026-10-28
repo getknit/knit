@@ -9,7 +9,8 @@ topics: [wifi-aware, ble, battery, reliability]
 # ADR 2026-10.2t49 — Wi-Fi Aware sleeps while no Aware phone is near, and the person can switch it off
 
 Status: Accepted (2026-10-24; `mesh/wifiaware/NanDormancyPolicy`, `data/settings/AwareSwitch`; device trials F–O owed,
-see the end). Amended 2026-10-24 (deep idle) and 2026-10-26 (the on-screen probe, draft)
+see the end). Amended 2026-10-24 (deep idle), 2026-10-26 (the on-screen probe, draft) and 2026-10-27 (the advert says
+Aware positively, draft)
 
 **What was observed.** GitHub getknit/knit#44: on a Pixel 8a, Wi-Fi throughput fell from about 250 to about 50 Mbps
 while Knit ran, and Bluetooth A2DP audio cut out on public transit. ADR 2026-10.486r took Instant Communication Mode for
@@ -308,3 +309,63 @@ walking. Every subject went dormant by itself (`IDLE` after 180 s once the last 
   measured.
 - **Not run:** the lost-edge `NEAR` wake (it needs a candidate's rising edge lost to a queued close), and its repeats
   under a Wi-Fi Direct pause and under backoff.
+
+## Amendment 2026-10-27 — the advert says Aware positively (GitHub getknit/knit#44)
+
+**What changed.** Bit 2 of the advert's flags byte flips meaning in place: `BleAdvertPayload.FLAG_AWARE` (0x04, the
+bit `FLAG_NO_AWARE` held) is set while a peer may count on this phone's Aware now. Reusing the bit is safe because the
+inverted form never shipped in a release: it reached main on 2026-10-24 and no tag carries it, and every released build
+(2.10.0 and older) leaves bit 2 clear. The evidence behind it is unchanged (item 2 and the 2026-10-24 amendment), and so
+is the debounce, mirrored: the bit comes down at once on "won't run" and goes up only after 60 s held "will run", on
+`ElapsedWait` (`AwareFlag`, which replaces `NoAwareFlag`). At the mesh's start it reads the complement of
+`awareWontRun`, which is true by default and before the plane says otherwise, so a phone that cannot vouch for its
+Aware starts with the bit clear. A peer is an Aware candidate only on a service-data sighting with bit 2 set
+(`AwareCandidateTracker.note`); the GATT `forget`, the `CAP_DOORBELL` and Coded-link rules and the heard set's lapse are
+unchanged. The transport keeps one state (`awareAdvertised`), and `BleAdvertPayload.flags(…, aware)` is the only place
+the bit is built. Logs: `bt advert aware=<bool>` replaces `bt advert noAware=`, and `bt state` carries `aware=` in the
+old field's place (no harness reads either).
+
+**Why.** Under the inverted bit, any older build counted as a candidate even with its Aware off or absent, because it
+could not say "don't count on me". An older peer whose Aware is running and in range holds us awake through
+`cueTargets` regardless, once discovery finds it, so the change makes only one kind of peer newly harmless: an older
+one whose Aware is not running. The maintainer accepts the costs below as temporary.
+
+It supersedes three statements above: item 2's "Inverted polarity on purpose: every older build advertises the bit
+clear and still wakes us"; the alternatives paragraph's rejection of a "has Aware" bit because it would never wake for
+an older phone; and the 2026-10-26 amendment's "older builds are candidates because `FLAG_NO_AWARE` has inverted
+polarity". Trial I's quoted `bt advert noAware=true`, and the other trial lines that name the old bit, stay as the
+history they record.
+
+**What it costs.**
+
+- Every released build (2.10.0 and older) never sets bit 2, so it is never a candidate. A dormant plane reaches such a
+  peer only by the 12-min duty attach (`DUTY_INTERVAL_MS`, skipped while the attach budget says no) or the on-screen
+  probe floored at 5 min (`PROBE_FLOOR_MS`). A Bluetooth dial makes no candidate, and a dormant plane has no session to
+  be found on.
+- Once discovery finds the peer, `cueTargets` and `linkActivity` hold both planes awake while their cues land within
+  `REACHABLE_LINGER_MS`.
+- A photo in the meantime rides Bluetooth.
+- An older peer has no dormancy and stays attached whatever we do.
+- Temporary: lab phones on main builds from 2026-10-24 until this change read the bit backwards until reflashed: such
+  a phone counts a new build whose Aware is off as a candidate, and never counts one whose Aware runs. The reverse
+  holds too: a new build counts such a phone as a candidate while its Aware is off or in deep idle (a dormant plane
+  wakes on its sighting for nothing) and never while its Aware runs.
+- knit-ios reads the flags byte without validating it and should reserve bit 2 (a paired follow-up, not in this change).
+
+**What keeps it true.** `BleAdvertPayloadTest` (`FLAG_AWARE` is 0x04 and its own; `aware = true` adds bit 2 alone and
+`aware = false` sets neither bit 2 nor bit 3, over every `flags()` input and in the bytes `advert()` builds, the
+function `readvertise` encodes with; a 23-byte advert and flags 0x03 and 0x00 read not-aware), `AwareCandidateTrackerTest`
+(those older adverts, parsed, are not candidates; bit 2 set is), `AwareFlagTest` (down at once, up after 60 s held, a
+flicker restarts the wait).
+
+**Device trials owed.** Every lab phone runs this build or one older than 2026-10-24, never a mix with a main build
+from 2026-10-24 until this change. Oracles: `bt advert aware=`, `bt state`'s `awareNear=` / `awareHeard=` / `aware=`,
+`aware dormant: …` and `aware awake: <WHY> …`, `NANDORM`'s stay reason.
+
+- **S. Dormancy beside an older build with its Aware off.** The P9 on this build beside the P7 on an older build,
+  Bluetooth on and Aware off (`NANOFF`). The P7 is absent from the P9's `awareNear=` / `awareHeard=`, and the P9 logs
+  `aware dormant: IDLE` within about 180 s.
+- **V. The older peer's Aware comes back.** Then lift the P7's `NANOFF`: the P9 logs `aware awake: DUTY` or `PROBE`,
+  then `NANDORM` reads stay reason `cue targets`, held for 15 min with no `aware dormant:` line.
+- **T. Sighting wake.** The P3 on this build at `bt advert aware=true` wakes a dormant P9 `SIGHTING` within one of the
+  P9's scan gaps.

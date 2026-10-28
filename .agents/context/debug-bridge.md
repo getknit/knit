@@ -648,7 +648,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `nextDutyInMs` (null unless dormant between duties), `dutyActive`, `probeActive` (the running window is the on-screen
   probe), `nextProbeAllowedInMs` (the probe's floor alone, 0 once it has run; null while awake), `idleForMs` and `stayReason` (awake: what holds it attached, null when the idle
   clock runs), `candidatesNear` / `candidatesHeard` / `seesNewcomers` (what Bluetooth pushed), `held`,
-  `dutyIntervalMs`, and the radio evidence the dormant health and the advert's `FLAG_NO_AWARE` read: `available`
+  `dutyIntervalMs`, and the radio evidence the dormant health and the advert's `FLAG_AWARE` read (`wontRun` is its complement): `available`
   (`isAvailable` now — trial F samples it beside `dumpsys wifiaware`'s `mUsageEnabled`), `wifiEnabled`, `deviceIdle`,
   `radioOff` (the health's reader: Wi-Fi off, or `isAvailable` false for 30 s outside the 30 s beat after our own
   close; never deep idle alone) and `wontRun` (the advert's: `radioOff`, `deviceIdle` or an abandoned attach, plus no

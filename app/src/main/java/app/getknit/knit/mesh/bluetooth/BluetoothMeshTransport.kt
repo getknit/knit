@@ -160,9 +160,9 @@ class BluetoothMeshTransport(
     private val partials: PartialBlobs,
     // The field log (ADR 2026-10.a239): each link's up, down and failed dial, as edges this transport already logs.
     private val field: FieldRecorder = FieldRecorder.NONE,
-    // "This phone won't run Wi-Fi Aware" (GitHub #44, built in `di/MeshModule`): the advert's FLAG_NO_AWARE, through
-    // [NoAwareFlag]'s asymmetric debounce. True — the bit set — for a phone without the plane, and by default: a phone
-    // that cannot say it runs Aware never makes a peer wake its own for it.
+    // "This phone won't run Wi-Fi Aware" (GitHub #44, built in `di/MeshModule`): the advert's FLAG_AWARE is its
+    // complement, through [AwareFlag]'s asymmetric debounce. True — the bit clear — for a phone without the plane, and by
+    // default: a phone that cannot say it runs Aware never makes a peer wake its own for it.
     private val awareWontRun: StateFlow<Boolean> = MutableStateFlow(true),
 ) : MeshTransport {
     private val appContext = context.applicationContext
@@ -412,8 +412,8 @@ class BluetoothMeshTransport(
         NewcomerWatch { sees, why -> Log.i(TAG, if (sees) "bt newcomers watched" else "bt newcomers unwatched ($why)") }
     override val seesNewcomers = newcomers.sees
 
-    // Whether the advert carries FLAG_NO_AWARE now ([NoAwareFlag] moves it); read by [readvertise] at each encode.
-    @Volatile private var noAwareAdvertised = true
+    // Whether the advert carries FLAG_AWARE now ([AwareFlag] moves it); read by [readvertise] at each encode.
+    @Volatile private var awareAdvertised = false
 
     // [publishReachable]'s snapshot and its writes, as one step: a sighting on the main thread and a window's end on
     // the scan loop's would otherwise write their sets in the other order. The sets last logged, for one line per change.
@@ -595,7 +595,7 @@ class BluetoothMeshTransport(
             advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
             codedKeeper.start(elapsed())
             // Before bringUp, so the first advert already says it; the collector below moves it from here.
-            noAwareAdvertised = awareWontRun.value
+            awareAdvertised = !awareWontRun.value
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
@@ -610,8 +610,8 @@ class BluetoothMeshTransport(
                         readvertise()
                     }
                 }
-            // FLAG_NO_AWARE (GitHub #44): set at once, cleared after a wall-clock minute held clear; each move re-advertises in place.
-            awareJob = scope.launch { NoAwareFlag.follow(awareWontRun, { noAwareAdvertised }, ::setNoAware, elapsedWait::sleep) }
+            // FLAG_AWARE (GitHub #44): cleared at once, set after a wall-clock minute of "will run"; each move re-advertises in place.
+            awareJob = scope.launch { AwareFlag.follow(awareWontRun, { awareAdvertised }, ::setAware, elapsedWait::sleep) }
             powerJob = scope.launch { powerState.state.drop(1).collect { onPowerChange() } }
             diagJob = scope.launch { diagLoop() }
             advertJob = scope.launch { advertLoop() }
@@ -1021,8 +1021,16 @@ class BluetoothMeshTransport(
         if (adapter?.isEnabled != true || currentPsm == 0 || !::localNodeId.isInitialized) return
         // FLAG_DIALS_GATT_PEERS rides the same gate as the reader, so it never claims a read this phone cannot make:
         // a lower-id iPhone waits to be dialed only by a phone that can find it (companion change A3).
-        val flags = BleAdvertPayload.flags(sideLive = sideChannel?.live == true, gattPeers = gattPeers, noAware = noAwareAdvertised)
-        val payload = BleAdvertPayload.encode(localNodeId, Protocol.LOCAL_CAPABILITIES, storeDigest.current(), currentPsm, flags)
+        val payload =
+            BleAdvertPayload.advert(
+                localNodeId,
+                Protocol.LOCAL_CAPABILITIES,
+                storeDigest.current(),
+                currentPsm,
+                sideLive = sideChannel?.live == true,
+                gattPeers = gattPeers,
+                aware = awareAdvertised,
+            )
         advertiser.update(payload)
         // The same bytes on the Coded set, so its PSM and cue can never lag the presence advert's.
         if (codedOn() && !codedAdvert.startsWith("dark")) {
@@ -1034,13 +1042,13 @@ class BluetoothMeshTransport(
     }
 
     /**
-     * [NoAwareFlag]'s move of FLAG_NO_AWARE (GitHub #44): the advert changes in place, once. A write the stack refuses
-     * is written again on the next re-assert turn ([BleAdvertiser.reassert]), since nothing else would push it.
+     * [AwareFlag]'s move of FLAG_AWARE (GitHub #44): the advert changes in place, once. A write the stack refuses is
+     * written again on the next re-assert turn ([BleAdvertiser.reassert]), since nothing else would push it.
      */
-    private fun setNoAware(on: Boolean) {
-        if (noAwareAdvertised == on) return
-        noAwareAdvertised = on
-        Log.i(TAG, "bt advert noAware=$on")
+    private fun setAware(on: Boolean) {
+        if (awareAdvertised == on) return
+        awareAdvertised = on
+        Log.i(TAG, "bt advert aware=$on")
         readvertise()
     }
 
@@ -2284,7 +2292,7 @@ class BluetoothMeshTransport(
             elapsed(),
         )
         // Before the publish, which reads it: only service data carries the bit; a GATT payload's is no evidence.
-        if (viaGatt) awareCandidates.forget(parsed.nodeId) else awareCandidates.note(parsed.nodeId, parsed.noAware, !coded, elapsed())
+        if (viaGatt) awareCandidates.forget(parsed.nodeId) else awareCandidates.note(parsed.nodeId, parsed.aware, !coded, elapsed())
         publishReachable()
         if (sideChannel != null) {
             // The audience, not anyCapable: a flagged peer appearing beside an all-linked clique must wake the loop.
@@ -3409,7 +3417,7 @@ class BluetoothMeshTransport(
                 // ble-link-trial.py reads `links=` then `reach=` at its head; near= and the fields after it carry bare ids.
                 " near=${_near.value.map { it.nodeId }}" +
                 // After near=, bare ids and booleans only: knit-ios interop.py reads every `<id>:<number>` past linkScores=.
-                " awareNear=${_awareCandidatesNear.value} awareHeard=${_awareCandidatesHeard.value} noAware=$noAwareAdvertised " +
+                " awareNear=${_awareCandidatesNear.value} awareHeard=${_awareCandidatesHeard.value} aware=$awareAdvertised " +
                 "newcomers=${newcomers.sees.value}",
         )
     }

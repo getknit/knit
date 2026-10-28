@@ -223,10 +223,10 @@ val meshModule =
                 // the plane once it is built below; the Bluetooth plane is built first, so it reads it through here.
                 val awarePlaneWontRun = MutableStateFlow(false)
 
-                // "This phone won't run Wi-Fi Aware" (GitHub #44), the Bluetooth advert's FLAG_NO_AWARE: switched off,
-                // or the plane says so — never for a plane that is merely dormant or lent to a Wi-Fi Direct group.
-                // Constant true without the plane. Starts true: the advert sets the bit at once and clears it only
-                // once it has held, so an early true only delays a peer's wake.
+                // "This phone won't run Wi-Fi Aware" (GitHub #44), the complement of the Bluetooth advert's FLAG_AWARE:
+                // switched off, or the plane says so — never for a plane that is merely dormant or lent to a Wi-Fi
+                // Direct group. Constant true without the plane. Starts true: the advert clears the bit at once and
+                // sets it only once "will run" has held, so an early true only delays a peer's wake.
                 // The Bluetooth plane's constructor takes it, for the advert's flag and its debounce.
                 val awareWontRunHere: StateFlow<Boolean> =
                     if (awareSupported) {

@@ -1,6 +1,6 @@
 package app.getknit.knit
 
-import app.getknit.knit.mesh.bluetooth.NoAwareFlag
+import app.getknit.knit.mesh.bluetooth.AwareFlag
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,13 +14,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [NoAwareFlag] (GitHub #44): FLAG_NO_AWARE goes up at once and comes down only after "will run Aware" has held for
- * [NoAwareFlag.CLEAR_AFTER_MS], so a Doze maintenance window's flicker never wakes a dormant neighbour. Virtual time.
+ * [AwareFlag] (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): FLAG_AWARE comes down at once and goes up only
+ * after "will run Aware" has held for [AwareFlag.SET_AFTER_MS], so a Doze maintenance window's flicker never wakes a
+ * dormant neighbour. Virtual time.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class NoAwareFlagTest {
+class AwareFlagTest {
     private val wontRun = MutableStateFlow(true)
-    private var advertised = true
+    private var advertised = false
     private val applied = mutableListOf<Boolean>()
 
     private fun apply(on: Boolean) {
@@ -29,52 +30,53 @@ class NoAwareFlagTest {
     }
 
     @Test
-    fun theBitComesDownOnlyAfterItHeldClearAMinute() =
+    fun theBitGoesUpOnlyAfterWillRunHeldAMinute() =
         runTest {
-            val job = launch { NoAwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
+            val job = launch { AwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
             runCurrent()
             assertTrue("an unchanged value applies nothing", applied.isEmpty())
             wontRun.value = false
-            advanceTimeBy(NoAwareFlag.CLEAR_AFTER_MS - 1)
+            advanceTimeBy(AwareFlag.SET_AFTER_MS - 1)
             runCurrent()
-            assertTrue(advertised)
+            assertFalse(advertised)
             advanceTimeBy(2)
-            runCurrent()
-            assertEquals(listOf(false), applied)
-            job.cancel()
-        }
-
-    @Test
-    fun theBitGoesUpAtOnce() =
-        runTest {
-            advertised = false
-            wontRun.value = false
-            val job = launch { NoAwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
-            runCurrent()
-            wontRun.value = true
             runCurrent()
             assertEquals(listOf(true), applied)
             job.cancel()
         }
 
     @Test
-    fun aFlickerInsideTheMinuteKeepsTheBitUp() =
+    fun theBitComesDownAtOnce() =
         runTest {
-            val job = launch { NoAwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
+            advertised = true
+            wontRun.value = false
+            val job = launch { AwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
+            runCurrent()
+            assertTrue("already up: nothing to apply", applied.isEmpty())
+            wontRun.value = true
+            runCurrent()
+            assertEquals(listOf(false), applied)
+            job.cancel()
+        }
+
+    @Test
+    fun aFlickerInsideTheMinuteKeepsTheBitDown() =
+        runTest {
+            val job = launch { AwareFlag.follow(wontRun, { advertised }, ::apply, { delay(it) }) }
             runCurrent()
             wontRun.value = false // a Doze maintenance window lets the radio back…
-            advanceTimeBy(NoAwareFlag.CLEAR_AFTER_MS / 2)
+            advanceTimeBy(AwareFlag.SET_AFTER_MS / 2)
             runCurrent()
             wontRun.value = true // …and Doze takes it again
             runCurrent()
             wontRun.value = false
-            advanceTimeBy(NoAwareFlag.CLEAR_AFTER_MS - 1)
+            advanceTimeBy(AwareFlag.SET_AFTER_MS - 1)
             runCurrent()
-            assertTrue("the clock starts again at each clear", applied.isEmpty())
+            assertTrue("the clock starts again at each will-run edge", applied.isEmpty())
             advanceTimeBy(2)
             runCurrent()
-            assertFalse(advertised)
-            assertEquals(listOf(false), applied)
+            assertTrue(advertised)
+            assertEquals(listOf(true), applied)
             job.cancel()
         }
 }

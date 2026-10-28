@@ -146,7 +146,7 @@ internal class BleAdvertiser(
                 synchronized(lock) {
                     if (set == null || set !== advertisingSet) return // a stopped or replaced set's late word
                     // A refused write leaves the old bytes on the air. A cue change heals at the next push, but a flags
-                    // change (FLAG_NO_AWARE, GitHub #44) has no next push, so [reassert] writes the newest bytes again.
+                    // change (FLAG_AWARE, GitHub #44) has no next push, so [reassert] writes the newest bytes again.
                     dataStale = status != ADVERTISE_SUCCESS
                 }
             }

@@ -364,7 +364,7 @@ interface MeshTransport {
 
     /**
      * The peers this short-range plane has positive evidence can run Wi-Fi Aware, heard **near** enough to be worth
-     * waking a dormant Aware plane for (the Bluetooth plane: a service-data advert whose flags say Aware runs there,
+     * waking a dormant Aware plane for (the Bluetooth plane: a service-data advert whose flags carry `FLAG_AWARE`,
      * GitHub #44). A subset of [awareCandidatesHeard]. [CompositeMeshTransport] pushes the union of the siblings' sets
      * through [onForeignAwareCandidates]. Default empty: a plane that cannot tell never names one.
      */
