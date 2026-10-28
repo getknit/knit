@@ -52,8 +52,6 @@ import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.meshRoomChannel
 import app.getknit.knit.data.message.newestOriginChannel
-import app.getknit.knit.data.message.quoteHasAttachment
-import app.getknit.knit.data.message.quoteSnippet
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.relay.AttachmentRelay
@@ -149,6 +147,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -179,6 +178,28 @@ data class QuoteView(
     val hasAttachment: Boolean,
     val state: QuoteState,
 )
+
+/**
+ * The name the thread puts on a message's author, one rule for the bubbles and the pinned bar. A heard post's author is
+ * the Meshtastic speaker ([origin]), never this phone, whose id sits in the sender column by convention: the contact
+ * the speaker resolved to, else the name the radio heard, else the board's `!hex` label. Otherwise this phone's own
+ * message reads [selfName] and anyone else's reads their directory label ([labelOf]).
+ *
+ * [selfName] is the caller's: the bubbles use the person's own display name where they set one, and the bar says
+ * "You", as a chat list or a quote does.
+ */
+internal fun senderName(
+    origin: MeshOrigin?,
+    senderId: String,
+    me: String?,
+    selfName: String,
+    labelOf: (nodeId: String) -> String,
+): String =
+    when {
+        origin != null -> origin.peerId?.let(labelOf) ?: origin.name ?: origin.nodeLabel
+        senderId == me -> selfName
+        else -> labelOf(senderId)
+    }
 
 /**
  * What the bubble shows of [m]'s quote, or null when [m] is not a reply. Our own replies ([mine]) are trusted — we
@@ -441,17 +462,15 @@ data class TransferConsent(
 )
 
 /**
- * One pinned message as the bar under the chat's title draws it (#42): who wrote it, in the reader's own label for
- * them, and its first line by the rule a quote uses ([quoteSnippet]), so a photo reads "Photo" and words the filter
- * hides stay hidden. Tapping it jumps to [messageId] through the quote-jump path.
+ * One pinned message as the bar under the chat's title draws it (#42): who wrote it, named as the thread names them
+ * ([senderName]), and its one-line [preview] by the chat list's rule ([messagePreview]), so a video reads "Video", a
+ * photo "Photo" and words the content filter hides "Message hidden". Tapping it jumps to [messageId] through the
+ * quote-jump path.
  */
 data class PinnedView(
     val messageId: String,
     val author: String,
-    val snippet: String,
-    val hasAttachment: Boolean,
-    // The content filter hides this message's words, so the bar says so rather than showing them (or a blank).
-    val hidden: Boolean = false,
+    val preview: String,
 )
 
 data class ChatUiState(
@@ -1038,9 +1057,6 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
-        // Pins have no FK cascade, so a pin whose message went with its thread or a retention trim stays behind. The
-        // bar never shows one (its read joins `messages`); this reclaims the rows. A few rows a phone, so cheap here.
-        pins?.let { repo -> viewModelScope.launch { repo.deleteOrphans(System.currentTimeMillis()) } }
         calls?.takeIf { it.walkieEnabled }?.let { calls ->
             viewModelScope.launch {
                 chatForeground.collectLatest { foreground ->
@@ -1284,10 +1300,16 @@ class ChatViewModel(
             preferMeshCalls,
         ) { name, consented, room, roster, preferMesh -> PublicInputs(name, consented, room, roster, preferMesh) }
 
+    // The peer directory, read once for this screen: the thread state and the pinned bar both name senders from it, and
+    // each change to the peer table reads the whole table and rebuilds its label index, so it is shared, not collected
+    // twice. Replayed so the second collector starts from the current directory.
+    private val peerDirectory =
+        peers.observeDirectory().shareIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+
     val state: StateFlow<ChatUiState> =
         combine(
             messagesWithReactions,
-            peers.observeDirectory(),
+            peerDirectory,
             meshStatus,
             myNodeId,
             publicIdentity,
@@ -1348,11 +1370,8 @@ class ChatViewModel(
                     val mine = m.senderId == me && origin == null
                     val contact = origin?.peerId?.let { label(it) }
                     val senderLabel = if (mine || origin != null) null else label(m.senderId)
-                    val name =
-                        contact?.text
-                            ?: origin?.let { it.name ?: it.nodeLabel }
-                            ?: senderLabel?.text
-                            ?: myName.ifBlank { context.getString(R.string.chat_self_name) }
+                    // Our own name above our own bubble where we set one; the pinned bar says "You" instead.
+                    val name = senderName(origin, m.senderId, me, selfName = myName.ifBlank { selfLabel }) { label(it).text }
                     val tallies =
                         reactionsByMessage[m.id]
                             .orEmpty()
@@ -1613,56 +1632,27 @@ class ChatViewModel(
 
     /**
      * This thread's pinned messages, newest pin first — the bar under the title (#42). A pin on a blocked sender's
-     * message is left out, as their bubbles are; the author is named the way the thread names its senders.
+     * message is left out, as their bubbles are (blocking also unpins it, [block]); the author is named by the thread's
+     * own rule ([senderName]), with "You" for this phone.
      */
     val pinned: StateFlow<List<PinnedView>> =
         combine(
             pins?.observePinnedIn(conversationId) ?: flowOf(emptyList()),
-            peers.observeDirectory(),
+            peerDirectory,
             myNodeId,
             settings.blockedNodeIds,
             settings.contentFilteringEnabled,
-        ) { rows, directory, me, blocked, hideSensitive ->
+        ) { rows, directory, me, blocked, hideFlagged ->
             val selfLabel = context.getString(R.string.chat_self_name)
-            val labels = quoteLabels(context)
             rows
                 .filter { it.message.senderId !in blocked }
                 .map { pin ->
                     val m = pin.message
-                    val node = m.originNode
-                    // A heard post's author is the Meshtastic speaker, never this phone (whose id sits in the sender
-                    // column by convention): the contact it resolved to, else the name the radio heard, else the board.
-                    val author =
-                        when {
-                            node != null -> {
-                                m.originPeerId?.let { directory.label(it).text }
-                                    ?: m.originName?.takeIf { it.isNotBlank() }
-                                    ?: meshNodeLabel(node)
-                            }
-
-                            m.senderId == me -> {
-                                selfLabel
-                            }
-
-                            else -> {
-                                directory.label(m.senderId).text
-                            }
-                        }
-                    val hidden = m.hiddenByFilter(hideSensitive)
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
                     PinnedView(
                         messageId = m.id,
-                        author = author,
-                        snippet =
-                            quoteSnippet(
-                                m.body,
-                                m.attachmentName,
-                                m.attachmentMime,
-                                m.attachmentAnimated,
-                                flagged = hidden,
-                                labels = labels,
-                            ),
-                        hasAttachment = quoteHasAttachment(m.attachmentHash, m.attachmentMime),
-                        hidden = hidden,
+                        author = senderName(origin, m.senderId, me, selfName = selfLabel) { directory.label(it).text },
+                        preview = messagePreview(context, m, hideFlagged),
                     )
                 }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -2512,15 +2502,18 @@ class ChatViewModel(
     }
 
     /**
-     * Pins [messageId] to the top of this chat, or unpins it when it is pinned already (#42). On this phone only:
-     * nothing is sent, so nobody else in the chat sees it. A pin past [PinRepository.MAX_PER_CHAT] unpins the
-     * thread's oldest, and the screen says so.
+     * Pins [messageId] to the top of this chat, or unpins it, as [pinned] says (#42). The caller passes the state it
+     * wants rather than asking for a toggle, so a second tap that lands before the bar has caught up does nothing
+     * instead of undoing the first. On this phone only: nothing is sent, so nobody else in the chat sees it. A pin past
+     * [PinRepository.MAX_PER_CHAT] unpins the thread's oldest, and the screen says so.
      */
-    fun togglePin(messageId: String) {
+    fun setPinned(
+        messageId: String,
+        pinned: Boolean,
+    ) {
         val repo = pins ?: return
         viewModelScope.launch {
-            val me = myNodeId.value ?: identity.nodeId()
-            if (repo.toggle(messageId, me, System.currentTimeMillis()) == PinOutcome.PinnedReplacingOldest) {
+            if (repo.setPinned(messageId, pinned, System.currentTimeMillis()) == PinOutcome.PinnedReplacingOldest) {
                 _events.tryEmit(R.string.chat_pin_replaced_oldest)
             }
         }
@@ -2546,10 +2539,14 @@ class ChatViewModel(
         }
     }
 
-    /** Blocks [nodeId] locally: their messages/reactions stop being stored, shown, and notified. */
+    /**
+     * Blocks [nodeId] locally: their messages/reactions stop being stored, shown, and notified, and their pinned
+     * messages are unpinned, so a pin nobody can see no longer takes one of the chat's places.
+     */
     fun block(nodeId: String) {
         viewModelScope.launch {
             settings.block(nodeId, peers.find(nodeId)?.deviceTag)
+            pins?.unpinFrom(nodeId)
             _events.tryEmit(R.string.chat_user_blocked)
             // Blocking the peer of a DM empties this thread (and hides it from the list), so close the
             // now-confusing screen. Emitted only after the block persists, so navigating away can't

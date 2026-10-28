@@ -49,6 +49,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
@@ -396,6 +397,7 @@ class DebugBridgeReceiver :
     private val attachments: AttachmentStore by inject()
     private val messages: MessageRepository by inject()
     private val reactions: ReactionRepository by inject()
+    private val pins: PinRepository by inject()
     private val receipts: MessageReceiptRepository by inject()
     private val forward: ForwardStore by inject()
     private val peers: PeerRepository by inject()
@@ -3421,8 +3423,8 @@ class DebugBridgeReceiver :
     /**
      * Purges soak-harness traffic from this phone: every message whose body starts with one of the
      * `|`-separated `--es prefix` alternatives (the harness stamps `soak …` and `burst …`), in every thread,
-     * through the same local delete the chat's long-press runs — the row, its reactions, its receipt rows, the
-     * attachment blob once nothing references it — plus the frame's custody row via [ForwardStore.remove],
+     * through the same local delete the chat's long-press runs — the row, its reactions, its pin, its receipt rows,
+     * the attachment blob once nothing references it — plus the frame's custody row via [ForwardStore.remove],
      * which keeps the content digest in lockstep with the table. The custody half is the point: a message id
      * is its frame id, and custody (24 h) outlives the SeenSet window (10 min), so a purge that left it would
      * watch the message walk back in from a peer's carry set. Run it on every phone in one pass; a phone
@@ -3464,6 +3466,7 @@ class DebugBridgeReceiver :
                 }
                 messages.delete(m.id)
                 reactions.deleteForMessage(m.id)
+                pins.deleteForMessage(m.id)
                 receipts.deleteForMessage(m.id)
                 m.attachmentHash?.let {
                     blobs.deleteIfUnreferenced(it)

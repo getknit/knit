@@ -11,6 +11,7 @@ import app.getknit.knit.contacts.ContactRemover
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.peer.MetPeerEntity
 import app.getknit.knit.data.peer.MetPeerRepository
@@ -31,6 +32,7 @@ import app.getknit.knit.ui.group
 import app.getknit.knit.ui.peer
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
@@ -113,22 +115,25 @@ class ProfileDetailsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm(calls: CallManager? = null) =
-        ProfileDetailsViewModel(
-            nodeId,
-            peers,
-            groups,
-            metPeers,
-            mesh,
-            settings,
-            identity,
-            messages,
-            remover,
-            spoolsFlow,
-            context,
-            clock = { NOW },
-            calls = calls,
-        )
+    private fun vm(
+        calls: CallManager? = null,
+        pins: PinRepository? = null,
+    ) = ProfileDetailsViewModel(
+        nodeId,
+        peers,
+        groups,
+        metPeers,
+        mesh,
+        settings,
+        identity,
+        messages,
+        remover,
+        spoolsFlow,
+        context,
+        clock = { NOW },
+        calls = calls,
+        pins = pins,
+    )
 
     @Test
     fun stateReflectsProfilePresenceBlockAndKeyState() =
@@ -434,6 +439,21 @@ class ProfileDetailsViewModelTest {
 
             coVerify { settings.block(nodeId, "tag-1") }
             assertFalse("scan result starts empty", vm.scanResult.value == VerifyScanResult.MATCH)
+        }
+
+    @Test
+    fun blockUnpinsWhatThePeerSentSoTheirPinsStopTakingAPlace() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            val vm = vm(pins = pins)
+
+            vm.block()
+            advanceUntilIdle()
+
+            coVerifyOrder {
+                settings.block(nodeId, any())
+                pins.unpinFrom(nodeId)
+            }
         }
 
     private fun spool(

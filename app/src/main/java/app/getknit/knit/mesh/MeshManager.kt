@@ -21,6 +21,7 @@ import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.forward.ForwardRepository
@@ -186,6 +187,9 @@ class MeshManager(
     private val receipts: MessageReceiptRepository,
     private val groups: GroupRepository,
     private val reactions: ReactionRepository,
+    // This phone's pinned messages (ADR 2026-10.2r7e): only swept here, at startup, beside the reactions. Required, not
+    // defaulted: a rig that forgets it should fail to compile.
+    private val pins: PinRepository,
     private val peers: PeerRepository,
     // The phones this one has met — the lifetime union of the nearby set, fed by [watchMetPeers] for the
     // Your mesh screen. Required, not defaulted: a rig that forgets it should fail to compile.
@@ -2762,11 +2766,12 @@ class MeshManager(
         if (recipientId != null) transport.fastSend(wire, Peer(recipientId)) else transport.fastFanout(wire)
     }
 
-    /** On startup, sweep orphaned blobs/reactions/receipts and re-request attachment blobs we're still missing. */
+    /** On startup, sweep orphaned blobs/reactions/pins/receipts and re-request attachment blobs we're still missing. */
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent (keeps carried ones)
             reactions.deleteOrphans(clock()) // reclaim reactions left by deleted messages
+            pins.deleteOrphans(settings.blockedNodeIds.first()) // ...pins left by them, or on a since-blocked sender's
             receipts.deleteOrphans() // ...and per-recipient delivery rows left by a deleted thread or a retention trim
             sweepExpired() // carried DMs whose TTL elapsed while we were down (the in-memory sets are usually empty)
             sweepLocalStorage() // bound the local messages/peers tables against a Sybil flood (Message Requests hardening)

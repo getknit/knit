@@ -132,13 +132,14 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
-- **Shared pinned messages** (GitHub #42, 2026-10-27). v1 pins are local to the phone that made them: a `pins` row
-  (`PinEntity`, keyed by message id, a null `pinnedBy` as the unpin tombstone, `updatedAt` as the clock), at most
-  `PinRepository.MAX_PER_CHAT` per thread, a bar under the chat's title, nothing framed. Left out on purpose, and
-  each still an open "Still to decide" item on the issue:
+- **Shared pinned messages** (GitHub #42, ADR 2026-10.2r7e, 2026-10-28). v1 pins are local to the phone that made
+  them: a `pins` row (`PinEntity`, keyed by message id, deleted on unpin), at most `PinRepository.MAX_PER_CHAT` per
+  thread, a bar under the chat's title, nothing framed. Left out on purpose, and each still an open "Still to decide"
+  item on the issue:
   - **Pins everyone in a DM or group sees**, as a sealed control inside the chat frame (ADR 018, the reactions'
-    route), applied through `PinRepository.apply`'s last-writer-wins, with a `mesh/lab/` scenario where two members
-    pin and unpin one message apart and then meet. The Nearby room keeps local pins.
+    route). It needs a schema change for what convergence takes (who pinned, an unpin tombstone, a last-writer-wins
+    stamp and an orphan grace for a pin that arrives before its message), and a `mesh/lab/` scenario where two
+    members pin and unpin one message apart and then meet. The Nearby room keeps local pins.
   - **Expiry** (24 h / 7 days / 30 days), a "pinned a message" thread line, and limiting pins to a group's creator.
 
 - **Message formatting past its first four styles** (ADR 2026-10.p95v, 2026-10-24). v1 sends bold, italic,

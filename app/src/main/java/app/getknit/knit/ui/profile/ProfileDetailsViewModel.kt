@@ -13,6 +13,7 @@ import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.GroupFace
@@ -205,6 +206,8 @@ class ProfileDetailsViewModel(
     private val clock: () -> Long = System::currentTimeMillis,
     // Voice calls (experimental, di/CallWiring): null in a build that wires none, which hides the Call button.
     private val calls: CallManager? = null,
+    // Pinned messages (ADR 2026-10.2r7e): blocking this peer unpins what they sent. Null in a rig that wires none.
+    private val pins: PinRepository? = null,
 ) : ViewModel() {
     private val me = MutableStateFlow<MyIdentity?>(null)
 
@@ -412,9 +415,15 @@ class ProfileDetailsViewModel(
         }
     }
 
-    /** Blocks this peer locally: their messages/reactions stop being stored, shown, and notified. */
+    /**
+     * Blocks this peer locally: their messages/reactions stop being stored, shown, and notified, and their pinned
+     * messages are unpinned, as the chat's own Block does (`ChatViewModel.block`).
+     */
     fun block() {
-        viewModelScope.launch { settings.block(nodeId, peerDeviceTag) }
+        viewModelScope.launch {
+            settings.block(nodeId, peerDeviceTag)
+            pins?.unpinFrom(nodeId)
+        }
     }
 
     /** Unblocks this peer, restoring their (never-deleted) message history. */

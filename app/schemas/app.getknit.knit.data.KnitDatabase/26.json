@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 26,
-    "identityHash": "3d8b7766ca0569908f1317ce65a25619",
+    "identityHash": "0bfc013ff22aef042e3dacf1184f6941",
     "entities": [
       {
         "tableName": "messages",
@@ -1913,7 +1913,7 @@
       },
       {
         "tableName": "pins",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`messageId` TEXT NOT NULL, `pinnedBy` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`messageId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`messageId` TEXT NOT NULL, `pinnedAt` INTEGER NOT NULL, PRIMARY KEY(`messageId`))",
         "fields": [
           {
             "fieldPath": "messageId",
@@ -1922,13 +1922,8 @@
             "notNull": true
           },
           {
-            "fieldPath": "pinnedBy",
-            "columnName": "pinnedBy",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "updatedAt",
-            "columnName": "updatedAt",
+            "fieldPath": "pinnedAt",
+            "columnName": "pinnedAt",
             "affinity": "INTEGER",
             "notNull": true
           }
@@ -1943,7 +1938,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '3d8b7766ca0569908f1317ce65a25619')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0bfc013ff22aef042e3dacf1184f6941')"
     ]
   }
 }

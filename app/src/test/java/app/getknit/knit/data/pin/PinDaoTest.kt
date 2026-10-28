@@ -6,14 +6,15 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Executes the **real** [PinDao] SQL, in the style of `ReactionDaoTest`: the thread read is a join against `messages`
- * (there is deliberately no FK), so it narrows to one thread, hides tombstones and drops a pin whose message is gone;
- * the orphan sweep is the reactions' anti-join with its age floor.
+ * Executes the **real** [PinDao] SQL, in the style of `ReactionDaoTest`: the thread reads are a join against `messages`
+ * (there is deliberately no FK), so they narrow to one thread and drop a pin whose message is gone; the startup sweep
+ * reclaims those rows and pins on a blocked sender's messages.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PinDaoTest : RoomDbTest() {
@@ -26,23 +27,20 @@ class PinDaoTest : RoomDbTest() {
     ) = db.messageDao().upsert(MessageEntity(id = id, senderId = senderId, conversationId = conversationId, body = id, sentAt = 1L))
 
     @Test
-    fun `observePinnedIn returns one thread's live pins, newest pin first, with their messages`() =
+    fun `observePinnedIn returns one thread's pins, newest pin first, with their messages`() =
         runTest {
             message("m1")
             message("m2")
-            message("m3")
             message("other", conversationId = "carol", senderId = "carol")
-            dao.upsert(PinEntity("m1", pinnedBy = "me", updatedAt = 10L))
-            dao.upsert(PinEntity("m2", pinnedBy = "me", updatedAt = 30L))
-            dao.upsert(PinEntity("m3", pinnedBy = null, updatedAt = 40L)) // unpinned → hidden
-            dao.upsert(PinEntity("other", pinnedBy = "me", updatedAt = 50L)) // another thread → excluded
-            dao.upsert(PinEntity("gone", pinnedBy = "me", updatedAt = 60L)) // no message on this phone → excluded
+            dao.insert(PinEntity("m1", pinnedAt = 10L))
+            dao.insert(PinEntity("m2", pinnedAt = 30L))
+            dao.insert(PinEntity("other", pinnedAt = 50L)) // another thread → excluded
+            dao.insert(PinEntity("gone", pinnedAt = 60L)) // no message on this phone → excluded
 
             val pins = dao.observePinnedIn("bob").first()
 
             assertEquals(listOf("m2", "m1"), pins.map { it.message.id })
             assertEquals(listOf(30L, 10L), pins.map { it.pinnedAt })
-            assertEquals(listOf("me", "me"), pins.map { it.pinnedBy })
             assertEquals("m2", pins.first().message.body)
         }
 
@@ -51,33 +49,38 @@ class PinDaoTest : RoomDbTest() {
         runTest {
             message("a")
             message("b")
-            dao.upsert(PinEntity("a", pinnedBy = "me", updatedAt = 5L))
-            dao.upsert(PinEntity("b", pinnedBy = "me", updatedAt = 5L))
+            dao.insert(PinEntity("a", pinnedAt = 5L))
+            dao.insert(PinEntity("b", pinnedAt = 5L))
 
             assertEquals(listOf("b", "a"), dao.observePinnedIn("bob").first().map { it.message.id })
-            assertEquals(listOf("a", "b"), dao.livePinIdsIn("bob"))
+            assertEquals(listOf("a", "b"), dao.pinIdsIn("bob"))
         }
 
     @Test
-    fun `livePinIdsIn lists one thread's live pins oldest first`() =
+    fun `pinIdsIn lists one thread's pins oldest first`() =
         runTest {
             message("m1")
             message("m2")
-            message("m3")
-            dao.upsert(PinEntity("m1", pinnedBy = "me", updatedAt = 20L))
-            dao.upsert(PinEntity("m2", pinnedBy = "me", updatedAt = 10L))
-            dao.upsert(PinEntity("m3", pinnedBy = null, updatedAt = 30L))
+            message("elsewhere", conversationId = "carol")
+            dao.insert(PinEntity("m1", pinnedAt = 20L))
+            dao.insert(PinEntity("m2", pinnedAt = 10L))
+            dao.insert(PinEntity("elsewhere", pinnedAt = 5L))
 
-            assertEquals(listOf("m2", "m1"), dao.livePinIdsIn("bob"))
+            assertEquals(listOf("m2", "m1"), dao.pinIdsIn("bob"))
         }
 
     @Test
-    fun `upsert replaces on the message id`() =
+    fun `newestPinIn is the thread's highest stamp and null for a thread with no pins`() =
         runTest {
-            dao.upsert(PinEntity("m1", pinnedBy = "me", updatedAt = 1L))
-            dao.upsert(PinEntity("m1", pinnedBy = null, updatedAt = 2L)) // same key → replace, not a second row
+            message("m1")
+            message("m2")
+            message("elsewhere", conversationId = "carol")
+            dao.insert(PinEntity("m1", pinnedAt = 20L))
+            dao.insert(PinEntity("m2", pinnedAt = 70L))
+            dao.insert(PinEntity("elsewhere", pinnedAt = 900L)) // another thread's stamp is not this one's floor
 
-            assertEquals(PinEntity("m1", pinnedBy = null, updatedAt = 2L), dao.find("m1"))
+            assertEquals(70L, dao.newestPinIn("bob"))
+            assertNull(dao.newestPinIn("dave"))
         }
 
     @Test
@@ -90,31 +93,57 @@ class PinDaoTest : RoomDbTest() {
         }
 
     @Test
-    fun `deleteForMessage drops only that message's pin`() =
+    fun `delete removes only that message's pin and says whether there was one`() =
         runTest {
-            dao.upsert(PinEntity("m1", pinnedBy = "me", updatedAt = 1L))
-            dao.upsert(PinEntity("m2", pinnedBy = "me", updatedAt = 1L))
+            dao.insert(PinEntity("m1", pinnedAt = 1L))
+            dao.insert(PinEntity("m2", pinnedAt = 1L))
 
-            dao.deleteForMessage("m1")
+            assertEquals(1, dao.delete("m1"))
+            assertEquals(0, dao.delete("m1"))
 
-            assertNull(dao.find("m1"))
-            assertEquals(PinEntity("m2", pinnedBy = "me", updatedAt = 1L), dao.find("m2"))
+            assertFalse(dao.isPinned("m1"))
+            assertTrue(dao.isPinned("m2"))
         }
 
     @Test
-    fun `deleteOrphansOlderThan reclaims only old pins whose message is gone`() =
+    fun `deleteFromSender unpins everything one sender wrote, in every thread`() =
+        runTest {
+            message("mal-1", conversationId = "g-hikers", senderId = "mallory")
+            message("mal-2", conversationId = "g-climbers", senderId = "mallory")
+            message("sam-1", conversationId = "g-hikers", senderId = "sam")
+            listOf("mal-1", "mal-2", "sam-1").forEach { dao.insert(PinEntity(it, pinnedAt = 1L)) }
+
+            dao.deleteFromSender("mallory")
+
+            assertFalse(dao.isPinned("mal-1"))
+            assertFalse(dao.isPinned("mal-2"))
+            assertTrue(dao.isPinned("sam-1"))
+        }
+
+    @Test
+    fun `deleteOrphans reclaims pins whose message is gone or whose sender is blocked`() =
         runTest {
             message("m_live")
-            dao.upsert(PinEntity("m_live", pinnedBy = "me", updatedAt = 1L)) // message present → kept
-            dao.upsert(PinEntity("m_gone_old", pinnedBy = "me", updatedAt = 1L)) // orphan, old → deleted
-            dao.upsert(PinEntity("m_gone_tomb", pinnedBy = null, updatedAt = 1L)) // an old orphan tombstone → deleted
-            dao.upsert(PinEntity("m_gone_new", pinnedBy = "me", updatedAt = 9L)) // orphan but newer than the floor
+            message("m_blocked", senderId = "mallory")
+            listOf("m_live", "m_blocked", "m_gone").forEach { dao.insert(PinEntity(it, pinnedAt = 1L)) }
 
-            dao.deleteOrphansOlderThan(olderThan = 5L)
+            dao.deleteOrphans(blocked = setOf("mallory"))
 
-            assertTrue(dao.find("m_live") != null)
-            assertNull(dao.find("m_gone_old"))
-            assertNull(dao.find("m_gone_tomb"))
-            assertTrue(dao.find("m_gone_new") != null)
+            assertTrue(dao.isPinned("m_live"))
+            assertFalse(dao.isPinned("m_blocked"))
+            assertFalse(dao.isPinned("m_gone"))
+        }
+
+    @Test
+    fun `deleteOrphans with nobody blocked reclaims only the orphans`() =
+        runTest {
+            message("m_live", senderId = "mallory")
+            dao.insert(PinEntity("m_live", pinnedAt = 1L))
+            dao.insert(PinEntity("m_gone", pinnedAt = 1L))
+
+            dao.deleteOrphans(blocked = emptySet())
+
+            assertTrue(dao.isPinned("m_live"))
+            assertFalse(dao.isPinned("m_gone"))
         }
 }

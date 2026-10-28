@@ -980,14 +980,14 @@ class KnitDatabaseMigrationTest {
                     // #42: nothing before this build pinned anything.
                     assertEquals(0L, s.getLong(1))
                 }
-                // Keyed by message id alone, with a nullable pinnedBy (the unpin tombstone) and no FK to messages, so a
-                // pin naming a message this phone does not hold is a legal row.
-                c.execSQL("INSERT INTO pins (messageId, pinnedBy, updatedAt) VALUES ('m1','me',5), ('not-here',NULL,6)")
-                c.execSQL("INSERT OR REPLACE INTO pins (messageId, pinnedBy, updatedAt) VALUES ('m1',NULL,7)")
-                c.prepare("SELECT COUNT(*), SUM(pinnedBy IS NULL) FROM pins").use { s ->
+                // Keyed by message id alone, with no FK to messages, so a pin naming a message this phone does not
+                // hold is a legal row (the startup sweep reclaims it), and pinning one message twice keeps one row.
+                c.execSQL("INSERT INTO pins (messageId, pinnedAt) VALUES ('m1',5), ('not-here',6)")
+                c.execSQL("INSERT OR REPLACE INTO pins (messageId, pinnedAt) VALUES ('m1',7)")
+                c.prepare("SELECT COUNT(*), MAX(pinnedAt) FROM pins").use { s ->
                     assertTrue(s.step())
                     assertEquals(2L, s.getLong(0))
-                    assertEquals(2L, s.getLong(1))
+                    assertEquals(7L, s.getLong(1))
                 }
             }
         }

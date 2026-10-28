@@ -208,6 +208,7 @@ carries; never renumber an old one.
 | [2026-09.zu5t](decisions/2026-09-zu5t-content-capture-is-off.md) | Content capture is off | privacy, ui, performance |
 | [2026-10.2da4](decisions/2026-10-2da4-a-bluetooth-link-that-feeds-a-file-asks-for-a-short-interval-and-earns-a-larger.md) | A Bluetooth link that feeds a file asks for a short interval and earns a larger budget | ble, mesh |
 | [2026-10.2drc](decisions/2026-10-2drc-a-pull-through-carries-a-hop-budget-and-a-deadline.md) | A pull-through carries a hop budget and a deadline | mesh, wire, blobs |
+| [2026-10.2r7e](decisions/2026-10-2r7e-pinned-messages.md) | Pinned messages | messages, storage |
 | [2026-10.2t49](decisions/2026-10-2t49-wi-fi-aware-sleeps-while-no-aware-phone-is-near.md) | Wi-Fi Aware sleeps while no Aware phone is near, and the person can switch it off | wifi-aware, ble, battery, reliability |
 | [2026-10.3sk7](decisions/2026-10-3sk7-an-invite-carries-a-customer-key.md) | An invite carries a customer key, and the app fetches its own ticket | calls, spool, tickets, relays |
 | [2026-10.3tee](decisions/2026-10-3tee-internet-plane-voice-calls-use-webrtc-signalled-over-sealed-spool-frames.md) | Internet-plane voice calls use WebRTC signalled over sealed Spool frames | voip, spool, webrtc, privacy |

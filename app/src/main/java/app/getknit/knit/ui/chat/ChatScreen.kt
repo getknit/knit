@@ -710,7 +710,7 @@ fun ChatScreen(
         quickReactions = recentReactions,
         onDeleteMessage = viewModel::deleteMessage,
         pinned = pinned,
-        onTogglePin = viewModel::togglePin,
+        onSetPinned = viewModel::setPinned,
         onBlock = viewModel::block,
         onUnblock = viewModel::unblock,
         onCopy = { text ->
@@ -1010,10 +1010,11 @@ internal fun ChatScreenContent(
     // the window is widened to reach it (`onRevealMessage`) and the quote-jump machinery below scrolls and
     // flashes it once the rows hold it. Defaulted so previews and the content-level tests need not name it.
     jumpToMessageId: String? = null,
-    // This thread's pinned messages, newest pin first, and the long-press Pin / Unpin (#42). Null offers no Pin;
-    // both defaulted so previews and the content-level tests need not name them.
+    // This thread's pinned messages, newest pin first, and the long-press Pin / Unpin and the bar's unpin (#42), each
+    // passing the state it wants so a repeated tap is a no-op. Null offers no Pin; both defaulted so previews and the
+    // content-level tests need not name them.
     pinned: List<PinnedView> = emptyList(),
-    onTogglePin: ((messageId: String) -> Unit)? = null,
+    onSetPinned: ((messageId: String, pinned: Boolean) -> Unit)? = null,
 ) {
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     var fullscreenVideo by remember { mutableStateOf<ChatRow?>(null) }
@@ -1581,7 +1582,7 @@ internal fun ChatScreenContent(
                 PinnedBar(
                     pinned = pinned,
                     onJump = jumpTo,
-                    onUnpin = { id -> onTogglePin?.invoke(id) },
+                    onUnpin = { id -> onSetPinned?.invoke(id, false) },
                 )
                 RelayNotice(
                     reach = state.relayReach,
@@ -1747,7 +1748,7 @@ internal fun ChatScreenContent(
                                         },
                                         onQuoteClick = jumpTo,
                                         pinned = pinned.any { it.messageId == row.id },
-                                        onTogglePin = onTogglePin,
+                                        onSetPinned = onSetPinned,
                                         onDelete = onDeleteMessage,
                                         onBlock = onBlock,
                                         onCopy = onCopy,
@@ -2112,10 +2113,11 @@ private fun RelayNotice(
 }
 
 /**
- * The pinned messages of this chat (#42), one at a time under the title: the shown pin's author and first line, and
- * "Pinned message 2 of 3" once there is more than one. A tap jumps to the shown message ([onJump], the quote-jump
+ * The pinned messages of this chat (#42), one at a time under the title: the shown pin's author and one-line preview,
+ * and "Pinned message 2 of 3" once there is more than one. A tap jumps to the shown message ([onJump], the quote-jump
  * path) and moves the bar on to the next, older pin, wrapping round, as WhatsApp's does; the trailing button unpins
- * the shown one. Renders nothing while nothing is pinned.
+ * the shown one ([onUnpin], which asks for the unpinned state rather than a toggle, so a double tap cannot re-pin it).
+ * Renders nothing while nothing is pinned.
  */
 @Composable
 internal fun PinnedBar(
@@ -2128,8 +2130,6 @@ internal fun PinnedBar(
     var index by rememberSaveable(pinned.map { it.messageId }) { mutableIntStateOf(0) }
     val at = index.mod(pinned.size)
     val shown = pinned[at]
-    val photoLabel = stringResource(R.string.chat_reply_photo)
-    val hiddenLabel = stringResource(R.string.moderation_preview_hidden)
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.onSurface,
@@ -2174,11 +2174,7 @@ internal fun PinnedBar(
                             modifier = Modifier.weight(1f, fill = false),
                         )
                         Text(
-                            text =
-                                when {
-                                    shown.hidden -> hiddenLabel
-                                    else -> shown.snippet.ifBlank { if (shown.hasAttachment) photoLabel else "" }
-                                },
+                            text = shown.preview,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -2597,7 +2593,7 @@ private fun MessageBubble(
     onQuoteClick: (messageId: String) -> Unit = {},
     // Whether this message is pinned, and the long-press Pin / Unpin (#42); null offers neither. Defaulted for previews.
     pinned: Boolean = false,
-    onTogglePin: ((messageId: String) -> Unit)? = null,
+    onSetPinned: ((messageId: String, pinned: Boolean) -> Unit)? = null,
     onDelete: (messageId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
     onCopy: (text: String) -> Unit,
@@ -3211,11 +3207,12 @@ private fun MessageBubble(
                                 null
                             },
                         pinned = pinned,
-                        onTogglePin =
-                            onTogglePin?.let { toggle ->
+                        // The opposite of what this bubble shows now: if that is already stale, the write is a no-op.
+                        onPinAction =
+                            onSetPinned?.let { setPinned ->
                                 {
                                     showPicker = false
-                                    toggle(row.id)
+                                    setPinned(row.id, !pinned)
                                 }
                             },
                         onDetails = {
@@ -3372,10 +3369,11 @@ private fun QuotedMessage(
 
 /**
  * Floating menu shown just above a long-pressed bubble: a "Reply" action, a row of quick-reaction emoji,
- * an optional "Copy text" action ([onCopy] is null for messages with no copyable text), a "Message info"
+ * an optional "Copy text" action ([onCopy] is null for messages with no copyable text), an optional "Translate"
+ * ([onTranslate]), an optional "Pin message" / "Unpin message" ([onPinAction]), a "Message info"
  * action ([onDetails]) opening the per-message details screen, an optional "Block user" action ([onBlock]
  * is null for your own messages), and an always-present "Delete message" action that removes the message
- * from this device only.
+ * from this device only. Up to seven rows, so the menu is kept inside the window ([pickerPosition]).
  */
 @Composable
 private fun ReactionPicker(
@@ -3395,9 +3393,9 @@ private fun ReactionPicker(
     canReact: Boolean = true,
     // Translate this message (ADR 2026-10.t2h6): null where translation is not wired or there is no text to read.
     onTranslate: (() -> Unit)? = null,
-    // Pin or unpin this message (#42), labelled by [pinned]: null where pins are not wired.
+    // Pin this message, or unpin it when [pinned] (#42), which also picks the label: null where pins are not wired.
     pinned: Boolean = false,
-    onTogglePin: (() -> Unit)? = null,
+    onPinAction: (() -> Unit)? = null,
 ) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // 48 dp cells with 4 dp gaps inside 8 dp side padding, plus the "+" cell: six recents need 376 dp, past
@@ -3410,7 +3408,7 @@ private fun ReactionPicker(
         }.value.toInt()
     val shown = ((windowWidthDp - QUICK_ROW_PADDING_DP) / QUICK_CELL_PITCH_DP - 1).coerceIn(MIN_QUICK_REACTIONS, RecentReactions.SHOWN)
     // Center the bar horizontally over the bubble and place it above; drop below only if it would clip
-    // the top of the window.
+    // the top of the window, and never past its bottom ([pickerPosition]).
     val positionProvider =
         remember(spacingPx) {
             object : PopupPositionProvider {
@@ -3419,13 +3417,7 @@ private fun ReactionPicker(
                     windowSize: IntSize,
                     layoutDirection: LayoutDirection,
                     popupContentSize: IntSize,
-                ): IntOffset {
-                    val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
-                    val clampedX = x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-                    val above = anchorBounds.top - popupContentSize.height - spacingPx
-                    val y = if (above >= 0) above else anchorBounds.bottom + spacingPx
-                    return IntOffset(clampedX, y)
-                }
+                ): IntOffset = pickerPosition(anchorBounds, windowSize, popupContentSize, spacingPx)
             }
         }
     Popup(
@@ -3490,11 +3482,11 @@ private fun ReactionPicker(
                         onClick = onTranslate,
                     )
                 }
-                if (onTogglePin != null) {
+                if (onPinAction != null) {
                     PickerAction(
                         icon = Icons.Outlined.PushPin,
                         label = stringResource(if (pinned) R.string.chat_action_unpin else R.string.chat_action_pin),
-                        onClick = onTogglePin,
+                        onClick = onPinAction,
                     )
                 }
                 PickerAction(
@@ -3521,7 +3513,27 @@ private fun ReactionPicker(
 }
 
 /**
- * One full-width row of the long-press menu: leading icon + label. Extracted because the menu holds five
+ * Where the long-press menu goes: centred over the bubble and above it, or below it when it would clip the top of the
+ * window, and in both cases moved back inside the window's edges. A tall menu (up to seven rows) under a tall bubble
+ * near the top of a small phone would otherwise run off the bottom and hide Block and Delete. A menu taller than the
+ * window keeps its top on screen.
+ */
+internal fun pickerPosition(
+    anchorBounds: IntRect,
+    windowSize: IntSize,
+    popupContentSize: IntSize,
+    spacingPx: Int,
+): IntOffset {
+    val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
+    val clampedX = x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+    val above = anchorBounds.top - popupContentSize.height - spacingPx
+    val y = if (above >= 0) above else anchorBounds.bottom + spacingPx
+    val clampedY = y.coerceIn(0, (windowSize.height - popupContentSize.height).coerceAtLeast(0))
+    return IntOffset(clampedX, clampedY)
+}
+
+/**
+ * One full-width row of the long-press menu: leading icon + label. Extracted because the menu holds up to seven
  * of these and the only differences are the icon, the label and whether it is destructive ([tint]).
  */
 @Composable

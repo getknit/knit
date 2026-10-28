@@ -436,11 +436,12 @@ val meshModule =
                 )
             }
         }
-        // Constructor order: transport, messages, receipts, groups, reactions, peers, metPeers, identity,
+        // Constructor order: transport, messages, receipts, groups, reactions, pins, peers, metPeers, identity,
         // settings, blobs, imageScreening, blobStore, partials, forwardStore, notifier, textModeration,
         // messageCrypto, ratchet, groupRatchet, groupRoots, scope, metrics, ledger, db, spoolDialer.
         single {
             MeshManager(
+                get(),
                 get(),
                 get(),
                 get(),

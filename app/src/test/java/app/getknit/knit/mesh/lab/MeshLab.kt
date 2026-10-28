@@ -32,6 +32,7 @@ import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.backup.BackupTables
@@ -1327,6 +1328,7 @@ class LabNode internal constructor(
                 receipts = receipts,
                 groups = groups,
                 reactions = reactions,
+                pins = PinRepository(db.pinDao(), db),
                 peers = peers,
                 metPeers = MetPeerRepository(db.metPeerDao(), db),
                 identity = identity,

@@ -7,83 +7,71 @@ import app.getknit.knit.data.pin.PinnedMessage
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Single source of truth for pinned messages (#42). Pins are local to this phone for now: nothing here is framed,
- * so a pin shows only on the phone that made it. [apply] owns the last-writer-wins rule the reactions use, so a
- * later shared pin can land through it unchanged.
+ * Single source of truth for pinned messages (#42, ADR 2026-10.2r7e). Pins are local to this phone: nothing here is
+ * framed, so a pin shows only on the phone that made it, a row exists only while its message is pinned, and an
+ * unpin deletes it.
  */
 class PinRepository(
     private val dao: PinDao,
     private val db: KnitDatabase,
 ) {
-    /** Live pins in one thread, newest pin first, each with its message — the pinned bar. */
+    /** Pins in one thread, newest pin first, each with its message — the pinned bar. */
     fun observePinnedIn(conversationId: String): Flow<List<PinnedMessage>> = dao.observePinnedIn(conversationId)
 
     /**
-     * Applies a pin or an unpin (a [PinEntity.pinnedBy] of null), keeping the stored row when this one is not
-     * strictly newer — [ReactionRepository.apply]'s guard, so out-of-order pins and unpins converge on the newest.
-     * Returns whether the message's pinned state changed.
-     */
-    suspend fun apply(pin: PinEntity): Boolean =
-        db.withWriteTransaction {
-            val current = dao.find(pin.messageId)
-            if (current != null && pin.updatedAt <= current.updatedAt) return@withWriteTransaction false
-            dao.upsert(pin)
-            (current?.pinnedBy != null) != (pin.pinnedBy != null)
-        }
-
-    /**
-     * Pins [messageId] for [me] at [now], or unpins it when it is pinned already — the long-press menu's one
-     * action. A thread holds at most [MAX_PER_CHAT] pins: a pin past that unpins the thread's oldest, and the
-     * result says so, so the screen can tell the person which one went. A message this phone does not hold is
-     * left alone.
+     * Puts [messageId] in the [pinned] state at [now], and does nothing when it is in that state already, so a second
+     * tap that lands before the bar has caught up cannot undo the first. A thread holds at most [MAX_PER_CHAT] pins: a
+     * pin past that unpins the thread's oldest, and the result says so, so the screen can tell the person which one
+     * went. A message this phone does not hold is never pinned.
      *
-     * The tap must take effect even when this phone's clock has gone back since the stored stamp, so the new stamp
-     * is one past the stored one at least. One write transaction covers the read, the count and both writes, so a
-     * second tap racing this one can neither double-count nor resurrect what it just unpinned.
+     * The new stamp is at least one past the thread's newest pin, not just [now]: eviction compares stamps across
+     * messages, and a pin made while the clock ran ahead would otherwise stay "newest" after the clock was put right,
+     * so the pins made after it would go first. One write transaction covers the reads, the count and both writes.
      */
-    suspend fun toggle(
+    suspend fun setPinned(
         messageId: String,
-        me: String,
+        pinned: Boolean,
         now: Long,
-    ): PinOutcome =
-        db.withWriteTransaction {
+    ): PinOutcome {
+        if (!pinned) return if (dao.delete(messageId) > 0) PinOutcome.Unpinned else PinOutcome.Unchanged
+        return db.withWriteTransaction {
+            if (dao.isPinned(messageId)) return@withWriteTransaction PinOutcome.Unchanged
             val conversationId = dao.conversationOf(messageId) ?: return@withWriteTransaction PinOutcome.Unchanged
-            val current = dao.find(messageId)
-            val stamp = maxOf(now, (current?.updatedAt ?: Long.MIN_VALUE) + 1)
-            if (current?.pinnedBy != null) {
-                dao.upsert(PinEntity(messageId, pinnedBy = null, updatedAt = stamp))
-                return@withWriteTransaction PinOutcome.Unpinned
-            }
-            dao.upsert(PinEntity(messageId, pinnedBy = me, updatedAt = stamp))
-            val live = dao.livePinIdsIn(conversationId)
-            val over = live.filter { it != messageId }.take((live.size - MAX_PER_CHAT).coerceAtLeast(0))
-            over.forEach { old ->
-                val stored = dao.find(old)?.updatedAt ?: Long.MIN_VALUE
-                dao.upsert(PinEntity(old, pinnedBy = null, updatedAt = maxOf(stamp, stored + 1)))
-            }
+            val stamp = dao.newestPinIn(conversationId)?.let { maxOf(now, it + 1) } ?: now
+            dao.insert(PinEntity(messageId, pinnedAt = stamp))
+            // Oldest first, and the new pin is strictly the newest, so it is never among the ones let go.
+            val pins = dao.pinIdsIn(conversationId)
+            val over = pins.take((pins.size - MAX_PER_CHAT).coerceAtLeast(0))
+            over.forEach { dao.delete(it) }
             if (over.isEmpty()) PinOutcome.Pinned else PinOutcome.PinnedReplacingOldest
         }
+    }
 
     /** Removes a deleted message's pin, since the pins table has no FK cascade. */
-    suspend fun deleteForMessage(messageId: String) = dao.deleteForMessage(messageId)
+    suspend fun deleteForMessage(messageId: String) {
+        dao.delete(messageId)
+    }
 
     /**
-     * Reclaims pins whose message is gone — deleted with its thread, or trimmed by retention — since the table has
-     * no FK cascade. Pins younger than [ORPHAN_GRACE_MILLIS] are kept, as reactions are
-     * ([ReactionRepository.deleteOrphans]), so a shared pin that arrives ahead of its message will survive the sweep.
+     * Unpins every message [senderId] sent — run when they are blocked. Their bubbles disappear, and a pin the person
+     * can no longer see or unpin must not keep taking one of the thread's [MAX_PER_CHAT] places.
      */
-    suspend fun deleteOrphans(now: Long) = dao.deleteOrphansOlderThan(now - ORPHAN_GRACE_MILLIS)
+    suspend fun unpinFrom(senderId: String) = dao.deleteFromSender(senderId)
+
+    /**
+     * Reclaims pins whose message is gone (deleted with its thread, or trimmed by retention), since the table has no FK
+     * cascade, and pins on a message from someone in [blocked] that a block path missed. Run once at startup, beside
+     * the reactions' sweep (`MeshManager`).
+     */
+    suspend fun deleteOrphans(blocked: Set<String>) = dao.deleteOrphans(blocked)
 
     companion object {
         /** The most pins one thread holds, as WhatsApp allows; a fourth unpins the oldest. */
         const val MAX_PER_CHAT = 3
-
-        // The reactions' grace (ReactionRepository): a day comfortably exceeds any out-of-order gap.
-        private const val ORPHAN_GRACE_MILLIS = 24L * 60 * 60 * 1000
     }
 }
 
-/** What [PinRepository.toggle] did. */
+/** What [PinRepository.setPinned] did. */
 enum class PinOutcome {
     /** The message is pinned now. */
     Pinned,
@@ -94,6 +82,6 @@ enum class PinOutcome {
     /** The message was pinned and is not any more. */
     Unpinned,
 
-    /** Nothing changed: this phone does not hold the message. */
+    /** Nothing changed: the message was in that state already, or this phone does not hold it. */
     Unchanged,
 }

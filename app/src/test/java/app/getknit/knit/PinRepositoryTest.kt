@@ -4,19 +4,17 @@ import app.getknit.knit.data.PinOutcome
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.message.MessageEntity
-import app.getknit.knit.data.pin.PinEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Drives [PinRepository] against a **real** in-memory Room DB, as `ReactionRepositoryTest` does for reactions: the
- * last-writer-wins guard a shared pin will land through, and the local toggle with its per-chat limit.
+ * Drives [PinRepository] against a **real** in-memory Room DB: pin and unpin as a wanted state (so a repeated tap is a
+ * no-op), the per-chat limit, the thread-wide stamp floor, and unpinning a blocked sender.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PinRepositoryTest : RoomDbTest() {
@@ -25,62 +23,46 @@ class PinRepositoryTest : RoomDbTest() {
     private suspend fun message(
         id: String,
         conversationId: String = "bob",
-    ) = db.messageDao().upsert(MessageEntity(id = id, senderId = "bob", conversationId = conversationId, body = id, sentAt = 1L))
+        senderId: String = "bob",
+    ) = db.messageDao().upsert(MessageEntity(id = id, senderId = senderId, conversationId = conversationId, body = id, sentAt = 1L))
 
     private suspend fun pinnedIds(conversationId: String = "bob") = repo().observePinnedIn(conversationId).first().map { it.message.id }
 
     @Test
-    fun applyKeepsTheNewerAndDropsTheStaler() =
-        runTest {
-            val repo = repo()
-
-            assertTrue(repo.apply(PinEntity("m1", pinnedBy = "alice", updatedAt = 100)))
-            assertFalse("an older unpin loses", repo.apply(PinEntity("m1", pinnedBy = null, updatedAt = 50)))
-            assertEquals("alice", db.pinDao().find("m1")?.pinnedBy)
-
-            assertTrue("a newer unpin wins", repo.apply(PinEntity("m1", pinnedBy = null, updatedAt = 150)))
-            assertFalse("a stale pin cannot resurrect it", repo.apply(PinEntity("m1", pinnedBy = "alice", updatedAt = 120)))
-            assertNull(db.pinDao().find("m1")?.pinnedBy)
-        }
-
-    @Test
-    fun applyReportsNoChangeForADuplicateOrARepin() =
-        runTest {
-            val repo = repo()
-
-            assertTrue(repo.apply(PinEntity("m1", pinnedBy = "alice", updatedAt = 100)))
-            assertFalse("the same stamp again is a duplicate", repo.apply(PinEntity("m1", pinnedBy = "alice", updatedAt = 100)))
-            assertFalse("pinned by someone else, still pinned", repo.apply(PinEntity("m1", pinnedBy = "bob", updatedAt = 200)))
-            assertEquals(PinEntity("m1", pinnedBy = "bob", updatedAt = 200), db.pinDao().find("m1"))
-        }
-
-    @Test
-    fun toggleSwitchesBetweenPinnedAndUnpinned() =
+    fun setPinnedPinsAndUnpinsAndAnUnpinDeletesTheRow() =
         runTest {
             message("m1")
             val repo = repo()
 
-            assertEquals(PinOutcome.Pinned, repo.toggle("m1", me = "me", now = 10))
+            assertEquals(PinOutcome.Pinned, repo.setPinned("m1", pinned = true, now = 10))
             assertEquals(listOf("m1"), pinnedIds())
-            assertEquals("me", db.pinDao().find("m1")?.pinnedBy)
 
-            assertEquals(PinOutcome.Unpinned, repo.toggle("m1", me = "me", now = 20))
+            assertEquals(PinOutcome.Unpinned, repo.setPinned("m1", pinned = false, now = 20))
             assertTrue(pinnedIds().isEmpty())
-            // Unpinned is a tombstone, not a deleted row: a later shared pin needs the stamp to compare against.
-            assertEquals(PinEntity("m1", pinnedBy = null, updatedAt = 20), db.pinDao().find("m1"))
+            assertFalse("an unpin leaves no row behind", db.pinDao().isPinned("m1"))
         }
 
     @Test
-    fun aTapTakesEffectEvenWhenTheClockWentBack() =
+    fun aRepeatedTapIsANoOpRatherThanAToggle() =
         runTest {
-            message("m1")
+            listOf("m1", "m2", "m3", "m4").forEach { message(it) }
             val repo = repo()
+            repo.setPinned("m1", pinned = true, now = 10)
+            repo.setPinned("m2", pinned = true, now = 20)
+            repo.setPinned("m3", pinned = true, now = 30)
 
-            repo.toggle("m1", me = "me", now = 1_000)
-            assertEquals(PinOutcome.Unpinned, repo.toggle("m1", me = "me", now = 500))
-            assertEquals(PinEntity("m1", pinnedBy = null, updatedAt = 1_001), db.pinDao().find("m1"))
-            assertEquals(PinOutcome.Pinned, repo.toggle("m1", me = "me", now = 400))
-            assertEquals(1_002L, db.pinDao().find("m1")?.updatedAt)
+            // The bar's ✕ tapped twice before the bar caught up: the second does nothing, rather than re-pinning m3
+            // with a new stamp.
+            assertEquals(PinOutcome.Unpinned, repo.setPinned("m3", pinned = false, now = 40))
+            assertEquals(PinOutcome.Unchanged, repo.setPinned("m3", pinned = false, now = 41))
+            assertEquals(listOf("m2", "m1"), pinnedIds())
+
+            // A stale long-press Pin on a message already pinned neither moves its stamp nor evicts anything.
+            repo.setPinned("m3", pinned = true, now = 50)
+            assertEquals(PinOutcome.Unchanged, repo.setPinned("m3", pinned = true, now = 51))
+            assertEquals(listOf("m3", "m2", "m1"), pinnedIds())
+            val newest = repo().observePinnedIn("bob").first().first()
+            assertEquals(50L, newest.pinnedAt)
         }
 
     @Test
@@ -89,38 +71,63 @@ class PinRepositoryTest : RoomDbTest() {
             listOf("m1", "m2", "m3", "m4").forEach { message(it) }
             message("elsewhere", conversationId = "carol")
             val repo = repo()
-            repo.toggle("elsewhere", me = "me", now = 1) // another thread's pin counts against nothing here
+            repo.setPinned("elsewhere", pinned = true, now = 1) // another thread's pin counts against nothing here
 
-            assertEquals(PinOutcome.Pinned, repo.toggle("m1", me = "me", now = 10))
-            assertEquals(PinOutcome.Pinned, repo.toggle("m2", me = "me", now = 20))
-            assertEquals(PinOutcome.Pinned, repo.toggle("m3", me = "me", now = 30))
+            assertEquals(PinOutcome.Pinned, repo.setPinned("m1", pinned = true, now = 10))
+            assertEquals(PinOutcome.Pinned, repo.setPinned("m2", pinned = true, now = 20))
+            assertEquals(PinOutcome.Pinned, repo.setPinned("m3", pinned = true, now = 30))
             assertEquals(PinRepository.MAX_PER_CHAT, pinnedIds().size)
 
-            assertEquals(PinOutcome.PinnedReplacingOldest, repo.toggle("m4", me = "me", now = 40))
+            assertEquals(PinOutcome.PinnedReplacingOldest, repo.setPinned("m4", pinned = true, now = 40))
 
             assertEquals(listOf("m4", "m3", "m2"), pinnedIds())
-            assertNull("the oldest is unpinned, as a tombstone", db.pinDao().find("m1")?.pinnedBy)
+            assertFalse("the oldest's row is gone", db.pinDao().isPinned("m1"))
             assertEquals(listOf("elsewhere"), pinnedIds("carol"))
+        }
+
+    @Test
+    fun aPinMadeAfterTheClockWasPutRightIsNewerThanOneMadeWhileItRanAhead() =
+        runTest {
+            listOf("x", "a", "b", "c").forEach { message(it) }
+            val repo = repo()
+            val day = 24L * 60 * 60 * 1000
+            repo.setPinned("x", pinned = true, now = 1_000 + day) // the clock was a day ahead
+            repo.setPinned("a", pinned = true, now = 1_000) // ...then put right
+            repo.setPinned("b", pinned = true, now = 2_000)
+
+            assertEquals("each later pin sorts newer", listOf("b", "a", "x"), pinnedIds())
+
+            // So the next pin lets X go, the oldest the person made, not A, which the snackbar would misdescribe.
+            assertEquals(PinOutcome.PinnedReplacingOldest, repo.setPinned("c", pinned = true, now = 3_000))
+            assertEquals(listOf("c", "b", "a"), pinnedIds())
         }
 
     @Test
     fun aMessageThisPhoneDoesNotHoldIsLeftAlone() =
         runTest {
-            assertEquals(PinOutcome.Unchanged, repo().toggle("missing", me = "me", now = 10))
-            assertNull(db.pinDao().find("missing"))
+            val repo = repo()
+            assertEquals(PinOutcome.Unchanged, repo.setPinned("missing", pinned = true, now = 10))
+            assertEquals(PinOutcome.Unchanged, repo.setPinned("missing", pinned = false, now = 10))
+            assertFalse(db.pinDao().isPinned("missing"))
         }
 
     @Test
-    fun deleteOrphansKeepsAFreshOrphanForADay() =
+    fun unpinFromFreesTheBlockedSendersPlaces() =
         runTest {
+            message("sam", conversationId = "g-hikers", senderId = "sam")
+            message("ana", conversationId = "g-hikers", senderId = "ana")
+            message("mallory", conversationId = "g-hikers", senderId = "mallory")
+            message("next", conversationId = "g-hikers", senderId = "sam")
             val repo = repo()
-            val day = 24L * 60 * 60 * 1000
-            repo.apply(PinEntity("old", pinnedBy = "me", updatedAt = 1))
-            repo.apply(PinEntity("fresh", pinnedBy = "me", updatedAt = day))
+            repo.setPinned("sam", pinned = true, now = 10)
+            repo.setPinned("ana", pinned = true, now = 20)
+            repo.setPinned("mallory", pinned = true, now = 30)
 
-            repo.deleteOrphans(now = day + 2)
+            repo.unpinFrom("mallory")
 
-            assertNull(db.pinDao().find("old"))
-            assertEquals("me", db.pinDao().find("fresh")?.pinnedBy)
+            // The thread holds two pins now, as the bar shows, so the next pin evicts nothing.
+            assertEquals(listOf("ana", "sam"), pinnedIds("g-hikers"))
+            assertEquals(PinOutcome.Pinned, repo.setPinned("next", pinned = true, now = 40))
+            assertEquals(listOf("next", "ana", "sam"), pinnedIds("g-hikers"))
         }
 }

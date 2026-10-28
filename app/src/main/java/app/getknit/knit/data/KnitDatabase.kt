@@ -241,10 +241,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 26
     //     again). Migrated by KnitMigrations.MIGRATION_23_24.
     // v25: `messages.styles` and `drafts.styles` — a message's and a draft's formatting as style ranges beside the plain
     //     body (ADR 2026-10.p95v), JSON triples; null on existing rows. Migrated by KnitMigrations.MIGRATION_24_25.
-    // v26: one `pins` table — the messages pinned to the top of their chat (#42), modelled on `reactions`: keyed by
-    //     message id, no foreign key to `messages`, a null `pinnedBy` as the unpin tombstone and `updatedAt` as the
-    //     last-writer-wins clock, so a later shared pin can reuse it. Local only today: never framed, never in custody.
-    //     Carried in a backup like `reactions`. Empty on arrival; migrated by KnitMigrations.MIGRATION_25_26.
+    // v26: one `pins` table — the messages pinned to the top of their chat on this phone (#42, ADR 2026-10.2r7e): keyed
+    //     by message id, no foreign key to `messages`, a row only while the message is pinned (an unpin deletes it) and
+    //     `pinnedAt` as its order. Local only: never framed, never in custody. Carried in a backup like `reactions`.
+    //     Empty on arrival; migrated by KnitMigrations.MIGRATION_25_26.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

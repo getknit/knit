@@ -11,6 +11,7 @@ import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.crypto.SignedPrekey
@@ -26,6 +27,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.MissingAttachment
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.pin.PinEntity
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
@@ -111,6 +113,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -545,6 +548,7 @@ class MeshManagerTest {
                 receipts = receipts,
                 groups = groups,
                 reactions = reactions,
+                pins = PinRepository(db.pinDao(), db),
                 peers = peers,
                 metPeers = MetPeerRepository(db.metPeerDao(), db),
                 identity = identity,
@@ -3208,6 +3212,30 @@ class MeshManagerTest {
         await(2) { passes.get() }
         manager.reofferToNeighbors()
     }
+
+    @Test
+    fun startupSweepsPinsWhoseMessageIsGoneOrWhoseSenderIsBlocked() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-10.2r7e: the pins table has no FK cascade, so the startup sweep beside the reactions' reclaims a
+            // pin whose message went (a deleted thread, a retention trim) and one a block path left on a blocked sender.
+            val rig = Rig(backgroundScope)
+            val messages = rig.db.messageDao()
+            messages.upsert(MessageEntity(id = "kept", senderId = "bob", conversationId = "bob", body = "hi", sentAt = 1L))
+            messages.upsert(MessageEntity(id = "blocked", senderId = "mallory", conversationId = "g-x", body = "spam", sentAt = 1L))
+            listOf("kept", "blocked", "gone").forEach { rig.db.pinDao().insert(PinEntity(it, pinnedAt = 1L)) }
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf("mallory"))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+
+            rig.manager.start()
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(AWAIT_MS) { while (rig.db.pinDao().isPinned("gone")) delay(POLL_MS) }
+            }
+
+            val left = listOf("kept", "blocked", "gone").filter { rig.db.pinDao().isPinned(it) }
+            assertEquals("pins left after the startup sweep", listOf("kept"), left)
+            rig.manager.stop()
+        }
 
     @Test
     fun theDatabaseReArmHoldsAnAttachmentOverTheLimitToWifiAwareAndChoosingNeverFetchesItAtOnce() =

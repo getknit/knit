@@ -92,6 +92,7 @@ import app.getknit.knit.ui.reaction
 import app.getknit.knit.ui.voice.VoicePlayer
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -125,6 +126,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 
 /**
@@ -313,18 +315,29 @@ class ChatViewModelTest {
         pins = pins,
     )
 
-    // --- Pinned messages (#42) -------------------------------------------------------------------------------------
+    // --- Pinned messages (#42, ADR 2026-10.2r7e) ---------------------------------------------------------------------
 
     @Test
+    @Config(qualifiers = "en-rUS") // asserts "You", "Video", "Photo" and "Message hidden"
     fun pinnedMessagesAreNamedTheWayTheThreadNamesItsSendersAndABlockedSendersPinIsLeftOut() =
         runTest {
             val pins = mockk<PinRepository>(relaxed = true)
             every { pins.observePinnedIn(GROUP) } returns
                 flowOf(
                     listOf(
-                        PinnedMessage(msg(senderId = "me", id = "m3", body = "I'll bring water", conversationId = GROUP), "me", 30),
-                        PinnedMessage(msg(senderId = "sam", id = "m2", body = "Meet at the\nnorth gate", conversationId = GROUP), "me", 20),
-                        PinnedMessage(msg(senderId = "mallory", id = "m1", body = "spam", conversationId = GROUP), "me", 10),
+                        PinnedMessage(msg(senderId = "me", id = "m5", body = "I'll bring water", conversationId = GROUP), 50),
+                        PinnedMessage(msg(senderId = "sam", id = "m4", body = "Meet at the north gate", conversationId = GROUP), 40),
+                        PinnedMessage(msg(senderId = "mallory", id = "m3", body = "spam", conversationId = GROUP), 30),
+                        PinnedMessage(
+                            msg(senderId = "sam", id = "m2", body = "", conversationId = GROUP, attachmentHash = "v")
+                                .copy(attachmentMime = "video/mp4", videoDurationMs = 3_000),
+                            20,
+                        ),
+                        PinnedMessage(
+                            msg(senderId = "sam", id = "m1", body = "", conversationId = GROUP, attachmentHash = "p")
+                                .copy(attachmentMime = "image/jpeg"),
+                            10,
+                        ),
                         PinnedMessage(
                             msg(
                                 senderId = "sam",
@@ -333,7 +346,6 @@ class ChatViewModelTest {
                                 conversationId = GROUP,
                                 moderation = MessageEntity.MODERATION_TEXT_FLAGGED,
                             ),
-                            "me",
                             5,
                         ),
                     ),
@@ -345,35 +357,97 @@ class ChatViewModelTest {
             advanceUntilIdle()
 
             val shown = vm.pinned.value
-            assertEquals(listOf("m3", "m2", "m0"), shown.map { it.messageId })
-            assertEquals(listOf("You", "Sam", "Sam"), shown.map { it.author })
-            // A quote's rule: one line, so a multi-line message reads as its words in a row.
-            assertEquals("Meet at the north gate", shown[1].snippet)
-            // Words the content filter hides stay hidden on the bar too.
-            assertTrue(shown[2].hidden)
-            assertEquals("", shown[2].snippet)
+            assertEquals(listOf("m5", "m4", "m2", "m1", "m0"), shown.map { it.messageId })
+            assertEquals(listOf("You", "Sam", "Sam", "Sam", "Sam"), shown.map { it.author })
+            // The chat list's preview rule (messagePreview), so a video with no caption is not called a photo.
+            assertEquals(
+                listOf("I'll bring water", "Meet at the north gate", "🎬 Video", "📷 Photo", "Message hidden"),
+                shown.map { it.preview },
+            )
         }
 
     @Test
-    fun togglingAPinGoesToTheRepositoryAndAFullChatSaysItsOldestWent() =
+    fun aPinnedHeardPostIsNamedForItsSpeakerNotThisPhone() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(Conversations.MESHTASTIC) } returns
+                flowOf(
+                    listOf(
+                        PinnedMessage(
+                            msg(
+                                senderId = "me",
+                                id = "heard",
+                                body = "net check",
+                                conversationId = Conversations.MESHTASTIC,
+                                originNode = 0x1234abcdL,
+                                originName = "Base Camp",
+                            ),
+                            10,
+                        ),
+                    ),
+                )
+            val vm = vm(Conversations.MESHTASTIC, pins = pins)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.pinned.collect {} }
+            advanceUntilIdle()
+
+            assertEquals(listOf("Base Camp"), vm.pinned.value.map { it.author })
+        }
+
+    @Test
+    fun senderNameIsOneRuleForTheThreadAndTheBar() {
+        val labels = mapOf("sam" to "Sam", "ana" to "Ana")
+        val labelOf = { id: String -> labels[id] ?: id }
+
+        fun origin(
+            name: String?,
+            peerId: String?,
+        ) = MeshOrigin(nodeLabel = "!1234abcd", name = name, peerId = peerId, hops = null, snrDeci = null, viaMqtt = false)
+
+        assertEquals("Ana", senderName(origin("Base Camp", peerId = "ana"), "me", "me", "You", labelOf))
+        assertEquals("Base Camp", senderName(origin("Base Camp", peerId = null), "me", "me", "You", labelOf))
+        assertEquals("!1234abcd", senderName(origin(null, peerId = null), "me", "me", "You", labelOf))
+        assertEquals("Kim", senderName(null, "me", "me", selfName = "Kim", labelOf = labelOf))
+        assertEquals("Sam", senderName(null, "sam", "me", "You", labelOf))
+    }
+
+    @Test
+    fun pinAndUnpinPassTheWantedStateAndAFullChatSaysItsOldestWent() =
         runTest {
             val pins = mockk<PinRepository>(relaxed = true)
             every { pins.observePinnedIn(any()) } returns flowOf(emptyList())
-            coEvery { pins.toggle("m4", "me", any()) } returns PinOutcome.PinnedReplacingOldest
-            coEvery { pins.toggle("m1", "me", any()) } returns PinOutcome.Pinned
+            coEvery { pins.setPinned("m4", true, any()) } returns PinOutcome.PinnedReplacingOldest
+            coEvery { pins.setPinned("m1", true, any()) } returns PinOutcome.Pinned
+            coEvery { pins.setPinned("m1", false, any()) } returns PinOutcome.Unpinned
             val vm = vm(GROUP, pins = pins)
             val events = mutableListOf<Int>()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
 
-            vm.togglePin("m1")
+            vm.setPinned("m1", pinned = true)
+            vm.setPinned("m1", pinned = false)
             advanceUntilIdle()
-            assertTrue("a plain pin says nothing", events.isEmpty())
+            assertTrue("a plain pin or unpin says nothing", events.isEmpty())
 
-            vm.togglePin("m4")
+            vm.setPinned("m4", pinned = true)
             advanceUntilIdle()
             assertEquals(listOf(R.string.chat_pin_replaced_oldest), events)
-            coVerify(exactly = 1) { pins.toggle("m1", "me", any()) }
-            coVerify(exactly = 1) { pins.toggle("m4", "me", any()) }
+            coVerify(exactly = 1) { pins.setPinned("m1", true, any()) }
+            coVerify(exactly = 1) { pins.setPinned("m1", false, any()) }
+        }
+
+    @Test
+    fun blockingASenderUnpinsWhatTheySent() =
+        runTest {
+            val pins = mockk<PinRepository>(relaxed = true)
+            every { pins.observePinnedIn(any()) } returns flowOf(emptyList())
+            val vm = vm(GROUP, pins = pins)
+
+            vm.block("mallory")
+            advanceUntilIdle()
+
+            coVerifyOrder {
+                settings.block("mallory", any())
+                pins.unpinFrom("mallory")
+            }
         }
 
     @Test
