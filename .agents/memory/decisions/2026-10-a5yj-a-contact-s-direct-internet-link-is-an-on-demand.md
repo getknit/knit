@@ -8,11 +8,13 @@ topics: [mesh, spool, transport, privacy, wire]
 
 # ADR 2026-10.a5yj — A contact's direct Internet link is an on-demand, long-range MeshTransport child
 
-Status: Proposed (2026-10-18, draft on `exp/dht-links`); Phase 0 went (2026-10-27, the go/no-go amendment below), and
-Phases 1–2 build on it in debug builds; it is marked Accepted when it ships (Phase 3). Reads ADR 019 (the spool plane and why
+Status: Accepted (2026-10-28, the maintainer's call, after the signal-lane device run). Proposed 2026-10-18 as a draft on
+`exp/dht-links`; Phase 0 went 2026-10-27 (the go/no-go amendment below); Phases 1–2 are built and device-checked in
+debug builds. Accepted ahead of Phase 3, which still flips the release default: `BuildConfig.DIRECT_LINKS` stays off
+in release, and the person's switch stays off by default, until then. Reads ADR 019 (the spool plane and why
 `ScopeSync` is not a transport), ADR 2026-10.3tee (call signalling over sealed spool frames), ADR 2026-09.2ajk and
 ADR 2026-10.fw8g (presence tiers), ADR 2026-10.kxnw (`CallLane`), ADR 2026-10.8t2y (the spool's gates) and ADR
-2026-10.swvp (libwebrtc is `compileOnly`). It amends none of them until it is accepted.
+2026-10.swvp (libwebrtc is `compileOnly`). It amends none of them: each holds as written, with the link beside it.
 
 Two contacts on two radio islands, each with an Internet route, already meet through a spool. Every frame goes up,
 waits and comes down. One Internet-connected member bridges a whole island both ways (SPOOL_PROTOCOL §1.2), so
@@ -461,27 +463,27 @@ link's, the first proof standing; and the proof is the file's, so a picture forw
 ## Amendment 2026-10-28 — the offer and answer ride the signal lane
 
 Status: stands (2026-10-28); the maintainer's call, on the signal lane's merge (ADR 2026-10.97vs; knit-spool ADR
-2026-10.2q49).
+2026-10.2q49). Verified the same day on the lab phones against the lab spool: a ticketless phone offered, and both
+directions came up with the spool's counters showing sigs and no casts.
 
-**A link's offer and answer go as sigs wherever a spool advertises them, and as casts only where it does not.**
-Until now the signal was cast-only, and casts sit behind a ticket on a spool that sells them (S-7.7-6). A phone that
-held no cast ticket could not offer at all (NO_CAST), and could answer only under the offer's `ct` hint. That ruled out
-most free phones, which the bulk trigger is meant to serve: a phone with no files ticket usually holds no cast ticket
-either. The signal lane (`docs/SPOOL_PROTOCOL.md` §7.8) is a cast's lane with no ticket in the way, and the spool stays
-content-blind. So:
+**A link's offer and answer go as sigs alone.** Until now the signal was cast-only, and casts sit behind a ticket on a
+spool that sells them (S-7.7-6). A phone that held no cast ticket could not offer at all, and could answer only under
+the offer's `ct` hint, which ruled out most free phones — the ones the bulk trigger is meant to serve, since a phone with
+no files ticket usually holds no cast ticket either. The signal lane (`docs/SPOOL_PROTOCOL.md` §7.8) is a cast's lane
+with no ticket in the way, and the spool stays content-blind. So:
 
 - **The signal set admits `link`** (C-7.8-13), in the DM form alone: on the pair's own DM scope, the scope's two
   members in the direction of travel, never a group's scope, the pair scope or the commons (`ScopeFrames.sigEligible`).
-- **The lanes are chosen per spool** (C-7.8-17, `ScopeSync.signal` / `canSignal`): the frame goes as a sig through
-  every spool that advertises sigs, and as a cast, under today's ticket rule with the `ct` hint, only through a spool
-  that does not; never both through one spool. The frame is sealed once on the ratchet, and each lane's scope seal
-  once; the peer keeps the first copy by frame id (C-7.8-15).
-- **The cast set keeps `link`** (C-7.7-13), widened in the spool spec to match `docs/VOICE_CALLS.md`, for a spool
-  without sigs. Dropping the cast fallback was weighed and set aside: a spool on a release before sigs would carry no
-  offer at all.
-- **What does not change:** the frame, its ratchet seal, `ct`, the radios and custody (never), the debug bridge and
-  field-log strings: `LinkOutcome.NO_CAST` keeps its name and now means that no lane, sig or cast, would carry the
-  signal.
+- **Sigs are the only lane** (C-7.8-17): the frame goes as a sig through every spool that advertises sigs
+  (`ScopeSync.sig` / `canSig`), and a spool without them carries no link signal. The cast set is the walkie's `talk`
+  alone again (C-7.7-13, and `docs/VOICE_CALLS.md`'s copy, whose Phase 0 widening is undone), and `LinkSignal.ct`, the
+  cast-ticket hint, is gone; an older build's `ct` is an unknown key and ignored.
+- **No cast fallback.** It was built first — a sig where a spool advertised sigs, a cast elsewhere under the ticket
+  rule — and dropped the same day by the maintainer: the fleet is upgraded to carry sigs, and the fallback's one use, a
+  spool from before sigs, would have kept a ticket deciding who links. A pair whose only spool lacks sigs gets no link
+  until it upgrades, and its messages ride that spool as always.
+- **`LinkOutcome.NO_SIG`** replaces NO_CAST (the debug bridge, the field log's `link_try`): no connected spool that
+  carries the pair's DM scope advertises sigs, so nothing was sealed or sent.
 
 The spool sees two sigs on the pair's DM scope per attempt (§10.1), where it saw two casts before.
 

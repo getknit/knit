@@ -24,8 +24,8 @@ import org.junit.Test
 import kotlin.random.Random
 
 /**
- * Two phones' direct links against each other (ADR 2026-10.a5yj, Phase 0): the offer and answer cast between them (a
- * CBOR round trip after a cast's delay), the punch over [FakeLinkNet], the backoff, crossing offers and the answer
+ * Two phones' direct links against each other (ADR 2026-10.a5yj, Phase 0): the offer and answer sent between them as
+ * sigs (a CBOR round trip after a sig's delay), the punch over [FakeLinkNet], the backoff, crossing offers and the answer
  * budget, on virtual time.
  */
 @OptIn(ExperimentalCoroutinesApi::class) // the test scheduler's clock and advanceTimeBy
@@ -43,7 +43,7 @@ class DirectLinksTest {
         var enabled = true
         var qualifies = true
         var signalOk = true
-        var casts = 0
+        var signals = 0
     }
 
     private fun TestScope.pair(
@@ -58,25 +58,19 @@ class DirectLinksTest {
                 object : LinkPeers {
                     override suspend fun mayOffer(peerId: String) = me.qualifies
 
-                    override fun canSignal(
-                        peerId: String,
-                        peerTicketed: Boolean,
-                    ) = me.signalOk
-
-                    override fun castTicketed() = false
+                    override fun canSignal(peerId: String) = me.signalOk
 
                     override fun stunUrls() = listOf("stun:stun.example")
 
                     override suspend fun send(
                         peerId: String,
                         signal: LinkSignal,
-                        peerTicketed: Boolean,
                     ): Boolean {
                         if (!me.signalOk) return false
-                        me.casts++
+                        me.signals++
                         val bytes = checkNotNull(LinkSignals.encode(signal)) { "a well-formed signal" }
                         scope.launch {
-                            delay(CAST_MS)
+                            delay(SIG_MS)
                             them.links.onSignal(me.id, checkNotNull(LinkSignals.decode(bytes)))
                         }
                         return true
@@ -132,10 +126,10 @@ class DirectLinksTest {
             b.enabled = false
             assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id))
             assertEquals(LinkOutcome.BACKOFF, a.links.offer(b.id))
-            assertEquals(1, a.casts)
+            assertEquals(1, a.signals)
             testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
             assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id))
-            assertEquals(2, a.casts)
+            assertEquals(2, a.signals)
             assertTrue(tries(b).isEmpty())
         }
 
@@ -150,7 +144,7 @@ class DirectLinksTest {
         }
 
     @Test
-    fun nothingIsCastToAContactThatDoesNotQualifyOrWithNoSpoolToCarryIt() =
+    fun nothingIsSentToAContactThatDoesNotQualifyOrWithNoSigLaneToCarryIt() =
         runTest {
             val net = FakeLinkNet().withStun()
             val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
@@ -158,8 +152,8 @@ class DirectLinksTest {
             assertEquals(LinkOutcome.NOT_QUALIFIED, a.links.offer(b.id))
             a.qualifies = true
             a.signalOk = false
-            assertEquals(LinkOutcome.NO_CAST, a.links.offer(b.id))
-            assertEquals(0, a.casts)
+            assertEquals(LinkOutcome.NO_SIG, a.links.offer(b.id))
+            assertEquals(0, a.signals)
             assertEquals(LinkOutcome.OFF, a.links.offer(a.id))
         }
 
@@ -325,6 +319,6 @@ class DirectLinksTest {
     }
 
     private companion object {
-        const val CAST_MS = 300L
+        const val SIG_MS = 300L
     }
 }

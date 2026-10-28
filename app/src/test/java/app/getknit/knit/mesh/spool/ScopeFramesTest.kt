@@ -596,18 +596,15 @@ class ScopeFramesTest {
     }
 
     @Test
-    fun `the cast set takes a link signal under the same rules as a talk frame`() {
+    fun `the cast set refuses a link signal, which rides sigs alone`() {
+        // C-7.8-17 (ADR 2026-10.a5yj): a direct link's offer or answer goes as a sig only, never a cast, either way.
         val link = { from: String, to: String -> talk(from = from, to = to, type = FrameType.LINK) }
-        assertTrue(ScopeFrames.castEligible(link(bob, alice), alice, scope(), inbound = true))
-        assertTrue(ScopeFrames.castEligible(link(alice, bob), alice, scope(), inbound = false))
-        assertFalse(ScopeFrames.castEligible(link(alice, bob), alice, scope(), inbound = true))
-        assertFalse(ScopeFrames.castEligible(link(mallory, alice), alice, scope(), inbound = true))
-        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, pairScope(), inbound = true))
-        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, groupScope(), inbound = true))
-        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, commonsScope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(bob, alice), alice, scope(), inbound = true))
+        assertFalse(ScopeFrames.castEligible(link(alice, bob), alice, scope(), inbound = false))
         val sig = ByteArray(ScopeCrypto.SIG_BYTES) { 3 }
         val signed = WireCodec.encodeEnvelope(link(bob, alice))
-        assertEquals(FrameType.LINK, ScopeFrames.openCast(scope(), alice, ScopeFrames.sealCast(scope(), sig, signed))!!.env.type)
+        val sealed = ScopeFrames.sealCast(scope(), sig, signed)
+        assertNull("a link sealed as a cast opens to nothing", ScopeFrames.openCast(scope(), alice, sealed))
     }
 
     @Test

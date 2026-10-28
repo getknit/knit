@@ -1,12 +1,11 @@
 # Direct links between contacts
 
-Status: experimental, Phase 0 spike (ADR 2026-10.a5yj, Proposed), behind `BuildConfig.DIRECT_LINKS` (`-PdirectLinks=`,
-on in debug, off in release). Android-first: a peer without `Protocol.CAP_INET_LINK` is never offered a link. This file
+Status: experimental (ADR 2026-10.a5yj, Accepted; Phases 0–2 built), behind `BuildConfig.DIRECT_LINKS` (`-PdirectLinks=`,
+on in debug, off in release until Phase 3) and the person's switch, off by default. Android-first: a peer without `Protocol.CAP_INET_LINK` is never offered a link. This file
 is the normative description the iOS port reads; the clauses below are numbered so a test or a review can name them.
 
 A direct link is a UDP path between two contacts who each have an Internet route. Its offer and answer ride a spool's
-live lane in the pair's DM scope, a sig where the spool advertises sigs (`docs/SPOOL_PROTOCOL.md` §7.8) and a cast where
-it does not (`docs/VOICE_CALLS.md` §2.7), its datagrams are sealed per direction, and it is opened on
+signal lane in the pair's DM scope, as sigs (`docs/SPOOL_PROTOCOL.md` §7.8), its datagrams are sealed per direction, and it is opened on
 demand and closed when idle. It carries the pair's own traffic only (a later phase); the Nearby room never crosses.
 
 ## 1. Who may link
@@ -15,15 +14,15 @@ demand and closed when idle. It carries the pair's own traffic only (a later pha
 | --- | --- |
 | **L-1-1** | A phone offers a link only to a contact with a **confirmed** DM session (`RatchetSessions.exportedRoots()` with `confirmed`, never our own unanswered reset), whom this person wrote to or verified, whose pinned profile carries `CAP_INET_LINK`. Never to itself. |
 | **L-1-2** | A phone answers an offer only while its own switch is on, from an accepted contact whose session is confirmed and who is not blocked (a blocked contact's signal is dropped unopened). It answers a contact as often as the contact uses the links: what is budgeted is an answer that came to nothing — a punch that found no path, or a link that closed without carrying data — at most six an hour per contact, and one answer per contact is in flight at once. An offer it does not answer gets no reply at all. |
-| **L-1-3** | Nothing about a link is sent while no spool's live lane can carry it (`ScopeSync.canSignal`): no seal, no ratchet step. There is no fallback to a stored frame. |
+| **L-1-3** | Nothing about a link is sent while no connected spool that carries the pair's DM scope advertises `sig` (`ScopeSync.canSig`): no seal, no ratchet step. There is no fallback to a cast or a stored frame. |
 
 ## 2. The signal
 
 | Clause | Rule |
 | --- | --- |
 | **L-2-1** | A signal is a `link` frame (`FrameType.LINK`): signed, addressed to the peer, its payload a `LinkSignal` sealed on the DM ratchet with `confirmedOnly` (laid out as a `talk` payload: `TalkSeal`, or a `ChatContent` for a header that form cannot carry). |
-| **L-2-2** | It rides a spool's live lanes only: a sig through every spool that advertises sigs, and a cast only through one that does not (`docs/SPOOL_PROTOCOL.md` C-7.8-17, C-7.8-13, C-7.7-13), so a phone that holds no cast ticket offers and answers wherever a spool advertises sigs. It is never sent over the radios, custodied, parked, relayed or handed on. A copy that arrives from anywhere but a spool is dropped. An unsigned one is refused. A failed open is never evidence for a session reset. |
-| **L-2-3** | `LinkSignal { ph, id, k, c, nt, ct }`: `ph` 1 OFFER, 2 ANSWER; `id` 16 random bytes naming the attempt; `k` 32 random bytes drawn fresh for that attempt; `c` the sender's candidates; `nt` its network (0 other, 1 Wi-Fi, 2 cellular); `ct` the sender holds a cast ticket, which lets the answer go back as a cast where a spool gates casts and advertises no sigs. |
+| **L-2-2** | It rides a spool's signal lane only: a sig through every spool that advertises `sig` (`docs/SPOOL_PROTOCOL.md` C-7.8-17, C-7.8-13), which no ticket gates, so any contact offers and answers. It is never sent as a cast, over the radios, custodied, parked, relayed or handed on. A copy that arrives from anywhere but a spool is dropped. An unsigned one is refused. A failed open is never evidence for a session reset. |
+| **L-2-3** | `LinkSignal { ph, id, k, c, nt }`: `ph` 1 OFFER, 2 ANSWER; `id` 16 random bytes naming the attempt; `k` 32 random bytes drawn fresh for that attempt; `c` the sender's candidates; `nt` its network (0 other, 1 Wi-Fi, 2 cellular); an older build's `ct` key is ignored. |
 | **L-2-4** | An OFFER is sent once per `id`; a retry is a new `id` and a new `k`. The contact answers one `id` once, echoing it; the offerer takes the first ANSWER that opens under a pending `id` and ignores the rest. An answer is judged by `id` alone, never by `sentAt`; an offer is answered only while its `sentAt` is within `MAX_FUTURE_SKEW_MS` of now. |
 | **L-2-5** | Offers that cross: the lower node id's offer stands; the higher id drops its own and answers. |
 

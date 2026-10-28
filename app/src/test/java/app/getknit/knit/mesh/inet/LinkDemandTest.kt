@@ -62,7 +62,7 @@ class LinkDemandTest {
     @Test
     fun aRefusalThatSentNothingRestsTheContact() =
         runTest {
-            val d = demand(listOf(Pending("bob", 0L))) { LinkOutcome.NO_CAST }
+            val d = demand(listOf(Pending("bob", 0L))) { LinkOutcome.NO_SIG }
             advanceTo(LinkDemandPolicy.TICK_WAIT_MS)
             d.round()
             runCurrent()

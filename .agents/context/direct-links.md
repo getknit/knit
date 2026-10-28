@@ -1,7 +1,7 @@
 # Direct links between contacts — which decision governs which symbol
 
 The symbol → ADR routing for direct Internet links: `mesh/inet/`, the `link` signal, the lane and the build flag. The
-normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Proposed — a spike).
+normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Accepted 2026-10-28; off in release until Phase 3).
 
 Each entry names the symbols that trigger it and the ADRs to read (`.agents/memory/decisions.md` maps an id to its
 file, amendments included). An entry is an index into its ADRs, not a substitute: where they disagree, the ADR wins
@@ -55,14 +55,13 @@ and the entry is fixed.
   group's picture, and never an attachment that is not stuck, so a sender's `DirectLink` holder row means the link
   carried it. The spool plane's next look (`reopenUploads`, the hourly recheck) then settles it PROVED (ADR 2026-10.vy27).
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal` / `canSignalLink`,
-  `ScopeSync.signal` / `canSignal`, `LinkPeers.canSignal`, `InboundPipeline`'s `link` arm or `onLinkSignal`,
-  `mesh/crypto/LinkKeys` or the `link` halves of `ScopeFrames.castEligible` / `sigEligible`:** READ ADR 2026-10.a5yj
-  (its lane-key and 2026-10-28 signal-lane amendments), `docs/DIRECT_LINKS.md` §2 and §5, spec §7.8 (C-7.8-13,
-  C-7.8-17) and `docs/VOICE_CALLS.md` §2.7. The signal rides a spool's live lanes only and is signed (`MeshRouter`
-  never relays or hands one on): a sig through every spool that advertises sigs, a cast only through one that does
-  not, never both through one spool — so a free phone offers wherever a spool has sigs. Sealed on the DM ratchet with
-  `confirmedOnly` — never under our own unanswered reset, and nothing is sealed while no lane would take it — and
-  a failed open is never reset evidence. Lane keys come from both sides' fresh `k`, bound to the attempt id and both ids
+  `ScopeSync.sig` / `canSig`, `LinkPeers.canSignal`, `LinkOutcome.NO_SIG`, `InboundPipeline`'s `link` arm or
+  `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.sigEligible`:** READ ADR 2026-10.a5yj (its
+  lane-key and 2026-10-28 signal-lane amendments), `docs/DIRECT_LINKS.md` §2 and §5 and spec §7.8 (C-7.8-13,
+  C-7.8-17). The signal rides spool sigs alone and is signed (`MeshRouter` never relays or hands one on): never a
+  cast — the cast set is the walkie's `talk` — so no ticket decides who links, and a spool without `sig` carries no
+  offer (NO_SIG). Sealed on the DM ratchet with `confirmedOnly` — never under our own unanswered reset, and nothing is
+  sealed while no sig lane would take it — and a failed open is never reset evidence. Lane keys come from both sides' fresh `k`, bound to the attempt id and both ids
   by role, never from the pairwise root. One lane per attempt, its counter shared by every path; a retry is a new id.
 - **When touching `di/DirectLinkWiring` (`directLinkModule`, `onLinkSignal`, `MeshLinkPeers`),
   `SettingsStore.directLinksEnabled` / `KEY_DIRECT_LINKS`, `InternetRelayViewModel.setDirectLinks` /

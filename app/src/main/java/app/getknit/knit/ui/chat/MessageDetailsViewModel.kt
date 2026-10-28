@@ -69,6 +69,9 @@ data class RecipientRow(
     val deliveredAt: Long?,
     // The ` (Alias)` suffix already inside [displayName] when another known peer shares the name (ADR 058).
     val discriminator: String? = null,
+    // The plane their receipt crossed ([MessageReceiptEntity.via]): the per-member answer a group's one tick cannot
+    // give, so a member a contact's direct link reached shows it (ADR 2026-10.a5yj). Unknown while waiting.
+    val plane: DeliveryPlane = DeliveryPlane.Unknown,
 )
 
 /** One selectable emoji on the details screen's filter row — the chip's emoji and how many left it. */
@@ -307,7 +310,7 @@ class MessageDetailsViewModel(
                     base.state.copy(
                         showRecipients = true,
                         // Ordered by the DAO's `notedAt ASC`, so the list grows downward as receipts land.
-                        deliveredTo = acks.filter { it.ackerNodeId in roster }.map { row(base, it.ackerNodeId, it.notedAt) },
+                        deliveredTo = acks.filter { it.ackerNodeId in roster }.map { ackRow(base, it) },
                         waitingOn = roster.filterNot { it in ackedAt }.map { row(base, it, null) },
                         recipientTotal = roster.size,
                     )
@@ -319,7 +322,7 @@ class MessageDetailsViewModel(
             message.conversationId == Conversations.NEARBY && acks.isNotEmpty() -> {
                 base.state.copy(
                     showRecipients = true,
-                    deliveredTo = acks.map { row(base, it.ackerNodeId, it.notedAt) },
+                    deliveredTo = acks.map { ackRow(base, it) },
                 )
             }
 
@@ -347,10 +350,17 @@ class MessageDetailsViewModel(
         return copy(delivery = status, radioReachedAt = reach?.takeUnless { it.late }?.atMs)
     }
 
+    /** A member whose receipt is in: when it reached us, and the plane it crossed. */
+    private fun ackRow(
+        base: Base,
+        ack: MessageReceiptEntity,
+    ): RecipientRow = row(base, ack.ackerNodeId, ack.notedAt, DeliveryPlane.fromCode(ack.via))
+
     private fun row(
         base: Base,
         nodeId: String,
         deliveredAt: Long?,
+        plane: DeliveryPlane = DeliveryPlane.Unknown,
     ): RecipientRow =
         RecipientRow(
             nodeId = nodeId,
@@ -358,6 +368,7 @@ class MessageDetailsViewModel(
             avatarHash = base.directory.byNode[nodeId]?.avatarHash,
             deliveredAt = deliveredAt,
             discriminator = base.directory.label(nodeId).discriminator,
+            plane = plane,
         )
 
     /** Chip order: most-reacted first, ties broken by who got there first, so chips don't reshuffle. */

@@ -109,7 +109,8 @@ class MessageDetailsViewModelTest {
     private fun ack(
         acker: String,
         notedAt: Long,
-    ) = MessageReceiptEntity(MSG, acker, notedAt, DeliveryPlane.Nearby.code)
+        via: DeliveryPlane = DeliveryPlane.Nearby,
+    ) = MessageReceiptEntity(MSG, acker, notedAt, via.code)
 
     @Test
     fun `every reactor keeps its identity, resolved to a display name`() =
@@ -255,6 +256,24 @@ class MessageDetailsViewModelTest {
             assertEquals(listOf<Long?>(null), state.waitingOn.map { it.deliveredAt })
             // "of 3" — we never ack our own message, so our own row would wait forever.
             assertEquals(3, state.recipientTotal)
+        }
+
+    @Test
+    fun `each member who has a group send carries the plane their receipt crossed`() =
+        runTest {
+            // The group's one tick names whichever member acked first; the split names each (ADR 2026-10.a5yj).
+            messageFlow.value = msg(senderId = "me", conversationId = GROUP, received = true, id = MSG)
+            inGroup("me", "sam", "priya", "theo")
+            receiptsFlow.value =
+                listOf(ack("priya", notedAt = 20L, via = DeliveryPlane.Internet), ack("sam", notedAt = 30L, via = DeliveryPlane.DirectLink))
+
+            val state = collect(viewModel())
+
+            assertEquals(
+                listOf("priya" to DeliveryPlane.Internet, "sam" to DeliveryPlane.DirectLink),
+                state.deliveredTo.map { it.nodeId to it.plane },
+            )
+            assertEquals("a member still waiting has no plane", listOf(DeliveryPlane.Unknown), state.waitingOn.map { it.plane })
         }
 
     @Test

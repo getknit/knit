@@ -182,20 +182,14 @@ private class MeshLinkPeers(
 
     override suspend fun mayOffer(peerId: String) = mesh.mayOfferLink(peerId)
 
-    override fun canSignal(
-        peerId: String,
-        peerTicketed: Boolean,
-    ) = mesh.canSignalLink(peerId, peerTicketed)
-
-    override fun castTicketed() = mesh.castTicketed()
+    override fun canSignal(peerId: String) = mesh.canSignalLink(peerId)
 
     override fun stunUrls() = mesh.stunUrls()
 
     override suspend fun send(
         peerId: String,
         signal: LinkSignal,
-        peerTicketed: Boolean,
-    ) = mesh.sendLinkSignal(peerId, signal, peerTicketed)
+    ) = mesh.sendLinkSignal(peerId, signal)
 }
 
 private const val TAG = "KnitLink"

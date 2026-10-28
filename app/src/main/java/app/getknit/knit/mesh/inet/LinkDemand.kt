@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
  * L-7-7): every [ROUND_MS] while the link plane runs ([active]), reads which of our recent messages contacts have not
  * ticked, and which of our DM attachments no spool will take ([pending]), and offers a link to each contact
  * [LinkDemandPolicy] finds due, one offer per contact at a time. A contact the links refused before anything went out
- * (not qualified, no cast, no port, off) rests [QUIET_MS], so a round never asks again for what it was just told; a
+ * (not qualified, no sig lane, no port, off) rests [QUIET_MS], so a round never asks again for what it was just told; a
  * punch that failed rests on the links' own backoff. Each round also asks every contact a link holds now about our DM
  * attachments to them that no spool takes ([prove], `LinkHolderProof`), ahead of any offer: the link that carried such a
  * photo is the only path its proof can come back on. Thin: the rule is [LinkDemandPolicy], the attempt `DirectLinks`.
@@ -82,7 +82,7 @@ class LinkDemand(
         const val QUIET_MS = 60_000L
 
         // The refusals that sent nothing, and carry no backoff of their own.
-        private val QUIET = setOf(LinkOutcome.NOT_QUALIFIED, LinkOutcome.NO_CAST, LinkOutcome.NO_PORT, LinkOutcome.OFF)
+        private val QUIET = setOf(LinkOutcome.NOT_QUALIFIED, LinkOutcome.NO_SIG, LinkOutcome.NO_PORT, LinkOutcome.OFF)
         private const val SHORT = 6
     }
 }

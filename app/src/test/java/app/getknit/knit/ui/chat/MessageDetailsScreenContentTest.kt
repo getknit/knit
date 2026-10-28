@@ -6,10 +6,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionContains
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -147,6 +153,30 @@ class MessageDetailsScreenContentTest {
         render(withRecipients())
 
         compose.onNodeWithTag("recipient_row_theo").assertContentDescriptionContains("Theo Diaz, not delivered yet")
+    }
+
+    @Test
+    fun `a member a direct link reached shows the link, named in the row's description`() {
+        render(
+            withRecipients().copy(
+                deliveredTo =
+                    listOf(
+                        RecipientRow("sam", "Sam Rivera", null, 1_700_000_060_000L, plane = DeliveryPlane.DirectLink),
+                        RecipientRow("priya", "Priya Nair", null, 1_700_000_120_000L, plane = DeliveryPlane.Nearby),
+                    ),
+            ),
+        )
+
+        compose.onNodeWithTag("recipient_plane_sam_link", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("recipient_row_sam").assertContentDescriptionContains("Delivered over a direct link", substring = true)
+        // A phone radio paints nothing, as on the bubble, and its row says nothing of a plane.
+        val priyaPlane =
+            SemanticsMatcher("a plane glyph on priya's row") {
+                it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("recipient_plane_priya") == true
+            }
+        compose.onAllNodes(priyaPlane, useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithTag("recipient_row_priya").assertContentDescriptionContains("Priya Nair, delivered", substring = true)
+        compose.onNodeWithTag("recipient_row_priya").assert(!hasContentDescription(" over ", substring = true))
     }
 
     @Test

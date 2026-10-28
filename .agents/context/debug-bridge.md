@@ -306,21 +306,20 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   - A force-stop mid-transfer really does strand a group on air (`dumpsys wifip2p` shows
     `curState=GroupCreatedState` with the app dead). `--ez sweep true` is the same sweep the app runs 8 s into
     launch, on demand — the way to prove a leftover is gone without waiting out a restart.
-- `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj, the Phase 0 spike; a debug build with
+- `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj; a debug build with
   `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
   `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (a 90 s keepalive instead
   of the 60 s idle close) or releases it — this phone's end only, so hold both or the other idles out and sends BYE; `--es op try --es peer <nodeId>` offers that contact a link now, past its
   backoff, and answers once the attempt ends
-  with `outcome` (UP / NO_PATH / NO_ANSWER / NO_CAST / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED); `--es op close --es peer
+  with `outcome` (UP / NO_PATH / NO_ANSWER / NO_SIG / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED); `--es op close --es peer
   <nodeId>` closes one with a BYE; no op reads state. Every reply carries `enabled`, `links` (peer, state, datagram
   bytes `in`/`out`), `plane` (the mesh's link plane, Phase 1: `adopted`, the peers whose streams it runs, and
   `refused`, the frames its pair rule dropped either way) and `tries` (the last attempt with each peer: `out` when this
   phone offered, `outcome`, `path`
   V6_TEMPORARY / V6 / HOST / V4_REFLEXIVE / PEER_REFLEXIVE, `peerNet`, `ms`, `rtt`). Never an address: the oracle
   for a trial is `tries` on both phones plus their `link_try` / `link_end` field-log lines. Both phones need the switch
-  on, a confirmed DM session, a connected spool that carries the signal (sigs, which no ticket gates, or else casts,
-  which may want one), and each other's `CAP_INET_LINK`; a `try` that answers NOT_QUALIFIED or NO_CAST (no lane would
-  carry it) names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
+  on, a confirmed DM session, a connected spool that advertises `sig` (no ticket needed), and each other's
+  `CAP_INET_LINK`; a `try` that answers NOT_QUALIFIED or NO_SIG (no spool with `sig` carries the pair) names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
   after 15 s, and the answerer's `tries` stays empty. **How long an idle path lives** (the keepalive question): `--es op
   quiet --ez on true` on **both** phones before the link is made (memory only; links made after it never idle out, send
   no keepalive and never close for silence), `try`, then `--es op gaps --es peer <nodeId> [--es gaps 15,30,60,120,240]` (seconds) on the

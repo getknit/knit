@@ -672,7 +672,7 @@ class GoldenVectorTest {
                 ),
             // A direct link's OFFER (ADR 2026-10.a5yj, experimental; CAP_INET_LINK builds only): the plaintext a `link`
             // frame seals on the DM ratchet, raw — no MessageContent around it. One candidate of each kind (0 IPv6
-            // temporary, 1 IPv6, 2 host, 3 IPv4 reflexive), the sender's network kind and its cast-ticket flag.
+            // temporary, 1 IPv6, 2 host, 3 IPv4 reflexive) and the sender's network kind.
             "linkSignalOffer" to
                 WireCodec.encodePayload(
                     LinkSignal(
@@ -687,7 +687,6 @@ class GoldenVectorTest {
                                 LinkCand(a = byteArrayOf(203.toByte(), 0, 113, 9), p = 61_000, t = 3),
                             ),
                         nt = LinkSignal.NET_CELLULAR,
-                        ct = true,
                     ),
                 ),
         )

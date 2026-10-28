@@ -2798,12 +2798,12 @@ class MeshManagerTest {
 
     /**
      * A link signal is sealed only under a session this phone holds confirmed (`confirmedOnly`), never by opening one,
-     * and only when a spool would take the cast: without one nothing is sealed and the chain does not move. What it
-     * seals is a signed `link` frame for its addressee alone, which the pair's DM scope casts and the peer opens to the
-     * signal.
+     * and only when a spool would take the sig: without one nothing is sealed and the chain does not move. What it seals
+     * is a signed `link` frame for its addressee alone, which the pair's DM scope carries as a sig, never a cast
+     * (C-7.8-17), and the peer opens to the signal.
      */
     @Test
-    fun aLinkSignalIsSealedOnlyUnderAConfirmedSessionAndOnlyForACastASpoolWouldTake() =
+    fun aLinkSignalIsSealedOnlyUnderAConfirmedSessionAndOnlyForASigASpoolWouldTake() =
         runTest(UnconfinedTestDispatcher()) {
             val pair = LinkPair(Rig(backgroundScope))
             val (me, bob) = pair.me to pair.bob
@@ -2815,21 +2815,23 @@ class MeshManagerTest {
             pair.confirm()
 
             // No spool plane in this rig, so sendLinkSignal refuses before anything is sealed. (That a connected spool
-            // refusing the cast is asked before the seal is sendLinkSignal's order; this rig has no spool to refuse it.)
+            // without a sig lane is asked before the seal is sendLinkSignal's order; this rig has no spool to ask.)
             val before = pair.sendCount()
-            assertFalse(pair.manager.sendLinkSignal(bob, linkOffer(), peerTicketed = true))
+            assertFalse(pair.manager.sendLinkSignal(bob, linkOffer()))
             assertEquals("with no spool plane nothing is sealed", before, pair.sendCount())
 
-            // The frame itself: signed, ttl 0, for Bob alone, the pair's DM scope casts it, and it opens to the signal.
+            // The frame itself: signed, ttl 0, for Bob alone, the pair's DM scope carries it as a sig — never a cast
+            // (C-7.8-17) — and it opens to the signal.
             val (env, wire) = checkNotNull(pair.manager.linkSignalFrame(bob, linkOffer()))
             assertEquals(FrameType.LINK, env.type)
             assertEquals(bob, env.recipientId)
             assertEquals(0, wire.ttl)
             assertFalse(wire.relay)
             assertTrue(MessageCrypto.verify(pair.rig.me.bundle, wire.sig, wire.signed))
-            assertTrue(ScopeFrames.castEligible(env, me, dmScope(me, bob), inbound = false))
-            val cast = ScopeFrames.sealCast(dmScope(me, bob), wire.sig, wire.signed)
-            assertEquals(FrameType.LINK, checkNotNull(ScopeFrames.openCast(dmScope(bob, me), bob, cast)).env.type)
+            assertTrue(ScopeFrames.sigEligible(env, me, dmScope(me, bob), inbound = false))
+            assertFalse(ScopeFrames.castEligible(env, me, dmScope(me, bob), inbound = false))
+            val sig = ScopeFrames.sealSig(dmScope(me, bob), wire.sig, wire.signed)
+            assertEquals(FrameType.LINK, checkNotNull(ScopeFrames.openSig(dmScope(bob, me), bob, sig)).env.type)
             val (header, ct) = checkNotNull(TalkSeal.decode(env.payload)) { "a v3 peer gets the compact seal" }
             val aad = MessageCrypto.header(env.id, me, env.sentAt, bob)
             val read = pair.bobSide.peekOpen(bob, me, pair.myIk.pub, header, null, ct, aad, pair.rig.now)

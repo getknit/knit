@@ -29,7 +29,7 @@ import kotlin.random.Random
 
 /**
  * A contact's direct Internet link made the way a phone makes it (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md`): each node's
- * real `DirectLinks` casts its offer and answer through the relay, punches over the lab's fake NATs ([LabInternet]),
+ * real `DirectLinks` sends its offer and answer through the relay as sigs, punches over the lab's fake NATs ([LabInternet]),
  * seals its lane, and hands the stream to the node's link plane; `LinkDemand` offers on its own. Where
  * `DirectLinkLabTest` joins two link planes by in-memory streams, these run everything that comes before them.
  */
@@ -50,11 +50,11 @@ class InternetLinkLabTest {
         lab.close()
     }
 
-    // A relay that fans out casts and advertises the lab's STUN server, as `lab.lax` does.
-    private fun relay() = FakeSpool(cast = SpoolCastInfo(maxBytes = 2_048, rate = 4), stun = listOf(LabInternet.STUN_URL))
+    // A relay that fans out sigs and advertises the lab's STUN server, as `lab.lax` does.
+    private fun relay() = FakeSpool(sig = SpoolSigInfo(maxBytes = 8_192, rate = 2), stun = listOf(LabInternet.STUN_URL))
 
     // Alice and Bob on the relay and the lab's Internet behind NATs of [nat], contacts with a confirmed session each way and
-    // a DM scope converged at the relay ([MeshLab.meetOnTheRelay]): what a link's offer needs, its cast door open.
+    // a DM scope converged at the relay ([MeshLab.meetOnTheRelay]): what a link's offer needs, its sig lane open.
     private suspend fun contacts(
         spool: FakeSpool,
         nat: Nat,
@@ -91,7 +91,7 @@ class InternetLinkLabTest {
 
     /**
      * Alice and Bob met once, then parted to two islands: both behind port-restricted NATs, both on one relay that carries
-     * casts. Alice's offer comes up over the punch, and once it is up the relay goes silent (it still fans out casts, and
+     * sigs. Alice's offer comes up over the punch, and once it is up the relay goes silent (it still fans out sigs, and
      * takes nothing else), so the DM and the group post that follow converge over the link alone, ticks and all.
      */
     @Test
@@ -131,7 +131,7 @@ class InternetLinkLabTest {
     /**
      * Both behind symmetric NATs — a fresh mapping per destination, so neither end's reflexive candidate is the port the
      * other must aim at: the punch gives up and the attempt ends NO_PATH; the contact then waits out its backoff, so a second
-     * offer casts nothing; and the relay, which never stopped, still carries the DM.
+     * offer sends nothing; and the relay, which never stopped, still carries the DM.
      */
     @Test
     fun twoSymmetricNatsFindNoPathBackOffAndTheRelayStillCarries() =
@@ -142,9 +142,9 @@ class InternetLinkLabTest {
             assertEquals(LinkOutcome.NO_PATH, checkNotNull(alice.links).offer(bob.nodeId))
             assertEquals(LinkOutcome.NO_PATH, checkNotNull(alice.links).lastTries()[bob.nodeId]?.outcome)
             assertFalse("a link came up behind two symmetric NATs", alice.linkPlaneHolds(bob))
-            val casts = spool.casts.size
+            val sigs = spool.sigs.size
             assertEquals(LinkOutcome.BACKOFF, checkNotNull(alice.links).offer(bob.nodeId))
-            assertEquals("an offer in its backoff cast", casts, spool.casts.size)
+            assertEquals("an offer in its backoff sent a sig", sigs, spool.sigs.size)
 
             assertTrue(alice.sendDm(bob, "by the relay"))
             lab.assertConverged(listOf(alice, bob), atLeast = 3, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
@@ -152,6 +152,9 @@ class InternetLinkLabTest {
             }
             val dm = alice.ownMessageId(alice.dmWith(bob), "by the relay")
             assertEquals(DeliveryPlane.Internet, bob.receivedVia(bob.dmWith(alice), dm))
+            // Again once a whole DM round trip has crossed the same connection, in order: a sig sent in the backoff would
+            // have reached the relay by now, where the read straight after the offer could beat it.
+            assertEquals("an offer in its backoff sent a sig", sigs, spool.sigs.size)
         }
 
     /**
@@ -214,7 +217,7 @@ class InternetLinkLabTest {
         }
 
     /**
-     * The demand opens a link, the link idles out, and the demand opens it again. The relay goes silent but for its casts:
+     * The demand opens a link, the link idles out, and the demand opens it again. The relay goes silent but for its sigs:
      * Alice's DM goes unticked, so once it has waited the tick wait her demand offers Bob a link, over which the DM and its
      * tick cross. With nothing more to carry the link closes idle; a second DM, written after it went, reopens it.
      */
@@ -267,21 +270,18 @@ class InternetLinkLabTest {
         }
 
     /**
-     * The signal lane (spec §7.8, C-7.8-17): neither phone holds a ticket, and the relay sells its casts, so a cast offer
-     * could not leave. It advertises sigs, which no ticket gates, so Alice's demand offers over a sig, Bob answers over
-     * one, and the link comes up and carries the DM. No cast could leave here (no ticket); that a spool taking sigs never
-     * gets the cast as well is `ScopeSyncTest`'s, on an ungated spool.
+     * The signal lane alone (spec §7.8, C-7.8-17): the relay fans out casts to anyone, no ticket asked, and sigs too. Alice's
+     * demand's offer and Bob's answer go as sigs, the link comes up and carries the DM, and not one cast is sent: a link
+     * signal never rides a cast, even where one would be carried.
      */
     @Test
-    fun aFreePhoneOffersALinkOverTheRelaysSigsWhereItsCastsWantATicket() =
+    fun aLinkSignalRidesSigsEvenWhereTheRelayWouldCarryItsCast() =
         runBlocking {
             val spool =
                 FakeSpool(
                     cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
                     sig = SpoolSigInfo(maxBytes = 8_192, rate = 2),
                     stun = listOf(LabInternet.STUN_URL),
-                    ent = true,
-                    entGates = SpoolTicket.LEGACY_GATES,
                 )
             val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
             val demand = checkNotNull(alice.demand)
@@ -295,20 +295,20 @@ class InternetLinkLabTest {
             val sent = alice.ownMessageId(alice.dmWith(bob), "over a free lane")
             assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), sent))
             assertTrue("the offer and its answer went as sigs: ${spool.sigsFanned}", spool.sigsFanned >= 2)
-            assertTrue("a cast left with no ticket to carry it: ${spool.casts}", spool.casts.isEmpty())
+            assertTrue("a link signal went as a cast: ${spool.casts}", spool.casts.isEmpty())
         }
 
-    // A relay that carries casts and frames but takes attachments only from a files ticket, which nobody holds yet.
+    // A relay that carries sigs and frames but takes attachments only from a files ticket, which nobody holds yet.
     private fun filesGatedRelay() =
         FakeSpool(
-            cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
+            sig = SpoolSigInfo(maxBytes = 8_192, rate = 2),
             stun = listOf(LabInternet.STUN_URL),
             ent = true,
             entGates = SpoolTicket.FL_FILES,
         )
 
     /**
-     * The bulk trigger (L-7-7): the relay carries casts and frames, but gates attachments behind a files ticket Alice does
+     * The bulk trigger (L-7-7): the relay carries sigs and frames, but gates attachments behind a files ticket Alice does
      * not hold, so her DM photo has no spool to go up to. The demand offers Bob a link at once — no tick wait, the photo's
      * message itself still rides the relay — and the photo crosses the link, once, and Bob records it as the link's.
      *

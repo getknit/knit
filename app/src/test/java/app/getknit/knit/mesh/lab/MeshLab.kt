@@ -262,7 +262,7 @@ class MeshLab {
         // links [directLink] makes over in-memory streams — no punch, no relay. False builds the node as before.
         directLinks: Boolean = false,
         // A place on the lab's Internet ([LabInternet]) behind a NAT of this kind: the node also runs the real
-        // `DirectLinks` — offers and answers cast through [spool], the punch over the fake NATs, the lane, the stream
+        // `DirectLinks` — offers and answers sent as sigs through [spool], the punch over the fake NATs, the lane, the stream
         // handed to its link plane — and a `LinkDemand` a scenario drives by [LabNode.demand]. Null builds none.
         internet: FakeLinkNet.Nat? = null,
     ): LabNode {
@@ -1386,7 +1386,7 @@ class LabNode internal constructor(
         }
 
     // The real direct links and their demand, for a node on the lab's Internet, wired as `di/DirectLinkWiring` wires them:
-    // the peers are the manager's own (who qualifies, the cast, the spools' STUN), each up link's stream goes to the link
+    // the peers are the manager's own (who qualifies, the sig lane, the spools' STUN), each up link's stream goes to the link
     // plane, and the demand reads this node's stores and the composite's radios.
     private fun buildLinks(
         scope: CoroutineScope,
@@ -1429,20 +1429,14 @@ class LabNode internal constructor(
     private inner class ManagerLinkPeers : LinkPeers {
         override suspend fun mayOffer(peerId: String) = manager.mayOfferLink(peerId)
 
-        override fun canSignal(
-            peerId: String,
-            peerTicketed: Boolean,
-        ) = manager.canSignalLink(peerId, peerTicketed)
-
-        override fun castTicketed() = manager.castTicketed()
+        override fun canSignal(peerId: String) = manager.canSignalLink(peerId)
 
         override fun stunUrls() = manager.stunUrls()
 
         override suspend fun send(
             peerId: String,
             signal: LinkSignal,
-            peerTicketed: Boolean,
-        ) = manager.sendLinkSignal(peerId, signal, peerTicketed)
+        ) = manager.sendLinkSignal(peerId, signal)
     }
 
     // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. The

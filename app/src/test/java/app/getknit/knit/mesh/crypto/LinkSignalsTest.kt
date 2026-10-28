@@ -16,7 +16,7 @@ class LinkSignalsTest {
         id: ByteArray = ByteArray(LinkSignal.ID_BYTES) { 1 },
         k: ByteArray = ByteArray(LinkSignal.KEY_BYTES) { 2 },
         c: List<LinkCand> = listOf(LinkCand(ByteArray(16) { 3 }, 40_000, 0), LinkCand(byteArrayOf(192.toByte(), 0, 2, 1), 40_001, 3)),
-    ) = LinkSignal(ph = ph, id = id, k = k, c = c, nt = LinkSignal.NET_WIFI, ct = true)
+    ) = LinkSignal(ph = ph, id = id, k = k, c = c, nt = LinkSignal.NET_WIFI)
 
     @Test
     fun aWellFormedSignalRoundTrips() {

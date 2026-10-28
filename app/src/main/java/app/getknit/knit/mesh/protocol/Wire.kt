@@ -994,12 +994,11 @@ data class CallPayload(
 
 /**
  * One direct-link signal (ADR 2026-10.a5yj), the plaintext a [FrameType.LINK] frame seals on the DM ratchet. The
- * offerer casts an OFFER ([ph] = [PHASE_OFFER]) under a fresh link id [id]; the contact casts back one ANSWER under the
- * same [id], and both punch toward each other's candidates [c]. Each side's [k] is 32 bytes drawn fresh for that link
- * id: the lane's keys come from both (`LinkKeys`), so only the two who opened both seals can derive them. [nt] is the
- * sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the spike's field log; [ct] says the sender holds
- * a cast ticket on a connected spool, so a free peer's ANSWER is carried by a gated one (the walkie's
- * `CallPayload.ct`, S-7.7-6).
+ * offerer sends an OFFER ([ph] = [PHASE_OFFER]) under a fresh link id [id] as a spool sig (C-7.8-17); the contact sends
+ * back one ANSWER under the same [id], and both punch toward each other's candidates [c]. Each side's [k] is 32 bytes
+ * drawn fresh for that link id: the lane's keys come from both (`LinkKeys`), so only the two who opened both seals can
+ * derive them. [nt] is the sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the field log. An older
+ * build's `ct` (a cast-ticket hint from when the signal could ride a cast) is an unknown key now, and ignored.
  *
  * A class with raw byte strings, not a `data class` ([RelayEnvelope]'s reason). Every field a reader acts on is
  * validated before it is: [id] is [ID_BYTES], [k] is [KEY_BYTES], and each candidate passes `PunchPolicy.sane`.
@@ -1011,7 +1010,6 @@ class LinkSignal(
     @ByteString val k: ByteArray,
     val c: List<LinkCand> = emptyList(),
     val nt: Int = NET_OTHER,
-    val ct: Boolean = false,
 ) {
     companion object {
         const val PHASE_OFFER = 1

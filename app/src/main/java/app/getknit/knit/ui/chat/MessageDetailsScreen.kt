@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.location.GeoUri
+import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.PeerNameText
@@ -427,7 +428,7 @@ private fun SectionHeader(
 
 /**
  * One recipient: avatar + name, and the time their receipt reached us, trailing — blank while we are still
- * waiting on them.
+ * waiting on them — with the plane that receipt crossed beside it where the bubble would paint one.
  *
  * The section header above is not announced with the rows beneath it, so each row carries its own status in
  * its content description; the trailing time alone would leave a waiting row saying nothing at all. Same
@@ -441,12 +442,17 @@ private fun RecipientListRow(
 ) {
     val context = LocalContext.current
     val delivered = recipient.deliveredAt?.let { absoluteTime(context, it, showYear = false) }
-    val description =
+    // The plane this member's receipt crossed, painted as the bubble paints a plane (nothing for a phone radio) and
+    // named in the row's description, since the glyph never carries the meaning alone.
+    val glyph = if (delivered != null) planeGlyph(recipient.plane) else null
+    val status =
         if (delivered != null) {
             stringResource(R.string.message_details_recipient_delivered, recipient.displayName, delivered)
         } else {
             stringResource(R.string.message_details_recipient_waiting, recipient.displayName)
         }
+    val planeWords = if (glyph != null) deliveryLabel(DeliveryStatus.Delivered, recipient.plane, mine = true).resolve() else null
+    val description = planeWords?.let { stringResource(R.string.joined_with_dot, status, it) } ?: status
     Row(
         modifier =
             Modifier
@@ -464,17 +470,35 @@ private fun RecipientListRow(
     ) {
         Avatar(avatarHash = recipient.avatarHash, name = recipient.displayName, nodeId = recipient.nodeId, size = 40.dp)
         Spacer(Modifier.width(12.dp))
-        PeerNameText(
-            text = recipient.displayName,
-            discriminator = recipient.discriminator,
-            style = MaterialTheme.typography.titleMedium,
+        // The name keeps its line: the plane and the time move under it once they would squeeze it (a long date in a
+        // longer language did, to nothing).
+        AdaptiveRow(
+            trailing = {
+                if (delivered != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (glyph != null) {
+                            Icon(
+                                glyph,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp).testTag("recipient_plane_${recipient.nodeId}_${planeTag(recipient.plane)}"),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(
+                            text = delivered,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
             modifier = Modifier.weight(1f),
-        )
-        if (delivered != null) {
-            Text(
-                text = delivered,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        ) {
+            PeerNameText(
+                text = recipient.displayName,
+                discriminator = recipient.discriminator,
+                style = MaterialTheme.typography.titleMedium,
             )
         }
     }
@@ -569,8 +593,8 @@ fun MessageDetailsScreenPreview() =
                     showRecipients = true,
                     deliveredTo =
                         listOf(
-                            RecipientRow("samr1v00", "Sam Rivera", null, PREVIEW_NOW - 9 * 60_000L),
-                            RecipientRow("priya001", "Priya Nair", null, PREVIEW_NOW - 5 * 60_000L),
+                            RecipientRow("samr1v00", "Sam Rivera", null, PREVIEW_NOW - 9 * 60_000L, plane = DeliveryPlane.Internet),
+                            RecipientRow("priya001", "Priya Nair", null, PREVIEW_NOW - 5 * 60_000L, plane = DeliveryPlane.DirectLink),
                         ),
                     waitingOn = listOf(RecipientRow("theod001", "Theo Diaz", null, null)),
                     recipientTotal = 3,

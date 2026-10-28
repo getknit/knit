@@ -21,10 +21,10 @@ import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * How a direct link attempt ended, for the field log and the debug bridge. [NO_CAST] keeps its name, a field-log and
- * bridge string, though it now means no spool's live lane would carry the signal: no sig, and no cast either (C-7.8-17).
+ * How a direct link attempt ended, for the field log and the debug bridge. [NO_SIG]: no connected spool that carries the
+ * pair's DM scope advertises sigs, the one lane a signal rides (C-7.8-17), so nothing was sealed or sent.
  */
-enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_CAST, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED }
+enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_SIG, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED }
 
 /** The path a link came up on: a candidate's kind, or an address the peer never listed. */
 enum class LinkPath { V6_TEMPORARY, V6, HOST, V4_REFLEXIVE, PEER_REFLEXIVE }
@@ -46,7 +46,7 @@ enum class LinkNet {
     }
 }
 
-/** What direct links need from the rest of the app: who qualifies, the spools' live lanes, and their STUN servers. */
+/** What direct links need from the rest of the app: who qualifies, the spools' sig lane, and their STUN servers. */
 interface LinkPeers {
     /**
      * Whether [peerId] may be offered a link now: a confirmed DM session (never our own unanswered reset), a contact
@@ -54,26 +54,16 @@ interface LinkPeers {
      */
     suspend fun mayOffer(peerId: String): Boolean
 
-    /**
-     * Whether a signal to [peerId] would be taken by a connected spool now: as a sig where a spool advertises sigs, which
-     * no ticket gates, else as a cast, given the peer's ticket hint (spec C-7.8-17).
-     */
-    fun canSignal(
-        peerId: String,
-        peerTicketed: Boolean,
-    ): Boolean
-
-    /** Whether this phone holds a cast ticket on a connected spool (the signal's `ct`). */
-    fun castTicketed(): Boolean
+    /** Whether a signal to [peerId] would be taken now, as a sig by a connected spool that advertises sigs (C-7.8-17). */
+    fun canSignal(peerId: String): Boolean
 
     /** The connected spools' STUN URLs, already narrowed by `call/StunServers`. */
     fun stunUrls(): List<String>
 
-    /** Seals and sends [signal] to [peerId] as a sig or a cast; false when nothing took it (nothing is sealed then). */
+    /** Seals and sends [signal] to [peerId] as a sig; false when nothing took it (nothing is sealed then). */
     suspend fun send(
         peerId: String,
         signal: LinkSignal,
-        peerTicketed: Boolean,
     ): Boolean
 }
 
@@ -329,9 +319,9 @@ class DirectLinks(
         val port = datagrams.open() ?: return finish(peerId, attempt, LinkOutcome.NO_PORT)
         val own = LinkGather.candidates(port, peers.stunUrls(), clock, random)
         val offer = signal(LinkSignal.PHASE_OFFER, attempt.linkId, attempt.kOffer, own)
-        if (!peers.send(peerId, offer, false)) {
+        if (!peers.send(peerId, offer)) {
             port.close()
-            return finish(peerId, attempt, LinkOutcome.NO_CAST)
+            return finish(peerId, attempt, LinkOutcome.NO_SIG)
         }
         val answer = withTimeoutOrNull(ANSWER_WAIT_MS) { attempt.answer.await() }
         if (answer == null) {
@@ -359,7 +349,7 @@ class DirectLinks(
         if (links.value[peerId]?.state?.value == LinkSession.State.UP) return LinkOutcome.UP
         if (!force && clock() < (nextTryAt[peerId] ?: 0L)) return LinkOutcome.BACKOFF
         if (!peers.mayOffer(peerId)) return LinkOutcome.NOT_QUALIFIED
-        if (!peers.canSignal(peerId, false)) return LinkOutcome.NO_CAST
+        if (!peers.canSignal(peerId)) return LinkOutcome.NO_SIG
         return null
     }
 
@@ -444,9 +434,9 @@ class DirectLinks(
         val reply = signal(LinkSignal.PHASE_ANSWER, offer.id, kAnswer, own)
         kAnswer.fill(0)
         session.start()
-        if (!peers.send(offererId, reply, offer.ct)) {
+        if (!peers.send(offererId, reply)) {
             session.close(LinkSession.EndReason.LOCAL, sayBye = false)
-            record(offererId, false, LinkOutcome.NO_CAST, null, LinkNet.of(offer.nt), clock() - started, own)
+            record(offererId, false, LinkOutcome.NO_SIG, null, LinkNet.of(offer.nt), clock() - started, own)
             return
         }
         run(offererId, session, socket, offerer = false, started, LinkNet.of(offer.nt), own, alreadyStarted = true)
@@ -624,7 +614,6 @@ class DirectLinks(
         k = k.copyOf(),
         c = own.map { LinkCand(it.address, it.port, it.kind.code) },
         nt = datagrams.networkKind(),
-        ct = peers.castTicketed(),
     )
 
     private fun bytes(n: Int) = ByteArray(n).also(random::nextBytes)
