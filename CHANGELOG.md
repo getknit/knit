@@ -56,6 +56,8 @@ document:
 
 ### Fixed
 
+- Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
+  which from a chat or Settings left Knit on a blank screen.
 - Voice notes and files no longer show up in the Nearby room. Knit never offered them there, but a modified
   app could post one, and Knit can't screen either for nearby strangers.
 - Tapping a quote, a pinned message or a search result now lands on that message while someone is typing.
