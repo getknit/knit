@@ -73,7 +73,7 @@ class LinkDemandTest {
         }
 
     @Test
-    fun aRoundReadsTheWindowPastTheTickWaitAndNothingWhileThePlaneIsOff() =
+    fun aRoundReadsTheWholeWindowAndNothingWhileThePlaneIsOff() =
         runTest {
             var running = false
             val d = demand(listOf(Pending("bob", 0L)), active = { running }) { LinkOutcome.UP }
@@ -83,7 +83,8 @@ class LinkDemandTest {
             running = true
             d.round()
             val now = testScheduler.currentTime
-            assertEquals(listOf(now - LinkDemandPolicy.WINDOW_MS to now - LinkDemandPolicy.TICK_WAIT_MS), windows)
+            // Up to now: a stuck attachment is due at once, so the policy, not the read, applies each row's wait.
+            assertEquals(listOf(now - LinkDemandPolicy.WINDOW_MS to now), windows)
         }
 
     private fun TestScope.advanceTo(t: Long) {

@@ -347,6 +347,16 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   radio sets (`shortRangeNeighbors`, `shortRangeReachable`) on collectors of their own, so `awaitLinksActedOn` waits
   for those too: read stale under chaos, a radio neighbour that had just linked ranked as a link's in a blob ask, and a
   peer the radio had lost was stamped a radio sighting after a calendar jump, holding a photo for the whole ack grace.
+- **A node on the lab's Internet runs the real `DirectLinks`** (`LabInternet.kt`, 2026-10-28). `lab.node(…, spool =
+  FakeSpool(cast = …, stun = listOf(LabInternet.STUN_URL)), internet = FakeLinkNet.Nat.X)` puts the node behind its
+  own NAT of kind `X` on one lab-wide `FakeLinkNet`: offers and answers cast through the relay, the punch, the lane,
+  and the stream handed to its link plane, as a phone does. `LabNode.links` is that node's `DirectLinks` (`offer`,
+  `lastTries`, `links`), `LabNode.demand` its `LinkDemand`, never started (a scenario runs `round()` after advancing
+  the clock past the tick wait), `linksOn` its switch and `linkLog` what the links logged. The punch, its give-up and
+  the idle close read the node's clock, so `lab.clock.advance(LinkSession.IDLE_MS)` closes an idle link at the
+  session's next tick (≤ 5 s); the streams' ARQ reads a monotonic clock, which no jump moves. `FakeSpool.mute()` keeps
+  the relay connected and fanning out casts while it takes nothing else — a link that is the only path. The set is
+  `InternetLinkLabTest`.
 - **Wait for the frame, not for the state that precedes it.** A settings or DB write the scenario can see
   lands *before* the frame it triggers reaches the transport (`broadcastProfile` bumps the version, then
   stamps, signs and floods), so "the version moved" is not "the frame is parked": `ProfileUpdateLabTest`

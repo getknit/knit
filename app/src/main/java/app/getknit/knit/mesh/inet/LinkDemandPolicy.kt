@@ -3,8 +3,9 @@ package app.getknit.knit.mesh.inet
 /**
  * When to offer a contact a direct link (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-7-7): the spool first, a link as
  * the last resort. A spool this phone holds open carries our messages within seconds, so a link is offered only when
- * one has not arrived: a contact is due when something of ours to them — a DM, or a post in a group they are in — has
- * waited [TICK_WAIT_MS] for their delivery tick, within the last [WINDOW_MS], and
+ * one has not arrived, or cannot: a contact is due, within the last [WINDOW_MS], when something of ours to them — a DM,
+ * or a post in a group they are in — has waited [TICK_WAIT_MS] for their delivery tick, or at once when a DM attachment
+ * of ours to them has no spool to go up to ([Pending.bulk]: every spool carrying the pair refuses the upload), and
  *  - no radio holds a link to them: a radio neighbour's tick is slow for the radio's own reasons, and the radio carries
  *    the frame for free;
  *  - no link to them is up, or has been since that message was sent: a link that was up had its chance at it — sent
@@ -17,10 +18,14 @@ package app.getknit.knit.mesh.inet
  * the database's rows, the radios and the links are its inputs.
  */
 object LinkDemandPolicy {
-    /** One message of ours that [peerId] has not ticked: a DM to them, or a post in a group they are in. */
+    /**
+     * One message of ours that [peerId] has not ticked — a DM to them, or a post in a group they are in — or, when [bulk],
+     * a DM attachment of ours to them that no spool will take.
+     */
     data class Pending(
         val peerId: String,
         val sentAt: Long,
+        val bulk: Boolean = false,
     )
 
     /** How long a message of ours waits for its tick before the contact is offered a link. */
@@ -51,7 +56,7 @@ object LinkDemandPolicy {
         if (room <= 0) return emptyList()
         return pending
             .asSequence()
-            .filter { now - it.sentAt in TICK_WAIT_MS..WINDOW_MS }
+            .filter { now - it.sentAt in (if (it.bulk) 0L else TICK_WAIT_MS)..WINDOW_MS }
             .filter { it.peerId !in up && it.peerId !in offering && now >= (quietUntil[it.peerId] ?: 0L) }
             .filter { p -> lastUpAt(p.peerId)?.let { p.sentAt > it } ?: true }
             .groupBy({ it.peerId }, { it.sentAt })

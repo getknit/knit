@@ -132,8 +132,12 @@ class DirectLinkAttachmentLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 3) { alice.dmThreadWith(bob)(it) }
 
             // Past Alice's serve memo, which refuses a repeat ask silently: a wrongful re-ask by Bob, held now, would be
-            // served and counted, so the copy count below can fail on what it names.
+            // served and counted, so the copy count below can fail on what it names. The link is cut first, so no ask
+            // sent before Bob held the photo is still in flight when the jump lifts the memo (real time never moves
+            // 45 s inside one delivery); the new link and the re-offer round then ask afresh.
+            lab.cutDirectLink(alice, bob)
             lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
+            lab.directLink(alice, bob)
             bob.reoffer()
             lab.assertConverged(listOf(alice, bob), atLeast = 3) { alice.dmThreadWith(bob)(it) }
             assertEquals("one copy per (hash, link): ${alice.linkFiles}", 1, alice.linkCopiesTo(bob, hash))
@@ -233,10 +237,11 @@ class DirectLinkAttachmentLabTest {
             )
             assertEquals("asked again once: ${alice.linkFiles}", 2, alice.linkCopiesTo(bob, hash))
 
-            // Held now: a link-up's re-ask and the re-offer round find nothing missing. Past Alice's serve memo first, so a
-            // wrongful re-ask would be served and counted rather than refused silently.
-            lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
+            // Held now: a link-up's re-ask and the re-offer round find nothing missing. Past Alice's serve memo, so a
+            // wrongful re-ask would be served and counted rather than refused silently — and the jump only once the old
+            // link is cut, so an ask sent before Bob held the photo cannot land after it (a chaos seed did, 2026-10-28).
             lab.cutDirectLink(alice, bob)
+            lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
             lab.directLink(alice, bob)
             bob.reoffer()
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { alice.dmThreadWith(bob)(it) }

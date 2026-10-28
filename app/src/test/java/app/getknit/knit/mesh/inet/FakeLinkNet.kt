@@ -63,8 +63,10 @@ class FakeLinkNet(
 
     /**
      * A phone behind a NAT of [nat] whose external address is [external] (phones that pass the same [external] share the
-     * NAT and its LAN), with an IPv6 [v6] address behind a stateful firewall when given, on a network of [kind].
+     * NAT and its LAN), with an IPv6 [v6] address behind a stateful firewall when given, on a network of [kind]. Under
+     * [route]'s lock, as [open] is: the mesh lab's nodes add phones and ports from real threads while datagrams cross.
      */
+    @Synchronized
     fun phone(
         nat: Nat,
         external: ByteArray,
@@ -74,11 +76,18 @@ class FakeLinkNet(
         val gateway = nats.firstOrNull { it.external.contentEquals(external) } ?: Nat4(nat, external).also { nats += it }
         val lan = if (nat == Nat.NONE) external else byteArrayOf(192.toByte(), 168.toByte(), 1, (nextHost++).toByte())
         return object : LinkDatagrams {
-            override fun open(): LinkPort = FakePort(this@FakeLinkNet, gateway, lan, v6, 50_000 + ports.size).also { ports += it }
+            override fun open(): LinkPort = open(gateway, lan, v6)
 
             override fun networkKind(): Int = kind
         }
     }
+
+    @Synchronized
+    private fun open(
+        gateway: Nat4,
+        lan: ByteArray,
+        v6: ByteArray?,
+    ): LinkPort = FakePort(this, gateway, lan, v6, 50_000 + ports.size).also { ports += it }
 
     private class FakePort(
         val net: FakeLinkNet,

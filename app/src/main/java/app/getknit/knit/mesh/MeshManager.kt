@@ -4394,6 +4394,22 @@ class MeshManager(
     }
 
     /**
+     * Whether our DM attachment [hash] to [peerId] has no spool to go up to and is not provably held by them — a direct
+     * link's bulk trigger (`docs/DIRECT_LINKS.md` L-7-7): every connected spool that carries the pair's scope refuses the
+     * upload (no files ticket, the day spent, over the ticket's or the spool's limit). False with no spool plane, for
+     * bytes not held here, and once the recipient's hold is proved (ADR 2026-10.vy27).
+     */
+    suspend fun attachmentStuck(
+        peerId: String,
+        hash: String,
+    ): Boolean {
+        val sync = scopeSync ?: return false
+        if (blobs.heldInPair(hash, identity.nodeId(), peerId)) return false
+        val size = blobs.sizes(listOf(hash))[hash]?.toInt() ?: return false
+        return sync.refusesUpload(peerId, size)
+    }
+
+    /**
      * Whether this phone may offer [peerId] a direct link now (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-1-1): links
      * wired here, never ourselves or a blocked contact, a session with the peer that is confirmed (never our own first
      * contact or unanswered reset — the seal would refuse it anyway, `confirmedOnly`), a contact this person wrote to

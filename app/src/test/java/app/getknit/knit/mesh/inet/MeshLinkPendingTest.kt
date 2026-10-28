@@ -21,7 +21,8 @@ class MeshLinkPendingTest : RoomDbTest() {
     private val messages by lazy { MessageRepository(db.messageDao()) }
     private val receipts by lazy { MessageReceiptRepository(db.messageReceiptDao(), messages, db) }
     private val groups = mutableMapOf<String, GroupEntity>()
-    private val pending by lazy { MeshLinkPending(messages, receipts) { groups[it] } }
+    private val stuck = mutableSetOf<String>()
+    private val pending by lazy { MeshLinkPending(messages, receipts, group = { groups[it] }, stuck = { _, hash -> hash in stuck }) }
 
     private fun dm(
         id: String,
@@ -84,6 +85,18 @@ class MeshLinkPendingTest : RoomDbTest() {
             receipts.record("p1", "bob", DeliveryPlane.Internet, at = 110)
 
             assertEquals(listOf(Pending("carol", 100)), pending.between(ME, since = 50, until = 200))
+        }
+
+    @Test
+    fun aDmAttachmentNoSpoolWillTakeIsPendingAtOnceAndNoOtherAttachment() =
+        runTest {
+            val dao = db.messageDao()
+            dao.upsert(dm("m1", "bob", sentAt = 100, received = true).copy(attachmentHash = "H1"))
+            dao.upsert(dm("m2", "carol", sentAt = 100, received = true).copy(attachmentHash = "H2"))
+            dao.upsert(dm("m3", "dave", sentAt = 100, received = true))
+            stuck += "H1"
+
+            assertEquals(listOf(Pending("bob", 100, bulk = true)), pending.between(ME, since = 50, until = 200))
         }
 
     private companion object {

@@ -18,6 +18,17 @@ class LinkDemandPolicyTest {
     }
 
     @Test
+    fun anAttachmentNoSpoolWillTakeIsDueAtOnce() {
+        val fresh = now - 1
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", fresh, bulk = true)), now, none, emptySet()))
+        // The same row as a plain unticked message waits for the spool.
+        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", fresh)), now, none, emptySet()).isEmpty())
+        // Inside the window only, as everything else.
+        val old = now - LinkDemandPolicy.WINDOW_MS - 1
+        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", old, bulk = true)), now, none, emptySet()).isEmpty())
+    }
+
+    @Test
     fun aMessageOlderThanTheWindowIsTheSpoolsAlone() {
         val old = now - LinkDemandPolicy.WINDOW_MS - 1
         assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", old)), now, none, emptySet()).isEmpty())

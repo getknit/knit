@@ -3464,6 +3464,94 @@ class ScopeSyncTest {
         }
 
     @Test
+    fun `an upload the pair's spool would take is not refused, one past its budget is`() =
+        runTest {
+            val phone = member(FakeSpool(maxAttachBytes = 100_000), alice, bob)
+            phone.sync.start(backgroundScope)
+            pump(rounds = 4)
+            assertFalse(phone.sync.refusesUpload(bob, 50_000))
+            assertFalse("the budget itself fits", phone.sync.refusesUpload(bob, 100_000))
+            assertTrue("over the spool's attachment budget", phone.sync.refusesUpload(bob, 100_001))
+            phone.sync.stop()
+        }
+
+    @Test
+    fun `no upload is refused while no spool carries the pair's scope`() =
+        runTest {
+            // The scope is derived, but its only spool never answers the dial: the DM itself has no spool, and its tick
+            // wait covers it — an attachment is no reason for a link at once.
+            val closed =
+                object : SpoolDialer {
+                    override suspend fun dial(url: String): SpoolSocket =
+                        object : SpoolSocket {
+                            private val ch = Channel<ByteArray>(Channel.UNLIMITED).also { it.close() }
+
+                            override val incoming get() = ch
+                            override val closeReason = "close 4001 auth"
+
+                            override fun send(bytes: ByteArray) = false
+
+                            override fun close(
+                                code: Int,
+                                reason: String,
+                            ) = Unit
+                        }
+                }
+            val phone = member(FakeSpool(maxAttachBytes = 100_000), alice, bob, dialer = closed)
+            phone.sync.start(backgroundScope)
+            pump(rounds = 4)
+            assertFalse(phone.sync.refusesUpload(bob, 100_001))
+            phone.sync.stop()
+        }
+
+    @Test
+    fun `one spool of the pair's that takes an upload is enough`() =
+        runTest {
+            val urls = listOf("ws://small.test/spool/v1", "ws://large.test/spool/v1")
+            val small = FakeSpool(maxAttachBytes = 100_000)
+            val relays = Relays(mapOf(urls[0] to small, urls[1] to FakeSpool()))
+            val phone = member(small, alice, bob, dialer = relays, urls = urls)
+            phone.sync.start(backgroundScope)
+            pump(rounds = 4)
+            assertFalse("the larger spool takes it", phone.sync.refusesUpload(bob, 100_001))
+            phone.sync.stop()
+        }
+
+    @Test
+    fun `an upload to a spool that takes no attachments is refused`() =
+        runTest {
+            val phone = member(FakeSpool(attachments = false), alice, bob)
+            phone.sync.start(backgroundScope)
+            pump(rounds = 4)
+            assertTrue(phone.sync.refusesUpload(bob, 1_000))
+            phone.sync.stop()
+        }
+
+    @Test
+    fun `an upload past the files ticket's chunk limit is refused`() =
+        runTest {
+            val spool = FakeSpool(ent = true, entGates = SpoolTicket.FL_FILES)
+            val am = 2L * ScopeCrypto.ATTACH_CHUNK_BYTES
+            val tickets = filesTickets(SpoolTicketsTest.ticket(fl = SpoolTicket.FL_FILES, am = am))
+            val phone = member(spool, alice, bob, urls = listOf(filesUrl), tickets = tickets)
+            phone.sync.start(backgroundScope)
+            pump(rounds = 8)
+            assertFalse("two chunks fit", phone.sync.refusesUpload(bob, am.toInt()))
+            assertTrue("a third does not", phone.sync.refusesUpload(bob, am.toInt() + 1))
+            phone.sync.stop()
+        }
+
+    @Test
+    fun `an upload behind a files gate with no ticket is refused`() =
+        runTest {
+            val phone = member(FakeSpool(ent = true, entGates = SpoolTicket.FL_FILES), alice, bob, urls = listOf(filesUrl))
+            phone.sync.start(backgroundScope)
+            pump(rounds = 4)
+            assertTrue(phone.sync.refusesUpload(bob, 1_000))
+            phone.sync.stop()
+        }
+
+    @Test
     fun `a deferred attachment is neither uploaded nor asked about`() =
         runTest {
             val spool = FakeSpool()

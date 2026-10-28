@@ -556,6 +556,22 @@ class ScopeSync(
     }
 
     /**
+     * Whether every connected spool that carries our DM scope with [peerId] would refuse our upload of an attachment of
+     * [size] bytes — the direct link's bulk trigger (`docs/DIRECT_LINKS.md` L-7-7): no attachments there, over its
+     * attachment budget, our uploads locked or spent (C-7.6-24), or over the ticket's chunk limit (C-7.6-32). False while
+     * no connected spool carries the scope at all: then the DM itself has no spool, which the demand's tick wait covers.
+     * Lock-free, like [canCast].
+     */
+    fun refusesUpload(
+        peerId: String,
+        size: Int,
+    ): Boolean {
+        val scope = castScope(peerId) ?: return false
+        val carrying = workers.values.filter { it.carries(scope) }
+        return carrying.isNotEmpty() && carrying.none { it.takesUpload(scope, size) }
+    }
+
+    /**
      * Whether a cast to [peerId] would reach it (docs/VOICE_CALLS.md §2.7, C-3.11-8's notice): [canCast] on a spool the
      * peer's own recent traffic reached within [lingerMs] (its `peerSeenAt`, as `spoolPresentPeers` reads it). A spool
      * fans a cast out only to the scope's live subscribers, so one the peer was never seen on carries it to nobody we
@@ -1156,6 +1172,27 @@ class ScopeSync(
         ): Boolean {
             val conn = connection ?: return false
             return scope.belongsAt(url) && spoolDigests.containsKey(scope.idHex) && conn.canCast(scope.idHex, peerTicketed)
+        }
+
+        /** Whether this worker's live connection carries [scope]: it lives here and its SUB was answered. */
+        fun carries(scope: Scope): Boolean = connection != null && scope.belongsAt(url) && spoolDigests.containsKey(scope.idHex)
+
+        /**
+         * Whether this worker's live connection would take our upload of an attachment of [size] bytes into [scope] it
+         * [carries]: the spool takes attachments and one this large, our uploads are open here, and the ticket's chunk
+         * limit holds it — the gates [passLocally] and [pushAttachment] meet, asked ahead.
+         */
+        fun takesUpload(
+            scope: Scope,
+            size: Int,
+        ): Boolean {
+            val conn = connection ?: return false
+            val limits = conn.limits?.takeIf { it.attachments } ?: return false
+            return carries(scope) &&
+                size <= ScopeAttachments.MAX_ATTACHMENT_BYTES &&
+                limits.maxAttachBytes.let { it == null || size <= it } &&
+                uploadsOn(conn) == SpoolUploads.Open &&
+                conn.uploadLimitChunks().let { it == null || ScopeAttachments.chunkCount(size) <= it }
         }
 
         /** Whether [scope]'s own peer put something recent into it on this spool within [lingerMs] of [now]. */

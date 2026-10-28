@@ -849,6 +849,20 @@ interface MessageDao {
     ): List<PeerSentAt>
 
     /**
+     * Our own DMs sent in [since]..[until] that carry an attachment: to whom, which, and when — what a direct link's bulk
+     * trigger asks the spools about (L-7-7).
+     */
+    @Query(
+        "SELECT recipientId AS peerId, attachmentHash AS hash, sentAt FROM messages WHERE kind = 0 AND senderId = :me " +
+            "AND recipientId IS NOT NULL AND attachmentHash IS NOT NULL AND sentAt BETWEEN :since AND :until",
+    )
+    suspend fun ownDmAttachmentsBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerAttachment>
+
+    /**
      * Our own group posts sent in [since]..[until] (`kind = 0`, not a status row): a link's demand reads their acks.
      * [groupPattern] is [Conversations.GROUP_ID_PREFIX] + `%`, which [app.getknit.knit.data.MessageRepository] passes.
      */
@@ -867,6 +881,13 @@ interface MessageDao {
 /** Room projection for [MessageDao.unackedDmsBetween]: one DM of ours still unticked, its peer and when it was sent. */
 data class PeerSentAt(
     val peerId: String,
+    val sentAt: Long,
+)
+
+/** Room projection for [MessageDao.ownDmAttachmentsBetween]: one DM attachment of ours, its peer and when it was sent. */
+data class PeerAttachment(
+    val peerId: String,
+    val hash: String,
     val sentAt: Long,
 )
 

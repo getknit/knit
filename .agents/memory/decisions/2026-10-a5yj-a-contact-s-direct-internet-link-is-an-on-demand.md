@@ -8,7 +8,8 @@ topics: [mesh, spool, transport, privacy, wire]
 
 # ADR 2026-10.a5yj — A contact's direct Internet link is an on-demand, long-range MeshTransport child
 
-Status: Proposed (2026-10-18, draft on `exp/dht-links`; nothing built). Reads ADR 019 (the spool plane and why
+Status: Proposed (2026-10-18, draft on `exp/dht-links`); Phase 0 went (2026-10-27, the go/no-go amendment below), and
+Phases 1–2 build on it in debug builds; it is marked Accepted when it ships (Phase 3). Reads ADR 019 (the spool plane and why
 `ScopeSync` is not a transport), ADR 2026-10.3tee (call signalling over sealed spool frames), ADR 2026-09.2ajk and
 ADR 2026-10.fw8g (presence tiers), ADR 2026-10.kxnw (`CallLane`), ADR 2026-10.8t2y (the spool's gates) and ADR
 2026-10.swvp (libwebrtc is `compileOnly`). It amends none of them until it is accepted.
@@ -165,9 +166,10 @@ license and its reproducibility.
   no spool path converge through one lab Internet link and end in `assertConverged`. A scenario in which the room and
   a stranger's frames stay on their island.
 
-## Amendment 2026-10-27 — the signal's seal and the lane's keys (draft)
+## Amendment 2026-10-27 — the signal's seal and the lane's keys
 
-Status: draft from the crypto design pass on the Phase 0 spike; the caller decides whether it stands.
+Status: stands (2026-10-27, at the go/no-go below). From the crypto design pass on the Phase 0 spike; built as written
+and trialled on the lab phones.
 
 **The lane keys come from both signals, not from the pairwise root.** Each signal carries `k`, 32 bytes drawn fresh for
 that attempt, and `key(dir) = HKDF-SHA256(ikm = kOffer ‖ kAnswer, salt = linkId, info = label ‖ offererId ‖
@@ -377,6 +379,10 @@ its tick back within seconds, so it goes first. A contact is offered a link when
 in a group they are in, has gone 20 s without their tick. Two more conditions apply: no radio links them, and no link
 to them has been up since the message was sent.
 
+- **The bulk trigger, at once:** a DM attachment of ours that every connected spool carrying the pair refuses to take
+  (no attachments, over its budget or the ticket's chunk limit, our uploads locked or spent) and that the recipient is
+  not proved to hold. The spool cannot carry those bytes at all, while the cast still goes: this is the case a link is
+  for (`MeshManager.attachmentStuck`, `ScopeSync.refusesUpload`).
 - **The window:** only messages from the last 15 min count, since a link is for a conversation going on now.
 - **The limits:** one offer per contact at a time, and at most two links up or offered at once.
 - **Resting:** a refusal that sent nothing rests the contact a minute; a punch that failed rests on its backoff.
@@ -388,3 +394,31 @@ spool's copy waits up to 30 s for the link to have its chance. It would save the
 conversation. But it holds every DM back behind a cast and a punch when the open spool would have delivered it in a
 second, and the offer itself rides that same spool anyway. The spool's copy of what a link carried is unchanged:
 it still goes up, as a radio-delivered DM's does.
+
+## Amendment 2026-10-27 — Phase 0: go
+
+Status: stands (2026-10-27). The go/no-go gate of the phased plan: the spike measured, on the lab phones, whether two
+contacts' phones punch a path at all, and what a stream over it carries.
+
+**Every pair class tried came up.** P9 offering P7, one attempt each:
+
+| P9 | P7 | Path | Up after | Idle path held |
+| --- | --- | --- | --- | --- |
+| home Wi-Fi | home Wi-Fi | IPv4 reflexive (the router hairpinned), later host | 0.7 s | 4 min on keepalives |
+| T-Mobile LTE (IPv6 + CLAT) | home Wi-Fi | IPv4 reflexive | 1.2 s | 3 min held; an IPv6 path there lived 2–4 min |
+| T-Mobile LTE | T-Mobile LTE | IPv6 | 1.7 s | 3 min held; silent gaps of up to 4 min passed |
+
+The controls held: a BYE closes the far end, a phone with links off never answers (NO_ANSWER at 15 s), and a phone
+with no cast ticket cannot offer (NO_CAST) though it answers under the offer's hint. The stream (own ARQ, its
+amendment above) moved 3.5–4.3 Mbit/s over the LAN and 1.7–4.3 Mbit/s with one end on LTE.
+
+**Not measured, and why it is still go.** One attempt per class, one carrier, one home router: no two separate LANs, no
+mix of carriers, no IPv4 CGNAT mapping life, and the home Wi-Fi's deprecated global IPv6 addresses are never offered.
+A link that fails costs only a cast and a backoff, and the spool carries everything regardless (the spool-first
+amendment), so a lower success rate in the field costs latency for bulk, never delivery. The rate is to be read from
+the field log's `link_try` lines once testers run it, before Phase 3 flips the release default.
+
+**The decisions the gate was to record are recorded above:** the lane keys from both signals' fresh `k`, never a root
+(the seal amendment, standing now); the stream is our own ARQ; no standing keepalive; the link as a transport and its
+custody and blob rules; the spool first. Phases 1 and 2 proceed in debug builds; the release default stays off, and the
+person's switch off, until Phase 3.

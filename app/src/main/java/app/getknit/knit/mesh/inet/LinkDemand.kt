@@ -9,10 +9,10 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Opens direct links on demand, the spool first and a link as the last resort (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md`
  * L-7-7): every [ROUND_MS] while the link plane runs ([active]), reads which of our recent messages contacts have not
- * ticked ([pending]) and offers a link to each contact [LinkDemandPolicy] finds due, one offer per contact at a time. A
- * contact the links refused before anything went out (not qualified, no cast, no port, off) rests [QUIET_MS], so a round
- * never asks again for what it was just told; a punch that failed rests on the links' own backoff. Thin: the rule is
- * [LinkDemandPolicy], the attempt `DirectLinks`.
+ * ticked, and which of our DM attachments no spool will take ([pending]), and offers a link to each contact
+ * [LinkDemandPolicy] finds due, one offer per contact at a time. A contact the links refused before anything went out
+ * (not qualified, no cast, no port, off) rests [QUIET_MS], so a round never asks again for what it was just told; a
+ * punch that failed rests on the links' own backoff. Thin: the rule is [LinkDemandPolicy], the attempt `DirectLinks`.
  */
 @Suppress("LongParameterList") // the seams the rule reads and the one it acts through
 class LinkDemand(
@@ -36,7 +36,7 @@ class LinkDemand(
     suspend fun round() {
         if (!active()) return
         val now = clock()
-        val rows = pending(now - LinkDemandPolicy.WINDOW_MS, now - LinkDemandPolicy.TICK_WAIT_MS)
+        val rows = pending(now - LinkDemandPolicy.WINDOW_MS, now)
         if (rows.isEmpty()) return
         val due = LinkDemandPolicy.due(rows, now, radioLinked, up(), offering.toSet(), lastUpAt, HashMap(quietUntil))
         due.forEach { peer ->

@@ -11,6 +11,7 @@ import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.MissingAttachment
 import app.getknit.knit.data.message.OwnPost
+import app.getknit.knit.data.message.PeerAttachment
 import app.getknit.knit.data.message.PeerSentAt
 import app.getknit.knit.data.message.QuoteSettlement
 import app.getknit.knit.data.search.SearchQuery
@@ -140,6 +141,13 @@ class MessageRepository(
         since: Long,
         until: Long,
     ): List<PeerSentAt> = dao.unackedDmsBetween(me, since, until)
+
+    /** Our own DM attachments sent in [since]..[until] ([MessageDao.ownDmAttachmentsBetween]). */
+    suspend fun ownDmAttachmentsBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerAttachment> = dao.ownDmAttachmentsBetween(me, since, until)
 
     /** Our own group posts sent in [since]..[until] ([MessageDao.ownGroupPostsBetween]). */
     suspend fun ownGroupPostsBetween(

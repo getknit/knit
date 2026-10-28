@@ -156,7 +156,8 @@ private fun Module.linkDemand() =
         val transport = get<DirectLinkTransport>()
         val identity = get<Identity>()
         val groups = get<GroupRepository>()
-        val pending = MeshLinkPending(get(), get(), groups::find)
+        val pending =
+            MeshLinkPending(get(), get(), groups::find) { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) }
         LinkDemand(
             pending = { since, until -> pending.between(identity.nodeId(), since, until) },
             offer = { links.offer(it) },

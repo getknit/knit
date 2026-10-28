@@ -96,7 +96,12 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
 import app.getknit.knit.mesh.inet.DirectLinkTransport
+import app.getknit.knit.mesh.inet.DirectLinks
+import app.getknit.knit.mesh.inet.FakeLinkNet
 import app.getknit.knit.mesh.inet.LinkArq
+import app.getknit.knit.mesh.inet.LinkDemand
+import app.getknit.knit.mesh.inet.LinkPeers
+import app.getknit.knit.mesh.inet.MeshLinkPending
 import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
@@ -112,6 +117,7 @@ import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.MemoryRatchetStore
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
@@ -254,6 +260,10 @@ class MeshLab {
         // A contact's direct Internet link plane beside the radio (ADR 2026-10.a5yj): the real `DirectLinkTransport`, whose
         // links [directLink] makes over in-memory streams — no punch, no relay. False builds the node as before.
         directLinks: Boolean = false,
+        // A place on the lab's Internet ([LabInternet]) behind a NAT of this kind: the node also runs the real
+        // `DirectLinks` — offers and answers cast through [spool], the punch over the fake NATs, the lane, the stream
+        // handed to its link plane — and a `LinkDemand` a scenario drives by [LabNode.demand]. Null builds none.
+        internet: FakeLinkNet.Nat? = null,
     ): LabNode {
         val started = System.nanoTime()
         val board = air ?: boardsAir?.takeIf { board }
@@ -284,6 +294,7 @@ class MeshLab {
                 publicRelays = publicRelays,
                 home = home,
                 directLinks = directLinks,
+                internet = internet?.let { labInternet().phone(it) },
             )
         nodes += node
         node.boot()
@@ -360,6 +371,12 @@ class MeshLab {
     private val linkStreams = java.util.Collections.synchronizedList(ArrayList<LinkArq>())
     private val linkScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // The lab's Internet for nodes built with `internet`, made by the first of them; [close] ends its streams.
+    private var internetNet: LabInternet? = null
+
+    @Synchronized
+    private fun labInternet(): LabInternet = internetNet ?: LabInternet().also { internetNet = it }
+
     // The latest direct link [directLink] made per pair of node ids (the lower id first), for [cutDirectLink].
     private val directLinks = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, LabDirectLink>()
 
@@ -432,6 +449,7 @@ class MeshLab {
     fun close() {
         synchronized(linkStreams) { linkStreams.forEach { it.end() } }
         linkScope.cancel()
+        internetNet?.close()
         // Every node goes down even when one fails its shutdown: a node left running leaks its collectors into the
         // next test class in this JVM. The first failure is rethrown, the rest ride along as suppressed. A gate a failed
         // scenario left holding is released first: the delivery parked at it cannot be cancelled (ADR 2026-10.f82h),
@@ -1224,6 +1242,8 @@ class LabNode internal constructor(
     private val publicRelays: LabPublicRelays? = null,
     private val home: String? = null,
     private val directLinks: Boolean = false,
+    // This node's place on the lab's Internet ([MeshLab.node]'s `internet`); kept across restarts, as a phone's NAT is.
+    private val internet: LabInternet.Phone? = null,
 ) {
     /** [delegate], or its chaos-lagged form when the lab runs under [chaos]. */
     private fun dispatcher(delegate: CoroutineDispatcher): CoroutineDispatcher = chaos?.dispatcher(delegate) ?: delegate
@@ -1298,9 +1318,24 @@ class LabNode internal constructor(
     internal var boardLink: FakeMeshtasticLink? = null
         private set
 
-    /** The direct-link plane ([MeshLab.directLink]), for a node built with `directLinks`; else null. */
+    /** The direct-link plane ([MeshLab.directLink]), for a node built with `directLinks` or `internet`; else null. */
     internal var link: DirectLinkTransport? = null
         private set
+
+    /** The real direct links over the lab's Internet, for a node built with `internet`; else null. Rebuilt by a boot. */
+    internal var links: DirectLinks? = null
+        private set
+
+    /** The demand that offers this node's links (L-7-7), never started: a scenario runs its [LinkDemand.round]. */
+    internal var demand: LinkDemand? = null
+        private set
+
+    /** This phone's direct-links switch, as `DirectLinks.enabled` reads it: on unless a scenario turns it off. */
+    @Volatile
+    var linksOn = true
+
+    /** What this node's direct links logged (`DirectLinks`' log): each attempt's end and each link's. */
+    val linkLog = CopyOnWriteArrayList<String>()
 
     /**
      * Every file this node's direct-link plane accepted to send, as `to kind key` in send order ([LabLinkPlane]) — the
@@ -1317,7 +1352,7 @@ class LabNode internal constructor(
     // The direct-link plane, wired as `di/DirectLinkWiring` wires it: the real lookups over this node's stores, its use and
     // link-ups back to the manager, built late.
     private fun directLinkPlane(scope: CoroutineScope): DirectLinkTransport? =
-        if (!directLinks) {
+        if (!directLinks && internet == null) {
             null
         } else {
             DirectLinkTransport(
@@ -1335,9 +1370,69 @@ class LabNode internal constructor(
                 partials = partials,
                 metrics = metrics,
                 now = now,
+                onUse = { links?.noteUse(it) },
                 onLinkUp = { manager.onDirectLinkUp(it) },
             )
         }
+
+    // The real direct links and their demand, for a node on the lab's Internet, wired as `di/DirectLinkWiring` wires them:
+    // the peers are the manager's own (who qualifies, the cast, the spools' STUN), each up link's stream goes to the link
+    // plane, and the demand reads this node's stores and the composite's radios.
+    private fun buildLinks(
+        scope: CoroutineScope,
+        mesh: MeshTransport,
+    ) {
+        val phone = internet ?: return
+        val plane = checkNotNull(link) { "$name: a node on the Internet has a link plane" }
+        val built =
+            DirectLinks(
+                selfId = { nodeId },
+                datagrams = phone.datagrams,
+                peers = ManagerLinkPeers(),
+                enabled = { linksOn },
+                scope = scope,
+                clock = now,
+                streams = phone.streams,
+                onStream = { peer, socket, offerer -> plane.adopt(peer, socket, offerer) },
+                linkBusy = { plane.busy(it) },
+                log = { linkLog += it },
+            )
+        links = built
+        // The bulk trigger asks the node's own manager, resolved at each call as [ManagerLinkPeers] is.
+        val pending = MeshLinkPending(messages, receipts, groups::find) { peer, hash -> manager.attachmentStuck(peer, hash) }
+        demand =
+            LinkDemand(
+                pending = { since, until -> pending.between(nodeId, since, until) },
+                offer = { built.offer(it) },
+                up = { built.links.value.keys },
+                lastUpAt = built::lastUpAt,
+                radioLinked = mesh::radioLinked,
+                active = { plane.running },
+                scope = scope,
+                clock = now,
+                log = { linkLog += it },
+            )
+    }
+
+    // [LinkPeers] over this node's manager, resolved at each call: a restart rebuilds the manager under it.
+    private inner class ManagerLinkPeers : LinkPeers {
+        override suspend fun mayOffer(peerId: String) = manager.mayOfferLink(peerId)
+
+        override fun canCast(
+            peerId: String,
+            peerTicketed: Boolean,
+        ) = manager.canCastTalk(peerId, peerTicketed)
+
+        override fun castTicketed() = manager.castTicketed()
+
+        override fun stunUrls() = manager.stunUrls()
+
+        override suspend fun send(
+            peerId: String,
+            signal: LinkSignal,
+            peerTicketed: Boolean,
+        ) = manager.sendLinkSignal(peerId, signal, peerTicketed)
+    }
 
     // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. The
     // link plane goes in recorded ([LabLinkPlane]): its files sent, and its hand-off to the manager through [linkFileGate].
@@ -1611,7 +1706,12 @@ class LabNode internal constructor(
                 badgePins = listOf(BadgeKeys.RFC8032_TEST1),
                 onCallSignal = { sender, payload, sentAt -> calls.onSignal(sender, payload, sentAt) },
                 onCallTalk = { _, chunk, _, _, viaRelay -> heardTalk(chunk, viaRelay) },
+                // A node on the lab's Internet takes links as `di/DirectLinkWiring` wires them: the bit in its profile, and
+                // each opened signal handed to its links, resolved late.
+                onLinkSignal = { sender, signal, _ -> links?.onSignal(sender, signal) },
+                extraCapabilities = if (internet != null) Protocol.CAP_INET_LINK else 0L,
             )
+        buildLinks(scope, meshTransport)
         bindBoard()
         val callLines = CopyOnWriteArrayList<String>().also { callLog = it }
         calls =
@@ -1779,6 +1879,10 @@ class LabNode internal constructor(
             ledger.flush()
             peers.flushSeen()
         }
+        // Every link and attempt ends while the session still runs: a closed session ends its stream ([LabInternet]).
+        links?.stop()
+        links = null
+        demand = null
         manager.stop()
         // Joined, not only cancelled: a collector still mid-query (the name-clash fade's anchors) when [shutdown] closes
         // the database next throws on the closed pool, and that lands as an uncaught exception on whichever `runTest`
