@@ -192,6 +192,8 @@ data class InternetRelayUiState(
     val offline: Boolean = false,
     // False only before the stores' first answer, so a relay's own screen can tell "not read yet" from "removed".
     val loaded: Boolean = false,
+    // This phone's direct links switch (ADR 2026-10.a5yj), or null in a build without links, which draws no row.
+    val directLinks: Boolean? = null,
 )
 
 /** One-shot outcomes for the screen's snackbar and share sheet. */
@@ -256,10 +258,16 @@ class InternetRelayViewModel(
     private val spoolTickets: SpoolTicketJournal? = null,
     // Free tickets' switch (C-7.6-34), only where Knit Anywhere is wired; without it no row offers one.
     private val freeUploads: FreeUploads? = null,
+    // Whether this build takes direct links (`DIRECT_LINKS_WIRED`); without them the screen draws no links switch.
+    directLinks: Boolean = false,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     val state: StateFlow<InternetRelayUiState> =
-        combine(rows(), gate?.online ?: MutableStateFlow(true)) { rows, online -> rows.copy(offline = !online) }
+        combine(
+            rows(),
+            gate?.online ?: MutableStateFlow(true),
+            if (directLinks) settings.directLinksEnabled else flowOf(null),
+        ) { rows, online, links -> rows.copy(offline = !online, directLinks = links) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), InternetRelayUiState())
 
     /** The stored tickets and keys a relay's call details read, or null in a build without calls. */
@@ -429,6 +437,14 @@ class InternetRelayViewModel(
             .first()
             .firstOrNull { it.connected && SpoolUrl.redact(it.url) == redacted }
             ?.adverts
+    }
+
+    /**
+     * This phone's direct links switch, written straight through either way: off by default, and it needs no sheet of
+     * its own, since its line says what a link shows a contact (ADR 2026-10.a5yj).
+     */
+    fun setDirectLinks(on: Boolean) {
+        viewModelScope.launch { settings.setDirectLinksEnabled(on) }
     }
 
     fun onToggle(on: Boolean) {

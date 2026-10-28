@@ -247,6 +247,7 @@ val uiModule =
                 // wired, and its free tickets' switch only where Knit Anywhere is.
                 spoolTickets = if (CALLS_WIRED || ANYWHERE_WIRED) get<SettingsStore>() else null,
                 freeUploads = if (ANYWHERE_WIRED) get<FreeUploads>() else null,
+                directLinks = DIRECT_LINKS_WIRED,
             )
         }
         viewModel { LoraRadioViewModel(get(), get(), get(), get()) }

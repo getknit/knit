@@ -1382,6 +1382,8 @@
     <string name="relays_summary_none_active">Увімкнено · ретранслятори не використовуються</string>
     <string name="relays_section_list">Ретранслятори</string>
     <string name="relays_off_note">Якщо вимкнути, нові копії не завантажуватимуться. Зашифровані копії, які вже є на ретрансляторі, він прочитати не може, і їхній термін спливає протягом 48 годин.</string>
+    <string name="relays_direct_links_title">Пряме з’єднання з контактами</string>
+    <string name="relays_direct_links_subtitle">Коли ретранслятор працює повільно або не передає фото, Knit може з’єднати вас із контактом напряму через інтернет, якщо у вас обох це ввімкнено. Контакт, з яким Knit намагається з’єднатися, бачить IP-адресу вашого телефона.</string>
     <string name="relays_empty">Ретрансляторів не додано. Інтернет-канал вимкнений, доки ви не додасте хоча б один, — ваші повідомлення й далі передаються через Wi-Fi і Bluetooth.</string>
     <string name="relays_add">Додати ретранслятор</string>
     <string name="relays_add_title">Додати ретранслятор</string>

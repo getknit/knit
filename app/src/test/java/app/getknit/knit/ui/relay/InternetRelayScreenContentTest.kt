@@ -50,6 +50,7 @@ class InternetRelayScreenContentTest {
         state: InternetRelayUiState,
         showConsent: Boolean = false,
         onToggle: (Boolean) -> Unit = {},
+        onSetDirectLinks: (Boolean) -> Unit = {},
         onAddRelay: (String) -> Unit = {},
         onOpenRelay: (String) -> Unit = {},
         onSetRelayEnabled: (String, Boolean) -> Unit = { _, _ -> },
@@ -65,6 +66,7 @@ class InternetRelayScreenContentTest {
                     showConsent = showConsent,
                     onBack = {},
                     onToggle = onToggle,
+                    onSetDirectLinks = onSetDirectLinks,
                     onAcceptConsent = onAcceptConsent,
                     onAddRelay = onAddRelay,
                     onOpenRelay = onOpenRelay,
@@ -159,6 +161,33 @@ class InternetRelayScreenContentTest {
         render(InternetRelayUiState(), onToggle = { requested = it })
         compose.onNodeWithTag("relays_switch").performClick()
         assertEquals(true, requested)
+    }
+
+    @Test
+    fun theLinksSwitchShowsTheStoredChoiceWhileTheRelaysAreOn() {
+        render(InternetRelayUiState(enabled = true, directLinks = true, relays = listOf(relay())))
+        compose.onNodeWithTag("relays_direct_links_switch").assertIsOn()
+    }
+
+    @Test
+    fun theLinksSwitchReportsTheRequestedState() {
+        var requested: Boolean? = null
+        render(InternetRelayUiState(enabled = true, directLinks = false), onSetDirectLinks = { requested = it })
+        compose.onNodeWithTag("relays_direct_links_switch").assertIsOff().performClick()
+        assertEquals(true, requested)
+    }
+
+    @Test
+    fun noLinksSwitchWhileTheRelaysAreOff() {
+        // A link's offer rides the relays: with them off the switch would do nothing, so it is not drawn.
+        render(InternetRelayUiState(enabled = false, directLinks = true))
+        compose.onAllNodesWithTag("relays_direct_links_switch").assertCountEquals(0)
+    }
+
+    @Test
+    fun noLinksSwitchInABuildWithoutLinks() {
+        render(InternetRelayUiState(enabled = true, directLinks = null))
+        compose.onAllNodesWithTag("relays_direct_links_switch").assertCountEquals(0)
     }
 
     @Test

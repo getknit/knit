@@ -56,9 +56,13 @@ and the entry is fixed.
   a failed open is never reset evidence. Lane keys come from both sides' fresh `k`, bound to the attempt id and both ids
   by role, never from the pairwise root. One lane per attempt, its counter shared by every path; a retry is a new id.
 - **When touching `di/DirectLinkWiring` (`directLinkModule`, `onLinkSignal`, `MeshLinkPeers`),
-  `SettingsStore.directLinksEnabled` / `KEY_DIRECT_LINKS`, `MeshManager.mayOfferLink`, `DropReason.LINK_STALE` or
-  `…debug.LINK`:** READ ADR 2026-10.a5yj. The switch is off by default and per phone (`direct_links_` is
-  backup-transient); off or paused, every link closes and nothing is offered or answered. `mayOfferLink` is the
+  `SettingsStore.directLinksEnabled` / `KEY_DIRECT_LINKS`, `InternetRelayViewModel.setDirectLinks` /
+  `InternetRelayUiState.directLinks`, `MeshManager.mayOfferLink`, `DropReason.LINK_STALE` or `…debug.LINK`:** READ ADR
+  2026-10.a5yj. The switch is off by default and per phone (`direct_links_` is backup-transient); off or paused, every
+  link closes and nothing is offered or answered. Its row is on the relays screen, drawn only while the relays are on
+  (a link's offer rides them) and only in a build with links; it writes straight through, with no sheet, because its
+  line is the disclosure (a contact Knit tries to connect with learns the phone's IP address). The copy never says
+  every phone can start a link, nor names the cast ticket that decides it today. `mayOfferLink` is the
   offerer's consent rule (a confirmed session, a contact written to or verified, the peer's bit, not blocked) and is
   never asked at receipt. The links' graph is resolved late from the mesh's inbound hook, and the mesh's half
   (`MeshLinkPeers`) late from the links, so neither graph needs the other built first.

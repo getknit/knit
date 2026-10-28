@@ -1358,6 +1358,8 @@
     <string name="relays_summary_none_active">Ativado · nenhum retransmissor em uso</string>
     <string name="relays_section_list">Retransmissores</string>
     <string name="relays_off_note">Desativar isto interrompe novos envios. As cópias lacradas que já estão em um retransmissor são ilegíveis para ele e expiram em até 48 horas.</string>
+    <string name="relays_direct_links_title">Conectar direto aos seus contatos</string>
+    <string name="relays_direct_links_subtitle">Quando um retransmissor está lento ou não leva uma foto, o Knit pode conectar você direto a um contato pela internet, se vocês dois tiverem isto ativado. Um contato com quem o Knit tenta se conectar vê o endereço IP do seu celular.</string>
     <string name="relays_empty">Nenhum retransmissor adicionado. O Knit não usa a internet até você adicionar um — suas mensagens continuam indo por Wi-Fi e Bluetooth.</string>
     <string name="relays_add">Adicionar retransmissor</string>
     <string name="relays_add_title">Adicionar um retransmissor</string>

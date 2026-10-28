@@ -88,6 +88,7 @@ fun InternetRelayScreen(
         snackbarHostState = snackbarHostState,
         onBack = onBack,
         onToggle = viewModel::onToggle,
+        onSetDirectLinks = viewModel::setDirectLinks,
         onAcceptConsent = viewModel::acceptConsent,
         onDismissConsent = viewModel::dismissConsent,
         onAddRelay = viewModel::addRelay,
@@ -109,6 +110,7 @@ internal fun InternetRelayScreenContent(
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onBack: () -> Unit,
     onToggle: (Boolean) -> Unit,
+    onSetDirectLinks: (Boolean) -> Unit = {},
     onAcceptConsent: () -> Unit = {},
     onDismissConsent: () -> Unit = {},
     onAddRelay: (String) -> Unit = {},
@@ -147,13 +149,31 @@ internal fun InternetRelayScreenContent(
                     .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            MasterSwitchRow(enabled = state.enabled, onToggle = onToggle)
+            SwitchRow(
+                title = stringResource(R.string.settings_internet_relays_title),
+                subtitle = stringResource(R.string.settings_internet_relays_subtitle),
+                checked = state.enabled,
+                onToggle = onToggle,
+                tag = "relays_switch",
+            )
 
             Text(
                 text = stringResource(R.string.relays_off_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // A link's offer and answer ride the relays, so the switch shows only while they are on; the stored choice
+            // keeps either way (ADR 2026-10.a5yj).
+            if (state.enabled && state.directLinks != null) {
+                SwitchRow(
+                    title = stringResource(R.string.relays_direct_links_title),
+                    subtitle = stringResource(R.string.relays_direct_links_subtitle),
+                    checked = state.directLinks,
+                    onToggle = onSetDirectLinks,
+                    tag = "relays_direct_links_switch",
+                )
+            }
 
             Text(
                 text = stringResource(R.string.relays_section_list),
@@ -218,36 +238,39 @@ internal fun InternetRelayScreenContent(
 }
 
 /**
- * The master switch. Same shape as the Profile screen's toggle rows: the row owns the `toggleable` and
- * the `Switch` takes a null handler, so a screen reader announces one labelled switch rather than an
- * unlabelled control next to some text.
+ * A screen-wide switch: the master switch and the direct links one. Same shape as the Profile screen's toggle rows:
+ * the row owns the `toggleable` and the `Switch` takes a null handler, so a screen reader announces one labelled
+ * switch rather than an unlabelled control next to some text.
  */
 @Composable
-private fun MasterSwitchRow(
-    enabled: Boolean,
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
     onToggle: (Boolean) -> Unit,
+    tag: String,
 ) {
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .toggleable(value = enabled, onValueChange = onToggle, role = Role.Switch)
-                .testTag("relays_switch"),
+                .toggleable(value = checked, onValueChange = onToggle, role = Role.Switch)
+                .testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = stringResource(R.string.settings_internet_relays_title),
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                text = stringResource(R.string.settings_internet_relays_subtitle),
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = enabled, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -380,6 +403,7 @@ fun InternetRelayScreenOnPreview() =
             state =
                 InternetRelayUiState(
                     enabled = true,
+                    directLinks = false,
                     relays =
                         listOf(
                             RelayRow(

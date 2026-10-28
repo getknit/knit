@@ -1630,6 +1630,9 @@
     <string name="relays_summary_none_active">On · no relays in use</string>
     <string name="relays_section_list">Relays</string>
     <string name="relays_off_note">Turning this off stops new uploads. Sealed copies already on a relay are unreadable to it and expire within 48 hours.</string>
+    <!-- The direct links switch (ADR 2026-10.a5yj): a phone-to-phone Internet connection to a contact, no relay in between. "This" is the switch itself. -->
+    <string name="relays_direct_links_title">Connect directly to contacts</string>
+    <string name="relays_direct_links_subtitle">When a relay is slow, or won\'t carry a photo, Knit can connect you straight to a contact over the Internet, if you both have this on. A contact Knit tries to connect with learns your phone\'s IP address.</string>
     <string name="relays_empty">No relays added. The Internet plane stays off until you add one — your messages still travel by Wi-Fi and Bluetooth.</string>
     <string name="relays_add">Add relay</string>
     <string name="relays_add_title">Add a relay</string>
