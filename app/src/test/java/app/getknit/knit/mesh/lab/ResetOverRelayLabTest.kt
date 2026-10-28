@@ -344,8 +344,10 @@ class ResetOverRelayLabTest {
      * smaller id first, which wins its side of the race and keeps the root; then the smaller id's next DM, sealed
      * since the reset and still carrying the old init, reaches the resetter. That must race — the resetter loses and
      * adopts the root the peer kept — or the pair sits on two roots, each reading the other read-only, with nobody
-     * confirming. Radio, not the relay: one scope carries the answer and the reset alike, unordered, so only a lossy
-     * pipe fixes the order this case needs (the answer withheld, the reset let through).
+     * confirming. The smaller id's intro answer to the reset is already such a frame, so the race can end before the
+     * scenario's own DM: the re-root is proven off the reset frame, not the resetter's row. Radio, not the relay: one
+     * scope carries the answer and the reset alike, unordered, so only a lossy pipe fixes the order this case needs
+     * (the answer withheld, the reset let through).
      */
     @Test
     fun theReplacedErasInitSealedSinceOurResetStillRacesAndThePairMeetsOnOneRoot() =
@@ -365,8 +367,16 @@ class ResetOverRelayLabTest {
 
             val resetsBefore = small.custodiedChatsFrom(large, small)
             assertEquals("the larger id's reset went out", null, large.resetSession(small))
-            assertTrue("the reset moved the resetter off the old root", large.session(small)?.rootHash != oldRoot)
             lab.await(resetsBefore + 1) { small.custodiedChatsFrom(large, small) }
+            // Read off the reset frame, never the resetter's row: the smaller id answers the reset at once (IntroSync),
+            // sealed under the root it kept with its init still attached, so the resetter can lose the race and be back
+            // on the old root before any read of its row here. The resetter is the responder on the old root, so its
+            // reset is a re-root, whose header carries an init of the resetter's own, not the old root's.
+            val headers = small.custodyIds().mapNotNull { small.custodiedSeal(it)?.r }
+            val (resets, rest) = headers.partition { it.flags and RatchetHeader.FLAG_RESET != 0 }
+            val oldInit = rest.firstNotNullOf { it.init?.eph } // the smaller id's own frames, the old root's init on each
+            val resetInit = checkNotNull(resets.single().init) { "the reset carried no init" }.eph
+            assertTrue("the reset moved the resetter off the old root", !resetInit.contentEquals(oldInit))
             assertTrue(small.sendDm(large, "still on my init"))
             assertTrue(
                 "the resetter never lost the live race to the smaller id: ${large.session(small)?.rootHash} vs $oldRoot",
