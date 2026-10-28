@@ -457,3 +457,31 @@ Its limits, accepted: a group send of ours never shows the link, since no member
 holding speaks for another); a DM peer that got the photo another way and confirmed it over a link reads as the
 link's, the first proof standing; and the proof is the file's, so a picture forwarded under its sealed identity (ADR
 2026-10.mptm) shows the link on every received row naming it, each served from the one copy that came over the link.
+
+## Amendment 2026-10-28 — the offer and answer ride the signal lane
+
+Status: stands (2026-10-28); the maintainer's call, on the signal lane's merge (ADR 2026-10.97vs; knit-spool ADR
+2026-10.2q49).
+
+**A link's offer and answer go as sigs wherever a spool advertises them, and as casts only where it does not.**
+Until now the signal was cast-only, and casts sit behind a ticket on a spool that sells them (S-7.7-6). A phone that
+held no cast ticket could not offer at all (NO_CAST), and could answer only under the offer's `ct` hint. That ruled out
+most free phones, which the bulk trigger is meant to serve: a phone with no files ticket usually holds no cast ticket
+either. The signal lane (`docs/SPOOL_PROTOCOL.md` §7.8) is a cast's lane with no ticket in the way, and the spool stays
+content-blind. So:
+
+- **The signal set admits `link`** (C-7.8-13), in the DM form alone: on the pair's own DM scope, the scope's two
+  members in the direction of travel, never a group's scope, the pair scope or the commons (`ScopeFrames.sigEligible`).
+- **The lanes are chosen per spool** (C-7.8-17, `ScopeSync.signal` / `canSignal`): the frame goes as a sig through
+  every spool that advertises sigs, and as a cast, under today's ticket rule with the `ct` hint, only through a spool
+  that does not; never both through one spool. The frame is sealed once on the ratchet, and each lane's scope seal
+  once; the peer keeps the first copy by frame id (C-7.8-15).
+- **The cast set keeps `link`** (C-7.7-13), widened in the spool spec to match `docs/VOICE_CALLS.md`, for a spool
+  without sigs. Dropping the cast fallback was weighed and set aside: a spool on a release before sigs would carry no
+  offer at all.
+- **What does not change:** the frame, its ratchet seal, `ct`, the radios and custody (never), the debug bridge and
+  field-log strings: `LinkOutcome.NO_CAST` keeps its name and now means that no lane, sig or cast, would carry the
+  signal.
+
+The spool sees two sigs on the pair's DM scope per attempt (§10.1), where it saw two casts before.
+

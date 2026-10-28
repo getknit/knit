@@ -613,7 +613,50 @@ class ScopeSync(
         return workers.values.count { it.castOut(scope, data, peerTicketed) }
     }
 
-    /** The peer's current DM scope, the one a cast rides: never a retiring one, never the pair scope. */
+    /**
+     * Whether a direct link's signal to [peerId] would leave through at least one connected spool now (ADR 2026-10.a5yj,
+     * C-7.8-17): as a sig through one whose hello advertised sigs, whatever ticket either phone holds (S-7.8-4), else as a
+     * cast through one that did not, by [canCast]'s rule with the peer's ticket flag [peerTicketed]. Lock-free and
+     * synchronous, so the links can ask before they seal and spend a ratchet step.
+     */
+    fun canSignal(
+        peerId: String,
+        peerTicketed: Boolean,
+    ): Boolean {
+        val scope = castScope(peerId) ?: return false
+        return workers.values.any { it.canSignal(scope, peerTicketed) }
+    }
+
+    /**
+     * Sends one signed direct-link frame to [peerId] (C-7.8-17) and returns how many spools took it: as a sig through
+     * every connected spool whose hello advertised sigs, and as a cast only through one that did not — never both through
+     * one spool, and a spool that advertises sigs never gets the cast, whatever its tickets. Each lane's seal is made
+     * once, and only if some spool takes it; the peer keeps the first copy by frame id (C-7.8-15). [cast]'s rules
+     * otherwise: never under a worker's round lock, never a request.
+     */
+    suspend fun signal(
+        peerId: String,
+        peerTicketed: Boolean,
+        env: RelayEnvelope,
+        sig: ByteArray,
+        signed: ByteArray,
+    ): Int {
+        val scope = castScope(peerId) ?: return 0
+        val me = selfId()
+        val sigOk = ScopeFrames.sigEligible(env, me, scope, inbound = false)
+        val castOk = ScopeFrames.castEligible(env, me, scope, inbound = false)
+        val asSig by lazy { ScopeFrames.sealSig(scope, sig, signed) }
+        val asCast by lazy { ScopeFrames.sealCast(scope, sig, signed) }
+        return workers.values.count { worker ->
+            if (worker.advertisesSig()) {
+                sigOk && worker.canSig(scope) && worker.sigOut(scope, asSig)
+            } else {
+                castOk && worker.canCast(scope, peerTicketed) && worker.castOut(scope, asCast, peerTicketed)
+            }
+        }
+    }
+
+    /** The peer's current DM scope, the one a cast or a direct link's signal rides: never a retiring one, never the pair scope. */
     private fun castScope(peerId: String): Scope? = scopes.firstOrNull { it.peerId == peerId && !it.retiring && !it.pair }
 
     /**
@@ -1213,6 +1256,18 @@ class ScopeSync(
             val conn = connection ?: return false
             return scope.belongsAt(url) && spoolDigests.containsKey(scope.idHex) && conn.canSig(scope.idHex)
         }
+
+        /** Whether this worker's live connection advertised sigs (§7.8): a direct link's signal goes as a sig here, never a cast. */
+        fun advertisesSig(): Boolean = connection?.takeIf { it.isReady }?.sig != null
+
+        /**
+         * Whether a direct link's signal for [scope] would leave here (C-7.8-17): as a sig where the hello advertised sigs
+         * ([canSig]), else as a cast ([canCast], with the peer's ticket flag [peerTicketed]).
+         */
+        fun canSignal(
+            scope: Scope,
+            peerTicketed: Boolean,
+        ): Boolean = if (advertisesSig()) canSig(scope) else canCast(scope, peerTicketed)
 
         /** Sends one sealed sig for [scope] on the live connection; false when it would not leave here. */
         fun sigOut(

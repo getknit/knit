@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.inet.LinkOutcome
 import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.SpoolCastInfo
+import app.getknit.knit.mesh.spool.SpoolSigInfo
 import app.getknit.knit.mesh.spool.SpoolTicket
 import app.getknit.knit.mesh.spool.SpoolTickets
 import app.getknit.knit.mesh.spool.SpoolTicketsTest
@@ -263,6 +264,38 @@ class InternetLinkLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 4) { it.dmWith(if (it === alice) bob else alice) }
             val second = alice.ownMessageId(alice.dmWith(bob), "second")
             assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), second))
+        }
+
+    /**
+     * The signal lane (spec §7.8, C-7.8-17): neither phone holds a ticket, and the relay sells its casts, so a cast offer
+     * could not leave. It advertises sigs, which no ticket gates, so Alice's demand offers over a sig, Bob answers over
+     * one, and the link comes up and carries the DM. No cast could leave here (no ticket); that a spool taking sigs never
+     * gets the cast as well is `ScopeSyncTest`'s, on an ungated spool.
+     */
+    @Test
+    fun aFreePhoneOffersALinkOverTheRelaysSigsWhereItsCastsWantATicket() =
+        runBlocking {
+            val spool =
+                FakeSpool(
+                    cast = SpoolCastInfo(maxBytes = 2_048, rate = 4),
+                    sig = SpoolSigInfo(maxBytes = 8_192, rate = 2),
+                    stun = listOf(LabInternet.STUN_URL),
+                    ent = true,
+                    entGates = SpoolTicket.LEGACY_GATES,
+                )
+            val (alice, bob) = contacts(spool, Nat.PORT_RESTRICTED)
+            val demand = checkNotNull(alice.demand)
+            spool.mute()
+
+            assertTrue(alice.sendDm(bob, "over a free lane"))
+            lab.clock.advance(LinkDemandPolicy.TICK_WAIT_MS)
+            demand.round()
+            awaitLinked(alice, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3) { it.dmWith(if (it === alice) bob else alice) }
+            val sent = alice.ownMessageId(alice.dmWith(bob), "over a free lane")
+            assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), sent))
+            assertTrue("the offer and its answer went as sigs: ${spool.sigsFanned}", spool.sigsFanned >= 2)
+            assertTrue("a cast left with no ticket to carry it: ${spool.casts}", spool.casts.isEmpty())
         }
 
     // A relay that carries casts and frames but takes attachments only from a files ticket, which nobody holds yet.

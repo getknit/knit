@@ -426,7 +426,7 @@ object ScopeFrames {
     }
 
     /**
-     * The signal set (spec §7.8, C-7.8-13), the §4.4 analogue for the sig lane. Only a `typing` cue, in one of two forms:
+     * The signal set (spec §7.8, C-7.8-13), the §4.4 analogue for the sig lane. A `typing` cue, in one of two forms:
      *
      * - on a pair's own DM scope — never a pair scope, which is bootstrap-only (§3.5) — naming no group, with sender and
      *   recipient the scope's two members in the direction [inbound] names: peer to us on the way in, us to the peer on
@@ -434,6 +434,9 @@ object ScopeFrames {
      * - on a group's scope, its group ([TypingContent.groupId], where every port carries a typing cue's group) that
      *   scope's group, addressed to nobody, from a founding-roster member ([Scope.roster], §4.4's reason): another
      *   member on the way in, us on the way out.
+     *
+     * Or a direct link's `link` signal (ADR 2026-10.a5yj), in the DM form only: an offer or an answer is for the one
+     * contact, so never a group's scope.
      *
      * Never the commons, and never a cue whose payload will not decode, which `InboundPipeline.handleTyping` drops as
      * malformed. `isCustodial` is checked as well, belt and braces, as for a cast: a
@@ -446,20 +449,23 @@ object ScopeFrames {
         scope: Scope,
         inbound: Boolean,
     ): Boolean {
-        if (env.type != FrameType.TYPING || FrameType.isCustodial(env.type)) return false
+        if (env.type !in SIG_TYPES || FrameType.isCustodial(env.type)) return false
         if (scope.commonsId != null || scope.pair || env.group != null) return false
-        val cueGroup = (WireCodec.decodeChecked<TypingContent>(env.payload) ?: return false).groupId
         val peerId = scope.peerId
+        if (env.type == FrameType.LINK) return peerId != null && dmTravels(env, selfId, peerId, inbound)
+        val cueGroup = (WireCodec.decodeChecked<TypingContent>(env.payload) ?: return false).groupId
         val groupId = scope.groupId
         return when {
-            peerId != null -> cueGroup == null && dmCueTravels(env, selfId, peerId, inbound)
+            peerId != null -> cueGroup == null && dmTravels(env, selfId, peerId, inbound)
             groupId != null -> cueGroup == groupId && groupCueTravels(env, selfId, scope.roster, inbound)
             else -> false
         }
     }
 
-    /** A DM cue between the pair in the direction [inbound] names: peer to us on the way in, us to the peer out. */
-    private fun dmCueTravels(
+    private val SIG_TYPES = setOf(FrameType.TYPING, FrameType.LINK)
+
+    /** A DM frame between the pair in the direction [inbound] names: peer to us on the way in, us to the peer out. */
+    private fun dmTravels(
         env: RelayEnvelope,
         selfId: String,
         peerId: String,

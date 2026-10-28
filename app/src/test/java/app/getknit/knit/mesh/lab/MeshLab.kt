@@ -1429,10 +1429,10 @@ class LabNode internal constructor(
     private inner class ManagerLinkPeers : LinkPeers {
         override suspend fun mayOffer(peerId: String) = manager.mayOfferLink(peerId)
 
-        override fun canCast(
+        override fun canSignal(
             peerId: String,
             peerTicketed: Boolean,
-        ) = manager.canCastTalk(peerId, peerTicketed)
+        ) = manager.canSignalLink(peerId, peerTicketed)
 
         override fun castTicketed() = manager.castTicketed()
 

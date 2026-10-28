@@ -4148,6 +4148,132 @@ class ScopeSyncTest {
             receiver.sync.stop()
         }
 
+    // ---- a direct link's signal (C-7.8-17): a sig where the spool advertises sigs, a cast only where it does not ----
+
+    private fun linkSignal(
+        id: String = fid("ln1"),
+        to: String = bob,
+    ) = RelayEnvelope(
+        type = FrameType.LINK,
+        id = id,
+        senderId = alice,
+        sentAt = now,
+        recipientId = to,
+        payload = ByteArray(48) { it.toByte() },
+    )
+
+    private suspend fun Member.signalLink(
+        env: RelayEnvelope = linkSignal(),
+        peerTicketed: Boolean = false,
+    ): Int = sync.signal(bob, peerTicketed, env, castSig, WireCodec.encodeEnvelope(env))
+
+    @Test
+    fun `a link signal goes as a sig where the spool advertises sigs, never as its cast`() =
+        runTest {
+            val spool = FakeSpool(sig = sigBounds, cast = castBounds)
+            val sender = member(spool, alice, bob)
+            val receiver = member(spool, bob, alice)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertTrue(sender.sync.canSignal(bob, peerTicketed = false))
+            assertEquals(1, sender.signalLink())
+            pump(1)
+            assertEquals(listOf(fid("ln1")), receiver.delivered.map { it.id })
+            assertEquals(1, spool.sigsFanned)
+            assertEquals("a spool that takes sigs is never sent the cast as well", 0, spool.castsFanned)
+            assertTrue(spool.casts.isEmpty())
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    /** S-7.8-4 for the link: on a spool whose casts want a ticket nobody holds, a free phone still offers over its sigs. */
+    @Test
+    fun `a free phone signals a link over sigs where casts want a ticket`() =
+        runTest {
+            val spool =
+                FakeSpool(
+                    sig = sigBounds,
+                    cast = castBounds,
+                    ent = true,
+                    entGates = SpoolTicket.LEGACY_GATES or SpoolTicket.FL_FILES,
+                )
+            val sender = member(spool, alice, bob)
+            val receiver = member(spool, bob, alice)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertFalse("casts here want a ticket nobody holds", sender.sync.canCast(bob, peerTicketed = false))
+            assertTrue(sender.sync.canSignal(bob, peerTicketed = false))
+            assertEquals(1, sender.signalLink())
+            pump(1)
+            assertEquals(listOf(fid("ln1")), receiver.delivered.map { it.id })
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    @Test
+    fun `a link signal falls back to a cast only on a spool without sigs`() =
+        runTest {
+            val withSigs = FakeSpool(sig = sigBounds, cast = castBounds)
+            val castsOnly = FakeSpool(cast = castBounds)
+            val urls = listOf("ws://one.test/spool/v1", "ws://two.test/spool/v1")
+            val relays = Relays(mapOf(urls[0] to withSigs, urls[1] to castsOnly))
+            val sender = member(withSigs, alice, bob, dialer = relays, urls = urls)
+            val receiver = member(withSigs, bob, alice, dialer = relays, urls = urls)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(2, sender.signalLink())
+            pump(1)
+            assertEquals(1, withSigs.sigsFanned)
+            assertEquals(0, withSigs.castsFanned)
+            assertEquals(1, castsOnly.castsFanned)
+            assertTrue("a spool that never advertised sigs is sent none", castsOnly.sigs.isEmpty())
+            // Both copies are the same frame; the router behind `deliver` keeps one (C-7.8-15).
+            assertEquals(listOf(fid("ln1"), fid("ln1")), receiver.delivered.map { it.id })
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    @Test
+    fun `no lane, no signal, and nothing outside the pair's DM is sent`() =
+        runTest {
+            // A spool that advertises neither lane carries no signal: the links read that as no attempt.
+            val bare = FakeSpool()
+            val sender = member(bare, alice, bob)
+            sender.sync.start(backgroundScope)
+            pump()
+            // Connected, so what follows is "no lane advertised", never "not connected".
+            assertTrue(
+                sender.sync
+                    .status()
+                    .single()
+                    .connected,
+            )
+            assertFalse(sender.sync.canSignal(bob, peerTicketed = false))
+            assertEquals(0, sender.signalLink())
+            sender.sync.stop()
+
+            val spool = FakeSpool(sig = sigBounds, cast = castBounds)
+            val other = member(spool, alice, bob)
+            other.sync.start(backgroundScope)
+            pump()
+            // A lane is open, so it is the set that refuses: a signal addressed to a third party, or a chat frame, goes
+            // through neither lane.
+            assertTrue(other.sync.canSignal(bob, peerTicketed = false))
+            val stray = linkSignal(to = carol)
+            assertEquals(0, other.sync.signal(bob, false, stray, castSig, WireCodec.encodeEnvelope(stray)))
+            val chat = dmFrame(fid("c1"), alice, bob).envelope
+            assertEquals(0, other.sync.signal(bob, false, chat, castSig, WireCodec.encodeEnvelope(chat)))
+            assertTrue("a sig leaked: ${spool.sigs}", spool.sigs.isEmpty())
+            assertTrue("a cast leaked: ${spool.casts}", spool.casts.isEmpty())
+            other.sync.stop()
+        }
+
     /** The DM fixture's scope, as both members derive it: what a hostile spool's own sig is sealed under. */
     private fun dmScope() =
         Scope(

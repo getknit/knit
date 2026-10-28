@@ -42,7 +42,7 @@ class DirectLinksTest {
         val lines = mutableListOf<FieldEvent>()
         var enabled = true
         var qualifies = true
-        var castOk = true
+        var signalOk = true
         var casts = 0
     }
 
@@ -58,10 +58,10 @@ class DirectLinksTest {
                 object : LinkPeers {
                     override suspend fun mayOffer(peerId: String) = me.qualifies
 
-                    override fun canCast(
+                    override fun canSignal(
                         peerId: String,
                         peerTicketed: Boolean,
-                    ) = me.castOk
+                    ) = me.signalOk
 
                     override fun castTicketed() = false
 
@@ -72,7 +72,7 @@ class DirectLinksTest {
                         signal: LinkSignal,
                         peerTicketed: Boolean,
                     ): Boolean {
-                        if (!me.castOk) return false
+                        if (!me.signalOk) return false
                         me.casts++
                         val bytes = checkNotNull(LinkSignals.encode(signal)) { "a well-formed signal" }
                         scope.launch {
@@ -157,7 +157,7 @@ class DirectLinksTest {
             a.qualifies = false
             assertEquals(LinkOutcome.NOT_QUALIFIED, a.links.offer(b.id))
             a.qualifies = true
-            a.castOk = false
+            a.signalOk = false
             assertEquals(LinkOutcome.NO_CAST, a.links.offer(b.id))
             assertEquals(0, a.casts)
             assertEquals(LinkOutcome.OFF, a.links.offer(a.id))

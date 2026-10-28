@@ -62,7 +62,9 @@ lines.
   `ScopeFrames.sigEligible` / `openSig` — or how a typing cue is sent or shown (`MeshManager.sendTyping`,
   `InboundPipeline.handleTyping`, `SettingsStore.typingIndicatorsEnabled`):** READ ADR 2026-10.97vs and spec §7.8
   (knit-spool ADR 2026-10.2q49 is the spool half). A sig is a cast's lane with no ticket (S-7.8-4), budgets and a
-  seal (`0x05`) of its own, and one signal kind today, a `typing` cue on a DM or group scope (C-7.8-13). A new kind
+  seal (`0x05`) of its own, and two signal kinds today (C-7.8-13): a `typing` cue on a DM or group scope, and a direct
+  link's `link` signal on the DM scope, which goes as a sig where a spool advertises sigs and as a cast only where not
+  (C-7.8-17, `ScopeSync.signal`; ADR 2026-10.a5yj, `.agents/context/direct-links.md`). A new kind
   is a revision of `sigEligible` and C-7.8-13, never a widened cast or a stored frame, and nothing custodial ever
   joins the set. A sig is delivered `ttl = 0` like a cast and is never presence (ADR 2026-10.fw8g). The Typing
   indicators switch stops cues on every plane, and `handleTyping` shows none from a blocked sender or in a message

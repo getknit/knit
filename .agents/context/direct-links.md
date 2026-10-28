@@ -54,11 +54,14 @@ and the entry is fixed.
   TTL rather than the 15-min window — never a memo of what was asked, never a count (FETCHING is asked again), never a
   group's picture, and never an attachment that is not stuck, so a sender's `DirectLink` holder row means the link
   carried it. The spool plane's next look (`reopenUploads`, the hourly recheck) then settles it PROVED (ADR 2026-10.vy27).
-- **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`
-  arm or `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.castEligible`:** READ ADR 2026-10.a5yj
-  (and its lane-key amendment once recorded), `docs/DIRECT_LINKS.md` §2 and §5 and `docs/VOICE_CALLS.md` §2.7. The
-  signal is cast-only and signed (`MeshRouter` never relays or hands one on), sealed on the DM ratchet with
-  `confirmedOnly` — never under our own unanswered reset, and nothing is sealed while no spool would take the cast — and
+- **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal` / `canSignalLink`,
+  `ScopeSync.signal` / `canSignal`, `LinkPeers.canSignal`, `InboundPipeline`'s `link` arm or `onLinkSignal`,
+  `mesh/crypto/LinkKeys` or the `link` halves of `ScopeFrames.castEligible` / `sigEligible`:** READ ADR 2026-10.a5yj
+  (its lane-key and 2026-10-28 signal-lane amendments), `docs/DIRECT_LINKS.md` §2 and §5, spec §7.8 (C-7.8-13,
+  C-7.8-17) and `docs/VOICE_CALLS.md` §2.7. The signal rides a spool's live lanes only and is signed (`MeshRouter`
+  never relays or hands one on): a sig through every spool that advertises sigs, a cast only through one that does
+  not, never both through one spool — so a free phone offers wherever a spool has sigs. Sealed on the DM ratchet with
+  `confirmedOnly` — never under our own unanswered reset, and nothing is sealed while no lane would take it — and
   a failed open is never reset evidence. Lane keys come from both sides' fresh `k`, bound to the attempt id and both ids
   by role, never from the pairwise root. One lane per attempt, its counter shared by every path; a retry is a new id.
 - **When touching `di/DirectLinkWiring` (`directLinkModule`, `onLinkSignal`, `MeshLinkPeers`),

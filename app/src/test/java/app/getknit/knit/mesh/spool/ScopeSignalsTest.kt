@@ -16,8 +16,8 @@ import org.junit.Test
 
 /**
  * The signal set of `docs/SPOOL_PROTOCOL.md` §7.8 (C-7.8-13, C-7.8-14): a `typing` cue, on a pair's own DM scope or a
- * group's, never stored. [ScopeFramesTest]'s §4.4 matrix for the lane a spool never stores and no ticket gates, both
- * directions, every wrong scope kind, and the opened wire.
+ * group's, or a direct link's `link` signal on the DM scope, never stored. [ScopeFramesTest]'s §4.4 matrix for the lane
+ * a spool never stores and no ticket gates, both directions, every wrong scope kind, and the opened wire.
  */
 class ScopeSignalsTest {
     private val alice = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -129,6 +129,53 @@ class ScopeSignalsTest {
             )
         assertFalse(ScopeFrames.sigEligible(rostered, alice, groupScope(), inbound = true))
         assertFalse(ScopeFrames.sigEligible(typing(from = bob, to = alice, payload = byteArrayOf(0x42)), alice, scope(), inbound = true))
+    }
+
+    private fun link(
+        from: String,
+        to: String?,
+        group: GroupInfo? = null,
+    ) = RelayEnvelope(
+        type = FrameType.LINK,
+        id = frameIdOf("ln1"),
+        senderId = from,
+        sentAt = 7L,
+        recipientId = to,
+        group = group,
+        payload = ByteArray(48) { it.toByte() },
+    )
+
+    @Test
+    fun `the signal set takes a direct link's signal between the pair, on the DM scope only`() {
+        // ADR 2026-10.a5yj: an offer or an answer, sealed on the ratchet, so its payload is no cue to decode.
+        assertTrue(ScopeFrames.sigEligible(link(from = bob, to = alice), alice, scope(), inbound = true))
+        assertTrue(ScopeFrames.sigEligible(link(from = alice, to = bob), alice, scope(), inbound = false))
+        // The wrong way round for the direction, a third party, and one addressed to nobody.
+        assertFalse(ScopeFrames.sigEligible(link(from = alice, to = bob), alice, scope(), inbound = true))
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = alice), alice, scope(), inbound = false))
+        assertFalse(ScopeFrames.sigEligible(link(from = mallory, to = alice), alice, scope(), inbound = true))
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = null), alice, scope(), inbound = true))
+        // Never a group's scope, the pair scope or the commons: a link is for the one contact.
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = alice), alice, groupScope(), inbound = true))
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = null), alice, groupScope(), inbound = true))
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = alice), alice, pairScope(), inbound = true))
+        assertFalse(ScopeFrames.sigEligible(link(from = bob, to = alice), alice, commonsScope(), inbound = true))
+        val rostered = link(from = bob, to = alice, group = GroupInfo(id = groupId, members = founding.toList(), createdBy = alice))
+        assertFalse(ScopeFrames.sigEligible(rostered, alice, scope(), inbound = true))
+    }
+
+    @Test
+    fun `an opened link sig is a delivery to this phone alone`() {
+        val env = link(from = bob, to = alice)
+        val signed = WireCodec.encodeEnvelope(env)
+        val sig = ByteArray(ScopeCrypto.SIG_BYTES) { 3 }
+        val opened = ScopeFrames.openSig(scope(), alice, ScopeFrames.sealSig(scope(), sig, signed))
+        assertEquals(FrameType.LINK, opened!!.env.type)
+        assertEquals(0, opened.wire.ttl)
+        assertFalse(opened.wire.relay)
+        assertArrayEquals(sig, opened.wire.sig)
+        // Sealed as a cast it is no sig: the lanes' seals never open as each other.
+        assertNull(ScopeFrames.openSig(scope(), alice, ScopeFrames.sealCast(scope(), sig, signed)))
     }
 
     @Test

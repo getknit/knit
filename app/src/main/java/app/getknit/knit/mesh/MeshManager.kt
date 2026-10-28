@@ -4344,17 +4344,27 @@ class MeshManager(
     fun castTicketed(): Boolean = scopeSync?.castTicketed() == true
 
     /**
-     * Casts one direct-link [signal] (an OFFER or an ANSWER, ADR 2026-10.a5yj, experimental) to [peerId] through the
-     * spools, with the peer's ticket flag [peerTicketed] as [sendCallTalk] reads it. True when at least one spool took
-     * the cast. Cast-only by design: what the signal carries — this phone's addresses and half a lane's key — is for
-     * the one contact and the next ten seconds, so it never rides the radios, custody or a chat ctl, and a spool that
-     * will not carry it means no attempt, never a fallback.
+     * Whether a direct link's signal to [peerId] could leave through a connected spool now ([ScopeSync.canSignal]): as a
+     * sig where a spool advertises sigs, else as a cast with the peer's ticket flag [peerTicketed]. False without the plane.
+     */
+    fun canSignalLink(
+        peerId: String,
+        peerTicketed: Boolean,
+    ): Boolean = scopeSync?.canSignal(peerId, peerTicketed) == true
+
+    /**
+     * Sends one direct-link [signal] (an OFFER or an ANSWER, ADR 2026-10.a5yj, experimental) to [peerId] through the
+     * spools' live lanes ([ScopeSync.signal], C-7.8-17): as a sig through every spool that advertises sigs, which no
+     * ticket gates, and as a cast only through one that does not, with the peer's ticket flag [peerTicketed] as
+     * [sendCallTalk] reads it. True when at least one spool took it. Live-only by design: what the signal carries — this
+     * phone's addresses and half a lane's key — is for the one contact and the next ten seconds, so it never rides the
+     * radios, custody or a chat ctl, and no spool that will carry it means no attempt, never a fallback.
      *
-     * Nothing is sealed unless it can go, so the ratchet moves only for a cast a spool would take: links wired here,
-     * never to ourselves, a cast available now ([ScopeSync.canCast], asked before the seal), and then [linkSignalFrame]'s
-     * refusals. The window between the ask and the cast (a spool dropping in between) spends one chain key on nothing,
-     * a hole the peer's chain reads past. Each call is one frame under a fresh id, sealed once and never re-sent: a
-     * retry is a new attempt the link layer paces.
+     * Nothing is sealed unless it can go, so the ratchet moves only for a signal a spool would take: links wired here,
+     * never to ourselves, a lane available now ([ScopeSync.canSignal], asked before the seal), and then
+     * [linkSignalFrame]'s refusals. The window between the ask and the send (a spool dropping in between) spends one
+     * chain key on nothing, a hole the peer's chain reads past. Each call is one frame under a fresh id, sealed once
+     * and never re-sent: a retry is a new attempt the link layer paces.
      */
     suspend fun sendLinkSignal(
         peerId: String,
@@ -4362,13 +4372,13 @@ class MeshManager(
         peerTicketed: Boolean,
     ): Boolean {
         val sync = scopeSync ?: return false
-        if (peerId == identity.nodeId() || !sync.canCast(peerId, peerTicketed)) return false
+        if (peerId == identity.nodeId() || !sync.canSignal(peerId, peerTicketed)) return false
         val (env, wire) = linkSignalFrame(peerId, signal) ?: return false
-        return sync.cast(peerId, peerTicketed, env, wire.sig, wire.signed) > 0
+        return sync.signal(peerId, peerTicketed, env, wire.sig, wire.signed) > 0
     }
 
     /**
-     * The signed `link` frame [sendLinkSignal] casts, or null with nothing sealed. The payload is [signal]'s CBOR
+     * The signed `link` frame [sendLinkSignal] sends, or null with nothing sealed. The payload is [signal]'s CBOR
      * ([LinkSignals]) sealed on the DM ratchet, laid out as a walkie chunk's ([TalkSeal] under v3, else a [ChatContent]),
      * the AAD binding the frame id, both ends and the stamp. Refused, before any seal:
      *  - when this build does not wire links ([Protocol.CAP_INET_LINK] absent from [extraCapabilities]), or the

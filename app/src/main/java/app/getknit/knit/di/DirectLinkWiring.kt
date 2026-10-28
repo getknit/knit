@@ -182,10 +182,10 @@ private class MeshLinkPeers(
 
     override suspend fun mayOffer(peerId: String) = mesh.mayOfferLink(peerId)
 
-    override fun canCast(
+    override fun canSignal(
         peerId: String,
         peerTicketed: Boolean,
-    ) = mesh.canCastTalk(peerId, peerTicketed)
+    ) = mesh.canSignalLink(peerId, peerTicketed)
 
     override fun castTicketed() = mesh.castTicketed()
 

@@ -318,8 +318,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   phone offered, `outcome`, `path`
   V6_TEMPORARY / V6 / HOST / V4_REFLEXIVE / PEER_REFLEXIVE, `peerNet`, `ms`, `rtt`). Never an address: the oracle
   for a trial is `tries` on both phones plus their `link_try` / `link_end` field-log lines. Both phones need the switch
-  on, a confirmed DM session, a connected spool that carries casts, and each other's `CAP_INET_LINK`; a `try` that
-  answers NOT_QUALIFIED or NO_CAST names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
+  on, a confirmed DM session, a connected spool that carries the signal (sigs, which no ticket gates, or else casts,
+  which may want one), and each other's `CAP_INET_LINK`; a `try` that answers NOT_QUALIFIED or NO_CAST (no lane would
+  carry it) names which. Negative control: `op off` on the answerer, then `try` — NO_ANSWER
   after 15 s, and the answerer's `tries` stays empty. **How long an idle path lives** (the keepalive question): `--es op
   quiet --ez on true` on **both** phones before the link is made (memory only; links made after it never idle out, send
   no keepalive and never close for silence), `try`, then `--es op gaps --es peer <nodeId> [--es gaps 15,30,60,120,240]` (seconds) on the

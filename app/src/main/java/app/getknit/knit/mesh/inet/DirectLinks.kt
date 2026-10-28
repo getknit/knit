@@ -20,7 +20,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
-/** How a direct link attempt ended, for the field log and the debug bridge. */
+/**
+ * How a direct link attempt ended, for the field log and the debug bridge. [NO_CAST] keeps its name, a field-log and
+ * bridge string, though it now means no spool's live lane would carry the signal: no sig, and no cast either (C-7.8-17).
+ */
 enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_CAST, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED }
 
 /** The path a link came up on: a candidate's kind, or an address the peer never listed. */
@@ -43,7 +46,7 @@ enum class LinkNet {
     }
 }
 
-/** What direct links need from the rest of the app: who qualifies, the cast lane, and the spools' STUN servers. */
+/** What direct links need from the rest of the app: who qualifies, the spools' live lanes, and their STUN servers. */
 interface LinkPeers {
     /**
      * Whether [peerId] may be offered a link now: a confirmed DM session (never our own unanswered reset), a contact
@@ -51,8 +54,11 @@ interface LinkPeers {
      */
     suspend fun mayOffer(peerId: String): Boolean
 
-    /** Whether a cast to [peerId] would be taken by a connected spool now, given the peer's ticket hint. */
-    fun canCast(
+    /**
+     * Whether a signal to [peerId] would be taken by a connected spool now: as a sig where a spool advertises sigs, which
+     * no ticket gates, else as a cast, given the peer's ticket hint (spec C-7.8-17).
+     */
+    fun canSignal(
         peerId: String,
         peerTicketed: Boolean,
     ): Boolean
@@ -63,7 +69,7 @@ interface LinkPeers {
     /** The connected spools' STUN URLs, already narrowed by `call/StunServers`. */
     fun stunUrls(): List<String>
 
-    /** Seals and casts [signal] to [peerId]; false when nothing took it (nothing is sealed then). */
+    /** Seals and sends [signal] to [peerId] as a sig or a cast; false when nothing took it (nothing is sealed then). */
     suspend fun send(
         peerId: String,
         signal: LinkSignal,
@@ -98,7 +104,7 @@ fun interface LaneKeys {
  * link that came up. Pure above its seams ([LinkDatagrams], [LinkPeers], [LaneKeys]), so `DirectLinksTest` runs two of
  * them against each other over `FakeLinkNet`.
  *
- * An attempt is one link id: the offer is cast once under it, the contact answers it once, and the first ANSWER that
+ * An attempt is one link id: the offer is sent once under it, the contact answers it once, and the first ANSWER that
  * opens binds it; a retry is a new link id with fresh keys, never this one again (the lane's nonce rule). Two offers
  * that cross are settled by the node ids: the lower id's offer stands and the other side answers it. A contact that
  * does not answer within [ANSWER_WAIT_MS], or whose punch finds no path, waits [PunchPolicy.backoffMs] before the next
@@ -353,7 +359,7 @@ class DirectLinks(
         if (links.value[peerId]?.state?.value == LinkSession.State.UP) return LinkOutcome.UP
         if (!force && clock() < (nextTryAt[peerId] ?: 0L)) return LinkOutcome.BACKOFF
         if (!peers.mayOffer(peerId)) return LinkOutcome.NOT_QUALIFIED
-        if (!peers.canCast(peerId, false)) return LinkOutcome.NO_CAST
+        if (!peers.canSignal(peerId, false)) return LinkOutcome.NO_CAST
         return null
     }
 
@@ -422,7 +428,7 @@ class DirectLinks(
         }
     }
 
-    // The answer itself, once [answer] has let it through: gather, derive, start punching, cast the ANSWER, run.
+    // The answer itself, once [answer] has let it through: gather, derive, start punching, send the ANSWER, run.
     private suspend fun answerNow(
         offererId: String,
         offer: LinkSignal,
@@ -624,7 +630,7 @@ class DirectLinks(
     private fun bytes(n: Int) = ByteArray(n).also(random::nextBytes)
 
     companion object {
-        /** How long an offer waits for its answer: two casts and the contact's gathering, with room to spare. */
+        /** How long an offer waits for its answer: two signals and the contact's gathering, with room to spare. */
         const val ANSWER_WAIT_MS = 15_000L
 
         /** Most answers to one contact in an hour that may come to nothing (no path, or a link that carried no data). */
