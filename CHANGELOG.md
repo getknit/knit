@@ -35,6 +35,9 @@ document:
   to it. Each chat holds three pins, and for now they stay on your phone: nobody else in the chat sees them.
 - You can now see when a contact or group member is typing over an internet relay, and they can see when you
   are. A new Typing indicators switch in Settings turns this off both ways.
+- Stable releases on GitHub now include a slim APK, about 49 MB smaller, that leaves out internet relays,
+  calls, transcription and Knit Anywhere. You can switch between it and the full app without losing your
+  messages.
 
 ### Changed
 

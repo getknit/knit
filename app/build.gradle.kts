@@ -67,13 +67,22 @@ fun releaseSigningCred(
 val bundleRequested = gradle.startParameter.taskNames.any { it.contains("bundle", ignoreCase = true) }
 val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toBoolean() ?: bundleRequested
 
+// The slim APK: `-Pslim=true` is a preset for the core radio messenger, which every stable GitHub Release ships beside
+// the full APK (`knit-X.Y.Z-slim.apk`, .github/workflows/release.yml). It defaults the Internet plane (relays, link
+// previews), both call kinds, speech and Knit Anywhere to OFF, and tags the versionName `-slim` so About, crash reports
+// and a shared APK name it. Each feature's own flag still wins. Same applicationId and key as the full build, so the
+// two install over each other and keep the user's data. Absent, it changes nothing: F-Droid's -P-free rebuild stays
+// identical. See .agents/context/distribution.md.
+val slim = (project.findProperty("slim") as? String)?.toBoolean() == true
+val offWhenSlim: Boolean? = if (slim) false else null
+
 // Internet (spool) relay plane — the whole feature's visibility switch, read here because both
 // defaultConfig and buildTypes.release need it. Null means "no opinion", which resolves to ON
 // everywhere as of 2.4.0 (ADR 064 — the feature is introduced, so the switch it hid is now the user's
 // own, not the build's); `-PinternetPlane=true|false` overrides either way. See the BuildConfig fields
 // below for what the flag actually gates, and note that ON here means *visible and reachable*, never
 // *enabled*: `SettingsStore.spoolEnabled` still defaults false behind a consent sheet.
-val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolean()
+val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolean() ?: offWhenSlim
 
 // LoRa (Meshtastic-over-BLE) plane — the same kind of visibility switch, now ON everywhere as of 2.5.0
 // (ADR 2026-09.6gtm), overridable with `-PloraPlane=true|false`. It gates the LoRa child in the composite
@@ -172,13 +181,14 @@ val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 // its service, receiver and permissions). Main compiles in every variant against `compileOnly` WebRTC, core-telecom and
 // Moonshine; off, `di/CallWiring` builds none of a feature's graph and R8 drops the classes only that graph reached. The
 // debug build packages all three libraries whatever the flags say (it is locked); a release-shaped build with
-// libraries other than the default's (WebRTC and core-telecom) is a maintainer's, so its runtime classpaths go unlocked
-// (`dependencyLocking` below). The defaults live in source so F-Droid's -P-free rebuild stays identical.
-val calls = (project.findProperty("calls") as? String)?.toBoolean()
+// libraries other than the default's (WebRTC and core-telecom) is a maintainer's or the slim APK, so its runtime
+// classpaths go unlocked (`dependencyLocking` below). The defaults live in source so F-Droid's -P-free rebuild stays
+// identical.
+val calls = (project.findProperty("calls") as? String)?.toBoolean() ?: offWhenSlim
 val liveCalls = (project.findProperty("liveCalls") as? String)?.toBoolean() ?: calls
 val meshCalls = (project.findProperty("meshCalls") as? String)?.toBoolean() ?: calls
-val stt = (project.findProperty("stt") as? String)?.toBoolean()
-val knitAnywhere = (project.findProperty("knitAnywhere") as? String)?.toBoolean()
+val stt = (project.findProperty("stt") as? String)?.toBoolean() ?: offWhenSlim
+val knitAnywhere = (project.findProperty("knitAnywhere") as? String)?.toBoolean() ?: offWhenSlim
 val liveCallsInDebug = liveCalls ?: true
 val liveCallsInRelease = liveCalls ?: true
 val meshCallsInDebug = meshCalls ?: true
@@ -283,6 +293,7 @@ android {
         // with `-Pknit.versionCode=$CI_PIPELINE_IID` without editing this file.
         versionCode = providers.gradleProperty("knit.versionCode").get().toInt()
         versionName = providers.gradleProperty("knit.versionName").get()
+        if (slim) versionNameSuffix = "-slim"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Android Test Orchestrator isolation: wipe app data (identity keystore + SQLCipher DB + DataStore)
@@ -1102,10 +1113,12 @@ dependencyLocking {
 }
 
 // A release-shaped build whose runtime differs from the default's (`-PliveCalls=false`, `-PmeshCalls=false`,
-// `-Pstt=true`) is a maintainer's: it drops WebRTC or core-telecom from, or adds Moonshine to, the runtime classpaths the
-// lock state records, so those go unlocked rather than lock a second runtime. `-Ptranslate=true` adds translate-native to
-// every build type's, debug's included, so it unlocks those too. The versions still come from the catalog; a -P-free
-// build is never affected. Regenerate the lockfile with no such flag set, `~/.gradle/gradle.properties` included.
+// `-Pstt=true`, `-Pslim=true`) is a maintainer's or the slim APK: it drops WebRTC or core-telecom from, or adds Moonshine
+// to, the runtime classpaths the lock state records, so those go unlocked rather than lock a second runtime. The slim
+// APK only removes libraries, and `gradle/verification-metadata.xml` still pins the bytes of everything it resolves.
+// `-Ptranslate=true` adds translate-native to every build type's, debug's included, so it unlocks those too. The versions
+// still come from the catalog; a -P-free build is never affected. Regenerate the lockfile with no such flag set,
+// `~/.gradle/gradle.properties` included.
 if (!liveCallsInRelease || !meshCallsInRelease || sttInRelease || translate) {
     configurations.configureEach {
         if (name.endsWith("RuntimeClasspath") && (translate || !name.startsWith("debug"))) {

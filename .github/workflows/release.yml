@@ -29,6 +29,11 @@ name: Release
 #   build-fdroid  F-Droid's own buildserver image, NO secrets -> the same APK, unsigned
 #   publish       proves those two are one APK modulo the signature, then cuts the Release
 #
+# A stable tag also ships the slim APK (knit-X.Y.Z-slim.apk, `-Pslim=true`): the core radio messenger without
+# relays, calls, speech or Knit Anywhere, for people who want only that. Same key and versionCode, so it swaps in
+# place with the full APK either way. It passes the same gates, through its own build-fdroid matrix leg. F-Droid
+# never sees it: `Binaries:` names the full APK only.
+#
 # The point of build-fdroid is that a GitHub runner is a *third* build environment. Reproducibility was
 # only ever proven between the maintainer's machine and F-Droid's container; nothing says a runner agrees
 # with either. Rather than find out when F-Droid's verification fails — after the tag and Release are
@@ -60,7 +65,9 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       version_code: ${{ steps.check.outputs.version_code }}
       apk_name: ${{ steps.check.outputs.apk_name }}
+      slim_apk_name: ${{ steps.check.outputs.slim_apk_name }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      variants: ${{ steps.check.outputs.variants }}
     steps:
       - uses: actions/checkout@v7
       # Explicit, so `pip install` targets a tool-cache Python rather than the runner's system Python,
@@ -79,7 +86,7 @@ jobs:
           set -euo pipefail
           pip install --quiet pyyaml
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import os, pathlib, re, sys, yaml
+          import json, os, pathlib, re, sys, yaml
 
           tag = os.environ["TAG"]
           props = dict(
@@ -201,6 +208,10 @@ jobs:
           if not prerelease and f"/releases/download/{tag}/" not in url:
               errs.append(f"Binaries: URL does not point at {tag}: {url}")
           apk_name = url.rsplit("/", 1)[-1]
+          if not apk_name.endswith(".apk"):
+              errs.append(f"Binaries: URL does not name an .apk: {url}")
+          # The slim APK rides beside the full one on a stable Release only; F-Droid never fetches it.
+          slim_apk_name = apk_name.removesuffix(".apk") + "-slim.apk"
 
           if errs:
               for e in errs:
@@ -211,7 +222,9 @@ jobs:
           print(f"version={version}")
           print(f"version_code={code}")
           print(f"apk_name={apk_name}")
+          print(f"slim_apk_name={slim_apk_name}")
           print(f"prerelease={'true' if prerelease else 'false'}")
+          print("variants=" + json.dumps(["full"] if prerelease else ["full", "slim"]))
           print(f"OK: {kind} {tag} -> {apk_name} (versionCode {code})", file=sys.stderr)
           PY
 
@@ -244,72 +257,113 @@ jobs:
           fi
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/knit-dist.jks"
 
+      # Each build is copied out before the next one overwrites app-release.apk and its mapping.
       - name: assembleRelease
         env:
           KNIT_SIGNING_STORE_FILE: ${{ runner.temp }}/knit-dist.jks
           KNIT_SIGNING_STORE_PASSWORD: ${{ secrets.KNIT_DIST_STORE_PASSWORD }}
           KNIT_SIGNING_KEY_ALIAS: ${{ secrets.KNIT_DIST_KEY_ALIAS }}
           KNIT_SIGNING_KEY_PASSWORD: ${{ secrets.KNIT_DIST_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleRelease --console=plain --stacktrace
+          VERSION: ${{ needs.preflight.outputs.version }}
+          APK: ${{ needs.preflight.outputs.apk_name }}
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleRelease --console=plain --stacktrace
+          [ -f "$APK_DIR/app-release.apk" ] \
+            || { echo "::error::$APK_DIR/app-release.apk not produced — did signing credentials resolve?"; exit 1; }
+          mkdir -p out
+          cp "$APK_DIR/app-release.apk" "out/$APK"
+          # R8 obfuscates, so this is the only way to symbolicate a crash from this build. Keep it forever.
+          # ~63 MB raw and highly compressible, so ship it gzipped rather than doubling the release size.
+          gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "out/mapping-$VERSION.txt.gz"
+
+      # The slim APK, stable tags only. Its versionName carries `-slim`, so a crash report from it names
+      # mapping-<version>-slim.txt.gz (crash/CrashStore.kt builds the name from the versionName).
+      - name: assembleRelease (slim)
+        if: needs.preflight.outputs.prerelease != 'true'
+        env:
+          KNIT_SIGNING_STORE_FILE: ${{ runner.temp }}/knit-dist.jks
+          KNIT_SIGNING_STORE_PASSWORD: ${{ secrets.KNIT_DIST_STORE_PASSWORD }}
+          KNIT_SIGNING_KEY_ALIAS: ${{ secrets.KNIT_DIST_KEY_ALIAS }}
+          KNIT_SIGNING_KEY_PASSWORD: ${{ secrets.KNIT_DIST_KEY_PASSWORD }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SLIM_APK: ${{ needs.preflight.outputs.slim_apk_name }}
+        run: |
+          set -euo pipefail
+          rm -f "$APK_DIR/app-release.apk" app/build/outputs/mapping/release/mapping.txt
+          ./gradlew :app:assembleRelease -Pslim=true --console=plain --stacktrace
+          [ -f "$APK_DIR/app-release.apk" ] || { echo "::error::slim $APK_DIR/app-release.apk not produced"; exit 1; }
+          cp "$APK_DIR/app-release.apk" "out/$SLIM_APK"
+          gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "out/mapping-$VERSION-slim.txt.gz"
 
       - name: Destroy keystore
         if: always()
         run: shred -u "$RUNNER_TEMP/knit-dist.jks" 2>/dev/null || rm -f "$RUNNER_TEMP/knit-dist.jks"
 
-      - name: Verify the APK before anyone can download it
+      - name: Verify the APKs before anyone can download them
         env:
-          VERSION: ${{ needs.preflight.outputs.version }}
+          APK: ${{ needs.preflight.outputs.apk_name }}
+          SLIM_APK: ${{ needs.preflight.outputs.slim_apk_name }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           set -euo pipefail
-          apk="$APK_DIR/app-release.apk"
-          [ -f "$apk" ] || { echo "::error::$apk not produced — did signing credentials resolve?"; exit 1; }
           # printf over a glob, not `ls` (SC2012). `tail -1` drains its input, so no SIGPIPE here.
           apksigner=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           [ -x "$apksigner" ] \
             || { echo "::error::no apksigner under $ANDROID_HOME/build-tools"; exit 1; }
-
-          # Read each source ONCE into a variable, then match in-shell. Deliberately no `cmd | grep -q`
-          # below: grep -q exits at its first match, SIGPIPEs the writer, and under `set -o pipefail` that
-          # surfaces as a FAILED check — nondeterministically, depending on whether the writer had already
-          # finished. Measured here: identical checks returning 0 and 141 on consecutive ABIs.
-          entries=$(unzip -Z1 "$apk")
-          certs=$("$apksigner" verify --print-certs "$apk") \
-            || { echo "::error::apksigner could not verify $apk"; exit 1; }
-
-          # 1. Signed with the key fdroiddata pins. AllowedAPKSigningKeys is a permanent public commitment;
-          #    an APK signed with anything else (say the Play upload key) cannot be distributed or update
-          #    an existing install, and the mistake is only visible here.
           expected=$(sed -n 's/^AllowedAPKSigningKeys:[[:space:]]*//p' .fdroid.yml)
-          actual=$(awk '/certificate SHA-256 digest:/ {print $NF; exit}' <<<"$certs")
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::signed with ${actual:-<no certificate>} but AllowedAPKSigningKeys pins $expected"
-            exit 1
-          fi
-          echo "signing certificate matches AllowedAPKSigningKeys ($actual)"
 
-          # 2. No VCS stamp. This is the exact entry that broke cross-environment reproducibility once
-          #    (buildTypes.release { vcsInfo { include = false } }); AGP would re-add it if that regressed.
-          case $entries in
-            *META-INF/version-control-info.textproto*)
-              echo "::error::APK contains META-INF/version-control-info.textproto — vcsInfo re-enabled?"
-              exit 1 ;;
-          esac
+          apks=("out/$APK")
+          [ "$PRERELEASE" = true ] || apks+=("out/$SLIM_APK")
+          for apk in "${apks[@]}"; do
+            [ -f "$apk" ] || { echo "::error::$apk missing"; exit 1; }
+            # Read each source ONCE into a variable, then match in-shell. Deliberately no `cmd | grep -q`
+            # below: grep -q exits at its first match, SIGPIPEs the writer, and under `set -o pipefail` that
+            # surfaces as a FAILED check — nondeterministically, depending on whether the writer had already
+            # finished. Measured here: identical checks returning 0 and 141 on consecutive ABIs.
+            entries=$(unzip -Z1 "$apk")
+            certs=$("$apksigner" verify --print-certs "$apk") \
+              || { echo "::error::apksigner could not verify $apk"; exit 1; }
 
-          # 3. Universal APK, all four ABIs. An accidental split would leave most users unable to install
-          #    the single file F-Droid distributes.
-          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            # 1. Signed with the key fdroiddata pins. AllowedAPKSigningKeys is a permanent public commitment;
+            #    an APK signed with anything else (say the Play upload key) cannot be distributed or update
+            #    an existing install, and the mistake is only visible here. The slim APK carries the same key
+            #    so it swaps in place with the full one.
+            actual=$(awk '/certificate SHA-256 digest:/ {print $NF; exit}' <<<"$certs")
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::$apk signed with ${actual:-<no certificate>} but AllowedAPKSigningKeys pins $expected"
+              exit 1
+            fi
+
+            # 2. No VCS stamp. This is the exact entry that broke cross-environment reproducibility once
+            #    (buildTypes.release { vcsInfo { include = false } }); AGP would re-add it if that regressed.
             case $entries in
-              *"lib/$abi/"*) ;;
-              *) echo "::error::no lib/$abi/ in APK — is this still a universal build?"; exit 1 ;;
+              *META-INF/version-control-info.textproto*)
+                echo "::error::$apk contains META-INF/version-control-info.textproto — vcsInfo re-enabled?"
+                exit 1 ;;
             esac
-          done
-          echo "universal APK, no VCS stamp: OK"
 
-          mkdir -p out
-          cp "$apk" "out/${{ needs.preflight.outputs.apk_name }}"
-          # R8 obfuscates, so this is the only way to symbolicate a crash from this build. Keep it forever.
-          # ~63 MB raw and highly compressible, so ship it gzipped rather than doubling the release size.
-          gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "out/mapping-$VERSION.txt.gz"
+            # 3. Universal APK, all four ABIs. An accidental split would leave most users unable to install
+            #    the single file F-Droid distributes.
+            for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+              case $entries in
+                *"lib/$abi/"*) ;;
+                *) echo "::error::no lib/$abi/ in $apk — is this still a universal build?"; exit 1 ;;
+              esac
+            done
+            echo "$apk: signed with AllowedAPKSigningKeys ($actual), universal, no VCS stamp: OK"
+          done
+
+          # 4. The slim APK really is slim: no WebRTC, the one library only calls package. A flag that stopped
+          #    reaching the release build would otherwise ship a full APK under the slim name.
+          if [ "$PRERELEASE" != true ]; then
+            slim_entries=$(unzip -Z1 "out/$SLIM_APK")
+            case $slim_entries in
+              *libjingle_peerconnection_so.so*)
+                echo "::error::$SLIM_APK packages WebRTC — did -Pslim=true stop turning calls off?"; exit 1 ;;
+            esac
+            echo "$SLIM_APK: $(stat -c %s "out/$SLIM_APK") bytes vs $(stat -c %s "out/$APK") for the full APK"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -319,9 +373,14 @@ jobs:
           retention-days: 7
 
   build-fdroid:
-    name: Reproduce unsigned on F-Droid's buildserver
+    name: Reproduce unsigned on F-Droid's buildserver (${{ matrix.variant }})
     needs: preflight
     runs-on: ubuntu-latest
+    # One cold leg per published APK: full always, slim on a stable tag (preflight's `variants`).
+    strategy:
+      fail-fast: true
+      matrix:
+        variant: ${{ fromJSON(needs.preflight.outputs.variants) }}
     # F-Droid's actual build image, so this job answers the only question that matters: will their
     # rebuild of this tag match the bytes we publish? Deliberately has no access to signing secrets.
     container:
@@ -353,11 +412,17 @@ jobs:
       # SDK versions, not the launcher. Verified in this image: Gradle 9.5.0 on its Debian JDK 21, with the
       # daemon JVM resolved from gradle/gradle-daemon-jvm.properties and no foojay download.
       - name: assembleRelease (unsigned)
-        run: ./gradlew :app:assembleRelease --console=plain --stacktrace --no-build-cache
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$VARIANT" = slim ]; then flags+=(-Pslim=true); fi
+          ./gradlew :app:assembleRelease "${flags[@]}" --console=plain --stacktrace --no-build-cache
 
       - uses: actions/upload-artifact@v7
         with:
-          name: fdroid-unsigned
+          name: fdroid-unsigned-${{ matrix.variant }}
           path: ${{ env.APK_DIR }}/app-release-unsigned.apk
           if-no-files-found: error
           retention-days: 7
@@ -383,14 +448,19 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with: { name: signed-release, path: signed }
+      # One directory per leg: unsigned/fdroid-unsigned-full/, unsigned/fdroid-unsigned-slim/.
       - uses: actions/download-artifact@v8
-        with: { name: fdroid-unsigned, path: unsigned }
+        with: { pattern: fdroid-unsigned-*, path: unsigned }
 
       # THE gate. apksigcopier is the same tool fdroidserver's `fdroid verify` uses: it grafts the
       # signature off our APK onto F-Droid's unsigned rebuild and checks the result still verifies —
       # which it only can if every other byte is identical. Passing here means F-Droid's verification
       # of this release will pass too.
-      - name: Signed APK must be F-Droid's rebuild plus a signature
+      - name: Signed APKs must be F-Droid's rebuilds plus a signature
+        env:
+          APK: ${{ needs.preflight.outputs.apk_name }}
+          SLIM_APK: ${{ needs.preflight.outputs.slim_apk_name }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           set -euo pipefail
           pip install --quiet apksigcopier
@@ -399,22 +469,31 @@ jobs:
           [ -x "$build_tools/apksigner" ] \
             || { echo "::error::no apksigner under $ANDROID_HOME/build-tools"; exit 1; }
           export PATH="$build_tools:$PATH"
-          apksigcopier compare \
-            "signed/${{ needs.preflight.outputs.apk_name }}" \
-            unsigned/app-release-unsigned.apk --unsigned
-          echo "reproducible: the published APK is F-Droid's build, signed"
+          apksigcopier compare "signed/$APK" unsigned/fdroid-unsigned-full/app-release-unsigned.apk --unsigned
+          echo "reproducible: $APK is F-Droid's build, signed"
+          if [ "$PRERELEASE" != true ]; then
+            apksigcopier compare "signed/$SLIM_APK" unsigned/fdroid-unsigned-slim/app-release-unsigned.apk --unsigned
+            echo "reproducible: $SLIM_APK is the F-Droid image's -Pslim=true build, signed"
+          fi
 
       - name: Compose release notes
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
           VERSION_CODE: ${{ needs.preflight.outputs.version_code }}
           APK: ${{ needs.preflight.outputs.apk_name }}
+          SLIM_APK: ${{ needs.preflight.outputs.slim_apk_name }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           set -euo pipefail
           cd signed
           sha256sum "$APK" > "$APK.sha256"
           digest=$(cut -d' ' -f1 "$APK.sha256")
+          if [ "$PRERELEASE" != true ]; then
+            sha256sum "$SLIM_APK" > "$SLIM_APK.sha256"
+            slim_digest=$(cut -d' ' -f1 "$SLIM_APK.sha256")
+            full_mb=$(( $(stat -c %s "$APK") / 1048576 ))
+            slim_mb=$(( $(stat -c %s "$SLIM_APK") / 1048576 ))
+          fi
           cert=$(sed -n 's/^AllowedAPKSigningKeys:[[:space:]]*//p' ../.fdroid.yml)
           changelog="../fastlane/metadata/android/en-US/changelogs/$VERSION_CODE.txt"
 
@@ -458,14 +537,23 @@ jobs:
           EOF
             else
               cat <<EOF
-          **\`$APK\`** — \`sha256:$digest\`
+          **\`$APK\`** — \`sha256:$digest\` — $full_mb MB
 
-          Signed with Knit's distribution key (certificate \`$cert\`), the key pinned in F-Droid's
-          \`AllowedAPKSigningKeys\`. CI verified this file is byte-identical, apart from the signature, to
-          an independent unsigned rebuild produced inside F-Droid's own buildserver image — so F-Droid's
-          rebuild-and-compare check resolves to exactly this APK.
+          **\`$SLIM_APK\`** — \`sha256:$slim_digest\` — $slim_mb MB
 
-          \`mapping-$VERSION.txt.gz\` is the R8 deobfuscation map for symbolicating crash reports from this build.
+          The slim APK is Knit's offline messenger and nothing else: Wi-Fi Aware, Bluetooth and LoRa boards,
+          without internet relays, link previews, calls, transcription or Knit Anywhere. It has the same key and
+          version as the full APK, so either one installs over the other and keeps your messages. F-Droid only
+          carries the full APK, and an F-Droid client on the same phone will offer it as the next update; to
+          stay on the slim build, update from this page.
+
+          Both are signed with Knit's distribution key (certificate \`$cert\`), the key pinned in F-Droid's
+          \`AllowedAPKSigningKeys\`. CI verified each file is byte-identical, apart from the signature, to an
+          independent unsigned rebuild produced inside F-Droid's own buildserver image — so F-Droid's
+          rebuild-and-compare check resolves to exactly \`$APK\`.
+
+          \`mapping-$VERSION.txt.gz\` and \`mapping-$VERSION-slim.txt.gz\` are the R8 deobfuscation maps for
+          symbolicating crash reports from each build.
           EOF
             fi
           } > notes.md
@@ -476,10 +564,12 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.preflight.outputs.version }}
           APK: ${{ needs.preflight.outputs.apk_name }}
+          SLIM_APK: ${{ needs.preflight.outputs.slim_apk_name }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           set -euo pipefail
           cd signed
+          assets=("$APK" "$APK.sha256" "mapping-$VERSION.txt.gz")
           if [ "$PRERELEASE" = true ]; then
             # Published, not drafted: nothing in fdroiddata points here, so there is no 404 window to
             # manage, and the whole point of a test build is that testers can fetch it the moment CI is
@@ -492,12 +582,9 @@ jobs:
             # 404 until you click, which is the correct state while fdroiddata still points at the previous
             # version. Drop `--draft` if you'd rather it go straight out.
             flags=(--draft --title "Knit $VERSION")
+            assets+=("$SLIM_APK" "$SLIM_APK.sha256" "mapping-$VERSION-slim.txt.gz")
           fi
-          gh release create "$TAG" "${flags[@]}" \
-            --notes-file notes.md \
-            "$APK" \
-            "$APK.sha256" \
-            "mapping-$VERSION.txt.gz"
+          gh release create "$TAG" "${flags[@]}" --notes-file notes.md "${assets[@]}"
           if [ "$PRERELEASE" = true ]; then
             echo "::notice::Pre-release $TAG published — the sideload URL is live now. F-Droid is untouched."
           else
