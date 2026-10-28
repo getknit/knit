@@ -24,6 +24,8 @@ document:
 
 - Knit no longer closes during a live call on mobile data, or when your phone moves onto mobile data in the
   middle of one.
+- Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
+  which from a chat or Settings left Knit on a blank screen.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

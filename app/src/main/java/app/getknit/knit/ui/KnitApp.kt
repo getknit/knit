@@ -25,6 +25,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -397,7 +398,7 @@ fun KnitApp(startRoute: String? = null) {
                 arguments = listOf(navArgument("restore") { defaultValue = "false" }),
             ) { entry ->
                 BackupScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     restoreOnly = entry.arguments?.getString("restore") == "true",
                 )
             }
@@ -420,9 +421,9 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenWhatsNew = { navController.navigate(Routes.WHATS_NEW) },
                 )
             }
-            composable(Routes.CONTACTS) {
+            composable(Routes.CONTACTS) { entry ->
                 ContactsScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onAddContact = { navController.navigate(Routes.ADD_CONTACT) },
                     // Open the chosen conversation (a peer's node id for a DM, or a freshly created group's
                     // id) and drop the picker from the back stack, so Back from the chat returns to the list.
@@ -433,13 +434,15 @@ fun KnitApp(startRoute: String? = null) {
                     },
                 )
             }
-            composable(Routes.SHARE) {
+            composable(Routes.SHARE) { entry ->
                 ShareTargetScreen(
                     // Abandoning the share clears the inbox so it can't prefill a later chat; the picker
                     // always sits over the chat list, so popping returns there.
                     onBack = {
-                        shareInbox.clear()
-                        navController.popBackStack()
+                        navController.ifOnTop(entry) {
+                            shareInbox.clear()
+                            popBackStack()
+                        }
                     },
                     // Open the chosen conversation and drop the picker; ChatScreen drains the inbox into
                     // its draft on arrival.
@@ -450,9 +453,9 @@ fun KnitApp(startRoute: String? = null) {
                     },
                 )
             }
-            composable(Routes.SEARCH) {
+            composable(Routes.SEARCH) { entry ->
                 SearchScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     // A plain navigate on purpose: the search entry — and its ViewModel, which holds the query —
                     // stays under the thread, so Back returns to the results as they were. No launchSingleTop,
                     // for the reason spelled out on the notification deep link above.
@@ -479,7 +482,7 @@ fun KnitApp(startRoute: String? = null) {
                     conversationId = conversationId,
                     // Navigation hands the value back decoded.
                     jumpToMessageId = backStackEntry.arguments?.getString("messageId"),
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(backStackEntry) },
                     onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     onOpenGroupDetails = { id -> navController.navigate(Routes.groupDetails(id)) },
                     onOpenMessageDetails = { id -> navController.navigate(Routes.messageDetails(id)) },
@@ -492,7 +495,7 @@ fun KnitApp(startRoute: String? = null) {
                 val messageId = backStackEntry.arguments?.getString("messageId") ?: return@composable
                 MessageDetailsScreen(
                     messageId = messageId,
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(backStackEntry) },
                     onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                 )
             }
@@ -503,7 +506,7 @@ fun KnitApp(startRoute: String? = null) {
                 val nodeId = backStackEntry.arguments?.getString("nodeId") ?: return@composable
                 ProfileDetailsScreen(
                     nodeId = nodeId,
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(backStackEntry) },
                     onMessage = { id ->
                         // Nearby, groups, and DMs all share the chat/{conversationId} destination, so
                         // launchSingleTop here would reuse whatever chat sits under this profile — its
@@ -511,11 +514,13 @@ fun KnitApp(startRoute: String? = null) {
                         // the peer's DM (the reported "Message just returns to Nearby" bug). If we arrived
                         // straight from this peer's own DM, just return to it so we don't stack a duplicate;
                         // otherwise open it, replacing the profile so Back lands on the chat we came from.
-                        if (navController.parentIsDmWith(id)) {
-                            navController.popBackStack()
-                        } else {
-                            navController.navigate(Routes.chat(id)) {
-                                popUpTo(Routes.PROFILE_DETAILS) { inclusive = true }
+                        navController.ifOnTop(backStackEntry) {
+                            if (parentIsDmWith(id)) {
+                                popBackStack()
+                            } else {
+                                navigate(Routes.chat(id)) {
+                                    popUpTo(Routes.PROFILE_DETAILS) { inclusive = true }
+                                }
                             }
                         }
                     },
@@ -540,15 +545,15 @@ fun KnitApp(startRoute: String? = null) {
                 val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
                 GroupDetailsScreen(
                     groupId = groupId,
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(backStackEntry) },
                     onOpenMemberProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     // Leaving deletes the thread, so pop past this screen AND the chat, back to the list.
                     onLeft = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
                 )
             }
-            composable(Routes.SETTINGS) {
+            composable(Routes.SETTINGS) { entry ->
                 SettingsScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onOpenProfile = { navController.navigate(Routes.PROFILE) },
                     onOpenRelays = { navController.navigate(Routes.INTERNET_RELAYS) },
                     onOpenLora = { navController.navigate(Routes.LORA_RADIO) },
@@ -560,26 +565,26 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenWhatsNew = { navController.navigate(Routes.WHATS_NEW) },
                 )
             }
-            composable(Routes.WHATS_NEW) {
+            composable(Routes.WHATS_NEW) { entry ->
                 // Reading the screen reads the newest announcement, whichever door it came through.
                 val settings = koinInject<SettingsStore>()
                 LaunchedEffect(Unit) { WhatsNew.latest?.let { settings.markWhatsNewSeen(it.id) } }
                 val context = LocalContext.current
-                WhatsNewScreen(onBack = { navController.popBackStack() }, onOpenUrl = { openUrl(context, it) })
+                WhatsNewScreen(onBack = { navController.popFrom(entry) }, onOpenUrl = { openUrl(context, it) })
             }
-            composable(Routes.PROFILE) {
-                ProfileScreen(onBack = { navController.popBackStack() })
+            composable(Routes.PROFILE) { entry ->
+                ProfileScreen(onBack = { navController.popFrom(entry) })
             }
-            composable(Routes.ABOUT) {
+            composable(Routes.ABOUT) { entry ->
                 AboutScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onOpenLicenses = { navController.navigate(Routes.LICENSES) },
                     onOpenLicense = { navController.navigate(Routes.license(it)) },
                 )
             }
-            composable(Routes.LICENSES) {
+            composable(Routes.LICENSES) { entry ->
                 LicensesScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onOpenLicense = { navController.navigate(Routes.license(it)) },
                 )
             }
@@ -589,16 +594,16 @@ fun KnitApp(startRoute: String? = null) {
             ) { backStackEntry ->
                 val license =
                     backStackEntry.arguments?.getString("licenseId")?.let(License::fromRouteId) ?: return@composable
-                LicenseTextScreen(license = license, onBack = { navController.popBackStack() })
+                LicenseTextScreen(license = license, onBack = { navController.popFrom(backStackEntry) })
             }
             // The Internet-relay plane's editor exists only in builds that introduce the feature — the route
             // is not registered at all when it is dark, so nothing (a restored back stack, a future deep
             // link) can reach a screen whose switch would be inert anyway. Settings hides its row on the same
             // flag, so nothing navigates here. See app/build.gradle.kts for what INTERNET_PLANE gates.
             if (BuildConfig.INTERNET_PLANE) {
-                composable(Routes.INTERNET_RELAYS) {
+                composable(Routes.INTERNET_RELAYS) { entry ->
                     InternetRelayScreen(
-                        onBack = { navController.popBackStack() },
+                        onBack = { navController.popFrom(entry) },
                         onOpenRelay = { navController.navigate(Routes.relayDetail(it)) },
                     )
                 }
@@ -628,42 +633,42 @@ fun KnitApp(startRoute: String? = null) {
             // The LoRa radio screen exists only in builds that introduce the feature; the route is not
             // registered when the flag is off, and Settings hides its row on the same flag.
             if (BuildConfig.LORA_PLANE) {
-                composable(Routes.LORA_RADIO) {
-                    LoraRadioScreen(onBack = { navController.popBackStack() })
+                composable(Routes.LORA_RADIO) { entry ->
+                    LoraRadioScreen(onBack = { navController.popFrom(entry) })
                 }
             }
             // Calls (experimental): only a build that wires live calls or speech has the screen, or the view model it
             // resolves — a build with mesh calls alone has nothing on it to set.
             if (CALL_SETTINGS_WIRED) {
-                composable(Routes.CALLS) {
-                    CallSettingsScreen(onBack = { navController.popBackStack() })
+                composable(Routes.CALLS) { entry ->
+                    CallSettingsScreen(onBack = { navController.popFrom(entry) })
                 }
             }
-            composable(Routes.DIAGNOSTICS) {
+            composable(Routes.DIAGNOSTICS) { entry ->
                 DiagnosticsScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onOpenCrashLog = { navController.navigate(Routes.CRASH_LOG) },
                     onOpenFieldLog = { navController.navigate(Routes.FIELD_LOG) },
                 )
             }
-            composable(Routes.CRASH_LOG) {
-                CrashLogScreen(onBack = { navController.popBackStack() })
+            composable(Routes.CRASH_LOG) { entry ->
+                CrashLogScreen(onBack = { navController.popFrom(entry) })
             }
-            composable(Routes.FIELD_LOG) {
-                FieldLogScreen(onBack = { navController.popBackStack() })
+            composable(Routes.FIELD_LOG) { entry ->
+                FieldLogScreen(onBack = { navController.popFrom(entry) })
             }
-            composable(Routes.YOUR_MESH) {
+            composable(Routes.YOUR_MESH) { entry ->
                 YourMeshScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) },
                 )
             }
-            composable(Routes.BLOCKED_USERS) {
-                BlockedUsersScreen(onBack = { navController.popBackStack() })
+            composable(Routes.BLOCKED_USERS) { entry ->
+                BlockedUsersScreen(onBack = { navController.popFrom(entry) })
             }
-            composable(Routes.MESSAGE_REQUESTS) {
+            composable(Routes.MESSAGE_REQUESTS) { entry ->
                 MessageRequestsScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     // Tapping a request's avatar opens the sender's profile; its Message action accepts the
                     // request and opens the DM (see ProfileDetailsScreen.onMessage).
                     onOpenProfile = { navController.navigate(Routes.profileDetails(it)) },
@@ -677,15 +682,15 @@ fun KnitApp(startRoute: String? = null) {
                     },
                 )
             }
-            composable(Routes.DONATE) {
+            composable(Routes.DONATE) { entry ->
                 DonateScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     rateUrl = remember { reviewPrompter.rateUrl() },
                 )
             }
-            composable(Routes.ADD_CONTACT) {
+            composable(Routes.ADD_CONTACT) { entry ->
                 AddContactScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = { navController.popFrom(entry) },
                     // Land on the new contact's profile — it shows the intro's progress and the Message button —
                     // and drop this screen, so Back returns to wherever the user came from.
                     onImported = { id ->
@@ -714,6 +719,25 @@ fun KnitApp(startRoute: String? = null) {
             onDismiss = { reviewInbox.consume() },
         )
     }
+}
+
+/**
+ * Pops [entry]'s screen, if it is still the one on top. See [ifOnTop].
+ */
+internal fun NavController.popFrom(entry: NavBackStackEntry) = ifOnTop(entry) { popBackStack() }
+
+/**
+ * Runs [action] only while [entry] is still the screen on top. A screen on its way out stays drawn, and takes taps,
+ * through its exit transition, and its effects keep collecting until it leaves composition: a second tap on its Back,
+ * or a saved or closed event landing after the user already left, would otherwise act on the screen under it. From a
+ * screen one deep that pops the chat list and leaves an empty NavHost, the state Navigation's "ViewModels after the
+ * NavBackStackEntry is destroyed" crash was reproduced from (GitHub #55).
+ */
+internal inline fun NavController.ifOnTop(
+    entry: NavBackStackEntry,
+    action: NavController.() -> Unit,
+) {
+    if (currentBackStackEntry?.id == entry.id) action()
 }
 
 /**
