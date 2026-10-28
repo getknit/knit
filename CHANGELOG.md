@@ -53,6 +53,8 @@ document:
 
 - Voice notes and files no longer show up in the Nearby room. Knit never offered them there, but a modified
   app could post one, and Knit can't screen either for nearby strangers.
+- Tapping a quote, a pinned message or a search result now lands on that message while someone is typing.
+  It used to stop one message short, so after a photo or a long message the one you wanted sat off screen.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 
