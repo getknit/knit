@@ -1109,11 +1109,20 @@ class DebugBridgeReceiver :
      * Fires one best-effort "now typing" cue for `--es conv <id>` (or the `to` DM shorthand; default the
      * broadcast room), exactly as the chat input's throttle does. Poll a receiver's [ACTION_STATE] `typing`
      * field to confirm it landed. Fire-and-forget: replies `ok` regardless of whether anyone was reachable.
+     * `--ez indicators <bool>` sets the Settings › Typing indicators switch instead and sends nothing (ADR
+     * 2026-10.97vs); every reply names the switch's state as `indicators`.
      */
     private suspend fun handleTyping(intent: Intent): JSONObject {
+        if (intent.hasExtra(EXTRA_INDICATORS)) {
+            val on = intent.getBooleanExtra(EXTRA_INDICATORS, true)
+            settings.setTypingIndicatorsEnabled(on)
+            return reply("ok", "typing indicators ${if (on) "on" else "off"}").put("indicators", on)
+        }
         val conv = intent.getStringExtra(EXTRA_CONV) ?: intent.getStringExtra(EXTRA_TO) ?: Conversations.NEARBY
         mesh.sendTyping(conv)
-        return reply("ok", "typing cue sent to $conv").put("conversation", conv)
+        return reply("ok", "typing cue sent to $conv")
+            .put("conversation", conv)
+            .put("indicators", settings.typingIndicatorsEnabled.first())
     }
 
     private suspend fun handleState(intent: Intent): JSONObject {
@@ -4170,6 +4179,7 @@ class DebugBridgeReceiver :
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_CONV = "conv"
         const val EXTRA_TO = "to"
+        const val EXTRA_INDICATORS = "indicators"
         const val EXTRA_REPLY_TO = "replyTo"
         const val EXTRA_STYLES = "styles"
         const val EXTRA_ID = "id"

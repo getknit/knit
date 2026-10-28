@@ -794,7 +794,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   device.
 - `…debug.TYPING` — fires one best-effort **typing cue** for `--es conv <id>` (or `--es to <peer>`; default the room),
   exactly as the chat input's throttle does. Fire-and-forget: it answers `ok` whether or not anyone was reachable,
-  so confirm on the receiver through `…debug.STATE`'s `typing` map.
+  so confirm on the receiver through `…debug.STATE`'s `typing` map. A DM's or group's cue also goes up as a spool sig
+  (spec §7.8). `--ez indicators false|true` sets the Settings › Typing indicators switch instead and sends nothing;
+  every reply carries the switch's state as `indicators`.
 - `…debug.SHAREAPK` — runs the offline **Share Knit app** prepare step with no share sheet (`prepareKnitApk`). For a
   Play App Bundle install it merges the on-disk splits into one re-signed APK; `splitInstall` says which path ran, and
   `files` lists what was staged under `cacheDir/apk`. Pull one with `adb shell run-as app.getknit.knit cat
