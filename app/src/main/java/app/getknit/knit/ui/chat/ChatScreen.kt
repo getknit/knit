@@ -6,6 +6,7 @@ import android.os.Build
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -1177,9 +1178,14 @@ internal fun ChatScreenContent(
                                     contentDescription = stringResource(R.string.chat_more_options),
                                 )
                             }
+                            // Not focusable: a focusable popup takes focus from the message field, so the keyboard
+                            // drops while the menu is open and springs back when it closes. A non-focusable popup
+                            // gets no Back, so the screen closes the menu itself before Back leaves the chat.
+                            BackHandler(enabled = headerMenuOpen) { headerMenuOpen = false }
                             DropdownMenu(
                                 expanded = headerMenuOpen,
                                 onDismissRequest = { headerMenuOpen = false },
+                                properties = PopupProperties(focusable = false),
                             ) {
                                 // Gone while a position is staged: the tile above the field already carries
                                 // Refresh, and a second entry that restarted the same fix would only look like
