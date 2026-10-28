@@ -26,6 +26,8 @@ document:
   middle of one.
 - Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
   which from a chat or Settings left Knit on a blank screen.
+- Tapping a quote or a search result now lands on that message while someone is typing. It used to stop one
+  message short, so after a photo or a long message the one you wanted sat off screen.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

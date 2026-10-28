@@ -876,8 +876,8 @@ internal fun ChatScreenContent(
 
     // Read another page of history as the reader approaches the oldest loaded message. Under reverseLayout
     // the LAST visible index is the oldest row — the visual top — and the count comes from layoutInfo rather
-    // than state.rows.size because the typing indicator is an item too, and would otherwise shift the
-    // threshold by one whenever somebody starts or stops typing. A page appends to the end of the reversed
+    // than state.rows.size because the typing indicator is an item too (see listIndexOf below), and would otherwise
+    // shift the threshold by one whenever somebody starts or stops typing. A page appends to the end of the reversed
     // list, so index 0 (the newest bubble, glued to the bottom) never moves and the effect above never fires.
     LaunchedEffect(listState, state.hasOlder) {
         if (!state.hasOlder) return@LaunchedEffect
@@ -891,13 +891,23 @@ internal fun ChatScreenContent(
         }.distinctUntilChanged().collect { nearOldest -> if (nearOldest) onLoadOlder() }
     }
 
+    // Where a loaded message sits in the LazyColumn below, or null when it is outside the window. The rows are not the
+    // list's first items: the typing indicator is emitted before them, so a row's index in the reversed rows is one
+    // short of its list index while somebody types, and a jump to it rested the next newer row on the bottom edge
+    // instead (#53). Every item emitted before the rows is counted here, the one place both jumps read.
+    fun listIndexOf(messageId: String): Int? {
+        val row = state.rows.asReversed().indexOfFirst { it.id == messageId }
+        if (row < 0) return null
+        return row + if (state.typingPeers.isNotEmpty()) 1 else 0
+    }
+
     // A tapped quote whose original is older than the window: ask for it, then scroll once it lands. Held
     // rather than acted on immediately because the rows arrive an emission later.
     var pendingQuoteTarget by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(pendingQuoteTarget, state.rows.size, state.isLoading) {
         val target = pendingQuoteTarget ?: return@LaunchedEffect
-        val idx = state.rows.asReversed().indexOfFirst { it.id == target }
-        if (idx >= 0) {
+        val idx = listIndexOf(target)
+        if (idx != null) {
             pendingQuoteTarget = null
             highlightedMessageId = target
             // On the screen's scope, not this effect's: clearing the target above re-keys this effect, and
@@ -908,6 +918,21 @@ internal fun ChatScreenContent(
             // in it: retention trimmed it, or it sits deeper than the screen reaches. Stop waiting. The seed
             // state reports no rows and no history, so it must not count as "the end".
             pendingQuoteTarget = null
+        }
+    }
+
+    // Scroll to a message and flash it: a tapped quote's original. One older than the window is asked for and scrolled
+    // to once it lands, by the effect above.
+    val jumpTo: (String) -> Unit = { targetId ->
+        val idx = listIndexOf(targetId)
+        if (idx != null) {
+            highlightedMessageId = targetId
+            scrollScope.launch { listState.animateScrollToItem(idx) }
+        } else {
+            // Older than the loaded window: grow it far enough to reach the original, and let the effect above
+            // scroll once it arrives.
+            onRevealMessage(targetId)
+            pendingQuoteTarget = targetId
         }
     }
 
@@ -1398,6 +1423,7 @@ internal fun ChatScreenContent(
                         ) {
                             // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
                             // directly above the input and below the newest message (Signal-style, scrolls with content).
+                            // An item here shifts every row's index: listIndexOf above counts it.
                             if (state.typingPeers.isNotEmpty()) {
                                 item(key = "typing_indicator") {
                                     // Fades with the same spec as a message bubble: the indicator arriving and
@@ -1497,18 +1523,7 @@ internal fun ChatScreenContent(
                                                 ),
                                             )
                                         },
-                                        onQuoteClick = { targetId ->
-                                            val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
-                                            if (idx >= 0) {
-                                                highlightedMessageId = targetId
-                                                scrollScope.launch { listState.animateScrollToItem(idx) }
-                                            } else {
-                                                // Older than the loaded window: grow it far enough to reach the
-                                                // original, and let the effect above scroll once it arrives.
-                                                onRevealMessage(targetId)
-                                                pendingQuoteTarget = targetId
-                                            }
-                                        },
+                                        onQuoteClick = jumpTo,
                                         onDelete = onDeleteMessage,
                                         onBlock = onBlock,
                                         onCopy = onCopy,
