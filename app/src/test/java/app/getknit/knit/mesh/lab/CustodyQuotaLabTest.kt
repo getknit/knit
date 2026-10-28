@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lab
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -183,7 +184,9 @@ class CustodyQuotaLabTest {
      * theirs still counts in their bucket, and a newer post's room trim then drops that post as well. So the exchange
      * past one window can itself leave two stores a frame apart, each refusing the other's as seen, and only the next
      * window settles it. The ADR's simulation settled within about two windows and `ForwardRepositoryTest`'s exchange
-     * case bounds it at three, as [pastSeenWindowsUntilCustodyAgrees] does here through the real stacks. Messages differ
+     * case bounds it at three, as [pastSeenWindowsUntilCustodyAgrees] does here through the real stacks (a chaos sweep
+     * of 50 seeds, #141: agreed past the first window 33 times, past the second 17, never needed a third). The pairs
+     * meet their DM sessions before the partition, so the meeting mints no custodied frame of its own. Messages differ
      * by design — a post the quotas evicted before it crossed never reaches the other side — so only Carol's thread is
      * the oracle's, and the others are carriers.
      */
@@ -196,6 +199,13 @@ class CustodyQuotaLabTest {
             val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            // Every pair's DM session first, while the three are linked: a reader's tick to Carol's post carries the
+            // X3DH init, and her answer is a sealed DM custody carries. First met at the meeting instead, the answers
+            // are minted after its exchange (#141) and land on each store in its own order, which with the cap
+            // binding decides what each keeps; no window is left to settle that.
+            assertTrue(carol.sendRoom("carol 0"))
+            awaitSessionsSettled(alice to carol, bob to carol)
+            lab.awaitCustodyParity(alice, bob, carol)
 
             lab.unlink(alice, carol)
             lab.unlink(bob, carol)
@@ -203,6 +213,7 @@ class CustodyQuotaLabTest {
             (1..2).forEach { assertTrue(bob.sendRoom("bob $it")) }
             (1..2).forEach { assertTrue(alice.sendDm(bob, "dm $it")) }
             lab.await(2) { bob.decrypted(bob.dmWith(alice)).size }
+            awaitSessionsSettled(alice to bob) // Bob's answer is in their island's custody before Carol meets either
             (1..3).forEach { assertTrue(carol.sendRoom("carol $it")) }
 
             val bobsLast = bob.ownMessageId(Conversations.NEARBY, "bob 2")
@@ -216,14 +227,37 @@ class CustodyQuotaLabTest {
             listOf(alice, bob, carol).forEach { assertTrue("${it.name}: the cap held", it.custodyIds().size <= 12) }
         }
 
+    /** Waits until each pair holds one confirmed session on both sides: the same root and era, opposite roles. */
+    private suspend fun awaitSessionsSettled(vararg pairs: Pair<LabNode, LabNode>) {
+        val settled =
+            lab.tryAwait(1) {
+                val all =
+                    pairs.all { (a, b) ->
+                        val x = a.session(b)
+                        val y = b.session(a)
+                        x != null && y != null && x.hasSession && y.hasSession && x.confirmed && y.confirmed &&
+                            x.rootHash == y.rootHash && x.establishedAt == y.establishedAt && x.weAreInitiator != y.weAreInitiator
+                    }
+                if (all) 1 else 0
+            }
+        assertTrue("sessions never settled: ${pairs.map { (a, b) -> "${a.name}↔${b.name}" }}", settled)
+    }
+
     /**
      * Lets the router's seen window lapse, up to [windows] times, until the three stores agree. The first pass is the
      * meeting; the rest are the 60 s re-offer on the links they kept, which a calendar jump never wakes. Each pass
      * serves again what the last one refused as seen. The pipes' crossing memo (`LinkCrossings`) runs on the routers'
-     * calendar, so a frame that came in over a link can go back over it once the window has lapsed. A pass waits for
-     * agreement as long as any oracle waits. One that never agrees has run its exchange, each store refusing the
-     * other's leftovers as seen and each pipe keeping a frame from going back the way it came; the next pass serves
-     * them again. The oracle after this fails with every store's listing if the last pass did not agree.
+     * calendar, so a frame that came in over a link can go back over it once the window has lapsed.
+     *
+     * A pass reads the stores once its exchange has landed: every newcomer hook ran (the digests are out), every digest
+     * is answered and every frame the answers carried is handled. Read any earlier, the stores can agree for a moment
+     * while a reply computed before an eviction is still on its way — a frame every store has since evicted, to a node
+     * that never saw it, which takes it in past the window and trims another (#141: a re-served post and Alice's
+     * profile, each split one store off after the three had agreed, and no window was left to settle it). Waiting
+     * longer for agreement buys nothing: once the exchange has landed, the stores that disagree refuse each other's
+     * leftovers as seen until the next window. One round of the three awaits is enough: with the sessions settled
+     * nothing the meeting handles sends inline onward a frame custody keeps. The oracle after this fails with every
+     * store's listing if the last pass did not agree.
      */
     private suspend fun pastSeenWindowsUntilCustodyAgrees(
         alice: LabNode,
@@ -234,9 +268,27 @@ class CustodyQuotaLabTest {
         val three = listOf(alice, bob, carol)
         repeat(windows) { pass ->
             lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
-            if (pass == 0) lab.linkAll(alice to bob, bob to carol, alice to carol) else three.forEach { it.reoffer() }
-            if (lab.tryAwait(1) { if (three.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }) return
+            if (pass == 0) meetForCustodyOnly(alice to bob, bob to carol, alice to carol) else three.forEach { it.reoffer() }
+            three.forEach { it.transport.awaitNeighborsHandled() }
+            three.forEach { it.transport.awaitDigestsAnswered() }
+            three.forEach { it.transport.awaitInboundDrained() }
+            if (three.map { it.custodyFingerprint() }.distinct().size == 1) return
         }
+    }
+
+    /**
+     * [MeshLab.linkAll] with the air losing every *relay* both ways ([linkForCustodyOnly]'s rule), for the meeting.
+     * A frame a custody serve hands over is flooded on, 0–150 ms after its receiver handled it: past the drained check,
+     * so the relay of a frame that store took in and then trimmed inside the exchange could reach a third store, never
+     * served it, after the read. Each edge of the triangle is a direct link, so everything the meeting must carry
+     * crosses as a hop-0 serve the awaits cover, and later passes reuse these pipes.
+     */
+    private fun meetForCustodyOnly(vararg links: Pair<LabNode, LabNode>) {
+        val relay = { wire: WireEnvelope -> wire.hops > 0 }
+        links.forEach { (a, b) ->
+            a.transport.connect(b.transport, publish = false, lossy = relay, arm = { b.transport.lossy(a.transport, relay) })
+        }
+        links.flatMap { it.toList() }.distinct().forEach { it.transport.publishNeighbors() }
     }
 
     /**

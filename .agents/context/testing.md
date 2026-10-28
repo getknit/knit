@@ -308,7 +308,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   one 60 s re-offer round now, the tick a lab clock jump never wakes. Every `sendFile`
   is logged in `files` as `to kind key` (the phone's `file …` line: one copy per (hash, link)), and
   `digestsSent` names whom a node advertised its digest to — the newcomer batch's last hook, so a re-link
-  "as the 60 s re-offer would" waits on it before asserting what the batch did not send. `sent` records the
+  "as the 60 s re-offer would" waits on it before asserting what the batch did not send. `awaitDigestsAnswered()`
+  waits until a node has answered every digest a peer advertised to it (the reply's frames are sent), so with every
+  far end's `awaitInboundDrained()` after it the exchange has landed: read custody agreement there, not on the first
+  poll that agrees, when the cap binds. A reply computed before an eviction is still on its way when the stores
+  first agree, and the frame it carries trims a store past the window (#141). `sent` records the
   peer as `nodeId.take(6)`, not the full id.
 - **A cut transfer is `streamFiles(to, untilBytes)` plus `lab.unlink`** (ADR 2026-10.wtyc). A streamed hold
   feeds the receiver's real `FileIntake` the header and the blob up to the mark, then parks (the receiver's

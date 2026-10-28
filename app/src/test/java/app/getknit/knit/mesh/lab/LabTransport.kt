@@ -228,7 +228,23 @@ class LabTransport(
     }
 
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = BUFFER)
-    override val incomingDigests: Flow<ReceivedDigest> = _incomingDigests.asSharedFlow().lagged()
+
+    // Digests a peer advertised to this node against digests its collector has answered: [awaitDigestsAnswered].
+    private val digestsIn = AtomicLong()
+    private val digestsAnswered = AtomicLong()
+
+    /**
+     * The custody digests peers advertised, counted out as the collector *finishes* each one, as [inbound] counts
+     * frames: the manager's `collect { forwardSync.onDigest(…) }` returns from `emit` only once its reply (every
+     * frame the peer lacked) is sent. Early behind a composite's `merge`, as [inbound] is.
+     */
+    override val incomingDigests: Flow<ReceivedDigest> =
+        flow {
+            _incomingDigests.asSharedFlow().lagged().collect {
+                emit(it)
+                digestsAnswered.incrementAndGet()
+            }
+        }
 
     private fun <T> Flow<T>.lagged(): Flow<T> = chaos?.let { c -> onEach { c.jitter() } } ?: this
 
@@ -568,6 +584,18 @@ class LabTransport(
         val drained =
             withTimeoutOrNull(MeshLab.AWAIT_MS) { while (framesHandled.get() < framesIn.get()) delay(1) } != null
         check(drained) { "$nodeId: the router never finished its inbound frames (${framesHandled.get()} of ${framesIn.get()})" }
+    }
+
+    /**
+     * Suspends until this node has answered every custody digest a peer advertised to it: each reply's frames are
+     * sent, and a send returns once the far end holds the frame, so the far end's [awaitInboundDrained] after this
+     * means the exchange has landed. A digest handed to a node whose manager is not collecting is never answered,
+     * and this fails on it rather than waits forever: not for a node stopped or restarted since it booted.
+     */
+    suspend fun awaitDigestsAnswered() {
+        val answered =
+            withTimeoutOrNull(MeshLab.AWAIT_MS) { while (digestsAnswered.get() < digestsIn.get()) delay(1) } != null
+        check(answered) { "$nodeId: the manager never answered its custody digests (${digestsAnswered.get()} of ${digestsIn.get()})" }
     }
 
     /** From now on, frames this node sends [to] are parked instead of delivered — until [release]. */
@@ -1012,7 +1040,10 @@ class LabTransport(
     ) {
         chaos?.jitter()
         digestsSent += to.nodeId
-        pipes[to.nodeId]?.target?._incomingDigests?.emit(ReceivedDigest(nodeId, ids))
+        pipes[to.nodeId]?.target?.let { target ->
+            target.digestsIn.incrementAndGet()
+            target._incomingDigests.emit(ReceivedDigest(nodeId, ids))
+        }
         chaos?.jitter()
     }
 
