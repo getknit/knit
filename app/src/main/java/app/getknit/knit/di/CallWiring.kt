@@ -182,6 +182,17 @@ private fun callGraph(): Module =
         single<SystemCalls> { get<TelecomCalls>() }
         single<CallControl> { get<CallManager>() }
         single { SystemCallSync(calls = get(), system = get(), scope = get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+        // C-3.13-12 (ADR 2026-10.kw29): which microphone path a call, live or walkie, records from — the fallback on a
+        // generic system image over an older vendor, or once a call here captured only zeros. Read from the store on the
+        // app scope; until then, the image's own answer.
+        single<CaptureJournal> { CaptureStore(get()) }
+        single {
+            CaptureHealth(
+                journal = get(),
+                stamp = modelGuardStamp(BuildConfig.VERSION_CODE, Build.FINGERPRINT.orEmpty()),
+                genericImage = get<DeviceImage>().genericOnOlderVendor,
+            ).also { health -> get<CoroutineScope>().launch { health.load() } }
+        }
         if (LIVE_CALLS_WIRED) liveGraph()
         if (CALL_SETTINGS_WIRED) {
             viewModel {
@@ -300,17 +311,6 @@ private fun Module.liveGraph() {
             log = { Log.i(TAG, it) },
             field = fieldLog(),
         )
-    }
-    // C-3.13-12 (ADR 2026-10.kw29): which microphone path a call records from — the fallback on a generic system
-    // image over an older vendor, or once a call here captured only zeros. Read from the store on the app scope;
-    // until then, the image's own answer.
-    single<CaptureJournal> { CaptureStore(get()) }
-    single {
-        CaptureHealth(
-            journal = get(),
-            stamp = modelGuardStamp(BuildConfig.VERSION_CODE, Build.FINGERPRINT.orEmpty()),
-            genericImage = get<DeviceImage>().genericOnOlderVendor,
-        ).also { health -> get<CoroutineScope>().launch { health.load() } }
     }
     single {
         WebRtcCallMedia(
@@ -502,6 +502,8 @@ private fun Module.speechGraph() {
                         "lines" to get<MoonshineSpeech>().lines.name.lowercase(),
                         "call" to get<CallManager>().state.value?.id,
                         "suppressor" to if (line.mine) get<TalkRecorder>().suppressor else null,
+                        "source" to if (line.mine) get<TalkRecorder>().lastSource else null,
+                        "gain" to if (line.mine) get<TalkRecorder>().applyGain else null,
                     )
                 },
                 log = { Log.i(TAG, it) },
@@ -527,7 +529,15 @@ private fun Module.speechGraph() {
 /** The walkie's audio and its streaming over the mesh (§3.11); each tap feeds the transcript where speech is wired. */
 private fun Module.walkieGraph() {
     single { TalkPlayer(tap = if (STT_WIRED) get<WalkieTranscriber>() else null) }
-    single { TalkRecorder(get<CoroutineScope>(), tap = if (STT_WIRED) get<WalkieTranscriber>().mic else null) }
+    single {
+        TalkRecorder(
+            get<CoroutineScope>(),
+            tap = if (STT_WIRED) get<WalkieTranscriber>().mic else null,
+            // The phone's microphone follows the live call's profile, and a dead call path teaches it (C-3.11-5).
+            capture = get(),
+            muted = { get<CallManager>().state.value?.muted == true },
+        )
+    }
     single {
         WalkieTalk(
             calls = get(),

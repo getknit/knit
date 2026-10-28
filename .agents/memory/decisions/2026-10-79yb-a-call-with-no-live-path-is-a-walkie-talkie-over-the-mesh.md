@@ -553,3 +553,42 @@ Owed: the 2026-10-18 shape again. P9 and P7 walk out of the P8's range, wait out
 first burst should log `via Through the relay · cast` and be heard. Then a two-hop call (P9 ↔ P7 ↔ P8, the P8 out of
 the P9's range) should stay `Through a neighbour · flooded` with `walkie: reported burst … over the radios` lines and
 no cast.
+
+## Amendment 2026-10-28 (13): the phone's microphone takes the call path
+
+A P7 → P9 walkie transcribed badly on the P9 (the user, 2026-10-28; same speaker, same distance). The saved clips
+showed why: through `VOICE_RECOGNITION` the P7's microphone kept most of a voice's "s" and "f" above 4 kHz, where the
+8 kbps codec cuts, over a noise floor about 15 dB under speech, while the P9's same source rolled off above 4 kHz. The
+CDD holds that source flat only from 100 Hz to 4 kHz, so above that every phone differs. A trial on the two phones
+compared three sources by ear and by transcript. `UNPROCESSED` (which both Pixels say they lack, yet open)
+transcribed best but arrived about 25 dB under speech level, below where `TalkGain` hears speech at all.
+`VOICE_COMMUNICATION` landed at −21 to −34 dBFS with a very low floor, and sounded right to the user. Every phone
+that makes VoIP calls has it.
+
+- **Source.** The phone's own microphone now follows the live call's capture profile (ADR 2026-10.kw29,
+  `call/TalkCapture`). On `STANDARD` it records from `VOICE_COMMUNICATION`, then `VOICE_RECOGNITION`, then `MIC`. On
+  `FALLBACK` (a generic image, or a phone where a call captured only zeros) it records from `VOICE_RECOGNITION`, then
+  `MIC`, as before. `CaptureHealth` moves out of the live-call graph so a walkie-only build has it too. A headset is
+  unchanged (`VOICE_COMMUNICATION`).
+- **Suppressor.** Knit attaches the platform's `NoiseSuppressor` only where the source runs none of its own. On
+  `VOICE_COMMUNICATION` the phone's call processing is the suppression, and `walkie in:` says `noise suppressor call
+  path`. This also drops the explicit request amendment (10) made on a headset's `VOICE_COMMUNICATION`.
+- **Gain.** `TalkGain` stays. The P7's call path delivered speech about 8 dB under the P9's (−28 to −34 against −21
+  to −25 dBFS). The gain's slow rise and its hold across bursts make it a trim on top of the phone's own gain, not a
+  second one fighting it.
+- **A dead call path.** A burst from the phone's `VOICE_COMMUNICATION` with at least 1 s of audio and not one sample
+  above zero, not muted and not silenced by the system, calls `CaptureHealth.learnedSilent()` (C-3.13-13's rule over
+  a burst). The next bursts and calls open on the fallback. Without this, a phone whose VoIP record route is dead, but
+  which is not a known generic image, would send silence for good, where the old source worked.
+
+The 4 kHz codec band stays. Rejected for now: raising the bitrate to 12–16 kbps for wideband Opus. That costs
+1.5–2× the bytes per chunk on Coded PHY and the relay, and `VOICE_COMMUNICATION` mostly brings what the model needs
+under 4 kHz. Also rejected: `UNPROCESSED` with a fixed +18 dB make-up gain (the CDD's sensitivity gap). Phones need
+not offer it, the Pixels say they don't, and it brings no suppression.
+
+`…debug.CALL --es op source` and `--es op gain` stay for A/Bs, and each saved clip's sidecar records `source` and
+`gain`.
+
+Owed: a P9 ↔ P7 walkie on this build with scripted sentences, read against the 2026-10-28 clips. Then the Moto (a
+generic image) should log `walkie in: source 6`, and `…debug.CALL --es op capture --es set fallback` on a Pixel should
+move its next burst to source 6.

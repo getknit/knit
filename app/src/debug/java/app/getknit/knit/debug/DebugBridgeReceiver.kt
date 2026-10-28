@@ -9,6 +9,8 @@ import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.Movie
 import android.graphics.drawable.AnimatedImageDrawable
+import android.media.AudioManager
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Debug
@@ -2702,6 +2704,37 @@ class DebugBridgeReceiver :
                     .put("suppressor", recorder.suppressor ?: JSONObject.NULL)
             }
 
+            "gain" -> {
+                // The walkie microphone's own gain (`TalkGain`, C-3.11-5): `--ez on false` sends the source's level as it
+                // comes, in memory only, until the process ends. Takes effect at the next burst.
+                val recorder = getKoin().getOrNull<TalkRecorder>() ?: return reply("error", "this build wires no walkie")
+                if (intent.hasExtra("on")) recorder.applyGain = intent.getBooleanExtra("on", true)
+                return reply("ok", "walkie gain ${if (recorder.applyGain) "on" else "off"}").put("on", recorder.applyGain)
+            }
+
+            "source" -> {
+                // The walkie microphone's audio source, tried before the usual list (C-3.11-5): `--es source
+                // unprocessed|recognition|mic|communication|camcorder|performance|default`, in memory only, until the
+                // process ends. `unprocessed` says whether the phone claims the raw source.
+                val recorder = getKoin().getOrNull<TalkRecorder>() ?: return reply("error", "this build wires no walkie")
+                intent.getStringExtra("source")?.let { name ->
+                    recorder.sourceFirst =
+                        if (name == "default") null else WALKIE_SOURCES[name] ?: return reply("error", "unknown source '$name'")
+                }
+                val audio = context.getSystemService(AudioManager::class.java)
+                val profile =
+                    getKoin()
+                        .getOrNull<CaptureHealth>()
+                        ?.choice
+                        ?.value
+                        ?.profile
+                return reply("ok", "walkie source first ${recorder.sourceFirst ?: "default"}")
+                    .put("sourceFirst", recorder.sourceFirst ?: JSONObject.NULL)
+                    .put("lastSource", recorder.lastSource ?: JSONObject.NULL)
+                    .put("profile", profile?.name?.lowercase() ?: JSONObject.NULL)
+                    .put("unprocessed", audio.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) ?: JSONObject.NULL)
+            }
+
             "relay" -> {
                 // Settings' "Relay all calls" (`SettingsStore.callsRelayAll`, C-3.7-3): persisted, and the row shows it.
                 val on = intent.getBooleanExtra("on", true)
@@ -4229,6 +4262,17 @@ class DebugBridgeReceiver :
         const val MILLIS_PER_SEC = 1000L
     }
 }
+
+// `…debug.CALL --es op source`: the walkie microphone's sources by name.
+private val WALKIE_SOURCES =
+    mapOf(
+        "unprocessed" to MediaRecorder.AudioSource.UNPROCESSED,
+        "recognition" to MediaRecorder.AudioSource.VOICE_RECOGNITION,
+        "mic" to MediaRecorder.AudioSource.MIC,
+        "communication" to MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+        "camcorder" to MediaRecorder.AudioSource.CAMCORDER,
+        "performance" to MediaRecorder.AudioSource.VOICE_PERFORMANCE,
+    )
 
 // `…debug.CALL --es op talk`: how long the talk button is held — a burst's floor up to what a receiver's goAsync allows.
 private const val TALK_DEFAULT_MS = 3_000

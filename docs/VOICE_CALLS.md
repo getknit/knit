@@ -836,11 +836,16 @@ its media (`REASON_MEDIA`).
   a peer sends it (`CallManager.dropToWalkie`, off), so a lost live call ends `no_route`. In a P9↔P7 call over the
   Internet the drop left the two phones in a walkie session neither could send on, because the peer was off every
   radio. A walkie session placed on purpose is unchanged.
-- **C-3.11-5** A burst is Opus at 8 kbps, captured at 16 kHz mono, in 20 ms packets, up to 60 s. The microphone's
-  session carries the platform's noise suppressor (`android.media.audiofx.NoiseSuppressor`), enabled, where the phone
-  implements one; `VOICE_RECOGNITION` has no processing of its own, and a phone without the effect records the burst
-  as it comes. Before the encoder the capture passes a gain stage (`call/TalkGain`), because the phone's flat microphone path has no gain control and
-  a live call's audio has WebRTC's. Speech is brought toward −18 dBFS RMS, gaining at most 24 dB and never losing.
+- **C-3.11-5** A burst is Opus at 8 kbps, captured at 16 kHz mono, in 20 ms packets, up to 60 s. The phone's own
+  microphone follows the live call's capture profile (C-3.13-12, `call/TalkCapture`): on the standard profile it
+  records from `VOICE_COMMUNICATION`, the phone's call-tuned path with its own suppression and gain, then
+  `VOICE_RECOGNITION`, then `MIC`; on the fallback from `VOICE_RECOGNITION`, then `MIC`. A burst from the phone's
+  `VOICE_COMMUNICATION` that is 1 s or more of exact zeros, not muted or silenced by the system, moves the phone to the
+  fallback, as a silent call does (C-3.13-13). Where the source runs no processing of its own (`VOICE_RECOGNITION`,
+  `MIC`), the session carries the platform's noise suppressor (`android.media.audiofx.NoiseSuppressor`), enabled,
+  where the phone implements one; a phone without the effect records the burst as it comes. Before the encoder the
+  capture passes a gain stage (`call/TalkGain`), because the flat path has no gain control and the call path's level
+  differs from phone to phone. Speech is brought toward −18 dBFS RMS, gaining at most 24 dB and never losing.
   The gain falls at once and rises at most 5 dB per second of speech. It holds between words, where a frame is within
   12 dB of the quietest frame of the last 2 s. No peak passes −1 dBFS. Each microphone keeps its own gain across
   bursts. It is cut into chunks: one each time 480 ms of audio is in hand, then the rest marked as the last. A chunk's plaintext is binary:
@@ -1026,7 +1031,7 @@ scope, never on the inbound path. `ui/call/TelecomCalls` is the one importer of 
 | **C-3.13-4** | The system is offered no hold, so a phone call answered over ours ends it. A call the system refuses is declined `busy` while it alerts, else hung up. So is every call on a phone that would not register this app.                                                              |
 | **C-3.13-5** | A live call starts where Telecom puts it: a connected headset, else the earpiece. A walkie session starts on the loudspeaker unless a headset is connected, which takes it as it would a call.                                                                                   |
 | **C-3.13-6** | When a walkie session's route falls to the earpiece without the user picking it (a headset unplugged, a start not honoured), the session asks for the loudspeaker, once per fall. A live call that drops to a walkie is moved off the earpiece the same way.                        |
-| **C-3.13-7** | Nothing but Telecom sets the route while a call is up: no `setCommunicationDevice`, no `startBluetoothSco`, no preferred device on a track. Both kinds play on the voice-communication usage. A walkie burst is recorded from `VOICE_COMMUNICATION` while a headset has the call, else from the phone's microphone (`VOICE_RECOGNITION`, then `MIC`). |
+| **C-3.13-7** | Nothing but Telecom sets the route while a call is up: no `setCommunicationDevice`, no `startBluetoothSco`, no preferred device on a track. Both kinds play on the voice-communication usage. A walkie burst is recorded from `VOICE_COMMUNICATION` while a headset has the call, else from the phone's microphone on the source its capture profile picks (C-3.11-5). |
 | **C-3.13-8** | The call screen's route control is the loudspeaker toggle while the earpiece and the loudspeaker are the only routes. With a third route it names the current one and lists them all. The notification's one route action goes onto the loudspeaker, or off it to a Bluetooth headset, then a wired one, then the earpiece. It carries that route's key, so a stale tap never moves the call anywhere unseen. |
 | **C-3.13-9** | A mute set from a car or a watch reaches the call. The first value the system reports is only where it starts, and is not acted on.                                                                                                                                             |
 | **C-3.13-10** | A call the system answered starts the call's microphone service from inside the system's answer, because the call screen may never open. Without the service, a backgrounded call's microphone is silenced. Android allowed that background start on the trial phone (a Pixel 9, API 37). |

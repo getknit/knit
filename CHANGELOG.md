@@ -48,6 +48,8 @@ document:
 - The Support Knit screen now says Knit is funded by its supporters and is its developer's full-time job. The
   relay screen and your profile now name your ticket key where they used to say Knit Anywhere ended or needed
   renewing.
+- Walkie-talkie calls now record your voice the way regular calls do, with your phone's own noise reduction
+  and volume leveling. Background noise drops, and voices sound about as loud from one phone to the next.
 
 ### Fixed
 

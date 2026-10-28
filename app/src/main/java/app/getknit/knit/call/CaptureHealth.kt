@@ -7,7 +7,7 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Which microphone path a live call records from (docs/VOICE_CALLS.md C-3.13-12, ADR 2026-10.kw29). A walkie records
- * through its own recorder (C-3.13-7) and is not this.
+ * through its own recorder (C-3.13-7), whose phone microphone picks its source by this too (`TalkCapture`, C-3.11-5).
  */
 enum class CaptureProfile {
     /** `VOICE_COMMUNICATION` with the platform's echo canceller and noise suppressor: the call-tuned path. */

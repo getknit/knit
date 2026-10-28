@@ -384,8 +384,19 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
       transcript's end-to-end trial: send a known sentence and read it back on the receiver.
     - `--es op ns [--ez on true|false]`: the walkie microphone's platform noise suppressor (C-3.11-5), on by default;
       `false` turns it off for an A/B until the process ends, from the next burst. Replies with `on` and `suppressor`,
-      what the last burst's microphone had: `on`, `off`, `unavailable` (the phone implements none) or `refused`. The
+      what the last burst's microphone had: `on`, `off`, `call path` (its source, `VOICE_COMMUNICATION`, runs the phone's
+      own, so Knit adds none), `unavailable` (the phone implements none) or `refused`. The
       `walkie in:` logcat line says the same per burst. A `--es pcm` burst bypasses the microphone, and with it this.
+    - `--es op source [--es source unprocessed|recognition|mic|communication|camcorder|performance|default]`: an audio
+      source the phone's own walkie microphone tries before its usual list (`TalkCapture.sources`: `VOICE_COMMUNICATION`
+      on the standard capture profile, `VOICE_RECOGNITION` on the fallback; C-3.11-5), in memory until the process ends,
+      from the next burst; a headset's burst ignores it. Replies with `sourceFirst`, `lastSource` (what the last burst
+      opened with, as a `MediaRecorder.AudioSource` number), `profile` (`standard`/`fallback`) and `unprocessed` (the
+      phone's `PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED`; a Pixel says `false` and opens it anyway). The `walkie in:`
+      logcat line names the source per burst.
+    - `--es op gain [--ez on true|false]`: the walkie microphone's own gain (`TalkGain`), on by default; `false` sends
+      the source's level as it comes, until the process ends, from the next burst. Off, the gain still reads each burst,
+      and its `walkie gain:` line ends `(off, not applied)` with the gain it would have used.
     - `state`'s `walkie` block also carries `transcript` and `stt`, as `…debug.STT` reports them (below).
 - `…debug.STT` — the **walkie transcript** (C-3.11-9, ADR 2026-10.nz3g; debug builds with `BuildConfig.STT`, and
   `loop` and `clips` need the walkie too). `--es op status` (the default) replies with the model's id and size, `stt`
@@ -428,7 +439,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     and a dropped burst excepted, one heard with no model included — is written by `WalkieClipFiles` to
     `Android/data/<package>/files/walkie-clips/` as `<UTC stamp>-heard|spoken-b<burst>.wav` (16 kHz mono s16, as the
     model got it) and a `.json` sidecar: the line's fields as `transcript` gives them, plus `model`, `lines`,
-    `call` (the call's id, the same on both phones) and, for a spoken burst, `suppressor`. Unencrypted, capped at
+    `call` (the call's id, the same on both phones) and, for a spoken burst, `suppressor`, `source` (the
+    `MediaRecorder.AudioSource` number) and `gain` (whether `TalkGain` was applied). Unencrypted, capped at
     256 MiB (oldest first); pull with `adb pull /sdcard/Android/data/app.getknit.knit/files/walkie-clips`.
   - `loop --es path <file>` sends the file the whole walkie way but the radio (the recorder's Opus encoder at 8 kbps,
     the player's decoder and tap, the transcriber) as burst 0 of a fresh transcript, and replies at once; poll

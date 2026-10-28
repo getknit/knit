@@ -62,7 +62,7 @@ lines.
   `InboundPipeline.handleTalk` / `isTalkShape`, `Protocol.CAP_WALKIE`, `call/TalkRoute` (`TalkRoute`, `HeardLedger`),
   `CallPayload.hr`, `mesh/TalkRadioPaths`, `CallManager`'s `fallback` / `walkieOk` /
   `onTalk`, `MeshTransport.sendLive` / `holdLink`, `mesh/wifiaware/NanLinkHold` (the hold in `superviseLink`), `TalkLink`,
-  `ui/call/WalkieTalk` / `TalkRecorder` / `TalkPlayer` or `BuildConfig.MESH_CALLS`:** READ ADR 2026-10.79yb and
+  `ui/call/WalkieTalk` / `TalkRecorder` / `TalkPlayer` / `call/TalkCapture` or `BuildConfig.MESH_CALLS`:** READ ADR 2026-10.79yb and
   `docs/VOICE_CALLS.md` §3.11 — a call with no live path is a media-less walkie session whose bursts stream as Opus in
   unsigned, compactly sealed `talk` frames nobody custodies, sized for Coded PHY (a pin in `TalkSealTest`), so nothing
   lands in the thread; a chunk stays on the radios while `TalkRadioPaths` holds fresh, link-bound evidence of a path,
@@ -70,7 +70,8 @@ lines.
   amendment; never `heardIndirectly`); a live call drops to one, without a frame, only when both OFFER and ANSWER carried the walkie
   bit (parked since 2026-10-09: `CallManager.dropToWalkie` is off, so a lost live call ends `no_route`); the flag is read once, as `CallWiring.WALKIE_WIRED`, and needs no live calls.
   **Before touching `call/CaptureHealth` (`CaptureProfile`, `CapturePolicy`, `CaptureWatch`), `ui/call/CaptureTap`,
-  the audio module in `WebRtcCallMedia` or the `call_capture_` keys:** READ ADR 2026-10.kw29 and `docs/VOICE_CALLS.md`
+  the audio module in `WebRtcCallMedia`, `call/TalkCapture` or the `call_capture_` keys:** READ ADR 2026-10.kw29 (and
+  79yb's thirteenth amendment: the walkie's phone microphone follows the same profile) and `docs/VOICE_CALLS.md`
   C-3.13-12/13 — a generic image (and a phone where a call went silent) records calls from `VOICE_RECOGNITION` with
   WebRTC's own canceller, the module is rebuilt per profile between calls only, and the tap watches every 10 ms buffer
   and moves a call whose path hands it only zeros onto its own recorder mid-call.
