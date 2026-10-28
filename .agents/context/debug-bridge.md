@@ -137,8 +137,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   pseudonym has sent its day's uploads here; held in memory across reconnects, cleared by a ticket with another
   pseudonym). A free phone on an Anywhere spool reads `ent: true`, `stun: 1`, `held: false`, and on one that gates
   files `entGates: 11`, `uploads: locked:missing`. Logcat under `ScopeSync`: `<host>: ticket presented|accepted|refused:
-  <word>`, `<host>: uploads refused: <word>` and, per call, `<host>: TURN ask (ticketed): …` or `TURN ask skipped,
-  no ticket (ent)`.
+  <word>`, `<host>: uploads refused: <word>`, per call `<host>: TURN ask (ticketed): …` or `TURN ask skipped,
+  no ticket (ent)`, and per attachment of ours `<host>: attachment <hash8>… in <scope label>: uploaded <n>/<total>
+  chunks` or `…: proved, not uploaded` (ADR 2026-10.vy27) — which photo went up, where `spoolAttachPushed` counts only
+  chunks.
   `--es url <spoolUrl> --es issuer <https://host[:port]> --es key <kak1_…>` holds a **customer key** for that relay's
   host without an invite (ADR 2026-10.3sk7; debug builds only, where the ticket refresher runs): the refresher then
   trades it at that issuer for the host's tickets, at once and again before the held one is 6 h from `exp`, and
@@ -330,6 +332,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `segments`, `retransmits`, `srtt`, `cwnd`, and `lossEvents` / `timeouts` / `spurious`: window halvings, timer expiries,
   and segments presumed lost that were acknowledged before going again) with a bare `LINK` once `measuring` is false. The peer's `drained` (bytes its
   end of each peer's stream read) must reach the same count. A link idles out 60 s after the run.
+  Links also open by themselves (L-7-7, the spool first): a message of ours a contact has not ticked in 20 s, with no
+  radio between the phones, has the demand offer them a link — logcat `KnitLink: link demand <id6>: <outcome>`. The
+  offer rides a spool too, so only a spool that carries casts but not the message (a pair scope homed at a relay one
+  phone does not dial, #210) shows it in the field.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
   `BuildConfig.LIVE_CALLS` / `MESH_CALLS`; `op capture` and `op dropgroup` need live calls;
   `docs/VOICE_CALLS.md`). `--es op state` (the default) dumps the call, its phase, `reason` and the selected

@@ -831,7 +831,51 @@ interface MessageDao {
         me: String,
         since: Long,
     ): List<PlaneDelay>
+
+    /**
+     * Our own DMs sent in [since]..[until] that no delivery tick has flipped: whom each went to, and when — what a direct
+     * link's demand reads (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-7-7). A DM still waiting on the peer's key is not
+     * sent yet, so it is left out; status rows are never ticked, so `kind = 0` (Room's `@Query` can't name
+     * [MessageEntity.KIND_NORMAL]).
+     */
+    @Query(
+        "SELECT recipientId AS peerId, sentAt FROM messages WHERE kind = 0 AND senderId = :me AND recipientId IS NOT NULL " +
+            "AND received = 0 AND pendingKey = 0 AND sentAt BETWEEN :since AND :until",
+    )
+    suspend fun unackedDmsBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerSentAt>
+
+    /**
+     * Our own group posts sent in [since]..[until] (`kind = 0`, not a status row): a link's demand reads their acks.
+     * [groupPattern] is [Conversations.GROUP_ID_PREFIX] + `%`, which [app.getknit.knit.data.MessageRepository] passes.
+     */
+    @Query(
+        "SELECT id, conversationId, sentAt FROM messages WHERE kind = 0 AND senderId = :me " +
+            "AND conversationId LIKE :groupPattern AND sentAt BETWEEN :since AND :until",
+    )
+    suspend fun ownGroupPostsBetween(
+        me: String,
+        groupPattern: String,
+        since: Long,
+        until: Long,
+    ): List<OwnPost>
 }
+
+/** Room projection for [MessageDao.unackedDmsBetween]: one DM of ours still unticked, its peer and when it was sent. */
+data class PeerSentAt(
+    val peerId: String,
+    val sentAt: Long,
+)
+
+/** Room projection for [MessageDao.ownGroupPostsBetween]: one post of ours in a group. */
+data class OwnPost(
+    val id: String,
+    val conversationId: String,
+    val sentAt: Long,
+)
 
 /** One delivery's plane ([DeliveryPlane.code]) and how long it took, for the field log's latency summary. */
 data class PlaneDelay(

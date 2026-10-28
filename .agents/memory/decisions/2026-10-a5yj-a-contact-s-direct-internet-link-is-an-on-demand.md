@@ -366,3 +366,25 @@ three only with it.
 control frames do not, and a link moving a file is busy and never idles out mid-stream. Known gap: the 60 s re-offer
 round's key requests, owed ticks and unacknowledged group seeds are content frames, so one owed forever would keep a
 link from idling out (#225, to revisit).
+
+## Amendment 2026-10-27 — the spool first, a link as the last resort
+
+Status: stands (2026-10-27); the owner's call, after weighing link first.
+
+**A link is offered only when the spool has not delivered** (`LinkDemand`, `LinkDemandPolicy`, `MeshLinkPending`;
+`docs/DIRECT_LINKS.md` L-7-7). A spool this phone holds open already has its WebSocket up, and carries a message and
+its tick back within seconds, so it goes first. A contact is offered a link when a DM of ours to them, or a post of ours
+in a group they are in, has gone 20 s without their tick. Two more conditions apply: no radio links them, and no link
+to them has been up since the message was sent.
+
+- **The window:** only messages from the last 15 min count, since a link is for a conversation going on now.
+- **The limits:** one offer per contact at a time, and at most two links up or offered at once.
+- **Resting:** a refusal that sent nothing rests the contact a minute; a punch that failed rests on its backoff.
+
+Low-power mode now offers and answers none: `DirectLinks.enabled` reads it, as the plane's switch already did.
+
+"Link first, the spool after" was weighed and set aside. In it, sending to a contact offers the link at once, and the
+spool's copy waits up to 30 s for the link to have its chance. It would save the spool's timing view of a live
+conversation. But it holds every DM back behind a cast and a punch when the open spool would have delivered it in a
+second, and the offer itself rides that same spool anyway. The spool's copy of what a link carried is unchanged:
+it still goes up, as a radio-delivered DM's does.

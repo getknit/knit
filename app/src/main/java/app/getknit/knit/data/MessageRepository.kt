@@ -10,6 +10,8 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.MissingAttachment
+import app.getknit.knit.data.message.OwnPost
+import app.getknit.knit.data.message.PeerSentAt
 import app.getknit.knit.data.message.QuoteSettlement
 import app.getknit.knit.data.search.SearchQuery
 import kotlinx.coroutines.flow.Flow
@@ -131,6 +133,20 @@ class MessageRepository(
         me: String,
         since: Long,
     ): List<MessageEntity> = dao.unackedDmsTo(recipientId, me, since)
+
+    /** Our own DMs sent in [since]..[until] still unticked, by peer and time ([MessageDao.unackedDmsBetween]). */
+    suspend fun unackedDmsBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerSentAt> = dao.unackedDmsBetween(me, since, until)
+
+    /** Our own group posts sent in [since]..[until] ([MessageDao.ownGroupPostsBetween]). */
+    suspend fun ownGroupPostsBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<OwnPost> = dao.ownGroupPostsBetween(me, Conversations.GROUP_ID_PREFIX + "%", since, until)
 
     /** Clears the pending-key flag once a stuck DM has finally been sealed and flooded. */
     suspend fun clearPending(id: String) = dao.clearPending(id)

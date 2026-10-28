@@ -64,4 +64,8 @@ interface MessageReceiptDao {
      */
     @Query("DELETE FROM message_receipts WHERE messageId NOT IN (SELECT id FROM messages)")
     suspend fun deleteOrphans()
+
+    /** Every receipt recorded for [messageIds]: who has acked each of them. */
+    @Query("SELECT * FROM message_receipts WHERE messageId IN (:messageIds)")
+    suspend fun forMessages(messageIds: List<String>): List<MessageReceiptEntity>
 }

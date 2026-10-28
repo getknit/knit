@@ -490,8 +490,9 @@ class MeshManager(
     /**
      * Whom the conversations naming blob [hash] are addressed to, every one of them ([BlobExchange.addresseesAcross]): a
      * group's members, a DM's two ends; null when one is a room's or no message we hold names it. A holder serves those
-     * ahead of carriers (ADR 2026-10.nsr7). A picture forwarded under its identity (ADR 2026-10.mptm) from a group into a
-     * DM with someone outside it is both's, and the first row alone classed one side carriers by row order.
+     * ahead of carriers (ADR 2026-10.nsr7). Every conversation, as [blobAddressees] reads them for the link: a picture
+     * forwarded under its identity (ADR 2026-10.mptm) from a group into a DM with someone outside it is both's, and the
+     * first row alone classed one side carriers by row order.
      */
     private suspend fun addresseesOf(hash: String): Set<String>? =
         BlobExchange.addresseesAcross(messages.conversationsOfAttachment(hash).map { addresseesOfConversation(it) })

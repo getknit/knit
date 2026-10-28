@@ -336,6 +336,17 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `lab.link(a, b) { … }`, which runs once the pipes exist and before either end lists the link. And a carried
   attachment's `blobreq` leaves from the custody step, before the frame is opened, so a holder serving it is no
   evidence the recipient handled the frame: await the author's receipt before the link goes.
+- **A direct link has its own knobs** (`LabDirectLink.kt`, 2026-10-27). `lab.directLink(a, b)` returns the link's
+  handle; `hold(from = b)` parks every datagram `b` sends on it — its asks, answers and the stream's acks — until
+  `lab.cutDirectLink(a, b)`, which drops them and ends both streams, then waits as `unlink` does (neither plane holds
+  the link, both managers acted on it). There is no release: a link comes back as a fresh `directLink`, as a re-punch
+  would. The link plane's files sent are `LabNode.linkFiles` (`to kind key`, the radio's `files` line, kept across
+  restarts), and `LabNode.linkFileGate` holds a file the link landed before the manager takes it — still landing on
+  the plane (#138) — so a scenario can stop a node mid-hand-off: `restart { linkFileGate.release() }`.
+  `DirectLinkAttachmentLabTest` is the set (a DM photo over a link, proof and spool pushes). A composite merges its
+  radio sets (`shortRangeNeighbors`, `shortRangeReachable`) on collectors of their own, so `awaitLinksActedOn` waits
+  for those too: read stale under chaos, a radio neighbour that had just linked ranked as a link's in a blob ask, and a
+  peer the radio had lost was stamped a radio sighting after a calendar jump, holding a photo for the whole ack grace.
 - **Wait for the frame, not for the state that precedes it.** A settings or DB write the scenario can see
   lands *before* the frame it triggers reaches the transport (`broadcastProfile` bumps the version, then
   stamps, signs and floods), so "the version moved" is not "the frame is parked": `ProfileUpdateLabTest`

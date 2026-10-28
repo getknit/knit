@@ -93,7 +93,10 @@ class DirectLinkTransport(
     private val links = ConcurrentHashMap<String, FramedLink>()
     private val landing = LandingFiles()
 
-    @Volatile private var running = false
+    /** Whether the plane is started: the composite runs it, and its switch holds it on (what a link's demand waits on). */
+    @Volatile
+    var running = false
+        private set
 
     // Our node id, once a link has asked for it: the filter's other half.
     @Volatile private var self: String? = null
@@ -138,7 +141,9 @@ class DirectLinkTransport(
 
     override fun stop() {
         running = false
-        links.keys.toList().forEach { id -> links.remove(id)?.close() }
+        // Straight over the map, never `toList()`: a link dropping as the plane stops can empty it between the size
+        // `toList()` reads and the element it then takes (NoSuchElementException, a lab chaos teardown).
+        for (id in links.keys) links.remove(id)?.close()
         landing.clear()
         publish()
     }
@@ -289,7 +294,8 @@ class DirectLinkTransport(
         wire: WireEnvelope,
         to: Peer?,
     ) {
-        val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
+        // A copy that tolerates a link dropping meanwhile (`toList()` does not: see [stop]).
+        val targets = if (to == null) ArrayList(links.values) else listOfNotNull(links[to.nodeId])
         if (targets.isEmpty()) return
         val env = WireCodec.decodeEnvelope(wire.signed) ?: return
         val bytes = WireCodec.encodeWire(wire)

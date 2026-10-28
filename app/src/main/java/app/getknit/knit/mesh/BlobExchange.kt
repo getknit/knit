@@ -3013,8 +3013,9 @@ class BlobExchange(
          * so a member of *any* of them is a member at the holder. One sealed picture is named by several when it is
          * forwarded under its identity (ADR 2026-10.mptm): from a group G into a DM with D, where D is not in G, reading
          * the first row classed D — the DM's real recipient — a carrier behind every live feed, or G's members carriers
-         * behind D's, by row order. Unknown anywhere, or no conversation at all, is null: everyone a member, as one room's
-         * row always made it.
+         * behind D's, by row order, and disagreed with the link's rule for the same hash (`MeshManager.blobAddressees`,
+         * ADR 2026-10.a5yj). Unknown anywhere, or no conversation at all, is null: everyone a member, as one room's row
+         * always made it.
          */
         fun addresseesAcross(conversations: List<Set<String>?>): Set<String>? =
             if (conversations.isEmpty() || conversations.any { it == null }) null else conversations.flatMapTo(HashSet()) { it.orEmpty() }

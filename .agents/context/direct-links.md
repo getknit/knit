@@ -40,6 +40,12 @@ and the entry is fixed.
   so never read the first row. A refusal by shared groups read over `DirectLinkTransport.GROUPS_REREAD_MS` ago is
   decided again on a fresh read, so a group made since never waits a re-offer round for its first post. Only frames and
   files are use; digests and handshakes keep nothing open.
+- **When touching `LinkDemand`, `LinkDemandPolicy`, `MeshLinkPending`, `DirectLinks.lastUpAt`,
+  `MessageDao.unackedDmsBetween` / `ownGroupPostsBetween` or `MessageReceiptRepository.ackersOf`:** READ ADR
+  2026-10.a5yj's "spool first" amendment and `docs/DIRECT_LINKS.md` L-7-7. The spool goes first; a link is offered only
+  for a message of ours a contact has not ticked in 20 s (last 15 min), no radio links them and no link has been up since
+  it was sent — never a hold on the spool's copy (link first was weighed and set aside). Read only while the link plane
+  runs; low-power mode offers and answers none.
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal`, `InboundPipeline`'s `link`
   arm or `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.castEligible`:** READ ADR 2026-10.a5yj
   (and its lane-key amendment once recorded), `docs/DIRECT_LINKS.md` §2 and §5 and `docs/VOICE_CALLS.md` §2.7. The

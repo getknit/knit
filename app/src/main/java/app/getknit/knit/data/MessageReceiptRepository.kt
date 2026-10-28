@@ -67,4 +67,21 @@ class MessageReceiptRepository(
      * the table has no FK cascade. Mirrors [ReactionRepository.deleteOrphans]; run on the prune heartbeat.
      */
     suspend fun deleteOrphans() = dao.deleteOrphans()
+
+    /** Who has acked each of [messageIds], by message id; a message nobody acked is absent. */
+    suspend fun ackersOf(messageIds: List<String>): Map<String, Set<String>> =
+        if (messageIds.isEmpty()) {
+            emptyMap()
+        } else {
+            messageIds
+                .chunked(QUERY_IDS_MAX)
+                .flatMap { dao.forMessages(it) }
+                .groupBy({ it.messageId }, { it.ackerNodeId })
+                .mapValues { it.value.toSet() }
+        }
+
+    private companion object {
+        // SQLite's bound-parameter limit is 999 on older builds: one IN list stays well under it.
+        const val QUERY_IDS_MAX = 500
+    }
 }

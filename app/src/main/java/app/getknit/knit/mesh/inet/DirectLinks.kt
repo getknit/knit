@@ -299,6 +299,15 @@ class DirectLinks(
     /** The links up now, by peer. */
     val links: StateFlow<Map<String, LinkSession>> = _links.asStateFlow()
 
+    // When each contact's last link to us ended: what [lastUpAt] reads once it is down.
+    private val lastDownAt = ConcurrentHashMap<String, Long>()
+
+    /**
+     * When a link to [peerId] was last up: now while one is, else when the last one ended; null when none has been up
+     * since this phone started. What a frame sent before it had its chance on (`LinkDemandPolicy`).
+     */
+    fun lastUpAt(peerId: String): Long? = if (links.value.containsKey(peerId)) clock() else lastDownAt[peerId]
+
     /**
      * Offers [peerId] a link and runs the attempt to its outcome. [force] skips the backoff (the debug bridge's try).
      */
@@ -520,6 +529,7 @@ class DirectLinks(
             session.state.first { it == LinkSession.State.CLOSED }
             sockets.remove(peerId, socket)
             _links.update { if (it[peerId] === session) it - peerId else it }
+            lastDownAt[peerId] = clock()
             val (bytesIn, bytesOut) = session.bytes()
             val reason = session.endReason ?: LinkSession.EndReason.LOCAL
             log("link end ${peerId.take(SHORT)} $reason after ${clock() - upAt}ms in=$bytesIn out=$bytesOut")

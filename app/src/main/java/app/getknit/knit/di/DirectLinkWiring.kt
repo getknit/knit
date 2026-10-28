@@ -3,6 +3,7 @@ package app.getknit.knit.di
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.fieldlog.FieldLog
 import app.getknit.knit.fieldlog.FieldRecorder
@@ -14,7 +15,9 @@ import app.getknit.knit.mesh.SwitchableTransport
 import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.inet.LinkDatagrams
+import app.getknit.knit.mesh.inet.LinkDemand
 import app.getknit.knit.mesh.inet.LinkPeers
+import app.getknit.knit.mesh.inet.MeshLinkPending
 import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.protocol.LinkSignal
@@ -29,6 +32,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.koin.android.ext.koin.androidContext
@@ -70,6 +74,8 @@ fun Scope.onLinkSignal(
  */
 fun Scope.directLinkPlane(): MeshTransport {
     val off = combine(get<SettingsStore>().directLinksEnabled, get<LowPowerSource>().posture) { on, posture -> !on || posture.active }
+    // Built with the plane, so the demand runs from the mesh's first start: nothing else would build it before a signal.
+    get<LinkDemand>()
     return SwitchableTransport(get<DirectLinkTransport>(), off, get(), { msg -> Log.i(TAG, msg) })
 }
 
@@ -108,12 +114,16 @@ private fun directLinkGraph(): Module =
             val identity = get<Identity>()
             val on = settings.directLinksEnabled.stateIn(scope, SharingStarted.Eagerly, false)
             val pausedUntil = settings.meshPausedUntil.stateIn(scope, SharingStarted.Eagerly, null)
+            val lowPower = get<LowPowerSource>().posture.map { it.active }.stateIn(scope, SharingStarted.Eagerly, false)
             val links =
                 DirectLinks(
                     selfId = { identity.nodeId() },
                     datagrams = get(),
                     peers = MeshLinkPeers(this),
-                    enabled = { on.value && MeshPause.activeDeadline(pausedUntil.value, System.currentTimeMillis()) == null },
+                    // Low-power mode opens and answers none (ADR 2026-10.a5yj), as it holds the link plane off.
+                    enabled = {
+                        on.value && !lowPower.value && MeshPause.activeDeadline(pausedUntil.value, System.currentTimeMillis()) == null
+                    },
                     scope = scope,
                     clock = System::currentTimeMillis,
                     // Each up link's stream goes to the transport, the offerer writing the first HELLO.
@@ -128,12 +138,36 @@ private fun directLinkGraph(): Module =
             scope.launch {
                 pausedUntil.collect { if (MeshPause.activeDeadline(it, System.currentTimeMillis()) != null) links.stop() }
             }
+            scope.launch { lowPower.collect { if (it) links.stop() } }
             val routeChanges = get<InternetGate>().routeChanges
             scope.launch {
                 on.flatMapLatest { if (it) routeChanges else emptyFlow() }.collect { links.onRouteChanged() }
             }
             links
         }
+        linkDemand()
+    }
+
+// The spool first, a link as the last resort (L-7-7): offers a contact a link when something of ours to them has gone
+// unticked, while the link plane runs. The composite is resolved late, as everywhere here.
+private fun Module.linkDemand() =
+    single {
+        val links = get<DirectLinks>()
+        val transport = get<DirectLinkTransport>()
+        val identity = get<Identity>()
+        val groups = get<GroupRepository>()
+        val pending = MeshLinkPending(get(), get(), groups::find)
+        LinkDemand(
+            pending = { since, until -> pending.between(identity.nodeId(), since, until) },
+            offer = { links.offer(it) },
+            up = { links.links.value.keys },
+            lastUpAt = links::lastUpAt,
+            radioLinked = { getKoin().get<MeshTransport>().radioLinked(it) },
+            active = { transport.running },
+            scope = get(),
+            clock = System::currentTimeMillis,
+            log = { Log.d(TAG, it) },
+        ).also { it.start() }
     }
 
 // The mesh's half of [LinkPeers], resolved late: the mesh graph builds MeshManager, whose inbound hook reaches the

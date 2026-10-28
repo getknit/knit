@@ -2334,6 +2334,7 @@ class ScopeSync(
                 mine && provedAttachment(scope, ref) -> {
                     metrics.onSpoolAttachmentProved()
                     settleAttachment(scope, ref.aHash)
+                    log("${SpoolUrl.host(url)}: attachment ${ref.aHash.take(LOG_HASH_CHARS)}… in ${scope.label}: proved, not uploaded")
                     LocalPass.PROVED
                 }
 
@@ -2678,7 +2679,19 @@ class ScopeSync(
                     return true
                 }
             }
+            logUploaded(scope, ref, missing.size, total)
             return true
+        }
+
+        // One line per attachment of ours that went up, by hash: the counters count chunks, and say nothing of which one.
+        private fun logUploaded(
+            scope: Scope,
+            ref: ScopeAttachments.Ref,
+            chunks: Int,
+            total: Int,
+        ) {
+            if (chunks == 0) return
+            log("${SpoolUrl.host(url)}: attachment ${ref.aHash.take(LOG_HASH_CHARS)}… in ${scope.label}: uploaded $chunks/$total chunks")
         }
 
         /** A retiring scope is drained, a dead attachment is gone, and §9.2 bars an aged-out frame's bytes. */
@@ -3296,6 +3309,9 @@ class ScopeSync(
         /** Used when a frame names an attachment but no mime; Coil sniffs the real format anyway. */
         private const val FALLBACK_MIME = "image/jpeg"
         private const val BLOB_SET_MAX = 512
+
+        /** How much of an attachment's hash a log line names (as `MeshManager`'s blob lines do). */
+        private const val LOG_HASH_CHARS = 8
 
         /** How many rounds a commons post waits for its author's profile before it is written off (§7.4). */
         private const val MAX_PARK_ROUNDS = 8

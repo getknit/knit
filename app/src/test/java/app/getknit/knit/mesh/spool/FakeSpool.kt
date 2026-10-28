@@ -372,6 +372,15 @@ class FakeSpool(
     /** Every `aput` the spool accepted, as "aidHex:index" — the outbound attachment assertion hook. */
     val chunksPut = mutableListOf<String>()
 
+    /**
+     * The attachment ids the spool holds any chunk of in [scopeHex] — what [chunksPut] cannot say when one node holds
+     * several scopes: a picture of ours pushed for a group and kept off its DM is one id in one scope.
+     */
+    fun attachmentIdsIn(scopeHex: String): Set<String> {
+        val held = synchronized(this) { scopes[scopeHex]?.attachments?.keys?.toSet() }
+        return held.orEmpty()
+    }
+
     /** Every `aget` window the spool was asked for, as "aidHex:from+n" — proves the client stopped asking. */
     val chunkGets = mutableListOf<String>()
 

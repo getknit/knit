@@ -360,28 +360,70 @@ class MeshLab {
     private val linkStreams = java.util.Collections.synchronizedList(ArrayList<LinkArq>())
     private val linkScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // The latest direct link [directLink] made per pair of node ids (the lower id first), for [cutDirectLink].
+    private val directLinks = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, LabDirectLink>()
+
+    private fun pairKey(
+        a: LabNode,
+        b: LabNode,
+    ): Pair<String, String> = if (a.nodeId < b.nodeId) a.nodeId to b.nodeId else b.nodeId to a.nodeId
+
     /**
      * Joins two nodes built with `directLinks` by a contact's direct link (ADR 2026-10.a5yj): two in-memory streams, each
      * datagram delivered on its own coroutine as a path would, handed to each node's link plane as `DirectLinks` hands an
-     * up link's stream over ([a] offers, so it writes the first HELLO). Returns once both managers have acted on the link.
+     * up link's stream over ([a] offers, so it writes the first HELLO). Returns once both managers have acted on the link,
+     * with the link's handle ([LabDirectLink.hold]). A pair linked again — after [cutDirectLink], or after one end's
+     * restart ended the link — gets a fresh link, as a re-punch would.
      */
     suspend fun directLink(
         a: LabNode,
         b: LabNode,
-    ) {
+    ): LabDirectLink {
         lateinit var toB: LinkArq
         lateinit var toA: LinkArq
         val clock = { System.nanoTime() / 1_000_000L }
-        val aStream = LinkArq({ bytes -> true.also { linkScope.launch { toB.take(bytes) } } }, linkScope, clock, onClose = { toB.end() })
-        val bStream = LinkArq({ bytes -> true.also { linkScope.launch { toA.take(bytes) } } }, linkScope, clock, onClose = { toA.end() })
+        val joined = LabDirectLink(a, b)
+        val aStream =
+            LinkArq(
+                { bytes -> joined.carry(a.nodeId) { linkScope.launch { toB.take(bytes) } } },
+                linkScope,
+                clock,
+                onClose = { toB.end() },
+            )
+        val bStream =
+            LinkArq(
+                { bytes -> joined.carry(b.nodeId) { linkScope.launch { toA.take(bytes) } } },
+                linkScope,
+                clock,
+                onClose = { toA.end() },
+            )
         toB = bStream
         toA = aStream
+        joined.aStream = aStream
+        joined.bStream = bStream
         linkStreams += aStream
         linkStreams += bStream
+        directLinks[pairKey(a, b)] = joined
         checkNotNull(a.link) { "${a.name} has no direct-link plane" }.adopt(b.nodeId, aStream, offerer = true)
         checkNotNull(b.link) { "${b.name} has no direct-link plane" }.adopt(a.nodeId, bStream, offerer = false)
         // The link planes themselves, never the merged set, which a radio entry left over could already satisfy.
         await(1) { if (a.linkPlaneHolds(b) && b.linkPlaneHolds(a)) 1 else 0 }
+        a.awaitLinksActedOn()
+        b.awaitLinksActedOn()
+        return joined
+    }
+
+    /**
+     * Cuts the direct link between [a] and [b] (the path went away): what it parked is lost, both streams end, and this
+     * returns once neither plane holds the link and both managers have acted on its going ([LabNode.awaitLinksActedOn]),
+     * the departure [unlink] waits for on a radio. A link one end's stop already ended is cut all the same.
+     */
+    suspend fun cutDirectLink(
+        a: LabNode,
+        b: LabNode,
+    ) {
+        checkNotNull(directLinks.remove(pairKey(a, b))) { "${a.name} and ${b.name} hold no direct link" }.cut()
+        await(1) { if (!a.linkPlaneHolds(b) && !b.linkPlaneHolds(a)) 1 else 0 }
         a.awaitLinksActedOn()
         b.awaitLinksActedOn()
     }
@@ -394,7 +436,10 @@ class MeshLab {
         // next test class in this JVM. The first failure is rethrown, the rest ride along as suppressed. A gate a failed
         // scenario left holding is released first: the delivery parked at it cannot be cancelled (ADR 2026-10.f82h),
         // and the scope join would wait out its bound on it and bury the scenario's own failure under that one.
-        nodes.forEach { it.custodyGate.release() }
+        nodes.forEach {
+            it.custodyGate.release()
+            it.linkFileGate.release()
+        }
         // What the boards-everywhere sweep exercised, so a green run says whether a DM ever went compact in it.
         if (boardsAir != null) {
             println(
@@ -1257,6 +1302,15 @@ class LabNode internal constructor(
     internal var link: DirectLinkTransport? = null
         private set
 
+    /**
+     * Every file this node's direct-link plane accepted to send, as `to kind key` in send order ([LabLinkPlane]) — the
+     * link's half of [LabTransport.files], kept across restarts.
+     */
+    val linkFiles = CopyOnWriteArrayList<String>()
+
+    /** This node's hand-off of a file its direct-link plane landed to the manager, holdable ([LabFileGate]). */
+    val linkFileGate = LabFileGate()
+
     /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
 
@@ -1285,9 +1339,14 @@ class LabNode internal constructor(
             )
         }
 
-    // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone.
+    // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. The
+    // link plane goes in recorded ([LabLinkPlane]): its files sent, and its hand-off to the manager through [linkFileGate].
     private fun compositeOver(scope: CoroutineScope): CompositeMeshTransport? =
-        if (lora == null && link == null) null else CompositeMeshTransport(listOfNotNull(transport, lora, link), scope)
+        if (lora == null && link == null) {
+            null
+        } else {
+            CompositeMeshTransport(listOfNotNull(transport, lora, link?.let { LabLinkPlane(it, linkFiles, linkFileGate) }), scope)
+        }
 
     /** Whether this node's direct-link plane has framed a link to [peer]. */
     internal fun linkPlaneHolds(peer: LabNode): Boolean = link?.neighbors?.value?.any { it.nodeId == peer.nodeId } == true
@@ -2365,6 +2424,26 @@ class LabNode internal constructor(
                     }
                 } != null
             check(caughtUp) { "$name's composite never caught up with its planes' links ${planesLinks()}" }
+            // And its radio sets, merges on collectors of their own: what `radioLinked` reads, which decides whether a
+            // neighbour is a radio or a direct link's (a blob ask's rank, the deferral's link sighting), and what the
+            // deferral stamps as a radio sighting (`shortRangeReachable`, the manager's nearby set). Read stale, a radio
+            // neighbour that just linked ranked as a link's, and a peer the radio just lost was sighted for 15 min more.
+            val radioIds = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
+            val radioCaughtUp =
+                withContext(Dispatchers.Default) {
+                    withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                        while (merged.shortRangeNeighbors.value.mapTo(HashSet()) { it.nodeId } != radioIds() ||
+                            merged.shortRangeReachable.value.mapTo(HashSet()) { it.nodeId } !=
+                            transport.reachable.value.mapTo(HashSet()) { it.nodeId }
+                        ) {
+                            delay(1)
+                        }
+                    }
+                } != null
+            check(radioCaughtUp) {
+                "$name's composite never caught up with its radio's links ${radioIds()}: radio set " +
+                    "${merged.shortRangeNeighbors.value.map { it.nodeId }}, nearby ${merged.shortRangeReachable.value.map { it.nodeId }}"
+            }
         }
         val radio = ::planesLinks
         val seen =
