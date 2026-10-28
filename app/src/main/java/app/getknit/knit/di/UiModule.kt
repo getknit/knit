@@ -9,6 +9,7 @@ import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
+import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsRepository
@@ -96,6 +97,7 @@ val uiModule =
                 noteSpeech = if (STT_WIRED) get<VoiceNoteSpeech>() else null,
                 translation = if (TRANSLATE_WIRED) get<ChatTranslation>() else null,
                 pins = get<PinRepository>(),
+                localDelete = get<LocalMessageDelete>(),
             )
         }
         viewModel {

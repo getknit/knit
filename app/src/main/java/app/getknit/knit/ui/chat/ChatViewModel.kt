@@ -23,6 +23,7 @@ import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.LinkCardStore
+import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -656,6 +657,8 @@ class ChatViewModel(
     translation: ChatTranslation? = null,
     // Pinned messages (#42), local to this phone: null in a rig that wires none, which offers no Pin and draws no bar.
     private val pins: PinRepository? = null,
+    // Delete-for-me, shared with the debug bridge's PURGE so the two cannot drift. Stateless; defaulted for every rig.
+    private val localDelete: LocalMessageDelete = LocalMessageDelete(messages, reactions, receipts, blobs, pins),
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -2523,9 +2526,9 @@ class ChatViewModel(
     }
 
     /**
-     * Removes [messageId] from this device only — its row, its reactions, its per-recipient delivery
-     * rows, and (if no other message still references it) its content-addressed attachment blob. Sends
-     * nothing over the mesh.
+     * Removes [messageId] from this device only, through [LocalMessageDelete]: its row, its reactions, its pin, its
+     * per-recipient delivery rows, and (if no other message still references it) its content-addressed attachment
+     * blob. Sends nothing over the mesh.
      */
     fun deleteMessage(messageId: String) {
         val hash =
@@ -2533,11 +2536,7 @@ class ChatViewModel(
                 .firstOrNull { it.id == messageId }
                 ?.attachmentHash
         viewModelScope.launch {
-            messages.delete(messageId)
-            reactions.deleteForMessage(messageId)
-            pins?.deleteForMessage(messageId)
-            receipts.deleteForMessage(messageId)
-            blobs.deleteIfUnreferenced(hash)
+            localDelete.delete(messageId, hash)
             _events.tryEmit(R.string.chat_message_deleted)
         }
     }
