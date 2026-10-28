@@ -574,6 +574,31 @@ class MeshRouterTest {
             assertEquals(0, metrics.frames().framesSuppressed)
         }
 
+    /**
+     * C-7.8-15: a typing cue that reaches us over a radio link and as a sig off a relay (`ttl = 0`, `relay = false`) is
+     * delivered once, whichever copy is first, and neither copy is handed on.
+     */
+    @Test
+    fun aTypingCueOverARadioAndASigIsDeliveredOnceWhicheverIsFirst() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c"))
+            val delivered = mutableListOf<Pair<String, String>>()
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, from, _ -> delivered += env.id to from }
+            val spool = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example"
+
+            val (radio, env) = frame("ty1", recipientId = "me", relay = false, type = FrameType.TYPING)
+            val sig = WireEnvelope(ttl = 0, hops = 0, relay = false, sig = radio.sig, signed = radio.signed)
+            router.handleInbound(radio, env, fromNodeId = "b")
+            router.handleInbound(sig, env, fromNodeId = spool)
+            val (radio2, env2) = frame("ty2", recipientId = "me", relay = false, type = FrameType.TYPING)
+            router.handleInbound(WireEnvelope(ttl = 0, hops = 0, relay = false, sig = radio2.sig, signed = radio2.signed), env2, spool)
+            router.handleInbound(radio2, env2, fromNodeId = "b")
+            advanceUntilIdle()
+
+            assertEquals(listOf(env.id to "b", env2.id to spool), delivered)
+            assertEquals(0, transport.sent.size)
+        }
+
     /** A spool-first relay is still suppressed — by two radio neighbours, exactly as a radio-first one is. */
     @Test
     fun aSpoolFirstRelayIsStillSuppressedByTwoRadioNeighbours() =

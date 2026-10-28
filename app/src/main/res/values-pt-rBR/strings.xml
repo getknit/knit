@@ -860,6 +860,8 @@
     <string name="call_settings_speech_model_cancel">Cancelar</string>
     <string name="call_settings_speech_model_remove">Remover</string>
     <string name="settings_link_previews_subtitle">Quando você digita um link, o Knit busca o título e a imagem da página pela internet e os envia com sua mensagem. O site vê seu endereço IP; as pessoas para quem você envia nunca acessam o site.</string>
+    <string name="settings_typing_indicators_title">Indicador de digitação</string>
+    <string name="settings_typing_indicators_subtitle">As pessoas com quem você conversa veem quando você está digitando, por perto ou por um retransmissor, e você vê quando elas estão. Desativado, o Knit não envia nem mostra quem está digitando.</string>
     <string name="settings_low_power_title">Modo de baixo consumo</string>
     <string name="settings_low_power_subtitle">Desliga o Wi-Fi Aware para economizar bateria. O Bluetooth mantém você na mesh, então as mensagens continuam chegando, mas fotos e arquivos demoram mais. Também fica ativo junto com a Economia de bateria.</string>
     <string name="settings_low_power_subtitle_saver">Ativo agora porque a Economia de bateria está ativada. O Wi-Fi Aware está desligado, e o Bluetooth mantém você na mesh.</string>

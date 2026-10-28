@@ -627,10 +627,15 @@ class InboundPipeline(
      * we don't know locally is ignored — nothing to show it in), a DM addressed to us keyed by the other party, and
      * the broadcast room otherwise. A DM not addressed to us and our own cue looping back are dropped. Auto-expires
      * in the tracker; a real message from the same sender clears it early ([deliverChat] → [TypingTracker.onMessageFrom]).
+     *
+     * One rule for every plane, a radio link or a relay's signal lane (docs/SPOOL_PROTOCOL.md §7.8): nothing is shown
+     * while the person has typing indicators off, from a blocked sender, or in a conversation that is still a message
+     * request. A cue is never presence, so none of this touches the peer's reach.
      */
     private suspend fun handleTyping(env: RelayEnvelope) {
         val me = identity.nodeId()
         if (env.senderId == me) return
+        if (!settings.typingIndicatorsEnabled.first() || env.senderId in settings.blockedNodeIds.first()) return
         // Every port encodes a DM or room cue as `{}`, so a payload that won't decode is malformed, never a DM or
         // room cue: counted and dropped rather than read as one (a group cue whose groupId broke would light the room).
         val groupId = (decodeCounted<TypingContent>(env.payload) ?: return).groupId
@@ -641,6 +646,7 @@ class InboundPipeline(
                 !Conversations.isForMe(env.recipientId, me) -> return
                 else -> env.senderId
             }
+        if (!isAccepted(conversationId, me)) return
         typingTracker.onTyping(conversationId, env.senderId)
     }
 

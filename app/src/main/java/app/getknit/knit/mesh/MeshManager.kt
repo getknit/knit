@@ -2741,8 +2741,14 @@ class MeshManager(
      * simply no-ops. Scope rides the frame the same way a chat does — [RelayEnvelope.recipientId] for a DM, a
      * compact [TypingContent.groupId] for a group (not the heavy [RelayEnvelope.group] roster, which could blow
      * the coordination-plane size cap).
+     *
+     * A DM's or a group's cue also goes up as a sig (docs/SPOOL_PROTOCOL.md §7.8): the same signed frame, beside the
+     * radio copy, on every connected relay that carries sigs and holds the conversation's current scope, so a contact
+     * reachable only over the Internet sees it too. The receiver keeps the first copy by frame id. Nothing is sent on
+     * any plane while the person has turned typing indicators off.
      */
     override suspend fun sendTyping(conversationId: String) {
+        if (!settings.typingIndicatorsEnabled.first()) return
         val me = identity.nodeId()
         val kind = Conversations.kindFor(conversationId)
         // The bridged public room has no typing cue and must not fall through to one. A `typing` frame
@@ -2764,6 +2770,7 @@ class MeshManager(
             )
         val wire = sign(env, relay = false)
         if (recipientId != null) transport.fastSend(wire, Peer(recipientId)) else transport.fastFanout(wire)
+        if (kind == ConversationKind.DM || kind == ConversationKind.GROUP) scopeSync?.sig(conversationId, env, wire.sig, wire.signed)
     }
 
     /** On startup, sweep orphaned blobs/reactions/pins/receipts and re-request attachment blobs we're still missing. */

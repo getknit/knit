@@ -138,6 +138,11 @@ class SettingsViewModel(
         settings.contentFilteringEnabled
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
+    /** Whether this phone sends and shows typing indicators on every plane (on by default — see the store's KDoc). */
+    val typingIndicatorsEnabled: StateFlow<Boolean> =
+        settings.typingIndicatorsEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     /** Whether links this device sends carry a preview card (off by default — see the store's KDoc). */
     val linkPreviewsEnabled: StateFlow<Boolean> =
         settings.linkPreviewsEnabled
@@ -229,6 +234,10 @@ class SettingsViewModel(
 
     fun setLinkPreviewsEnabled(value: Boolean) {
         viewModelScope.launch { settings.setLinkPreviewsEnabled(value) }
+    }
+
+    fun setTypingIndicatorsEnabled(value: Boolean) {
+        viewModelScope.launch { settings.setTypingIndicatorsEnabled(value) }
     }
 
     fun setBluetoothDownloadLimit(value: BluetoothDownloadLimit) {

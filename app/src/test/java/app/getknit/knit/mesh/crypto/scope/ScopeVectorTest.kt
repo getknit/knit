@@ -1,10 +1,15 @@
 package app.getknit.knit.mesh.crypto.scope
 
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.TypingContent
+import app.getknit.knit.mesh.protocol.WireCodec
 import com.google.crypto.tink.subtle.X25519
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 /**
  * Golden vectors for the scope crypto — the byte-exact fixtures mirrored in docs/SPOOL_PROTOCOL.md
@@ -81,8 +86,24 @@ class ScopeVectorTest {
             "commonsSecret2" to commonsSecret2.toHex(),
             "commonsScopeId2" to ScopeCrypto.commonsScopeId(commonsSecret2).toHex(),
             "commonsTag2" to ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(commonsSecret2)).toHex(),
+            // Appended (§7.8, 2026-10-28) — a DM typing cue from A to B, then its sig seal on the DM fixture with the
+            // `sig` input above. Produced independently (pyca/cryptography and a hand-rolled CBOR encoder, by a script
+            // that first reproduces the cast seal).
+            "sigTyping" to WireCodec.encodeEnvelope(sigTyping()).toHex(),
+            "sigSeal" to ScopeCrypto.sealSig(dmKeys, dmScopeId(), bytes(64, 4), WireCodec.encodeEnvelope(sigTyping())).toHex(),
         )
     }
+
+    /** The typing cue `sigSeal` carries: a fixture frame id (16 bytes, base64url), a fixed send time, `{}` content. */
+    private fun sigTyping() =
+        RelayEnvelope(
+            type = FrameType.TYPING,
+            id = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes(16, 6)),
+            senderId = NODE_A,
+            sentAt = 1_800_000_000_000L,
+            recipientId = NODE_B,
+            payload = WireCodec.encodePayload(TypingContent()),
+        )
 
     @Test
     fun thePairSecretIsSymmetric() {
@@ -159,6 +180,22 @@ class ScopeVectorTest {
                 "commonsSecret2" to "0b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4",
                 "commonsScopeId2" to "ae34feaf814400c10160a8351729da34ee3c4b48ab69ecfca5eb9d168bf2c29e",
                 "commonsTag2" to "a2f73b72abeabcb1",
+                "sigTyping" to
+                    "a6647479706566747970696e676269647642673055477949704d44632d5255785457" +
+                    "6d466f62776873656e6465724964781a616161616162626262626363636363646464" +
+                    "64646565656565666673656e7441741b000001a3185c50006b726563697069656e74" +
+                    "4964781a7a7a7a7a7a79797979797878787878777777777776767676767567706179" +
+                    "6c6f616441a0",
+                "sigSeal" to
+                    "0589ed1b8a7ebe6aae19a950ae72daccbf1068d2def69efb14b5d37f246d8b0d44f2" +
+                    "1aef6965c55c8bf204ae5d90ab0e12f2eaba379f50f2b978efa6bd68f40315464aaf" +
+                    "abdfaea1e815b52a4f3ef14e52a76b0f044273057be1572b7faafc5fe42ca4399bab" +
+                    "727eccc8a47b1ee6918e94d72baf36910165ac1d3be2f76864a8a0dcc3bcd3605722" +
+                    "2f6d1b3cc7c0a8f48b2789206d1cff1c457643415753130ae325aabbf994f98b32b6" +
+                    "ff09eda346df7b0950fcdd55fa0c17503272e5551c970146f1ded14b8872c2154c9f" +
+                    "df68d65c6facd8278f4f5ad295edd6d10c817be7c652a1542f0092eaa1b846e9915d" +
+                    "6f0730756d330f9bdac6d506145aab02e2452fda630b9f57f4d338d00a120029ded1" +
+                    "e59f915544f72827aee86e1cc8",
             )
     }
 }

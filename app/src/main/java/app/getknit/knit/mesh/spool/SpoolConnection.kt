@@ -18,7 +18,7 @@ interface SpoolLink {
     /** Sends one binary WebSocket message; false when the socket is already gone. */
     fun send(bytes: ByteArray): Boolean
 
-    /** Bytes handed to [send] and not yet written to the socket — what a cast checks so it never waits behind a blob. */
+    /** Bytes handed to [send] and not yet written to the socket — what a cast or a sig checks so it never waits behind a blob. */
     fun queued(): Long = 0L
 
     fun close(
@@ -205,6 +205,8 @@ class SpoolConnection(
     private val clock: () -> Long = { System.currentTimeMillis() },
     // A cast another member sent (docs/VOICE_CALLS.md §2.7). Never answered, never a request, no `q`.
     private val onCast: suspend (SpoolCast) -> Unit = {},
+    // A sig another member sent (§7.8). Never answered, never a request, no `q`, as for a cast.
+    private val onSig: suspend (SpoolSig) -> Unit = {},
 ) {
     /**
      * One outstanding `q`. For the two requests answered by un-`q`'d records (`pull` → `blob`*,
@@ -350,7 +352,19 @@ class SpoolConnection(
 
     // The advertised cast budget, kept on our side because the spool's refusals are silent. Built at the hello.
     @Volatile
-    private var castBudget: CastBudget? = null
+    private var castBudget: SendBudget? = null
+
+    /**
+     * This spool's sig bounds (HELLO `sig`, §7.8), clamped like [cast], or null when it fans out none — read after
+     * [awaitReady]. [sigOut] sends nothing without it (C-7.8-9).
+     */
+    @Volatile
+    var sig: SpoolSigInfo? = null
+        private set
+
+    // The advertised sig budget, separate from the cast one as the spool's are (S-7.8-3). Built at the hello.
+    @Volatile
+    private var sigBudget: SendBudget? = null
 
     // The ticket the spool last accepted here, until its `exp` lapses on our clock or a later one replaces it, and its
     // pseudonym — what an upload here is charged to (S-7.6-22).
@@ -608,6 +622,28 @@ class SpoolConnection(
     }
 
     /**
+     * Whether a sig for [scopeHex] would leave here at all, short of the budget and the queue: sigs advertised, the hello
+     * done, and the scope subscribed (C-7.8-9, C-7.8-10). No ticket enters into it: nothing gates a sig (S-7.8-4).
+     */
+    fun canSig(scopeHex: String): Boolean = sig != null && isReady && isSubscribed(scopeHex)
+
+    /**
+     * Sends one sig (§7.8): no `q`, no [pending] entry, no answer awaited, no strike — [castOut]'s rule. False, and
+     * nothing sent, when [canSig] does not hold, when [data] is over the advertised `maxBytes`, when the advertised rate
+     * is spent, or while more than [CAST_QUEUE_LIMIT] bytes are queued on the socket: a typing cue behind a blob would
+     * show a moment the typist has already left.
+     */
+    fun sigOut(
+        scope: ByteArray,
+        data: ByteArray,
+    ): Boolean {
+        val info = sig ?: return false
+        if (!canSig(hex(scope)) || data.size > info.maxBytes) return false
+        if (link.queued() > CAST_QUEUE_LIMIT || sigBudget?.take() != true) return false
+        return send(SpoolCodec.encode(SpoolSig(t = SpoolRecordType.SIG, scope = scope, data = data)))
+    }
+
+    /**
      * Asks for one TURN credential (experimental, docs/VOICE_CALLS.md §2.2): [SpoolReply.Turn], or [SpoolReply.Failed]
      * (`not_subscribed`, `rate` + `retryMs`, `internal`, `ticket`), or [SpoolReply.Closed] — including when this spool
      * never advertised `turn` (C-7.6-3) and when it stays silent past [timeoutMs]. A call is waiting on the answer, so
@@ -712,6 +748,7 @@ class SpoolConnection(
             SpoolRecordType.ACHUNK -> SpoolCodec.decode<SpoolAchunk>(bytes)?.let(::onAchunk)
             SpoolRecordType.TURNCRED -> SpoolCodec.decode<SpoolTurnCred>(bytes)?.let(::onTurnCred)
             SpoolRecordType.CAST -> SpoolCodec.decode<SpoolCast>(bytes)?.let { onCast(it) }
+            SpoolRecordType.SIG -> SpoolCodec.decode<SpoolSig>(bytes)?.let { onSig(it) }
             SpoolRecordType.ERR -> SpoolCodec.decode<SpoolErr>(bytes)?.let { onErr(it) }
             else -> Unit // unknown `t`: additive evolution — ignore, never close
         }
@@ -769,7 +806,10 @@ class SpoolConnection(
         // A hostile list is bounded here, before anything holds it: four URLs a call can actually use, or none.
         stun = StunServers.pick(hello.stun.orEmpty())
         cast = hello.cast?.clamped(limits)
-        castBudget = cast?.let { CastBudget(it.rate, clock) }
+        castBudget = cast?.let { SendBudget(it.rate, clock) }
+        // Rate 0 means omitted (S-7.8-1): a spool that sent one fans out none, so nothing is sent to it.
+        sig = hello.sig?.clamped(limits)?.takeIf { it.rate > 0 }
+        sigBudget = sig?.let { SendBudget(it.rate, clock) }
         // A difficulty beyond what a phone will attempt is refused outright rather than mined for: the
         // work is spent per scope on every round that re-subscribes, so believing an absurd one is a
         // remote battery denial that costs the spool a single integer.
@@ -977,10 +1017,10 @@ class SpoolConnection(
         /** Socket bytes queued past which a cast is skipped rather than sent behind them: about one attachment chunk. */
         const val CAST_QUEUE_LIMIT = 64L * 1024
 
-        /** The highest cast rate believed from a hello; knit-spool refuses to start above it. */
+        /** The highest cast or sig rate believed from a hello; knit-spool refuses to start above it (C-7.8-9). */
         const val MAX_CAST_RATE = 100
 
-        /** A cast budget's burst, as a multiple of its rate (docs/VOICE_CALLS.md §2.7). */
+        /** A cast or sig budget's burst, as a multiple of its rate (§7.7, §7.8). */
         const val CAST_BURST_FACTOR = 4
 
         private const val MS_PER_S = 1_000L
@@ -1027,6 +1067,13 @@ class SpoolConnection(
                 rate = rate.coerceIn(0, MAX_CAST_RATE),
             )
 
+        /** A spool's sig bounds, held to [SpoolCastInfo.clamped]'s ceilings (C-7.8-9). */
+        private fun SpoolSigInfo.clamped(limits: SpoolLimits?) =
+            SpoolSigInfo(
+                maxBytes = maxBytes.coerceIn(0, limits?.maxRecord ?: MAX_INBOUND_RECORD),
+                rate = rate.coerceIn(0, MAX_CAST_RATE),
+            )
+
         /** The room's pinned bounds (§7.4), held to the same ceilings as the spool-wide caps they sit under. */
         private fun SpoolCommonsInfo.clamped(limits: SpoolLimits?) =
             SpoolCommonsInfo(
@@ -1042,10 +1089,10 @@ class SpoolConnection(
 }
 
 /**
- * A spool's advertised cast budget, kept here because the spool drops an over-budget cast without a word: [rate] a
- * second with a burst of four times that, exactly the bucket the spool runs. A rate of 0 refuses every take.
+ * A spool's advertised cast or sig budget, kept here because the spool drops an over-budget record without a word: [rate]
+ * a second with a burst of four times that, exactly the bucket the spool runs. A rate of 0 refuses every take.
  */
-private class CastBudget(
+private class SendBudget(
     private val rate: Int,
     private val clock: () -> Long,
 ) {

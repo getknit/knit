@@ -55,6 +55,16 @@ lines.
   overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
   `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default
   when it is introduced.
+- **When touching the signal lane — `SpoolSig` / `SpoolSigInfo`, `SpoolHello.sig`, `SpoolConnection.canSig` / `sigOut`
+  / `SendBudget`, `ScopeSync.sig` / `sigScope` / `handleSig`, `ScopeCrypto.sealSig` / `openSig` / `SIG_SEAL_VERSION`,
+  `ScopeFrames.sigEligible` / `openSig` — or how a typing cue is sent or shown (`MeshManager.sendTyping`,
+  `InboundPipeline.handleTyping`, `SettingsStore.typingIndicatorsEnabled`):** READ ADR 2026-10.97vs and spec §7.8
+  (knit-spool ADR 2026-10.2q49 is the spool half). A sig is a cast's lane with no ticket (S-7.8-4), budgets and a
+  seal (`0x05`) of its own, and one signal kind today, a `typing` cue on a DM or group scope (C-7.8-13). A new kind
+  is a revision of `sigEligible` and C-7.8-13, never a widened cast or a stored frame, and nothing custodial ever
+  joins the set. A sig is delivered `ttl = 0` like a cast and is never presence (ADR 2026-10.fw8g). The Typing
+  indicators switch stops cues on every plane, and `handleTyping` shows none from a blocked sender or in a message
+  request, whatever plane it came over.
 - **When touching `ScopeSync.reconcile`, `Worker.stop`, or the worker coroutine that hands a pull to `deliver`:**
   READ ADR 2026-10.f82h. A reconcile that drops a relay cancels its worker mid-delivery as a matter of course; the
   delivery survives only because `MeshRouter.handleInbound` finishes what it admitted under `NonCancellable`. Don't

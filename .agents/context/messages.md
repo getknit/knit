@@ -11,6 +11,11 @@ lines.
 
 ## Entries
 
+- **When touching typing cues — `MeshManager.sendTyping`, `InboundPipeline.handleTyping`, `TypingTracker`,
+  `ChatViewModel.onUserTyping` / its typing combine, or `SettingsStore.typingIndicatorsEnabled`:** READ ADR
+  2026-10.97vs. A cue goes over the radios and, for a DM or group, as a spool sig beside them (spec §7.8); the
+  Typing indicators switch (on by default) stops both and hides cues already showing, and a cue from a blocked
+  sender or in a message request is never shown, whatever plane carried it.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
   for the card its link is fetching, or the share sheet never carries one; a LoRa thread takes a card exactly

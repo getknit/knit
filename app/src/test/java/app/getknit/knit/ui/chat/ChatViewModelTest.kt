@@ -180,6 +180,7 @@ class ChatViewModelTest {
     private val cardsFlow = MutableStateFlow(emptyMap<String, LinkCard>())
     private val onlineFlow = MutableStateFlow(true)
     private val linkPreviewsEnabledFlow = MutableStateFlow(false)
+    private val typingIndicatorsFlow = MutableStateFlow(true)
     private val publicConsentFlow = MutableStateFlow(false)
     private val locationConsentFlow = MutableStateFlow(false)
     private val transferConsentFlow = MutableStateFlow(false)
@@ -221,6 +222,8 @@ class ChatViewModelTest {
         every { linkCards.cards } returns cardsFlow
         every { linkPreviews.online } returns onlineFlow
         every { settings.linkPreviewsEnabled } returns linkPreviewsEnabledFlow
+        // An arm of the mesh-status combine: a relaxed mock's silent flow would stall every state assertion.
+        every { settings.typingIndicatorsEnabled } returns typingIndicatorsFlow
         every { settings.locationShareConsented } returns locationConsentFlow
         every { settings.directTransferConsented } returns transferConsentFlow
         every { transfers.states } returns transfersFlow
@@ -1253,6 +1256,28 @@ class ChatViewModelTest {
             advanceUntilIdle()
 
             assertTrue(mesh.sentTyping.isEmpty())
+        }
+
+    @Test
+    fun turningTypingIndicatorsOffHidesACueAlreadyShowing() =
+        runTest {
+            val vm = vm(Conversations.NEARBY)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            mesh.typing.value = mapOf(Conversations.NEARBY to setOf("sam"))
+            advanceUntilIdle()
+            assertEquals(
+                listOf("sam"),
+                vm.state.value.typingPeers
+                    .map { it.nodeId },
+            )
+
+            typingIndicatorsFlow.value = false
+            advanceUntilIdle()
+            assertTrue(
+                "hidden at once, before the cue's own hold runs out",
+                vm.state.value.typingPeers
+                    .isEmpty(),
+            )
         }
 
     @Test

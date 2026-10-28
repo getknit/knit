@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 
@@ -81,6 +82,7 @@ class Scope(
  * signature byte-exact (never the block list: ADR 2026-09.bts9). [ScopeSync] runs it as the step between [open] and the
  * mesh bridge, the way [app.getknit.knit.mesh.ForwardSync] injects its `authenticate` hook.
  */
+@Suppress("TooManyFunctions") // the member side of §4 and §7.7–§7.8: one frame set per object class, beside its seal
 object ScopeFrames {
     /** A sealed custody unit ready to PUSH: the blob and its content address. */
     class Sealed(
@@ -417,6 +419,83 @@ object ScopeFrames {
         val unsealed = runCatching { ScopeCrypto.openCast(scope.keys, scope.id, data) }.getOrNull() ?: return null
         val env = WireCodec.decodeEnvelope(unsealed.signed) ?: return null
         if (!castEligible(env, selfId, scope, inbound = true)) return null
+        return Opened(WireEnvelope(ttl = 0, hops = 0, relay = false, sig = unsealed.sig, signed = unsealed.signed), env)
+    }
+
+    /**
+     * The signal set (spec §7.8, C-7.8-13), the §4.4 analogue for the sig lane. Only a `typing` cue, in one of two forms:
+     *
+     * - on a pair's own DM scope — never a pair scope, which is bootstrap-only (§3.5) — naming no group, with sender and
+     *   recipient the scope's two members in the direction [inbound] names: peer to us on the way in, us to the peer on
+     *   the way out;
+     * - on a group's scope, its group ([TypingContent.groupId], where every port carries a typing cue's group) that
+     *   scope's group, addressed to nobody, from a founding-roster member ([Scope.roster], §4.4's reason): another
+     *   member on the way in, us on the way out.
+     *
+     * Never the commons, and never a cue whose payload will not decode, which `InboundPipeline.handleTyping` drops as
+     * malformed. `isCustodial` is checked as well, belt and braces, as for a cast: a
+     * kind added later can never let a custodial type dodge custody and the digest. The signature is not checked here;
+     * it is `InboundPipeline.canCarry`, which `ScopeSync` runs next.
+     */
+    fun sigEligible(
+        env: RelayEnvelope,
+        selfId: String,
+        scope: Scope,
+        inbound: Boolean,
+    ): Boolean {
+        if (env.type != FrameType.TYPING || FrameType.isCustodial(env.type)) return false
+        if (scope.commonsId != null || scope.pair || env.group != null) return false
+        val cueGroup = (WireCodec.decodeChecked<TypingContent>(env.payload) ?: return false).groupId
+        val peerId = scope.peerId
+        val groupId = scope.groupId
+        return when {
+            peerId != null -> cueGroup == null && dmCueTravels(env, selfId, peerId, inbound)
+            groupId != null -> cueGroup == groupId && groupCueTravels(env, selfId, scope.roster, inbound)
+            else -> false
+        }
+    }
+
+    /** A DM cue between the pair in the direction [inbound] names: peer to us on the way in, us to the peer out. */
+    private fun dmCueTravels(
+        env: RelayEnvelope,
+        selfId: String,
+        peerId: String,
+        inbound: Boolean,
+    ): Boolean {
+        val from = if (inbound) peerId else selfId
+        val to = if (inbound) selfId else peerId
+        return env.senderId == from && env.recipientId == to
+    }
+
+    /** A group cue addressed to nobody, from a founding member: another member on the way in, us on the way out. */
+    private fun groupCueTravels(
+        env: RelayEnvelope,
+        selfId: String,
+        roster: Set<String>,
+        inbound: Boolean,
+    ): Boolean = env.recipientId == null && env.senderId in roster && (env.senderId == selfId) != inbound
+
+    /** Seals one signed frame as a sig for [scope] (spec §7.8). */
+    fun sealSig(
+        scope: Scope,
+        sig: ByteArray,
+        signed: ByteArray,
+    ): ByteArray = ScopeCrypto.sealSig(scope.keys, scope.id, sig, signed)
+
+    /**
+     * Opens a sig and applies the signal set, or null on any failure (C-7.8-14). [openCast]'s shape: nothing is
+     * quarantined or remembered, and the returned wire is a delivery to this phone alone — `ttl = 0`, `relay = false` —
+     * whose signature rides as the frame's own, so the ordinary signed door verifies it again. The router marks nothing
+     * seen for a frame it then refuses.
+     */
+    fun openSig(
+        scope: Scope,
+        selfId: String,
+        data: ByteArray,
+    ): Opened? {
+        val unsealed = runCatching { ScopeCrypto.openSig(scope.keys, scope.id, data) }.getOrNull() ?: return null
+        val env = WireCodec.decodeEnvelope(unsealed.signed) ?: return null
+        if (!sigEligible(env, selfId, scope, inbound = true)) return null
         return Opened(WireEnvelope(ttl = 0, hops = 0, relay = false, sig = unsealed.sig, signed = unsealed.signed), env)
     }
 

@@ -64,6 +64,8 @@ class SettingsScreenContentTest {
         onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
         linkPreviewsEnabled: Boolean = false,
         onToggleLinkPreviews: (Boolean) -> Unit = {},
+        typingIndicatorsEnabled: Boolean = true,
+        onToggleTypingIndicators: (Boolean) -> Unit = {},
         calls: CallsSummary = CallsSummary(),
         onOpenCalls: () -> Unit = {},
         showCalls: Boolean = true,
@@ -95,6 +97,7 @@ class SettingsScreenContentTest {
                             themeMode = themeMode,
                             bluetoothDownloadLimit = bluetoothDownloadLimit,
                             linkPreviewsEnabled = linkPreviewsEnabled,
+                            typingIndicatorsEnabled = typingIndicatorsEnabled,
                             calls = calls,
                             dynamicColor = dynamicColor,
                             relay = relay,
@@ -113,6 +116,7 @@ class SettingsScreenContentTest {
                     onToggleWifiAware = onToggleWifiAware,
                     onSelectBluetoothDownloadLimit = onSelectBluetoothDownloadLimit,
                     onToggleLinkPreviews = onToggleLinkPreviews,
+                    onToggleTypingIndicators = onToggleTypingIndicators,
                     onOpenCalls = onOpenCalls,
                     showCalls = showCalls,
                     onToggleDynamicColor = onToggleDynamicColor,
@@ -361,6 +365,25 @@ class SettingsScreenContentTest {
         compose.onNodeWithTag("settings_link_previews").performScrollTo().assertIsOn()
         compose.onNodeWithTag("settings_link_previews").performClick()
         assertEquals(false, toggled)
+    }
+
+    /** On by default, and in every build: the radios carry typing cues whether or not the Internet plane is there. */
+    @Test
+    fun theTypingIndicatorsRowIsOnByDefaultAndTogglesOff() {
+        var toggled: Boolean? = null
+        render(showInternetRelays = false, onToggleTypingIndicators = { toggled = it })
+        compose.onNodeWithTag("settings_typing_indicators").performScrollTo().assertIsOn()
+        compose.onNodeWithTag("settings_typing_indicators").performClick()
+        assertEquals(false, toggled)
+    }
+
+    @Test
+    fun theTypingIndicatorsRowTogglesBackOn() {
+        var toggled: Boolean? = null
+        render(typingIndicatorsEnabled = false, onToggleTypingIndicators = { toggled = it })
+        compose.onNodeWithTag("settings_typing_indicators").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("settings_typing_indicators").performClick()
+        assertEquals(true, toggled)
     }
 
     @Test

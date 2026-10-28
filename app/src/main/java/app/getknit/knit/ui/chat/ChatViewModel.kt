@@ -1270,11 +1270,14 @@ class ChatViewModel(
         val lora: LoraThread,
     )
 
+    // Typing indicators off hides at once a cue already showing, which the pipeline then stops recording.
+    private val typingShown = combine(meshManager.typing, settings.typingIndicatorsEnabled) { typing, on -> if (on) typing else emptyMap() }
+
     private val meshStatus =
         combine(
             meshManager.neighborCount,
             meshManager.transportHealth,
-            meshManager.typing,
+            typingShown,
             relayThread,
             loraThread,
         ) { count, health, typing, relay, lora -> MeshStatus(count, health, typing, relay, lora) }

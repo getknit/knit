@@ -872,6 +872,8 @@
     <string name="call_settings_speech_model_cancel">Скасувати</string>
     <string name="call_settings_speech_model_remove">Видалити</string>
     <string name="settings_link_previews_subtitle">Коли ви вводите посилання, Knit отримує назву й зображення сторінки через інтернет і надсилає їх разом із повідомленням. Сайт бачить вашу IP-адресу; ті, кому ви пишете, до нього не звертаються.</string>
+    <string name="settings_typing_indicators_title">Індикатор набору</string>
+    <string name="settings_typing_indicators_subtitle">Люди, з якими ви листуєтеся, бачать, коли ви пишете, поруч або через ретранслятор, а ви бачите, коли пишуть вони. Якщо вимкнено, Knit не надсилає й не показує, хто пише.</string>
     <string name="settings_low_power_title">Режим енергозбереження</string>
     <string name="settings_low_power_subtitle">Вимикає Wi-Fi Aware, щоб заощадити батарею. Bluetooth тримає вас у mesh-мережі, тож повідомлення надходять, але фото й файли йдуть довше. Також увімкнено, коли ввімкнено Енергозбереження.</string>
     <string name="settings_low_power_subtitle_saver">Увімкнено, бо ввімкнено Енергозбереження. Wi-Fi Aware вимкнено, а Bluetooth тримає вас у mesh-мережі.</string>

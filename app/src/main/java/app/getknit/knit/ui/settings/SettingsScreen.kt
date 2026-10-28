@@ -94,6 +94,7 @@ internal data class SettingsFormState(
     val themeMode: ThemeMode = ThemeMode.System,
     val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
     val linkPreviewsEnabled: Boolean = false,
+    val typingIndicatorsEnabled: Boolean = true,
     /** The Calls row's subtitle (docs/VOICE_CALLS.md §3.14), shown only where calls are wired. */
     val calls: CallsSummary = CallsSummary(),
     val dynamicColor: Boolean = false,
@@ -130,6 +131,7 @@ fun SettingsScreen(
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
+    val typingIndicatorsEnabled by viewModel.typingIndicatorsEnabled.collectAsStateWithLifecycle()
     val calls by viewModel.callsSummary.collectAsStateWithLifecycle()
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val relay by viewModel.relaySummary.collectAsStateWithLifecycle()
@@ -158,6 +160,7 @@ fun SettingsScreen(
                 themeMode = themeMode,
                 bluetoothDownloadLimit = bluetoothDownloadLimit,
                 linkPreviewsEnabled = linkPreviewsEnabled,
+                typingIndicatorsEnabled = typingIndicatorsEnabled,
                 calls = calls,
                 dynamicColor = dynamicColor,
                 relay = relay,
@@ -175,6 +178,7 @@ fun SettingsScreen(
         onSelectThemeMode = viewModel::setThemeMode,
         onSelectBluetoothDownloadLimit = viewModel::setBluetoothDownloadLimit,
         onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
+        onToggleTypingIndicators = viewModel::setTypingIndicatorsEnabled,
         onToggleDynamicColor = viewModel::setDynamicColor,
         onToggleLowPower = viewModel::setLowPowerMode,
         onToggleWifiAware = viewModel::setWifiAwareOn,
@@ -204,6 +208,7 @@ internal fun SettingsScreenContent(
     onSelectThemeMode: (ThemeMode) -> Unit = {},
     onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
     onToggleLinkPreviews: (Boolean) -> Unit = {},
+    onToggleTypingIndicators: (Boolean) -> Unit = {},
     onToggleDynamicColor: (Boolean) -> Unit = {},
     onToggleLowPower: (Boolean) -> Unit = {},
     onToggleWifiAware: (Boolean) -> Unit = {},
@@ -369,6 +374,16 @@ internal fun SettingsScreenContent(
                     modifier = Modifier.testTag("settings_dynamic_color"),
                 )
             }
+
+            // What a chat tells the other side while you write. Not under the Internet plane's flag: the radios carry
+            // typing cues in every build, and the switch stops them there too.
+            ToggleRow(
+                title = stringResource(R.string.settings_typing_indicators_title),
+                subtitle = stringResource(R.string.settings_typing_indicators_subtitle),
+                enabled = form.typingIndicatorsEnabled,
+                onToggle = onToggleTypingIndicators,
+                modifier = Modifier.testTag("settings_typing_indicators"),
+            )
 
             // Link previews are the one other thing that uses the Internet, so they ship under the same build
             // switch as the relay plane; the subtitle carries the disclosure that would otherwise need a sheet.

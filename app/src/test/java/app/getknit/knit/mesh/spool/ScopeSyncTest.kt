@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RatchetInit
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.frameIdOf
@@ -155,8 +156,10 @@ class ScopeSyncTest {
                 deliver = { wire, env, _ ->
                     delivered.add(env)
                     wires.add(wire)
-                    // A walkie chunk is never custodied (InboundPipeline.onDeliver carries custodial types alone).
-                    if (env.type != FrameType.TALK) custody.store(CarriedFrame(env, wire.sig, wire.signed), ForwardStore.ORIGIN_RELAY, now)
+                    // Only custodial types are custodied (InboundPipeline.onDeliver): never a walkie chunk or a typing cue.
+                    if (FrameType.isCustodial(env.type)) {
+                        custody.store(CarriedFrame(env, wire.sig, wire.signed), ForwardStore.ORIGIN_RELAY, now)
+                    }
                 },
                 blobs = blobs,
                 onAttachmentObtained = { obtained.add(it) },
@@ -3899,6 +3902,234 @@ class ScopeSyncTest {
             assertEquals(listOf("free"), payer.delivered.map { it.id })
             payer.sync.stop()
             friend.sync.stop()
+        }
+
+    // ---- sigs (§7.8): the signal lane typing rides, open to every phone ----
+
+    private val sigBounds = SpoolSigInfo(maxBytes = 8_192, rate = 2)
+
+    private fun typingCue(
+        id: String = fid("ty1"),
+        from: String = alice,
+        to: String? = bob,
+        group: String? = null,
+    ) = RelayEnvelope(
+        type = FrameType.TYPING,
+        id = id,
+        senderId = from,
+        sentAt = now,
+        recipientId = to,
+        payload = WireCodec.encodePayload(TypingContent(group)),
+    )
+
+    /** Sends [env] as a sig of [conversationId]'s: the peer's node id for a DM, the group id for a group. */
+    private suspend fun Member.sigCue(
+        env: RelayEnvelope = typingCue(),
+        conversationId: String = env.recipientId ?: WireCodec.decodePayload<TypingContent>(env.payload)!!.groupId!!,
+        sig: ByteArray = castSig,
+    ): Int = sync.sig(conversationId, env, sig, WireCodec.encodeEnvelope(env))
+
+    @Test
+    fun `a typing sig reaches the DM peer as a frame for it alone, and the spool stores nothing`() =
+        runTest {
+            val spool = FakeSpool(sig = sigBounds)
+            val sender = member(spool, alice, bob)
+            val receiver = member(spool, bob, alice)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(
+                8_192,
+                sender.sync
+                    .status()
+                    .single()
+                    .sig
+                    ?.maxBytes,
+            )
+            assertEquals(1, sender.sigCue())
+            pump(1)
+
+            assertEquals(listOf(fid("ty1")), receiver.delivered.map { it.id })
+            val wire = receiver.wires.single()
+            assertEquals("delivered to this phone and flooded nowhere", 0, wire.ttl)
+            assertFalse(wire.relay)
+            assertTrue("the sig's signature rides as the frame's own", wire.sig.contentEquals(castSig))
+            assertTrue("nothing was pushed: a sig is never a blob", spool.pushed.isEmpty())
+            assertEquals(1, spool.sigsFanned)
+            assertEquals("a sig is not a cast", 0, spool.castsFanned)
+            assertEquals(0, receiver.metrics.spool().spoolInvalid)
+            assertEquals(0, receiver.metrics.spool().spoolAccounted)
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    @Test
+    fun `a group typing sig reaches the other members on the group's scope`() =
+        runTest {
+            val spool = FakeSpool(sig = sigBounds)
+            val groupId = "g-00112233445566778899aabb"
+            val group = GroupScopeRoots(groupId, setOf(alice, bob, carol), groupRoot, rootVersion = 1)
+            val sender = member(spool, alice, bob, groups = listOf(group))
+            val bobSide = member(spool, bob, alice, groups = listOf(group))
+            val carolSide = member(spool, carol, alice, roots = { emptyList() }, groups = listOf(group))
+            listOf(sender, bobSide, carolSide).forEach { it.sync.start(backgroundScope) }
+            pump()
+
+            assertEquals(1, sender.sigCue(typingCue(to = null, group = groupId)))
+            pump(1)
+
+            assertEquals(listOf(fid("ty1")), bobSide.delivered.map { it.id })
+            assertEquals(listOf(fid("ty1")), carolSide.delivered.map { it.id })
+            assertEquals(hex(ScopeCrypto.groupScopeId(groupRoot, groupId, 1)), spool.sigs.single())
+            listOf(sender, bobSide, carolSide).forEach { it.sync.stop() }
+        }
+
+    @Test
+    fun `a spool that never advertised sigs is sent none`() =
+        runTest {
+            val spool = FakeSpool(cast = castBounds)
+            val sender = member(spool, alice, bob)
+            sender.sync.start(backgroundScope)
+            pump()
+            assertNull(
+                sender.sync
+                    .status()
+                    .single()
+                    .sig,
+            )
+            assertEquals("a spool with casts alone is still sent no sig", 0, sender.sigCue())
+            assertFalse(SpoolRecordType.SIG in spool.skippedRecords)
+            assertTrue(spool.sigs.isEmpty())
+            // And a conversation this phone holds no scope for is sent nothing anywhere.
+            assertEquals(0, sender.sigCue(typingCue(to = "nobody"), conversationId = "nobody"))
+            sender.sync.stop()
+        }
+
+    @Test
+    fun `a sig the carry gate refuses, or outside the signal set, is dropped and remembered nowhere`() =
+        runTest {
+            val spool = FakeSpool(sig = sigBounds)
+            val sender = member(spool, alice, bob)
+            val receiver = member(spool, bob, alice, carryGate = { wire, _ -> wire.sig.contentEquals(castSig) })
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(1, sender.sigCue(sig = ByteArray(ScopeCrypto.SIG_BYTES)))
+            // A chat frame or a walkie chunk is no typing cue, whatever the caller asks: the outward set refuses it before
+            // the seal.
+            assertEquals(0, sender.sync.sig(bob, dmFrame(fid("c1"), alice, bob).envelope, castSig, ByteArray(8)))
+            assertEquals(0, sender.sync.sig(bob, talk(), castSig, WireCodec.encodeEnvelope(talk())))
+            // Nor does a cue for one conversation ride another's scope.
+            assertEquals(0, sender.sigCue(typingCue(to = carol), conversationId = bob))
+            // The forged copy was refused, and the genuine one under its id still lands.
+            assertEquals(1, sender.sigCue())
+            pump(1)
+            assertEquals(listOf(fid("ty1")), receiver.delivered.map { it.id })
+            assertEquals(0, receiver.metrics.spool().spoolInvalid)
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    /** S-7.8-4: on a spool that gates every verb it can behind a ticket, a phone holding none still sends and gets sigs. */
+    @Test
+    fun `no ticket gates a sig, even on a spool that gates everything else`() =
+        runTest {
+            val spool =
+                FakeSpool(
+                    sig = sigBounds,
+                    cast = castBounds,
+                    ent = true,
+                    entGates =
+                        SpoolTicket.LEGACY_GATES or SpoolTicket.FL_FILES,
+                )
+            val sender = member(spool, alice, bob)
+            val receiver = member(spool, bob, alice)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertFalse("casts here want a ticket nobody holds", sender.sync.canCast(bob, peerTicketed = false))
+            assertEquals(1, sender.sigCue())
+            assertEquals(1, receiver.sigCue(typingCue(id = fid("back"), from = bob, to = alice)))
+            pump(1)
+            assertEquals(listOf(fid("ty1")), receiver.delivered.map { it.id })
+            assertEquals(listOf(fid("back")), sender.delivered.map { it.id })
+            sender.sync.stop()
+            receiver.sync.stop()
+        }
+
+    /** The DM fixture's scope, as both members derive it: what a hostile spool's own sig is sealed under. */
+    private fun dmScope() =
+        Scope(
+            id = ScopeCrypto.dmScopeId(pairwiseRoot, alice, bob),
+            keys = ScopeCrypto.dmSealKeys(pairwiseRoot, alice, bob),
+            bounds = ScopeRegistry.DEFAULT_BOUNDS,
+            peerId = bob,
+        )
+
+    /**
+     * A well-formed sig from Alice to Bob, as a spool would relay it. [padded] grows it past 512 bytes of `data` with a
+     * key `TypingContent` does not know (`{"pad": 300 bytes}`), so it is still a cue the signal set admits: only its size
+     * is wrong.
+     */
+    private fun relayedSig(padded: Boolean = false): ByteArray {
+        val pad = byteArrayOf(0xa1.toByte(), 0x63) + "pad".toByteArray() + byteArrayOf(0x59, 0x01, 0x2c) + ByteArray(300)
+        val cue = typingCue()
+        val env = if (padded) RelayEnvelope(cue.type, cue.id, cue.senderId, cue.sentAt, cue.recipientId, payload = pad) else cue
+        val data = ScopeFrames.sealSig(dmScope(), castSig, WireCodec.encodeEnvelope(env))
+        return SpoolCodec.encode(SpoolSig(t = SpoolRecordType.SIG, scope = dmScope().id, data = data))
+    }
+
+    /** C-7.8-9's other side: a spool whose HELLO never said `sig` has its sigs ignored, and one over `maxBytes` is dropped. */
+    @Test
+    fun `a sig off a spool that never advertised sigs, or over its maxBytes, is ignored`() =
+        runTest {
+            val older = FakeSpool()
+            val receiver = member(older, bob, alice)
+            receiver.sync.start(backgroundScope)
+            pump()
+            older.gossip(relayedSig())
+            pump(1)
+            assertTrue("a spool without `sig` is never read for one", receiver.delivered.isEmpty())
+            receiver.sync.stop()
+
+            val small = FakeSpool(sig = SpoolSigInfo(maxBytes = 300, rate = 2))
+            val bob2 = member(small, bob, alice)
+            bob2.sync.start(backgroundScope)
+            pump()
+            small.gossip(relayedSig(padded = true))
+            pump(1)
+            assertTrue("over the advertised maxBytes", bob2.delivered.isEmpty())
+            // The positive control: the same spool's sig inside its bound lands.
+            small.gossip(relayedSig())
+            pump(1)
+            assertEquals(listOf(fid("ty1")), bob2.delivered.map { it.id })
+            bob2.sync.stop()
+        }
+
+    @Test
+    fun `a sig goes to every spool that carries it`() =
+        runTest {
+            val one = FakeSpool(sig = sigBounds)
+            val two = FakeSpool(sig = sigBounds)
+            val urls = listOf("ws://one.test/spool/v1", "ws://two.test/spool/v1")
+            val relays = Relays(mapOf(urls[0] to one, urls[1] to two))
+            val sender = member(one, alice, bob, dialer = relays, urls = urls)
+            val receiver = member(one, bob, alice, dialer = relays, urls = urls)
+            sender.sync.start(backgroundScope)
+            receiver.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(2, sender.sigCue())
+            pump(1)
+            assertEquals(1, one.sigsFanned)
+            assertEquals(1, two.sigsFanned)
+            // Both copies are the same frame; the router behind `deliver` keeps the first (C-7.8-15, `SeenSet`, by id).
+            assertEquals(listOf(fid("ty1"), fid("ty1")), receiver.delivered.map { it.id })
+            sender.sync.stop()
+            receiver.sync.stop()
         }
 
     @Test

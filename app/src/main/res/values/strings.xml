@@ -1032,6 +1032,10 @@
     <string name="call_settings_speech_model_cancel">Cancel</string>
     <string name="call_settings_speech_model_remove">Remove</string>
     <string name="settings_link_previews_subtitle">When you type a link, Knit fetches the page\'s title and picture over the Internet and sends them with your message. The site sees your IP address; the people you send to never contact it.</string>
+    <!-- Settings switch, on by default: whether this phone sends "now typing" cues to the people it chats with, over
+         the radios and an Internet relay, and shows theirs. Off, it does neither. -->
+    <string name="settings_typing_indicators_title">Typing indicators</string>
+    <string name="settings_typing_indicators_subtitle">The people you chat with see when you\'re typing, nearby or through a relay, and you see when they are. Off, Knit neither sends nor shows typing.</string>
     <!-- Low-power mode (ADR 2026-10.d44b). The subtitle changes when Battery Saver holds the mode on with the switch off,
          or the charger holds it off with the switch on. -->
     <string name="settings_low_power_title">Low-power mode</string>

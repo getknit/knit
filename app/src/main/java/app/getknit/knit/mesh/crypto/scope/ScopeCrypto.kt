@@ -54,10 +54,19 @@ object ScopeCrypto {
      */
     const val CAST_SEAL_VERSION: Byte = 0x04
 
-    /** A cast's plaintext is padded to a multiple of this, so a spool sees a size class rather than a frame's size. */
+    /**
+     * Sig seal version, a sig's first byte (spec §7.8). The cast's construction under its own byte, nonce label and aad,
+     * so a sig never opens as a cast, a frame blob or a chunk, and none of those opens as a sig.
+     */
+    const val SIG_SEAL_VERSION: Byte = 0x05
+
+    /**
+     * A cast's or a sig's plaintext is padded to a multiple of this, so a spool sees a size class rather than a
+     * frame's size.
+     */
     const val CAST_PAD_BYTES = 128
 
-    /** The u16 length a cast plaintext carries ahead of `signed`, and so the bound on `signed`. */
+    /** The u16 length a padded plaintext carries ahead of `signed`, and so the bound on `signed`. */
     private const val CAST_LENGTH_BYTES = 2
     private const val MAX_CAST_SIGNED = 0xFFFF
 
@@ -114,6 +123,8 @@ object ScopeCrypto {
     private val AAD_ATTACH_PREFIX = "knit/scope/v1/attach".toByteArray()
     private val LABEL_CNONCE = "knit/scope/v1/cnonce".toByteArray()
     private val AAD_CAST_PREFIX = "knit/scope/v1/cast".toByteArray()
+    private val LABEL_SNONCE = "knit/scope/v1/snonce".toByteArray()
+    private val AAD_SIG_PREFIX = "knit/scope/v1/sig".toByteArray()
 
     // FNV-1a 64-bit, mirrored from mesh/StoreDigest (same fold, raw-byte input instead of UTF-8).
     private const val FNV64_OFFSET = -0x340D631B7BDDDCDBL
@@ -310,19 +321,7 @@ object ScopeCrypto {
         scopeId: ByteArray,
         sig: ByteArray,
         signed: ByteArray,
-    ): ByteArray {
-        require(sig.size == SIG_BYTES) { "sig must be $SIG_BYTES raw Ed25519 bytes" }
-        require(signed.isNotEmpty() && signed.size <= MAX_CAST_SIGNED) { "signed must be 1..$MAX_CAST_SIGNED bytes" }
-        val body = sig + byteArrayOf((signed.size ushr Byte.SIZE_BITS).toByte(), signed.size.toByte()) + signed
-        val pt = body + ByteArray(Math.floorMod(-body.size, CAST_PAD_BYTES))
-        val nonce = Hkdf.computeHkdf(MAC, keys.nonceKey, ZERO_SALT, LABEL_CNONCE + sha256(pt), NONCE_BYTES)
-        val cipher =
-            Cipher.getInstance(TRANSFORMATION).apply {
-                init(Cipher.ENCRYPT_MODE, SecretKeySpec(keys.sealKey, "AES"), GCMParameterSpec(TAG_BITS, nonce))
-                updateAAD(AAD_CAST_PREFIX + scopeId)
-            }
-        return byteArrayOf(CAST_SEAL_VERSION) + nonce + cipher.doFinal(pt)
-    }
+    ): ByteArray = sealPadded(CAST_SEAL_VERSION, LABEL_CNONCE, AAD_CAST_PREFIX, keys, scopeId, sig, signed)
 
     /**
      * Opens a cast back into the frame it carries. Throws like [open]: [IllegalArgumentException] on an unknown version,
@@ -333,22 +332,77 @@ object ScopeCrypto {
         keys: SealKeys,
         scopeId: ByteArray,
         data: ByteArray,
+    ): Unsealed = openPadded(CAST_SEAL_VERSION, AAD_CAST_PREFIX, keys, scopeId, data)
+
+    /**
+     * Seals one frame as a sig (spec §7.8): [sealCast]'s construction under [SIG_SEAL_VERSION], the nonce label
+     * `knit/scope/v1/snonce` and the aad `knit/scope/v1/sig ‖ scopeId` (49 bytes, against a cast's 50, a frame's 45 and
+     * a chunk's 52). [sig] must be the frame's raw Ed25519 signature: every sig is signed (C-7.8-11).
+     */
+    fun sealSig(
+        keys: SealKeys,
+        scopeId: ByteArray,
+        sig: ByteArray,
+        signed: ByteArray,
+    ): ByteArray = sealPadded(SIG_SEAL_VERSION, LABEL_SNONCE, AAD_SIG_PREFIX, keys, scopeId, sig, signed)
+
+    /**
+     * Opens a sig back into the frame it carries, refusing every plaintext but the canonical one (C-7.8-12). Throws like
+     * [openCast]. The caller still verifies the frame's signature and the signal set.
+     */
+    fun openSig(
+        keys: SealKeys,
+        scopeId: ByteArray,
+        data: ByteArray,
+    ): Unsealed = openPadded(SIG_SEAL_VERSION, AAD_SIG_PREFIX, keys, scopeId, data)
+
+    /** `version ‖ nonce ‖ AES-256-GCM(pt)`, `pt = sig(64) ‖ u16be(|signed|) ‖ signed ‖ 0x00…` in whole blocks. */
+    @Suppress("LongParameterList") // the two lanes differ only in their three labels
+    private fun sealPadded(
+        version: Byte,
+        nonceLabel: ByteArray,
+        aadPrefix: ByteArray,
+        keys: SealKeys,
+        scopeId: ByteArray,
+        sig: ByteArray,
+        signed: ByteArray,
+    ): ByteArray {
+        require(sig.size == SIG_BYTES) { "sig must be $SIG_BYTES raw Ed25519 bytes" }
+        require(signed.isNotEmpty() && signed.size <= MAX_CAST_SIGNED) { "signed must be 1..$MAX_CAST_SIGNED bytes" }
+        val body = sig + byteArrayOf((signed.size ushr Byte.SIZE_BITS).toByte(), signed.size.toByte()) + signed
+        val pt = body + ByteArray(Math.floorMod(-body.size, CAST_PAD_BYTES))
+        val nonce = Hkdf.computeHkdf(MAC, keys.nonceKey, ZERO_SALT, nonceLabel + sha256(pt), NONCE_BYTES)
+        val cipher =
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.ENCRYPT_MODE, SecretKeySpec(keys.sealKey, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+                updateAAD(aadPrefix + scopeId)
+            }
+        return byteArrayOf(version) + nonce + cipher.doFinal(pt)
+    }
+
+    /** The opener for [sealPadded]: whole blocks, a nonzero length inside them, at most one block of zero padding. */
+    private fun openPadded(
+        version: Byte,
+        aadPrefix: ByteArray,
+        keys: SealKeys,
+        scopeId: ByteArray,
+        data: ByteArray,
     ): Unsealed {
-        require(data.isNotEmpty() && data[0] == CAST_SEAL_VERSION) { "unknown cast seal version" }
-        require(data.size > 1 + NONCE_BYTES + SIG_BYTES + CAST_LENGTH_BYTES) { "cast too short" }
+        require(data.isNotEmpty() && data[0] == version) { "unknown seal version" }
+        require(data.size > 1 + NONCE_BYTES + SIG_BYTES + CAST_LENGTH_BYTES) { "sealed frame too short" }
         val nonce = data.copyOfRange(1, 1 + NONCE_BYTES)
         val cipher =
             Cipher.getInstance(TRANSFORMATION).apply {
                 init(Cipher.DECRYPT_MODE, SecretKeySpec(keys.sealKey, "AES"), GCMParameterSpec(TAG_BITS, nonce))
-                updateAAD(AAD_CAST_PREFIX + scopeId)
+                updateAAD(aadPrefix + scopeId)
             }
         val pt = cipher.doFinal(data, 1 + NONCE_BYTES, data.size - 1 - NONCE_BYTES)
-        require(pt.size % CAST_PAD_BYTES == 0) { "cast plaintext is not padded" }
+        require(pt.size % CAST_PAD_BYTES == 0) { "plaintext is not padded" }
         val n = ((pt[SIG_BYTES].toInt() and BYTE_MASK_INT) shl Byte.SIZE_BITS) or (pt[SIG_BYTES + 1].toInt() and BYTE_MASK_INT)
         val end = SIG_BYTES + CAST_LENGTH_BYTES + n
-        require(n > 0 && end <= pt.size) { "cast length outside its plaintext" }
-        require(end + CAST_PAD_BYTES > pt.size) { "cast padded past one block" }
-        require((end until pt.size).all { pt[it] == 0.toByte() }) { "cast padding is not zero" }
+        require(n > 0 && end <= pt.size) { "length outside its plaintext" }
+        require(end + CAST_PAD_BYTES > pt.size) { "padded past one block" }
+        require((end until pt.size).all { pt[it] == 0.toByte() }) { "padding is not zero" }
         return Unsealed(sig = pt.copyOfRange(0, SIG_BYTES), signed = pt.copyOfRange(SIG_BYTES + CAST_LENGTH_BYTES, end))
     }
 

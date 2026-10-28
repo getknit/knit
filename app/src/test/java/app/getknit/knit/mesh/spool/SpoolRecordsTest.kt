@@ -251,6 +251,32 @@ class SpoolRecordsTest {
                             ),
                     ),
                 ),
+            // Appended (§7.8, 2026-10-28): `helloSpool` with the signal lane's bounds, and a c→s `sig` on `cast`'s fixture.
+            // Both copied from knit-spool feat/sig-lane 0e0336df37ca5c49e9d42781d92f1cd315943f76 (`SigRecordVectorTest`),
+            // which made them with an encoder of its own.
+            "helloSpoolSig" to
+                SpoolCodec.encode(
+                    SpoolHello(
+                        t = SpoolRecordType.HELLO,
+                        v = SPOOL_RECORD_VERSION,
+                        min = 1,
+                        limits =
+                            SpoolLimits(
+                                maxBlob = 65_536,
+                                maxRecord = 131_072,
+                                maxScopes = 64,
+                                maxPull = 64,
+                                maxFramesCap = 1_000,
+                                maxTtlMs = 604_800_000L,
+                            ),
+                        powBits = 20,
+                        sig = SpoolSigInfo(maxBytes = 8_192, rate = 2),
+                    ),
+                ),
+            "sigRecord" to
+                SpoolCodec.encode(
+                    SpoolSig(t = SpoolRecordType.SIG, scope = ByteArray(32) { it.toByte() }, data = ByteArray(16) { (0xa0 + it).toByte() }),
+                ),
         )
 
     private fun tagOf(secret: ByteArray) = ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(secret))
@@ -347,6 +373,18 @@ class SpoolRecordsTest {
         assertEquals("Home", hello.commons!!.name)
         // Each tag is an 8-byte string (`48`), and no 32-byte id rides anywhere in the record.
         assertTrue(bytes.none { it == 0x58.toByte() })
+    }
+
+    /** Additive (B-2-2): `sig` decodes back to its bounds, and `helloSpool` without it reads as a spool with no sigs. */
+    @Test
+    fun theSigBoundsRideHelloAndTheSigRecordRoundTrips() {
+        val hello = SpoolCodec.decode<SpoolHello>(vectors().getValue("helloSpoolSig"))!!
+        assertEquals(8_192, hello.sig?.maxBytes)
+        assertEquals(2, hello.sig?.rate)
+        assertNull(SpoolCodec.decode<SpoolHello>(vectors().getValue("helloSpool"))!!.sig)
+        val sig = SpoolCodec.decode<SpoolSig>(vectors().getValue("sigRecord"))!!
+        assertEquals(SpoolRecordType.SIG, SpoolCodec.peekType(vectors().getValue("sigRecord")))
+        assertArrayEquals(ByteArray(16) { (0xa0 + it).toByte() }, sig.data)
     }
 
     @Test
@@ -513,6 +551,17 @@ class SpoolRecordsTest {
                     "784672616d65731901f46574746c4d731a05265c00676d6178426c6f621a00010000" +
                     "a56374616748a2f73b72abeabcb1696d61784672616d657318c86574746c4d731a05" +
                     "265c00676d6178426c6f621a0001000066617474616368f5",
+                // Copied from knit-spool 0e0336df37ca5c49e9d42781d92f1cd315943f76, never recomputed here.
+                "helloSpoolSig" to
+                    "a661746568656c6c6f617601636d696e01666c696d697473a6676d6178426c6f621a" +
+                    "00010000696d61785265636f72641a00020000696d617853636f7065731840676d61" +
+                    "7850756c6c18406c6d61784672616d65734361701903e8686d617854746c4d731a24" +
+                    "0c840067706f77426974731463736967a2686d617842797465731920006472617465" +
+                    "02",
+                "sigRecord" to
+                    "a36174637369676573636f70655820000102030405060708090a0b0c0d0e0f101112" +
+                    "131415161718191a1b1c1d1e1f646461746150a0a1a2a3a4a5a6a7a8a9aaabacadae" +
+                    "af",
             )
 
         private val HOME = SpoolCommonsInfo(name = "Home", maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)

@@ -27,6 +27,9 @@ interface InboundSettings {
     /** Conversation ids explicitly accepted out of the message-request queue (see [SettingsStore.acceptedConversations]). */
     val acceptedConversations: Flow<Set<String>>
 
+    /** Whether a typing cue this phone receives is shown at all ([SettingsStore.typingIndicatorsEnabled]). */
+    val typingIndicatorsEnabled: Flow<Boolean>
+
     /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
     suspend fun block(
         nodeId: String,

@@ -228,6 +228,7 @@ carries; never renumber an old one.
 | [2026-10.8jwn](decisions/2026-10-8jwn-a-bluetooth-file-feed-splits-one-pace-budget-across-the-links-it-feeds.md) | A Bluetooth file feed splits one pace budget across the links it feeds | ble, mesh |
 | [2026-10.8kfx](decisions/2026-10-8kfx-a-phone-lives-on-one-home-relay-and-a-conversation-names-its-relays.md) | A phone lives on one home relay and a conversation names its relays | spool, wire, settings |
 | [2026-10.8t2y](decisions/2026-10-8t2y-a-files-ticket-unlocks-this-phone-s-uploads.md) | A files ticket unlocks this phone's uploads, and each gate is read from its own bit | calls, spool, tickets, attachments |
+| [2026-10.97vs](decisions/2026-10-97vs-typing-indicators-ride-the-spool-s-signal-lane.md) | Typing indicators ride the spool's signal lane | spool, wire, privacy, settings |
 | [2026-10.9qr4](decisions/2026-10-9qr4-an-inbound-frame-s-id-has-the-shape-its-type-is-minted-with.md) | An inbound frame's id has the shape its type is minted with | wire, custody, spool, security |
 | [2026-10.9rh6](decisions/2026-10-9rh6-block-on-send-only-in-the-public-rooms.md) | Block on send only in the public rooms | moderation, privacy |
 | [2026-10.9utz](decisions/2026-10-9utz-the-ble-presence-set-is-enabled-again-after-every-connection.md) | The BLE presence set is enabled again after every connection | ble, mesh |

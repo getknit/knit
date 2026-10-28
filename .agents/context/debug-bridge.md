@@ -119,8 +119,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `url` only names the relay and is not added (re-adding it untokened would make a second row). A live connection
   presents an import at once; the reply's `ticketImport` names the host and `exp`, never the ticket. Each spool in
   the dump carries `ent` (its hello takes tickets), `stun` (how many STUN URIs its hello gave a call, after the
-  client's URL rule), `turn` (its hello offers TURN), `cast` (its hello's `maxBytes` and `rate`, or null) and
-  `ticket`: `state` (`none`/`pending`/`accepted`/`refused`) with `exp`, the grants `turn`, `files` and `cast` (from
+  client's URL rule), `turn` (its hello offers TURN), `cast` (its hello's `maxBytes` and `rate`, or null), `sig`
+  (the same for the spec §7.8 signal lane, which typing rides with no ticket) and `ticket`: `state`
+  (`none`/`pending`/`accepted`/`refused`) with `exp`, the grants `turn`, `files` and `cast` (from
   the accepted claims' `fl`, else the held ticket's) and the refusal `reason` for this connection, plus `held` and
   `verdict` for the stored ticket (`retry:early`, or the word that keeps it from going out again). Beside it,
   `entGates` is the `fl` bits this connection's hello gates behind a ticket (`ent` without `entGates` reads 9, no

@@ -99,6 +99,10 @@ class FakeSpool(
     // spool from before it did. Each server's credential carries `turn:<entry>?transport=udp` alone (S-7.6-50), and a
     // TURNREQ naming no listed entry is answered from the first (S-7.6-49).
     private val turnHosts: List<String>? = null,
+    // Fans out sigs (§7.8): HELLO carries these bounds, and a SIG from a subscriber goes to every other subscriber of its
+    // scope, whatever the tickets (S-7.8-4), never into a commons (S-7.8-3), and is never stored or answered. Null = a
+    // spool without sigs, which skips a SIG unanswered.
+    private val sig: SpoolSigInfo? = null,
 ) : SpoolDialer {
     // Settable, so a test can play the operator changing it — a rotated invite reverted, a restart without the
     // room's setting. A HELLO reads it as a connection opens and a DIGEST as it is answered: change it, then
@@ -246,6 +250,7 @@ class FakeSpool(
                     cast = cast,
                     entGates = entGates.takeIf { ent },
                     turnHosts = turnHosts?.takeIf { turn },
+                    sig = sig,
                     rooms =
                         listed?.map { (id, info) ->
                             SpoolCommonsRoom(ScopeCrypto.commonsTag(id), info.name, info.maxFrames, info.ttlMs, info.maxBlob, info.attach)
@@ -396,6 +401,14 @@ class FakeSpool(
     /** Copies of casts handed to subscribers, the daemon's `knit_spool_casts_fanned_total`. */
     @Volatile
     var castsFanned = 0
+        private set
+
+    /** Every SIG this spool was sent, as scope hex — carried or dropped. */
+    val sigs: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** Copies of sigs handed to subscribers. */
+    @Volatile
+    var sigsFanned = 0
         private set
 
     /** Every ENT this spool was sent, in order. */
@@ -621,6 +634,10 @@ class FakeSpool(
                     if (cast != null) SpoolCodec.decode<SpoolCast>(bytes)?.let(::onCast) else skip(SpoolRecordType.CAST)
                 }
 
+                SpoolRecordType.SIG -> {
+                    if (sig != null) SpoolCodec.decode<SpoolSig>(bytes)?.let(::onSig) else skip(SpoolRecordType.SIG)
+                }
+
                 else -> {}
             }
         }
@@ -809,6 +826,23 @@ class FakeSpool(
             others.filterNot { it === this }.forEach {
                 it.emit(relayed)
                 castsFanned++
+            }
+        }
+
+        /**
+         * The daemon's sig handling (S-7.8-3): never answered, never stored, no ticket asked. Dropped unless this
+         * connection subscribed the scope, the data fits and the scope is no commons; then relayed unchanged to every
+         * other subscriber.
+         */
+        private fun onSig(record: SpoolSig) {
+            val scopeHex = hex(record.scope)
+            sigs.add(scopeHex)
+            val bounds = sig ?: return
+            if (scopeHex !in subscribed || record.data.size > bounds.maxBytes || roomFor(scopeHex) != null) return
+            val relayed = SpoolCodec.encode(SpoolSig(t = SpoolRecordType.SIG, scope = record.scope, data = record.data))
+            synchronized(sockets) { sockets.toList() }.filter { it !== this && scopeHex in it.subscribed }.forEach {
+                it.emit(relayed)
+                sigsFanned++
             }
         }
 
@@ -1269,7 +1303,7 @@ private fun carried(
 private const val BLACKHOLE_MS = 500L
 
 /**
- * What a muted spool still handles: the handshake and the SUB (so it reads as connected), and casts, which are never
- * answered, so a silent spool has nothing to swallow there.
+ * What a muted spool still handles: the handshake and the SUB (so it reads as connected), and casts and sigs, which
+ * are never answered, so a silent spool has nothing to swallow there.
  */
-private val UNSWALLOWED = setOf(SpoolRecordType.HELLO, SpoolRecordType.SUB, SpoolRecordType.CAST)
+private val UNSWALLOWED = setOf(SpoolRecordType.HELLO, SpoolRecordType.SUB, SpoolRecordType.CAST, SpoolRecordType.SIG)

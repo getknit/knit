@@ -158,6 +158,17 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `typing indicators default on and round-trip off`() =
+        runTest {
+            val store = newStore()
+            assertTrue(store.typingIndicatorsEnabled.first())
+            store.setTypingIndicatorsEnabled(false)
+            assertFalse(store.typingIndicatorsEnabled.first())
+            store.setTypingIndicatorsEnabled(true)
+            assertTrue(store.typingIndicatorsEnabled.first())
+        }
+
+    @Test
     fun `open to chat defaults off and round-trips on`() =
         runTest {
             val store = newStore()

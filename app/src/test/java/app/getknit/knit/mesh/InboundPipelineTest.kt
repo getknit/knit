@@ -216,6 +216,7 @@ class InboundPipelineTest {
         override val displayName = MutableStateFlow("Me")
         val accepted = MutableStateFlow(emptySet<String>())
         override val acceptedConversations get() = accepted
+        override val typingIndicatorsEnabled = MutableStateFlow(true)
 
         override suspend fun block(
             nodeId: String,
@@ -1838,6 +1839,7 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
             val env = rig.typing(alice, recipientId = rig.self.nodeId)
 
             rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
@@ -2002,6 +2004,105 @@ class InboundPipelineTest {
                 rig.typingTracker.typing.value
                     .isEmpty(),
             )
+        }
+
+    /** A cue is shown only where the conversation is no longer a message request, whatever plane it came over. */
+    @Test
+    fun typingCueInAMessageRequestIsNotShown() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.typing(alice, recipientId = rig.self.nodeId)
+
+            rig.pipeline.onDeliver(alice.sign(env), env, ScopeSync.SPOOL_SOURCE_PREFIX + "wss://lab.example/spool/v1")
+
+            assertTrue(
+                "a stranger's DM is a request, so its cue shows nowhere",
+                rig.typingTracker.typing.value
+                    .isEmpty(),
+            )
+        }
+
+    /** C-7.8-14: a cue off a relay's signal lane (`ttl = 0`, `relay = false`) is shown and custodied by nobody. */
+    @Test
+    fun typingCueOffTheSignalLaneIsShownAndNeverCustodied() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            val env = rig.typing(alice, recipientId = rig.self.nodeId)
+            val signed = alice.sign(env)
+            val sig = WireEnvelope(ttl = 0, hops = 0, relay = false, sig = signed.sig, signed = signed.signed)
+
+            rig.pipeline.onDeliver(sig, env, ScopeSync.SPOOL_SOURCE_PREFIX + "wss://lab.example/spool/v1")
+
+            assertEquals(setOf(alice.nodeId), rig.typingTracker.typing.value[alice.nodeId])
+            assertFalse(rig.forwardStore.has(env.id))
+        }
+
+    @Test
+    fun typingCueFromABlockedSenderIsNotShown() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val env = rig.typing(alice, recipientId = rig.self.nodeId)
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            assertTrue(
+                rig.typingTracker.typing.value
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun noTypingCueIsShownWhileTypingIndicatorsAreOff() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            rig.settings.typingIndicatorsEnabled.value = false
+            val first = rig.typing(alice, recipientId = rig.self.nodeId)
+
+            rig.pipeline.onDeliver(alice.sign(first), first, alice.nodeId)
+            assertTrue(
+                "off: the cue is not tracked",
+                rig.typingTracker.typing.value
+                    .isEmpty(),
+            )
+
+            // Back on, the next cue shows, so the switch hid cues rather than breaking the path.
+            rig.settings.typingIndicatorsEnabled.value = true
+            val second = RelayEnvelope(first.type, "typing-again", first.senderId, first.sentAt, first.recipientId, payload = first.payload)
+            rig.pipeline.onDeliver(alice.sign(second), second, alice.nodeId)
+            assertEquals(setOf(alice.nodeId), rig.typingTracker.typing.value[alice.nodeId])
+        }
+
+    @Test
+    fun typingCueInAnAcceptedGroupShowsAndInAGroupRequestDoesNot() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val accepted = "g-00112233445566778899aabb"
+            val request = "g-ffeeddccbbaa998877665544"
+            rig.seedGroup(accepted, listOf(alice.nodeId, rig.self.nodeId), createdBy = alice.nodeId)
+            rig.seedGroup(request, listOf(alice.nodeId, rig.self.nodeId), createdBy = alice.nodeId)
+            rig.settings.accepted.value = setOf(accepted)
+
+            val inRequest =
+                RelayEnvelope(FrameType.TYPING, "typing-r", alice.nodeId, 7L, payload = WireCodec.encodePayload(TypingContent(request)))
+            rig.pipeline.onDeliver(alice.sign(inRequest), inRequest, alice.nodeId)
+            val inGroup = rig.typing(alice, groupId = accepted)
+            rig.pipeline.onDeliver(alice.sign(inGroup), inGroup, alice.nodeId)
+
+            assertEquals(mapOf(accepted to setOf(alice.nodeId)), rig.typingTracker.typing.value)
         }
 
     @Test

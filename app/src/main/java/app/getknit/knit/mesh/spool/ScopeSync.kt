@@ -214,6 +214,8 @@ class SpoolStatus(
     val turnForUs: Boolean = false,
     /** This connection's HELLO cast bounds (docs/VOICE_CALLS.md §2.7), or null when the spool fans out no casts. */
     val cast: SpoolCastInfo? = null,
+    /** This connection's HELLO sig bounds (§7.8), or null when the spool fans out no sigs. */
+    val sig: SpoolSigInfo? = null,
     /** The `fl` bits this connection's HELLO gates behind a ticket (`SpoolHello.ticketGates`); 0 while disconnected. */
     val entGates: Long = 0L,
     /**
@@ -597,6 +599,34 @@ class ScopeSync(
 
     /** The peer's current DM scope, the one a cast rides: never a retiring one, never the pair scope. */
     private fun castScope(peerId: String): Scope? = scopes.firstOrNull { it.peerId == peerId && !it.retiring && !it.pair }
+
+    /**
+     * Sends one signed frame of [conversationId]'s as a sig through every connected spool that would carry it (§7.8) and
+     * returns how many took it: one whose hello advertised `sig` and that has answered the SUB of the conversation's
+     * current scope (C-7.8-9, C-7.8-10). Sealed once, for [cast]'s reason; the receiver keeps the first copy by frame id
+     * (C-7.8-15). The frame must be in the signal set, outward (C-7.8-13), and no ticket enters into it (S-7.8-4). Never
+     * under a worker's round lock and never a request: a typing cue is live or lost.
+     */
+    suspend fun sig(
+        conversationId: String,
+        env: RelayEnvelope,
+        sig: ByteArray,
+        signed: ByteArray,
+    ): Int {
+        val scope = sigScope(conversationId) ?: return 0
+        if (!ScopeFrames.sigEligible(env, selfId(), scope, inbound = false)) return 0
+        val data = ScopeFrames.sealSig(scope, sig, signed)
+        return workers.values.count { it.sigOut(scope, data) }
+    }
+
+    /**
+     * The scope a sig of [conversationId]'s rides: the DM peer's current scope or the group's, never a retiring one, a
+     * pair scope or a commons (C-7.8-13). A DM's conversation id is its peer's node id, which no group id can equal.
+     */
+    private fun sigScope(conversationId: String): Scope? =
+        scopes.firstOrNull {
+            !it.retiring && !it.pair && it.commonsId == null && (it.peerId == conversationId || it.groupId == conversationId)
+        }
 
     /**
      * The credential-free STUN URIs every connected spool advertised in its HELLO (C-7.6-20), in worker order and
@@ -1138,6 +1168,24 @@ class ScopeSync(
         /** Whether this phone's own ticket unlocks casts on this worker's live connection. */
         fun castTicketed(): Boolean = connection?.takeIf { it.isReady && it.cast != null }?.ticketedCast == true
 
+        /**
+         * Whether this worker's live connection would take a sig for [scope]: the scope belongs here, its SUB was answered,
+         * and the hello advertised sigs ([SpoolConnection.canSig]). Lock-free like [canCast].
+         */
+        fun canSig(scope: Scope): Boolean {
+            val conn = connection ?: return false
+            return scope.belongsAt(url) && spoolDigests.containsKey(scope.idHex) && conn.canSig(scope.idHex)
+        }
+
+        /** Sends one sealed sig for [scope] on the live connection; false when it would not leave here. */
+        fun sigOut(
+            scope: Scope,
+            data: ByteArray,
+        ): Boolean {
+            val conn = connection ?: return false
+            return canSig(scope) && conn.sigOut(scope.id, data)
+        }
+
         /** Sends one sealed cast for [scope] on the live connection; false when it would not leave here. */
         fun castOut(
             scope: Scope,
@@ -1277,6 +1325,7 @@ class ScopeSync(
                 turnHosts = connection?.takeIf { it.isReady }?.turnHosts.orEmpty(),
                 turnForUs = turnForUs(),
                 cast = connection?.takeIf { it.isReady }?.cast,
+                sig = connection?.takeIf { it.isReady }?.sig,
                 entGates = connection?.takeIf { it.isReady }?.gates ?: 0L,
                 uploads = connection?.takeIf { it.isReady }?.let(::uploadsOn) ?: SpoolUploads.Open,
                 uploadLimitChunks = connection?.takeIf { it.isReady }?.uploadLimitChunks(),
@@ -1574,6 +1623,7 @@ class ScopeSync(
                 onTicketAnswer = { ticket, reply -> ticketAnswered(ticket, reply) },
                 clock = clock,
                 onCast = { handleCast(it) },
+                onSig = { handleSig(it) },
             )
 
         /**
@@ -2753,6 +2803,23 @@ class ScopeSync(
             if (cast.data.size > maxBytes) return
             val scope = mine(scopes, conn).firstOrNull { it.idHex == hex(cast.scope) } ?: return
             val opened = ScopeFrames.openCast(scope, selfId(), cast.data) ?: return
+            if (!canCarry(opened.wire, opened.env)) return
+            deliver(opened.wire, opened.env, SPOOL_SOURCE_PREFIX + url)
+        }
+
+        /**
+         * A sig another member sent (§7.8): [handleCast]'s path under the signal set (C-7.8-13, C-7.8-14). Opened, held to
+         * the set, authenticated by [canCarry], then handed to [deliver] as a frame for this phone alone (`ttl = 0`). It is
+         * never claimed, accounted, quarantined, folded or counted as presence, and one that fails is dropped and
+         * forgotten; the router marks nothing seen for a frame it then refuses. A spool that never advertised sigs has its
+         * sigs ignored.
+         */
+        private suspend fun handleSig(sig: SpoolSig) {
+            val conn = connection ?: return
+            val maxBytes = conn.sig?.maxBytes ?: return
+            if (sig.data.size > maxBytes) return
+            val scope = mine(scopes, conn).firstOrNull { it.idHex == hex(sig.scope) } ?: return
+            val opened = ScopeFrames.openSig(scope, selfId(), sig.data) ?: return
             if (!canCarry(opened.wire, opened.env)) return
             deliver(opened.wire, opened.env, SPOOL_SOURCE_PREFIX + url)
         }

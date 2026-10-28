@@ -138,6 +138,15 @@ class SettingsStore(
         dataStore.data.map { BuildConfig.INTERNET_PLANE && (it[KEY_LINK_PREVIEWS] ?: false) }
 
     /**
+     * Typing indicators: whether this phone tells the people it chats with that it is typing, and shows them typing. **On
+     * by default.** Off, `MeshManager.sendTyping` sends no cue on any plane, the radios or a relay's signal lane
+     * (docs/SPOOL_PROTOCOL.md §7.8), and no cue this phone receives is shown. A choice the person made, so it rides a
+     * backup.
+     */
+    override val typingIndicatorsEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_TYPING_INDICATORS] ?: true }
+
+    /**
      * Relay all calls (experimental, docs/VOICE_CALLS.md C-3.7-3): every call goes through a relay's TURN server and
      * nothing this phone sends a callee names its own address, so the peer never learns it. Off by default, read by
      * `CallManager` as each call opens its media, and shown only by a build that wires live calls (`LIVE_CALLS_WIRED`). A choice
@@ -667,6 +676,8 @@ class SettingsStore(
 
     suspend fun setLinkPreviewsEnabled(value: Boolean) = dataStore.edit { it[KEY_LINK_PREVIEWS] = value }
 
+    suspend fun setTypingIndicatorsEnabled(value: Boolean) = dataStore.edit { it[KEY_TYPING_INDICATORS] = value }
+
     suspend fun setCallsRelayAll(value: Boolean) = dataStore.edit { it[KEY_CALLS_RELAY_ALL] = value }
 
     suspend fun setFieldLogEnabled(value: Boolean) = dataStore.edit { it[KEY_FIELD_LOG] = value }
@@ -1046,6 +1057,7 @@ class SettingsStore(
         val KEY_INTRO_GRACE = stringSetPreferencesKey("intro_grace")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
         val KEY_LINK_PREVIEWS = booleanPreferencesKey("link_previews_enabled")
+        val KEY_TYPING_INDICATORS = booleanPreferencesKey("typing_indicators_enabled")
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")
         val KEY_FIELD_LOG = booleanPreferencesKey("field_log_enabled")
         val KEY_OPEN_TO_CHAT = booleanPreferencesKey("open_to_chat")

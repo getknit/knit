@@ -1935,6 +1935,11 @@ class DebugBridgeReceiver :
                     .put(
                         "cast",
                         spool.cast?.let { JSONObject().put("maxBytes", it.maxBytes).put("rate", it.rate) } ?: JSONObject.NULL,
+                    )
+                    // §7.8: its sig bounds (null when it fans out none), which every phone may send on with no ticket.
+                    .put(
+                        "sig",
+                        spool.sig?.let { JSONObject().put("maxBytes", it.maxBytes).put("rate", it.rate) } ?: JSONObject.NULL,
                     ).put("ticket", ticketJson(tickets, spool))
                     .put("ticketKey", ticketKeyJson(tickets, spool.url))
                     // The `fl` bits this connection's hello gates behind a ticket (`ent` with no `entGates` reads 9;

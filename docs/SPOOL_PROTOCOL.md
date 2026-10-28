@@ -6,8 +6,8 @@
 |--------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Protocol version   | 1                                                                                                                                                                       |
 | Status             | Normative. Implemented and shipping (see Appendix A)                                                                                                                    |
-| This revision      | 2026-10-25                                                                                                                                                              |
-| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2, ADR 2026-10.dn2a; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp, ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4                                                                                                              |
+| This revision      | 2026-10-28                                                                                                                                                              |
+| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2, ADR 2026-10.dn2a; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp, ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4; §7.8: ADR 2026-10.97vs, knit-spool ADR 2026-10.2q49                                                                                                              |
 | Client reference   | `mesh/crypto/scope/` (`ScopeCrypto`, `SpoolPow`), `mesh/spool/` (`SpoolRecords`, `ScopeFrames`, `ScopeAttachments`, `GroupRootPolicy`, `ScopeRegistry`, `ScopeSync`)    |
 | Spool reference    | [`knit-spool`](https://github.com/getknit/knit-spool) (AGPL-3.0, separate repository) + its conformance suite                                                           |
 | Executable anchors | `ScopeCryptoTest`, `ScopeVectorTest`, `SpoolPowTest`, `SpoolRecordsTest`, `ScopeAttachmentsTest`, `ScopeFramesTest`, `GroupRootPolicyTest`, `AttachmentDeferPolicyTest` |
@@ -941,7 +941,7 @@ index. Chunks are opaque, exactly like frame blobs.
 | **B-7.1-5** | Each direction sends `hello` first. The spool advertises `v` (highest supported record-layer version), `min`, `limits` and `powBits`; the client answers with the chosen `v` in `[min, v]`, and nothing else identifying in either direction. |
 | **B-7.1-6** | No version overlap closes `4002`.                                                                                                                                                                                                             |
 | **B-7.1-7** | A `hello` *after* negotiation is malformed in-band traffic: answer `err malformed` and keep the connection. Close `4000` covers pre-hello traffic only.                                                                                       |
-| **B-7.1-8** | The client stamps `q`, monotonically increasing per connection; terminal responses (`ok`/`err`) echo it. Server-initiated records (`digest`, `event`, `blob`, `achunk`, a relayed `cast`) carry no `q`. A client's `cast` (§7.7) is the one client record that carries no `q`, and it is never answered (S-7.7-2).                                                         |
+| **B-7.1-8** | The client stamps `q`, monotonically increasing per connection; terminal responses (`ok`/`err`) echo it. Server-initiated records (`digest`, `event`, `blob`, `achunk`, a relayed `cast` or `sig`) carry no `q`. Two client records carry no `q` and are never answered: a `cast` (§7.7, S-7.7-2) and a `sig` (§7.8, S-7.8-2).                                                         |
 | **B-7.1-9** | All scope operations require a prior `sub` for that scope on the same connection, `not_subscribed` otherwise.                                                                                                                                 |
 | **S-7.1-10** | A spool at its connection cap MAY refuse the upgrade at the transport layer with `503`, and SHOULD send `Retry-After`. It MUST NOT use a close code to say so.                                                                              |
 | **C-7.1-11** | A client MUST treat a refused upgrade as a transient transport failure and keep its own reconnect backoff. It SHOULD apply a `Retry-After` as a *floor* on the next wait, and MUST keep its jitter on top.                                  |
@@ -975,7 +975,7 @@ Field names are the CBOR map keys. `bstr32`/`bstr8` are byte strings of that len
 
 A spool's `hello` may also carry optional capability fields, each defined in its own section and each
 signalled by its presence: `commons` and `rooms` (§7.4), `moderation` (§7.5), `turn`, `turnHosts`, `ent`, `entGates`
-and `stun` (§7.6), and `cast` (§7.7).
+and `stun` (§7.6), `cast` (§7.7) and `sig` (§7.8).
 
 **Error registry** (append-only; unknown codes are terminal-generic): `version`, `pow`,
 `tombstoned`,
@@ -1479,7 +1479,7 @@ the scope's other live subscribers and keeps nothing of. The reference daemon ex
 | ID           | Requirement                                                                                                                                                                                                                                                                                       |
 |--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **S-7.7-1**  | A spool that fans out casts advertises `cast` in HELLO; one that does not MUST omit it. Presence is the signal.                                                                                                                                                                                  |
-| **S-7.7-2**  | A spool MUST NOT answer a cast, with `ok` or with `err`, whatever becomes of it. This is B-7.1-8's one exception: a client record that carries no `q`.                                                                                                                                           |
+| **S-7.7-2**  | A spool MUST NOT answer a cast, with `ok` or with `err`, whatever becomes of it. This is one of B-7.1-8's two exceptions, client records that carry no `q`; the other is a sig (S-7.8-2).                                                                                                        |
 | **S-7.7-3**  | A cast is fanned out only when its connection holds a `sub` for the scope, its `data` is at most `maxBytes`, it is within the per-connection, per-IP and spool-wide budgets, the scope is not the commons, and the ticket rule (S-7.7-6) holds. Anything else is dropped, and MAY be counted. |
 | **S-7.7-4**  | A spool MUST NOT store a cast or let one touch a stored scope: no blob, digest fold, tombstone, listing, `maxScopes` hold, creation gate or disk write. A cast for a scope the store has shed still fans out while subscribers hold the scope.                                                  |
 | **S-7.7-5**  | Fan-out is best-effort, and a dropped copy MUST NOT count toward the slow-consumer close: a subscriber whose channel is full loses that cast and nothing else.                                                                                                                                   |
@@ -1525,6 +1525,71 @@ its plaintext pads to 768 and its cast is 797 bytes: about 1.7 KB/s at two a sec
 >
 > **Why `push` with a marker was rejected.** An older spool ignores an unknown key (B-2-2) and stores the
 > chunk. The HELLO gate is what makes an unstored lane safe to add.
+
+### 7.8 Signals
+
+A **sig** is a cast's lane (§7.7) opened to every phone: one sealed frame the spool hands to a scope's other live
+subscribers and keeps nothing of, with no ticket in the way. It carries what is worth something only now and to
+anyone in the conversation, so it cannot sit behind a payment the way a voice stream can. The first signal is a
+typing cue; the lane is sized and specified so that later kinds join it by revising the signal set (C-7.8-13) alone,
+with no new record or HELLO key. The reference daemon exposes it as `SPOOL_RATE_SIGS`, `SPOOL_MAX_SIG` and
+`SPOOL_RATE_SIGS_TOTAL` (knit-spool ADR 2026-10.2q49); the reference client's half is ADR 2026-10.97vs.
+
+| Record  | Direction | Fields                                 | Semantics                                                                                                                                       |
+|---------|-----------|----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| `hello` | s→c       | `…, sig: { maxBytes: Int, rate: Int }` | Present when the spool fans out signals. `maxBytes` caps a sig's `data`. `rate` is sigs per second per connection, with a burst of four times that |
+| `sig`   | c→s       | `t, scope: bstr32, data: bstr`         | One sealed frame for the scope's other live subscribers. No `q`, and never answered                                                             |
+| `sig`   | s→c       | `t, scope: bstr32, data: bstr`         | The same record, relayed unchanged to every other subscriber of the scope. The sender's connection is excluded                                  |
+
+The record type and the HELLO key are both `sig`. In a HELLO the key is declared last, after `turnHosts`.
+
+| ID           | Requirement                                                                                                                                                                                                                                                                                                                    |
+|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **S-7.8-1**  | A spool that fans out sigs advertises `sig` in HELLO. One that does not MUST omit it: a `rate` of 0 means omitted.                                                                                                                                                                                                            |
+| **S-7.8-2**  | A spool MUST NOT answer a sig, with `ok` or with `err`. It tells nobody whether a sig reached anyone. With casts, sigs are B-7.1-8's two exceptions to the `q` rule.                                                                                                                                                          |
+| **S-7.8-3**  | A sig is fanned out only when its connection holds a `sub` for the scope, its `data` is at most `maxBytes`, it is within the per-connection, per-address and spool-wide sig budgets (which are separate from the cast budgets), and the scope is not the commons. Anything else is dropped, and MAY be counted.               |
+| **S-7.8-4**  | No ticket gates a sig. A spool fans one out whatever its `ent`, its `entGates` or the connection's ticket. `entGates` has no bit for it.                                                                                                                                                                                      |
+| **S-7.8-5**  | A spool MUST NOT store a sig or let one touch a stored scope, as S-7.7-4 says for casts.                                                                                                                                                                                                                                      |
+| **S-7.8-6**  | Fan-out is best-effort. A dropped copy MUST NOT count toward the slow-consumer close.                                                                                                                                                                                                                                         |
+| **S-7.8-7**  | A dropped sig MUST NOT be a strike. The per-record budget every record pays still applies to it.                                                                                                                                                                                                                              |
+| **S-7.8-8**  | A spool MUST NOT log or persist a sig or the scope it names. Metrics MAY count sigs, copies fanned out and drops by reason.                                                                                                                                                                                                    |
+| **C-7.8-9**  | A client MUST NOT send a sig to a spool whose HELLO omitted `sig`. It MUST keep within `maxBytes` and `rate` unprompted, because a refusal is silent. It clamps `maxBytes` to `maxRecord` and `rate` to 100, as for casts.                                                                                                     |
+| **C-7.8-10** | A client sends a sig only into a scope whose SUB that spool has answered.                                                                                                                                                                                                                                                     |
+| **C-7.8-11** | Every sig is signed: its `sig` is the Ed25519 frame signature over `signed` (§4.1).                                                                                                                                                                                                                                           |
+| **C-7.8-12** | The seal is the one below. An opener refuses any plaintext but the canonical one, by C-7.7-12's rule.                                                                                                                                                                                                                         |
+| **C-7.8-13** | The signal set is a `typing` frame in one of two forms: on the pair's own DM scope, never a pair scope (§3.5), naming no group, with sender and recipient the scope's two members in the direction of travel; or on a group's scope (§3.3), its group that scope's group and its sender a member. Never the commons or a bridged room. The signature verifies against the pinned sender key. Nothing else is sealed into a sig or accepted out of one. A later revision adds kinds, and a receiver drops a kind it does not know. |
+| **C-7.8-14** | A received sig re-enters delivery for this device alone (`ttl = 0`, `relay = false`). It never goes through §9.4, and is never custodied, accounted (§9.6), quarantined (§9.3) or taken as presence (the reference client's ADR 2026-10.fw8g). A sig that fails is dropped and forgotten, and does not mark its frame id as seen. |
+| **C-7.8-15** | The same frame may arrive over the radios and from several spools. The receiver keeps the first copy by frame id.                                                                                                                                                                                                             |
+| **C-7.8-16** | A sig never replaces a stored frame. Anything that has a stored form goes up as it does today, and a sig of it may only go alongside.                                                                                                                                                                                          |
+
+```
+pt    = sig(64) ‖ u16be(|signed|) ‖ signed ‖ 0x00…              // padded to a multiple of 128 bytes
+nonce = HKDF(ikm = nonceKey, info = "knit/scope/v1/snonce" ‖ SHA-256(pt), L = 12)
+aad   = "knit/scope/v1/sig" ‖ scopeId                             // 49 bytes: a cast's is 50, a frame's 45
+data  = 0x05 ‖ nonce(12) ‖ AES-256-GCM(key = sealKey, nonce, pt, aad)
+```
+
+`sealKey` and `nonceKey` are the scope's own (§4.2). A typing cue's group lives where every port puts it, in its
+payload's `groupId`; its envelope names no roster. A DM cue is about 140 bytes, so its plaintext pads to 256 and its
+sig is 285 bytes: about one every 8 s while a person types, the cadence the reference client sends radio cues at.
+
+> **Why no ticket.** Typing is messaging, and messaging over the Internet stays free. A cue is worth something only
+> to the people in the conversation at that moment, so a gate would not sell anything; it would only make a free
+> phone's conversations quieter. The lane's own budgets, per connection, per address and spool-wide, are what bound
+> it, and at a cue every 8 s per typist they sit far above honest use.
+>
+> **Why no answer.** S-7.7-2's reasons hold unchanged: a scoped `err` with no `q` reads as a refused `sub`, and a `q`
+> would put an ack, a pending slot and the silent-request strike (C-9.1-4) on a frame that is live or lost. An answer
+> would also tell the sender whether anyone was there, which a typing cue should not learn.
+>
+> **Why a seal of its own.** With `0x05` and its own aad, a sig never opens as a cast, a frame blob or a chunk, and
+> none of those opens as a sig. The record type already names the lane, but the seal is what makes that hold end to
+> end: nobody can lift a cast off a ticketed lane (S-7.7-6) and replay it through the free one, or move a sig into a
+> scope's digest, whatever a later signal set admits.
+>
+> **Why not casts.** A spool that sells casts gates the whole lane behind a ticket (S-7.7-6), and the cast set is a
+> walkie's `talk` frame on a DM scope alone. Widening it would have put typing behind a payment on every spool that
+> takes one, and opening casts to every phone would have given away the walkie the ticket pays for.
 
 ## 8. Proof of work [Both]
 
@@ -1885,6 +1950,10 @@ a relay.
   Padding (C-7.7-12) and a constant-bitrate encoder keep a chunk's size from saying what was said; nothing
   hides that something was. On a spool that gates casts, the ticket rule (S-7.7-6) ties the ticket
   holder's pseudonym to that timing, which the spool could already tie to the holder's subscriptions.
+- With sigs (§7.8), live and never on disk: when someone in a DM or group scope is typing, about one sig every 8 s
+  per typist, the subscribers' IPs, and sizes in 128-byte steps. The IPs are the ones that scope's traffic already
+  shows; what is new is the timing, while a person types and before they send. The reference client's Typing
+  indicators switch turns the cue off on every plane.
 - With the commons (§7.4), the spool's HELLO is a **directory** of its rooms: whoever completes a HELLO
   learns how many rooms it runs, each one's pinned bounds and whether it takes attachments, and the names
   the operator chose to advertise. On a spool with no token that is anyone, which is why S-7.4-19 keeps names
@@ -1961,6 +2030,9 @@ Deliberately open, additively reachable, in no particular order.
 | **Persisted partial attachment downloads** | §9.5 keeps them in memory, so a process death re-fetches                                             |
 | Blind-signed tickets                       | Would stop a spool linking one holder's connections within a day, and an issuer linking a day's `ps` to an account (§7.6, §10.1). A later ticket `v: 2`: the client picks `ps` and the issuer blind-signs it. The public claims (`aud`, `exp`, `fl`, `ab`, `am`) need a partially blind scheme or a key per claim set |
 | Ticket-gated scope creation                | `fl` bit 2 is reserved for it. The reference deployment keeps creation open (knit-spool ADR 2026-10.x9gq) |
+| More signal kinds                          | A link offer and its answer, later call signalling: each by a revision of the signal set (C-7.8-13), with no new record or HELLO key |
+| Sig budgets per pseudonym or per scope     | §7.8 bounds sigs per connection, per address and spool-wide only. No ticket bit gates a sig, and no stamp is asked for one |
+| Wider sig padding                          | Size buckets past 128 B, against the §10.1 size signal                                                |
 
 ## 12. Constants [Both]
 
@@ -1977,6 +2049,8 @@ Deliberately open, additively reachable, in no particular order.
 | `aChunkBytes`                   | 49152 (48 KiB)                                    | §4.5 — **not tunable**: it is what makes a chunk's position derivable without a manifest |
 | sealed chunk size               | 49221 B (`1 + 12 + 40 + 49152 + 16`)              | §4.5 — sized to stay inside the 64 KiB `maxBlob`                                         |
 | cast `sealv` / padding block    | `0x04` / 128 B                                    | §7.7                                                                                     |
+| sig `sealv` / padding block     | `0x05` / 128 B                                    | §7.8                                                                                     |
+| sig nonce label / aad label     | `knit/scope/v1/snonce` / `knit/scope/v1/sig`      | §7.8 — disjoint from the frame's, the chunk's and the cast's                             |
 | ticket `kid` / `ps`             | 8 B / 16 B                                        | §7.6                                                                                     |
 | ticket lifetime / skew          | ≤ 48 h / ±300 s                                   | §7.6 (S-7.6-14)                                                                          |
 | TURN username suffix            | 10 B, 16 base32 characters                        | §7.6 (S-7.6-6, S-7.6-17)                                                                 |
@@ -2018,6 +2092,7 @@ Deliberately open, additively reachable, in no particular order.
 | ticket `am`                              | absent: the spool's own per-attachment limit            | §7.6 (S-7.6-31) — rounded down to whole `aChunkBytes`; it can only lower a limit                                        |
 | spool names                              | one; a second only while it is renamed                  | §7.6 (S-7.6-47) — a holder with tickets for both counts twice in every bound kept per pseudonym                         |
 | casts                                    | off by default; suggested `rate` 4/s, burst 4×; `maxBytes` 2048; spool-wide 200/s, burst 4× | §7.7                                                                     |
+| sigs                                     | on by default; `rate` 2/s, burst 4×; `maxBytes` 8192; per address 8 × `rate` (16/s, burst 64); spool-wide 200/s, burst 4× | §7.8 — the daemon's `SPOOL_RATE_SIGS`, `SPOOL_MAX_SIG`, `SPOOL_RATE_SIGS_TOTAL`; `rate` 0 leaves `sig` out of HELLO |
 
 ## 13. Test vectors [Both]
 
@@ -2304,8 +2379,35 @@ castSeal  = 0486dfeaff6b30c3cebc549d35183a43023f9b0c354d6f49d5cc1bac81def2774409
             5ca1b114fe8db955ad94fa4679cffb59ade46563a3650fd4b3
 ```
 
-The §7.6 and §7.7 vectors are pinned by knit-spool's `TurnRecordVectorTest`, `TicketVectorTest` and
-`CastRecordVectorTest`, and `castSeal` by the reference client's cast seal tests. The reference client pins the TURN
+Signals (§7.8): `helloSpool` with `sig = {8192, 2}` as its sixth key; a c→s `sig` on the cast record's fixture
+(`scope = 00 01 … 1f`, `data = a0 a1 … af`); then a DM typing cue from `nodeIdA` to `nodeIdB`, with frame id
+`Bg0UGyIpMDc-RUxTWmFobw` (`fixture(16, 6)` in base64url), `sentAt = 1800000000000` and an empty `TypingContent`, and
+its sig seal on the DM fixture above with the `sig` input above (64 bytes):
+
+```
+helloSpoolSig = a661746568656c6c6f617601636d696e01666c696d697473a6676d6178426c6f621a0001
+                0000696d61785265636f72641a00020000696d617853636f7065731840676d617850756c
+                6c18406c6d61784672616d65734361701903e8686d617854746c4d731a240c840067706f
+                77426974731463736967a2686d61784279746573192000647261746502
+sigRecord     = a36174637369676573636f70655820000102030405060708090a0b0c0d0e0f1011121314
+                15161718191a1b1c1d1e1f646461746150a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+sigTyping     = a6647479706566747970696e676269647642673055477949704d44632d52557854576d46
+                6f62776873656e6465724964781a61616161616262626262636363636364646464646565
+                656565666673656e7441741b000001a3185c50006b726563697069656e744964781a7a7a
+                7a7a7a797979797978787878787777777777767676767675677061796c6f616441a0
+sigSeal       = 0589ed1b8a7ebe6aae19a950ae72daccbf1068d2def69efb14b5d37f246d8b0d44f21aef
+                6965c55c8bf204ae5d90ab0e12f2eaba379f50f2b978efa6bd68f40315464aafabdfaea1
+                e815b52a4f3ef14e52a76b0f044273057be1572b7faafc5fe42ca4399bab727eccc8a47b
+                1ee6918e94d72baf36910165ac1d3be2f76864a8a0dcc3bcd36057222f6d1b3cc7c0a8f4
+                8b2789206d1cff1c457643415753130ae325aabbf994f98b32b6ff09eda346df7b0950fc
+                dd55fa0c17503272e5551c970146f1ded14b8872c2154c9fdf68d65c6facd8278f4f5ad2
+                95edd6d10c817be7c652a1542f0092eaa1b846e9915d6f0730756d330f9bdac6d506145a
+                ab02e2452fda630b9f57f4d338d00a120029ded1e59f915544f72827aee86e1cc8
+```
+
+The §7.6 to §7.8 vectors are pinned by knit-spool's `TurnRecordVectorTest`, `TicketVectorTest`,
+`CastRecordVectorTest` and `SigRecordVectorTest`, `castSeal` by the reference client's cast seal tests, and
+`sigTyping` and `sigSeal` by its `ScopeVectorTest`, which `SpoolRecordsTest` joins for `helloSpoolSig` and `sigRecord`. The reference client pins the TURN
 records, `helloSpoolTurnHosts` and `turnreqHost` among them, in `SpoolTurnRecordsTest`, and the ticket records in
 `SpoolTicketRecordsTest`.
 
@@ -2322,6 +2424,7 @@ wire.
 | §3.5 pair scopes                                | Shipped                                                                                                                                    | `ScopeCrypto.pairSecret`, `ScopeRegistry.pairs`, `IntroSync`      |
 | §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24): client half built in the reference client, spool half in `knit-spool` 0.6.0. Rooms changed without a restart (S-7.4-21; 2026-10-25): spool half in `knit-spool` to follow; clients need nothing new | `ScopeCrypto.commons*`, `CommonsAdverts`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
 | §7.6 TURN credentials, tickets, STUN            | Shipped both sides: off on a spool until its operator configures it, and the reference client calls through it since 2.10.0. Several TURN servers per spool (`turnHosts`, `host`, C-7.6-51 to C-7.6-54; 2026-10-25): client half built in the reference client, spool half in `knit-spool` to follow its release | `ScopeSync`, `SpoolConnection`, `call/`, `knit-spool`            |
+| §7.8 signals                                    | Spool side built in `knit-spool` 0.8.0-dev.2, on by default; client half built in the reference client for typing cues, not yet in a shipped build | `ScopeSync`, `SpoolConnection`, `ScopeFrames`, `knit-spool`     |
 | §7.7 casts                                      | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
 | §4.1–§4.4 sealing and frame rules               | Shipped                                                                                                                                    | `ScopeCrypto`, `ScopeFrames`                                     |
@@ -2385,3 +2488,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-24 | **One spool runs several commons rooms (§7.4: S-7.4-1, S-7.4-2, S-7.4-3, S-7.4-4, S-7.4-5, C-7.4-11 amended; S-7.4-15, B-7.4-16, C-7.4-17, C-7.4-18, S-7.4-19, B-7.4-20 new; ADR 2026-10.wqu2).** A new optional HELLO field, `rooms`, lists every room a spool runs, each entry led by a `tag`, the first 8 bytes of `SHA-256("knit/spool/v1/commons-tag" ‖ scopeId)`, which a spool computes from the id it holds and a member from the id it derives; `commons` stays as the first entry. Bounds, `attach` and the push budget are per room, under a second, spool-wide budget; `moderation` stays spool-wide; a spool with no token keeps names off its HELLO. A member never leaves a room on the strength of another room's invite. Notes say what a client that predates `rooms` gets in a second room, and why the hazard is documented rather than forbidden; §1.4 and §7.5 wording, a §10.1 bullet, a §12.1 row, §12.2 rows and §13 vectors appended | **Spools:** optional; a spool running one room may keep sending `commons` alone, but SHOULD add `rooms`; one running several MUST send both and enforce both budgets. Whatever its room count, a spool with no access token SHOULD drop room names from its HELLO, `commons.name` included (S-7.4-19). **Clients:** read their room by tag where `rooms` is present, else as before; one that predates `rooms` sees the first room on every spool. No derivation or existing vector moved; §13 gains `commonsTag`, `commonsSecret2`, `commonsScopeId2`, `commonsTag2` and `helloSpoolRooms` |
 | 2026-10-25 | **A spool may name several TURN servers, and a phone relays through the one nearest it (§7.6: S-7.6-48, S-7.6-49, S-7.6-50, C-7.6-51, C-7.6-52, C-7.6-53, C-7.6-54 new; C-7.6-12 refined; ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4).** A spool names up to four TURN servers in HELLO as `turnHosts`, the `host:port` of each one's UDP listener in server order. A `turnreq` may name one in `host`, and its `turncred` carries that server's URLs alone, signed under that server's secret; an absent or unknown `host` selects server 1, under budgets shared across servers. A client measures the listed servers by STUN Binding round trip over UDP when its network changes, never during a call, names the one it ranks best, and hands its ICE agent one TURN server per call instead of up to two. A refusal with 486 or 508 marks a server for 5 minutes, and a side whose description has not yet gone out gathers once more on the next one. Four notes say why one box per call, why the phone measures, why server 1 is the fallback and why a side moves on only before its description leaves; a §10.1 sentence and §12 rows | **Spools:** optional; one with a single server sends one entry, or none if it has no UDP URL, and one that predates `turnHosts` sends none and ignores `host` (B-2-2). **Clients:** one that predates `host` sends none and gets server 1, today's box; a new client facing an older spool behaves as before. No existing record, derivation or vector moved; §13 gains `helloSpoolTurnHosts` and `turnreqHost` |
 | 2026-10-25 | **A spool changes its commons rooms without a restart (§7.4: S-7.4-3 amended; S-7.4-21 new; ADR 2026-10.dn2a, knit-spool ADR 2026-10.hs75).** A spool may start running a room, stop running one or change one's entry while it runs. A room it starts running exists before any HELLO advertises it; one it stops running is an ordinary scope from then on. Since a HELLO is never revised, the spool closes `1001` exactly the connections subscribed to a room it stopped running or whose bounds or `attach` it changed, and their next HELLO says what the room now is. A note says why those connections and no others; the §7.1 close-code line names `1001`; the §7.4 intro and the rotation notes stop saying a rotation is a restart | **Spools:** optional; one that changes its rooms only by restarting conforms as before. One that changes them live MUST create a new room before advertising it and close `1001` the subscribers of a room it retires or reshapes. **Clients:** none: a client already reconnects on any close and reads its rooms from each HELLO. No record, derivation or §13 vector changed |
+| 2026-10-28 | **A signal lane, first for typing cues (§7.8: S-7.8-1 to S-7.8-8, C-7.8-9 to C-7.8-16 new; B-7.1-8 and S-7.7-2 amended; ADR 2026-10.97vs, knit-spool ADR 2026-10.2q49).** A new optional HELLO key, `sig`, and a `sig` record both ways: a cast's shape, fanned out live to a scope's other subscribers and never stored or answered, with budgets of its own per connection, per address and spool-wide, and no ticket in the way (S-7.8-4). Its own seal, `sealv = 0x05`, with the labels `knit/scope/v1/snonce` and `knit/scope/v1/sig`. The signal set is a `typing` cue on a DM or group scope (C-7.8-13). B-7.1-8 and S-7.7-2 now name casts and sigs as the two client records with no `q`. §10.1 bullet, §11 rows, §12 constants and §13 vectors (`helloSpoolSig`, `sigRecord`, `sigTyping`, `sigSeal`) appended | **Spools:** optional; one that leaves `sig` out of HELLO is unaffected, and a spool on knit-spool 0.8.0-dev.2 carries sigs with no configuration. **Clients:** a client that predates `sig` ignores the HELLO key (B-2-2) and skips an inbound `sig` as an unknown record, never closing or striking; no existing record, derivation or vector moved |

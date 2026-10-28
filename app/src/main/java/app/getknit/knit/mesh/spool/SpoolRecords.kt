@@ -52,6 +52,10 @@ object SpoolRecordType {
     // Casts (experimental; docs/VOICE_CALLS.md §2.7, proposed spec §7.7): one name for both directions. Sent only to
     // a spool whose HELLO carried `cast`, and never answered.
     const val CAST = "cast"
+
+    // Signals (§7.8): casts' shape, a lane of its own. Sent only to a spool whose HELLO carried `sig`, and never
+    // answered.
+    const val SIG = "sig"
 }
 
 /** Error codes a spool may return; the registry is append-only (unknown codes are terminal-generic). */
@@ -224,7 +228,8 @@ class ScopeSub(
  * commons room the spool runs, each by its tag, and [commons] then repeats the first (§7.4, S-7.4-1); a spool that
  * predates the list sends [commons] alone. [CommonsAdverts] is the one reader of the pair. [turnHosts] lists the
  * `host:port` of each TURN server's UDP listener, in server order, beside [turn] (S-7.6-48): the servers a phone
- * measures and names one of in [SpoolTurnReq.host]. Declared last, so the encoders write it after every other key.
+ * measures and names one of in [SpoolTurnReq.host]. [sig] says the spool fans out [SpoolSig]s within its bounds (§7.8),
+ * and is absent when it does not; declared last, after [turnHosts], so the encoders write it after every other key.
  * Client→spool: [v] is the chosen version, everything else omitted — a client identifies itself no further
  * than that.
  */
@@ -243,6 +248,7 @@ class SpoolHello(
     val entGates: Long? = null,
     val rooms: List<SpoolCommonsRoom>? = null,
     val turnHosts: List<String>? = null,
+    val sig: SpoolSigInfo? = null,
 ) {
     /**
      * The `fl` bits this spool requires a ticket for (S-7.6-13), mirroring knit-spool's `Hello.ticketGates`: none
@@ -272,6 +278,30 @@ class SpoolCastInfo(
  */
 @Serializable
 class SpoolCast(
+    val t: String,
+    val scope: ByteArray,
+    val data: ByteArray,
+)
+
+/**
+ * A spool's sig bounds (§7.8): [maxBytes] caps a sig's `data`, and [rate] is sigs per second per connection with a burst
+ * of four times that. Stated up front for [SpoolCastInfo]'s reason: a sig is never answered, so a client keeps to them
+ * unprompted (C-7.8-9).
+ */
+@Serializable
+class SpoolSigInfo(
+    val maxBytes: Int,
+    val rate: Int,
+)
+
+/**
+ * A sig (§7.8): one sealed frame for a scope's other live subscribers, which the spool fans out and never stores, and
+ * which any subscriber may send — no ticket gates it (S-7.8-4). Client→spool it carries no `q` and is never answered;
+ * spool→client it arrives unchanged, from whichever member sent it. [data] is a sig seal (`ScopeCrypto.sealSig`), never a
+ * frame blob or a cast.
+ */
+@Serializable
+class SpoolSig(
     val t: String,
     val scope: ByteArray,
     val data: ByteArray,

@@ -45,6 +45,7 @@ class SettingsViewModelTest {
     private val avatarHashFlow = MutableStateFlow<String?>(null)
     private val filteringFlow = MutableStateFlow(true)
     private val linkPreviewsFlow = MutableStateFlow(false)
+    private val typingIndicatorsFlow = MutableStateFlow(true)
     private val relayAllCallsFlow = MutableStateFlow(false)
     private val ownIceFlow = MutableStateFlow(OwnIceServers())
     private val dynamicColorFlow = MutableStateFlow(false)
@@ -63,6 +64,7 @@ class SettingsViewModelTest {
         every { settings.ownAvatarHash } returns avatarHashFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         every { settings.linkPreviewsEnabled } returns linkPreviewsFlow
+        every { settings.typingIndicatorsEnabled } returns typingIndicatorsFlow
         every { settings.callsRelayAll } returns relayAllCallsFlow
         every { settings.dynamicColor } returns dynamicColorFlow
         every { settings.themeMode } returns themeModeFlow
@@ -147,6 +149,23 @@ class SettingsViewModelTest {
             vm.setLinkPreviewsEnabled(false)
             advanceUntilIdle()
             coVerify { settings.setLinkPreviewsEnabled(false) }
+        }
+
+    /** On until the user says otherwise, and a toggle writes straight through to the store. */
+    @Test
+    fun typingIndicatorsMirrorTheStoreAndPersistOnToggle() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.typingIndicatorsEnabled.collect {} }
+            advanceUntilIdle()
+            assertTrue(vm.typingIndicatorsEnabled.value)
+            typingIndicatorsFlow.value = false
+            advanceUntilIdle()
+            assertFalse(vm.typingIndicatorsEnabled.value)
+
+            vm.setTypingIndicatorsEnabled(true)
+            advanceUntilIdle()
+            coVerify { settings.setTypingIndicatorsEnabled(true) }
         }
 
     /** The Calls row's summary (§3.14): relay-all, and only the own servers a call would use — on and valid. */
