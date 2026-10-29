@@ -759,7 +759,9 @@ class SpoolConnection(
         closed = true
         if (!handshake.isCompleted) handshake.complete(false)
         subscriptions.clear()
-        pending.keys.toList().forEach { q -> pending.remove(q)?.reply?.complete(SpoolReply.Closed) }
+        // The map's own weakly consistent iterator, never `toList()`: that reads the size, then the iterator, and a reply
+        // removing the last entry between the two throws NoSuchElementException (a chaos sweep reached it at shutdown).
+        pending.keys.forEach { q -> pending.remove(q)?.reply?.complete(SpoolReply.Closed) }
     }
 
     fun close(
