@@ -46,6 +46,7 @@ class FakeLinkNet(
         val lastOut = HashMap<Int, Long>() // external port → last datagram out
         val inbound = HashMap<Int, Pair<FakePort, String>>() // external port → (port, mapping key)
         val permitted = HashSet<String>() // "extPort|addr" or "extPort|addr|port"
+        var sentOut = 0 // datagrams sent to anything but a STUN server, lost ones too
     }
 
     private val nats = ArrayList<Nat4>()
@@ -69,6 +70,13 @@ class FakeLinkNet(
     ) {
         silent[name] = address
     }
+
+    /**
+     * How many datagrams the phones behind the NAT at [external] have sent to anything but a STUN server, lost ones
+     * included: a punch's probes and then its link's traffic, so a test sees an attempt has started punching.
+     */
+    @Synchronized
+    fun sentOut(external: ByteArray): Int = nats.firstOrNull { it.external.contentEquals(external) }?.sentOut ?: 0
 
     /**
      * A phone behind a NAT of [nat] whose external address is [external] (phones that pass the same [external] share the
@@ -149,7 +157,7 @@ class FakeLinkNet(
         port: Int,
         data: ByteArray,
     ): Boolean {
-        if (loss > 0 && random.nextDouble() < loss) return true
+        if (lost(from, address)) return true
         if (address.size == V6) return routeV6(from, address, port, data)
         stun.entries.firstOrNull { it.value.contentEquals(address) }?.let { (_, server) ->
             val (srcAddr, srcPort) = outbound(from, server, port)
@@ -171,6 +179,15 @@ class FakeLinkNet(
             }
         to?.let { deliver(it, Datagram(data, srcAddr, srcPort)) }
         return true
+    }
+
+    // Counts a datagram [from] sends to anything but a STUN server ([sentOut]), then rolls whether it is lost on the way.
+    private fun lost(
+        from: FakePort,
+        address: ByteArray,
+    ): Boolean {
+        if ((stun.values + silent.values).none { it.contentEquals(address) }) from.gateway.sentOut++
+        return loss > 0 && random.nextDouble() < loss
     }
 
     // Maps [from]'s port toward [address]:[port] on its NAT, records the filter permission, and returns the source the

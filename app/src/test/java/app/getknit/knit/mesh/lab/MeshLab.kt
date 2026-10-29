@@ -1340,6 +1340,12 @@ class LabNode internal constructor(
     val linkLog = CopyOnWriteArrayList<String>()
 
     /**
+     * Datagrams this node has sent on the lab's Internet to anything but its STUN server ([LabInternet.Phone.sentOut]): a
+     * punch's probes, then its link's traffic. 0 for a node off it.
+     */
+    fun linkDatagramsSent(): Int = internet?.sentOut?.invoke() ?: 0
+
+    /**
      * How many uses this node's direct-link plane has noted (`DirectLinkTransport.onUse`: a frame or file sent or taken),
      * each counted after the link took it, so a scenario that sees the count move knows the link's idle close moved too.
      */

@@ -19,7 +19,9 @@ import java.util.Collections
  * `LinkSession.IDLE_MS` while a link is up idles it out; one of `LinkSession.SILENCE_MS` or more closes it SILENT only
  * while DATA it sent is unanswered, and one of `LinkSession.HOLD_SILENCE_MS` whatever it sent; one of
  * `LinkSession.HOLD_KEEPALIVE_MS` or more sends a keepalive; and any jump while an attempt punches ends it NO_PATH — jump
- * only before an offer or once a link is meant to go.
+ * only before an offer, once a link is meant to go, or to end a punch meant to fail without sitting out its ten seconds:
+ * once the offerer's first probe is out ([Phone.sentOut] moved), both ends are punching on clocks a jump of
+ * `PunchPolicy.GIVE_UP_MS` ends at their next probe round.
  */
 class LabInternet {
     val net = FakeLinkNet().apply { stunServer(STUN_HOST, byteArrayOf(198.toByte(), 51, 100, 7)) }
@@ -27,11 +29,15 @@ class LabInternet {
     private val opened = Collections.synchronizedList(ArrayList<LinkArq>())
     private var nextAddress = 1
 
-    /** One node's place on the Internet: its datagrams behind its own NAT, and how its links' streams are made. */
+    /**
+     * One node's place on the Internet: its datagrams behind its own NAT, how its links' streams are made, and how many
+     * datagrams it has sent to anything but the STUN server ([FakeLinkNet.sentOut]).
+     */
     class Phone(
         val nat: FakeLinkNet.Nat,
         val datagrams: LinkDatagrams,
         val streams: LinkStream,
+        val sentOut: () -> Int,
     )
 
     /** A phone behind a NAT of [nat] at a public address no other node shares. */
@@ -42,7 +48,7 @@ class LabInternet {
             LinkStream { session ->
                 LinkStream.arq(scope) { System.nanoTime() / NANOS_PER_MS }.open(session).also { opened += it as LinkArq }
             }
-        return Phone(nat, net.phone(nat, external), streams)
+        return Phone(nat, net.phone(nat, external), streams) { net.sentOut(external) }
     }
 
     /** Ends every stream a link opened, so no `FramedLink` reader stays parked, and stops their timers. */

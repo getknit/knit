@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.spool.SpoolTicket
 import app.getknit.knit.mesh.spool.SpoolTickets
 import app.getknit.knit.mesh.spool.SpoolTicketsTest
 import app.getknit.knit.mesh.spool.SpoolUrl
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -133,7 +134,8 @@ class InternetLinkLabTest {
     /**
      * Both behind symmetric NATs — a fresh mapping per destination, so neither end's reflexive candidate is the port the
      * other must aim at: the punch gives up and the attempt ends NO_PATH; the contact then waits out its backoff, so a second
-     * offer sends nothing; and the relay, which never stopped, still carries the DM.
+     * offer sends nothing; and the relay, which never stopped, still carries the DM. The give-up is the session's own, met
+     * by a clock jump rather than sat out ([LabInternet]).
      */
     @Test
     fun twoSymmetricNatsFindNoPathBackOffAndTheRelayStillCarries() =
@@ -141,7 +143,14 @@ class InternetLinkLabTest {
             val spool = relay()
             val (alice, bob) = contacts(spool, Nat.SYMMETRIC)
 
-            assertEquals(LinkOutcome.NO_PATH, checkNotNull(alice.links).offer(bob.nodeId))
+            val sentBefore = alice.linkDatagramsSent()
+            val attempt = async { checkNotNull(alice.links).offer(bob.nodeId) }
+            // Alice's first probe leaves after her session took its start from the clock, and Bob's started before his
+            // answer left: a jump now ends both punches at their next probe round, as the give-up would ten seconds on. An
+            // attempt that ended before any probe (no sig, no answer) ends the wait too, so the assert names its outcome.
+            lab.await(1) { if (attempt.isCompleted || alice.linkDatagramsSent() > sentBefore) 1 else 0 }
+            lab.clock.advance(PunchPolicy.GIVE_UP_MS)
+            assertEquals(LinkOutcome.NO_PATH, attempt.await())
             assertEquals(LinkOutcome.NO_PATH, checkNotNull(alice.links).lastTries()[bob.nodeId]?.outcome)
             assertFalse("a link came up behind two symmetric NATs", alice.linkPlaneHolds(bob))
             val sigs = spool.sigs.size
