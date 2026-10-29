@@ -153,6 +153,23 @@ class CheckTest(unittest.TestCase):
         self.assertIsNone(check.locale_of("values-night"))
         self.assertIsNone(check.locale_of("values-v31"))
 
+    def test_a_regional_overlay_holds_only_what_the_region_says_differently(self):
+        self.findings(GOOD_PT.replace("Olá", "Hola"), "values-es")
+        overlay = '    <string name="greeting">Che, %1$s</string>\n'
+        self.assertEqual([], self.findings(overlay, "values-es-rAR"))
+        self.assertEqual(1, len([f for f in self.findings(overlay.replace("%1$s", ""), "values-es-rAR")
+                                 if f[1] == "error"]))  # an overlay string still gets every check
+
+    def test_an_overlay_string_copied_from_its_language_is_a_warning(self):
+        self.findings(GOOD_PT.replace("Olá", "Hola"), "values-es")
+        warnings = self.findings('    <string name="greeting">Hola, %1$s</string>\n', "values-es-rAR")
+        self.assertEqual([("greeting", "warning", "same as values-es: leave it out so a fix there reaches here too")],
+                         warnings)
+
+    def test_a_regional_folder_with_no_language_folder_is_a_whole_locale(self):
+        errors = self.errors('    <string name="greeting">Olá, %1$s</string>\n')  # values-pt-rBR, no values-pt
+        self.assertIn("relays_add: missing (lint: MissingTranslation)", errors)
+
     def test_main_exits_one_on_an_error_and_zero_on_warnings(self):
         target = self.res / "values-pt-rBR/strings.xml"
         target.parent.mkdir()

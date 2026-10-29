@@ -21,8 +21,14 @@ each `values-<locale>/strings.xml` (or the one `--locale` names) and reports
            past twice its English length, `...` for `…`, a different count of `\\n`, and a glossary term
            with none of its renderings (scripts/translation-glossary.tsv)
 
-as `values-<locale>: <name>: <level>: <what>`. Any error exits 1; warnings alone exit 0. In CI it is advisory
-(continue-on-error / allow_failure) while the first locales settle. Pure stdlib; tests:
+A regional folder whose language folder exists (`values-es-rAR` beside `values-es`) is an overlay: Android
+falls back to the language folder string by string, so it holds only the strings the region says differently. A
+string it leaves out is not missing, and one it copies unchanged from the language folder is a warning, since the
+copy would stop a later fix there from reaching the region. A regional folder with no language folder beside it
+(`values-pt-rBR`) is checked as a whole locale.
+
+Findings print as `values-<locale>: <name>: <level>: <what>`. Any error exits 1; warnings alone exit 0. GitHub's
+CI fails on an error; GitLab's job is advisory (allow_failure). Pure stdlib; tests:
 `python3 -m unittest scripts/test_translation_check.py`.
 
 Usage: scripts/translation-check.py [--locale pt-BR] [--errors-only] [--res DIR] [--glossary FILE]
@@ -137,6 +143,15 @@ def locale_of(dir_name: str) -> str | None:
     return m.group(2) + (f"-{m.group(3)}" if m.group(3) else "")
 
 
+def base_of(path: Path) -> Path | None:
+    """The language folder's strings a regional overlay falls back to (`values-es-rAR` -> `values-es`), if any."""
+    locale = locale_of(path.parent.name)
+    if not locale or "-" not in locale:
+        return None
+    base = path.parent.parent / f"values-{locale.split('-')[0]}" / "strings.xml"
+    return base if base.exists() else None
+
+
 def placeholders(text: str) -> list[str]:
     return sorted(PLACEHOLDER.findall(text))
 
@@ -194,6 +209,11 @@ def check_locale(source: dict[str, Entry], path: Path, glossary: Glossary) -> li
         target = load_entries(path)
     except ET.ParseError as e:
         return [Finding(locale_dir, "-", "error", f"does not parse: {e}")]
+    base_path = base_of(path)
+    try:
+        base = load_entries(base_path) if base_path else None
+    except ET.ParseError:
+        base = None  # the language folder's own check names the parse error
 
     quantities = PLURALS.get(language)
     if quantities is None:
@@ -206,8 +226,11 @@ def check_locale(source: dict[str, Entry], path: Path, glossary: Glossary) -> li
                 report(name, "error", 'translated, but the English marks it translatable="false"')
             continue
         if tr is None:
-            report(name, "error", "missing (lint: MissingTranslation)")
+            if base is None:
+                report(name, "error", "missing (lint: MissingTranslation)")
             continue
+        if base is not None and name in base and base[name].text == tr.text:
+            report(name, "warning", f"same as {base_path.parent.name}: leave it out so a fix there reaches here too")
         if tr.kind != en.kind:
             report(name, "error", f"a <{tr.kind}> here, a <{en.kind}> in the English")
             continue
@@ -286,8 +309,9 @@ def main(argv: list[str]) -> int:
             if f.level == "error" or not args.errors_only:
                 print(f)
     translatable = sum(e.translatable for e in source.values())
-    print(f"translation-check: {len(files)} locale(s), {translatable} strings each, {errors} error(s), "
-          f"{warnings} warning(s)")
+    overlays = sum(base_of(p) is not None for p in files)
+    print(f"translation-check: {len(files)} locale(s) ({overlays} regional overlay(s)), {translatable} strings "
+          f"in the English, {errors} error(s), {warnings} warning(s)")
     return 1 if errors else 0
 
 

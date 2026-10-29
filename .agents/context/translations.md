@@ -21,7 +21,8 @@ Progress per language is GitHub issue #43.
 - **One locale lands whole.** Android Lint's `MissingTranslation` stays an error (`lint { warningsAsErrors }`,
   `context/toolchain.md`), so a locale is added only with every translatable string in it. A new English string
   then fails lint until each shipped locale has it: that failure is the reminder, not noise. Never relax the check,
-  `tools:ignore` it or mark a user-facing string `translatable="false"` to get past it; translate it.
+  `tools:ignore` it or mark a user-facing string `translatable="false"` to get past it; translate it. A regional
+  variant is the one exception ("A regional variant", below).
 - **Adding a language.** The `machine-translation` skill is the procedure. The machine pass translates the whole of
   `values/strings.xml` into `values-<locale>/strings.xml` against the glossary (`scripts/translation-glossary.tsv`,
   mirrored into Weblate's translator instructions), skipping `translatable="false"`, in the English file's order so
@@ -47,6 +48,31 @@ Progress per language is GitHub issue #43.
   tree, so the F-Droid rebuild stays byte-identical (`context/distribution.md`). There is no in-app picker for older
   phones, which would need AppCompat.
 
+## A regional variant
+
+A region's folder holds only the strings that region says differently. Android looks a string up in
+`values-es-rAR/` first and falls back to `values-es/` one string at a time, so Argentine Spanish needs its voseo
+("tocá", "mantené presionado") and its own words ("celular"), not a second copy of the Spanish. Lint reads it the
+same way and doesn't call a string missing from a regional folder when the language folder has it.
+
+- **Start from the language.** `values-es/`, `values-fr/` and `values-de/` are written for every speaker, and a fix
+  there reaches every region. A region gets a folder when a speaker of it asks for one, in an issue or through
+  Weblate's contact address, the same way a new language is requested.
+- **The repo creates the folder.** It lands as a pull request carrying the region's differences, from the translator
+  or from a machine pass told to change register and vocabulary and nothing else. Weblate finds it on its next pull.
+- **`scripts/translation-check.py` reads it as an overlay.** A string left out is fine. A string copied unchanged
+  from the language folder is a warning: the copy pins it, and a later fix in `values-es/` would stop short of
+  Argentina. The strings the region does carry get every other check. A regional folder with no language folder
+  beside it (`values-pt-rBR/`, there is no `values-pt/`) is still a whole locale and must be complete.
+- **Weblate has no fallback.** It treats `es_AR` as a language of its own, shows it as mostly untranslated from the
+  first day, and that figure drags the project's total down. Read the region's strings, not its percentage. Its
+  pull requests stay sparse, because an Android file leaves out a string Weblate has no translation for, which is
+  exactly the overlay Android wants. The translator instructions ask a region's translators to translate only what
+  reads wrong in their region and to leave everything else empty.
+- **The picker follows on its own.** `generateLocaleConfig` adds the region to Android 13's per-app language list.
+  Play has no `es-AR` listing (Argentina reads `es-419`), so a region gets a `fastlane/metadata/android/` folder only
+  when Play has a code for it.
+
 ## Weblate
 
 The project is `knit` on Hosted Weblate (https://hosted.weblate.org/projects/knit/), set up 2026-10-22 on the Libre
@@ -58,7 +84,8 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   `Signed-off-by: {{ author }}` (the translator) for the DCO check, and a `chore(i18n): …` subject.
 - **New languages are requested, not created** (`new_lang: contact`). A language starts in the repo as a complete
   machine pass; Weblate finds the new `values-<locale>/` on its next pull and from then on carries corrections.
-  Adding one in Weblate instead would open a pull request with a partial locale, which lint fails.
+  Adding one in Weblate instead would open a pull request with a partial locale, which lint fails. A regional
+  variant is requested the same way and starts as a sparse folder in the repo ("A regional variant", above).
 - **A machine pass imports as Translated**, since Android's format has no draft state; only the project's review step
   (approved vs. translated) tells a person's check from the machine's. Never bulk-mark imported strings "needs
   editing": with no draft state to write, Weblate can drop such a string from the file it commits, and a partial
