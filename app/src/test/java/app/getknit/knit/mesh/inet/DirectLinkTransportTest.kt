@@ -436,6 +436,30 @@ class DirectLinkTransportTest {
             assertEquals(listOf(alice), b.uses.toList())
         }
 
+    /**
+     * Custody hands a phone back its own sends when its digest lacks them; the frame crosses, but it is not use at either
+     * end, or an author that does not keep the copy would hold the link open a round at a time.
+     */
+    @Test
+    fun aFrameHandedBackToItsAuthorCrossesButIsNotUse() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val got =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    b.transport.inbound
+                        .take(2)
+                        .toList()
+                }
+            a.transport.send(frame("m7-QQ", from = bob, to = alice), Peer(bob))
+            // A DM of Alice's behind it, in order on the link: once it is in, Bob's own frame was taken first.
+            a.transport.send(frame("m8-QQ"), Peer(bob))
+            assertEquals(listOf("m7-QQ", "m8-QQ"), withTimeout(WAIT_MS) { got.await() }.map { it.envelope.id })
+            assertEquals(listOf(bob), a.uses.toList())
+            assertEquals(listOf(alice), b.uses.toList())
+        }
+
     @Test
     fun aLookupThatThrowsDropsThatFrameAndNoneAfterIt() =
         runBlocking<Unit> {

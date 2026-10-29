@@ -62,8 +62,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * **Use.** A content frame or a file sent or taken calls [onUse] for that peer ([DirectLinks.noteUse]): what keeps a
  * link from its idle close, and what tells an answer that came to nothing from one that carried something. Digests,
- * handshakes, the stream's own acks and the blob exchange's control frames (which re-ask on their own rounds) never do,
- * so a link that only keeps itself in sync idles out; a link moving a file is [busy], which the session reads too. A
+ * handshakes, the stream's own acks, the blob exchange's control frames (which re-ask on their own rounds) and a frame
+ * handed back to the phone that wrote it (custody re-serving an author its own sends) never do, so a link that only
+ * keeps itself in sync idles out; a link moving a file is [busy], which the session reads too. A
  * walkie call holds its link through the pauses between bursts, or raises one ([holdLink], [DirectLinks.raise]).
  *
  * **Digests** are filtered here by the link's [view], from the ids' custody envelopes, so a contact never learns what
@@ -213,7 +214,7 @@ class DirectLinkTransport(
                         false
                     }
                 if (ok) {
-                    if (isUse(frame.envelope)) onUse(frame.fromNodeId)
+                    if (isUse(frame.envelope, author = self)) used(frame.fromNodeId, frame.envelope, outbound = false)
                     _inbound.emit(frame)
                 }
             }
@@ -305,7 +306,7 @@ class DirectLinkTransport(
         targets.forEach {
             if (!admits(env, it.nodeId, outbound = true)) return@forEach
             it.send(bytes)
-            if (isUse(env)) onUse(it.nodeId)
+            if (isUse(env, author = it.nodeId)) used(it.nodeId, env, outbound = true)
         }
     }
 
@@ -362,7 +363,24 @@ class DirectLinkTransport(
 
     // Only a frame that is content is use: a blob control frame is the exchange's bookkeeping, which re-asks on its own
     // rounds and would keep a link open for a blob nobody can supply.
-    private fun isUse(env: RelayEnvelope) = LinkPairFilter.blobHashes(env) == null
+    // Use is a frame the far end did not write: a blob control frame is not (the exchange re-asks on its own rounds), nor
+    // is a frame handed back to its [author] — custody re-serves a phone its own sends when its digest lacks them, and an
+    // author that does not keep the copy is offered it again at the next round, which would hold the link open for it.
+    private fun isUse(
+        env: RelayEnvelope,
+        author: String?,
+    ) = LinkPairFilter.blobHashes(env) == null && env.senderId != author
+
+    // A content frame crossed the link to or from [peerId]: the link is in use. Logged by type and id, never its content,
+    // so a link that outlived its idle wait names what kept it (a sealed tick reads as `chat`, as it does on the wire).
+    private fun used(
+        peerId: String,
+        env: RelayEnvelope,
+        outbound: Boolean,
+    ) {
+        onUse(peerId)
+        log("link ${peerId.take(SHORT)}: ${if (outbound) "tx" else "rx"} ${env.type} ${env.id.take(SHORT)}")
+    }
 
     /** Whether the link to [peer] is moving a file either way: a link mid-file is in use, frame or no frame. */
     fun busy(peer: String): Boolean = links[peer]?.let { it.txInProgress || it.rxInProgress } ?: false

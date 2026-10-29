@@ -338,7 +338,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   Links also open by themselves (L-7-7, the spool first): a message of ours a contact has not ticked in 20 s, with no
   radio between the phones, has the demand offer them a link — logcat `KnitLink: link demand <id6>: <outcome>`. The
   offer rides a spool too, so only a spool that carries casts but not the message (a pair scope homed at a relay one
-  phone does not dial, #210) shows it in the field.
+  phone does not dial, #210) shows it in the field. What keeps an up link from its idle close is in logcat too: each
+  content frame that crossed it logs `KnitLink: link <id6>: tx|rx <type> <frame id6>` (a sealed tick reads as `chat`,
+  as on the wire; digests, acks and blob asks are not use and log nothing), and each file `file …` / `rx …`.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
   `BuildConfig.LIVE_CALLS` / `MESH_CALLS`; `op capture` and `op dropgroup` need live calls;
   `docs/VOICE_CALLS.md`). `--es op state` (the default) dumps the call, its phase, `reason` and the selected
