@@ -34,8 +34,8 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * The app-settings half of what used to be one ViewModel: the three switches, the two plane summaries, and
- * the header row that stands in for the profile editor behind it.
+ * The app-settings half of what used to be one ViewModel: the switches, the plane summaries, and the header row
+ * that stands in for the profile editor behind it. Settings › Chats' switches are [ChatSettingsViewModelTest]'s.
  */
 class SettingsViewModelTest {
     private val settings = mockk<SettingsStore>(relaxed = true)
@@ -43,9 +43,6 @@ class SettingsViewModelTest {
 
     private val nameFlow = MutableStateFlow("Alice")
     private val avatarHashFlow = MutableStateFlow<String?>(null)
-    private val filteringFlow = MutableStateFlow(true)
-    private val linkPreviewsFlow = MutableStateFlow(false)
-    private val typingIndicatorsFlow = MutableStateFlow(true)
     private val relayAllCallsFlow = MutableStateFlow(false)
     private val ownIceFlow = MutableStateFlow(OwnIceServers())
     private val dynamicColorFlow = MutableStateFlow(false)
@@ -62,9 +59,6 @@ class SettingsViewModelTest {
         coEvery { identity.nodeId() } returns NODE_ID
         every { settings.displayName } returns nameFlow
         every { settings.ownAvatarHash } returns avatarHashFlow
-        every { settings.contentFilteringEnabled } returns filteringFlow
-        every { settings.linkPreviewsEnabled } returns linkPreviewsFlow
-        every { settings.typingIndicatorsEnabled } returns typingIndicatorsFlow
         every { settings.callsRelayAll } returns relayAllCallsFlow
         every { settings.dynamicColor } returns dynamicColorFlow
         every { settings.themeMode } returns themeModeFlow
@@ -119,53 +113,6 @@ class SettingsViewModelTest {
             advanceUntilIdle()
             assertEquals(Alias.aliasFor(NODE_ID), vm.header.value.name)
             assertNull(vm.header.value.alias)
-        }
-
-    @Test
-    fun contentFilteringMirrorsTheStoreAndPersistsOnToggle() =
-        runTest {
-            val vm = vm()
-            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.contentFilteringEnabled.collect {} }
-            advanceUntilIdle()
-            assertTrue(vm.contentFilteringEnabled.value)
-
-            vm.setContentFilteringEnabled(false)
-            advanceUntilIdle()
-            coVerify { settings.setContentFilteringEnabled(false) }
-        }
-
-    /** Off until the user says otherwise, and a toggle writes straight through to the store. */
-    @Test
-    fun linkPreviewsMirrorTheStoreAndPersistOnToggle() =
-        runTest {
-            val vm = vm()
-            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.linkPreviewsEnabled.collect {} }
-            advanceUntilIdle()
-            assertFalse(vm.linkPreviewsEnabled.value)
-            linkPreviewsFlow.value = true
-            advanceUntilIdle()
-            assertTrue(vm.linkPreviewsEnabled.value)
-
-            vm.setLinkPreviewsEnabled(false)
-            advanceUntilIdle()
-            coVerify { settings.setLinkPreviewsEnabled(false) }
-        }
-
-    /** On until the user says otherwise, and a toggle writes straight through to the store. */
-    @Test
-    fun typingIndicatorsMirrorTheStoreAndPersistOnToggle() =
-        runTest {
-            val vm = vm()
-            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.typingIndicatorsEnabled.collect {} }
-            advanceUntilIdle()
-            assertTrue(vm.typingIndicatorsEnabled.value)
-            typingIndicatorsFlow.value = false
-            advanceUntilIdle()
-            assertFalse(vm.typingIndicatorsEnabled.value)
-
-            vm.setTypingIndicatorsEnabled(true)
-            advanceUntilIdle()
-            coVerify { settings.setTypingIndicatorsEnabled(true) }
         }
 
     /** The Calls row's summary (§3.14): relay-all, and only the own servers a call would use — on and valid. */

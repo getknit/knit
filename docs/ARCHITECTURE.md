@@ -734,9 +734,10 @@ that budget is a purely local knob that can differ per node without breaking cue
   - `ChatScreen` — a `LazyColumn` of bubbles with reactions, image attachments (Coil + animated
     decoder for GIF/WebP), `@`-mention highlighting and typeahead, auto-scroll, and an IME-padded
     input.
-  - `SettingsScreen` — what the overflow menu opens: a profile header row into `ProfileScreen`, the
-    light/dark selector, the content-filtering / Material You / link-preview switches, the rows that hand
-    off to the Internet-relay and LoRa screens, and the battery-opt row.
+  - `SettingsScreen` — what the overflow menu opens: a profile header row into `ProfileScreen`, a Chats row
+    into `ChatSettingsScreen` (typing indicators, link previews, content filtering, the large Bluetooth
+    download limit), the light/dark selector and Material You switch, the rows that hand off to the Calls,
+    Internet-relay and LoRa screens, and the battery-opt row.
   - `ProfileScreen` — your own profile behind that header row: avatar via photo picker + Coil,
     name/status fields, node id, alias, and the open-to-chat flag, with one Save for the two text
     fields; key verification (safety number / QR) of a *peer* is `ProfileDetailsScreen`.

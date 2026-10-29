@@ -85,6 +85,7 @@ import app.getknit.knit.ui.requests.MessageRequestsScreen
 import app.getknit.knit.ui.review.RateReviewDialog
 import app.getknit.knit.ui.review.ReviewPromptInbox
 import app.getknit.knit.ui.search.SearchScreen
+import app.getknit.knit.ui.settings.ChatSettingsScreen
 import app.getknit.knit.ui.settings.SettingsScreen
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.ShareTargetScreen
@@ -108,6 +109,7 @@ private object Routes {
     const val CHAT_LIST = "chatlist"
     const val CONTACTS = "contacts"
     const val SETTINGS = "settings"
+    const val CHAT_SETTINGS = "chatSettings"
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
 
@@ -586,6 +588,7 @@ fun KnitApp(startRoute: String? = null) {
                 SettingsScreen(
                     onBack = { navController.popFrom(entry) },
                     onOpenProfile = { navController.navigate(Routes.PROFILE) },
+                    onOpenChats = { navController.navigate(Routes.CHAT_SETTINGS) },
                     onOpenRelays = { navController.navigate(Routes.INTERNET_RELAYS) },
                     onOpenLora = { navController.navigate(Routes.LORA_RADIO) },
                     onOpenCalls = { navController.navigate(Routes.CALLS) },
@@ -595,6 +598,9 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenBlockedUsers = { navController.navigate(Routes.BLOCKED_USERS) },
                     onOpenWhatsNew = { navController.navigate(Routes.WHATS_NEW) },
                 )
+            }
+            composable(Routes.CHAT_SETTINGS) { entry ->
+                ChatSettingsScreen(onBack = { navController.popFrom(entry) })
             }
             composable(Routes.WHATS_NEW) { entry ->
                 // Reading the screen reads the newest announcement, whichever door it came through.

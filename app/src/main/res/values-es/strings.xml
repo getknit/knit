@@ -779,6 +779,8 @@
     <string name="profile_section_device">Este dispositivo</string>
     <string name="profile_node_id_label">ID de nodo</string>
     <string name="profile_alias_label">Alias</string>
+    <string name="settings_chats_title">Chats</string>
+    <string name="settings_chats_subtitle">Indicadores de escritura, vistas previas de enlaces, filtro de contenido y descargas grandes</string>
     <string name="settings_content_filtering_title">Filtro de contenido</string>
     <string name="settings_content_filtering_subtitle">Oculta imágenes explícitas y mensajes abusivos que recibas de otras personas</string>
     <string name="settings_theme_title">Tema</string>

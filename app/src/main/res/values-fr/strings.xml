@@ -779,6 +779,8 @@
     <string name="profile_section_device">Cet appareil</string>
     <string name="profile_node_id_label">ID du nœud</string>
     <string name="profile_alias_label">Alias</string>
+    <string name="settings_chats_title">Discussions</string>
+    <string name="settings_chats_subtitle">Indicateurs de saisie, aperçus des liens, filtrage du contenu et gros téléchargements</string>
     <string name="settings_content_filtering_title">Filtrage du contenu</string>
     <string name="settings_content_filtering_subtitle">Masquer les images explicites et les messages injurieux que vous recevez</string>
     <string name="settings_theme_title">Thème</string>

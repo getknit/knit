@@ -1,13 +1,11 @@
 package app.getknit.knit.ui.settings
 
 import android.content.Context
-import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -18,7 +16,6 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
-import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.BackgroundBattery
@@ -34,8 +31,8 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The app's settings: the three switches, the two rows that hand off to a plane's own screen (each present
- * only in a build that introduces that plane), and the profile header row that leads to the profile editor.
+ * The app's settings: the switches, the rows that hand off to Settings › Chats and to a plane's own screen (each plane
+ * present only in a build that introduces it), and the profile header row that leads to the profile editor.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -49,23 +46,16 @@ class SettingsScreenContentTest {
     private fun render(
         header: ProfileHeader = ProfileHeader(name = "Alice", alias = "Cool Fox"),
         onOpenProfile: () -> Unit = {},
+        onOpenChats: () -> Unit = {},
         relay: RelaySummary = RelaySummary(),
         onOpenRelays: () -> Unit = {},
         showInternetRelays: Boolean = true,
         lora: LoraSummary = LoraSummary(),
         onOpenLora: () -> Unit = {},
-        contentFilteringEnabled: Boolean = true,
-        onToggleContentFiltering: (Boolean) -> Unit = {},
         themeMode: ThemeMode = ThemeMode.System,
         onSelectThemeMode: (ThemeMode) -> Unit = {},
         showThemeMode: Boolean = true,
         wifiAware: Boolean = true,
-        bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
-        onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
-        linkPreviewsEnabled: Boolean = false,
-        onToggleLinkPreviews: (Boolean) -> Unit = {},
-        typingIndicatorsEnabled: Boolean = true,
-        onToggleTypingIndicators: (Boolean) -> Unit = {},
         calls: CallsSummary = CallsSummary(),
         onOpenCalls: () -> Unit = {},
         showCalls: Boolean = true,
@@ -93,11 +83,7 @@ class SettingsScreenContentTest {
                     form =
                         SettingsFormState(
                             header = header,
-                            contentFilteringEnabled = contentFilteringEnabled,
                             themeMode = themeMode,
-                            bluetoothDownloadLimit = bluetoothDownloadLimit,
-                            linkPreviewsEnabled = linkPreviewsEnabled,
-                            typingIndicatorsEnabled = typingIndicatorsEnabled,
                             calls = calls,
                             dynamicColor = dynamicColor,
                             relay = relay,
@@ -109,14 +95,11 @@ class SettingsScreenContentTest {
                     supervision = supervision,
                     onBack = {},
                     onOpenProfile = onOpenProfile,
-                    onToggleContentFiltering = onToggleContentFiltering,
+                    onOpenChats = onOpenChats,
                     onSelectThemeMode = onSelectThemeMode,
                     showThemeMode = showThemeMode,
                     wifiAware = wifiAware,
                     onToggleWifiAware = onToggleWifiAware,
-                    onSelectBluetoothDownloadLimit = onSelectBluetoothDownloadLimit,
-                    onToggleLinkPreviews = onToggleLinkPreviews,
-                    onToggleTypingIndicators = onToggleTypingIndicators,
                     onOpenCalls = onOpenCalls,
                     showCalls = showCalls,
                     onToggleDynamicColor = onToggleDynamicColor,
@@ -160,13 +143,18 @@ class SettingsScreenContentTest {
         compose.onAllNodesWithText("Cool Fox", substring = true).assertCountEquals(1)
     }
 
+    /** Typing, link previews, content filtering and large downloads live behind one row, which opens Settings › Chats. */
     @Test
-    fun theContentFilteringRowTogglesTheFlag() {
-        var toggled: Boolean? = null
-        render(contentFilteringEnabled = true, onToggleContentFiltering = { toggled = it })
-        compose.onNodeWithTag("settings_content_filtering").performScrollTo().assertIsOn()
-        compose.onNodeWithTag("settings_content_filtering").performClick()
-        assertEquals(false, toggled)
+    fun theChatsRowOpensTheChatsScreen() {
+        var opened = 0
+        render(onOpenChats = { opened++ })
+        compose.onNodeWithText(context.getString(R.string.settings_chats_subtitle)).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("settings_chats").performClick()
+        assertEquals(1, opened)
+        compose.onNodeWithTag("settings_content_filtering").assertDoesNotExist()
+        compose.onNodeWithTag("settings_typing_indicators").assertDoesNotExist()
+        compose.onNodeWithTag("settings_link_previews").assertDoesNotExist()
+        compose.onNodeWithTag("settings_bt_download").assertDoesNotExist()
     }
 
     /** GitHub #44: Settings › Wi-Fi Aware, on by default, says what each position costs, and toggles the switch. */
@@ -257,33 +245,6 @@ class SettingsScreenContentTest {
         compose.onNodeWithText("Light").assertIsSelected()
     }
 
-    @Test
-    fun theLargeDownloadRowStartsAtOneMegabyteAndReportsAPick() {
-        // ADR 2026-10.js2p: the default asks above 1 MB; Never turns the card off.
-        var picked: BluetoothDownloadLimit? = null
-        render(onSelectBluetoothDownloadLimit = { picked = it })
-        compose.onNodeWithTag("settings_bt_download").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Over 1 MB").assertIsSelected()
-        compose.onNodeWithText("Never").performClick()
-        assertEquals(BluetoothDownloadLimit.NEVER, picked)
-    }
-
-    /** A phone without Wi-Fi Aware is never told the plane fetches anything on its own (the Moto G trial). */
-    @Test
-    fun theLargeDownloadRowNamesWifiAwareOnlyWhereThePhoneHasIt() {
-        render(wifiAware = false)
-        // Scoped to the row: the low-power row names Wi-Fi Aware whatever the phone has.
-        compose.onNodeWithTag("settings_bt_download").performScrollTo().assert(!hasText("Wi-Fi Aware", substring = true))
-        compose.onNodeWithText("before Bluetooth brings it", substring = true).assertExists()
-    }
-
-    @Test
-    fun theLargeDownloadRowNamesWifiAwareWhereThePhoneHasIt() {
-        render(wifiAware = true)
-        compose.onNodeWithTag("settings_bt_download").performScrollTo()
-        compose.onNodeWithText("over Wi-Fi Aware", substring = true).assertExists()
-    }
-
     /** Below API 31 there is no per-app night mode, so the control is absent rather than dead. */
     @Test
     fun theThemeRowIsAbsentWhereThePlatformCannotDoIt() {
@@ -347,49 +308,6 @@ class SettingsScreenContentTest {
     fun theCallsRowStaysWhenTheInternetPlaneIsDark() {
         render(showInternetRelays = false)
         compose.onNodeWithTag("settings_calls").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun theLinkPreviewsRowIsOffByDefaultAndTogglesOn() {
-        var toggled: Boolean? = null
-        render(onToggleLinkPreviews = { toggled = it })
-        compose.onNodeWithTag("settings_link_previews").performScrollTo().assertIsOff()
-        compose.onNodeWithTag("settings_link_previews").performClick()
-        assertEquals(true, toggled)
-    }
-
-    @Test
-    fun theLinkPreviewsRowTogglesOff() {
-        var toggled: Boolean? = null
-        render(linkPreviewsEnabled = true, onToggleLinkPreviews = { toggled = it })
-        compose.onNodeWithTag("settings_link_previews").performScrollTo().assertIsOn()
-        compose.onNodeWithTag("settings_link_previews").performClick()
-        assertEquals(false, toggled)
-    }
-
-    /** On by default, and in every build: the radios carry typing cues whether or not the Internet plane is there. */
-    @Test
-    fun theTypingIndicatorsRowIsOnByDefaultAndTogglesOff() {
-        var toggled: Boolean? = null
-        render(showInternetRelays = false, onToggleTypingIndicators = { toggled = it })
-        compose.onNodeWithTag("settings_typing_indicators").performScrollTo().assertIsOn()
-        compose.onNodeWithTag("settings_typing_indicators").performClick()
-        assertEquals(false, toggled)
-    }
-
-    @Test
-    fun theTypingIndicatorsRowTogglesBackOn() {
-        var toggled: Boolean? = null
-        render(typingIndicatorsEnabled = false, onToggleTypingIndicators = { toggled = it })
-        compose.onNodeWithTag("settings_typing_indicators").performScrollTo().assertIsOff()
-        compose.onNodeWithTag("settings_typing_indicators").performClick()
-        assertEquals(true, toggled)
-    }
-
-    @Test
-    fun theLinkPreviewsRowFollowsTheInternetPlaneSwitch() {
-        render(showInternetRelays = false)
-        compose.onNodeWithTag("settings_link_previews").assertDoesNotExist()
     }
 
     /** Unrestricted is the quiet state: a status line and nothing to press. */

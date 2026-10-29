@@ -791,6 +791,8 @@
     <string name="profile_section_device">Цей пристрій</string>
     <string name="profile_node_id_label">ID вузла</string>
     <string name="profile_alias_label">Псевдонім</string>
+    <string name="settings_chats_title">Чати</string>
+    <string name="settings_chats_subtitle">Індикатор набору, попередній перегляд посилань, фільтр вмісту й великі завантаження</string>
     <string name="settings_content_filtering_title">Фільтр вмісту</string>
     <string name="settings_content_filtering_subtitle">Приховувати відверті зображення й образливі повідомлення, які вам надсилають</string>
     <string name="settings_theme_title">Тема</string>

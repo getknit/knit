@@ -767,6 +767,8 @@
     <string name="profile_section_device">Dieses Gerät</string>
     <string name="profile_node_id_label">Knoten-ID</string>
     <string name="profile_alias_label">Alias</string>
+    <string name="settings_chats_title">Chats</string>
+    <string name="settings_chats_subtitle">Tippindikatoren, Linkvorschauen, Inhaltsfilter und große Downloads</string>
     <string name="settings_content_filtering_title">Inhaltsfilter</string>
     <string name="settings_content_filtering_subtitle">Blendet explizite Bilder und beleidigende Nachrichten aus, die du von anderen erhältst</string>
     <string name="settings_theme_title">Design</string>

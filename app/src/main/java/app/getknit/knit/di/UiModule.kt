@@ -52,6 +52,7 @@ import app.getknit.knit.ui.profile.ProfileViewModel
 import app.getknit.knit.ui.relay.InternetRelayViewModel
 import app.getknit.knit.ui.requests.MessageRequestsViewModel
 import app.getknit.knit.ui.search.SearchViewModel
+import app.getknit.knit.ui.settings.ChatSettingsViewModel
 import app.getknit.knit.ui.settings.SettingsViewModel
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -166,6 +167,7 @@ val uiModule =
             )
         }
         viewModel { OnboardingViewModel(get(), get()) }
+        viewModel { ChatSettingsViewModel(get()) }
         viewModel {
             SettingsViewModel(
                 get(),

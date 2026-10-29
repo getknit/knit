@@ -948,6 +948,10 @@
     <string name="profile_section_device">This device</string>
     <string name="profile_node_id_label">Node ID</string>
     <string name="profile_alias_label">Alias</string>
+    <!-- Settings › Chats: the row on Settings and the title of the screen it opens, which holds what a chat sends, shows
+         and lets in. The subtitle names the screen's rows. -->
+    <string name="settings_chats_title">Chats</string>
+    <string name="settings_chats_subtitle">Typing indicators, link previews, content filtering and large downloads</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
     <string name="settings_theme_title">Theme</string>

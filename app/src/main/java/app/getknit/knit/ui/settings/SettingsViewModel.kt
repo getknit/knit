@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import app.getknit.knit.call.OwnIceServers
 import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.settings.AwareSwitch
-import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.data.settings.LowPowerSwitch
 import app.getknit.knit.data.settings.SettingsStore
@@ -133,21 +132,6 @@ class SettingsViewModel(
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ProfileHeader())
 
-    /** Whether on-device content moderation is enabled. A Switch can bind straight to the DataStore flow. */
-    val contentFilteringEnabled: StateFlow<Boolean> =
-        settings.contentFilteringEnabled
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
-
-    /** Whether this phone sends and shows typing indicators on every plane (on by default — see the store's KDoc). */
-    val typingIndicatorsEnabled: StateFlow<Boolean> =
-        settings.typingIndicatorsEnabled
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
-
-    /** Whether links this device sends carry a preview card (off by default — see the store's KDoc). */
-    val linkPreviewsEnabled: StateFlow<Boolean> =
-        settings.linkPreviewsEnabled
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-
     /**
      * What the Calls row says: "Relay all calls" (C-3.7-3) and the own servers a call actually uses — switched on and
      * valid, as [app.getknit.knit.call.OwnIceServers.effective] reads them — and the incoming calls switched off.
@@ -180,11 +164,6 @@ class SettingsViewModel(
     val themeMode: StateFlow<ThemeMode> =
         settings.themeMode
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThemeMode.System)
-
-    /** "Ask before large Bluetooth downloads" (ADR 2026-10.js2p). */
-    val bluetoothDownloadLimit: StateFlow<BluetoothDownloadLimit> =
-        settings.bluetoothDownloadLimit
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BluetoothDownloadLimit.DEFAULT)
 
     /**
      * Summary of the Internet (spool) plane for the row that navigates to its own screen — the switch
@@ -226,22 +205,6 @@ class SettingsViewModel(
             nodeId.value = id
             alias.value = Alias.aliasFor(id)
         }
-    }
-
-    fun setContentFilteringEnabled(value: Boolean) {
-        viewModelScope.launch { settings.setContentFilteringEnabled(value) }
-    }
-
-    fun setLinkPreviewsEnabled(value: Boolean) {
-        viewModelScope.launch { settings.setLinkPreviewsEnabled(value) }
-    }
-
-    fun setTypingIndicatorsEnabled(value: Boolean) {
-        viewModelScope.launch { settings.setTypingIndicatorsEnabled(value) }
-    }
-
-    fun setBluetoothDownloadLimit(value: BluetoothDownloadLimit) {
-        viewModelScope.launch { settings.setBluetoothDownloadLimit(value) }
     }
 
     fun setLowPowerMode(value: Boolean) {

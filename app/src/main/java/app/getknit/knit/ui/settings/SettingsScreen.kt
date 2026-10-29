@@ -12,12 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,7 +35,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -58,7 +55,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
-import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.di.CALL_SETTINGS_WIRED
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.LoraPlane
@@ -72,7 +68,6 @@ import app.getknit.knit.ui.camera.openAppSettings
 import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
-import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.openUnusedAppPauseSettings
 import app.getknit.knit.ui.preview.KnitPreview
@@ -90,11 +85,7 @@ import org.koin.androidx.compose.koinViewModel
 /** UI-local projection of [SettingsViewModel]'s per-setting flows for the stateless content. */
 internal data class SettingsFormState(
     val header: ProfileHeader = ProfileHeader(),
-    val contentFilteringEnabled: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.System,
-    val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
-    val linkPreviewsEnabled: Boolean = false,
-    val typingIndicatorsEnabled: Boolean = true,
     /** The Calls row's subtitle (docs/VOICE_CALLS.md §3.14), shown only where calls are wired. */
     val calls: CallsSummary = CallsSummary(),
     val dynamicColor: Boolean = false,
@@ -116,6 +107,7 @@ internal data class SettingsFormState(
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenProfile: () -> Unit = {},
+    onOpenChats: () -> Unit = {},
     onOpenRelays: () -> Unit = {},
     onOpenLora: () -> Unit = {},
     onOpenCalls: () -> Unit = {},
@@ -127,11 +119,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = koinViewModel(),
 ) {
     val header by viewModel.header.collectAsStateWithLifecycle()
-    val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
-    val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
-    val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
-    val typingIndicatorsEnabled by viewModel.typingIndicatorsEnabled.collectAsStateWithLifecycle()
     val calls by viewModel.callsSummary.collectAsStateWithLifecycle()
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val relay by viewModel.relaySummary.collectAsStateWithLifecycle()
@@ -156,11 +144,7 @@ fun SettingsScreen(
         form =
             SettingsFormState(
                 header = header,
-                contentFilteringEnabled = contentFilteringEnabled,
                 themeMode = themeMode,
-                bluetoothDownloadLimit = bluetoothDownloadLimit,
-                linkPreviewsEnabled = linkPreviewsEnabled,
-                typingIndicatorsEnabled = typingIndicatorsEnabled,
                 calls = calls,
                 dynamicColor = dynamicColor,
                 relay = relay,
@@ -174,11 +158,8 @@ fun SettingsScreen(
         supervision = rememberOnResume { deviceSupervision(context) },
         onBack = onBack,
         onOpenProfile = onOpenProfile,
-        onToggleContentFiltering = viewModel::setContentFilteringEnabled,
+        onOpenChats = onOpenChats,
         onSelectThemeMode = viewModel::setThemeMode,
-        onSelectBluetoothDownloadLimit = viewModel::setBluetoothDownloadLimit,
-        onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
-        onToggleTypingIndicators = viewModel::setTypingIndicatorsEnabled,
         onToggleDynamicColor = viewModel::setDynamicColor,
         onToggleLowPower = viewModel::setLowPowerMode,
         onToggleWifiAware = viewModel::setWifiAwareOn,
@@ -204,11 +185,8 @@ internal fun SettingsScreenContent(
     battery: BackgroundBattery,
     onBack: () -> Unit,
     onOpenProfile: () -> Unit = {},
-    onToggleContentFiltering: (Boolean) -> Unit,
+    onOpenChats: () -> Unit = {},
     onSelectThemeMode: (ThemeMode) -> Unit = {},
-    onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
-    onToggleLinkPreviews: (Boolean) -> Unit = {},
-    onToggleTypingIndicators: (Boolean) -> Unit = {},
     onToggleDynamicColor: (Boolean) -> Unit = {},
     onToggleLowPower: (Boolean) -> Unit = {},
     onToggleWifiAware: (Boolean) -> Unit = {},
@@ -236,8 +214,7 @@ internal fun SettingsScreenContent(
     // Same, for the platform's per-app night mode — a different fact that happens to carry the same
     // API level; see ui/theme/ThemeMode.kt.
     showThemeMode: Boolean = THEME_MODE_SUPPORTED,
-    // Whether this phone has Wi-Fi Aware at all, so the large-download row never promises a plane it lacks, and the
-    // Wi-Fi Aware switch shows only where there is a plane to switch.
+    // Whether this phone has Wi-Fi Aware at all, so the Wi-Fi Aware switch shows only where there is a plane to switch.
     wifiAware: Boolean = rememberWifiAwareSupported(),
     // Whether low-power mode is offered (`LOW_POWER_OFFERED`, false since GitHub #44): its row stays in the code.
     showLowPower: Boolean = LOW_POWER_OFFERED,
@@ -332,26 +309,13 @@ internal fun SettingsScreenContent(
                 CloneNoticeRow(onClick = onSignOut)
             }
 
-            ToggleRow(
-                title = stringResource(R.string.settings_content_filtering_title),
-                subtitle = stringResource(R.string.settings_content_filtering_subtitle),
-                enabled = form.contentFilteringEnabled,
-                onToggle = onToggleContentFiltering,
-                modifier = Modifier.testTag("settings_content_filtering"),
-            )
-
-            // How a large attachment only Bluetooth could bring arrives (ADR 2026-10.js2p). Beside content filtering:
-            // both decide what reaches this phone from others.
-            ChoiceRow(
-                title = stringResource(R.string.settings_bt_download_title),
-                subtitle =
-                    stringResource(
-                        if (wifiAware) R.string.settings_bt_download_subtitle else R.string.settings_bt_download_subtitle_bluetooth_only,
-                    ),
-                choices = BT_DOWNLOAD_LIMITS,
-                selected = form.bluetoothDownloadLimit,
-                onSelect = onSelectBluetoothDownloadLimit,
-                modifier = Modifier.testTag("settings_bt_download"),
+            // What a chat sends, shows and lets in — typing, link previews, content filtering, large Bluetooth downloads —
+            // on its own screen, so this column keeps to the app, its planes and the phone.
+            NavigatingRow(
+                title = stringResource(R.string.settings_chats_title),
+                subtitle = stringResource(R.string.settings_chats_subtitle),
+                onClick = onOpenChats,
+                modifier = Modifier.testTag("settings_chats"),
             )
 
             // Both appearance controls are hidden rather than disabled below API 31, matching the two plane
@@ -372,28 +336,6 @@ internal fun SettingsScreenContent(
                     enabled = form.dynamicColor,
                     onToggle = onToggleDynamicColor,
                     modifier = Modifier.testTag("settings_dynamic_color"),
-                )
-            }
-
-            // What a chat tells the other side while you write. Not under the Internet plane's flag: the radios carry
-            // typing cues in every build, and the switch stops them there too.
-            ToggleRow(
-                title = stringResource(R.string.settings_typing_indicators_title),
-                subtitle = stringResource(R.string.settings_typing_indicators_subtitle),
-                enabled = form.typingIndicatorsEnabled,
-                onToggle = onToggleTypingIndicators,
-                modifier = Modifier.testTag("settings_typing_indicators"),
-            )
-
-            // Link previews are the one other thing that uses the Internet, so they ship under the same build
-            // switch as the relay plane; the subtitle carries the disclosure that would otherwise need a sheet.
-            if (showInternetRelays) {
-                ToggleRow(
-                    title = stringResource(R.string.settings_link_previews_title),
-                    subtitle = stringResource(R.string.settings_link_previews_subtitle),
-                    enabled = form.linkPreviewsEnabled,
-                    onToggle = onToggleLinkPreviews,
-                    modifier = Modifier.testTag("settings_link_previews"),
                 )
             }
 
@@ -507,51 +449,6 @@ private fun ThemeModeRow(
     modifier = modifier,
 )
 
-/**
- * A title, a line of explanation, and one control carrying every answer at once — the theme and the
- * large-download limit share it.
- *
- * Every answer in view rather than the dialog the neighbouring `NavigatingRow`s would suggest, because picking a
- * theme applies a configuration change and recreates the Activity — a dialog would be torn down as you chose
- * from it. [ChoiceButtons] draws them as segmented buttons, or as a list of radio buttons when a label is too long
- * for its segment.
- */
-@Composable
-private fun <T> ChoiceRow(
-    title: String,
-    subtitle: String,
-    choices: List<Pair<T, Int>>,
-    selected: T,
-    onSelect: (T) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        ChoiceButtons(
-            choices = choices.map { (choice, label) -> choice to stringResource(label) },
-            selected = selected,
-            onSelect = onSelect,
-        )
-    }
-}
-
-/** The three limits in the order they read, each with the string that names it. */
-private val BT_DOWNLOAD_LIMITS =
-    listOf(
-        BluetoothDownloadLimit.NEVER to R.string.settings_bt_download_never,
-        BluetoothDownloadLimit.MB_1 to R.string.settings_bt_download_1mb,
-        BluetoothDownloadLimit.MB_5 to R.string.settings_bt_download_5mb,
-    )
-
 /** The three choices in the order they read, each with the string that names it. */
 private val THEME_MODES =
     listOf(
@@ -559,42 +456,6 @@ private val THEME_MODES =
         ThemeMode.Light to R.string.settings_theme_light,
         ThemeMode.Dark to R.string.settings_theme_dark,
     )
-
-/** A titled switch row — every switch on this screen shares it. */
-@Composable
-private fun ToggleRow(
-    title: String,
-    subtitle: String,
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                // One toggle target: the row owns the switch so a screen reader announces the title +
-                // subtitle as the label with an on/off state, instead of an unlabelled switch node.
-                .toggleable(value = enabled, onValueChange = onToggle, role = Role.Switch)
-                .padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        // null handler: the row's toggleable owns the interaction (avoids a duplicate focus stop).
-        Switch(checked = enabled, onCheckedChange = null)
-    }
-}
 
 /**
  * Entry point to the Internet (spool) plane's own screen, with its current state as the subtitle.
@@ -740,42 +601,6 @@ private fun CloneNoticeRow(
                 }
             }
         }
-    }
-}
-
-/** A titled row that hands off to another screen: title, live subtitle, chevron. One tap target. */
-@Composable
-private fun NavigatingRow(
-    title: String,
-    subtitle: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick, role = Role.Button)
-                .padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -985,13 +810,11 @@ fun SettingsScreenPreview() =
                             name = "Ada Lovelace",
                             alias = "GentlyRustlingRabbit",
                         ),
-                    contentFilteringEnabled = true,
                     relay = RelaySummary(enabled = true, configured = 2, active = 2, connected = 1),
                     lora = LoraSummary(enabled = true, boardName = "Meshtastic_1a2b", plane = LoraPlane.Live),
                 ),
             battery = BackgroundBattery.Optimized,
             onBack = {},
-            onToggleContentFiltering = {},
             onOpenRelays = {},
             onAllowBattery = {},
             // The screen a shipped build shows: it has no calls (`CALL_SETTINGS_WIRED` off), and so no Calls row.
@@ -1008,7 +831,6 @@ fun SettingsScreenClonePreview() =
             form = SettingsFormState(header = ProfileHeader(name = "Ada Lovelace", alias = "GentlyRustlingRabbit"), cloneVisible = true),
             battery = BackgroundBattery.Unrestricted,
             onBack = {},
-            onToggleContentFiltering = {},
             onOpenRelays = {},
             onAllowBattery = {},
             showCalls = false,
@@ -1025,7 +847,6 @@ fun SettingsScreenNewUserPreview() =
             form = SettingsFormState(header = ProfileHeader(name = "GentlyRustlingRabbit")),
             battery = BackgroundBattery.Unrestricted,
             onBack = {},
-            onToggleContentFiltering = {},
             onOpenRelays = {},
             onAllowBattery = {},
             showCalls = false,

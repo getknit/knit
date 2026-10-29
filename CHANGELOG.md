@@ -34,7 +34,7 @@ document:
 - Long-press a message and pick Pin message to keep it in a bar under the chat's name, where a tap jumps back
   to it. Each chat holds three pins, and for now they stay on your phone: nobody else in the chat sees them.
 - You can now see when a contact or group member is typing over an internet relay, and they can see when you
-  are. A new Typing indicators switch in Settings turns this off both ways.
+  are. A new Typing indicators switch in Settings › Chats turns this off both ways.
 - Stable releases on GitHub now include a slim APK, about 49 MB smaller, that leaves out internet relays,
   calls, transcription and Knit Anywhere. You can switch between it and the full app without losing your
   messages.
@@ -56,6 +56,8 @@ document:
   renewing.
 - Walkie-talkie calls now record your voice the way regular calls do, with your phone's own noise reduction
   and volume leveling. Background noise drops, and voices sound about as loud from one phone to the next.
+- Typing indicators, link previews, content filtering and the large Bluetooth download limit have moved to a
+  new Chats screen in Settings.
 
 ### Fixed
 
