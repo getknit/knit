@@ -713,9 +713,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   reply sent before the first DM landed became the both-initiate race the fixture was written to avoid,
   and the failure surfaced as the oracle's, a step later and under the wrong name (2026-09-18). `node()` returns only once the router is
   collecting `inbound` — a `SharedFlow` with no replay drops what is emitted before that, and a link brought
-  up too early would lose the profile push. A boot (and a `restart`) waits for a direct-link plane's collectors too
-  (`LabLinkPlane.collecting`): the composite subscribes each plane on a `merge` coroutine of its own, and a file the
-  plane landed before its subscriber was dropped (a chaos stall of ~400 ms after a restart, 2026-10-29). Bring a multi-hop topology up with `linkAll` so no relay fires in
+  up too early would lose the profile push. A boot (and a `restart`) waits for every plane beside the radio too, a
+  board's and a direct link's (`LabCollectors`, `LabBoardPlane`, `LabLinkPlane`): the composite subscribes each plane
+  on a `merge` coroutine of its own, and a file the link plane landed before its subscriber was dropped (a chaos stall
+  of ~400 ms after a restart, 2026-10-29). lab-lint's `plane-collectors-at-boot` reads `MeshLab.kt` for a composite
+  child no `while` wait reads `.collecting`; that a plane's wrapper counts each shared flow it hands up is left to review. Bring a multi-hop topology up with `linkAll` so no relay fires in
   the gap between two links. Boot costs ~1 s per node (Tink keygen + Room + DataStore); the scenarios
   themselves run in a few hundred ms. **A calendar jump past the router's 10-min `SeenSet` with a relay still in
   flight** (a copy in its 0–150 ms jitter when `awaitCustodyParity` returned) turns that copy into a re-delivery,

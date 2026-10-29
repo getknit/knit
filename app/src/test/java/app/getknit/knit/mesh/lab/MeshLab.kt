@@ -1387,8 +1387,14 @@ class LabNode internal constructor(
     /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
 
-    /** This session's recorded link plane, the composite's child over [link]; null with no link plane. */
+    /** This session's composite children over [lora] and [link], their collectors counted; null with no such plane. */
+    private var boardPlane: LabBoardPlane? = null
     private var linkPlane: LabLinkPlane? = null
+
+    // Whether the manager collects every plane's flows yet: the radio's, and each plane beside it, which the composite
+    // subscribes on a coroutine of its own ([LabCollectors]).
+    private val collecting: Boolean
+        get() = transport.collecting && boardPlane?.collecting != false && linkPlane?.collecting != false
 
     // The direct-link plane, wired as `di/DirectLinkWiring` wires it: the real lookups over this node's stores, its use and
     // link-ups back to the manager, built late.
@@ -1488,16 +1494,17 @@ class LabNode internal constructor(
         ) = manager.sendLinkSignal(peerId, signal)
     }
 
-    // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. The
-    // link plane goes in recorded ([LabLinkPlane]): its files and frames sent, the digests it took, and its hand-off to the
-    // manager through [linkFileGate].
+    // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. Each
+    // plane goes in with its collectors counted, which the boot waits on ([LabCollectors]); the link plane recorded too
+    // ([LabLinkPlane]): its files and frames sent, the digests it took, and its hand-off to the manager through [linkFileGate].
     private fun compositeOver(scope: CoroutineScope): CompositeMeshTransport? =
         if (lora == null && link == null) {
             null
         } else {
-            val plane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get, linkAsksOut, linkAsksIn)) }
-            linkPlane = plane
-            CompositeMeshTransport(listOfNotNull(transport, lora, plane), scope)
+            boardPlane = lora?.let(::LabBoardPlane)
+            val record = LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get, linkAsksOut, linkAsksIn)
+            linkPlane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, record) }
+            CompositeMeshTransport(listOfNotNull(transport, boardPlane, linkPlane), scope)
         }
 
     /**
@@ -1801,8 +1808,7 @@ class LabNode internal constructor(
         // unconverged inside the oracle's window. Wait for the seed, so every link starts from a settled store.
         withContext(Dispatchers.Default) {
             withTimeout(MeshLab.AWAIT_MS) {
-                // The link plane's too: the composite subscribes it on a coroutine of its own (LabLinkPlane.collecting).
-                while (!transport.collecting || linkPlane?.collecting == false) delay(1)
+                while (!collecting) delay(1)
                 transport.joinPages()
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }

@@ -84,4 +84,7 @@ owner write more code.
   or the code it drives. On a follow-up pass, the sweep and the stress cover only the classes the delta touched, at
   `--runs 10` and `--runs 8`, and mutation or `unit-prefix` runs cover only new or changed tests.
 - Once the last round has no blocking finding, the main session runs one full sweep of every changed lab class
-  (`--runs 20`) before calling the change done.
+  (`--runs 20`) before calling the change done. A change that fixes a chaos flake, or a scenario that jumps the clock
+  across a memo after a cut or restarts a node beside a board or a link plane, gets its changed methods swept at
+  `--runs 200` or more as well: twenty runs see a 1-in-200 flake about one time in ten (the mesh-lab-reviewer's
+  "Size the sweep to the risk").

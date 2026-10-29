@@ -67,7 +67,13 @@ RULES = {
     "subject is something the oracle cannot see allows this with its reason.",
     "missing-chaos-rule": "every `*LabTest` carries `@get:Rule val chaos = LabChaos.rule()`, or it runs plain under "
     "chaos and its failures name no seed (`LabChaosCoverageTest`, catalogue shape 11).",
+    "plane-collectors-at-boot": "(MeshLab.kt) every child of a node's `CompositeMeshTransport` is read `.collecting` "
+    "in a `while` wait, directly or through a `val collecting` getter: the composite subscribes each child on a `merge` coroutine of its own, and a "
+    "shared flow drops what it is handed before then — a restarted node lost a link file so (catalogue shape 13). Wrap "
+    "the child so its collectors are counted (`LabCollectors`) and add it to the boot's wait.",
 }
+
+FIXTURE = "MeshLab.kt"
 
 ALLOW = re.compile(r"lab-lint:\s*allow\s+([\w,\s-]+?)\s*(?:—|--|:)\s*\S")
 
@@ -399,6 +405,10 @@ def lint_text(path: Path, src: str) -> list[Finding]:
         if not allowed(lines, line, rule) and not allowed(lines, first, rule):
             out.append(Finding(path, line, rule, detail or RULES[rule]))
 
+    if path.name == FIXTURE:
+        _plane_collectors(code, add)
+        return sorted(set(out), key=lambda f: (str(f.path), f.line, f.rule))
+
     if path.name.endswith("LabTest.kt") and not re.search(r"@get:Rule\s+val\s+\w+\s*=\s*LabChaos\.rule\(\)", code):
         cls = re.search(r"\bclass\s+\w+", code)
         add(cls.start() if cls else 0, "missing-chaos-rule")
@@ -632,6 +642,36 @@ def _clock_jumps(src: str, code: str, base: int, body: str, add, helpers: dict[s
             return
 
 
+def _plane_collectors(code: str, add) -> None:
+    """Each child of a `CompositeMeshTransport(listOf…(…))` is read `.collecting` in a `while (…)` wait's condition.
+
+    A bare `collecting` in a condition reads the class's own `val collecting` getter, so the wait may name the children
+    through it. The radio's `transport` is a child like the others.
+    """
+    getter = re.search(r"\bval\s+collecting\s*:\s*Boolean\s*get\s*\(\s*\)\s*=\s*([^\n]+)", code)
+    waited = ""
+    for w in re.finditer(r"\bwhile\s*\(", code):
+        cond = code[w.end() : matching(code, w.end() - 1) - 1]
+        if re.search(r"(?<![.\w])collecting\b", cond) and getter:
+            cond += " " + getter.group(1)
+        waited += cond + "\n"
+    for m in re.finditer(r"\bCompositeMeshTransport\s*\(\s*listOf(?:NotNull)?\s*\(", code):
+        args, depth, cur = [], 0, ""
+        for c in code[m.end() : matching(code, m.end() - 1) - 1]:
+            depth += c in "([{"
+            depth -= c in ")]}"
+            if c == "," and depth == 0:
+                args.append(cur.strip())
+                cur = ""
+            else:
+                cur += c
+        args.append(cur.strip())
+        for arg in filter(None, args):
+            # An inline expression has no name a wait could read: name the child first.
+            if not re.fullmatch(r"[A-Za-z_]\w*", arg) or not re.search(rf"\b{re.escape(arg)}\s*\??\.collecting\b", waited):
+                add(m.start(), "plane-collectors-at-boot", f"`{arg}` is never awaited `collecting`. " + RULES["plane-collectors-at-boot"])
+
+
 def _reaches_oracle(code: str, meth: Method, helpers: dict[str, Method], seen: set[str]) -> bool:
     body = code[meth.body_start : meth.body_end]
     if re.search(r"\bassertConverged\s*\(", body):
@@ -668,7 +708,7 @@ def hook() -> int:
         return 0
     raw = (payload.get("tool_input") or {}).get("file_path") or ""
     path = Path(raw)
-    if not raw or not path.name.endswith("LabTest.kt") or not path.is_file():
+    if not raw or not (path.name.endswith("LabTest.kt") or path.name == FIXTURE) or not path.is_file():
         return 0
     try:
         path.resolve().relative_to(LAB.resolve())
@@ -693,11 +733,11 @@ def main(argv: list[str]) -> int:
         return 0
     if "--hook" in argv:
         return hook()
-    paths = [Path(a).resolve() for a in argv if not a.startswith("--")] or scenario_files()
+    paths = [Path(a).resolve() for a in argv if not a.startswith("--")] or scenario_files() + [LAB / FIXTURE]
     findings = lint(paths)
     for f in findings:
         print(f.render())
-    word = "scenario file" if len(paths) == 1 else "scenario files"
+    word = "lab file" if len(paths) == 1 else "lab files"
     print(f"lab-lint: {len(findings)} finding(s) in {len(paths)} {word}" + ("" if findings else ", clean"))
     return 1 if findings else 0
 

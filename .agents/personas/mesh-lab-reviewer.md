@@ -63,10 +63,12 @@ the source for the shapes the text shows, in a second: a `delay`/`sleep`/`withTi
 (shape 6), a dropped `tryAwait` (9), a pipe held again after a release (5), a `release` reorder that may drop a frame
 with no re-link before the oracle (5), a direct `transport.disconnect` (6), a missing chaos rule (11), clock jumps
 past 48 h before a `heal()`/`restart()`/`restoreFromBackup()` (8), a relay-decision count used as a wait (1, #119),
-an `@Ignore` with no issue and a scenario that never reaches `assertConverged`. Its own blind spots: a pipe or
+an `@Ignore` with no issue, a scenario that never reaches `assertConverged`, and (on `MeshLab.kt`) a composite child the
+boot never awaits `collecting` (13). Its own blind spots: a pipe or
 counter named through a variable or a helper, an `it.transport` pair, and helpers outside the scenario's file. Each finding is a finding: report it with its rule. A `// lab-lint: allow <rule> — <why>` the
 diff adds is a claim to check: say so if the reason does not hold. Then spend your reading on what no linter sees —
-shapes 1–4, 7 and 10, and the parts of 5, 6 and 8 that need the mesh's order.
+shapes 1–4, 7, 10 and 12, the parts of 5, 6 and 8 that need the mesh's order, and whether 13's wrapper counts every
+shared flow its plane hands up.
 
 ## Method: walk the scenario as two threads
 
@@ -119,6 +121,20 @@ Check each of these shapes explicitly — they are the whole history of the lab'
     it — and any new helper that returns after launching work must await that work's end.
 11. **Chaos rule.** Every `*LabTest` class carries `@get:Rule val chaos = LabChaos.rule()`
     (`LabChaosCoverageTest` enforces it; flag it anyway if missing).
+12. **A cut drops the link, not the far end's queue.** `lab.cutDirectLink` / `lab.unlink` loses what is still on the
+    link; a frame that already crossed waits in the far router (one frame at a time) and is handled after the cut, after
+    a relink, after a clock jump. A scenario that cuts so that "nothing sent before is still in flight" when it jumps past
+    a memo or window (`SERVE_MEMO_MS`, the `SeenSet` TTL, an ack grace) is asserting that of the link only. Fix: await
+    the far end's handling of what crossed (`blobAsksHandled` past `linkAsksIn`, as
+    `DirectLinkAttachmentLabTest.awaitAsksAnswered`; `awaitInboundDrained` on a radio) before the jump. A comment that
+    claims the window is closed is a claim to trace, not a reason to clear the step (2026-10-28 → 10-29).
+13. **Every plane's collectors at boot.** The composite subscribes each child on a `merge` coroutine of its own, so the
+    radio's `LabTransport.collecting` proves nothing of a board's or a link plane's, and a shared flow with no replay
+    drops what it is handed first (a restarted Bob's link file, chaos seed 844568381). A fixture change that adds a
+    child to `CompositeMeshTransport` or touches `boot` keeps every child wrapped in `LabCollectors` and awaited
+    `collecting`; lab-lint's `plane-collectors-at-boot` checks that a `while` wait reads each child's `.collecting`, not
+    that the wrapper counts every shared flow the plane hands up (a flow mapped before `watch` is no longer a `SharedFlow`
+    and goes uncounted). The defect is a line the diff did not touch: read `boot` whenever a plane changes.
 
 Do not flag what the read-safe list clears (user-level sends hand frames to the transport before returning;
 a DM row and its ratchet commit share one transaction; the block list is a fresh read; `skipCovered` runs at
@@ -139,7 +155,12 @@ sweep your caller already ran when the tree has not moved since and it covered t
 many runs (it says so in its first line); otherwise it sweeps, the seeds split across parallel JVMs. It prints
 each failing scenario with its seed, and names as `slow` any scenario that spends more than a few seconds a run:
 that one is waiting out a production timer (or a lost wake that only a timed round covers) — report it as a
-finding, with the timer, and the `LabLimits` knob or poke that would end the wait. A chaos failure is a finding by construction (chaos only produces schedules a slow
+finding, with the timer, and the `LabLimits` knob or poke that would end the wait.
+
+**Size the sweep to the risk, not the default.** Ten or twenty runs catch a 1-in-33 flake about half the time and a
+1-in-200 one about one time in ten. Sweep the changed methods (`--tests '<Class>.<method>'`) at `--runs 200` or more
+when the diff fixes a chaos flake, when a scenario jumps the clock across a memo or window after a cut or relink (shape
+12), or when it restarts a node with a plane beside the radio (shape 13). Say which run count you used and why. A chaos failure is a finding by construction (chaos only produces schedules a slow
 runner can produce) — report it with the seed and the assertion's first line, then find which shape above
 it is. A green sweep does **not** clear a finding you reasoned out: the 2026-09-16 audit's five sites never
 reproduced in ten throttled runs. If the build fails to compile, report that and stop.

@@ -55,6 +55,55 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(masked.count("delay"), 1)
 
 
+FIXTURE_SRC = """package app.getknit.knit.mesh.lab
+
+class LabNode {{
+    private val collecting: Boolean
+        get() = {getter}
+
+    private fun compositeOver(scope: CoroutineScope) =
+        CompositeMeshTransport(listOfNotNull({children}), scope)
+
+    private suspend fun boot() {{
+        {wait}
+    }}
+}}
+"""
+
+
+class FixtureTest(unittest.TestCase):
+    def fixture(self, children: str, waits: str, getter: str = "true", wait: str | None = None) -> list[str]:
+        boot = wait if wait is not None else f"while (!transport.collecting{waits}) delay(1)"
+        return rules(FIXTURE_SRC.format(children=children, getter=getter, wait=boot), name="MeshLab.kt")
+
+    def test_every_plane_awaited_passes(self):
+        self.assertEqual([], self.fixture("transport, boardPlane, linkPlane", " || boardPlane?.collecting == false || linkPlane?.collecting == false"))
+
+    def test_a_plane_missing_from_the_boot_wait(self):
+        self.assertEqual(["plane-collectors-at-boot"], self.fixture("transport, boardPlane, linkPlane", " || linkPlane?.collecting == false"))
+
+    def test_planes_awaited_through_the_getter_pass(self):
+        getter = "transport.collecting && boardPlane?.collecting != false && linkPlane?.collecting != false"
+        self.assertEqual([], self.fixture("transport, boardPlane, linkPlane", "", getter, "while (!collecting) delay(1)"))
+
+    def test_a_getter_nothing_waits_on(self):
+        getter = "transport.collecting && linkPlane?.collecting != false"
+        self.assertEqual(["plane-collectors-at-boot"] * 2, self.fixture("transport, linkPlane", "", getter, "delay(1)"))
+
+    def test_the_radio_is_a_child_too(self):
+        self.assertEqual(["plane-collectors-at-boot"], self.fixture("transport, linkPlane", "", wait="while (linkPlane?.collecting == false) delay(1)"))
+
+    def test_an_inline_child_cannot_be_awaited(self):
+        self.assertEqual(["plane-collectors-at-boot"], self.fixture("transport, lora?.let(::LabBoardPlane)", ""))
+
+    def test_the_fixture_skips_the_scenario_rules(self):
+        self.assertEqual([], self.fixture("transport", ""))
+
+    def test_the_real_fixture_is_clean(self):
+        path = lint.LAB / lint.FIXTURE
+        self.assertEqual([], [f.render() for f in lint.lint_text(path, path.read_text(encoding="utf-8"))])
+
+
 class RuleTest(unittest.TestCase):
     def test_a_clean_scenario_passes(self):
         self.assertEqual([], rules(scenario("            assertTrue(alice.sendDm(bob, \"hi\"))")))

@@ -13,11 +13,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.flow.onSubscription
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -143,46 +139,22 @@ internal class LabLinkPlane(
     private val handOff: LabFileGate,
     private val record: LabLinkRecord,
 ) : MeshTransport by plane {
-    // The collectors the plane's own flows hold now, counted once each one's subscription is registered ([collecting]).
-    private val inboundSubs = AtomicInteger()
-    private val fileSubs = AtomicInteger()
-    private val digestSubs = AtomicInteger()
+    private val collectors = LabCollectors()
 
-    /**
-     * Whether the manager collects the plane's frames, files and digests yet: [LabTransport.collecting] for this plane. The
-     * composite subscribes each plane on a `merge` coroutine of its own, so the radio's collectors say nothing of these;
-     * a file the plane lands before its collector subscribes is dropped (`DirectLinkTransport.take`), as every plane drops
-     * one, and its re-ask waits for the next round (a restarted Bob lost his photo so under chaos seed 844568381).
-     */
+    /** Whether the manager collects the plane's frames, files and digests yet ([LabCollectors]). */
     val collecting: Boolean
-        get() = inboundSubs.get() > 0 && fileSubs.get() > 0 && digestSubs.get() > 0
+        get() = collectors.collecting
 
-    override val incomingFiles: Flow<ReceivedFile> = plane.incomingFiles.counted(fileSubs).onEach { handOff.pass() }
+    override val incomingFiles: Flow<ReceivedFile> = collectors.watch(plane.incomingFiles).onEach { handOff.pass() }
 
     // Counted as the plane hands it up, ahead of the composite's merge: that it arrived, never that it was answered.
     override val incomingDigests: Flow<ReceivedDigest> =
-        plane.incomingDigests.counted(digestSubs).onEach { record.digestsFrom += it.fromNodeId }
+        collectors.watch(plane.incomingDigests).onEach { record.digestsFrom += it.fromNodeId }
 
     // Counted as the plane hands it up, ahead of the router: that it arrived, never that it was answered.
     override val inbound: Flow<InboundFrame> =
-        plane.inbound.counted(inboundSubs).onEach {
+        collectors.watch(plane.inbound).onEach {
             if (it.envelope.type == FrameType.BLOB_REQ) record.asksIn += "${it.fromNodeId} ${it.envelope.id}"
-        }
-
-    // [this] with its live collectors counted in [subs]: one from the moment the shared flow registers it until it ends.
-    private fun <T> SharedFlow<T>.counted(subs: AtomicInteger): Flow<T> =
-        flow {
-            var counted = false
-            try {
-                emitAll(
-                    onSubscription {
-                        subs.incrementAndGet()
-                        counted = true
-                    },
-                )
-            } finally {
-                if (counted) subs.decrementAndGet()
-            }
         }
 
     override suspend fun send(
