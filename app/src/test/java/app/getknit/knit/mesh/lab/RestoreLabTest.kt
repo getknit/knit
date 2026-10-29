@@ -123,6 +123,12 @@ class RestoreLabTest {
             // handled it: dropped, for Carol saw every one of these ids inside her window.
             lab.await(sent.size) { sent.count { id -> alice.copiesTo(carol, id) >= 2 } }
             carol.transport.awaitInboundDrained()
+            // And Bob has failed to open the originals Carol served him at the link-up, each failure spending his one
+            // reopen of that id (SeenSet.reopen). The restore's reset waits on none of them, so that serve can still sit
+            // in his queue here; handled after the jump, it spends the reopen inside the window of Carol's next re-serve
+            // of the original, whose own reopen is then refused, and the second-pass re-seal behind it drops as seen.
+            lab.await(sent.size) { sent.count { id -> carol.copiesTo(bob, id) >= 1 } }
+            bob.transport.awaitInboundDrained()
 
             // The routers' window runs out; the 60 s tick (driven here, the lab clock moves no scheduler) re-seals the
             // three once more, and Carol now relays them.
