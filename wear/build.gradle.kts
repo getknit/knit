@@ -88,6 +88,34 @@ android {
         compose = true
     }
 
+    androidResources {
+        // Android 13+ lists the watch app's languages under its own language setting, written from the
+        // res/values-<locale>/ directories as :app's is (res/resources.properties names the default's language).
+        generateLocaleConfig = true
+    }
+
+    testOptions {
+        unitTests {
+            // StatusTextTest words every surface from the real English resources under Robolectric
+            // (src/test/resources/robolectric.properties pins the SDK, as :app's does).
+            isIncludeAndroidResources = true
+            all { test ->
+                // Robolectric 4.17's JPMS escapes for JDK 17+, verbatim from :app's testOptions.
+                test.jvmArgs(
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                    "--add-opens=java.base/java.net=ALL-UNNAMED",
+                    "--add-opens=java.base/java.security=ALL-UNNAMED",
+                    "--add-opens=java.base/java.text=ALL-UNNAMED",
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+                )
+            }
+        }
+    }
+
     sourceSets {
         // The one codec both ends read — compiled here from :app's tree rather than copied, so a phone build
         // and a watch build cannot disagree on a byte. The package is pure Kotlin by rule (see its header).
@@ -131,4 +159,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+
+    // HardcodedUiText: a literal in Text or a contentDescription fails, as in :app.
+    detektPlugins(project(":detekt-rules"))
 }

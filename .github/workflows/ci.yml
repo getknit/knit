@@ -473,6 +473,9 @@ jobs:
         run: python3 -m unittest scripts/test_weblate_screenshots.py
       - name: Check the translations
         run: python3 scripts/translation-check.py
+      # The Wear OS watch app's own strings, which no Gradle job here builds (`:wear` is opt-in), so lint never sees them.
+      - name: Check the watch app's translations
+        run: python3 scripts/translation-check.py --res wear/src/main/res
 
   btsnoop-drain:
     name: Snoop analyser tests

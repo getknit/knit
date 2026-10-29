@@ -24,6 +24,8 @@ lines.
   Every read of the phone runs in `StatusReadJob` and no surface waits on Bluetooth (the fourth amendment: the
   watch app is a cached process, frozen ten seconds after a complication or tile poke, and dozing defers the asks);
   past the six-minute window a reading is drawn aged (`StatusText.shown`), and only a failed read says out of reach.
+  Every word the watch shows is a string resource in the shipped locales, worded once in `StatusText.kt` from the
+  watch's `Resources`: READ "The watch app" in `.agents/context/translations.md` before adding or renaming one.
   A raised wrist does not end Doze, so while a complication is active `StatusAlarm` reads every five minutes on an
   allow-while-idle alarm; don't lean on `UPDATE_PERIOD_SECONDS` for freshness.
   **The Knit watch face** (`:watchface`, built beside `:wear` under the same switch) is a resource-only Watch Face

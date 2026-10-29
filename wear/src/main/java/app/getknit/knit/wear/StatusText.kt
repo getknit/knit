@@ -1,9 +1,13 @@
 package app.getknit.knit.wear
 
+import android.content.res.Resources
+import androidx.annotation.PluralsRes
+import androidx.annotation.StringRes
 import app.getknit.knit.wearstatus.MeshState
 import app.getknit.knit.wearstatus.Plane
 import app.getknit.knit.wearstatus.WearLink
 import app.getknit.knit.wearstatus.WearStatus
+import java.text.NumberFormat
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -48,7 +52,7 @@ enum class Tone(
 
 /** A plane with its display name, in the order every surface lists them. */
 data class PlaneRow(
-    val name: String,
+    @param:StringRes val name: Int,
     val letter: Char,
     val plane: Plane,
 )
@@ -64,10 +68,12 @@ data class Shown(
 )
 
 /**
- * The words and colours every Wear surface draws, pure so they are unit-tested. A reading within [STALE_MS] is
- * drawn as it stands. Past it, it is drawn with its age rather than as [NO_DATA]: Wear OS does not ask a data
- * source while the watch dozes, so an old reading usually means nobody asked, not that the phone went away.
- * "Phone out of reach" is kept for a read that found no phone (ADR 2026-09.wetm, fourth amendment).
+ * The words and colours every Wear surface draws, worded from the watch's string resources ([Resources] carries
+ * the watch's language) and otherwise pure, so they are unit-tested under Robolectric against the English. A
+ * reading within [STALE_MS] is drawn as it stands. Past it, it is drawn with its age rather than as [NO_DATA]:
+ * Wear OS does not ask a data source while the watch dozes, so an old reading usually means nobody asked, not that
+ * the phone went away. "Phone out of reach" is kept for a read that found no phone (ADR 2026-09.wetm, fourth
+ * amendment).
  */
 object StatusText {
     /** How long a reading counts as live: one 300 s complication period plus slack. */
@@ -124,54 +130,118 @@ object StatusText {
 
     fun planes(s: WearStatus): List<PlaneRow> =
         listOf(
-            PlaneRow("Bluetooth", 'B', s.ble),
-            PlaneRow("Wi-Fi Aware", 'N', s.nan),
-            PlaneRow("LoRa", 'L', s.lora),
-            PlaneRow("Internet relay", 'S', s.spool),
+            PlaneRow(R.string.plane_bluetooth, 'B', s.ble),
+            PlaneRow(R.string.plane_aware, 'N', s.nan),
+            PlaneRow(R.string.plane_lora, 'L', s.lora),
+            PlaneRow(R.string.plane_relay, 'S', s.spool),
         )
 
     // --- short text (≤ 7 characters) -------------------------------------------------------------------------
 
-    fun nearby(s: WearStatus?): Face =
+    fun nearby(
+        res: Resources,
+        s: WearStatus?,
+    ): Face =
         when {
-            s == null -> Face(NO_DATA, "nearby", Glyph.NoPhone)
-            resting(s) -> Face(NO_DATA, word(s.state).lowercase(Locale.ROOT), glyph(s.state))
-            else -> Face(s.nearby.toString(), "nearby", glyph(s.state), tone(s.state))
+            s == null -> {
+                Face(NO_DATA, res.getString(R.string.short_nearby), Glyph.NoPhone)
+            }
+
+            resting(s) -> {
+                Face(
+                    NO_DATA,
+                    res.getString(
+                        if (s.state ==
+                            MeshState.Paused
+                        ) {
+                            R.string.short_paused
+                        } else {
+                            R.string.short_off
+                        },
+                    ),
+                    glyph(s.state),
+                )
+            }
+
+            else -> {
+                Face(s.nearby.toString(), res.getString(R.string.short_nearby), glyph(s.state), tone(s.state))
+            }
         }
 
-    fun health(s: WearStatus?): Face =
+    fun health(
+        res: Resources,
+        s: WearStatus?,
+    ): Face =
         when (s?.state) {
-            null -> Face(NO_DATA, "mesh", Glyph.NoPhone)
-            MeshState.NoRadio -> Face("Radios", "off", Glyph.NoRadio, Tone.Bad)
-            else -> Face(word(s.state), "mesh", glyph(s.state), tone(s.state))
+            null -> {
+                Face(NO_DATA, res.getString(R.string.short_mesh), Glyph.NoPhone)
+            }
+
+            MeshState.NoRadio -> {
+                Face(
+                    res.getString(R.string.short_radios),
+                    res.getString(R.string.short_radios_off),
+                    Glyph.NoRadio,
+                    Tone.Bad,
+                )
+            }
+
+            else -> {
+                Face(word(res, s.state), res.getString(R.string.short_mesh), glyph(s.state), tone(s.state))
+            }
         }
 
     /** What the phone holds for other people — known even while the mesh rests; unknown from an older phone. */
-    fun carrying(s: WearStatus?): Face =
-        s?.extra?.let { Face(Counts.compact(it.carrying.toLong()), "held", Glyph.Carrying, Tone.Calm) }
-            ?: Face(NO_DATA, "held", Glyph.Carrying)
-
-    /** The day's rise in the relayed counter, from the watch's own history. */
-    fun relayedToday(today: Today?): Face =
-        today?.relayed?.let { Face("+" + Counts.compact(it), "today", Glyph.Relayed, Tone.Calm) }
-            ?: Face(NO_DATA, "today", Glyph.Relayed)
-
-    /** How long the mesh was linked today; "–" before the watch has any reading today. */
-    fun day(today: Today?): Face {
-        val share = today?.share
-        if (share == null || share.totalMs == 0L) return Face(NO_DATA, "linked", Glyph.Day)
-        return Face(Counts.durationShort(share.linkedMs), "linked", Glyph.Day, if (share.linkedMs > 0) Tone.Good else Tone.Calm)
+    fun carrying(
+        res: Resources,
+        s: WearStatus?,
+    ): Face {
+        val label = res.getString(R.string.short_held)
+        return s?.extra?.let { Face(Counts.compact(it.carrying.toLong(), res.locale), label, Glyph.Carrying, Tone.Calm) }
+            ?: Face(NO_DATA, label, Glyph.Carrying)
     }
 
-    fun word(state: MeshState): String =
-        when (state) {
-            MeshState.Off -> "Off"
-            MeshState.Paused -> "Paused"
-            MeshState.Alone -> "Alone"
-            MeshState.Linked -> "Linked"
-            MeshState.Degraded -> "Weak"
-            MeshState.NoRadio -> "No radio"
-        }
+    /** The day's rise in the relayed counter, from the watch's own history. */
+    fun relayedToday(
+        res: Resources,
+        today: Today?,
+    ): Face {
+        val label = res.getString(R.string.short_today)
+        return today?.relayed?.let { Face("+" + Counts.compact(it, res.locale), label, Glyph.Relayed, Tone.Calm) }
+            ?: Face(NO_DATA, label, Glyph.Relayed)
+    }
+
+    /** How long the mesh was linked today; "–" before the watch has any reading today. */
+    fun day(
+        res: Resources,
+        today: Today?,
+    ): Face {
+        val share = today?.share
+        val label = res.getString(R.string.short_linked)
+        if (share == null || share.totalMs == 0L) return Face(NO_DATA, label, Glyph.Day)
+        return Face(Counts.durationShort(res, share.linkedMs), label, Glyph.Day, if (share.linkedMs > 0) Tone.Good else Tone.Calm)
+    }
+
+    fun word(
+        res: Resources,
+        state: MeshState,
+    ): String =
+        res.getString(
+            when (state) {
+                MeshState.Off -> R.string.state_word_off
+                MeshState.Paused -> R.string.state_word_paused
+                MeshState.Alone -> R.string.state_word_alone
+                MeshState.Linked -> R.string.state_word_linked
+                MeshState.Degraded -> R.string.state_word_weak
+                MeshState.NoRadio -> R.string.state_word_no_radio
+            },
+        )
+
+    /** "Mesh paused" or "Mesh off", for a mesh that is not running. */
+    fun meshResting(
+        res: Resources,
+        state: MeshState,
+    ): String = res.getString(if (state == MeshState.Paused) R.string.mesh_paused else R.string.mesh_off)
 }
 
 /**
@@ -180,67 +250,158 @@ object StatusText {
  * is the normal case, and one the user never set up is not a problem.
  */
 object StatusLines {
-    fun nearbyLine(s: WearStatus?): Line =
-        when {
-            s == null -> Line("Phone out of reach", "Knit", Glyph.NoPhone)
-            StatusText.resting(s) -> Line("Mesh ${StatusText.word(s.state).lowercase(Locale.ROOT)}", "Knit", StatusText.glyph(s.state))
-            s.state == MeshState.NoRadio -> Line("Radios off", "Knit", Glyph.NoRadio, Tone.Bad)
-            s.nearby == 0 -> Line("No one nearby", "Knit", StatusText.glyph(s.state), StatusText.tone(s.state))
-            else -> Line(peers(s.nearby) + " nearby", "Knit", StatusText.glyph(s.state), StatusText.tone(s.state))
-        }
+    fun nearbyLine(
+        res: Resources,
+        s: WearStatus?,
+    ): Line {
+        val knit = res.getString(R.string.app_name)
+        return when {
+            s == null -> {
+                Line(res.getString(R.string.phone_out_of_reach), knit, Glyph.NoPhone)
+            }
 
-    fun healthLine(s: WearStatus?): Line =
-        when (s?.state) {
-            null -> Line("Phone out of reach", "Knit mesh", Glyph.NoPhone)
-            MeshState.Linked -> Line("Linked · ${s.nearby} nearby", "Knit mesh", Glyph.Linked, Tone.Good)
-            MeshState.Alone -> Line("Alone · listening", "Knit mesh", Glyph.Alone, Tone.Calm)
-            MeshState.Degraded -> Line("Weak · ${problemShort(s) ?: "check radios"}", "Knit mesh", Glyph.Weak, Tone.Warn)
-            MeshState.NoRadio -> Line("Radios off", "Knit mesh", Glyph.NoRadio, Tone.Bad)
-            MeshState.Paused -> Line("Paused", "Knit mesh", Glyph.Paused)
-            MeshState.Off -> Line("Off", "Knit mesh", Glyph.Off)
-        }
+            StatusText.resting(s) -> {
+                Line(StatusText.meshResting(res, s.state), knit, StatusText.glyph(s.state))
+            }
 
-    fun carryingLine(s: WearStatus?): Line {
-        val n = s?.extra?.carrying ?: return Line("Phone out of reach", "Carrying", Glyph.Carrying)
-        val text = if (n == 0) "Nothing held for others" else "${Counts.grouped(n.toLong())} held for others"
-        return Line(text, "Carrying", Glyph.Carrying, Tone.Calm)
+            s.state == MeshState.NoRadio -> {
+                Line(res.getString(R.string.radios_off), knit, Glyph.NoRadio, Tone.Bad)
+            }
+
+            s.nearby == 0 -> {
+                Line(res.getString(R.string.no_one_nearby), knit, StatusText.glyph(s.state), StatusText.tone(s.state))
+            }
+
+            else -> {
+                Line(
+                    res.getQuantityString(R.plurals.peers_nearby, s.nearby, s.nearby),
+                    knit,
+                    StatusText.glyph(s.state),
+                    StatusText.tone(s.state),
+                )
+            }
+        }
+    }
+
+    fun healthLine(
+        res: Resources,
+        s: WearStatus?,
+    ): Line {
+        val title = res.getString(R.string.title_knit_mesh)
+        return when (s?.state) {
+            null -> {
+                Line(res.getString(R.string.phone_out_of_reach), title, Glyph.NoPhone)
+            }
+
+            MeshState.Linked -> {
+                Line(
+                    res.count(R.plurals.linked_nearby, R.string.linked_nearby_zero, s.nearby.toLong(), s.nearby),
+                    title,
+                    Glyph.Linked,
+                    Tone.Good,
+                )
+            }
+
+            MeshState.Alone -> {
+                Line(res.getString(R.string.alone_listening), title, Glyph.Alone, Tone.Calm)
+            }
+
+            MeshState.Degraded -> {
+                val text =
+                    problemShort(res, s)?.let { res.getString(R.string.weak_problem, it) } ?: res.getString(R.string.weak_check_radios)
+                Line(text, title, Glyph.Weak, Tone.Warn)
+            }
+
+            MeshState.NoRadio -> {
+                Line(res.getString(R.string.radios_off), title, Glyph.NoRadio, Tone.Bad)
+            }
+
+            MeshState.Paused -> {
+                Line(StatusText.word(res, s.state), title, Glyph.Paused)
+            }
+
+            MeshState.Off -> {
+                Line(StatusText.word(res, s.state), title, Glyph.Off)
+            }
+        }
+    }
+
+    fun carryingLine(
+        res: Resources,
+        s: WearStatus?,
+    ): Line {
+        val title = res.getString(R.string.title_carrying)
+        val n = s?.extra?.carrying ?: return Line(res.getString(R.string.phone_out_of_reach), title, Glyph.Carrying)
+        val text =
+            if (n == 0) {
+                res.getString(R.string.nothing_held)
+            } else {
+                res.getQuantityString(R.plurals.held_for_others, n, Counts.grouped(n.toLong(), res.locale))
+            }
+        return Line(text, title, Glyph.Carrying, Tone.Calm)
     }
 
     fun relayedLine(
+        res: Resources,
         s: WearStatus?,
         today: Today?,
     ): Line {
-        val title = s?.let { "${Counts.grouped(it.relayed)} in all" } ?: "Relayed"
-        val text = today?.relayed?.let { "${Counts.grouped(it)} relayed today" } ?: "No readings yet today"
+        val title = s?.let { relayedInAll(res, it.relayed) } ?: res.getString(R.string.title_relayed)
+        val text = today?.relayed?.let { relayedToday(res, it) } ?: res.getString(R.string.no_readings_today)
         return Line(text, title, Glyph.Relayed, Tone.Calm)
     }
 
-    fun dayLine(today: Today?): Line {
+    /** "1,234 in all": the phone's all-time relayed count. */
+    fun relayedInAll(
+        res: Resources,
+        n: Long,
+    ): String = res.count(R.plurals.relayed_in_all, R.string.relayed_in_all_zero, n, Counts.grouped(n, res.locale))
+
+    /** "42 relayed today". */
+    fun relayedToday(
+        res: Resources,
+        n: Long,
+    ): String = res.count(R.plurals.relayed_today, R.string.relayed_today_zero, n, Counts.grouped(n, res.locale))
+
+    fun dayLine(
+        res: Resources,
+        today: Today?,
+    ): Line {
         val share = today?.share
-        if (share == null || share.totalMs == 0L) return Line("No readings yet today", "Your day", Glyph.Day)
-        val text = if (share.linkedMs == 0L) "Not linked yet today" else "Linked ${Counts.duration(share.linkedMs)} today"
-        return Line(text, "Your day", Glyph.Day, if (share.linkedMs > 0) Tone.Good else Tone.Calm)
+        val title = res.getString(R.string.title_your_day)
+        if (share == null || share.totalMs == 0L) return Line(res.getString(R.string.no_readings_today), title, Glyph.Day)
+        val text =
+            if (share.linkedMs == 0L) {
+                res.getString(R.string.not_linked_today)
+            } else {
+                res.getString(R.string.linked_duration_today, Counts.duration(res, share.linkedMs))
+            }
+        return Line(text, title, Glyph.Day, if (share.linkedMs > 0) Tone.Good else Tone.Calm)
     }
 
     /** "Linked for 2 h 10 min" while linked; "Last peer 14 min ago" after; null with no peer today. */
     fun streak(
+        res: Resources,
         today: Today?,
         nowMs: Long,
     ): String? {
-        today?.linkedSinceMs?.let { return "Linked for ${Counts.duration(nowMs - it)}" }
-        today?.lastPeerAtMs?.let { return "Last peer ${Counts.ago(nowMs - it)}" }
+        today?.linkedSinceMs?.let { return res.getString(R.string.linked_for, Counts.duration(res, nowMs - it)) }
+        today?.lastPeerAtMs?.let { return res.getString(R.string.last_peer, Counts.ago(res, nowMs - it)) }
         return null
     }
 
     /** One line per radio the phone has that is weak or down, worst first; none while the mesh rests. */
-    fun problems(s: WearStatus?): List<Line> =
+    fun problems(
+        res: Resources,
+        s: WearStatus?,
+    ): List<Line> =
         issues(s).map { (row, down) ->
             val text =
                 when (row.letter) {
-                    'B' -> if (down) "Bluetooth is off" else "Bluetooth is weak"
-                    'N' -> if (down) "Wi-Fi Aware is off" else "Wi-Fi Aware is limited"
-                    'L' -> "LoRa board disconnected"
-                    else -> "Internet relay unreachable"
+                    'B' -> if (down) R.string.problem_bluetooth_off else R.string.problem_bluetooth_weak
+                    'N' -> if (down) R.string.problem_aware_off else R.string.problem_aware_weak
+                    'L' -> R.string.problem_lora
+                    else -> R.string.problem_relay
                 }
             val icon =
                 when (row.letter) {
@@ -249,21 +410,24 @@ object StatusLines {
                     'L' -> Glyph.LoRa
                     else -> Glyph.Relay
                 }
-            Line(text, row.name, icon, if (down) Tone.Bad else Tone.Warn)
+            Line(res.getString(text), res.getString(row.name), icon, if (down) Tone.Bad else Tone.Warn)
         }
 
     /** The worst problem in a few words, for a title: "LoRa offline", "Aware weak". */
-    fun problemShort(s: WearStatus?): String? =
+    fun problemShort(
+        res: Resources,
+        s: WearStatus?,
+    ): String? =
         issues(s).firstOrNull()?.let { (row, down) ->
-            when (row.letter) {
-                'B' -> if (down) "Bluetooth off" else "Bluetooth weak"
-                'N' -> if (down) "Aware off" else "Aware weak"
-                'L' -> "LoRa offline"
-                else -> "Relay offline"
-            }
+            res.getString(
+                when (row.letter) {
+                    'B' -> if (down) R.string.problem_short_bluetooth_off else R.string.problem_short_bluetooth_weak
+                    'N' -> if (down) R.string.problem_short_aware_off else R.string.problem_short_aware_weak
+                    'L' -> R.string.problem_short_lora
+                    else -> R.string.problem_short_relay
+                },
+            )
         }
-
-    fun peers(n: Int): String = if (n == 1) "1 peer" else "$n peers"
 
     /** (plane, down?) for every weak or down plane, down ones first. */
     private fun issues(s: WearStatus?): List<Pair<PlaneRow, Boolean>> {
@@ -276,19 +440,19 @@ object StatusLines {
 
 /** How a line in the peer map is drawn, by the best plane that reaches the peer. */
 enum class LinkStyle(
-    val label: String,
+    @param:StringRes val label: Int,
 ) {
     /** A solid line. */
-    Bluetooth("Bluetooth"),
+    Bluetooth(R.string.plane_bluetooth),
 
     /** Two parallel lines: the wider pipe. Wins over Bluetooth for a peer on both. */
-    Aware("Wi-Fi Aware"),
+    Aware(R.string.plane_aware),
 
     /** A wave: radio over distance. */
-    LoRa("LoRa"),
+    LoRa(R.string.plane_lora),
 
     /** Dots: hops through the internet relay. */
-    Relay("Relay"),
+    Relay(R.string.link_relay),
 }
 
 /** The peer map's logic, pure: which style each peer's line takes and what the legend and summary say. */
@@ -308,55 +472,85 @@ object PeerLinks {
     fun legend(links: List<Int>): List<LinkStyle> = links.mapNotNull(::style).distinct().sortedBy { it.ordinal }
 
     /** "5 nearby · 2 far", "No one in range"; null while the mesh rests or there is no reading. */
-    fun summary(s: WearStatus?): String? {
+    fun summary(
+        res: Resources,
+        s: WearStatus?,
+    ): String? {
         if (s == null || StatusText.resting(s)) return null
         val far = s.extra?.far ?: 0
+        val nearby = res.getQuantityString(R.plurals.map_nearby, s.nearby, s.nearby)
+        val farText = res.getQuantityString(R.plurals.map_far, far, far)
         return when {
-            s.nearby == 0 && far == 0 -> "No one in range"
-            far == 0 -> "${s.nearby} nearby"
-            s.nearby == 0 -> "$far far"
-            else -> "${s.nearby} nearby · $far far"
+            s.nearby == 0 && far == 0 -> res.getString(R.string.no_one_in_range)
+            far == 0 -> nearby
+            s.nearby == 0 -> farText
+            else -> res.getString(R.string.joined_with_dot, nearby, farText)
         }
     }
 }
 
-/** Numbers and times as the watch writes them, pure. */
-object Counts {
-    /**
-     * A no-break space: a number and its unit ("12 h") never part at a line end, which at a large font size on a
-     * small watch they otherwise do (WO-V1).
-     */
-    const val NBSP = "\u00A0"
+/** The language the watch's strings are in, for the numbers written beside them. */
+val Resources.locale: Locale get() = configuration.locales[0]
 
+/**
+ * [plural] for [n], with [arg] (by default [n]) as its argument, or [zero] at 0: Android picks a plural's form by
+ * CLDR, which files 0 under `one` in Portuguese and French, and a `<plurals>` cannot say otherwise.
+ */
+fun Resources.count(
+    @PluralsRes plural: Int,
+    @StringRes zero: Int,
+    n: Long,
+    arg: Any = n,
+): String = if (n == 0L) getString(zero, arg) else getQuantityString(plural, quantity(n), arg)
+
+/**
+ * [n] as a plural quantity, which Android takes as an Int. CLDR's rules read only a number's last six digits
+ * (and whether it is a whole million), so a count past [Int.MAX_VALUE] keeps its form.
+ */
+private fun quantity(n: Long): Int = if (n < MILLION_Q) n.toInt() else (n % MILLION_Q + MILLION_Q).toInt()
+
+private const val MILLION_Q = 1_000_000L
+
+/** Numbers and times as the watch writes them, in its language. */
+object Counts {
     /** "just now", "42 s ago", "3 min ago", "2 h ago" — the age of a snapshot on the watch's clock. */
-    fun ago(ageMs: Long): String {
+    fun ago(
+        res: Resources,
+        ageMs: Long,
+    ): String {
         val s = (ageMs / SECOND).coerceAtLeast(0)
         return when {
-            s < JUST_NOW_S -> "just now"
-            s < MINUTE_S -> "$s${NBSP}s ago"
-            s < HOUR_S -> "${s / MINUTE_S}${NBSP}min ago"
-            else -> "${s / HOUR_S}${NBSP}h ago"
+            s < JUST_NOW_S -> res.getString(R.string.ago_just_now)
+            s < MINUTE_S -> res.getString(R.string.ago_seconds, s)
+            s < HOUR_S -> res.getString(R.string.ago_minutes, s / MINUTE_S)
+            else -> res.getString(R.string.ago_hours, s / HOUR_S)
         }
     }
 
-    /** "under a minute", "45 min", "2 h", "2 h 10 min" (each number bound to its unit by [NBSP]). */
-    fun duration(ms: Long): String {
+    /** "under a minute", "45 min", "2 h", "2 h 10 min" (each number bound to its unit by a no-break space, WO-V1). */
+    fun duration(
+        res: Resources,
+        ms: Long,
+    ): String {
         val m = (ms / MINUTE_MS).coerceAtLeast(0)
         return when {
-            m < 1 -> "under a minute"
-            m < MINUTES_PER_HOUR -> "$m${NBSP}min"
-            m % MINUTES_PER_HOUR == 0L -> "${m / MINUTES_PER_HOUR}${NBSP}h"
-            else -> "${m / MINUTES_PER_HOUR}${NBSP}h ${m % MINUTES_PER_HOUR}${NBSP}min"
+            m < 1 -> res.getString(R.string.duration_under_a_minute)
+            m < MINUTES_PER_HOUR -> res.getString(R.string.duration_minutes, m)
+            m % MINUTES_PER_HOUR == 0L -> res.getString(R.string.duration_hours, m / MINUTES_PER_HOUR)
+            else -> res.getString(R.string.duration_hours_minutes, m / MINUTES_PER_HOUR, m % MINUTES_PER_HOUR)
         }
     }
 
     /** The same in at most five characters, for a short complication: "0m", "45m", "2h", "2h10". */
-    fun durationShort(ms: Long): String {
+    fun durationShort(
+        res: Resources,
+        ms: Long,
+    ): String {
         val m = (ms / MINUTE_MS).coerceAtLeast(0)
         return when {
-            m < MINUTES_PER_HOUR -> "${m}m"
-            m % MINUTES_PER_HOUR == 0L || m >= TEN_HOURS_MIN -> "${m / MINUTES_PER_HOUR}h"
-            else -> "${m / MINUTES_PER_HOUR}h%02d".format(Locale.ROOT, m % MINUTES_PER_HOUR)
+            m < MINUTES_PER_HOUR -> res.getString(R.string.duration_short_minutes, m)
+            m % MINUTES_PER_HOUR == 0L || m >= TEN_HOURS_MIN -> res.getString(R.string.duration_short_hours, m / MINUTES_PER_HOUR)
+            else -> res.getString(R.string.duration_short_hours_minutes, m / MINUTES_PER_HOUR, m % MINUTES_PER_HOUR)
         }
     }
 
@@ -367,18 +561,24 @@ object Counts {
         locale: Locale = Locale.getDefault(),
     ): String = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(Instant.ofEpochMilli(atMs).atZone(zone))
 
-    /** 999 → "999", 1234 → "1.2k", 12345 → "12k", 1234567 → "1.2M". */
-    fun compact(n: Long): String =
+    /** 999 → "999", 1234 → "1.2k", 12345 → "12k", 1234567 → "1.2M": SI suffixes, [locale]'s digits ("1,2k" in German). */
+    fun compact(
+        n: Long,
+        locale: Locale,
+    ): String =
         when {
-            n < THOUSAND -> n.toString()
-            n < TEN_THOUSAND -> String.format(Locale.ROOT, "%.1fk", n / THOUSAND.toDouble())
-            n < MILLION -> "${n / THOUSAND}k"
-            n < TEN_MILLION -> String.format(Locale.ROOT, "%.1fM", n / MILLION.toDouble())
-            else -> "${n / MILLION}M"
+            n < THOUSAND -> String.format(locale, "%d", n)
+            n < TEN_THOUSAND -> String.format(locale, "%.1fk", n / THOUSAND.toDouble())
+            n < MILLION -> String.format(locale, "%dk", n / THOUSAND)
+            n < TEN_MILLION -> String.format(locale, "%.1fM", n / MILLION.toDouble())
+            else -> String.format(locale, "%dM", n / MILLION)
         }
 
-    /** 3312 → "3,312". */
-    fun grouped(n: Long): String = String.format(Locale.ROOT, "%,d", n)
+    /** 3312 → "3,312" in English, "3.312" in German. */
+    fun grouped(
+        n: Long,
+        locale: Locale,
+    ): String = NumberFormat.getIntegerInstance(locale).format(n)
 
     private const val SECOND = 1_000L
     private const val MINUTE_MS = 60_000L

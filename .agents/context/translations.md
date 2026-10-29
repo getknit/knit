@@ -136,6 +136,28 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   through `joined_with_dot` (`%1$s · %2$s`), so a language can reorder them.
 - Never change case in code (`lowercase()`, `replaceFirstChar`) on a translated string.
 
+## The watch app
+
+The Wear OS app (`:wear`) has its own `wear/src/main/res/values/strings.xml` and the same shipped locales, under the
+same rules: a locale lands whole, a new English string is translated into each of them, and the phone's wording is
+the reference for every term the two share. Three things differ.
+
+- **Gradle never checks it in CI**, since `:wear` is opt-in (`-Pknit.wear=true`), so lint's `MissingTranslation`
+  does not reach it there. Both CIs run `scripts/translation-check.py --res wear/src/main/res` instead, and
+  `./gradlew -Pknit.wear=true :wear:lintDebug` checks it locally.
+- **Room is counted in characters.** A short complication draws a value and a label of at most seven characters
+  each (`short_*`, `allow_short`, `aged_title_short` with the age the library writes, the `state_word_*` words);
+  `duration_short_*` renders in at most five. `StatusTextTest` fails a translation past them, and a locale whose
+  labels all read as the English, one test per locale: add one with each new language.
+- **A library's string of the same name wins.** Resource names are global across a module and its libraries, so a
+  watch string named like one in wear-compose takes the library's translations in every language the watch lacks
+  (`state_off` turned "Off" into "Desactivado"). `StatusTextTest` checks every watch string against a locale Knit
+  does not ship; rename a string it names.
+
+The words are built in `StatusText.kt` (`StatusText`, `StatusLines`, `PeerLinks`, `Counts`), which take the watch's
+`Resources` and are tested under Robolectric against the English, so the tile, the complications and the app say
+the same thing. Weblate has no component for it yet.
+
 ## A layout for every language
 
 A translation runs longer than the English, often by a third and by two or three times in a label of a word or two,
@@ -189,7 +211,8 @@ These are not oversights; leave them unless the plan changes.
   cannot know.
 - License names (`legal/`), log lines, exception messages and the speech model's refusal details (shown after a
   translated sentence, as a technical detail).
-- The `:wear` and `:watchface` prototypes, dark in release.
+- The watch faces (`:watchface`, `:watchface-monogram`): their one string is the face's name, and they are
+  sideloaded prototypes, never shipped.
 
 ## Not covered by translating the UI
 

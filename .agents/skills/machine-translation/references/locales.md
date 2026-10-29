@@ -109,3 +109,15 @@ locale's own section before adding strings to it (mode B). A new pass adds its s
   Ruhezeiten), „Vom Administrator deaktiviert“, the battery options and „Akkunutzung durch Apps“, „App-Aktivität
   pausieren, wenn die App nicht verwendet wird“, „Vollbildbenachrichtigungen zulassen“; „Relay“ vs. a German word
   for ordinary users.
+
+## The watch app (all locales)
+
+- **Files** `wear/src/main/res/values-<dir>/strings.xml`, machine pass 2026-10-28 for every shipped locale at once,
+  one translator per language, the phone's wording reused for every shared term (`translations.md`, "The watch app").
+- **Seven characters** forced short words: Linked = de „Im Mesh“, es «Enlace», fr « Relié », pt "Em rede", uk
+  «Зв’язок»; Paused = „Pause“ / «Pausa» / « Pause » (de, es, fr); `aged_title_short` = just `^1` everywhere (the library writes "12 Min." in German, "12min" in pt);
+  `allow_short` is a noun where the verb is too long (Zugriff, Permiso, Accès, Дозвіл; pt "Permita").
+- **Relayed** (passed on) is the phone's verb, never the relay server's noun: weitergegeben, reenviados, relayés,
+  retransmitidas, передано. The glossary's relay row flags each as a warning; leave it.
+- **Open:** every abbreviation above, de `short_relayed` „gesamt“, es `short_radios` / `short_radios_off` «Sin» /
+  «radios», pt state words in the feminine (a mesh), uk `last_peer` «Хтось був поруч».

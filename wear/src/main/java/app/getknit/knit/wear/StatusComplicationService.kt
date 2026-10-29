@@ -166,8 +166,8 @@ class NearbyComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? =
         when (type) {
-            ComplicationType.SHORT_TEXT -> shortText(StatusText.nearby(view.status), view.agedSinceMs)
-            ComplicationType.LONG_TEXT -> longText(StatusLines.nearbyLine(view.status), view.agedSinceMs)
+            ComplicationType.SHORT_TEXT -> shortText(StatusText.nearby(resources, view.status), view.agedSinceMs)
+            ComplicationType.LONG_TEXT -> longText(StatusLines.nearbyLine(resources, view.status), view.agedSinceMs)
             ComplicationType.RANGED_VALUE -> nearbyGauge(view.status, view.agedSinceMs)
             else -> null
         }
@@ -178,12 +178,12 @@ class HealthComplicationService : StatusComplicationService() {
         type: ComplicationType,
         view: WatchView,
     ): ComplicationData? {
-        val line = StatusLines.healthLine(view.status)
+        val line = StatusLines.healthLine(resources, view.status)
         val aged = view.agedSinceMs
-        val description = describe("${line.title}: ${line.text}", aged)
+        val description = describe(getString(R.string.title_and_text, line.title, line.text), aged)
         return when (type) {
             ComplicationType.SHORT_TEXT -> {
-                shortText(StatusText.health(view.status), aged)
+                shortText(StatusText.health(resources, view.status), aged)
             }
 
             ComplicationType.LONG_TEXT -> {
@@ -221,11 +221,11 @@ class DayComplicationService : StatusComplicationService() {
     ): ComplicationData? =
         when (type) {
             ComplicationType.SHORT_TEXT -> {
-                shortText(StatusText.day(view.today))
+                shortText(StatusText.day(resources, view.today))
             }
 
             ComplicationType.LONG_TEXT -> {
-                longText(StatusLines.dayLine(view.today))
+                longText(StatusLines.dayLine(resources, view.today))
             }
 
             else -> {
@@ -247,8 +247,8 @@ class RelayedComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? =
         when (type) {
-            ComplicationType.SHORT_TEXT -> shortText(StatusText.relayedToday(view.today))
-            ComplicationType.LONG_TEXT -> longText(StatusLines.relayedLine(view.status, view.today))
+            ComplicationType.SHORT_TEXT -> shortText(StatusText.relayedToday(resources, view.today))
+            ComplicationType.LONG_TEXT -> longText(StatusLines.relayedLine(resources, view.status, view.today))
             else -> null
         }
 }
@@ -260,8 +260,8 @@ class CarryingComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? =
         when (type) {
-            ComplicationType.SHORT_TEXT -> shortText(StatusText.carrying(view.status), view.agedSinceMs)
-            ComplicationType.LONG_TEXT -> longText(StatusLines.carryingLine(view.status), view.agedSinceMs)
+            ComplicationType.SHORT_TEXT -> shortText(StatusText.carrying(resources, view.status), view.agedSinceMs)
+            ComplicationType.LONG_TEXT -> longText(StatusLines.carryingLine(resources, view.status), view.agedSinceMs)
             else -> null
         }
 }
@@ -278,7 +278,7 @@ class RingComplicationService : StatusComplicationService() {
         if (type != ComplicationType.LONG_TEXT) return null
         val shown = view.status?.let { Shown(it, view.agedSinceMs) }
         return LongTextComplicationData
-            .Builder(text(RingCode.of(shown)), describe(StatusLines.nearbyLine(view.status).text, view.agedSinceMs))
+            .Builder(text(RingCode.of(shown)), describe(StatusLines.nearbyLine(resources, view.status).text, view.agedSinceMs))
             .setTapAction(openApp())
             .build()
     }
@@ -295,9 +295,10 @@ private fun Context.shortText(
     agedSinceMs: Long? = null,
 ): ComplicationData {
     val tone = if (agedSinceMs != null) Tone.Muted else face.tone
-    val title = agedSinceMs?.let { ago(it, "^1 ago") } ?: face.title?.let(::text)
+    val title = agedSinceMs?.let { ago(it, getString(R.string.aged_title_short)) } ?: face.title?.let(::text)
+    val description = face.title?.let { getString(R.string.value_and_label, face.text, it) } ?: face.text
     return ShortTextComplicationData
-        .Builder(text(face.text), describe(listOfNotNull(face.text, face.title).joinToString(" "), agedSinceMs))
+        .Builder(text(face.text), describe(description, agedSinceMs))
         .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(face.icon))
         .setSmallImage(smallImage(face.icon, tone))
@@ -311,9 +312,13 @@ private fun Context.longText(
     agedSinceMs: Long? = null,
 ): ComplicationData {
     val tone = if (agedSinceMs != null) Tone.Muted else line.tone
-    val title = agedSinceMs?.let { ago(it, listOfNotNull(line.title, "^1 ago").joinToString(" · ")) } ?: line.title?.let(::text)
+    val aged = getString(R.string.aged_title)
+    val title =
+        agedSinceMs?.let { ago(it, line.title?.let { t -> getString(R.string.joined_with_dot, t, aged) } ?: aged) }
+            ?: line.title?.let(::text)
+    val description = line.title?.let { getString(R.string.title_and_text, it, line.text) } ?: line.text
     return LongTextComplicationData
-        .Builder(text(line.text), describe(listOfNotNull(line.title, line.text).joinToString(": "), agedSinceMs))
+        .Builder(text(line.text), describe(description, agedSinceMs))
         .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(line.icon))
         .setSmallImage(smallImage(line.icon, tone))
@@ -330,7 +335,7 @@ private fun Context.nearbyGauge(
     status: WearStatus?,
     agedSinceMs: Long?,
 ): ComplicationData {
-    val face = StatusText.nearby(status)
+    val face = StatusText.nearby(resources, status)
     val count = status?.takeUnless { StatusText.resting(it) }?.nearby ?: 0
     val ramp =
         if (StatusText.resting(status) || agedSinceMs != null) {
@@ -338,13 +343,13 @@ private fun Context.nearbyGauge(
         } else {
             intArrayOf(Tone.Calm.argb, Tone.Good.argb)
         }
-    val title = agedSinceMs?.let { ago(it, "^1 ago") } ?: face.title?.let(::text)
+    val title = agedSinceMs?.let { ago(it, getString(R.string.aged_title_short)) } ?: face.title?.let(::text)
     return RangedValueComplicationData
         .Builder(
             value = count.coerceAtMost(StatusText.NEARBY_SCALE).toFloat(),
             min = 0f,
             max = StatusText.NEARBY_SCALE.toFloat(),
-            contentDescription = describe(StatusLines.nearbyLine(status).text, agedSinceMs),
+            contentDescription = describe(StatusLines.nearbyLine(resources, status).text, agedSinceMs),
         ).setText(text(face.text))
         .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(face.icon))
@@ -370,9 +375,9 @@ private fun Context.dayPie(today: Today?): ComplicationData {
         ).filter { it.first > 0 }
             .map { (ms, tone) -> WeightedElementsComplicationData.Element(ms.toFloat(), tone.argb) }
             .ifEmpty { listOf(WeightedElementsComplicationData.Element(1f, Tone.Muted.argb)) }
-    val face = StatusText.day(today)
+    val face = StatusText.day(resources, today)
     return WeightedElementsComplicationData
-        .Builder(elements, text(StatusLines.dayLine(today).text))
+        .Builder(elements, text(StatusLines.dayLine(resources, today).text))
         .setText(text(face.text))
         .apply { face.title?.let { setTitle(text(it)) } }
         .setMonochromaticImage(monochrome(Glyph.Day))
@@ -385,8 +390,8 @@ private fun Context.dayPie(today: Today?): ComplicationData {
  * app, which asks for it (WO-V9's "signed out" state, for a complication).
  */
 private fun Context.allow(type: ComplicationType): ComplicationData? {
-    val word = text(ALLOW)
-    val description = text(ALLOW_DESCRIPTION)
+    val word = text(getString(R.string.allow_short))
+    val description = text(getString(R.string.allow_description))
     val icon = monochrome(Glyph.Bluetooth)
     return when (type) {
         ComplicationType.SHORT_TEXT -> {
@@ -399,8 +404,8 @@ private fun Context.allow(type: ComplicationType): ComplicationData? {
 
         ComplicationType.LONG_TEXT -> {
             LongTextComplicationData
-                .Builder(text("Open Knit to allow nearby devices"), description)
-                .setTitle(text("Knit"))
+                .Builder(text(getString(R.string.allow_open)), description)
+                .setTitle(text(getString(R.string.app_name)))
                 .setMonochromaticImage(icon)
                 .setTapAction(openApp())
                 .build()
@@ -444,13 +449,13 @@ private fun Context.allow(type: ComplicationType): ComplicationData? {
     }
 }
 
-private const val ALLOW = "Allow"
-private const val ALLOW_DESCRIPTION = "Knit needs nearby devices. Tap to open Knit on this watch and allow it."
-
 private fun text(s: String): ComplicationText = PlainComplicationText.Builder(s).build()
 
-/** [template] with `^1` as the time since [sinceMs] ("12m", "3h"), counted up by the face on its own clock. */
-private fun ago(
+/**
+ * [template] with `^1` as the time since [sinceMs] ("12m", "3h"), counted up by the face on its own clock. The
+ * library words the age in the watch's language ("12 Min." in German), so `StatusTextTest` measures it rendered.
+ */
+internal fun ago(
     sinceMs: Long,
     template: String,
 ): ComplicationText =
@@ -461,10 +466,10 @@ private fun ago(
         .build()
 
 /** What TalkBack reads: [s], and for an aged reading how old it is. */
-private fun describe(
+private fun Context.describe(
     s: String,
     agedSinceMs: Long?,
-): ComplicationText = agedSinceMs?.let { ago(it, "$s, ^1 ago") } ?: text(s)
+): ComplicationText = agedSinceMs?.let { ago(it, getString(R.string.aged_description, s)) } ?: text(s)
 
 private fun Context.monochrome(glyph: Glyph): MonochromaticImage =
     MonochromaticImage.Builder(Icon.createWithResource(this, glyph.res)).build()

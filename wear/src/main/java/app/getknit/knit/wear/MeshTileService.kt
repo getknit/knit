@@ -91,18 +91,25 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         val status = shown?.status
         val aged = shown?.agedSinceMs
         return primaryLayout(
-            titleSlot = { text((aged?.let { "As of ${Counts.clock(it)}" } ?: title(status)).layoutString) },
+            titleSlot = {
+                text(
+                    (
+                        aged?.let { resources.getString(R.string.as_of, Counts.clock(it, locale = resources.locale)) }
+                            ?: title(status)
+                    ).layoutString,
+                )
+            },
             mainSlot = {
                 when {
                     status == null -> {
-                        message(Glyph.NoPhone, "No phone", "Open Knit on your phone")
+                        message(Glyph.NoPhone, resources.getString(R.string.no_phone), resources.getString(R.string.open_knit_on_phone))
                     }
 
                     StatusText.resting(status) -> {
                         message(
                             StatusText.glyph(status.state),
-                            "Mesh ${StatusText.word(status.state).lowercase()}",
-                            "Resume on your phone",
+                            StatusText.meshResting(resources, status.state),
+                            resources.getString(R.string.resume_on_phone),
                         )
                     }
 
@@ -114,18 +121,19 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
             bottomSlot = {
                 textEdgeButton(
                     onClick = clickable(loadAction(), id = REFRESH_ID),
-                    modifier = LayoutModifier.contentDescription("Refresh from phone"),
+                    modifier = LayoutModifier.contentDescription(resources.getString(R.string.refresh_description)),
                 ) {
                     text(
-                        (
-                            if (reading) {
-                                "Reading…"
-                            } else if (status == null) {
-                                "Try again"
-                            } else {
-                                "Refresh"
-                            }
-                        ).layoutString,
+                        resources
+                            .getString(
+                                if (reading) {
+                                    R.string.reading
+                                } else if (status == null) {
+                                    R.string.try_again
+                                } else {
+                                    R.string.refresh
+                                },
+                            ).layoutString,
                     )
                 }
             },
@@ -139,23 +147,25 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
      */
     private fun MaterialScope.allowLayout(): LayoutElement =
         primaryLayout(
-            titleSlot = { text("Knit".layoutString) },
-            mainSlot = { message(Glyph.Bluetooth, "Allow nearby devices", "Knit reads your phone over Bluetooth") },
+            titleSlot = { text(resources.getString(R.string.app_name).layoutString) },
+            mainSlot = {
+                message(Glyph.Bluetooth, resources.getString(R.string.allow_nearby_devices), resources.getString(R.string.allow_tile_hint))
+            },
             bottomSlot = {
                 textEdgeButton(
                     onClick = openApp(),
-                    modifier = LayoutModifier.contentDescription("Open Knit to allow nearby devices"),
-                ) { text("Allow".layoutString) }
+                    modifier = LayoutModifier.contentDescription(resources.getString(R.string.allow_open)),
+                ) { text(resources.getString(R.string.allow).layoutString) }
             },
         )
 
     private fun title(status: WearStatus?): String =
-        StatusLines.problemShort(status)
+        StatusLines.problemShort(resources, status)
             ?: when (status?.state) {
-                null -> "Knit"
-                MeshState.NoRadio -> "Radios off"
-                MeshState.Degraded -> "Weak mesh"
-                else -> StatusText.word(status.state)
+                null -> resources.getString(R.string.app_name)
+                MeshState.NoRadio -> resources.getString(R.string.radios_off)
+                MeshState.Degraded -> resources.getString(R.string.weak_mesh)
+                else -> StatusText.word(resources, status.state)
             }
 
     /**
@@ -168,22 +178,22 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         today: Today,
         aged: Boolean,
     ): LayoutElement {
-        val carrying = StatusText.carrying(status)
+        val carrying = StatusText.carrying(resources, status)
         val three = roomy()
         return buttonGroup {
             buttonGroupItem {
                 metric(
                     status.nearby.toString(),
-                    "nearby",
-                    StatusLines.nearbyLine(status).text,
+                    resources.getString(R.string.short_nearby),
+                    StatusLines.nearbyLine(resources, status).text,
                     if (aged) filledTonalCardColors() else stateColors(status.state),
                 )
             }
             buttonGroupItem {
                 metric(
-                    StatusText.relayedToday(today).text,
-                    "today",
-                    StatusLines.relayedLine(status, today).text,
+                    StatusText.relayedToday(resources, today).text,
+                    resources.getString(R.string.short_today),
+                    StatusLines.relayedLine(resources, status, today).text,
                     filledTonalCardColors(),
                 )
             }
@@ -191,13 +201,23 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
                 buttonGroupItem {
                     if (status.extra == null) {
                         metric(
-                            Counts.compact(status.relayed),
-                            "relayed",
-                            "${Counts.grouped(status.relayed)} relayed in all",
+                            Counts.compact(status.relayed, resources.locale),
+                            resources.getString(R.string.short_relayed),
+                            resources.count(
+                                R.plurals.relayed_in_all_long,
+                                R.string.relayed_in_all_long_zero,
+                                status.relayed,
+                                Counts.grouped(status.relayed, resources.locale),
+                            ),
                             filledVariantCardColors(),
                         )
                     } else {
-                        metric(carrying.text, "held", StatusLines.carryingLine(status).text, filledVariantCardColors())
+                        metric(
+                            carrying.text,
+                            resources.getString(R.string.short_held),
+                            StatusLines.carryingLine(resources, status).text,
+                            filledVariantCardColors(),
+                        )
                     }
                 }
             }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">Knit</string>
     <string name="complication_nearby">Knit · Nearby peers</string>
     <string name="complication_health">Knit · Mesh status</string>
@@ -9,4 +9,196 @@
     <string name="complication_ring">Knit · Link ring (for the Knit face)</string>
     <string name="tile_label">Knit mesh</string>
     <string name="tile_description">Peers nearby, messages relayed today and held for others by your phone</string>
+
+    <!-- Two parts of one line, the first and then the second. Reorder them if your language reads better that way. -->
+    <string name="joined_with_dot">%1$s · %2$s</string>
+    <!-- Two sentences TalkBack reads one after the other. -->
+    <string name="joined_sentences">%1$s. %2$s</string>
+    <!-- TalkBack: a complication's title, then what it says ("Knit mesh: Linked · 5 nearby"). -->
+    <string name="title_and_text">%1$s: %2$s</string>
+    <!-- TalkBack: a short complication's value and its label ("5 nearby"). -->
+    <string name="value_and_label">%1$s %2$s</string>
+
+    <!-- The mesh's state, as a word: the status screen's headline, the tile's title, a short complication. At most
+         7 characters, except "No radio". -->
+    <string name="state_word_off">Off</string>
+    <string name="state_word_paused">Paused</string>
+    <string name="state_word_alone">Alone</string>
+    <string name="state_word_linked">Linked</string>
+    <string name="state_word_weak">Weak</string>
+    <string name="state_word_no_radio">No radio</string>
+    <string name="mesh_off">Mesh off</string>
+    <string name="mesh_paused">Mesh paused</string>
+    <string name="radios_off">Radios off</string>
+    <string name="weak_mesh">Weak mesh</string>
+    <string name="no_phone">No phone</string>
+    <string name="phone_out_of_reach">Phone out of reach</string>
+    <!-- The status screen's headline while the watch may not use Bluetooth; the Allow card under it says what to do. -->
+    <string name="needs_permission">Needs permission</string>
+    <string name="needs_permission_description">Needs permission to read your phone over Bluetooth</string>
+
+    <!-- A short complication: a value of at most 7 characters over one of these labels, which must also fit in 7
+         characters. Lower case where your language allows it: they read as the second half of "5 nearby". -->
+    <string name="short_nearby">nearby</string>
+    <string name="short_mesh">mesh</string>
+    <string name="short_held">held</string>
+    <string name="short_today">today</string>
+    <string name="short_linked">linked</string>
+    <!-- Under "–" while the mesh is paused or off. -->
+    <string name="short_paused">paused</string>
+    <string name="short_off">off</string>
+    <!-- Two lines of a short complication: "Radios" over "off". Each at most 7 characters. -->
+    <string name="short_radios">Radios</string>
+    <string name="short_radios_off">off</string>
+    <!-- One word under a number in a narrow tile card: messages relayed in all. -->
+    <string name="short_relayed">relayed</string>
+
+    <!-- A duration in at most 5 characters, for a short complication: "45m", "2h", "2h05". -->
+    <string name="duration_short_minutes">%1$dm</string>
+    <string name="duration_short_hours">%1$dh</string>
+    <string name="duration_short_hours_minutes">%1$dh%2$02d</string>
+    <!-- A duration in words. The no-break space ( ) keeps a number with its unit at a line end. -->
+    <string name="duration_under_a_minute">under a minute</string>
+    <string name="duration_minutes">%1$d min</string>
+    <string name="duration_hours">%1$d h</string>
+    <string name="duration_hours_minutes">%1$d h %2$d min</string>
+    <!-- How long ago something happened. The no-break space keeps a number with its unit. -->
+    <string name="ago_just_now">just now</string>
+    <string name="ago_seconds">%1$d s ago</string>
+    <string name="ago_minutes">%1$d min ago</string>
+    <string name="ago_hours">%1$d h ago</string>
+    <!-- A complication's title on an old reading. The watch face replaces ^1 with the age ("12m") and counts it
+         up on its own clock: keep ^1 exactly as it is. -->
+    <string name="aged_title">^1 ago</string>
+    <!-- The same on a short complication, in at most 7 characters once the watch writes the age in your language
+         ("59 Min." in German, up to 99 days): just "^1" where "ago" does not fit. -->
+    <string name="aged_title_short">^1 ago</string>
+    <!-- TalkBack on an old reading: %1$s is what the complication says, ^1 its age (keep ^1 as it is). -->
+    <string name="aged_description">%1$s, ^1 ago</string>
+    <!-- %1$s is a time of day ("12:40"): when the reading on screen was taken. -->
+    <string name="as_of">As of %1$s</string>
+
+    <!-- The radios, as the watch names them. -->
+    <string name="plane_bluetooth">Bluetooth</string>
+    <string name="plane_aware">Wi-Fi Aware</string>
+    <string name="plane_lora">LoRa</string>
+    <string name="plane_relay">Internet relay</string>
+    <!-- The peer map's legend: a dotted line is a peer reached through an internet relay. -->
+    <string name="link_relay">Relay</string>
+    <!-- A radio of the phone's that needs attention, one line each. -->
+    <string name="problem_bluetooth_off">Bluetooth is off</string>
+    <string name="problem_bluetooth_weak">Bluetooth is weak</string>
+    <string name="problem_aware_off">Wi-Fi Aware is off</string>
+    <string name="problem_aware_weak">Wi-Fi Aware is limited</string>
+    <string name="problem_lora">LoRa board disconnected</string>
+    <string name="problem_relay">Internet relay unreachable</string>
+    <!-- The worst of those in a few words, for the tile's title and after "Weak · ". -->
+    <string name="problem_short_bluetooth_off">Bluetooth off</string>
+    <string name="problem_short_bluetooth_weak">Bluetooth weak</string>
+    <string name="problem_short_aware_off">Aware off</string>
+    <string name="problem_short_aware_weak">Aware weak</string>
+    <string name="problem_short_lora">LoRa offline</string>
+    <string name="problem_short_relay">Relay offline</string>
+
+    <!-- A long complication's title over the mesh's state. -->
+    <string name="title_knit_mesh">Knit mesh</string>
+    <string name="title_carrying">Carrying</string>
+    <string name="title_relayed">Relayed</string>
+    <string name="title_your_day">Your day</string>
+    <string name="no_one_nearby">No one nearby</string>
+    <plurals name="peers_nearby">
+        <item quantity="one">%1$d peer nearby</item>
+        <item quantity="other">%1$d peers nearby</item>
+    </plurals>
+    <!-- The mesh's state with how many people are in range: "Linked · 5 nearby". -->
+    <plurals name="linked_nearby">
+        <item quantity="one">Linked · %1$d nearby</item>
+        <item quantity="other">Linked · %1$d nearby</item>
+    </plurals>
+    <string name="linked_nearby_zero" tools:ignore="PluralsCandidate">Linked · %1$d nearby</string>
+    <string name="alone_listening">Alone · listening</string>
+    <!-- %1$s is the worst radio problem, as one of the problem_short strings ("Weak · LoRa offline"). -->
+    <string name="weak_problem">Weak · %1$s</string>
+    <string name="weak_check_radios">Weak · check radios</string>
+    <!-- Messages the phone stores for other people until it meets them. -->
+    <string name="nothing_held">Nothing held for others</string>
+    <plurals name="held_for_others">
+        <item quantity="one">%1$s held for others</item>
+        <item quantity="other">%1$s held for others</item>
+    </plurals>
+    <!-- A label under a count of messages, which is shown above it. -->
+    <string name="label_held_for_others">held for others</string>
+    <string name="label_relayed_today">relayed today</string>
+    <!-- Messages this phone has passed on for other people, ever. -->
+    <plurals name="relayed_in_all">
+        <item quantity="one">%1$s in all</item>
+        <item quantity="other">%1$s in all</item>
+    </plurals>
+    <string name="relayed_in_all_zero">%1$s in all</string>
+    <plurals name="relayed_in_all_long">
+        <item quantity="one">%1$s relayed in all</item>
+        <item quantity="other">%1$s relayed in all</item>
+    </plurals>
+    <string name="relayed_in_all_long_zero">%1$s relayed in all</string>
+    <plurals name="relayed_today">
+        <item quantity="one">%1$s relayed today</item>
+        <item quantity="other">%1$s relayed today</item>
+    </plurals>
+    <string name="relayed_today_zero">%1$s relayed today</string>
+    <string name="no_readings_today">No readings yet today</string>
+    <string name="not_linked_today">Not linked yet today</string>
+    <!-- %1$s is a duration ("2 h 10 min"). -->
+    <string name="linked_duration_today">Linked %1$s today</string>
+    <!-- %1$s is a duration: how long the mesh has been linked without a break. -->
+    <string name="linked_for">Linked for %1$s</string>
+    <!-- %1$s is how long ago ("14 min ago"). -->
+    <string name="last_peer">Last peer %1$s</string>
+    <!-- How the day went, as up to two parts joined by joined_with_dot: "Linked 2 h · alone 4 h". %1$s is a duration. -->
+    <string name="day_linked">Linked %1$s</string>
+    <string name="day_alone">alone %1$s</string>
+
+    <!-- Under the peer map: who is in range nearby, and who is reached farther away (LoRa, a relay). -->
+    <string name="no_one_in_range">No one in range</string>
+    <plurals name="map_nearby">
+        <item quantity="one">%1$d nearby</item>
+        <item quantity="other">%1$d nearby</item>
+    </plurals>
+    <plurals name="map_far">
+        <item quantity="one">%1$d far</item>
+        <item quantity="other">%1$d far</item>
+    </plurals>
+    <!-- With nobody on the map: the radios listening for someone, %1$s a list ("Bluetooth · LoRa"). -->
+    <string name="listening_on">Listening on %1$s</string>
+    <string name="no_radio_listening">No radio listening</string>
+
+    <string name="refresh">Refresh</string>
+    <string name="refresh_description">Refresh from phone</string>
+    <!-- A read of the phone is under way. -->
+    <string name="reading">Reading…</string>
+    <string name="try_again">Try again</string>
+    <string name="today">Today</string>
+    <!-- The chart of how many people were in range over the last twelve hours. -->
+    <string name="nearby_last_12h">Nearby · last 12 h</string>
+    <string name="chart_empty">Builds up as the watch reads your phone</string>
+    <!-- %1$d is the most people in range at once today, %2$s the time of day it happened. -->
+    <string name="busiest">Busiest: %1$d at %2$s</string>
+    <string name="unreachable_hint">Keep Bluetooth on, with Knit running on your phone.</string>
+    <!-- %1$s is how long ago ("14 min ago"). -->
+    <string name="last_reading">Last reading %1$s</string>
+    <string name="paused_hint">It resumes on its own, or from Knit\'s notification on your phone.</string>
+    <string name="off_hint">Start it from Knit on your phone.</string>
+    <!-- The Bluetooth permission is called "Nearby devices" in the watch's settings. -->
+    <string name="allow_nearby_devices">Allow nearby devices</string>
+    <string name="allow_hint">The watch reads the mesh from your phone over Bluetooth.</string>
+    <string name="allow">Allow</string>
+    <!-- The same on a complication, beside the Bluetooth glyph: at most 7 characters. -->
+    <string name="allow_short">Allow</string>
+    <string name="allow_open">Open Knit to allow nearby devices</string>
+    <string name="allow_description">Knit needs nearby devices. Tap to open Knit on this watch and allow it.</string>
+    <string name="allow_tile_hint">Knit reads your phone over Bluetooth</string>
+    <!-- %1$s is how long ago ("14 min ago"). -->
+    <string name="updated">Updated %1$s</string>
+    <string name="not_read_yet">Not read yet</string>
+    <string name="open_knit_on_phone">Open Knit on your phone</string>
+    <string name="resume_on_phone">Resume on your phone</string>
 </resources>

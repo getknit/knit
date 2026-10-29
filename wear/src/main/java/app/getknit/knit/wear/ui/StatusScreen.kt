@@ -1,5 +1,6 @@
 package app.getknit.knit.wear.ui
 
+import android.content.res.Resources
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -22,7 +23,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -69,6 +72,7 @@ import app.getknit.knit.wear.StatusRefresh
 import app.getknit.knit.wear.StatusText
 import app.getknit.knit.wear.Today
 import app.getknit.knit.wear.Tone
+import app.getknit.knit.wear.locale
 import app.getknit.knit.wear.res
 import app.getknit.knit.wearstatus.MeshState
 import app.getknit.knit.wearstatus.Plane
@@ -115,6 +119,7 @@ fun StatusScreen(
     val shown = StatusText.shown(snapshot, PhoneStatusReader.failedAt(context), now)
     val status = shown?.status
     val today = DayStats.today(history, StatusHistory.dayStart(now), now)
+    val res = LocalResources.current
     val listState = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
 
@@ -128,11 +133,13 @@ fun StatusScreen(
                     enabled = granted && !reading,
                 ) {
                     EdgeContent(
-                        when {
-                            reading -> "Reading…"
-                            status == null -> "Try again"
-                            else -> "Refresh"
-                        },
+                        stringResource(
+                            when {
+                                reading -> R.string.reading
+                                status == null -> R.string.try_again
+                                else -> R.string.refresh
+                            },
+                        ),
                         icon = !reading,
                     )
                 }
@@ -151,9 +158,9 @@ fun StatusScreen(
                     !granted -> item { PermissionCard(spec, onAllow) }
                     status == null -> item { UnreachableCard(spec, snapshot, now) }
                     StatusText.resting(status) -> item { RestingCard(spec, status) }
-                    else -> for (problem in StatusLines.problems(status)) item { ProblemCard(spec, problem) }
+                    else -> for (problem in StatusLines.problems(res, status)) item { ProblemCard(spec, problem) }
                 }
-                item { ListSubHeader(transformation = SurfaceTransformation(spec)) { Text("Today") } }
+                item { ListSubHeader(transformation = SurfaceTransformation(spec)) { Text(stringResource(R.string.today)) } }
                 item { RelayedCard(spec, snapshot?.status, today) }
                 status?.extra?.let { extra -> item { CarryingCard(spec, extra.carrying) } }
                 item { NearbyCard(spec, history, today, now) }
@@ -176,9 +183,16 @@ private fun Hero(
     agedSinceMs: Long?,
     blocked: Boolean = false,
 ) {
+    val res = LocalResources.current
     val tone = if (agedSinceMs != null) Tone.Muted else StatusText.tone(status?.state)
     val glyph = if (blocked) Glyph.Bluetooth else StatusText.glyph(status?.state)
-    val word = if (blocked) NO_GRANT else status?.let { StatusText.word(it.state) } ?: "No phone"
+    val word =
+        when {
+            blocked -> stringResource(R.string.needs_permission)
+            status == null -> stringResource(R.string.no_phone)
+            else -> StatusText.word(res, status.state)
+        }
+    val summary = PeerLinks.summary(res, status)
     val live = status?.takeUnless { StatusText.resting(it) }
     // A phone build without the link list: its nearby count, drawn as plain Bluetooth lines.
     val links =
@@ -192,11 +206,12 @@ private fun Hero(
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 4.dp)
             .semantics(mergeDescendants = true) {
+                val health = StatusLines.healthLine(res, status).text
                 contentDescription =
-                    if (blocked) {
-                        "$NO_GRANT to read your phone over Bluetooth"
-                    } else {
-                        listOfNotNull(StatusLines.healthLine(status).text, PeerLinks.summary(status)).joinToString(". ")
+                    when {
+                        blocked -> res.getString(R.string.needs_permission_description)
+                        summary == null -> health
+                        else -> res.getString(R.string.joined_sentences, health, summary)
                     }
             },
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -224,12 +239,12 @@ private fun Hero(
             }
         }
         Text(word, style = MaterialTheme.typography.titleMedium, color = tone.color())
-        PeerLinks.summary(status)?.let {
+        summary?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         agedSinceMs?.let {
             Text(
-                "As of ${Counts.clock(it)}",
+                stringResource(R.string.as_of, Counts.clock(it, locale = res.locale)),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -241,7 +256,7 @@ private fun Hero(
                 LinkLegend(legend, tone)
             } else {
                 Text(
-                    listening(live),
+                    listening(res, live),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -252,9 +267,13 @@ private fun Hero(
 }
 
 /** With nobody on the map, which radios are listening for someone: "Listening on Bluetooth · LoRa". */
-private fun listening(status: WearStatus): String {
-    val live = StatusText.planes(status).filter { it.plane == Plane.Live }.map { it.name }
-    return if (live.isEmpty()) "No radio listening" else "Listening on " + live.joinToString(" · ")
+private fun listening(
+    res: Resources,
+    status: WearStatus,
+): String {
+    val live = StatusText.planes(status).filter { it.plane == Plane.Live }.map { res.getString(it.name) }
+    if (live.isEmpty()) return res.getString(R.string.no_radio_listening)
+    return res.getString(R.string.listening_on, live.reduce { list, next -> res.getString(R.string.joined_with_dot, list, next) })
 }
 
 @Composable
@@ -284,12 +303,13 @@ private fun TransformingLazyColumnItemScope.RelayedCard(
     last: WearStatus?,
     today: Today,
 ) {
+    val res = LocalResources.current
     MetricCard(
         spec,
         Glyph.Relayed,
-        today.relayed?.let { "+" + Counts.grouped(it) } ?: StatusText.NO_DATA,
-        "relayed today",
-        last?.let { "${Counts.grouped(it.relayed)} in all" },
+        today.relayed?.let { "+" + Counts.grouped(it, res.locale) } ?: StatusText.NO_DATA,
+        stringResource(R.string.label_relayed_today),
+        last?.let { StatusLines.relayedInAll(res, it.relayed) },
     )
 }
 
@@ -298,7 +318,13 @@ private fun TransformingLazyColumnItemScope.CarryingCard(
     spec: TransformationSpec,
     carrying: Int,
 ) {
-    MetricCard(spec, Glyph.Carrying, Counts.grouped(carrying.toLong()), "held for others", null)
+    MetricCard(
+        spec,
+        Glyph.Carrying,
+        Counts.grouped(carrying.toLong(), LocalResources.current.locale),
+        stringResource(R.string.label_held_for_others),
+        null,
+    )
 }
 
 @Composable
@@ -339,11 +365,11 @@ private fun TransformingLazyColumnItemScope.NearbyCard(
 ) {
     val series = DayStats.nearbySeries(history, now - CHART_SPAN_MS, now, CHART_STEPS)
     StatusCard(spec) {
-        Text("Nearby · last 12${Counts.NBSP}h", style = MaterialTheme.typography.labelMedium)
+        Text(stringResource(R.string.nearby_last_12h), style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.height(6.dp))
         if (series.all { it == null }) {
             Text(
-                "Builds up as the watch reads your phone",
+                stringResource(R.string.chart_empty),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -352,7 +378,7 @@ private fun TransformingLazyColumnItemScope.NearbyCard(
             today.busiest?.let { (count, at) ->
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Busiest: $count at ${Counts.clock(at)}",
+                    stringResource(R.string.busiest, count, Counts.clock(at, locale = LocalResources.current.locale)),
                     style = MaterialTheme.typography.bodyExtraSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -369,20 +395,23 @@ private fun TransformingLazyColumnItemScope.DayCard(
     now: Long,
 ) {
     val share = today.share
+    val res = LocalResources.current
+    val linked = share.linkedMs.takeIf { it > 0 }?.let { res.getString(R.string.day_linked, Counts.duration(res, it)) }
+    val alone = share.aloneMs.takeIf { it > 0 }?.let { res.getString(R.string.day_alone, Counts.duration(res, it)) }
     StatusCard(spec) {
-        Text("Your day", style = MaterialTheme.typography.labelMedium)
+        Text(stringResource(R.string.title_your_day), style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.height(6.dp))
         DayBar(share)
         Spacer(Modifier.height(4.dp))
         Text(
-            listOfNotNull(
-                share.linkedMs.takeIf { it > 0 }?.let { "Linked ${Counts.duration(it)}" },
-                share.aloneMs.takeIf { it > 0 }?.let { "alone ${Counts.duration(it)}" },
-            ).joinToString(" · ").ifEmpty { StatusLines.dayLine(today).text },
+            when {
+                linked != null && alone != null -> res.getString(R.string.joined_with_dot, linked, alone)
+                else -> linked ?: alone ?: StatusLines.dayLine(res, today).text
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        StatusLines.streak(today, now)?.let {
+        StatusLines.streak(res, today, now)?.let {
             Text(it, style = MaterialTheme.typography.bodyExtraSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -395,15 +424,15 @@ private fun TransformingLazyColumnItemScope.UnreachableCard(
     now: Long,
 ) {
     StatusCard(spec) {
-        Text("Phone out of reach", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.phone_out_of_reach), style = MaterialTheme.typography.titleSmall)
         Text(
-            "Keep Bluetooth on, with Knit running on your phone.",
+            stringResource(R.string.unreachable_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         snapshot?.let {
             Text(
-                "Last reading ${Counts.ago(now - it.fetchedAtMs)}",
+                stringResource(R.string.last_reading, Counts.ago(LocalResources.current, now - it.fetchedAtMs)),
                 style = MaterialTheme.typography.bodyExtraSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -417,13 +446,9 @@ private fun TransformingLazyColumnItemScope.RestingCard(
     status: WearStatus,
 ) {
     StatusCard(spec) {
-        Text("Mesh ${StatusText.word(status.state).lowercase()}", style = MaterialTheme.typography.titleSmall)
+        Text(StatusText.meshResting(LocalResources.current, status.state), style = MaterialTheme.typography.titleSmall)
         Text(
-            if (status.state == MeshState.Paused) {
-                "It resumes on its own, or from Knit's notification on your phone."
-            } else {
-                "Start it from Knit on your phone."
-            },
+            stringResource(if (status.state == MeshState.Paused) R.string.paused_hint else R.string.off_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -436,13 +461,13 @@ private fun TransformingLazyColumnItemScope.PermissionCard(
     onAllow: () -> Unit,
 ) {
     StatusCard(spec) {
-        Text("Allow nearby devices", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.allow_nearby_devices), style = MaterialTheme.typography.titleSmall)
         Text(
-            "The watch reads the mesh from your phone over Bluetooth.",
+            stringResource(R.string.allow_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onAllow, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Allow") }
+        Button(onClick = onAllow, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(stringResource(R.string.allow)) }
     }
 }
 
@@ -467,20 +492,20 @@ private fun Footer(
     snapshot: Snapshot?,
     now: Long,
 ) {
-    // The transport rides along while the prototype gathers which one each watch's bond carries.
+    val res = LocalResources.current
+    // The transport rides along while the prototype gathers which one each watch's bond carries: its name is
+    // Bluetooth's own ("Classic", "LE"), the same in every language.
     Text(
         snapshot?.let { s ->
-            "Updated ${Counts.ago(now - s.fetchedAtMs)}" + (s.via?.let { " · ${it.label}" } ?: "")
-        } ?: "Not read yet",
+            val updated = res.getString(R.string.updated, Counts.ago(res, now - s.fetchedAtMs))
+            s.via?.let { res.getString(R.string.joined_with_dot, updated, it.label) } ?: updated
+        } ?: stringResource(R.string.not_read_yet),
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         style = MaterialTheme.typography.bodyExtraSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
     )
 }
-
-/** The hero's word while the Bluetooth grant is missing; the Allow card under it says what to do. */
-private const val NO_GRANT = "Needs permission"
 
 /**
  * The edge button's content: the refresh [icon] and [label] on one line. With the user's font size up on a small
