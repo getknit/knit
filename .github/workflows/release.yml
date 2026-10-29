@@ -414,6 +414,8 @@ jobs:
       - name: assembleRelease (unsigned)
         env:
           VARIANT: ${{ matrix.variant }}
+        # A container step defaults to `sh -e`, which is dash in this image: no arrays, no pipefail.
+        shell: bash
         run: |
           set -euo pipefail
           flags=()
