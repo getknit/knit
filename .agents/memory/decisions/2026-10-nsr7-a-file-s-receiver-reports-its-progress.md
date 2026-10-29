@@ -238,3 +238,15 @@ before smoothing, at `FeedWindow.CEILING_BYTES_PER_SEC`. Honest feeds never reac
 Bluetooth link's reports, a paced feed's budget tops out at `BOOST_PACE_BYTES_PER_SEC` (18 KiB/s), and a windowed
 feed's rate is already held under the same ceiling. The residual is in the costs above. No wire, vector or schema
 change; an Android-only bound, so nothing to pair.
+
+**Amendment (2026-10-27): a blob's addressees are every conversation naming it.** Item 3's "the message naming
+it" read the first row (`MessageDao.conversationOfAttachment`, `LIMIT 1`). A picture forwarded under its sealed
+identity (ADR 2026-10.mptm) from a group G into a DM with D, who is not in G, is named by both: whichever row came first
+classed the other side carriers — D, the DM's own recipient, waiting behind every live feed, or G's members behind D's
+copy. `MeshManager.addresseesOf` now reads every conversation (`conversationsOfAttachment`) and takes their union
+(`BlobExchange.addresseesAcross`); one whose addressees are unknown (a room's, a group this phone does not hold) makes
+the whole answer unknown, everyone a member, as a room's row alone always did. Only the serve order moves: a delay, never
+a refusal, and nothing on the wire. The read costs one indexed query plus a group read per conversation naming the hash,
+bounded by the conversations this phone has. Test:
+`BlobHolderQueryTest.aForwardedPicturesDmRecipientAndItsGroupsMembersAreAllMembers`, which fails with the first row's
+reading.

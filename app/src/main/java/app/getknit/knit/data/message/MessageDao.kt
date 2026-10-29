@@ -198,9 +198,14 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash")
     suspend fun countByAttachmentHash(hash: String): Int
 
-    /** The conversation of a message naming attachment [hash], if any: whom a holder serves first (ADR 2026-10.nsr7). */
-    @Query("SELECT conversationId FROM messages WHERE attachmentHash = :hash LIMIT 1")
-    suspend fun conversationOfAttachment(hash: String): String?
+    /**
+     * Every conversation a message naming attachment [hash] is in. One sealed picture can be named by several (ADR
+     * 2026-10.mptm: a forward keeps its identity), so a rule that asks whether *a* conversation is addressed to someone
+     * reads them all, never the first row: whom a holder serves first (ADR 2026-10.nsr7). Bounded by the conversations
+     * this phone has.
+     */
+    @Query("SELECT DISTINCT conversationId FROM messages WHERE attachmentHash = :hash")
+    suspend fun conversationsOfAttachment(hash: String): List<String>
 
     /**
      * The (base64) per-attachment key stored with a message referencing the ciphertext [hash], if any —

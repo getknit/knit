@@ -144,7 +144,8 @@ class MessageRepository(
     /** Number of messages still referencing [hash] (0 once an attachment's last message is gone). */
     suspend fun countByAttachmentHash(hash: String): Int = dao.countByAttachmentHash(hash)
 
-    suspend fun conversationOfAttachment(hash: String): String? = dao.conversationOfAttachment(hash)
+    /** Every conversation naming attachment [hash] (`MessageDao.conversationsOfAttachment`). */
+    suspend fun conversationsOfAttachment(hash: String): List<String> = dao.conversationsOfAttachment(hash)
 
     /** Base64 per-attachment key for an encrypted attachment by its ciphertext [hash], if stored. */
     suspend fun attachmentKeyForHash(hash: String): String? = dao.attachmentKeyForHash(hash)

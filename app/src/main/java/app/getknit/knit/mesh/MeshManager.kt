@@ -400,17 +400,21 @@ class MeshManager(
         )
 
     /**
-     * Whom the conversation naming blob [hash] is addressed to: a group's members, a DM's two ends; null for a room's, or
-     * when no message we hold names it. A holder serves those ahead of carriers (ADR 2026-10.nsr7).
+     * Whom the conversations naming blob [hash] are addressed to, every one of them ([BlobExchange.addresseesAcross]): a
+     * group's members, a DM's two ends; null when one is a room's or no message we hold names it. A holder serves those
+     * ahead of carriers (ADR 2026-10.nsr7). A picture forwarded under its identity (ADR 2026-10.mptm) from a group into a
+     * DM with someone outside it is both's, and the first row alone classed one side carriers by row order.
      */
-    private suspend fun addresseesOf(hash: String): Set<String>? {
-        val conversation = messages.conversationOfAttachment(hash) ?: return null
-        return when (Conversations.kindFor(conversation)) {
+    private suspend fun addresseesOf(hash: String): Set<String>? =
+        BlobExchange.addresseesAcross(messages.conversationsOfAttachment(hash).map { addresseesOfConversation(it) })
+
+    /** Whom [conversation] is addressed to: a group's members, a DM's two ends; null for the room or an unknown group. */
+    private suspend fun addresseesOfConversation(conversation: String): Set<String>? =
+        when (Conversations.kindFor(conversation)) {
             ConversationKind.GROUP -> groups.find(conversation)?.let { GroupMembersStore.decode(it.members).toSet() }
             ConversationKind.DM -> setOf(conversation, identity.nodeId())
             else -> null
         }
-    }
 
     // Store-and-forward DM custody: carries DMs we originate/relay and re-offers them to neighbors that
     // join later, so a message reaches a recipient that wasn't connected when it was first flooded.

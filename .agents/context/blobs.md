@@ -100,7 +100,8 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   file's receiver reports what it holds every 2 s by its own clock, the sender measures the drain from it, and a
   parked ask waits for a live feed however long (no bound of its own) until it ends, stalls (15 s with no progress) or
   passes its deadline (first measured ETA × 1.25 + 30 s); the fastest asker goes next, and one goes beside a feed only
-  when its own copy would end first. Members go before carriers, and an asker lets go of a neighbour its ask found
+  when its own copy would end first. Members go before carriers — the members of every conversation naming the blob
+  (`BlobExchange.addresseesAcross`, the 2026-10-27 amendment) — and an asker lets go of a neighbour its ask found
   lacking the blob, or whose other stream to it has more than 30 s left while an idle holder waits, withdrawing its
   ask with a `blobcancel` (the amendments). The meter believes a report only up to the bytes it wrote, at no more than
   64 KiB/s a sample (#158). Phase 2 (an in-flight window instead of the pace caps) is built as ADR

@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -676,6 +677,41 @@ class BlobHolderQueryTest {
             h.exchange.onRequest(hash, "c2")
             assertEquals("a carrier waits behind a member's copy, however fast", 0, h.served(hash, "c2"))
         }
+
+    /**
+     * A picture forwarded under its identity (ADR 2026-10.mptm) from a group into a DM with d, who is not in the group, is
+     * both conversations': d and the group's m1 each go beside a carrier's copy, and only c2, in neither, waits behind it.
+     * Read off one conversation alone, d or m1 would be a carrier, by row order.
+     */
+    @Test
+    fun aForwardedPicturesDmRecipientAndItsGroupsMembersAreAllMembers() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = Node("h", backgroundScope, timers = backgroundScope)
+            val nodes = listOf("c", "d", "m1", "c2").map { Node(it, backgroundScope) }
+            nodes.forEach { h.transport.connect(it.transport) }
+            backgroundScope.recordServes(h, nodes[1], nodes[2], nodes[3])
+            val hash = h.store.seed(picture(18_432))
+            val group = setOf("h", "m1", "m2")
+            val dm = setOf("h", "d")
+            h.to = BlobExchange.addresseesAcross(listOf(group, dm))
+            h.transport.feeds["c" to hash] = feeding(100_000) // a carrier's copy, 100 s from its end
+            listOf("d", "m1", "c2").forEach { h.transport.rates[it] = 128 } // about 144 s each: none would end first
+
+            h.exchange.onRequest(hash, "d")
+            assertEquals("the DM's recipient is a member", 1, h.served(hash, "d"))
+            h.exchange.onRequest(hash, "m1")
+            assertEquals("and so is the group's member", 1, h.served(hash, "m1"))
+            h.exchange.onRequest(hash, "c2")
+            assertEquals("a node in neither conversation waits as a carrier", 0, h.served(hash, "c2"))
+        }
+
+    /** The union of every conversation naming a blob; unknown addressees anywhere, or none at all, make everyone a member. */
+    @Test
+    fun addresseesAcrossConversationsAreTheirUnionAndUnknownWhereAnyIs() {
+        assertEquals(setOf("h", "m1", "d"), BlobExchange.addresseesAcross(listOf(setOf("h", "m1"), setOf("h", "d"))))
+        assertNull(BlobExchange.addresseesAcross(listOf(setOf("h", "d"), null)))
+        assertNull(BlobExchange.addresseesAcross(emptyList()))
+    }
 
     @Test
     fun aParkedMemberIsServedBeforeAFasterParkedCarrier() =

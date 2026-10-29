@@ -136,9 +136,9 @@ class BlobExchange(
     // Where an ask's grace is timed (ADR 2026-10.f7gg): the mesh session's scope, read at each arm. Null (no
     // session, or a rig) leaves the next step to the next want, answer, link-up or tick.
     private val timers: () -> CoroutineScope? = { null },
-    // Whom the conversation naming a blob is addressed to — a group's members, a DM's two ends — or null when no message
-    // we hold names it (a relay's blob, an avatar) or it is a room's: a holder serves members ahead of carriers (ADR
-    // 2026-10.nsr7's member-first amendment).
+    // Whom the conversations naming a blob are addressed to, all of them ([addresseesAcross]) — a group's members, a DM's
+    // two ends — or null when no message we hold names it (a relay's blob, an avatar) or one naming it is a room's: a
+    // holder serves members ahead of carriers (ADR 2026-10.nsr7's member-first amendment).
     private val addressees: suspend (hash: String) -> Set<String>? = { null },
     // Injected logger (the class stays Android-free): DI passes android.util.Log; tests default silent.
     private val log: (String) -> Unit = {},
@@ -2740,6 +2740,18 @@ class BlobExchange(
     }
 
     companion object {
+        /**
+         * The addressees of a blob named by several conversations ([conversations], one entry per conversation naming
+         * it, null where that conversation's are unknown — a room's, or a group this phone does not hold): their union,
+         * so a member of *any* of them is a member at the holder. One sealed picture is named by several when it is
+         * forwarded under its identity (ADR 2026-10.mptm): from a group G into a DM with D, where D is not in G, reading
+         * the first row classed D — the DM's real recipient — a carrier behind every live feed, or G's members carriers
+         * behind D's, by row order. Unknown anywhere, or no conversation at all, is null: everyone a member, as one room's
+         * row always made it.
+         */
+        fun addresseesAcross(conversations: List<Set<String>?>): Set<String>? =
+            if (conversations.isEmpty() || conversations.any { it == null }) null else conversations.flatMapTo(HashSet()) { it.orEmpty() }
+
         // How long an ask has to bring a header in before the next holder is tried. A holder over a live link answers
         // well inside it: the ask is one frame, and the serve reads the blob from the store and queues it. A holder that
         // can raise the Wi-Fi Aware link waits up to CompositeMeshTransport.BULK_GRACE_MS for it before it falls back to
