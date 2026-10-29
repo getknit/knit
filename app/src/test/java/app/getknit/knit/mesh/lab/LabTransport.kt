@@ -65,6 +65,7 @@ import java.util.concurrent.atomic.AtomicLong
  * over the pipe it came by, and what the memo skipped is in [dupSkipped]. Before it, every `shouldFastFanout`
  * frame crossed a real L2CAP link twice and the far end's SeenSet ate the second.
  */
+@Suppress("LargeClass") // one node's whole MeshTransport fake plus the drain counters every scenario awaits on
 class LabTransport(
     val nodeId: String,
     /**
