@@ -14,9 +14,11 @@ import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.furthestByKey
+import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LandingFiles
 import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.protocol.Protocol
@@ -97,6 +99,10 @@ class DirectLinkTransport(
     private val links = ConcurrentHashMap<String, FramedLink>()
     private val landing = LandingFiles()
 
+    // Which frames already crossed which link, either way: the router's flood and the DM fast path both hand a DM to the
+    // link to its addressee, and a link writes it once, as a Bluetooth link does. Forgotten with the link.
+    private val crossings = LinkCrossings(clock = now)
+
     /** Whether the plane is started: the composite runs it, and its switch holds it on (what a link's demand waits on). */
     @Volatile
     var running = false
@@ -148,6 +154,7 @@ class DirectLinkTransport(
         // Straight over the map, never `toList()`: a link dropping as the plane stops can empty it between the size
         // `toList()` reads and the element it then takes (NoSuchElementException, a lab chaos teardown).
         for (id in links.keys) links.remove(id)?.close()
+        crossings.clear()
         landing.clear()
         publish()
     }
@@ -214,7 +221,8 @@ class DirectLinkTransport(
                         false
                     }
                 if (ok) {
-                    if (isUse(frame.envelope, author = self)) used(frame.fromNodeId, frame.envelope, outbound = false)
+                    crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
+                    crossed(frame.fromNodeId, frame.envelope, outbound = false, author = self)
                     _inbound.emit(frame)
                 }
             }
@@ -254,6 +262,7 @@ class DirectLinkTransport(
             )
         held[0] = link
         links.put(peer.nodeId, link)?.close()
+        crossings.forget(peer.nodeId) // a fresh link starts clean: the peer may have restarted with an empty seen set
         // The reset first, then the neighbour set, then the reader: the peer's first digest is answered only after the memo
         // is fresh and the composite can route the answer here (a push it dropped would still be remembered as made). What
         // is sent before the start waits on the link's queue. A hook never ends a link.
@@ -288,6 +297,7 @@ class DirectLinkTransport(
         link: FramedLink,
     ) {
         if (!links.remove(nodeId, link)) return
+        crossings.forget(nodeId)
         link.close()
         publish()
     }
@@ -305,10 +315,12 @@ class DirectLinkTransport(
         if (targets.isEmpty()) return
         val env = WireCodec.decodeEnvelope(wire.signed) ?: return
         val bytes = WireCodec.encodeWire(wire)
+        val key = FrameKey.of(wire, env)
         targets.forEach {
             if (!admits(env, it.nodeId, outbound = true)) return@forEach
+            if (!crossings.firstCrossing(it.nodeId, key)) return@forEach // it crossed already, either way
             it.send(bytes)
-            if (isUse(env, author = it.nodeId)) used(it.nodeId, env, outbound = true)
+            crossed(it.nodeId, env, outbound = true, author = it.nodeId)
         }
     }
 
@@ -363,26 +375,25 @@ class DirectLinkTransport(
     // runs; the radios' own holds are their children's, asked beside this one.
     override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)
 
-    // Only a frame that is content is use. A blob control frame is the exchange's bookkeeping, which re-asks on its own
-    // rounds and would keep a link open for a blob nobody can supply. Nor is a frame handed back to its [author]: custody
-    // re-serves a sender's frames its full bucket has evicted, and the conversation a link exists for is never a phone's
-    // own sends. Defence in depth beside `LinkPushRounds`' not-kept memory (#235): it still covers the first round after
-    // each link-up and each lapse, and a far end on an older build that re-pushes every round.
-    private fun isUse(
-        env: RelayEnvelope,
-        author: String?,
-    ) = LinkPairFilter.blobHashes(env) == null && env.senderId != author
-
-    // A content frame crossed the link to or from [peerId]: the link is in use. Logged by type and the id's tail, never its
-    // content, so a link that outlived its idle wait names what kept it (a sealed tick reads as `chat`, as it does on the
-    // wire). The tail, since a profile's id opens with `profile-` and only its end tells one from the next.
-    private fun used(
+    // A frame crossed the link to or from [peerId]. Only a content frame is use. A blob control frame is the exchange's
+    // bookkeeping, which re-asks on its own rounds and would keep a link open for a blob nobody can supply: neither use nor
+    // logged. Nor is a frame handed back to its [author] use: custody re-serves a sender's frames its full bucket has
+    // evicted, and the conversation a link exists for is never a phone's own sends (defence in depth beside
+    // `LinkPushRounds`' not-kept memory, #235: the first round after each link-up and each lapse, and a far end on an older
+    // build). Logged by type and the id's tail, never its content, so a link that outlived its idle wait names what kept
+    // it, and a trial sees custody's re-serves as `(not use)`; a sealed tick reads as `chat`, as on the wire, and the tail
+    // because a profile's id opens with `profile-`.
+    private fun crossed(
         peerId: String,
         env: RelayEnvelope,
         outbound: Boolean,
+        author: String?,
     ) {
-        onUse(peerId)
-        log("link ${peerId.take(SHORT)}: ${if (outbound) "tx" else "rx"} ${env.type} …${env.id.takeLast(SHORT)}")
+        if (LinkPairFilter.blobHashes(env) != null) return
+        val use = env.senderId != author
+        if (use) onUse(peerId)
+        val way = if (outbound) "tx" else "rx"
+        log("link ${peerId.take(SHORT)}: $way ${env.type} …${env.id.takeLast(SHORT)}${if (use) "" else " (not use)"}")
     }
 
     /** Whether the link to [peer] is moving a file either way: a link mid-file is in use, frame or no frame. */

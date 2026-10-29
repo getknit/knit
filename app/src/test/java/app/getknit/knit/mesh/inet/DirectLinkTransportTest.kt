@@ -158,7 +158,8 @@ class DirectLinkTransportTest {
         to: String? = bob,
     ): WireEnvelope {
         val env = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = from, recipientId = to, payload = ByteArray(0))
-        return WireEnvelope(sig = byteArrayOf(1), signed = WireCodec.encodeEnvelope(env))
+        // A signature of its own per frame: a link writes a frame once, keyed on its signature (`FrameKey`).
+        return WireEnvelope(sig = id.encodeToByteArray(), signed = WireCodec.encodeEnvelope(env))
     }
 
     private fun linked(
@@ -460,6 +461,77 @@ class DirectLinkTransportTest {
             assertEquals(listOf(alice), b.uses.toList())
         }
 
+    /**
+     * The router's flood and the DM fast path both hand a DM to the link to its addressee: it crosses once, and is use
+     * once, as a Bluetooth link writes it once.
+     */
+    @Test
+    fun aFrameHandedToALinkTwiceCrossesItOnce() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val got =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    b.transport.inbound
+                        .take(2)
+                        .toList()
+                }
+            a.transport.send(frame("m9-QQ"), null)
+            a.transport.send(frame("m9-QQ"), Peer(bob))
+            // A DM behind it, in order on the link: had the second copy gone, it would be the second frame in.
+            a.transport.send(frame("m10-QQ"), Peer(bob))
+            assertEquals(listOf("m9-QQ", "m10-QQ"), withTimeout(WAIT_MS) { got.await() }.map { it.envelope.id })
+            assertEquals(listOf(bob, bob), a.uses.toList())
+        }
+
+    /** A frame that came in over a link has crossed it: relayed on, it never goes back to the peer it came from. */
+    @Test
+    fun aFrameThatCameInOverALinkIsNeverSentBackOverIt() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val toAlice = async(start = CoroutineStart.UNDISPATCHED) { a.transport.inbound.first() }
+            b.transport.send(frame("m11-QQ", from = bob, to = alice), Peer(alice))
+            assertEquals("m11-QQ", withTimeout(WAIT_MS) { toAlice.await() }.envelope.id)
+            val toBob = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
+            a.transport.send(frame("m11-QQ", from = bob, to = alice), null)
+            a.transport.send(frame("m12-QQ"), Peer(bob))
+            assertEquals("m12-QQ", withTimeout(WAIT_MS) { toBob.await() }.envelope.id)
+        }
+
+    /**
+     * A new link to the same peer starts with nothing crossed: the peer may have restarted with an empty seen set, and a
+     * frame that crossed the old link (custody's re-serve after a restart, say) must cross the new one.
+     */
+    @Test
+    fun aFrameThatCrossedTheOldLinkCrossesTheNewOne() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            val first = async(start = CoroutineStart.UNDISPATCHED) { b.transport.inbound.first() }
+            a.transport.send(frame("m13-QQ"), Peer(bob))
+            assertEquals("m13-QQ", withTimeout(WAIT_MS) { first.await() }.envelope.id)
+
+            // A new link replaces the old at both ends; each end reports it adopted, which it does once framed.
+            connect(a, b)
+            a.transport.adopt(bob, a.stream, offerer = true)
+            b.transport.adopt(alice, b.stream, offerer = false)
+            withTimeout(WAIT_MS) { while (a.ups.size < 2 || b.ups.size < 2) delay(POLL_MS) }
+
+            val again =
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    b.transport.inbound
+                        .take(2)
+                        .toList()
+                }
+            a.transport.send(frame("m13-QQ"), Peer(bob))
+            a.transport.send(frame("m14-QQ"), Peer(bob))
+            assertEquals(listOf("m13-QQ", "m14-QQ"), withTimeout(WAIT_MS) { again.await() }.map { it.envelope.id })
+        }
+
     @Test
     fun aLookupThatThrowsDropsThatFrameAndNoneAfterIt() =
         runBlocking<Unit> {
@@ -510,6 +582,7 @@ class DirectLinkTransportTest {
 
     private companion object {
         const val WAIT_MS = 10_000L
+        const val POLL_MS = 10L
 
         // Blob keys are 64-hex content hashes: the link's intake refuses anything else before the rule is asked.
         val PAIRS = "a".repeat(64)

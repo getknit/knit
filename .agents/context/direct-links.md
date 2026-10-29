@@ -42,7 +42,10 @@ and the entry is fixed.
   (`LinkScope.addresseeSetsOf`, `MeshManager.blobAddressees`): a forwarded picture keeps its hash (ADR 2026-10.mptm),
   so never read the first row. A refusal by shared groups read over `DirectLinkTransport.GROUPS_REREAD_MS` ago is
   decided again on a fresh read, so a group made since never waits a re-offer round for its first post. Only frames and
-  files are use; digests and handshakes keep nothing open.
+  files are use; digests and handshakes keep nothing open, and nor does a frame handed back to the phone that wrote it
+  (#235, logged `(not use)`). A frame crosses a link once, either way: the router's flood and the DM fast path both
+  hand a DM to its addressee's link, so the link keeps the Bluetooth plane's `LinkCrossings` memo, forgotten with the
+  link (2026-10-29, every DM had crossed twice).
 - **When touching `LinkDemandPolicy.evict` / `EVICT_IDLE_MS`, `DirectLinks.idleSince` / `close(reason)`,
   `LinkSession.idleSince`, `LinkSession.EndReason.YIELDED`, `LinkPeers.queuedAhead`, `ScopeSync.sigQueuedAhead`, the
   `link_try` `sent` / `queued` fields or `ScopeSync.sig`'s log line:** READ ADR 2026-10.a5yj's idle-wait amendment. A

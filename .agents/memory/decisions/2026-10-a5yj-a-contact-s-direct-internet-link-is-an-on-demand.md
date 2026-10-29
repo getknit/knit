@@ -654,5 +654,5 @@ fills from outside the view loops the same way, not only the author.
   every node's custody is what it was. The cost is one crossing of each such frame per link-up and per lapse, and a
   frame its digest crossed (pushed, then marked by a digest sent before it landed) waits one lapse if it was lost.
 
-`DirectLinkTransport.isUse` not counting a frame handed back to its author stays, as defence in depth: it still covers
+`DirectLinkTransport.crossed` not counting a frame handed back to its author stays, as defence in depth: it still covers
 the first round after each link-up and each lapse, and a far end on an older build that re-pushes every round.
