@@ -1,17 +1,23 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.FileMeta
+import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.LinkArq
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onSubscription
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -113,12 +119,15 @@ class LabFileGate {
 
 /**
  * What [LabLinkPlane] records of the frames and digests its plane carries: [LabNode.linkFrames], [LabNode.linkDigestsFrom],
- * and the node's link-up count ([LabNode.linkUps]) each frame line is stamped with.
+ * the node's link-up count ([LabNode.linkUps]) each frame line is stamped with, and the blob asks it sent and handed up
+ * ([LabNode.linkAsksOut], [LabNode.linkAsksIn]).
  */
 internal class LabLinkRecord(
     val frames: MutableList<String>,
     val digestsFrom: MutableList<String>,
     val linkUp: () -> Int,
+    val asksOut: MutableList<String>,
+    val asksIn: MutableList<String>,
 )
 
 /**
@@ -134,17 +143,57 @@ internal class LabLinkPlane(
     private val handOff: LabFileGate,
     private val record: LabLinkRecord,
 ) : MeshTransport by plane {
-    override val incomingFiles: Flow<ReceivedFile> = plane.incomingFiles.onEach { handOff.pass() }
+    // The collectors the plane's own flows hold now, counted once each one's subscription is registered ([collecting]).
+    private val inboundSubs = AtomicInteger()
+    private val fileSubs = AtomicInteger()
+    private val digestSubs = AtomicInteger()
+
+    /**
+     * Whether the manager collects the plane's frames, files and digests yet: [LabTransport.collecting] for this plane. The
+     * composite subscribes each plane on a `merge` coroutine of its own, so the radio's collectors say nothing of these;
+     * a file the plane lands before its collector subscribes is dropped (`DirectLinkTransport.take`), as every plane drops
+     * one, and its re-ask waits for the next round (a restarted Bob lost his photo so under chaos seed 844568381).
+     */
+    val collecting: Boolean
+        get() = inboundSubs.get() > 0 && fileSubs.get() > 0 && digestSubs.get() > 0
+
+    override val incomingFiles: Flow<ReceivedFile> = plane.incomingFiles.counted(fileSubs).onEach { handOff.pass() }
 
     // Counted as the plane hands it up, ahead of the composite's merge: that it arrived, never that it was answered.
-    override val incomingDigests: Flow<ReceivedDigest> = plane.incomingDigests.onEach { record.digestsFrom += it.fromNodeId }
+    override val incomingDigests: Flow<ReceivedDigest> =
+        plane.incomingDigests.counted(digestSubs).onEach { record.digestsFrom += it.fromNodeId }
+
+    // Counted as the plane hands it up, ahead of the router: that it arrived, never that it was answered.
+    override val inbound: Flow<InboundFrame> =
+        plane.inbound.counted(inboundSubs).onEach {
+            if (it.envelope.type == FrameType.BLOB_REQ) record.asksIn += "${it.fromNodeId} ${it.envelope.id}"
+        }
+
+    // [this] with its live collectors counted in [subs]: one from the moment the shared flow registers it until it ends.
+    private fun <T> SharedFlow<T>.counted(subs: AtomicInteger): Flow<T> =
+        flow {
+            var counted = false
+            try {
+                emitAll(
+                    onSubscription {
+                        subs.incrementAndGet()
+                        counted = true
+                    },
+                )
+            } finally {
+                if (counted) subs.decrementAndGet()
+            }
+        }
 
     override suspend fun send(
         wire: WireEnvelope,
         to: Peer?,
     ) {
         if (to != null && plane.neighbors.value.any { it.nodeId == to.nodeId }) {
-            WireCodec.decodeEnvelope(wire.signed)?.let { record.frames += "${record.linkUp()} ${to.nodeId} ${it.id}" }
+            WireCodec.decodeEnvelope(wire.signed)?.let {
+                record.frames += "${record.linkUp()} ${to.nodeId} ${it.id}"
+                if (it.type == FrameType.BLOB_REQ) record.asksOut += "${record.linkUp()} ${to.nodeId} ${it.id}"
+            }
         }
         plane.send(wire, to)
     }

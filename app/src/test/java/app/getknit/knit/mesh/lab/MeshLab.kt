@@ -1369,6 +1369,15 @@ class LabNode internal constructor(
     /** The node id of every custody digest that arrived over this node's direct-link plane, in arrival order. */
     val linkDigestsFrom = CopyOnWriteArrayList<String>()
 
+    /**
+     * Every blob ask this node's direct-link plane was handed for a peer it held a link to, as `linkUp to id` ([LabLinkPlane],
+     * [linkFrames]' stamp).
+     */
+    val linkAsksOut = CopyOnWriteArrayList<String>()
+
+    /** Every blob ask this node's direct-link plane handed up toward the router, as `from id`, in hand-up order. */
+    val linkAsksIn = CopyOnWriteArrayList<String>()
+
     /** How many direct links [MeshLab.directLink] has made to this node: the link-up a [linkFrames] line was sent in. */
     val linkUps = AtomicInteger()
 
@@ -1377,6 +1386,9 @@ class LabNode internal constructor(
 
     /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
+
+    /** This session's recorded link plane, the composite's child over [link]; null with no link plane. */
+    private var linkPlane: LabLinkPlane? = null
 
     // The direct-link plane, wired as `di/DirectLinkWiring` wires it: the real lookups over this node's stores, its use and
     // link-ups back to the manager, built late.
@@ -1483,7 +1495,8 @@ class LabNode internal constructor(
         if (lora == null && link == null) {
             null
         } else {
-            val plane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get)) }
+            val plane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get, linkAsksOut, linkAsksIn)) }
+            linkPlane = plane
             CompositeMeshTransport(listOfNotNull(transport, lora, plane), scope)
         }
 
@@ -1788,7 +1801,8 @@ class LabNode internal constructor(
         // unconverged inside the oracle's window. Wait for the seed, so every link starts from a settled store.
         withContext(Dispatchers.Default) {
             withTimeout(MeshLab.AWAIT_MS) {
-                while (!transport.collecting) delay(1)
+                // The link plane's too: the composite subscribes it on a coroutine of its own (LabLinkPlane.collecting).
+                while (!transport.collecting || linkPlane?.collecting == false) delay(1)
                 transport.joinPages()
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }

@@ -344,7 +344,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   restarts), its frames handed out for a linked peer `LabNode.linkFrames` (`linkUp to id`, `linkUp` being
   `LabNode.linkUps` at the send: count a custody push's crossings per link-up there, since the receiver's seen window
   hides a repeat), and the digests it took `LabNode.linkDigestsFrom` (on arrival, ahead of the composite's merge, so
-  never proof one was answered), and `LabNode.linkFileGate` holds a file the link landed before the manager takes it — still landing on
+  never proof one was answered). Its blob asks are `LabNode.linkAsksOut` (`linkUp to id`, as sent) and
+  `LabNode.linkAsksIn` (`from id`, as handed up): an ask that crossed can still wait in the holder's router, so await
+  it handled (`blobAsksHandled`) before a cut and a jump past `SERVE_MEMO_MS`, or it lands after the jump and is served
+  again (`DirectLinkAttachmentLabTest.awaitAsksAnswered`). `LabNode.linkFileGate` holds a file the link landed before the manager takes it — still landing on
   the plane (#138) — so a scenario can stop a node mid-hand-off: `restart { linkFileGate.release() }`.
   `DirectLinkAttachmentLabTest` is the set (a DM photo over a link, proof and spool pushes). A composite merges its
   radio sets (`shortRangeNeighbors`, `shortRangeReachable`) on collectors of their own, so `awaitLinksActedOn` waits
@@ -710,7 +713,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   reply sent before the first DM landed became the both-initiate race the fixture was written to avoid,
   and the failure surfaced as the oracle's, a step later and under the wrong name (2026-09-18). `node()` returns only once the router is
   collecting `inbound` — a `SharedFlow` with no replay drops what is emitted before that, and a link brought
-  up too early would lose the profile push. Bring a multi-hop topology up with `linkAll` so no relay fires in
+  up too early would lose the profile push. A boot (and a `restart`) waits for a direct-link plane's collectors too
+  (`LabLinkPlane.collecting`): the composite subscribes each plane on a `merge` coroutine of its own, and a file the
+  plane landed before its subscriber was dropped (a chaos stall of ~400 ms after a restart, 2026-10-29). Bring a multi-hop topology up with `linkAll` so no relay fires in
   the gap between two links. Boot costs ~1 s per node (Tink keygen + Room + DataStore); the scenarios
   themselves run in a few hundred ms. **A calendar jump past the router's 10-min `SeenSet` with a relay still in
   flight** (a copy in its 0–150 ms jitter when `awaitCustodyParity` returned) turns that copy into a re-delivery,

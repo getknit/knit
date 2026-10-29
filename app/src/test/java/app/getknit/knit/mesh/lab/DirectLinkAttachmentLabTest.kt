@@ -79,6 +79,27 @@ class DirectLinkAttachmentLabTest {
             .firstOrNull { it.holderId == holder.nodeId }
             ?.let { DeliveryPlane.fromCode(it.plane) }
 
+    /**
+     * Returns once [holder] has answered every blob ask [asker] sent it over their current direct link: served, refused or
+     * turned into a want. A cut loses what is still on the link, not what has crossed and waits for the holder's router,
+     * which takes frames one at a time: an ask waiting there through a cut, a relink and a jump past
+     * [BlobExchange.SERVE_MEMO_MS] finds the memo lifted and is served again (chaos seed 499887960, 2026-10-29). Each ask
+     * is awaited at the holder's plane, then the holder's `blobAsksHandled` past every ask its plane handed up. For a
+     * two-node scenario whose holder has not restarted: that count takes every ask the holder's session handled, from
+     * anyone over any plane, while [LabNode.linkAsksIn] outlives a restart. A third node's radio ask would read answered
+     * early, and a holder's restart would never catch up. The asker's own radio asks are checked, not assumed.
+     */
+    private suspend fun awaitAsksAnswered(
+        asker: LabNode,
+        holder: LabNode,
+    ) {
+        check(asker.transport.blobAsks.none { it.to == holder.nodeId }) { "${asker.name} asked ${holder.name} over the radio" }
+        val up = "${asker.linkUps.get()} ${holder.nodeId} "
+        val sent = asker.linkAsksOut.filter { it.startsWith(up) }.map { "${asker.nodeId} ${it.removePrefix(up)}" }
+        lab.await(1) { if (holder.linkAsksIn.containsAll(sent)) 1 else 0 }
+        lab.await(1) { if (holder.metrics.files().blobAsksHandled >= holder.linkAsksIn.size) 1 else 0 }
+    }
+
     private fun WireEnvelope.isChatFrom(node: LabNode): Boolean =
         WireCodec.decodeEnvelope(signed)?.let { it.type == FrameType.CHAT && it.senderId == node.nodeId } == true
 
@@ -134,7 +155,9 @@ class DirectLinkAttachmentLabTest {
             // Past Alice's serve memo, which refuses a repeat ask silently: a wrongful re-ask by Bob, held now, would be
             // served and counted, so the copy count below can fail on what it names. The link is cut first, so no ask
             // sent before Bob held the photo is still in flight when the jump lifts the memo (real time never moves
-            // 45 s inside one delivery); the new link and the re-offer round then ask afresh.
+            // 45 s inside one delivery), and every ask that crossed has been answered under the memo; the new link and the
+            // re-offer round then ask afresh.
+            awaitAsksAnswered(bob, alice)
             lab.cutDirectLink(alice, bob)
             lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
             lab.directLink(alice, bob)
@@ -239,7 +262,9 @@ class DirectLinkAttachmentLabTest {
 
             // Held now: a link-up's re-ask and the re-offer round find nothing missing. Past Alice's serve memo, so a
             // wrongful re-ask would be served and counted rather than refused silently — and the jump only once the old
-            // link is cut, so an ask sent before Bob held the photo cannot land after it (a chaos seed did, 2026-10-28).
+            // link is cut and every ask that crossed answered, so an ask sent before Bob held the photo cannot land after it
+            // (chaos seeds did, 2026-10-28 and 10-29).
+            awaitAsksAnswered(bob, alice)
             lab.cutDirectLink(alice, bob)
             lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
             lab.directLink(alice, bob)
