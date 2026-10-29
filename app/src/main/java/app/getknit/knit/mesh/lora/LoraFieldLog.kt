@@ -103,8 +103,8 @@ internal enum class LoraLinkEnd {
 
 /**
  * The field log's LoRa edges (ADR 2026-10.a239's 2026-10-18 amendment): [status] — the plane's published
- * [LoraStatus], a `StateFlow` — followed for one mesh session and turned into `lora_up`, `lora_down`, `lora_fail` and
- * `lora_role` lines. Reads the snapshots only; never asks the link or the session anything. A fresh [LoraFieldLog]
+ * [LoraStatus], a `StateFlow` — followed for one mesh session and turned into `lora_up`, `lora_down` and `lora_fail`
+ * lines (`lora_role` went with the gateway election, ADR 2026-10.rp3s). Reads the snapshots only; never asks the link or the session anything. A fresh [LoraFieldLog]
  * per collection, so each session starts over.
  *
  * [clock] must be the session's own monotonic base (`SystemClock.elapsedRealtime` in the app, as `MeshModule` hands
@@ -138,8 +138,6 @@ internal fun loraFieldEdges(
  *   that failed included (for a terminal state, which carries none, one past the last one published). The background
  *   wait is a dial mode, never a failure. A first snapshot already waiting out a failure writes nothing: an earlier
  *   session's follower wrote it.
- * - **Role.** The gateway role changing while a board is configured writes a [FieldEvent.LoraRole]; never on the first
- *   snapshot, and never while the link is [LinkState.Idle] (the stop's reset to active is no election).
  *
  * What conflation hides: the status is a `StateFlow`, so a link ready for only milliseconds can be read as
  * handshaking then disconnected — a `lora_fail` with no up or down. Nothing here can recover it.
@@ -165,18 +163,12 @@ internal class LoraFieldLog(
     /** The backoff position the session last published. */
     private var streak = 0
 
-    private var role: LoraGatewayPolicy.Role? = null
-
     @Synchronized
     fun next(status: LoraStatus): List<FieldEvent> {
         val now = clock()
         val state = status.state
         val edges = mutableListOf<FieldEvent>()
         if (state != previous) link(state, now, edges)
-        if (!first && status.role != role && state != LinkState.Idle) {
-            edges += FieldEvent.LoraRole(status.role, status.pocketLinks, status.gatewaysHeard)
-        }
-        role = status.role
         previous = state
         first = false
         return edges

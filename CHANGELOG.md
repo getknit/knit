@@ -62,6 +62,9 @@ document:
   and volume leveling. Background noise drops, and voices sound about as loud from one phone to the next.
 - Typing indicators, link previews, content filtering and the large Bluetooth download limit have moved to a
   new Chats screen in Settings.
+- Your LoRa board now sends only messages you write, and the Bridge distant groups switch is gone. Friends
+  without a board still see what yours hears, but their posts no longer go out through it. Long Nearby posts
+  may not go over LoRa at all, and reactions and delivery checkmarks never do.
 
 ### Fixed
 

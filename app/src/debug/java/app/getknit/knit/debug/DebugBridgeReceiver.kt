@@ -1736,12 +1736,16 @@ class DebugBridgeReceiver :
             .put("loraDmSent", snap.lora.loraDmSent)
             .put("loraDmReceived", snap.lora.loraDmReceived)
             .put("loraReoffered", snap.lora.loraReoffered)
-            .put("loraProfileRefanSkipped", snap.lora.loraProfileRefanSkipped)
-            .put("loraOfferSent", snap.lora.loraOfferSent)
-            .put("loraOfferReceived", snap.lora.loraOfferReceived)
-            .put("loraBridged", snap.lora.loraBridged)
-            .put("loraBridgeRefused", snap.lora.loraBridgeRefused)
-            .put("loraPassive", snap.lora.loraPassive)
+            // A held DM re-aired as a probe to a recipient who stayed silent (ADR 2026-10.rp3s).
+            .put("loraReprobed", snap.lora.loraReprobed)
+            // An own room post kept off the air because it needs more than one packet (ADR 2026-10.rp3s).
+            .put("loraRoomTooLong", snap.lora.loraRoomTooLong)
+            // An older build's OFFER (tag 0x10) heard and dropped: an old build's board is in range.
+            .put("loraRetiredCtl", snap.lora.loraRetiredCtl)
+            // Fanned before our own id was read and past the few then admitted (ADR 2026-10.rp3s): a stalling id read.
+            .put("loraPreIdRefused", snap.lora.loraPreIdRefused)
+            // The board-holder source failed (ADR 2026-10.rp3s): non-zero, the re-probe may have stopped probing.
+            .put("loraBoardHoldersFailed", snap.lora.loraBoardHoldersFailed)
             .put("loraSkippedLinked", snap.lora.loraSkippedLinked)
             .put("loraSkippedInternet", snap.lora.loraSkippedInternet)
             // A DM-form frame to a recipient this plane has not heard: held in custody for the first-hearing
@@ -1749,7 +1753,7 @@ class DebugBridgeReceiver :
             .put("loraUnheardHeld", snap.lora.loraUnheardHeld)
             .put("loraDmProbes", snap.lora.loraDmProbes)
             // The same gates as `loraSkippedLinked`, asked again at the moment of sending: how much air the
-            // queue would have spent on frames whose answer changed while they waited (LINKED/INTERNET/UNHEARD/STALE/PASSIVE).
+            // queue would have spent on frames whose answer changed while they waited (LINKED/INTERNET/UNHEARD/STALE/NOT_OWN).
             .put("loraStaleAtSend", snap.lora.loraStaleAtSend)
             .put("loraStaleAtSendByReason", JSONObject(snap.lora.loraStaleAtSendByReason))
             .put("loraTickDeferred", snap.lora.loraTickDeferred)
@@ -2308,7 +2312,6 @@ class DebugBridgeReceiver :
         if (intent.hasExtra("channel")) settings.setLoraChannelIndex(intent.getIntExtra("channel", 0))
         if (intent.hasExtra(EXTRA_ON)) settings.setLoraEnabled(intent.getBooleanExtra(EXTRA_ON, false))
         if (intent.hasExtra("dms")) settings.setLoraDmEnabled(intent.getBooleanExtra("dms", true))
-        if (intent.hasExtra("bridge")) settings.setLoraBridgeEnabled(intent.getBooleanExtra("bridge", true))
         if (intent.hasExtra("room")) settings.setLoraRoomEnabled(intent.getBooleanExtra("room", true))
 
         val status = lora.status.value
@@ -2316,7 +2319,6 @@ class DebugBridgeReceiver :
             .put("status", "ok")
             .put("enabled", settings.loraEnabled.first())
             .put("dms", settings.loraDmEnabled.first())
-            .put("bridge", settings.loraBridgeEnabled.first())
             .put("room", settings.loraRoomEnabled.first())
             .put("address", settings.loraDeviceAddress.first() ?: JSONObject.NULL)
             .put("channel", settings.loraChannelIndex.first())
@@ -2326,17 +2328,8 @@ class DebugBridgeReceiver :
             .put("rssi", status.lastRssi ?: JSONObject.NULL)
             .put("queueFree", status.queueFree ?: JSONObject.NULL)
             .put("queued", status.queued)
-            .put("heard", status.heard) // frame authors, relayed and backfilled ones included
+            .put("heard", status.heard) // frame authors, an older build's relayed ones included
             .put("boardsHeard", status.boardsHeard) // radios on air — "how many boards can I hear"
-            // The bridge's own oracle (ADR 044): which board here speaks for the pocket, what the radio is,
-            // and how much of the hour's airtime allowance has gone — the numbers a two-pocket trial reads.
-            .put("role", status.role.name)
-            // The election's inputs, not just its verdict: "why is this board listening?" is otherwise
-            // unanswerable in the field, which is exactly how the reachable-vs-linked bug survived review.
-            .put("pocketLinks", status.pocketLinks)
-            .put("gatewaysHeard", status.gatewaysHeard)
-            // pocketSightings > pocketLinks is the shape of the field failure: peers heard but not linked.
-            .put("pocketSightings", status.pocketSightings)
             // Peers a connected spool covers: DM-form frames to them stay off the air (ADR 2026-09.y5f3).
             .put("internetCovered", status.internetCovered)
             .put("radio", status.airtime?.let { "${it.region}/${it.preset}${if (it.known) "" else " (assumed)"}" } ?: JSONObject.NULL)
@@ -2357,15 +2350,8 @@ class DebugBridgeReceiver :
                         .put("boardChannelUtilPercent", status.boardAir?.channelUtilPercent?.toDouble() ?: JSONObject.NULL)
                         .put("liveMs", air.liveUsedMs)
                         .put("liveBudgetMs", air.liveBudgetMs)
-                        .put("bridgeMs", air.bridgeUsedMs)
-                        .put("bridgeBudgetMs", air.bridgeBudgetMs)
-                        .put("bootstrapMs", air.bootstrapUsedMs)
-                        .put("bootstrapBudgetMs", air.bootstrapBudgetMs)
                         .put("publicMs", air.publicUsedMs)
                         .put("publicBudgetMs", air.publicBudgetMs)
-                        // No budget of its own — bounded by the Trickle timer and the window total (ADR
-                        // 2026-09.7c8n) — so what matters here is that it is no longer inside bridgeMs.
-                        .put("gossipMs", air.gossipUsedMs)
                         .put("totalMs", air.totalUsedMs)
                 } ?: JSONObject.NULL,
             ).put("counters", metricsJson(metrics.snapshot()))

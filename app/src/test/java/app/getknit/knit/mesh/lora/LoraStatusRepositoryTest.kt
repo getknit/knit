@@ -101,10 +101,6 @@ class LoraStatusRepositoryTest {
                     known = true,
                     liveUsedMs = 0,
                     liveBudgetMs = 45_000,
-                    bridgeUsedMs = 0,
-                    bridgeBudgetMs = 13_500,
-                    bootstrapUsedMs = 0,
-                    bootstrapBudgetMs = 11_250,
                     dedicated = true,
                 )
             status.value = LoraStatus(state = ready, airtime = air)
@@ -148,17 +144,15 @@ class LoraStatusRepositoryTest {
                     known = true,
                     liveUsedMs = 40_000,
                     liveBudgetMs = 45_000,
-                    bridgeUsedMs = 1_000,
-                    bridgeBudgetMs = 13_500,
-                    bootstrapUsedMs = 0,
-                    bootstrapBudgetMs = 11_250,
+                    publicUsedMs = 1_000,
+                    publicBudgetMs = 6_750,
                 )
             val roomy = spent.copy(liveUsedMs = 20_000)
             status.value = LoraStatus(state = LinkState.Idle, airtime = spent)
             assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
             status.value = LoraStatus(state = ready, airtime = spent)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = true, canPost = true), repo.facts.first())
-            // Live and bridge spending count together, against the live budget — as the governor admits them.
+            // Live and public spending count together, against the live budget — as the governor admits them.
             status.value = LoraStatus(state = ready, airtime = roomy)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = false, canPost = true), repo.facts.first())
         }
@@ -234,10 +228,6 @@ class LoraStatusRepositoryTest {
                     known = true,
                     liveUsedMs = 0,
                     liveBudgetMs = 45_000,
-                    bridgeUsedMs = 0,
-                    bridgeBudgetMs = 13_500,
-                    bootstrapUsedMs = 0,
-                    bootstrapBudgetMs = 11_250,
                     signing = false,
                 )
             status.value = LoraStatus(state = ready, airtime = air)

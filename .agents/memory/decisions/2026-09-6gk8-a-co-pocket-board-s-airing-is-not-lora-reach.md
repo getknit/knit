@@ -66,3 +66,7 @@ Kept true by `LoraMeshTransportTest.aCoPocketGatewaysAiringIsNotReachForItsAutho
 `aRadioLearnedToBeCoPocketWithdrawsItsEarlierHearings`,
 `aCleartextTicksRetriesDedupOnWhatTheySayNotOnTheirSignature`, and
 `AckSyncTest.aCleartextTickBacksOffLikeTheSealedOne` / `aBackedOffCleartextTickStillGoesHomeTheMomentALinkExists`.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+The co-pocket reach withdrawal (it needed OFFERs, which this build drops) and the cleartext tick's `targetedKey` (LoRa's `fastSend` refuses every tick) are gone. `AckSync.backOff` for the cleartext tick stays.

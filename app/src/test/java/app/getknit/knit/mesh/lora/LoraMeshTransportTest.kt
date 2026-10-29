@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -69,8 +70,6 @@ class LoraMeshTransportTest {
         return WireEnvelope(relay = relay, sig = sig, signed = WireCodec.encodeEnvelope(env))
     }
 
-    private fun profile(sender: String): WireEnvelope = frame(FrameType.PROFILE, sender, body = "x".repeat(20))
-
     /**
      * The unsigned form (ADR 059): a `relay = false` DM-form chat from [sender] to [to] with an EMPTY sig — the
      * v3 live-link tick as the transport sees it (it never verifies; the policy admits it by shape).
@@ -110,18 +109,18 @@ class LoraMeshTransportTest {
             val before = b.link.sent.size
 
             val first = unsignedTick("bob", "alice")
-            b.transport.fastSend(first, Peer("alice"))
+            b.transport.longRangeFanout(first, FanoutHint.TICK)
             advanceTimeBy(4_000)
             runCurrent()
             val afterFirst = b.link.sent.size
             assertEquals("an unsigned tick rides as one packet", before + 1, afterFirst)
 
-            b.transport.fastSend(unsignedTick("bob", "alice"), Peer("alice"))
+            b.transport.longRangeFanout(unsignedTick("bob", "alice"), FanoutHint.TICK)
             advanceTimeBy(4_000)
             runCurrent()
             assertEquals("a second unsigned tick with its own id is not shadowed by the first", afterFirst + 1, b.link.sent.size)
 
-            b.transport.fastSend(first, Peer("alice")) // AckSync's verbatim retry inside the window
+            b.transport.longRangeFanout(first, FanoutHint.TICK) // AckSync's verbatim retry inside the window
             advanceTimeBy(4_000)
             runCurrent()
             assertEquals("the verbatim resend is suppressed", afterFirst + 1, b.link.sent.size)
@@ -295,7 +294,8 @@ class LoraMeshTransportTest {
             a.link.readyOnStart = false // the board is still connecting when the mesh fans frames at us
             a.transport.start()
             runCurrent()
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = noise()))
+            // DM-form, so it may fragment: a room post rides in one packet or not at all (ADR 2026-10.rp3s).
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "carol", body = noise()))
             a.link.ready() // the handshake completes (at MTU 512) with that frame still queued
             runCurrent()
             advanceTimeBy(30_000)
@@ -305,7 +305,7 @@ class LoraMeshTransportTest {
             assertTrue("every part fits an MTU-255 board", preReady.all { it.size <= LoraMeshTransport.PRE_READY_PAYLOAD })
             assertTrue("and none was chunked at the old protocol maximum", preReady.none { it.size > 228 })
 
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = noise()))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "carol", body = noise()))
             advanceTimeBy(30_000)
             runCurrent()
             val afterReady = a.link.sent.drop(preReady.size)
@@ -328,35 +328,6 @@ class LoraMeshTransportTest {
             writes++
         }
     }
-
-    @Test
-    fun aRestartDoesNotBeaconAgainInsideTheProfileFloor() =
-        runTest {
-            // The lab's reinstall cycle: the process dies and comes straight back, and the beacon floor — an
-            // in-memory timestamp — used to be void every time, so session-up put a profile on the air on
-            // every launch however recently the last one had gone out.
-            val air = FakeMeshtasticAir()
-            val state = FakePlaneState()
-            val first = rig(air, 1u, "alice", backgroundScope, state = state) { testScheduler.currentTime }
-            first.transport.start()
-            runCurrent()
-            advanceTimeBy(1)
-            runCurrent()
-            assertEquals("session-up beacons the profile", 1, first.link.sent.size)
-            first.transport.stop()
-            runCurrent()
-            assertTrue("stopping persisted the limiters", state.snapshot != null)
-
-            advanceTimeBy(60_000) // a minute later — well inside PROFILE_FLOOR_MS
-            val second = rig(air, 1u, "alice", backgroundScope, state = state) { testScheduler.currentTime }
-            second.transport.start()
-            runCurrent()
-            advanceTimeBy(1)
-            runCurrent()
-
-            assertEquals("the floor survived the restart", 0, second.link.sent.size)
-            second.transport.stop()
-        }
 
     @Test
     fun aRestartInheritsTheSpentWindowRatherThanAFreshAllowance() =
@@ -396,15 +367,17 @@ class LoraMeshTransportTest {
             state.snapshot =
                 LoraPlaneSnapshot(
                     savedAtWall = 60 * 60_000,
-                    selfProfileAtWall = 60 * 60_000,
+                    // A whole window's worth, and then some: trusted, it would hold every frame for good.
+                    air = listOf(AirBooking(atWall = 60 * 60_000, ms = 10 * LoraAirtime.WINDOW_MS, bucket = AirBucket.LIVE.name)),
                 )
             val rig = rig(air, 1u, "alice", backgroundScope, state = state) { testScheduler.currentTime }
             rig.transport.start()
             runCurrent()
-            advanceTimeBy(1)
+            rig.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = testScheduler.currentTime))
+            advanceTimeBy(5_000)
             runCurrent()
 
-            assertEquals("a beacon that a bad snapshot would have suppressed", 1, rig.link.sent.size)
+            assertEquals("a post that a bad snapshot would have held", 1, rig.link.sent.size)
             rig.transport.stop()
         }
 
@@ -414,8 +387,6 @@ class LoraMeshTransportTest {
         val rng = kotlin.random.Random(1234)
         return buildString(chars) { repeat(chars) { append(alphabet[rng.nextInt(alphabet.length)]) } }
     }
-
-    private fun profileSource(sender: String): suspend () -> WireEnvelope = { profile(sender) }
 
     private class Rig(
         val transport: LoraMeshTransport,
@@ -431,17 +402,9 @@ class LoraMeshTransportTest {
         scope: kotlinx.coroutines.CoroutineScope,
         config: kotlinx.coroutines.flow.Flow<LoraConfig?> = MutableStateFlow(LoraConfig("AA:$nodeNum", 0)),
         farFrames: suspend (String) -> List<WireEnvelope> = { emptyList() },
-        framesMissing: suspend (IntArray, Int, Boolean) -> List<WireEnvelope> = { _, _, _ -> emptyList() },
+        boardHolders: kotlinx.coroutines.flow.Flow<Set<String>>? = null,
         channelName: String = KnitChannel.NAME,
         pace: LoraPacePolicy = LoraPacePolicy(minGapMs = 0),
-        // No jitter, for the reason LoraGossipPolicy documents the seam: its Trickle timer transmits at a
-        // *random* point in each interval's second half, so the default policy puts an OFFER on the air at a
-        // wall-clock-independent but run-dependent time. Any test that advances virtual time across an
-        // interval boundary then counts a packet it did not send — which is not hypothetical: it made
-        // `aProfileIsFannedOncePerPublishNotOnEverySeenSetLapse` fail on CI (`expected:<3> but was:<4>`,
-        // the offer landing inside its 4 s re-fan window) while passing everywhere else. With `random = { 0 }`
-        // the offer goes out at exactly the midpoint, as it already does in LoraBridgeTest.
-        gossip: LoraGossipPolicy = LoraGossipPolicy(random = { 0 }),
         firmware: String = "2.5.0",
         publicKey: String? = null,
         onPublicPost: suspend (MeshPost) -> Unit = {},
@@ -457,9 +420,8 @@ class LoraMeshTransportTest {
                 selfId = selfId,
                 link = link,
                 config = config,
-                selfProfile = profileSource(selfNode),
                 farFrames = farFrames,
-                framesMissing = framesMissing,
+                boardHolders = boardHolders,
                 onPublicPost = onPublicPost,
                 onBoardBound = onBoardBound,
                 scope = scope,
@@ -468,7 +430,6 @@ class LoraMeshTransportTest {
                 clock = now,
                 wallClock = now,
                 pace = pace,
-                gossip = gossip,
             )
         val received = mutableListOf<InboundFrame>()
         scope.launch { transport.inbound.collect { received += it } }
@@ -476,7 +437,7 @@ class LoraMeshTransportTest {
     }
 
     @Test
-    fun readyMakesTheTransportHealthyAndBeaconsAProfile() =
+    fun readyMakesTheTransportHealthyAndAirsNothingOfItsOwnAccord() =
         runTest {
             val air = FakeMeshtasticAir()
             val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
@@ -486,7 +447,8 @@ class LoraMeshTransportTest {
             runCurrent()
             assertEquals(TransportHealth.Healthy, a.transport.health.value)
             assertEquals(1L, a.metrics.lora().loraSessionUps)
-            assertTrue("a self-profile beacon went out on session up", a.link.sent.isNotEmpty())
+            // No profile beacon on session up any more (ADR 2026-10.rp3s): an idle board airs nothing.
+            assertTrue(a.link.sent.isEmpty())
             a.transport.stop()
         }
 
@@ -730,35 +692,6 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aPassiveGatewayStillReadsItsOwnBoardsChannel() =
-        runTest {
-            // ADR 044's election decides who speaks for the pocket on Knit's channel. It has no say here: the
-            // room is this phone's own window onto its own board, nothing heard leaves the phone, and a
-            // board-holder standing down on the Knit hop must not go blind on the channel it paid for.
-            val air = FakeMeshtasticAir()
-            val posts = mutableListOf<MeshPost>()
-            val r = bridgeRig(air, posts)
-            // A co-pocket rival with a lower publisher key takes the ACTIVE role; we stand down.
-            r.transport.suppressDataPath(setOf("bob"))
-            val bobKey = StoreDigest.hash64("bob")
-            r.link.deliver(
-                from = 9u,
-                channelIndex = 1,
-                portnum = MeshtasticProto.PORT_PRIVATE_APP,
-                payload = LoraCtl.encodeOffer(bobKey, IntArray(0), 200),
-            )
-            runCurrent()
-
-            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
-            runCurrent()
-
-            assertEquals("the passive board still reads its own channel", 1, posts.size)
-            assertEquals(1L, r.metrics.meshtastic().meshPostHeard)
-            assertEquals(1L, r.metrics.meshtastic().meshPostIngested)
-            r.transport.stop()
-        }
-
-    @Test
     fun aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary() =
         runTest {
             // The debug bridge can bind any index by hand. On such a board index 0 IS Knit's own traffic, so
@@ -991,37 +924,6 @@ class LoraMeshTransportTest {
                 listOf(MeshtasticProto.PORT_TEXT_MESSAGE, MeshtasticProto.PORT_PRIVATE_APP),
                 r.link.sentPortnums,
             )
-            r.transport.stop()
-        }
-
-    @Test
-    fun aPassiveGatewayStillPostsThroughItsOwnBoard() =
-        runTest {
-            // Each user posts through their own board. Standing down on Knit's hop (ADR 044) says nothing
-            // about the user's own channel, and a post that silently went nowhere is the failure this room's
-            // whole design exists to avoid.
-            val air = FakeMeshtasticAir()
-            val r = bridgeRig(air, mutableListOf())
-            // A co-pocket rival with a lower publisher key takes the ACTIVE role; we stand down (ADR 044).
-            r.transport.suppressDataPath(setOf("bob"))
-            r.link.deliver(
-                from = 9u,
-                channelIndex = 1,
-                portnum = MeshtasticProto.PORT_PRIVATE_APP,
-                payload = LoraCtl.encodeOffer(StoreDigest.hash64("bob"), IntArray(0), 200),
-            )
-            runCurrent()
-
-            assertNull(r.transport.postToPublicChannel("hello mesh"))
-            runCurrent()
-
-            assertEquals(
-                "hello mesh",
-                r.link.sent
-                    .single()
-                    .decodeToString(),
-            )
-            assertEquals(1L, r.metrics.meshtastic().publicPostSent)
             r.transport.stop()
         }
 
@@ -1517,7 +1419,7 @@ class LoraMeshTransportTest {
             // Bridge off: this test has to advance past the gossip interval to age the frame, and an OFFER
             // put on the air on the way would be counted here as the frame that escaped.
             val a =
-                rig(air, 1u, "alice", backgroundScope, config = MutableStateFlow(LoraConfig("AA:1", 0, bridge = false))) {
+                rig(air, 1u, "alice", backgroundScope, config = MutableStateFlow(LoraConfig("AA:1", 0))) {
                     testScheduler.currentTime
                 }
             a.transport.start()
@@ -1582,7 +1484,7 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aLongRoomChatFragmentsAndReassembles() =
+    fun aLongDmFormFrameFragmentsAndReassembles() =
         runTest {
             val air = FakeMeshtasticAir()
             val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
@@ -1590,9 +1492,10 @@ class LoraMeshTransportTest {
             a.transport.start()
             b.transport.start()
             runCurrent()
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = incompressibleBody(400)))
+            // A room post rides in one packet or not at all (ADR 2026-10.rp3s); our own sealed ctl is DM-form and still fragments.
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "carol", body = incompressibleBody(400)))
             runCurrent()
-            assertTrue("a 300-char post arrives reassembled", b.received.any { it.envelope.senderId == "alice" })
+            assertTrue("a 400-char frame arrives reassembled", b.received.any { it.envelope.senderId == "alice" })
             assertEquals(1L, b.metrics.lora().loraReassembled)
             a.transport.stop()
             b.transport.stop()
@@ -1651,7 +1554,7 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aStaleChatIsNotFannedButAProfileAndAFreshChatAre() =
+    fun aStaleChatIsNotFannedButAFreshOneIs() =
         runTest {
             val air = FakeMeshtasticAir()
             val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
@@ -1660,73 +1563,27 @@ class LoraMeshTransportTest {
             advanceTimeBy(20 * 60_000) // 20 min into the session
             val baseline = a.link.sent.size
 
-            // A custody re-serve: a room post / DM stamped 20 min ago re-enters the pipeline and is re-fanned.
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "old room post", sentAt = 0L))
+            // A custody re-serve of our own: a room post / DM stamped 20 min ago re-enters the pipeline and is re-fanned.
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "old room post", sentAt = 0L))
             // (Addressed to a third party: a DM to *us* is refused by the recipient gate before freshness is asked.)
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "dave", body = "old dm", sentAt = 0L))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "dave", body = "old dm", sentAt = 0L))
             advanceTimeBy(4_000)
             runCurrent()
             assertEquals("stale chat never rides a live plane", baseline, a.link.sent.size)
             assertEquals(2L, a.metrics.lora().loraSuppressed)
 
-            // A peer's profile carries its publish stamp (hours old) and is the key bootstrap — never refused.
-            a.transport.fastFanout(frame(FrameType.PROFILE, "carol", body = "x".repeat(20), sentAt = 0L))
+            // A profile, however fresh, never rides any more (ADR 2026-10.rp3s).
+            a.transport.fastFanout(frame(FrameType.PROFILE, "alice", body = "x".repeat(20), sentAt = testScheduler.currentTime))
             advanceTimeBy(4_000)
             runCurrent()
-            assertEquals("an old profile still rides", baseline + 1, a.link.sent.size)
+            assertEquals(baseline, a.link.sent.size)
 
             val now = testScheduler.currentTime
-            hearFrom(a, "dave", sentAt = now) // heard, so the reach gate lets a relayed DM to him ride (ADR 2026-10.a4pm)
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "dave", body = "fresh ctl", sentAt = now))
             advanceTimeBy(4_000)
             runCurrent()
-            val beforeFresh = a.link.sent.size // past the first-hearing beacon that hearing set off
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "dave", body = "fresh dm", sentAt = now))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("a fresh DM rides", beforeFresh + 1, a.link.sent.size)
+            assertEquals("a fresh one rides", baseline + 1, a.link.sent.size)
             a.transport.stop()
-        }
-
-    @Test
-    fun aFirstHearingBeaconsAfterASixtySecondGapWhileSessionUpKeepsTheFloor() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            // This counts every packet alice sends, and the assertions are about beacons — so put her first
-            // gossip OFFER (a floor interval's midpoint, 2.5 min in) beyond the whole timeline rather than
-            // relying on the inbound-frame resets to keep shifting it out of the way.
-            val quiet = LoraGossipPolicy(minIntervalMs = 30 * 60_000, random = { 0 })
-            val a = rig(air, 1u, "alice", backgroundScope, gossip = quiet) { testScheduler.currentTime }
-            a.transport.start()
-            runCurrent()
-            assertEquals("session-up beacon", 1, a.link.sent.size)
-
-            // Two minutes later bob comes up and beacons; alice has never heard him, so she beacons again —
-            // her last beacon was inside the 5-min floor but past the 60-s first-hearing gap.
-            advanceTimeBy(2 * 60_000)
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            b.transport.start()
-            runCurrent()
-            assertEquals("alice re-beacons for a newly heard peer", 2, a.link.sent.size)
-            assertEquals("bob's own session-up beacon; alice's reply is inside his gap", 1, b.link.sent.size)
-
-            // Ten seconds later carol comes up: inside everyone's 60-s gap, so nobody re-beacons.
-            advanceTimeBy(10_000)
-            val c = rig(air, 3u, "carol", backgroundScope) { testScheduler.currentTime }
-            c.transport.start()
-            runCurrent()
-            assertEquals(2, a.link.sent.size)
-            assertEquals(1, b.link.sent.size)
-
-            // A reconnect one minute later is a session-up trigger and keeps the 5-min floor.
-            advanceTimeBy(60_000)
-            a.link.drop()
-            runCurrent()
-            a.link.start("AA:1")
-            runCurrent()
-            assertEquals("no session-up beacon inside the 5-min floor", 2, a.link.sent.size)
-            a.transport.stop()
-            b.transport.stop()
-            c.transport.stop()
         }
 
     private fun idOf(wire: WireEnvelope): String = WireCodec.decodeEnvelope(wire.signed)!!.id
@@ -1754,15 +1611,20 @@ class LoraMeshTransportTest {
             val aSentBefore = a.link.sent.size
 
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            b.transport.start() // bob beacons; alice hears him for the first time
+            b.transport.start()
+            runCurrent()
+            // No beacon any more (ADR 2026-10.rp3s): bob's own post is what alice first hears him by.
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "back on", sentAt = testScheduler.currentTime))
             advanceTimeBy(4_000)
             runCurrent()
 
             assertEquals("custody is asked once, for bob", listOf("bob"), asked)
-            // The addressee is double-checked, and the frame fanned inside the dedup window is skipped.
+            // The addressee is double-checked, a frame somebody else wrote never airs, and the probe fanned inside the
+            // dedup window is re-offered all the same: a transmission is not a hearing (ADR 2026-10.rp3s).
             assertEquals(1L, a.metrics.lora().loraReoffered)
-            assertEquals("alice's first-hearing beacon + one re-offered frame", aSentBefore + 2, a.link.sent.size)
-            assertTrue("bob received the re-offered DM", b.received.any { it.envelope.id == idOf(carried) })
+            assertEquals("one re-offered frame", aSentBefore + 1, a.link.sent.size)
+            assertTrue("bob received the re-offered DM", b.received.any { it.envelope.id == idOf(fannedLive) })
+            assertFalse("the relayed one never airs", b.received.any { it.envelope.id == idOf(carried) })
             assertFalse(b.received.any { it.envelope.id == idOf(notForBob) })
 
             // Hearing bob again inside the linger is not a first hearing.
@@ -1777,16 +1639,15 @@ class LoraMeshTransportTest {
             advanceTimeBy(4_000)
             runCurrent()
             assertEquals(listOf("bob", "bob"), asked)
-            // The live DM goes now its dedup window has lapsed; the carried one was re-offered inside the hour and
-            // waits (ADR 2026-10.a4pm's per-frame memory).
-            assertEquals(2L, a.metrics.lora().loraReoffered)
+            // It was re-offered inside the hour, so it waits (ADR 2026-10.a4pm's per-frame memory).
+            assertEquals(1L, a.metrics.lora().loraReoffered)
             a.transport.stop()
             b.transport.stop()
         }
 
     // --- The reach gate: a DM rides only to a recipient this plane has heard (ADR 2026-10.a4pm). ---
 
-    /** A rig with the bridge off, so no OFFER lands among the frames a reach-gate test counts. */
+    /** The reach-gate tests' rig: one board, its own re-offer source, and nothing else on the air. */
     private fun TestScope.quietRig(
         air: FakeMeshtasticAir,
         nodeNum: UInt,
@@ -1794,17 +1655,15 @@ class LoraMeshTransportTest {
         farFrames: suspend (String) -> List<WireEnvelope> = { emptyList() },
         pace: LoraPacePolicy = LoraPacePolicy(minGapMs = 0),
         state: LoraPlaneState = LoraPlaneState.None,
-        framesMissing: suspend (IntArray, Int, Boolean) -> List<WireEnvelope> = { _, _, _ -> emptyList() },
-        bridge: Boolean = false,
+        boardHolders: kotlinx.coroutines.flow.Flow<Set<String>>? = null,
     ): Rig =
         rig(
             air,
             nodeNum,
             selfNode,
             backgroundScope,
-            config = MutableStateFlow(LoraConfig("AA:$nodeNum", 0, bridge = bridge)),
             farFrames = farFrames,
-            framesMissing = framesMissing,
+            boardHolders = boardHolders,
             pace = pace,
             state = state,
         ) { testScheduler.currentTime }
@@ -1837,46 +1696,20 @@ class LoraMeshTransportTest {
             val before = pace.airtime.snapshot(testScheduler.currentTime)
 
             val b = quietRig(air, 2u, "bob")
-            b.transport.start() // bob beacons; alice hears him for the first time
+            b.transport.start()
+            runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "back on", sentAt = testScheduler.currentTime))
             advanceTimeBy(10_000)
             runCurrent()
 
-            assertEquals("the two held DMs, not the probe the dedup window still holds", 2L, a.metrics.lora().loraReoffered)
-            assertEquals(3L, a.metrics.lora().loraDmSent)
-            // The probe went to a board that was off; once bob's ✓✓ for these lands, framesFor drops them and a
-            // later hearing re-offers what is still unacked — the probe included, its dedup slot lapsed.
-            assertTrue("bob has the two that were held", dms.drop(1).all { dm -> b.received.any { it.envelope.id == idOf(dm) } })
+            // All three: the probe went to a board that was off, and the re-offer no longer asks the dedup slot it took
+            // (ADR 2026-10.rp3s) — a transmission is not a hearing.
+            assertEquals("the two held DMs and the lost probe", 3L, a.metrics.lora().loraReoffered)
+            assertEquals(4L, a.metrics.lora().loraDmSent)
+            assertTrue("bob has all three", dms.all { dm -> b.received.any { it.envelope.id == idOf(dm) } })
             val after = pace.airtime.snapshot(testScheduler.currentTime)
             assertTrue("our own re-offer spends LIVE", after.liveUsedMs > before.liveUsedMs)
-            assertEquals("and none of BRIDGE", before.bridgeUsedMs, after.bridgeUsedMs)
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    /** A frame alice carries for someone else is backfill, and keeps the backfill's meter. */
-    @Test
-    fun aRelayedReofferStaysOnTheBridgeBucket() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val carried = frame(FrameType.CHAT, "carol", recipientId = "bob", body = "relayed for carol")
-            val pace = LoraPacePolicy(minGapMs = 0)
-            val a = quietRig(air, 1u, "alice", farFrames = { listOf(carried) }, pace = pace)
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            val before = pace.airtime.snapshot(testScheduler.currentTime)
-
-            val b = quietRig(air, 2u, "bob")
-            b.transport.start()
-            advanceTimeBy(10_000)
-            runCurrent()
-
-            assertEquals(1L, a.metrics.lora().loraReoffered)
-            assertTrue(b.received.any { it.envelope.id == idOf(carried) })
-            val after = pace.airtime.snapshot(testScheduler.currentTime)
-            assertTrue("someone else's frame spends BRIDGE", after.bridgeUsedMs > before.bridgeUsedMs)
-            assertEquals("and none of LIVE", before.liveUsedMs, after.liveUsedMs)
+            assertEquals("and none of PUBLIC", before.publicUsedMs, after.publicUsedMs)
             a.transport.stop()
             b.transport.stop()
         }
@@ -2051,10 +1884,11 @@ class LoraMeshTransportTest {
     /**
      * The hint decides what the gate asks about. Our own sealed ctl (a reaction, a reset, a seed — hinted
      * [FanoutHint.CONTENT]) has no message row, so nothing would ever re-offer it: it flies as before. A relayed
-     * DM-form frame is opaque: held, and it never spends the probe — that is our own DMs' to spend.
+     * DM-form frame never even reaches the gate (ADR 2026-10.rp3s): it is not ours, so it neither airs nor spends the
+     * probe — that is our own DMs' to spend.
      */
     @Test
-    fun anOwnCtlFliesToAnUnheardPeerWhileARelayedDmIsHeldAndNeverProbes() =
+    fun anOwnCtlFliesToAnUnheardPeerWhileARelayedDmNeverAirsNorProbes() =
         runTest {
             val air = FakeMeshtasticAir()
             val a = quietRig(air, 1u, "alice")
@@ -2072,7 +1906,7 @@ class LoraMeshTransportTest {
             a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "carol's dm"))
             advanceTimeBy(10_000)
             runCurrent()
-            assertEquals("the relayed one was held", 1L, a.metrics.lora().loraUnheardHeld)
+            assertEquals("the relayed one is refused before the gate", 0L, a.metrics.lora().loraUnheardHeld)
             assertEquals("and spent no probe", 0L, a.metrics.lora().loraDmProbes)
             assertEquals(1L, a.metrics.lora().loraDmSent)
 
@@ -2081,45 +1915,6 @@ class LoraMeshTransportTest {
             runCurrent()
             assertEquals("our own DM still has the window", 1L, a.metrics.lora().loraDmProbes)
             a.transport.stop()
-        }
-
-    /**
-     * A board-less pocket-mate's DM, held while we were its gateway, was a live send too: re-offered on LIVE.
-     * Someone else's stays on BRIDGE (pinned by [aRelayedReofferStaysOnTheBridgeBucket]).
-     */
-    @Test
-    fun aLinkedPocketMatesHeldDmIsReofferedOnTheLiveBucket() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val carried = frame(FrameType.CHAT, "carol", recipientId = "bob", body = "from my pocket-mate")
-            val pace = LoraPacePolicy(minGapMs = 0)
-            val a = quietRig(air, 1u, "alice", farFrames = { listOf(carried) }, pace = pace)
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            a.transport.suppressDataPath(setOf("carol")) // carol is linked: she rides our board
-            // Her first DM to the unheard bob takes the probe (into a sky bob's board is not yet in); the next is held.
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "the probe"))
-            a.transport.longRangeFanout(carried)
-            advanceTimeBy(10_000)
-            runCurrent()
-            assertEquals(1L, a.metrics.lora().loraDmProbes)
-            assertEquals("held: bob is not heard", 1L, a.metrics.lora().loraUnheardHeld)
-            val before = pace.airtime.snapshot(testScheduler.currentTime)
-
-            val b = quietRig(air, 2u, "bob")
-            b.transport.start()
-            advanceTimeBy(10_000)
-            runCurrent()
-
-            assertEquals(1L, a.metrics.lora().loraReoffered)
-            assertTrue(b.received.any { it.envelope.id == idOf(carried) })
-            val after = pace.airtime.snapshot(testScheduler.currentTime)
-            assertTrue("a pocket-mate's held DM spends LIVE", after.liveUsedMs > before.liveUsedMs)
-            assertEquals(before.bridgeUsedMs, after.bridgeUsedMs)
-            a.transport.stop()
-            b.transport.stop()
         }
 
     /**
@@ -2173,53 +1968,6 @@ class LoraMeshTransportTest {
         }
 
     /**
-     * A copy the bridge queued on BRIDGE holds the frame's dedup slot; when the recipient is then heard, the
-     * re-offer lifts that copy onto LIVE in place instead of being turned away — the stall the lab found, where
-     * a spent BRIDGE share held our own DM for a window while LIVE had air.
-     */
-    @Test
-    fun aReofferLiftsTheBridgesQueuedCopyOntoLive() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "held for bob")
-            val pace = LoraPacePolicy(minGapMs = 0)
-            val a =
-                quietRig(
-                    air,
-                    1u,
-                    "alice",
-                    farFrames = { listOf(dm) },
-                    pace = pace,
-                    framesMissing = { _, _, _ -> listOf(dm) },
-                    bridge = true,
-                )
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            a.link.free = 0 // the board holds the queue, so the served copy waits as a spent share would hold it
-            runCurrent()
-            val sentBefore = a.link.sent.size
-            // The bridge's copy: bob's board OFFERs a set that lacks it, and the serve queues it on BRIDGE.
-            hearOffer(a, from = 9u, publisher = "bob")
-            runCurrent()
-            assertEquals("queued, not aired", sentBefore, a.link.sent.size)
-            val queued = pace.pending
-
-            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
-            advanceTimeBy(1_000)
-            runCurrent()
-            assertEquals("the re-offer took the queued copy's place", 1L, a.metrics.lora().loraReoffered)
-            assertEquals("one copy, not two", queued, pace.pending)
-            a.link.updateHeadroom(16)
-            advanceTimeBy(10_000)
-            runCurrent()
-            assertEquals("it aired once, on LIVE", 0L, pace.airtime.snapshot(testScheduler.currentTime).bridgeUsedMs)
-            assertTrue(a.metrics.lora().loraDmSent >= 1)
-            a.transport.stop()
-        }
-
-    /**
      * A probe the queue took by shedding an older frame is in the queue, so it spent the window and is counted
      * — `DROPPED_OLDEST` is an admission, only `REFUSED` gives the window back.
      */
@@ -2240,32 +1988,6 @@ class LoraMeshTransportTest {
             assertEquals("and is the probe", 1L, a.metrics.lora().loraDmProbes)
             a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "second"), FanoutHint.CHAT)
             assertEquals("the window is spent", 1L, a.metrics.lora().loraUnheardHeld)
-            a.transport.stop()
-        }
-
-    /**
-     * As the gateway, a board-less pocket-mate's DM reaches the air only through us, unhinted: it may take the
-     * probe for its recipient, or its DMs to a quiet far peer would wait for a hearing nothing provokes. A
-     * stranger's relayed DM still may not.
-     */
-    @Test
-    fun aLinkedPocketMatesDmMayProbeAsTheGateway() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val a = quietRig(air, 1u, "alice")
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            a.transport.suppressDataPath(setOf("carol"))
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "carol's dm"))
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "and another"))
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "erin", recipientId = "dave", body = "a stranger's"))
-            advanceTimeBy(10_000)
-            runCurrent()
-            assertEquals("carol's first DM probed for bob", 1L, a.metrics.lora().loraDmProbes)
-            assertEquals("her second and the stranger's were held", 2L, a.metrics.lora().loraUnheardHeld)
-            assertEquals(1L, a.metrics.lora().loraDmSent)
             a.transport.stop()
         }
 
@@ -2313,7 +2035,7 @@ class LoraMeshTransportTest {
             a.link.free = 0
             runCurrent()
             hearFrom(a, "bob", sentAt = testScheduler.currentTime)
-            advanceTimeBy(1_000)
+            advanceTimeBy(LoraMeshTransport.REOFFER_SETTLE_MS + 1_000)
             runCurrent()
             assertEquals("re-offered on the first hearing", 1L, a.metrics.lora().loraReoffered)
             a.transport.suppressDataPath(setOf("bob")) // linked while it waits
@@ -2330,38 +2052,6 @@ class LoraMeshTransportTest {
             advanceTimeBy(10_000)
             runCurrent()
             assertEquals(2L, a.metrics.lora().loraReoffered)
-            assertEquals(1L, a.metrics.lora().loraDmSent)
-            a.transport.stop()
-        }
-
-    /**
-     * The bridge never queues a second copy of a DM-form frame the pacer already holds: superseding the probe (on
-     * LIVE) with its own copy would push it onto BRIDGE, a share that may be spent, when it is going anyway.
-     */
-    @Test
-    fun theBridgeDoesNotPushAQueuedProbeDownToBridge() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "probe", sentAt = 5_000L)
-            val pace = LoraPacePolicy(minGapMs = 0)
-            val a = quietRig(air, 1u, "alice", pace = pace, framesMissing = { _, _, _ -> listOf(dm) }, bridge = true)
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            a.link.free = 0
-            runCurrent()
-            a.transport.longRangeFanout(dm, FanoutHint.CHAT)
-            runCurrent()
-            val queued = pace.pending
-            hearOffer(a, from = 9u, publisher = "bob")
-            runCurrent()
-            assertEquals("no second copy, and the first not displaced", queued, pace.pending)
-            a.link.updateHeadroom(16)
-            advanceTimeBy(10_000)
-            runCurrent()
-            val air0 = pace.airtime.snapshot(testScheduler.currentTime)
-            assertEquals("it left on LIVE", 0L, air0.bridgeUsedMs)
             assertEquals(1L, a.metrics.lora().loraDmSent)
             a.transport.stop()
         }
@@ -2409,47 +2099,15 @@ class LoraMeshTransportTest {
             pace.onQueueStatus(0)
             a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "probe"), FanoutHint.CHAT)
             assertEquals(1L, a.metrics.lora().loraDmProbes)
-            a.transport.fastFanout(profile("carol")) // BOOTSTRAP outranks DM: the probe is shed
+            // Our own sealed ctl to someone else: DM class too, so the full queue sheds its oldest DM — the probe.
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "carol", body = "ctl"), FanoutHint.CONTENT)
             assertEquals(1L, a.metrics.lora().loraDroppedQueue)
-            pace.onQueueStatus(16) // the board frees up and the profile drains, leaving the queue room for the next
+            pace.onQueueStatus(16) // the board frees up and the ctl drains, leaving the queue room for the next
             advanceTimeBy(10_000)
             runCurrent()
 
             a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "again"), FanoutHint.CHAT)
             assertEquals("the shed probe gave its window back", 2L, a.metrics.lora().loraDmProbes)
-            a.transport.stop()
-        }
-
-    /**
-     * A re-offer the queue refused (full of higher classes) never queued: the pacer hands it back and its dedup slot
-     * reopens, so a fan-out of the same frame inside the window still rides.
-     */
-    @Test
-    fun aRefusedReofferGivesItsSlotBack() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "held")
-            val pace = LoraPacePolicy(minGapMs = 0, queueCap = 1)
-            val a = quietRig(air, 1u, "alice", farFrames = { listOf(dm) }, pace = pace)
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(5_000)
-            runCurrent()
-            pace.onQueueStatus(0)
-            a.transport.fastFanout(profile("carol")) // BOOTSTRAP fills the one slot: a DM-class newcomer is refused
-            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
-            runCurrent()
-            assertEquals("refused, so not counted as re-offered", 0L, a.metrics.lora().loraReoffered)
-            assertTrue(a.metrics.lora().loraDroppedQueue >= 1)
-
-            pace.onQueueStatus(16)
-            advanceTimeBy(10_000)
-            runCurrent()
-            a.transport.longRangeFanout(dm, FanoutHint.CHAT) // bob is heard: it rides if its slot came back
-            advanceTimeBy(10_000)
-            runCurrent()
-            assertEquals("the slot came back", 1L, a.metrics.lora().loraDmSent)
-            assertEquals(0L, a.metrics.lora().loraSuppressed)
             a.transport.stop()
         }
 
@@ -2482,10 +2140,19 @@ class LoraMeshTransportTest {
             runCurrent()
             assertEquals("the room keeps riding", baseline + 1, a.link.sent.size)
 
+            // An idle board airs nothing (ADR 2026-10.rp3s), so bob has to say something to be heard at all.
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
             b.transport.start()
-            advanceTimeBy(4_000)
             runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "here", sentAt = testScheduler.currentTime))
+            runCurrent()
+            advanceTimeBy(2 * LoraMeshTransport.REOFFER_SETTLE_MS)
+            runCurrent()
+            assertTrue(
+                "alice heard bob, so a re-offer was due if DMs rode",
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
             assertTrue("no re-offer either", asked.isEmpty())
             assertEquals(0L, a.metrics.lora().loraDmSent)
             a.transport.stop()
@@ -2506,10 +2173,19 @@ class LoraMeshTransportTest {
             runCurrent()
             // Bob is on a live BLE/NAN link — custody's digest exchange syncs to him there for real.
             a.transport.suppressDataPath(setOf("bob"))
+            // An idle board airs nothing (ADR 2026-10.rp3s): bob's post is alice's first hearing of him.
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
             b.transport.start()
-            advanceTimeBy(4_000)
             runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "here", sentAt = testScheduler.currentTime))
+            runCurrent()
+            advanceTimeBy(2 * LoraMeshTransport.REOFFER_SETTLE_MS)
+            runCurrent()
+            assertTrue(
+                "alice heard bob, so the re-offer ran",
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
             assertTrue("custody is not even asked", asked.isEmpty())
             assertEquals(0L, a.metrics.lora().loraReoffered)
             a.transport.stop()
@@ -2541,43 +2217,6 @@ class LoraMeshTransportTest {
             runCurrent()
             assertTrue("allowed again after the window", a.link.sent.size > afterFirst)
             a.transport.stop()
-        }
-
-    @Test
-    fun fastSendOnlyReachesLoraReachablePeersNotServedByAnotherPlane() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            // bob hears alice, so alice becomes reachable to bob.
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "ping"))
-            runCurrent()
-            val bSentBefore = b.link.sent.size
-
-            // A tick toward a peer bob has never heard is dropped.
-            b.transport.fastSend(frame(FrameType.RECEIPT, "bob"), Peer("stranger"))
-            runCurrent()
-            assertEquals("no send to an unreachable peer", bSentBefore, b.link.sent.size)
-
-            // A tick toward alice, whom another plane holds a LIVE LINK to, is skipped — she gets it there.
-            b.transport.suppressDataPath(setOf("alice"))
-            b.transport.fastSend(frame(FrameType.RECEIPT, "bob"), Peer("alice"))
-            runCurrent()
-            assertEquals("no send to a peer another plane covers", bSentBefore, b.link.sent.size)
-
-            // But a peer merely *sighted* on BLE/NAN is covered by nothing, so the tick must still ride.
-            // Read as coverage, a sighting refused a far peer's only path to its ✓✓ (field, 2026-08-25).
-            b.transport.suppressDataPath(emptySet())
-            b.transport.onForeignReachable(setOf("alice"))
-            b.transport.fastSend(frame(FrameType.RECEIPT, "bob"), Peer("alice"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue("a tick to a LoRa-reachable, uncovered peer rides", b.link.sent.size > bSentBefore)
-            a.transport.stop()
-            b.transport.stop()
         }
 
     /** A cleartext `receipt` for [ackId] as AckSync builds each attempt: a fresh id and signature every time. */
@@ -2612,187 +2251,21 @@ class LoraMeshTransportTest {
         to.link.deliver(from = from, channelIndex = 0, portnum = MeshtasticProto.PORT_PRIVATE_APP, payload = it)
     }
 
-    /** [to] hears [publisher]'s OFFER aired by board [from] — how the plane learns whose radio that is. */
-    private fun hearOffer(
+    /**
+     * [wire] handed to [to] off the air from board [from], as an older build's gateway still airs frames it did not
+     * write — what no build since ADR 2026-10.rp3s puts on the air, and every build still reads.
+     */
+    private fun deliverFrame(
         to: Rig,
-        from: UInt,
-        publisher: String,
-    ) = to.link.deliver(
-        from = from,
-        channelIndex = 0,
-        portnum = MeshtasticProto.PORT_PRIVATE_APP,
-        payload = LoraCtl.encodeOffer(StoreDigest.hash64(publisher), IntArray(0), 200),
-    )
+        wire: WireEnvelope,
+        from: UInt = 9u,
+        snr: Float? = 6.5f,
+        rssi: Int? = -85,
+    ) = LoraFrameCodec.encodeBest(wire, fragId = sigCounter and 0xFFFF)!!.parts.forEach {
+        to.link.deliver(from = from, channelIndex = 0, portnum = MeshtasticProto.PORT_PRIVATE_APP, payload = it, rxSnr = snr, rxRssi = rssi)
+    }
 
-    @Test
-    fun aCoPocketGatewaysAiringIsNotReachForItsAuthors() =
-        runTest {
-            // Field, 2026-09-26: the lab P9 sat PASSIVE beside the P7 gateway it held a BLE link to. The P7 aired a
-            // board-less test peer's room posts, the P9's board heard them, and the author went into the P9's
-            // `reachable` — so every ✓✓ owed to it went onto the air, 218 at a time, and held the window full.
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            b.transport.suppressDataPath(setOf("alice")) // bob holds a live link to alice: same pocket
-            hearOffer(b, from = 1u, publisher = "alice")
-            runCurrent()
-
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "carol has no board"))
-            advanceTimeBy(4_000)
-            runCurrent()
-
-            assertTrue("the frame still crosses — delivery is untouched", b.received.any { it.envelope.senderId == "carol" })
-            assertFalse(
-                "but a co-pocket board's airing puts nobody in reach",
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-            val before = b.link.sent.size
-            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("carol"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("so carol's ✓✓ stays off the air", before, b.link.sent.size)
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    @Test
-    fun aFarGatewaysAiringStillPutsItsBoardlessAuthorInReach() =
-        runTest {
-            // ADR 2026-09.wkbk rests on this: a far pocket's ✓✓ goes back over LoRa to a board-less author because
-            // the far gateway aired that author's post, and hands it the last hop over its own link.
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            hearOffer(b, from = 1u, publisher = "alice") // a gateway, but not one bob is linked to
-            runCurrent()
-
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "from the far pocket"))
-            advanceTimeBy(4_000)
-            runCurrent()
-
-            assertTrue(
-                "carol is reachable through the far gateway",
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    @Test
-    fun linkingTheGatewayWithdrawsTheReachItsBoardVouchedFor() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            hearOffer(b, from = 1u, publisher = "alice")
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "heard while alice was far"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue(
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-
-            // Alice walks into bob's pocket: her board now airs what bob's own radios carry.
-            b.transport.suppressDataPath(setOf("alice"))
-            assertFalse(
-                "the hearing her board vouched for is withdrawn at once, not after the 45-min linger",
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-
-            // And she walks out again: the next fresh airing is reach once more.
-            b.transport.suppressDataPath(emptySet())
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "alice is far again"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue(
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    @Test
-    fun aRadioLearnedToBeCoPocketWithdrawsItsEarlierHearings() =
-        runTest {
-            // The OFFER can land after the frames: a hearing taken from a radio of unknown owner counts (the safe
-            // reading), and is withdrawn once that radio's OFFER names a node bob is linked to.
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            b.transport.suppressDataPath(setOf("alice"))
-            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "before any offer"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue(
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-
-            hearOffer(b, from = 1u, publisher = "alice")
-            runCurrent()
-            assertFalse(
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    @Test
-    fun aCleartextTicksRetriesDedupOnWhatTheySayNotOnTheirSignature() =
-        runTest {
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "ping"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            val before = b.link.sent.size
-
-            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice"))
-            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice")) // AckSync's next attempt: new id, new sig
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("one packet per tick inside the window", before + 1, b.link.sent.size)
-
-            b.transport.fastSend(cleartextReceipt("bob", "m2"), Peer("alice"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("a tick for another message is its own packet", before + 2, b.link.sent.size)
-
-            advanceTimeBy(LoraMeshTransport.SIG_TTL_MS)
-            runCurrent()
-            val lapsed = b.link.sent.size
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "still here")) // keep alice in reach
-            advanceTimeBy(4_000)
-            runCurrent()
-            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("past the window the retry rides again", lapsed + 1, b.link.sent.size)
-            a.transport.stop()
-            b.transport.stop()
-        }
+    private fun profileFrame(sender: String): WireEnvelope = frame(FrameType.PROFILE, sender, body = "x".repeat(20))
 
     @Test
     fun ineligibleFramesAreNeverSent() =
@@ -2852,7 +2325,6 @@ class LoraMeshTransportTest {
             runCurrent()
 
             a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate, ten minutes"))
-            a.transport.fastFanout(profile("bob")) // the other half of what the lab device was logging
             advanceTimeBy(4_000)
             runCurrent()
 
@@ -2893,37 +2365,28 @@ class LoraMeshTransportTest {
             a.transport.stop()
         }
 
-    /**
-     * The bug this guards: presence here is keyed on the frame **author**, and a gateway routinely puts other
-     * people's frames on air — the ADR 044 backfill, this ADR 039 re-offer, and `onDeliver`'s re-fan of
-     * anything first-seen, *including what the Internet plane just pulled off a spool*. A phone switched off
-     * for days therefore showed up as a live neighbour on every listener for the whole 45-minute linger.
-     */
     @Test
     fun aReofferedDmCrossesButDoesNotPutItsAuthorOnTheAir() =
         runTest {
             val air = FakeMeshtasticAir()
-            val carried = frame(FrameType.CHAT, "carol", recipientId = "bob", body = "sent long before bob came up")
-            val a = rig(air, 1u, "alice", backgroundScope, farFrames = { listOf(carried) }) { testScheduler.currentTime }
+            val held = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "sent long before bob came up", sentAt = 0L)
+            val a = rig(air, 1u, "alice", backgroundScope, farFrames = { listOf(held) }) { testScheduler.currentTime }
             a.transport.start()
             runCurrent()
-            // Carol's DM is now well past the fan-out's freshness window; only the re-offer would still carry it.
+            // The DM is now well past the fan-out's freshness window; only the re-offer would still carry it.
             advanceTimeBy(30 * 60_000)
             runCurrent()
 
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            b.transport.start() // bob beacons; alice hears him for the first time and re-offers carol's DM
+            b.transport.start()
+            runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "back on", sentAt = testScheduler.currentTime))
             advanceTimeBy(4_000)
             runCurrent()
 
-            assertTrue("bob still receives the re-offered DM", b.received.any { it.envelope.id == idOf(carried) })
+            assertTrue("bob receives the re-offered DM", b.received.any { it.envelope.id == idOf(held) })
             assertFalse(
-                "but carol is not on the air — alice carried that frame for her",
-                b.transport.reachable.value
-                    .any { it.nodeId == "carol" },
-            )
-            assertTrue(
-                "alice, whose own beacon bob heard, is",
+                "but an old frame is not presence — it says where the frame has been, not where alice is",
                 b.transport.reachable.value
                     .any { it.nodeId == "alice" },
             )
@@ -2942,10 +2405,11 @@ class LoraMeshTransportTest {
             runCurrent()
 
             // A profile's sentAt is a publish stamp refreshed every 12 h, so an idle node's beacon is old by
-            // design and must keep counting — it is what triggers the ADR 039 re-offer on first hearing.
+            // design and must keep counting. No build since ADR 2026-10.rp3s airs one, but an older build's gateway
+            // still does, so the board hands it in as it always did.
             advanceTimeBy(12 * 60 * 60_000L)
             runCurrent()
-            a.transport.fastFanout(profile("carol"))
+            deliverFrame(b, profileFrame("carol"), from = 1u)
             advanceTimeBy(4_000)
             runCurrent()
             assertTrue(
@@ -2958,7 +2422,7 @@ class LoraMeshTransportTest {
             // gets re-fanned. The frame must cross; dave must not come back to life.
             advanceTimeBy(14 * 60 * 60_000L)
             runCurrent()
-            a.transport.fastFanout(profile("dave"))
+            deliverFrame(b, profileFrame("dave"), from = 1u)
             advanceTimeBy(4_000)
             runCurrent()
             assertTrue("the profile still crosses — the key bootstrap is untouched", b.received.any { it.envelope.senderId == "dave" })
@@ -3059,7 +2523,7 @@ class LoraMeshTransportTest {
             // Room for one fragment, then the board is full: the rest of the frame comes back Busy.
             a.link.queueFills = true
             a.link.free = 1
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = incompressibleBody(600)))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = incompressibleBody(600)))
             runCurrent()
             val partial = a.link.sent.size
             assertTrue("the frame really did fragment and stall part-way", partial in 1 until LoraMeshTransport.FRAG_CAP)
@@ -3081,128 +2545,12 @@ class LoraMeshTransportTest {
                     .mapTo(HashSet()) { it.toList() }
                     .size
             assertEquals("no fragment was handed to the board twice", a.link.sent.size, distinct)
-            // Across every bucket: the session's self-profile beacon books BOOTSTRAP (ADR 056), the frame
-            // under test books LIVE, and the invariant is about the ledger as a whole.
+            // Across every bucket: the invariant is about the ledger as a whole.
             assertEquals(
                 "and the ledger booked exactly what went out",
                 a.link.sent.sumOf { pace.airtime.timeOnAirMs(it.size) },
                 AirBucket.entries.sumOf { pace.airtime.usedMs(it, testScheduler.currentTime) },
             )
-            a.transport.stop()
-        }
-
-    /**
-     * ADR 057. A relayed `profile` was gated only by [LoraMeshTransport.SIG_TTL_MS] — the same 10 minutes as
-     * `MeshRouter`'s SeenSet — so a profile that kept arriving looked first-seen again on every lapse and
-     * re-fanned indefinitely. `LoraFramePolicy.isFresh` exempts a profile from the staleness check (its
-     * `sentAt` is a publish stamp, hours old by design), so nothing else stopped it either. Now it rides once
-     * per **publish**, and a republish — which mints a new frame id — rides on its own merits.
-     */
-    @Test
-    fun aProfileBacklogCannotStarveTheGatewayOffer() =
-        runTest {
-            // The lab failure, end to end (2026-09-04). Profiles outrank the OFFER in the dequeue
-            // (BOOTSTRAP < GOSSIP), so a growing backlog of them took every window's freed bootstrap air and
-            // the offer was never *chosen*: `loraOfferSent` stuck at 0 for the whole session, and the two
-            // boards in the pocket therefore both stayed ACTIVE and transmitted every public post twice.
-            // Bounded to one queued copy per author, the backlog drains and the offer gets its turn.
-            val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            runCurrent()
-
-            // A run of republishes from one author, faster than the plane can drain them.
-            repeat(12) {
-                a.transport.fastFanout(frame(FrameType.PROFILE, "carol", body = "x".repeat(20)))
-                runCurrent()
-            }
-            // Well past a Trickle interval, so the gossip loop has had several chances to be heard.
-            advanceTimeBy(3 * LoraGossipPolicy.MAX_INTERVAL_MS)
-            runCurrent()
-
-            assertTrue("the offer reached the air", a.metrics.lora().loraOfferSent > 0)
-            assertTrue(
-                "and the backlog did not grow past one copy of one author's profile",
-                a.link.sent.count { it.size > 0 } < 12,
-            )
-            a.transport.stop()
-        }
-
-    @Test
-    fun aProfileIsFannedOncePerPublishNotOnEverySeenSetLapse() =
-        runTest {
-            val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            runCurrent()
-
-            val published = frame(FrameType.PROFILE, "carol", body = "x".repeat(20))
-            var before = a.link.sent.size
-            a.transport.fastFanout(published)
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("a profile rides the first time it is seen", before + 1, a.link.sent.size)
-
-            // Past the flood-suppression window: this is where the old behaviour started over, and over.
-            advanceTimeBy(LoraMeshTransport.SIG_TTL_MS + 60_000)
-            runCurrent()
-            before = a.link.sent.size
-            a.transport.fastFanout(published)
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("the same publish is not put back on the air", before, a.link.sent.size)
-            assertEquals(1L, a.metrics.lora().loraProfileRefanSkipped)
-            assertEquals("and it is not counted as an ordinary dedup", 0L, a.metrics.lora().loraSuppressed)
-
-            // A republish stamps a new frame id, so it is a different fact and rides.
-            before = a.link.sent.size
-            a.transport.fastFanout(frame(FrameType.PROFILE, "carol", body = "x".repeat(20)))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("a republished profile still rides", before + 1, a.link.sent.size)
-            a.transport.stop()
-        }
-
-    /**
-     * ADR 056. A relayed `profile` is the key bootstrap, so it is judged outside the window's total — but it
-     * has its own share, and once that is gone it waits like anything else. Before the cap, `admits` returned
-     * true for every BOOTSTRAP frame *and* recorded it, so a profile re-fanned on each SeenSet lapse could
-     * spend the whole allowance and leave the plane refusing traffic a human had typed: on the lab gateway
-     * 79 % of every frame it had ever sent was a profile.
-     */
-    @Test
-    fun aRelayedProfileIsMeteredAndStopsAtItsShareInsteadOfBlankingThePlane() =
-        runTest {
-            val pace = LoraPacePolicy(minGapMs = 3_000)
-            val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope, pace = pace) { testScheduler.currentTime }
-            a.transport.start()
-            runCurrent()
-            val baseline = a.link.sent.size
-
-            // Fan a distinct peer profile until the plane stops taking them.
-            var carried = 0
-            repeat(12) { i ->
-                a.transport.fastFanout(frame(FrameType.PROFILE, "carol", body = "profile-$i".padEnd(20, 'x')))
-                advanceTimeBy(4_000)
-                runCurrent()
-            }
-            carried = a.link.sent.size - baseline
-            assertTrue("some bootstrap always rides", carried > 0)
-            val spent = pace.airtime.usedMs(AirBucket.BOOTSTRAP, testScheduler.currentTime)
-            assertTrue(
-                "the bootstrap is booked to its own bucket now, not silently to LIVE",
-                spent > 0 && pace.airtime.usedMs(AirBucket.LIVE, testScheduler.currentTime) == 0L,
-            )
-            assertTrue("and it stops at its share", spent <= pace.airtime.budgetMs(AirBucket.BOOTSTRAP))
-            assertTrue(
-                "twelve profiles must not all ride — that is the unbounded behaviour ADR 056 removed",
-                carried < 12,
-            )
-
-            // The window is not blank: three quarters of it is still there for a message.
-            val sentSoFar = a.link.sent.size
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue("content still goes out with the bootstrap share spent", a.link.sent.size > sentSoFar)
             a.transport.stop()
         }
 
@@ -3243,27 +2591,40 @@ class LoraMeshTransportTest {
                     StandardTestDispatcher(testScheduler) + SupervisorJob() + CoroutineExceptionHandler { _, _ -> },
                 )
             val a = rig(FakeMeshtasticAir(), 1u, "alice", scope, pace = pace, now = clock)
-            a.transport.start()
-            runCurrent()
-
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = incompressibleBody(200)))
-            // Past the inter-packet gap, so nothing but the spent budget is holding the frame back — this is
-            // the window in which the old code's due time fell into the past.
-            advanceTimeBy(10_000)
-            runCurrent()
-            assertEquals("the frame is queued, not sent — the budget is spent", 1, pace.pending)
-
-            val atRest = reads
-            advanceTimeBy(60_000)
-            runCurrent()
-            assertTrue(
-                "the pacer stayed parked over a quiet minute (${reads - atRest} clock reads; a spin blows past $SPIN_CAP)",
-                reads - atRest < IDLE_WAKES_PER_MINUTE,
-            )
-            assertTrue("the clock cap was never hit", reads <= SPIN_CAP)
-            a.transport.stop()
-            scope.cancel()
+            // Cancelled whatever the outcome: the scope is not the test's, and a plane left running in it would have
+            // runTest's final advanceUntilIdle chase its sweep's timer for ever.
+            try {
+                pacerStaysParked(a, pace) { reads }
+            } finally {
+                a.transport.stop()
+                scope.cancel()
+            }
         }
+
+    private fun TestScope.pacerStaysParked(
+        a: Rig,
+        pace: LoraPacePolicy,
+        reads: () -> Int,
+    ) {
+        a.transport.start()
+        runCurrent()
+
+        a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten"))
+        // Past the inter-packet gap, so nothing but the spent budget is holding the frame back — this is
+        // the window in which the old code's due time fell into the past.
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals("the frame is queued, not sent — the budget is spent", 1, pace.pending)
+
+        val atRest = reads()
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertTrue(
+            "the pacer stayed parked over a quiet minute (${reads() - atRest} clock reads; a spin blows past $SPIN_CAP)",
+            reads() - atRest < IDLE_WAKES_PER_MINUTE,
+        )
+        assertTrue("the clock cap was never hit", reads() <= SPIN_CAP)
+    }
 
     /**
      * The recipient gate (ADR 054). A DM-form frame whose recipient a higher-preference plane holds a live
@@ -3282,16 +2643,16 @@ class LoraMeshTransportTest {
             runCurrent()
             val afterBeacon = a.link.sent.size
 
-            // bob is on a live BLE/NAN link: our DM to him and a relayed ✓✓ toward him both stay off the air,
-            // as does a DM addressed to us that the composite re-fans on relay (we are its only reader).
+            // bob is on a live BLE/NAN link: our DM to him and our ✓✓ toward him both stay off the air. A DM addressed
+            // to us that the composite re-fans on relay is not ours, so the admit rule refuses it before any cover.
             a.transport.suppressDataPath(setOf("bob"))
             a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "sealed"))
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "sealed tick"))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "sealed tick"), FanoutHint.TICK)
             a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "alice", body = "sealed"))
             advanceTimeBy(10_000)
             runCurrent()
             assertEquals("nothing on the air for a linked or self recipient", afterBeacon, a.link.sent.size)
-            assertEquals(3L, a.metrics.lora().loraSkippedLinked)
+            assertEquals(2L, a.metrics.lora().loraSkippedLinked)
             assertEquals("the sig dedup slot was not burned", 0L, a.metrics.lora().loraSuppressed)
 
             // A sighting is not a link: the same DM to a merely-sighted bob rides.
@@ -3313,15 +2674,8 @@ class LoraMeshTransportTest {
             a.transport.stop()
         }
 
-    /**
-     * The recipient gate's "or to us" half, before the transport knows who "us" is. [LoraMeshTransport.start]
-     * resolves the self id on a coroutine of its own, and a DM a pocket-mate hands us over the link is re-fanned
-     * on relay the moment it lands: if that comes first, the enqueuing gate reads it as addressed to a stranger.
-     * The pacer waits for the id, so the send-time gate refuses it instead. #141: the lab's linked-DM scenario
-     * under a chaos stall of that one launch, the board airing a DM and a ✓✓ that were both addressed to itself.
-     */
     @Test
-    fun aDmToUsQueuedBeforeTheSelfIdIsKnownNeverRides() =
+    fun nothingAirsBeforeTheSelfIdIsKnownAndOnlyOurOwnFramesAirAfter() =
         runTest {
             val air = FakeMeshtasticAir()
             val self = CompletableDeferred<String>()
@@ -3331,19 +2685,23 @@ class LoraMeshTransportTest {
             advanceTimeBy(1)
             runCurrent()
 
-            // Before the id is known the reach gate lets every DM-form frame through (ADR 2026-10.a4pm: it cannot
-            // tell ours from a stranger's), so the send-time re-ask is the one thing between this and the air.
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "bob", recipientId = "alice", body = "sealed"))
+            // Before the id is known the admit rule cannot be asked (ADR 2026-10.rp3s), so every frame of a kind the
+            // plane carries is queued with its author, and the send-time re-ask is what sorts ours from the rest. A
+            // post typed during a Keystore backoff must still ride; nobody else's may.
+            val now = testScheduler.currentTime
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "ours, typed during the backoff", sentAt = now))
+            a.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "a pocket-mate's", sentAt = now))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "bob", recipientId = "alice", body = "sealed", sentAt = now))
             advanceTimeBy(10_000)
             runCurrent()
             assertEquals("nothing leaves before the id is known", 0, a.link.sent.size)
 
             self.complete("alice")
-            advanceTimeBy(10_000)
+            advanceTimeBy(30_000)
             runCurrent()
-            assertTrue("the beacon queued meanwhile still goes", a.link.sent.isNotEmpty())
-            assertEquals("the DM addressed to us stayed off the air", 0L, a.metrics.lora().loraDmSent)
-            assertEquals(mapOf(StaleAtSend.LINKED.name to 1L), a.metrics.lora().loraStaleAtSendByReason)
+            assertEquals("our own post went, and nothing else", 1, a.link.sent.size)
+            assertEquals(0L, a.metrics.lora().loraDmSent)
+            assertEquals(mapOf(StaleAtSend.NOT_OWN.name to 2L), a.metrics.lora().loraStaleAtSendByReason)
             a.transport.stop()
         }
 
@@ -3364,6 +2722,7 @@ class LoraMeshTransportTest {
             val a = rig(air, 1u, "alice", backgroundScope, selfId = selfId) { testScheduler.currentTime }
             a.transport.start()
             runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "typed during the backoff", sentAt = testScheduler.currentTime))
             advanceTimeBy(1)
             runCurrent()
             assertEquals("nothing leaves while the id is unread", 0, a.link.sent.size)
@@ -3371,7 +2730,7 @@ class LoraMeshTransportTest {
             advanceTimeBy(LoraMeshTransport.SELF_ID_RETRY_MIN_MS + 1)
             runCurrent()
             assertEquals(2, reads)
-            assertTrue("the beacon goes once the retry lands", a.link.sent.isNotEmpty())
+            assertTrue("our own post goes once the retry lands", a.link.sent.isNotEmpty())
             a.transport.stop()
         }
 
@@ -3394,7 +2753,7 @@ class LoraMeshTransportTest {
 
             a.transport.coveredByInternet(setOf("bob"))
             a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "sealed"))
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "sealed tick"))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "sealed tick"), FanoutHint.TICK)
             advanceTimeBy(10_000)
             runCurrent()
             assertEquals("nothing on the air for a spool-covered recipient", afterBeacon, a.link.sent.size)
@@ -3432,37 +2791,6 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aTargetedTickToASpoolPresentPeerIsKeptOffTheAir() =
-        runTest {
-            // The first gate fastSend has had since ADR 044: a cover, not a role. The peer demonstrably has a
-            // path that costs nothing, and the tick is in the spool anyway.
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            b.transport.start()
-            runCurrent()
-            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "ping")) // bob hears alice
-            runCurrent()
-            val bSentBefore = b.link.sent.size
-
-            b.transport.coveredByInternet(setOf("alice"))
-            b.transport.fastSend(frame(FrameType.RECEIPT, "bob"), Peer("alice"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertEquals("the spool carries her tick", bSentBefore, b.link.sent.size)
-            assertEquals(1L, b.metrics.lora().loraSkippedInternet)
-
-            b.transport.coveredByInternet(emptySet())
-            b.transport.fastSend(frame(FrameType.RECEIPT, "bob"), Peer("alice"))
-            advanceTimeBy(4_000)
-            runCurrent()
-            assertTrue("uncovered, the targeted tick rides", b.link.sent.size > bSentBefore)
-            a.transport.stop()
-            b.transport.stop()
-        }
-
-    @Test
     fun aReofferIsSkippedForAPeerTheInternetPlaneCarries() =
         runTest {
             val air = FakeMeshtasticAir()
@@ -3478,6 +2806,8 @@ class LoraMeshTransportTest {
             a.transport.coveredByInternet(setOf("bob"))
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
             b.transport.start()
+            runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "here", sentAt = testScheduler.currentTime))
             advanceTimeBy(4_000)
             runCurrent()
             assertTrue("custody is not even asked", asked.isEmpty())
@@ -3520,24 +2850,6 @@ class LoraMeshTransportTest {
             a.transport.stop()
         }
 
-    @Test
-    fun internetCoverNeverMovesTheGatewayRole() =
-        runTest {
-            // A spool-present board-holder is not a co-pocket rival: the election reads links alone.
-            val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
-            a.transport.start()
-            runCurrent()
-            advanceTimeBy(1)
-            runCurrent()
-            val role = a.transport.status.value.role
-            a.transport.coveredByInternet(setOf("bob", "carol"))
-            runCurrent()
-            assertEquals(role, a.transport.status.value.role)
-            assertEquals(0, a.transport.status.value.pocketLinks)
-            a.transport.stop()
-        }
-
     /**
      * The originator's [FanoutHint.TICK] lands as [FrameClass.TICK] (ADR 054): with the queue full, a DM evicts a
      * hinted tick, and a tick arriving behind a DM yields — while the same bytes without the hint are DM class
@@ -3567,14 +2879,14 @@ class LoraMeshTransportTest {
             assertEquals("a tick behind a DM yields", 2L, a.metrics.lora().loraDroppedQueue)
 
             // The same bytes without the hint are content: within one class the oldest goes, so the newcomer stays.
-            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "relayed dm-form"))
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "own ctl"))
             assertEquals(3L, a.metrics.lora().loraDroppedQueue)
             assertEquals(1, pace.pending)
             a.transport.stop()
         }
 
     @Test
-    fun anUnconfiguredPlaneParksItsLoopsInsteadOfSweepingAndGossiping() =
+    fun anUnconfiguredPlaneParksItsLoopsInsteadOfSweeping() =
         runTest {
             var reads = 0
             val clock = {
@@ -3599,18 +2911,21 @@ class LoraMeshTransportTest {
             runCurrent()
 
             // The state most installs are in: the child is in the composite because BuildConfig.LORA_PLANE is
-            // on, and no board has ever been paired. Before the loops were gated this cost a sweep a minute
-            // -- an election over an empty heard set -- plus a gossip wake, for the life of the service.
-            val atRest = reads
-            advanceTimeBy(60 * 60_000)
-            runCurrent()
-            assertEquals(
-                "an hour with no board reads the clock not at all (${reads - atRest} reads)",
-                atRest,
-                reads,
-            )
-            a.transport.stop()
-            scope.cancel()
+            // on, and no board has ever been paired. Before the loops were gated this cost a sweep a minute for the
+            // life of the service.
+            try {
+                val atRest = reads
+                advanceTimeBy(60 * 60_000)
+                runCurrent()
+                assertEquals(
+                    "an hour with no board reads the clock not at all (${reads - atRest} reads)",
+                    atRest,
+                    reads,
+                )
+            } finally {
+                a.transport.stop()
+                scope.cancel()
+            }
         }
 
     @Test
@@ -3659,4 +2974,838 @@ class LoraMeshTransportTest {
          */
         const val OUTAGE_READS_PER_TEN_MINUTES = 100
     }
+
+    // --- ADR 2026-10.rp3s: the board airs only its own user's frames. ---
+
+    @Test
+    fun aRelayedRoomPostNeverAirs() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "a pocket-mate's post", sentAt = testScheduler.currentTime))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue("the composite re-fans every relay, and this board airs none of them", a.link.sent.isEmpty())
+            a.transport.stop()
+        }
+
+    @Test
+    fun ourOwnOnePacketRoomPostAirsAndNothingElseDoes() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("no beacon, no OFFER: an idle board airs nothing", a.link.sent.isEmpty())
+
+            val post = frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = testScheduler.currentTime)
+            a.transport.fastFanout(post)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals(1, a.link.sent.size)
+            assertTrue(b.received.any { it.envelope.id == idOf(post) })
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    @Test
+    fun ourOwnTwoPacketRoomPostDoesNotAirAndIsCountedApart() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = incompressibleBody(300), sentAt = testScheduler.currentTime))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue("a room post rides in one packet or not at all", a.link.sent.isEmpty())
+            assertEquals(1L, a.metrics.lora().loraRoomTooLong)
+            assertEquals("not past the plane's three packets, so not too big", 0L, a.metrics.lora().loraTooBig)
+            a.transport.stop()
+        }
+
+    @Test
+    fun aRoomReactionAndAProfileOursOrRelayedNeverAir() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val now = testScheduler.currentTime
+            a.transport.fastFanout(frame(FrameType.REACTION, "alice", sentAt = now))
+            a.transport.fastFanout(profileFrame("alice"))
+            a.transport.fastFanout(profileFrame("bob"))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(a.link.sent.isEmpty())
+            a.transport.stop()
+        }
+
+    @Test
+    fun fastSendRefusesEverything() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
+            runCurrent()
+            assertTrue(
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
+            // The room ✓✓ in both its forms: AckSync's cleartext receipt and its sealed escalation.
+            a.transport.fastSend(frame(FrameType.RECEIPT, "alice", recipientId = "bob", relay = false), Peer("bob"))
+            a.transport.fastSend(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "tick", relay = false), Peer("bob"))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue("no room tick rides LoRa", a.link.sent.isEmpty())
+            a.transport.stop()
+        }
+
+    @Test
+    fun aRelayedDmFormFrameNeverAirsWhileOurOwnDmStillDoes() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = quietRig(air, 1u, "alice")
+            a.transport.start()
+            runCurrent()
+            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
+            runCurrent()
+            val now = testScheduler.currentTime
+            // InboundPipeline re-fans every DM-form frame it delivers, plane-agnostic: the admit rule is the gate.
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "bob", body = "relayed", sentAt = now))
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(a.link.sent.isEmpty())
+            a.transport.longRangeFanout(frame(FrameType.CHAT, "alice", recipientId = "bob", body = "ours", sentAt = now), FanoutHint.CHAT)
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals(1L, a.metrics.lora().loraDmSent)
+            a.transport.stop()
+        }
+
+    @Test
+    fun aDmToALinkedPeerDoesNotAir() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = quietRig(air, 1u, "alice")
+            a.transport.start()
+            runCurrent()
+            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
+            // The only feed of the link cover since the gateway left (ADR 2026-10.rp3s): it must still be wired.
+            a.transport.suppressDataPath(setOf("bob"))
+            a.transport.longRangeFanout(
+                frame(FrameType.CHAT, "alice", recipientId = "bob", body = "linked", sentAt = testScheduler.currentTime),
+                FanoutHint.CHAT,
+            )
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(a.link.sent.isEmpty())
+            assertEquals(1L, a.metrics.lora().loraSkippedLinked)
+            a.transport.stop()
+        }
+
+    /**
+     * ADR 2026-10.rp3s: the re-offer no longer asks the fan-out's dedup slot. The probe that went out a minute ago into
+     * an empty sky is exactly the frame a first hearing exists to repair, and the bridge's serve that used to repair it
+     * is gone.
+     */
+    @Test
+    fun aFirstHearingReoffersTheProbeThatWentOutIntoAnEmptySky() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "probe", sentAt = 0L)
+            val a = quietRig(air, 1u, "alice", farFrames = { listOf(dm) })
+            a.transport.start()
+            runCurrent()
+            a.transport.longRangeFanout(dm, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("the probe flew", 1, a.link.sent.size)
+
+            advanceTimeBy(60_000) // well inside the ten-minute dedup window
+            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals(1L, a.metrics.lora().loraReoffered)
+            assertEquals("and it flew again", 2, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    /**
+     * The first hearing waits [LoraMeshTransport.REOFFER_SETTLE_MS] before it asks custody: the frame that made bob
+     * heard is very often his ✓✓ for the probe, and the router applies it a beat later. Read at once, custody would
+     * still call the probe unacked and it would air a second time, since the re-offer no longer asks the dedup slot.
+     */
+    @Test
+    fun aFirstHearingWaitsForTheAckItCarriedBeforeItReoffers() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "probe", sentAt = 0L)
+            var acked = false
+            val a = quietRig(air, 1u, "alice", farFrames = { listOf(dm).filterNot { acked } })
+            a.transport.start()
+            runCurrent()
+            a.transport.longRangeFanout(dm, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("the probe flew", 1, a.link.sent.size)
+
+            advanceTimeBy(60_000)
+            hearFrom(a, "bob", sentAt = testScheduler.currentTime)
+            // The router applies the ✓✓ the hearing carried halfway through the settle.
+            backgroundScope.launch {
+                delay(LoraMeshTransport.REOFFER_SETTLE_MS / 2)
+                acked = true
+            }
+            runCurrent()
+            assertTrue(
+                "bob is heard",
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue("the ack landed", acked)
+            assertEquals("the acked probe is not re-offered", 0L, a.metrics.lora().loraReoffered)
+            assertEquals("nor aired a second time", 1, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    /**
+     * The amendment's whole scenario (ADR 2026-10.rp3s): bob's board is off when alice's first DM probes, so it is lost;
+     * her second is held. Nothing makes a silent bob heard any more — no beacon, no OFFER — so the re-probe re-airs her
+     * newest held DM a window later. Bob, back on, receives it and his ✓✓ makes him heard; the first hearing re-offers
+     * the DM the lost probe carried. Both land.
+     */
+    @Test
+    fun aSilentRecipientIsReprobedAndTheFirstHearingThatFollowsDeliversTheRest() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val dm1 = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "first", sentAt = 1_000L)
+            val dm2 = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "second", sentAt = 2_000L)
+            val bobGot = mutableSetOf<String>()
+            // MeshManager's view: our unacked DMs to bob, newest first — acked once bob has them.
+            val a = quietRig(air, 1u, "alice", farFrames = { listOf(dm2, dm1).filter { idOf(it) !in bobGot } })
+            a.transport.start()
+            runCurrent()
+            advanceTimeBy(1_000)
+            a.transport.longRangeFanout(dm1, FanoutHint.CHAT)
+            advanceTimeBy(1_000)
+            a.transport.longRangeFanout(dm2, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("the probe flew into an empty sky", 1, a.link.sent.size)
+            assertEquals(1L, a.metrics.lora().loraUnheardHeld)
+
+            // Bob's board comes back; bob has nothing to say, and answers what reaches him with a ✓✓.
+            val b = quietRig(air, 2u, "bob")
+            backgroundScope.launch {
+                b.transport.inbound.collect { frame ->
+                    if (frame.envelope.senderId != "alice") return@collect
+                    bobGot += frame.envelope.id
+                    val tick =
+                        frame(FrameType.CHAT, "bob", recipientId = "alice", body = "", relay = false, sentAt = testScheduler.currentTime)
+                    b.transport.longRangeFanout(tick, FanoutHint.TICK)
+                }
+            }
+            b.transport.start()
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertTrue("bob is silent, so nothing has reached him yet", bobGot.isEmpty())
+
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS)
+            runCurrent()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals("one re-probe", 1L, a.metrics.lora().loraReprobed)
+            assertEquals("both DMs landed", setOf(idOf(dm1), idOf(dm2)), bobGot)
+            assertTrue(
+                "bob's ✓✓ made him heard",
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
+            assertEquals("and the first hearing carried the rest", 1L, a.metrics.lora().loraReoffered)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /** The re-probe's backoff is a limiter: a restart keeps the gap it has earned (ADR 2026-09.7svb). */
+    @Test
+    fun theReprobeBackoffOutlivesARestart() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val state = FakePlaneState()
+            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "held", sentAt = 0L)
+            val first = quietRig(air, 1u, "alice", farFrames = { listOf(dm) }, state = state)
+            first.transport.start()
+            runCurrent()
+            first.transport.longRangeFanout(dm, FanoutHint.CHAT)
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals(1L, first.metrics.lora().loraReprobed)
+            first.transport.stop()
+            runCurrent()
+            val saved = state.snapshot!!.reprobes.single()
+            assertEquals("bob", saved.id)
+            assertEquals("the gap doubled after the first re-probe", 2 * LoraMeshTransport.DM_PROBE_WINDOW_MS, saved.gapMs)
+
+            val second = quietRig(air, 1u, "alice", farFrames = { listOf(dm) }, state = state)
+            second.transport.start()
+            runCurrent()
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("not a fresh base gap after the restart", 0L, second.metrics.lora().loraReprobed)
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS)
+            runCurrent()
+            assertEquals("but on the gap it had earned", 1L, second.metrics.lora().loraReprobed)
+            second.transport.stop()
+            runCurrent()
+            // The due time alone would pass with a gap reset to the base: the second re-probe doubles what was earned.
+            assertEquals(
+                "the restored gap doubled again",
+                4 * LoraMeshTransport.DM_PROBE_WINDOW_MS,
+                state.snapshot!!
+                    .reprobes
+                    .single()
+                    .gapMs,
+            )
+        }
+
+    @Test
+    fun anOlderBuildsOfferIsDroppedUnderItsOwnCounterAndStillCountsTheRadio() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            // An older build's gateway OFFER: first byte 0x10, then a publisher digest and prefixes.
+            a.link.deliver(2u, 0, MeshtasticProto.PORT_PRIVATE_APP, byteArrayOf(LoraMeshTransport.RETIRED_CTL_TAG, 1, 2, 3, 4))
+            runCurrent()
+            assertEquals(1L, a.metrics.lora().loraRetiredCtl)
+            assertEquals(
+                "an unknown tag stays one nobody assigned",
+                null,
+                a.metrics
+                    .fast()
+                    .fastDropsByReason[app.getknit.knit.mesh.FastPathDrop.UNKNOWN_TAG]
+                    ?.takeIf { it > 0 },
+            )
+            assertEquals("the radio is still a radio in range", 1, a.status().boardsHeard)
+            assertEquals("but nobody has spoken", 0, a.status().heard)
+            a.transport.stop()
+        }
+
+    // --- The signal row and the radio count (moved from the bridge's tests). ---
+
+    private fun Rig.status() = transport.status.value
+
+    /**
+     * One packet straight off the air onto this rig's board, bypassing the frame codec — what the portnum/channel
+     * filter and [LoraMeshTransport.noteBoard] see. The defaults are a healthy board-to-board reception on the bound
+     * channel.
+     */
+    private fun Rig.hear(
+        from: UInt,
+        channelIndex: Int = 0,
+        portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
+        snr: Float? = 6.5f,
+        rssi: Int? = -85,
+    ) = link.deliver(from, channelIndex, portnum, byteArrayOf(1), snr, rssi)
+
+    @Test
+    fun oneRadioAiringOthersFramesCountsAsOneRadioAndSeveralPeople() =
+        runTest {
+            // Field report: "3 peers heard over LoRa" with only two radios in existence. The count was of frame
+            // *authors*, and an older build's gateway still airs frames authored by people nowhere near it, so the
+            // number legitimately outruns the hardware. Radios and people are counted separately.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+
+            listOf("bob", "carol", "dave").forEach { author ->
+                deliverFrame(a, frame(FrameType.CHAT, author, body = "from $author", sentAt = testScheduler.currentTime), from = 2u)
+                advanceTimeBy(5_000)
+                runCurrent()
+            }
+
+            assertEquals("one other radio, however many people it speaks for", 1, a.status().boardsHeard)
+            assertEquals("three people are reachable through it", 3, a.status().heard)
+            a.transport.stop()
+        }
+
+    @Test
+    fun theSignalRowIgnoresEverythingTheBoardMerelyOverhears() =
+        runTest {
+            // Field report: the row decayed to -17 dB / -105 dBm over hours and looked healthy again only
+            // after a board reboot, while the real board-to-board link measured +6 dB / -7 dBm throughout.
+            // The reading was taken in the session, ahead of every filter, so a stock board's public primary
+            // channel — strangers four to seven hops out, plus the NodeDB replay the firmware sends at each
+            // handshake — pinned it at the noise floor and it stuck there.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+
+            // A stranger relayed off another channel, and the handshake replay's shape: an SNR, no RSSI.
+            a.hear(3u, channelIndex = 1, snr = -17.25f, rssi = -105)
+            a.hear(4u, portnum = MeshtasticProto.PORT_TELEMETRY, snr = -12.25f, rssi = null)
+            runCurrent()
+
+            assertEquals("the reading is still the radio we actually talk to", 6.5f, a.status().lastSnr!!, 0.001f)
+            assertEquals(-85, a.status().lastRssi)
+            assertEquals("and neither stranger invented a radio", 1, a.status().boardsHeard)
+        }
+
+    @Test
+    fun aReceptionMissingAnRssiKeepsTheOneThatRadioLastGave() =
+        runTest {
+            // Every reception proves the radio is there and when; not all of them carry both numbers. Taking
+            // the newer packet wholesale would blank half the row rather than refresh it.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            a.hear(2u, snr = 7.5f, rssi = null)
+            runCurrent()
+
+            assertEquals("the fresher SNR", 7.5f, a.status().lastSnr!!, 0.001f)
+            assertEquals("the RSSI it came with last", -85, a.status().lastRssi)
+        }
+
+    @Test
+    fun theSignalReadingAgesOutWithTheRadioItBelongsTo() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+            assertEquals(6.5f, a.status().lastSnr!!, 0.001f)
+
+            advanceTimeBy(LoraMeshTransport.REACHABLE_LINGER_MS + LoraMeshTransport.LINGER_SWEEP_MS + 1_000)
+            runCurrent()
+
+            assertEquals("the radio aged out", 0, a.status().boardsHeard)
+            assertNull("so there is no link left to report a reading for", a.status().lastSnr)
+            assertNull(a.status().lastRssi)
+        }
+
+    @Test
+    fun restartingThePlaneDropsTheSignalReading() =
+        runTest {
+            // It used to live in the link and survive `stop()`, so a stale number read as the state of a link
+            // that had not been re-established yet — which is exactly what a board reboot looks like.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+            assertEquals(6.5f, a.status().lastSnr!!, 0.001f)
+
+            a.transport.stop()
+            runCurrent()
+
+            assertNull(a.status().lastSnr)
+            assertNull(a.status().lastRssi)
+        }
+
+    /**
+     * The heard-loss repair (ADR 2026-10.rp3s): bob keeps posting, so he is never unheard and no first hearing comes —
+     * yet alice's DM to him was lost on the air. Once it is a gap old and still unacked it is re-aired as a re-offer,
+     * not a probe.
+     */
+    @Test
+    fun aDmLostOnItsWayToAPeerWhoKeepsTalkingIsReairedAfterAGap() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val bobGot = mutableSetOf<String>()
+            var dm: WireEnvelope? = null
+            val a = quietRig(air, 1u, "alice", farFrames = { listOfNotNull(dm).filter { idOf(it) !in bobGot } })
+            val b = quietRig(air, 2u, "bob")
+            backgroundScope.launch { b.transport.inbound.collect { if (it.envelope.senderId == "alice") bobGot += it.envelope.id } }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "on the ridge", sentAt = testScheduler.currentTime))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue(
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
+
+            val lost = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "lost on the way", sentAt = testScheduler.currentTime)
+            dm = lost
+            air.lossy = { from, _ -> from == 1u }
+            a.transport.longRangeFanout(lost, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            air.lossy = { _, _ -> false }
+            assertEquals("it flew live, to a heard bob", 1L, a.metrics.lora().loraDmSent)
+            assertTrue(bobGot.isEmpty())
+
+            // Bob keeps talking: heard the whole time, so nothing is a first hearing and no probe is due.
+            repeat(4) {
+                advanceTimeBy(5 * 60_000)
+                b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "still here $it", sentAt = testScheduler.currentTime))
+                runCurrent()
+            }
+            advanceTimeBy(2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+
+            assertEquals("re-aired once, as a re-offer", 1L, a.metrics.lora().loraReoffered)
+            assertEquals("not as a probe", 0L, a.metrics.lora().loraReprobed)
+            assertTrue("and it landed", idOf(lost) in bobGot)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /**
+     * The heard-loss repair waits until the newest own unacked DM is a gap old (ADR 2026-10.rp3s): a DM sent just
+     * before the due round may simply not have been answered yet, and re-airing it then spends a packet on a frame
+     * that is still in flight. The round defers one gap, and the repair comes a round after the DM turns a gap old.
+     */
+    @Test
+    fun theHeardLossRepairWaitsUntilTheNewestDmIsAGapOld() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            var dms = emptyList<WireEnvelope>()
+            val a = quietRig(air, 1u, "alice", farFrames = { dms })
+            val b = quietRig(air, 2u, "bob")
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            // Bob keeps talking throughout: heard the whole time, so the repair is the only way back to him.
+            backgroundScope.launch {
+                var n = 0
+                while (true) {
+                    b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "still here ${n++}", sentAt = testScheduler.currentTime))
+                    delay(5 * 60_000L)
+                }
+            }
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue(
+                a.transport.reachable.value
+                    .any { it.nodeId == "bob" },
+            )
+
+            // Everything alice airs is lost, so nothing she sends bob is ever acked.
+            air.lossy = { from, _ -> from == 1u }
+            val lost = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "lost on the way", sentAt = testScheduler.currentTime)
+            dms = listOf(lost)
+            a.transport.longRangeFanout(lost, FanoutHint.CHAT) // on bob's schedule: due one gap from now
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS - 5_000)
+            runCurrent()
+
+            // Shortly before the due round, a second DM: the newest, and far younger than a gap there.
+            val newest = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "and another", sentAt = testScheduler.currentTime)
+            dms = listOf(newest, lost)
+            a.transport.longRangeFanout(newest, FanoutHint.CHAT)
+            runCurrent()
+            assertEquals("both flew live, to a heard bob", 2L, a.metrics.lora().loraDmSent)
+
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS - 1_000) // past the due round, not yet a gap old
+            runCurrent()
+            assertEquals("not repaired while the newest is younger than a gap", 0L, a.metrics.lora().loraReoffered)
+
+            advanceTimeBy(2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("repaired once it is a gap old", 1L, a.metrics.lora().loraReoffered)
+            assertEquals("as a re-offer, not a probe", 0L, a.metrics.lora().loraReprobed)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /**
+     * Before our own id is read only [LoraMeshTransport.PRE_ID_ADMISSIONS] frames are admitted, first come first
+     * served: an own post fanned ahead of a burst of relayed re-fans takes a slot, and the re-fans past the cap are
+     * refused rather than shedding it from a full queue.
+     */
+    @Test
+    fun beforeTheSelfIdIsKnownAnOwnPostFannedFirstKeepsItsSlotAndLaterReFansAreRefused() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val self = CompletableDeferred<String>()
+            val pace = LoraPacePolicy(minGapMs = 0, queueCap = LoraMeshTransport.PRE_ID_ADMISSIONS)
+            val a = rig(air, 1u, "alice", backgroundScope, pace = pace, selfId = { self.await() }) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val now = testScheduler.currentTime
+            val post = frame(FrameType.CHAT, "alice", body = "typed during the backoff", sentAt = now)
+            a.transport.fastFanout(post)
+            // A burst of relayed DM-form re-fans, DM class: uncapped, they would shed the room post from a full queue.
+            repeat(
+                6,
+            ) { a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "dave", body = "relayed $it", sentAt = now)) }
+            assertEquals("only the cap's worth reached the queue", LoraMeshTransport.PRE_ID_ADMISSIONS, pace.pending)
+            assertEquals(3L, a.metrics.lora().loraPreIdRefused)
+            assertEquals("nothing was shed", 0L, a.metrics.lora().loraDroppedQueue)
+
+            self.complete("alice")
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals("our own post went, and nothing else", 1, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    /**
+     * The pre-id cap's trade-off, recorded (ADR 2026-10.rp3s): before the id the fan-out cannot tell our post from a
+     * relayed one, so the cap is first come first served. Four relayed re-fans ahead of an own post take every slot,
+     * and the post is refused under `loraPreIdRefused` — lost to the air, though the radios and the spool still carry
+     * it — rather than any frame being shed from the queue.
+     */
+    @Test
+    fun beforeTheSelfIdIsKnownReFansFannedFirstTakeEverySlotAndOurOwnPostIsRefused() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val self = CompletableDeferred<String>()
+            val pace = LoraPacePolicy(minGapMs = 0, queueCap = LoraMeshTransport.PRE_ID_ADMISSIONS)
+            val a = rig(air, 1u, "alice", backgroundScope, pace = pace, selfId = { self.await() }) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val now = testScheduler.currentTime
+            repeat(LoraMeshTransport.PRE_ID_ADMISSIONS) {
+                a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "dave", body = "relayed $it", sentAt = now))
+            }
+            assertEquals("the re-fans took every slot", LoraMeshTransport.PRE_ID_ADMISSIONS, pace.pending)
+            assertEquals(0L, a.metrics.lora().loraPreIdRefused)
+
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "typed during the backoff", sentAt = now))
+            assertEquals("our post is refused past the cap", 1L, a.metrics.lora().loraPreIdRefused)
+            assertEquals("not queued", LoraMeshTransport.PRE_ID_ADMISSIONS, pace.pending)
+            assertEquals("nothing was shed", 0L, a.metrics.lora().loraDroppedQueue)
+
+            self.complete("alice")
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertTrue("nothing aired: the re-fans are not ours, and our post never queued", a.link.sent.isEmpty())
+            a.transport.stop()
+        }
+
+    /**
+     * A recipient whose pinned profile names no board can be reached by nothing on the air (ADR 2026-10.rp3s): their DM
+     * is held without spending the probe, and never re-probed. A board holder still gets both.
+     */
+    @Test
+    fun aBoardLessRecipientIsNeverProbedNorReprobed() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val toCarol = frame(FrameType.CHAT, "alice", recipientId = "carol", body = "carol has no board", sentAt = 0L)
+            val toBob = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "bob has one", sentAt = 0L)
+            val a =
+                quietRig(
+                    air,
+                    1u,
+                    "alice",
+                    farFrames = { peer -> listOf(toCarol, toBob).filter { WireCodec.decodeEnvelope(it.signed)!!.recipientId == peer } },
+                    boardHolders = MutableStateFlow(setOf("bob")),
+                )
+            a.transport.start()
+            runCurrent()
+            a.transport.longRangeFanout(toCarol, FanoutHint.CHAT)
+            a.transport.longRangeFanout(toBob, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("only bob's DM probed", 1L, a.metrics.lora().loraDmProbes)
+            assertEquals("carol's was held", 1L, a.metrics.lora().loraUnheardHeld)
+            assertEquals(1, a.link.sent.size)
+
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("bob is re-probed, carol never", 1L, a.metrics.lora().loraReprobed)
+            assertTrue("and nothing of carol's ever aired", a.link.sent.size == 2)
+            a.transport.stop()
+        }
+
+    /**
+     * Hearing is evidence of a board (ADR 2026-10.rp3s): bob's pinned profile names none, yet alice hears him on the
+     * air. A DM lost on its way to him still gets the heard-loss repair — it used to be dropped from the schedule as
+     * "not a board holder" on the first due round.
+     */
+    @Test
+    fun aHeardRecipientWithNoPinnedBoardStillGetsTheHeardLossRepair() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val bobGot = mutableSetOf<String>()
+            var dm: WireEnvelope? = null
+            val a =
+                quietRig(
+                    air,
+                    1u,
+                    "alice",
+                    farFrames = { listOfNotNull(dm).filter { idOf(it) !in bobGot } },
+                    boardHolders = MutableStateFlow(emptySet()),
+                )
+            val b = quietRig(air, 2u, "bob")
+            backgroundScope.launch { b.transport.inbound.collect { if (it.envelope.senderId == "alice") bobGot += it.envelope.id } }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "on the ridge", sentAt = testScheduler.currentTime))
+            advanceTimeBy(5_000)
+            runCurrent()
+
+            val lost = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "lost on the way", sentAt = testScheduler.currentTime)
+            dm = lost
+            air.lossy = { from, _ -> from == 1u }
+            a.transport.longRangeFanout(lost, FanoutHint.CHAT)
+            advanceTimeBy(5_000)
+            runCurrent()
+            air.lossy = { _, _ -> false }
+            assertEquals("it flew live, to a heard bob", 1L, a.metrics.lora().loraDmSent)
+
+            repeat(4) {
+                advanceTimeBy(5 * 60_000)
+                b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "still here $it", sentAt = testScheduler.currentTime))
+                runCurrent()
+            }
+            advanceTimeBy(2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+
+            assertEquals("re-aired once, as a re-offer", 1L, a.metrics.lora().loraReoffered)
+            assertTrue("and it landed", idOf(lost) in bobGot)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /**
+     * A holder source that has not emitted yet is "not now", never "never" (ADR 2026-10.rp3s): the schedule a restart
+     * restored is deferred while the source is silent, and bob is re-probed once it names him — no new DM needed.
+     */
+    @Test
+    fun aRestoredScheduleSurvivesAHolderSourceThatHasNotReportedYet() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val state = FakePlaneState()
+            val dm = frame(FrameType.CHAT, "alice", recipientId = "bob", body = "held", sentAt = 0L)
+            val first = quietRig(air, 1u, "alice", farFrames = { listOf(dm) }, state = state)
+            first.transport.start()
+            runCurrent()
+            first.transport.longRangeFanout(dm, FanoutHint.CHAT)
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals(1L, first.metrics.lora().loraReprobed)
+            first.transport.stop()
+            runCurrent()
+            assertEquals(
+                "bob",
+                state.snapshot!!
+                    .reprobes
+                    .single()
+                    .id,
+            )
+
+            val holders = kotlinx.coroutines.flow.MutableSharedFlow<Set<String>>()
+            val second = quietRig(air, 1u, "alice", farFrames = { listOf(dm) }, state = state, boardHolders = holders)
+            second.transport.start()
+            runCurrent()
+            advanceTimeBy(3 * LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("nothing probed while the source is silent", 0L, second.metrics.lora().loraReprobed)
+
+            holders.emit(setOf("bob"))
+            advanceTimeBy(2 * LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("the schedule outlived the wait", 1L, second.metrics.lora().loraReprobed)
+            second.transport.stop()
+        }
+
+    /**
+     * Every held recipient is scheduled, a board holder or not (ADR 2026-10.rp3s): carol has no `loraNode` when alice's
+     * DM is held, so nothing airs; her profile names a board later, and the next due round probes her with that DM.
+     */
+    @Test
+    fun aDmHeldToANonHolderIsReprobedOnceTheirBoardIsKnown() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val holders = MutableStateFlow(emptySet<String>())
+            val toCarol = frame(FrameType.CHAT, "alice", recipientId = "carol", body = "no board yet", sentAt = 0L)
+            val a =
+                quietRig(air, 1u, "alice", farFrames = { peer ->
+                    listOf(toCarol).takeIf { peer == "carol" }.orEmpty()
+                }, boardHolders = holders)
+            a.transport.start()
+            runCurrent()
+            a.transport.longRangeFanout(toCarol, FanoutHint.CHAT)
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("held, not probed", 1L, a.metrics.lora().loraUnheardHeld)
+            assertEquals(0L, a.metrics.lora().loraReprobed)
+            assertTrue("nothing aired", a.link.sent.isEmpty())
+
+            holders.value = setOf("carol")
+            advanceTimeBy(LoraMeshTransport.DM_PROBE_WINDOW_MS + 2 * LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertEquals("re-probed with no new DM", 1L, a.metrics.lora().loraReprobed)
+            assertEquals(1, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    /**
+     * The pre-id cap charges only a frame that reaches the queue (ADR 2026-10.rp3s): a burst of stale, link-covered,
+     * spool-covered and two-packet frames fanned before the id must not use up the slots an own post typed then needs.
+     */
+    @Test
+    fun beforeTheSelfIdIsKnownFramesThatNeverQueueDoNotUseUpTheCap() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val self = CompletableDeferred<String>()
+            val pace = LoraPacePolicy(minGapMs = 0)
+            val a = rig(air, 1u, "alice", backgroundScope, pace = pace, selfId = { self.await() }) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            advanceTimeBy(2 * LoraFramePolicy.FRESH_MS)
+            val now = testScheduler.currentTime
+            a.transport.suppressDataPath(setOf("dave"))
+            a.transport.coveredByInternet(setOf("erin"))
+            repeat(LoraMeshTransport.PRE_ID_ADMISSIONS) {
+                a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "stale $it", sentAt = 0L))
+                a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "dave", body = "linked $it", sentAt = now))
+                a.transport.longRangeFanout(frame(FrameType.CHAT, "carol", recipientId = "erin", body = "spooled $it", sentAt = now))
+                a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = incompressibleBody(300) + it, sentAt = now))
+            }
+            assertEquals("none of them queued", 0, pace.pending)
+
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "typed during the backoff", sentAt = now))
+            assertEquals("our post still found a slot", 1, pace.pending)
+            assertEquals(0L, a.metrics.lora().loraPreIdRefused)
+
+            self.complete("alice")
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals("our own post went", 1, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    /** A failing holder source is caught and counted, not left to stop the re-probe unseen (ADR 2026-10.rp3s). */
+    @Test
+    fun aFailingHolderSourceIsCountedAndThePlaneStaysUp() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a =
+                quietRig(air, 1u, "alice", boardHolders = kotlinx.coroutines.flow.flow { throw IllegalStateException("db closed") })
+            a.transport.start()
+            runCurrent()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(1L, a.metrics.lora().loraBoardHoldersFailed)
+            assertEquals(TransportHealth.Healthy, a.transport.health.value)
+            a.transport.stop()
+        }
 }

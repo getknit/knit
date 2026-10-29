@@ -1,5 +1,7 @@
 package app.getknit.knit.ui.chat
 
+import androidx.annotation.StringRes
+import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.mesh.TransportKind
@@ -175,7 +177,11 @@ fun loraCarryFor(
         else -> LoraCarry.None
     }
 
-/** The composer's body budget in bytes for [carry], or null when the draft would not ride LoRa at all. */
+/**
+ * The composer's body budget in bytes for [carry], or null when the draft would not ride LoRa at all. Zero means no
+ * draft of this shape rides, whatever its length: a room post with a reply or an attachment, since the room's budget
+ * is one packet (ADR 2026-10.rp3s) and either reserve is larger than that, or a DM carrying both.
+ */
 fun loraBudgetFor(
     carry: LoraCarry,
     replying: Boolean,
@@ -185,4 +191,20 @@ fun loraBudgetFor(
         LoraCarry.None -> null
         LoraCarry.Room -> LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying, attached)
         LoraCarry.Dm -> LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached)
+    }
+
+/**
+ * The words for a draft past [loraBudgetFor]'s budget. Both are hedges. The room's names what it covers (ADR
+ * 2026-10.rp3s): LoRa carries a room post only in one packet and never with a reply or an attachment — but the budget is
+ * the incompressible worst case and prose deflates, so a longer post often still fits, and the hint errs toward warning.
+ * A DM's budget sits under the real three-packet ceiling.
+ */
+@StringRes
+fun loraHintFor(carry: LoraCarry): Int =
+    if (carry ==
+        LoraCarry.Room
+    ) {
+        R.string.chat_lora_room_not_carried
+    } else {
+        R.string.chat_lora_long_message
     }

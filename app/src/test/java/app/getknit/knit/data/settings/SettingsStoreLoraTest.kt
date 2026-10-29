@@ -52,16 +52,13 @@ class SettingsStoreLoraTest {
             val store = newStore()
             assertFalse(store.loraEnabled.first())
             assertEquals(BuildConfig.LORA_PLANE, store.loraDmEnabled.first())
-            assertEquals(BuildConfig.LORA_PLANE, store.loraBridgeEnabled.first())
             assertEquals(BuildConfig.LORA_PLANE, store.loraRoomEnabled.first())
 
             store.setLoraEnabled(true)
             store.setLoraDmEnabled(false)
-            store.setLoraBridgeEnabled(false)
             store.setLoraRoomEnabled(false)
             assertEquals(BuildConfig.LORA_PLANE, store.loraEnabled.first())
             assertFalse(store.loraDmEnabled.first())
-            assertFalse(store.loraBridgeEnabled.first())
             assertFalse(store.loraRoomEnabled.first())
         }
 

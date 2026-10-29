@@ -122,3 +122,7 @@ Kept true by `AckSyncTest.aRideNobodyCarriesIsPushedToTheSpoolWhenItsAuthorIsPre
 `aCoalescedTickNeverCarriesMoreRidersThanTheLoraHopFits`; `InboundPipelineTest.aSealedDmReceiptCarriesTheRoomTicksWaitingForItsAuthor`;
 `CompositeMeshTransportTest.internetCoverIsForwardedToEveryChild`; and the three `RoomTickPlanesLabTest`
 scenarios in `mesh/lab/`, which run the real stacks over a fake air and a fake spool.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+The LoRa leg of route 2 is gone: LoRa's `fastSend` refuses every room tick, and `escalateRide` reads only short-range reach, so an author the board alone can hear keeps their tick parked for a link or the spool. The deadline, the spool route and Wi-Fi Aware's air route stay.

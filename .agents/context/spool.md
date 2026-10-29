@@ -15,7 +15,9 @@ lines.
   `MeshManager.ownProfile`:
   READ ADR 2026-09.y5f3 (aa27's ride hold now has a 60 s deadline; the tick then goes to a spool the author
   was recently seen on — a signed `relay = false` frame pushed direct and accounted, never custodied on the
-  acker — else over LoRa's targeted path; every DM-form frame to a spool-present peer stays off the board;
+  acker — else over a fast plane that reaches the author, read off `shortRangeReachable` since ADR 2026-10.rp3s
+  (LoRa's `fastSend` refuses every room tick, so a LoRa-only author's tick stays parked for a link or the spool);
+  every DM-form frame to a spool-present peer stays off the board;
   a node's own profile has one set of bytes per publish stamp) and ADR 2026-09.wkbk (`MeshRouter.handOn` —
   a point-to-point frame addressed to a peer we hold a **live link** to takes that one hop, DM-form chat
   only, which is how a far pocket's tick reaches a board-less author behind the gateway; an acker with no

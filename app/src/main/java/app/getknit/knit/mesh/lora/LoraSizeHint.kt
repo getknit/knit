@@ -2,19 +2,26 @@ package app.getknit.knit.mesh.lora
 
 /**
  * How long a draft may be before it risks not fitting the LoRa hop — the composer's "long message" hint
- * (ADR 040). The hop carries at most 3 × 227 = 681 compact bytes (`LoraFrameCodec`); everything above the
- * body — envelope, signature, the X3DH init a DM carries until the peer's first reply — is fixed cost, so a
+ * (ADR 040). A DM's hop carries at most 3 × 227 = 681 compact bytes (`LoraFrameCodec`); a room post rides only in
+ * **one** packet (ADR 2026-10.rp3s), so its budget is what one packet at the MTU-255 floor (228 B) holds. Everything
+ * above the body — envelope, signature, the X3DH init a DM carries until the peer's first reply — is fixed cost, so a
  * body budget is the honest way to say it before the send. The budgets are deliberately below the true
  * ceilings (a 100-char DM is 439 B with its init; ≈ 335 characters fit) and are pinned by
  * `CoordinationPlaneSizeBudgetTest`, which builds real frames at exactly these sizes and checks they fit in
  * the transcoded `0x05` form the plane sends (ADR 060 — untranscoded, a DM at this budget lands a byte or two
- * over the ceiling), so the hint can under-warn (a longer draft may still fit) but never over-promise. The
+ * over the ceiling), so the hint errs toward warning (a longer draft may still fit) and never over-promises. The
  * reserves are what a quoted reply (two ids, an author, a 120-char snippet) and an attachment reference
  * (hash + key + MIME) add inside the same frame. Pure — the composer calls it per keystroke.
  */
 object LoraSizeHint {
-    /** A plaintext Nearby-room post: no seal, and the codec deflates it, so the budget is the larger one. */
-    const val ROOM_BODY_BYTES = 400
+    /**
+     * A plaintext Nearby-room post, which rides LoRa only in one packet (ADR 2026-10.rp3s): what one 228-B packet holds
+     * of incompressible text, with a few bytes' margin (measured 109 B of random printable ASCII, 2026-10-29). Prose
+     * deflates, so a 150–250 B post often fits one packet too: for it the hint errs toward warning, which is why its
+     * words are a hedge. A reply or an attachment reserve is larger than this, so a room reply or attachment is never
+     * carried at all.
+     */
+    const val ROOM_BODY_BYTES = 100
 
     /** A sealed DM, with the session-initial X3DH init still attached (the worst case until the first reply). */
     const val DM_BODY_BYTES = 320

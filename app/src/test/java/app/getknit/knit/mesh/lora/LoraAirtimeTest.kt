@@ -122,153 +122,26 @@ class LoraAirtimeTest {
         assertEquals(booked, fast.snapshot(0).totalUsedMs)
     }
 
+    /**
+     * The retired buckets of ADR 2026-10.rp3s, read back off a ledger the last build saved: the bridge's and the
+     * gossip OFFER's air is still owed to the window it was spent in, so it comes back as LIVE — a first launch after
+     * the upgrade must not get a free window — while the bootstrap's, judged outside the total, is dropped.
+     */
     @Test
-    fun theBridgeBudgetIsAShareOfTheWholeAllowanceNotASecondOne() {
+    fun aRetiredBucketsBookingIsRestoredAsLiveExceptTheBootstrapsWhichIsDropped() {
+        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("BRIDGE"))
+        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("GOSSIP"))
+        assertNull(AirBucket.restoredFrom("BOOTSTRAP"))
+        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("LIVE"))
+        assertEquals(AirBucket.PUBLIC, AirBucket.restoredFrom("PUBLIC"))
+        assertNull("a bucket no build wrote is dropped", AirBucket.restoredFrom("CHAT"))
+    }
+
+    @Test
+    fun theLiveBudgetIsTheWholeAllowanceAndPublicIsAShareOfIt() {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        assertEquals((air.allowanceMs() * LoraAirtime.BRIDGE_SHARE).toLong(), air.budgetMs(AirBucket.BRIDGE))
         assertEquals(air.allowanceMs(), air.budgetMs(AirBucket.LIVE))
-    }
-
-    @Test
-    fun bridgeIsRefusedAtItsShareWhileLiveStillGoes() {
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        // Spend the bridge share and nothing else.
-        var now = 0L
-        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertFalse("bridge is spent", air.admits(AirBucket.BRIDGE, FrameClass.ROOM, packet, now))
-        assertTrue("live still has the rest of the allowance", air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now))
-        assertTrue(air.usedMs(AirBucket.BRIDGE, now) <= air.budgetMs(AirBucket.BRIDGE))
-    }
-
-    @Test
-    fun aGossipOfferRidesABridgeBudgetThatServingHasSpent() {
-        // The failure this exists for: an OFFER shares BRIDGE with the backfill it drives, so a gateway busy
-        // serving a far pocket starved its own offers — and an offer is the only thing that makes the far
-        // pocket able to serve back. Serving is what should shed under pressure, not the packet that unlocks
-        // the reverse direction.
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val offer = listOf(LoraCtl.HEADER_BYTES + LoraCtl.MAX_PREFIXES * LoraCtl.PREFIX_BYTES)
-        var now = 0L
-        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, offer, now)) {
-            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertFalse("serving is refused at its share", air.admits(AirBucket.BRIDGE, FrameClass.ROOM, offer, now))
-        assertTrue("the offer still rides", air.admits(AirBucket.GOSSIP, FrameClass.GOSSIP, offer, now))
-    }
-
-    @Test
-    fun aGossipOfferStillStopsAtTheWindowTotal() {
-        // The exemption is from the BRIDGE share, not from the allowance: live chat still outranks gossip,
-        // and a window spent on messages somebody typed repairs the bridge in the next one.
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        var now = 0L
-        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertFalse("no air left at all", air.admits(AirBucket.GOSSIP, FrameClass.GOSSIP, packet, now))
-    }
-
-    @Test
-    fun gossipSpendingLeavesServingsShareAlone() {
-        // The reversal of ADR 2026-09.t8t8's "heavy gossip costs serving its headroom" (ADR 2026-09.7c8n).
-        // Booking an exempt class against the share it is exempt from puts the whole cost of gossip on the
-        // one class that has nowhere to fall back to. Its own bucket keeps the exemption and drops the cost.
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        air.record(AirBucket.GOSSIP, MeshtasticProto.MAX_PAYLOAD, 0L)
-        assertEquals("the offer's air is not on serving's ledger", 0L, air.usedMs(AirBucket.BRIDGE, 0L))
-        assertTrue("it is on its own", air.usedMs(AirBucket.GOSSIP, 0L) > 0L)
-        assertEquals(
-            "and still on the total, which is the ceiling that is actually law",
-            air.usedMs(AirBucket.GOSSIP, 0L),
-            air.snapshot(0L).totalUsedMs,
-        )
-    }
-
-    @Test
-    fun offersAtTheTrickleFloorCannotStarveServing() {
-        // The field failure (2026-09-07): two gateways that genuinely disagree keep Trickle at its 5-minute
-        // floor, so three offers land in every 15-minute window. Against the 13.5 s bridge share that was
-        // ~44 % of serving's budget spent on packets serving cannot decline — and with the rest going to the
-        // backfill those offers asked for, `bridgeMs` reached 14026/13500 and a room post sat for 50 minutes.
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val offer = listOf(LoraCtl.HEADER_BYTES + LoraCtl.MAX_PREFIXES * LoraCtl.PREFIX_BYTES)
-        var now = 0L
-        repeat(3) {
-            assertTrue("an offer always rides", air.admits(AirBucket.GOSSIP, FrameClass.GOSSIP, offer, now))
-            air.record(AirBucket.GOSSIP, offer.single(), now)
-            now += 5 * 60_000L
-        }
-        assertEquals("none of it landed on serving", 0L, air.usedMs(AirBucket.BRIDGE, now))
-        assertTrue(
-            "so a whole window's serving is still affordable",
-            air.admits(AirBucket.BRIDGE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), now),
-        )
-    }
-
-    @Test
-    fun aBootstrapFrameStillRidesWithTheRestOfTheBudgetSpent() {
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        var now = 0L
-        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertFalse(air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now))
-        assertTrue(
-            "nothing verifies without the author's profile, so a spent window must not silence it",
-            air.admits(AirBucket.BOOTSTRAP, FrameClass.BOOTSTRAP, packet, now),
-        )
-    }
-
-    @Test
-    fun theBootstrapIsRefusedAtItsOwnShareSoItCanNeverBlankThePlane() {
-        // ADR 056. Before it, BOOTSTRAP returned true unconditionally *and* was recorded, so a relayed
-        // profile re-fanned every 10 min (the sig dedup's TTL) could take the whole allowance and leave the
-        // plane refusing everything a human had typed. On the lab gateway it took 79 % of all frames sent.
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        var now = 0L
-        var admitted = 0
-        while (air.admits(AirBucket.BOOTSTRAP, FrameClass.BOOTSTRAP, packet, now)) {
-            air.record(AirBucket.BOOTSTRAP, MeshtasticProto.MAX_PAYLOAD, now)
-            admitted++
-            now += 3_000
-            assertTrue("the exemption is bounded, not unbounded", admitted < 100)
-        }
-        assertTrue("some bootstrap always fits", admitted > 0)
-        assertTrue(
-            "spending stays inside the bootstrap share",
-            air.usedMs(AirBucket.BOOTSTRAP, now) <= air.budgetMs(AirBucket.BOOTSTRAP),
-        )
-        assertEquals(
-            (air.allowanceMs() * LoraAirtime.BOOTSTRAP_SHARE).toLong(),
-            air.budgetMs(AirBucket.BOOTSTRAP),
-        )
-        // And what it did spend is real air: content sees a window that much smaller, not a fresh one.
-        val left = air.allowanceMs() - air.usedMs(AirBucket.BOOTSTRAP, now)
-        assertTrue("the bootstrap's air is charged to the total too", left < air.allowanceMs())
-        assertTrue("three quarters of the window survives it", left >= air.allowanceMs() * 3 / 4)
-    }
-
-    @Test
-    fun aSpentBootstrapShareDoesNotStopContentGoingOut() {
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        var now = 0L
-        while (air.admits(AirBucket.BOOTSTRAP, FrameClass.BOOTSTRAP, packet, now)) {
-            air.record(AirBucket.BOOTSTRAP, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertFalse(air.admits(AirBucket.BOOTSTRAP, FrameClass.BOOTSTRAP, packet, now))
-        assertTrue("a DM still has the rest of the window", air.admits(AirBucket.LIVE, FrameClass.DM, packet, now))
+        assertEquals((air.allowanceMs() * LoraAirtime.PUBLIC_SHARE).toLong(), air.budgetMs(AirBucket.PUBLIC))
     }
 
     @Test
@@ -619,11 +492,11 @@ class LoraAirtimeTest {
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
         assertNull(air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now = 0))
         var now = 0L
-        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(AirBucket.PUBLIC, FrameClass.ROOM, packet, now)) {
+            air.record(AirBucket.PUBLIC, MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-        assertEquals("the bridge's own share", LoraAirtime.Refusal.SHARE, air.refusal(AirBucket.BRIDGE, FrameClass.DM, packet, now))
+        assertEquals("the public room's own share", LoraAirtime.Refusal.SHARE, air.refusal(AirBucket.PUBLIC, FrameClass.ROOM, packet, now))
         assertNull("live still has the rest of the total", air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now))
         while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
             air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)

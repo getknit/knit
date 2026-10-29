@@ -320,8 +320,8 @@ doc). **Don't start a deferred item without explicit direction.**
   ✓✓ + a reply, and a DM sent while the far board was off landing via the re-offer once it returns — all
   with the phones out of BLE/NAN range) — the GATT layer has no host test. **A DM waits for its recipient to be
   heard** (2026-10-10, ADR 2026-10.a4pm, proposed): a DM-form fan-out rides only to a peer in `reachable`, except
-  one probe DM per recipient per 15 min; the re-offer (own unacked ≤ 6 on `LIVE`, relayed ≤ 4 on `BRIDGE`) delivers
-  the rest on the recipient's first hearing. **Still owed:** its two-phone trial in `context/lora-bridge.md`
+  one probe DM per recipient per 15 min; the re-offer (own unacked ≤ 6 on `LIVE`; relayed ones went with ADR
+  2026-10.rp3s, which also added the backed-off re-probe) delivers the rest on the recipient's first hearing. **Still owed:** its two-phone trial in `context/lora-bridge.md`
   (`loraDmProbes 1`, `loraUnheardHeld 2`, then `loraReoffered ≥ 2` and three ✓✓). **Knit-provisioned channel
   SHIPPED** (2026-08-24): "Set up Knit channel" (or `…debug.LORAPROV`) writes the derived `KnitChannel` as a
   secondary channel over the Meshtastic admin API — the user no longer hand-configures the boards;
@@ -373,7 +373,7 @@ doc). **Don't start a deferred item without explicit direction.**
   warning for the downgrade shape — an unsigned post under 166 B from a contact whose profile advertises a
   key; and a mismatch / board-only verdict seen on hardware, which needs a third signer on the mesh.
   **The room is now a switch, default on** (2026-09-06, ADR 2026-09.x52a): `SettingsStore.loraRoomEnabled`
-  on the LoRa settings screen beside the DM and bridge switches. Off, the transport drops a slot-0 chat
+  on the LoRa settings screen beside the DM switch (the bridge switch went with ADR 2026-10.rp3s). Off, the transport drops a slot-0 chat
   packet before `onPrimaryPacket`, so nothing is judged, verified, moderated, stored or notified
   (`meshPostRefusedByReason.ROOM_OFF` climbs, `meshPostHeard` does not); the row leaves the chat list
   *including* its history, a post cannot leave the device, and the shade is cleared on the off edge. Knit's
@@ -412,11 +412,16 @@ doc). **Don't start a deferred item without explicit direction.**
   closes the **multi-board-per-clique** deferral above, an airtime governor reading the board's region and
   modem preset, and digest-driven backfill of what a far gateway's offer shows it lacks — behind
   `SettingsStore.loraBridgeEnabled` (default on). Live traffic already crossed before this and was not
-  rebuilt. **Still owed:** the **four-device two-pocket trial** in `context/lora-bridge.md`. **The backfill
-  no longer suppresses itself** (2026-09-02, ADR 2026-09.y8pu): `serveOne` consulted the same 10-min `sigSeen`
-  set the fan-out spends, so a frame fanned out of range was skipped by the one path that could repair it —
-  field-observed as a Nearby-room post that never arrived after the boards came back into range. Still owed:
-  the two-board confirmation on hardware. **Airtime shaping
+  rebuilt. **The bridge is REMOVED** (2026-10-29, ADR 2026-10.rp3s, proposed; Stage 1 of the LoRa rewrite on
+  `exp/lora-rewrite`): the board is an endpoint that airs only its own user's frames — an own room post in one
+  packet and own DM-form chat — with no gateway, gossip, backfill, profile beacon, relayed re-offer or room ✓✓; a
+  backed-off re-probe replaces what the beacons and serves did for a silent recipient. Its trials replace the
+  four-device bridge trial: **Still owed:** the board trial in `context/lora-bridge.md` — a pocket-mate's post never
+  airs, an own one-packet post lands, an idle board airs no `PRIVATE_APP` over 30 min (`meshtastic --listen`, `loraSent`
+  and `airtime` flat), and the strand trial (B's board off, A sends two DMs, B back on and silent → both land within
+  one window with ✓✓ on A). **Deferred: "Forward over LoRa"** — a user-initiated long-press that airs one
+  pocket-mate's room post on this phone's board; a second clause of `LoraFramePolicy.airs` and nowhere else, UI
+  undecided. Stages 2 (compact pair-sealed unicast DMs) and 3 (the airtime ledger's replacement) follow. **Airtime shaping
   SHIPPED** (2026-08-27, ADR 054): the recipient gate (a DM-form frame to a linked peer or to self never rides
   the board), a 15-min budget window at the same 5 %, a `TICK` class that sheds first and never spends a
   window's tail, coalesced DM receipts (`DmAckCoalescer`, ≤ 45 s hold, one tick per burst) piggybacked on a
@@ -427,10 +432,10 @@ doc). **Don't start a deferred item without explicit direction.**
   the author was recently seen on (a signed `relay = false` frame pushed direct, spec §9.4 C-9.4-3) or over
   LoRa's targeted path; the instant DM receipt and the escalated group tick are rides too; every DM-form
   frame to a spool-present peer stays off the board (`coveredByInternet`, 15 min). Pinned by
-  `RoomTickPlanesLabTest` over the real LoRa and spool planes in the lab. **Still owed:** the field re-run —
-  a LoRa-only author and a spool-only author each get a room ✓✓ within ~1 min; `lora tx send:` appears on
-  the acker; `receiptsSpooled` and `loraSkippedInternet` move in `…debug.LORA`. The residual is an author
-  reachable only through a relay with no board and no spool. **Meshtastic 2.8 caught up with** (2026-08-31): `LoraAirtime` now charges for
+  `RoomTickPlanesLabTest` over the real LoRa and spool planes in the lab. Since ADR 2026-10.rp3s the LoRa leg is
+  gone: no room ✓✓ airs, and a LoRa-only author's tick waits for a link or the spool. **Still owed:** the field
+  re-run of the spool leg — a spool-only author gets a room ✓✓ within ~1 min; `receiptsSpooled` and
+  `loraSkippedInternet` move in `…debug.LORA`. **Meshtastic 2.8 caught up with** (2026-08-31): `LoraAirtime` now charges for
   the 66-byte XEdDSA signature 2.8 bolts onto any broadcast under 165 B (gated on the board's firmware),
   `ModemPreset` names codes 9–16 (`LongTurbo` is 2.8's new US default and is deaf to `LongFast`), `LoraRegion`
   names the duty-limited regions that were collapsing into `OTHER`'s 100 % (`EU_866` 2.5 %, `EU_N_868` 10 %,
@@ -461,6 +466,9 @@ doc). **Don't start a deferred item without explicit direction.**
   start falling off it), **acknowledged backfill** (a served frame lost to the air waits for the next round),
   and **faster passive-to-active takeover** when an active gateway's phone dies without leaving
   `foreignReachable` (the 45-min `STALE_MS` is the whole blind spot today).
+  <!-- doc-lint: allow LoraCtl — the retired OFFER codec, named as history -->
+  <!-- doc-lint: allow LoraCtl — the shipped bridge this entry records, removed by ADR 2026-10.rp3s -->
+  <!-- doc-lint: allow loraBridgeEnabled — the shipped bridge this entry records, removed by ADR 2026-10.rp3s -->
 
 - ~~**The spool plane is hidden in shipped builds**~~ (2026-08-22, ADR 031) — **introduced at 2.4.0**
   (2026-08-31, ADR 064): `BuildConfig.INTERNET_PLANE` now defaults true in release and staging too, so a
@@ -746,6 +754,7 @@ doc). **Don't start a deferred item without explicit direction.**
   any further dictionary work (`DICT_V2` bought 16 B on the profile, zero margin), dropping the signature on
   *flooded* frames (custody and relays verify `senderId`), and a typed `@CborLabel` mirror for the transcoder
   (it could not pass unknown fields through, and `fastFanout` re-fans frames other builds originated).
+  <!-- doc-lint: allow LoraCtl — the retired OFFER codec, named as history -->
 - **Crypto hardening that is policy, not scheme** (from the 2026-08-29 pre-release review of v3, ADR 059
   amendment) — neither needs a version number, so neither rode v3: (1) mark a frame *seen* only after it
   verifies — today a forged frame carrying a real id shadows the genuine one for the SeenSet window (10 min,

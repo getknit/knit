@@ -235,7 +235,22 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `loraReassembled`/`loraNak`/`loraTooBig`) are the two-board range oracle; `loraNakByReason` (the board's
   `Routing.error_reason` names) says *why* a NAK happened — `TOO_LARGE` means the payload cap is wrong,
   `DUTY_CYCLE_LIMIT`/`RATE_LIMIT_EXCEEDED` mean airtime pressure — and every NAK is also logged as
-  `lora nak id=… reason=…` under `LoraMeshTransport`. `…debug.LORATX --es text <s>`
+  `lora nak id=… reason=…` under `LoraMeshTransport`. Since ADR 2026-10.rp3s the dump carries no `bridge` switch and no
+  `role`/`pocketLinks`/`pocketSightings`/`gatewaysHeard`, the `airtime` object only `liveMs`/`publicMs` (and their
+  budgets) beside `totalMs`, and the bridge counters (`loraOfferSent`/`loraOfferReceived`/`loraBridged`/
+  `loraBridgeRefused`/`loraPassive`/`loraProfileRefanSkipped`) are gone; new are `loraReprobed`, `loraRoomTooLong`,
+  `loraRetiredCtl` (an older build's OFFER heard and dropped), `loraPreIdRefused` and `loraBoardHoldersFailed` (the
+  board-holder source failed).
+  <!-- doc-lint: allow pocketLinks — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow pocketSightings — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow gatewaysHeard — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraOfferSent — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraOfferReceived — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraBridged — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraBridgeRefused — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraPassive — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraProfileRefanSkipped — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  `…debug.LORATX --es text <s>`
   sends a raw payload straight to the board (bypassing the frame codec) to confirm the board transmits via
   `meshtastic --noproto`; `--ei hop <n>` sets `MeshPacket.hop_limit` explicitly, which the production path
   omits — the A/B that proved 2.8 does **not** substitute the node's configured default, so every Knit

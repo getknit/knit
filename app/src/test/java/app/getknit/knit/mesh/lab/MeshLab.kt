@@ -94,7 +94,6 @@ import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
 import app.getknit.knit.mesh.lora.LoraConfig
-import app.getknit.knit.mesh.lora.LoraGossipPolicy
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -1024,24 +1023,10 @@ data class LabLimits(
     /** The profile cap (#234): custody's, and the door's, which reads the same value. */
     val custodyMaxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
     /**
-     * The LoRa bridge's Trickle interval ([LoraGossipPolicy]; 5–15 min in the field). A scenario that waits
-     * for an OFFER or the backfill it drives shortens it; the field numbers would never fire inside an await.
-     */
-    val loraGossipMinMs: Long = LoraGossipPolicy.MIN_INTERVAL_MS,
-    val loraGossipMaxMs: Long = LoraGossipPolicy.MAX_INTERVAL_MS,
-    /**
      * How long the ✓✓ for a DM that arrived over the board batches ([DmAckCoalescer.HOLD_MS], ADR 054). The
-     * field value by default: a scenario that waits for that tick shortens it, as [loraGossipMinMs].
+     * field value by default: a scenario that waits for that tick shortens it.
      */
     val dmAckHoldMs: Long = DmAckCoalescer.HOLD_MS,
-    /**
-     * Whether the boards run the ADR 044 bridge (`LoraConfig.bridge`, the "Bridge pockets" switch, on in the
-     * field). A scenario about the live fan-out and the first-hearing re-offer turns it off, because a far
-     * board's OFFER can have the bridge serve the same frames first, out of a share that carries about three
-     * one-packet frames a window at the lab's fallback preset — and a served frame takes the dedup slot the
-     * re-offer would use.
-     */
-    val loraBridge: Boolean = true,
     /**
      * How often the board's linger sweep re-reads its heard set (`LoraMeshTransport.LINGER_SWEEP_MS`, a minute in the
      * field). A scenario that moves the calendar past `REACHABLE_LINGER_MS` shortens it, so the boards forget each
@@ -1339,33 +1324,23 @@ class LabNode internal constructor(
                 override suspend fun <T> transact(block: suspend () -> T): T = db.withWriteTransaction { block() }
             }
         // The LoRa child is built the way `di/MeshModule` builds it — the real transport over the fake air,
-        // its frame sources late-bound to the manager exactly as the DI lambdas are — and composed with the
-        // radio through the real composite, so the cover, the election inputs and the fast-plane dispatch
-        // are the production ones.
+        // its frame source late-bound to the manager exactly as the DI lambda is — and composed with the
+        // radio through the real composite, so the covers and the fast-plane dispatch are the production ones.
         lora =
             air?.let { air ->
                 LoraMeshTransport(
                     selfId = { nodeId },
                     link = FakeMeshtasticLink(loraNodeNum(), air),
-                    config = MutableStateFlow(LoraConfig("AA:$name", 0, bridge = limits.loraBridge)),
-                    selfProfile = { manager.signedProfile() },
+                    config = MutableStateFlow(LoraConfig("AA:$name", 0)),
                     farFrames = { manager.framesFor(it) },
-                    offerPrefixes = { manager.offerPrefixes(it) },
-                    framesMissing = { prefixes, limit, dms -> manager.framesMissing(prefixes, limit, dms) },
                     onPublicPost = { manager.onPublicPostHeard(it) },
                     scope = scope,
                     metrics = metrics,
                     clock = now,
                     wallClock = now,
                     log = { loraLog += it },
-                    // No inter-packet gap and no Trickle jitter: the scenario's clock is the wall clock.
+                    // No inter-packet gap: the scenario's clock is the wall clock.
                     pace = LoraPacePolicy(minGapMs = 0),
-                    gossip =
-                        LoraGossipPolicy(
-                            minIntervalMs = limits.loraGossipMinMs,
-                            maxIntervalMs = limits.loraGossipMaxMs,
-                            random = { 0 },
-                        ),
                     lingerSweepMs = limits.loraLingerSweepMs,
                 )
             }
@@ -2148,10 +2123,10 @@ class LabNode internal constructor(
         val seen =
             withContext(Dispatchers.Default) {
                 withTimeoutOrNull(MeshLab.AWAIT_MS) {
-                    while (board.pocketLinkIds != radio() || merged() != radio()) delay(MeshLab.POLL_MS)
+                    while (board.linkIds != radio() || merged() != radio()) delay(MeshLab.POLL_MS)
                 }
             } != null
-        check(seen) { "$name's board never took the radio's links ${radio()} (holds ${board.pocketLinkIds}, the stack reads ${merged()})" }
+        check(seen) { "$name's board never took the radio's links ${radio()} (holds ${board.linkIds}, the stack reads ${merged()})" }
     }
 
     /**
@@ -2354,13 +2329,13 @@ class LabNode internal constructor(
         val s = metrics.lora()
         val lines =
             loraLog
-                .filter { l -> LORA_LOG_KEYS.any { it in l } && "bridge held" !in l && "offer" !in l }
+                .filter { l -> LORA_LOG_KEYS.any { it in l } }
                 .takeLast(LORA_LOG_LINES)
                 .joinToString("\n         ")
-        return "\n    lora: sent=${s.loraSent} received=${s.loraReceived} suppressed=${s.loraSuppressed} passive=${s.loraPassive} " +
-            "offers=${s.loraOfferSent}/${s.loraOfferReceived} bridged=${s.loraBridged} nak=${s.loraNak} dropped=${s.loraDroppedQueue} " +
+        return "\n    lora: sent=${s.loraSent} received=${s.loraReceived} suppressed=${s.loraSuppressed} " +
+            "roomTooLong=${s.loraRoomTooLong} retiredCtl=${s.loraRetiredCtl} nak=${s.loraNak} dropped=${s.loraDroppedQueue} " +
             "stale=${s.loraStaleAtSendByReason} unheard=${s.loraUnheardHeld} probes=${s.loraDmProbes} " +
-            "reoffered=${s.loraReoffered} tickDeferred=${s.loraTickDeferred} reassembled=${s.loraReassembled} " +
+            "reoffered=${s.loraReoffered} reprobed=${s.loraReprobed} tickDeferred=${s.loraTickDeferred} reassembled=${s.loraReassembled} " +
             "frag=${s.loraFragSent}\n    rx/tx: $lines"
     }
 
@@ -2437,21 +2412,16 @@ class LabNode internal constructor(
     fun loraTx(label: String): Int = loraLog.count { it.startsWith("lora tx $label") }
 
     /**
-     * 1 once this node's board has put frame [id] on the air, live or as the bridge's backfill, else 0 — a
-     * `tryAwait` count. Live is a `lora tx <live>` line past the [liveBefore] a scenario read before the frame
-     * existed (the fan-out's label names the type, never the id); backfill is `lora tx bridge:<id>`.
-     *
-     * Either one is the board carrying it, and a scenario cannot pin which. Custody comes first on both roads
-     * to the fan-out (`MeshManager.originateSigned`, `InboundPipeline.onDeliver`), so a far gateway's OFFER that
-     * lands in between makes the bridge serve the frame, take its signature slot, and the fan-out is then deduped
-     * on it (ADR 2026-09.y8pu) — still one transmission (#141, Findings 4 and 5). Assert `loraTx` on the live label
-     * alone only where no far board can be heard while the frame is fanned.
+     * 1 once this node's board has put frame [id] on the air, else 0 — a `tryAwait` count. Live is a
+     * `lora tx <live>` line past the [liveBefore] a scenario read before the frame existed (the fan-out's label names
+     * the type, never the id); a re-offer or a re-probe names the id (`lora tx reoffer:<id>`, `lora tx reprobe:<id>`).
+     * The bridge's backfill that used to be a third road left with the bridge (ADR 2026-10.rp3s).
      */
     fun loraAired(
         id: String,
         live: String,
         liveBefore: Int = 0,
-    ): Int = if (loraTx(live) > liveBefore || loraTx("bridge:$id") > 0) 1 else 0
+    ): Int = if (loraTx(live) > liveBefore || loraTx("reoffer:$id") > 0 || loraTx("reprobe:$id") > 0) 1 else 0
 
     /** Who reacted with what on [messageId], as (reactor, emoji). A retraction is a tombstone and is not listed. */
     suspend fun reactions(messageId: String): Set<Pair<String, String>> =
@@ -2675,7 +2645,7 @@ class LabNode internal constructor(
         val EXPLICIT = ImageVerdict(allowed = false, score = 0.99f)
 
         /** The LoRa log lines worth reading on a failure — the radio's own traffic, not the bridge loop's bookkeeping. */
-        val LORA_LOG_KEYS = listOf("rx ", "profile-self", "ready", "fastSend", "send:", "far:", "fanout:", "held", "drop", "stale")
+        val LORA_LOG_KEYS = listOf("rx ", "ready", "far:", "fanout:", "reoffer", "probe", "too long", "drop", "stale")
     }
 }
 

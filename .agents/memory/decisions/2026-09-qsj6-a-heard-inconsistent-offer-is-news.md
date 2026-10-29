@@ -8,7 +8,7 @@ topics: [lora, airtime, reliability]
 
 # ADR 2026-09.qsj6 — A heard inconsistent OFFER is news
 
-Status: Accepted (2026-09-03; `LoraGossipPolicy.onOffer` resets a backed-off interval, `reset` never delays)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the gossip it tuned is gone. Was: Accepted (2026-09-03; `LoraGossipPolicy.onOffer` resets a backed-off interval, `reset` never delays)
 
 `LoraGossipPolicy` shipped with only half of Trickle wired. `onOffer` counted a **same-set** OFFER toward
 suppressing our own — RFC 6206's redundancy half, and correct. A **different**-set OFFER, the genuinely

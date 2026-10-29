@@ -1660,6 +1660,7 @@ internal fun ChatScreenContent(
                             loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null)
                                 // A staged position rides the body, so its bytes come off the same budget.
                                 ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
+                        loraHint = loraHintFor(state.loraCarry),
                         maxBytes = state.publicPostBudget,
                         // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
                         // no on-device model can screen speech, so it is the one place unscreenable audio is not
@@ -4548,6 +4549,8 @@ private fun MessageInput(
     // The LoRa body budget for this draft ([loraBudgetFor]), or null when it would not ride the board. Above
     // it the composer shows the "long message" hint — a hedge, since the true ceiling is a little higher.
     loraBudget: Int? = null,
+    // What the hint says once the draft is past [loraBudget] ([loraHintFor]): the room's "not carried", a DM's hedge.
+    @StringRes loraHint: Int = R.string.chat_lora_long_message,
     // A hard UTF-8 byte cap on the draft ([ChatUiState.publicPostBudget]), or null where the ordinary
     // character cap is the only limit. Set only by the Meshtastic room, whose line has to fit one Meshtastic
     // frame — the opposite kind of limit from [loraBudget]: that one hedges about a frame the message might
@@ -4834,14 +4837,16 @@ private fun MessageInput(
             if (loraBudget != null) {
                 // Derived so the row recomposes only when the draft crosses the budget, not per keystroke.
                 // The formatting rides the frame beside the body, so its bytes count too (named key: the larger).
+                // A zero budget is a draft shape LoRa never carries (a room reply or attachment), empty or not.
                 val overLora by remember(loraBudget) {
                     derivedStateOf {
-                        LoraSizeHint.utf8Length(state.text) + StyleSpans.wireCost(state.bodySpans(), StyleKey.NAMED) > loraBudget
+                        loraBudget == 0 ||
+                            LoraSizeHint.utf8Length(state.text) + StyleSpans.wireCost(state.bodySpans(), StyleKey.NAMED) > loraBudget
                     }
                 }
                 if (overLora) {
                     Text(
-                        text = stringResource(R.string.chat_lora_long_message),
+                        text = stringResource(loraHint),
                         style = MaterialTheme.typography.bodySmall,
                         // Not an error: the message still goes, over the phone radios — only the board is out.
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

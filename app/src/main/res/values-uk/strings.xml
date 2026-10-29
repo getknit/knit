@@ -1463,12 +1463,9 @@
         <item quantity="many">%d людей досяжні через LoRa</item>
         <item quantity="other">%d людей досяжні через LoRa</item>
     </plurals>
-    <string name="lora_bridge_title">Зв’язувати віддалені групи</string>
-    <string name="lora_bridge_subtitle">Передавати повідомлення між групами, надто віддаленими одна від одної, зокрема ті, які надіслали не ви, використовуючи невелику обмежену частку ефірного часу. Якщо вимкнути, ви також перестанете отримувати пропущене.</string>
     <string name="lora_room_title">Кімната Meshtastic</string>
     <string name="lora_room_subtitle">Показувати власний канал вашого радіо як кімнату в Knit, щоб ви могли читати все інше, що в ньому є, і долучатися. Якщо вимкнути, кімната прихована й беззвучна, а Knit ігнорує цей канал — ваша плата все одно передає власні повідомлення Knit.</string>
     <string name="lora_room_subtitle_dedicated">Приховано, поки плата на окремій частоті: жодне публічне радіо її не чує, тож читати нема чого. Відновіть плату, щоб повернути кімнату.</string>
-    <string name="lora_role_passive">Інша плата Knit поблизу вже зв’язує групи — ця слухає</string>
     <string name="lora_airtime">Ефірний час: %1$d%% поточного ліміту</string>
     <string name="lora_radio_config">Радіо %1$s</string>
     <string name="lora_public_channel">Головний канал %1$s</string>
@@ -1654,6 +1651,7 @@
     <string name="chat_lora_group_title">Групові чати не передаються через LoRa</string>
     <string name="chat_lora_group_body">Радіо LoRa передає кімнату «Поруч» та особисті повідомлення, але не групові чати. Від когось тут останній сигнал надійшов через LoRa, тож ця людина побачить ці повідомлення, лише коли знову буде в зоні дії Wi-Fi чи Bluetooth або стане доступною через інтернет-ретранслятор. Нічого не втрачається — повідомлення на неї чекають.</string>
     <string name="chat_lora_long_message">Довге повідомлення — може не дійти через LoRa</string>
+    <string name="chat_lora_room_not_carried">Довгі дописи, відповіді та вкладення можуть не дійти через LoRa</string>
     <string name="chat_mesh_author">%1$s, у каналі Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, у каналі Meshtastic — особу не перевірено</string>
     <string name="chat_mesh_author_action">Чому це ім’я не перевірено</string>

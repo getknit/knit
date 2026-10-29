@@ -350,19 +350,16 @@ class ForwardRepositoryTest : RoomDbTest() {
                 "the signed bytes are served verbatim — a re-encode would break the signature",
                 carried.signed.contentEquals(back.signed),
             )
-            assertEquals(listOf("f1"), repo.liveFramesToFromOthers("peer", me = "me", now = 1_000L, limit = 10).map { it.envelope.id })
+            assertEquals(listOf("f1"), repo.liveFramesByIds(listOf("f1"), now = 1_000L).map { it.envelope.id })
 
             val expired = 1_000L + ForwardRepository.DEFAULT_TTL_MS + 1
             assertNull("past the frame-global expiry it is residue, not a frame", repo.frame("f1", now = expired))
-            assertEquals(
-                emptyList<String>(),
-                repo.liveFramesToFromOthers("peer", me = "me", now = expired, limit = 10).map { it.envelope.id },
-            )
+            assertEquals(emptyList<String>(), repo.liveFramesByIds(listOf("f1"), now = expired).map { it.envelope.id })
             assertNull(repo.frame("unknown", now = 1_000L))
         }
 
     @Test
-    fun `the re-offer reads pick our frames by id and everyone else's by recipient`() =
+    fun `the re-offer read picks our frames by id`() =
         runTest {
             val repo = repo(db, StoreDigest())
             repo.store(dm("mine-old", sender = "me", sentAt = 1_000L), ForwardStore.ORIGIN_SELF, now = 1_000L)
@@ -374,10 +371,6 @@ class ForwardRepositoryTest : RoomDbTest() {
                 repo.liveFramesByIds(listOf("mine-old", "mine-new", "unknown"), now = 3_000L).map { it.envelope.id },
             )
             assertEquals(emptyList<String>(), repo.liveFramesByIds(emptyList(), now = 3_000L).map { it.envelope.id })
-            assertEquals(
-                listOf("relayed"),
-                repo.liveFramesToFromOthers("peer", me = "me", now = 3_000L, limit = 10).map { it.envelope.id },
-            )
             val expired = 3_000L + ForwardRepository.DEFAULT_TTL_MS + 1
             assertEquals(emptyList<String>(), repo.liveFramesByIds(listOf("mine-new"), now = expired).map { it.envelope.id })
         }

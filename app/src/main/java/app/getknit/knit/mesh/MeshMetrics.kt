@@ -379,12 +379,11 @@ class MeshMetrics {
     private val loraDmSent = AtomicLong()
     private val loraDmReceived = AtomicLong()
     private val loraReoffered = AtomicLong()
-    private val loraProfileRefanSkipped = AtomicLong()
-    private val loraOfferSent = AtomicLong()
-    private val loraOfferReceived = AtomicLong()
-    private val loraBridged = AtomicLong()
-    private val loraBridgeRefused = AtomicLong()
-    private val loraPassive = AtomicLong()
+    private val loraReprobed = AtomicLong()
+    private val loraRoomTooLong = AtomicLong()
+    private val loraRetiredCtl = AtomicLong()
+    private val loraPreIdRefused = AtomicLong()
+    private val loraBoardHoldersFailed = AtomicLong()
     private val loraSkippedLinked = AtomicLong()
     private val loraSkippedInternet = AtomicLong()
     private val loraUnheardHeld = AtomicLong()
@@ -1126,7 +1125,7 @@ class MeshMetrics {
      * dropped** — it stays queued for a later window — which is exactly why it needed a counter of its own:
      * `loraDroppedQueue` only ever sees such a frame if the queue later fills and sheds it, so a plane whose
      * bucket is spent reads perfectly healthy right up until it overflows (field-observed 2026-09-04, a 99 %
-     * BRIDGE bucket with `loraBridgeRefused` at zero throughout).
+     * spent bucket with every drop counter at zero throughout).
      *
      * Counted once per frame, not once per pacer wake, so this measures congestion rather than the clock.
      */
@@ -1159,46 +1158,45 @@ class MeshMetrics {
     }
 
     /**
-     * A relayed `profile` the fan-out declined to put on the air again: the same publish already rode this
-     * plane inside the re-fan window (ADR 057). Against [loraSent] this is the measure of the redundancy
-     * that made profiles 79 % of one lab gateway's LoRa traffic.
+     * A held DM re-aired as a probe to a recipient who stayed silent (ADR 2026-10.rp3s, `LoraReprobe`): one per
+     * recipient per backed-off gap. Against [onLoraDmProbe] it says how often the first probe was not enough.
      */
-    fun onLoraProfileRefanSkipped() {
-        loraProfileRefanSkipped.incrementAndGet()
+    fun onLoraReprobed() {
+        loraReprobed.incrementAndGet()
     }
 
     /**
-     * A gossip OFFER that **reached the air** — one packet naming the custody window this gateway holds
-     * (ADR 044). Counted at transmit and not at enqueue, because an offer that never flies is the one failure
-     * this counter has to be able to show: it read 7 against two transmissions in the field while the far
-     * pocket heard none at all. It is also what makes `loraSent − loraDmSent − loraOfferSent` the profile +
-     * room count the debug bridge documents.
+     * An own Nearby-room post kept off LoRa because it needs more than one packet (ADR 2026-10.rp3s). The radios
+     * and the spool still carry it. Apart from `loraTooBig`, which is a frame past the plane's three packets.
      */
-    fun onLoraOfferSent() {
-        loraOfferSent.incrementAndGet()
-    }
-
-    /** A gossip OFFER heard from another gateway, co-pocket or far. */
-    fun onLoraOfferReceived() {
-        loraOfferReceived.incrementAndGet()
-    }
-
-    /** Frames served across the bridge because a far gateway's OFFER showed it lacked them. */
-    fun onLoraBridged(count: Int) {
-        loraBridged.addAndGet(count.toLong())
-    }
-
-    /** A backfill request refused outright — the publisher had already spent its hourly serve allowance. */
-    fun onLoraBridgeRefused() {
-        loraBridgeRefused.incrementAndGet()
+    fun onLoraRoomTooLong() {
+        loraRoomTooLong.incrementAndGet()
     }
 
     /**
-     * A transmission suppressed because another board in this pocket is the gateway. Healthy and expected on
-     * a spare board; climbing on a phone that should be bridging means the election picked someone else.
+     * An older build's gossip OFFER (first byte `0x10`) heard and dropped (ADR 2026-10.rp3s): the bridge is gone,
+     * and counting it apart keeps `UNKNOWN_TAG` meaning a tag nobody assigned. Climbing says an old build's board
+     * is still in range.
      */
-    fun onLoraPassive() {
-        loraPassive.incrementAndGet()
+    fun onLoraRetiredCtl() {
+        loraRetiredCtl.incrementAndGet()
+    }
+
+    /**
+     * A frame fanned before the plane had read our own id, refused because the few admitted then were spent
+     * (`LoraMeshTransport.PRE_ID_ADMISSIONS`, ADR 2026-10.rp3s). Climbing says the id read is stalling.
+     */
+    fun onLoraPreIdRefused() {
+        loraPreIdRefused.incrementAndGet()
+    }
+
+    /**
+     * The board-holder source (`MeshManager.loraBoardHolders`) failed and stopped reporting (ADR 2026-10.rp3s). The
+     * last set it gave stays in force; with none, the re-probe only defers. Non-zero says the plane may have stopped
+     * probing silent board holders while the row reads Ready.
+     */
+    fun onLoraBoardHoldersFailed() {
+        loraBoardHoldersFailed.incrementAndGet()
     }
 
     /**
@@ -1241,8 +1239,8 @@ class MeshMetrics {
 
     /**
      * A queued frame was refused at the moment it reached the air, because an enqueue-time gate had since
-     * changed its answer (`StaleAtSend`: the addressee linked on a better plane, the frame aged past the
-     * freshness window, or we stood down to a co-pocket gateway).
+     * changed its answer (`StaleAtSend`: the addressee linked on a better plane or a spool, went unheard, the frame
+     * aged past the freshness window, or it turned out not to be ours).
      *
      * Deliberately not folded into [onLoraSkippedLinked] or [onLoraSuppressed]: those say the gate refused a
      * frame before it ever queued, this says the queue held it until the answer moved, and only the split
@@ -1540,12 +1538,11 @@ class MeshMetrics {
             loraDmSent = loraDmSent.get(),
             loraDmReceived = loraDmReceived.get(),
             loraReoffered = loraReoffered.get(),
-            loraProfileRefanSkipped = loraProfileRefanSkipped.get(),
-            loraOfferSent = loraOfferSent.get(),
-            loraOfferReceived = loraOfferReceived.get(),
-            loraBridged = loraBridged.get(),
-            loraBridgeRefused = loraBridgeRefused.get(),
-            loraPassive = loraPassive.get(),
+            loraReprobed = loraReprobed.get(),
+            loraRoomTooLong = loraRoomTooLong.get(),
+            loraRetiredCtl = loraRetiredCtl.get(),
+            loraPreIdRefused = loraPreIdRefused.get(),
+            loraBoardHoldersFailed = loraBoardHoldersFailed.get(),
             loraSkippedLinked = loraSkippedLinked.get(),
             loraSkippedInternet = loraSkippedInternet.get(),
             loraUnheardHeld = loraUnheardHeld.get(),
@@ -1812,12 +1809,11 @@ class MeshMetrics {
             val loraDmSent: Long = 0,
             val loraDmReceived: Long = 0,
             val loraReoffered: Long = 0,
-            val loraProfileRefanSkipped: Long = 0,
-            val loraOfferSent: Long = 0,
-            val loraOfferReceived: Long = 0,
-            val loraBridged: Long = 0,
-            val loraBridgeRefused: Long = 0,
-            val loraPassive: Long = 0,
+            val loraReprobed: Long = 0,
+            val loraRoomTooLong: Long = 0,
+            val loraRetiredCtl: Long = 0,
+            val loraPreIdRefused: Long = 0,
+            val loraBoardHoldersFailed: Long = 0,
             val loraSkippedLinked: Long = 0,
             val loraSkippedInternet: Long = 0,
             val loraUnheardHeld: Long = 0,

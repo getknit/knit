@@ -453,16 +453,15 @@ sealed interface FieldEvent {
     }
 
     /**
-     * The paired LoRa board at a sample, while its link is ready: the plane's role, the last packet's signal, the
-     * queue, what it has heard, and the live share of airtime used against its budget. Beside them, what the role
-     * and a quiet plane are explained by: the gateways heard, the pocket's live links and sightings, the peers a
-     * spool covers; and what the board says of itself: its free queue slots, its battery, and its own duty-cycle
-     * readings (channel use and its own transmit share, in tenths of a percent). Never the board's name, address
-     * or node number.
+     * The paired LoRa board at a sample, while its link is ready: the last packet's signal, the queue, what it has
+     * heard, and the live share of airtime used against its budget. Beside them, what a quiet plane is explained by:
+     * the peers a spool covers; and what the board says of itself: its free queue slots, its battery, and its own
+     * duty-cycle readings (channel use and its own transmit share, in tenths of a percent). Never the board's name,
+     * address or node number. The gateway role and the election's inputs (`role`, `gateways`, `pocket`, `sighted`)
+     * left with the pocket bridge (ADR 2026-10.rp3s).
      */
     @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
     data class Lora(
-        val role: Enum<*>,
         val snrTenths: Int?,
         val rssi: Int?,
         val queued: Int,
@@ -470,9 +469,6 @@ sealed interface FieldEvent {
         val boardsHeard: Int,
         val airUsedMs: Long?,
         val airBudgetMs: Long?,
-        val gatewaysHeard: Int? = null,
-        val pocketLinks: Int? = null,
-        val pocketSightings: Int? = null,
         val internetCovered: Int? = null,
         val queueFree: Int? = null,
         val batteryPercent: Int? = null,
@@ -484,7 +480,6 @@ sealed interface FieldEvent {
 
         @Suppress("CyclomaticComplexMethod") // one optional column per line, each its own null check
         override fun write(out: FieldWriter) {
-            out.enum("role", role)
             snrTenths?.let { out.num("snr10", it.toLong()) }
             rssi?.let { out.num("rssi", it.toLong()) }
             out.num("queued", queued.toLong())
@@ -492,9 +487,6 @@ sealed interface FieldEvent {
             out.num("boards", boardsHeard.toLong())
             airUsedMs?.let { out.num("airUsed", it) }
             airBudgetMs?.let { out.num("airBudget", it) }
-            gatewaysHeard?.let { out.num("gateways", it.toLong()) }
-            pocketLinks?.let { out.num("pocket", it.toLong()) }
-            pocketSightings?.let { out.num("sighted", it.toLong()) }
             internetCovered?.let { out.num("covered", it.toLong()) }
             queueFree?.let { out.num("free", it.toLong()) }
             batteryPercent?.let { out.num("battery", it.toLong()) }
@@ -574,24 +566,6 @@ sealed interface FieldEvent {
             status?.let { out.num("status", it.toLong()) }
             out.num("streak", streak.toLong())
             waitMs?.let { out.num("wait", it) }
-        }
-    }
-
-    /**
-     * The LoRa plane's gateway role changed (ADR 044): [role] now, with the election's inputs as they stood — the
-     * pocket's live short-range links and the gateways heard.
-     */
-    data class LoraRole(
-        val role: Enum<*>,
-        val pocketLinks: Int,
-        val gatewaysHeard: Int,
-    ) : FieldEvent {
-        override val kind get() = "lora_role"
-
-        override fun write(out: FieldWriter) {
-            out.enum("role", role)
-            out.num("pocket", pocketLinks.toLong())
-            out.num("gateways", gatewaysHeard.toLong())
         }
     }
 

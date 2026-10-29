@@ -35,7 +35,6 @@ class LoraRadioScreenContentTest {
         state: LoraRadioUiState,
         onToggle: (Boolean) -> Unit = {},
         onShowAllBoards: (Boolean) -> Unit = {},
-        onToggleBridge: (Boolean) -> Unit = {},
         onToggleRoom: (Boolean) -> Unit = {},
         onAskSetup: () -> Unit = {},
         onSetUp: () -> Unit = {},
@@ -48,7 +47,6 @@ class LoraRadioScreenContentTest {
                     state = state,
                     onBack = {},
                     onToggle = onToggle,
-                    onToggleBridge = onToggleBridge,
                     onToggleRoom = onToggleRoom,
                     onShowAllBoards = onShowAllBoards,
                     onAskSetup = onAskSetup,
@@ -158,15 +156,6 @@ class LoraRadioScreenContentTest {
     }
 
     @Test
-    fun theBridgeSwitchReflectsTheStoredSettingAndReportsATap() {
-        var toggled: Boolean? = null
-        render(connected().copy(bridgeEnabled = false), onToggleBridge = { toggled = it })
-        compose.onNodeWithTag("lora_bridge_switch").performScrollTo().assertIsOff()
-        compose.onNodeWithTag("lora_bridge_switch").performClick()
-        assertEquals(true, toggled)
-    }
-
-    @Test
     fun theRoomSwitchReflectsTheStoredSettingAndReportsATap() {
         var toggled: Boolean? = null
         render(connected().copy(roomEnabled = false), onToggleRoom = { toggled = it })
@@ -182,15 +171,11 @@ class LoraRadioScreenContentTest {
         compose.onNodeWithText("42%", substring = true).assertIsDisplayed()
     }
 
+    /** The bridge switch and the passive-role note left with the pocket bridge (ADR 2026-10.rp3s). */
     @Test
-    fun aSpareBoardSaysItIsListeningRatherThanLookingBroken() {
-        render(connected().copy(bridgePassive = true))
-        compose.onNodeWithTag("lora_role_passive").performScrollTo().assertIsDisplayed()
-    }
-
-    @Test
-    fun theActiveGatewaySaysNothingAboutItsRole() {
+    fun theScreenHasNoBridgeSwitchAndNoRoleNote() {
         render(connected())
+        compose.onNodeWithTag("lora_bridge_switch").assertDoesNotExist()
         compose.onNodeWithTag("lora_role_passive").assertDoesNotExist()
     }
 

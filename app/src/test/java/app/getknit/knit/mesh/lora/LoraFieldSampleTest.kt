@@ -33,17 +33,12 @@ class LoraFieldSampleTest {
                 boardsHeard = 3,
                 battery = BoardBattery(percent = 64, voltage = 3.81f, powered = false),
                 boardAir = BoardAir(channelUtilPercent = 12.34f, airUtilTxPercent = 3.26f),
-                role = LoraGatewayPolicy.Role.PASSIVE,
-                pocketLinks = 4,
-                gatewaysHeard = 1,
-                pocketSightings = 6,
                 internetCovered = 2,
                 queued = 5,
             )
         assertEquals(
             listOf(
                 FieldEvent.Lora(
-                    role = LoraGatewayPolicy.Role.PASSIVE,
                     snrTenths = 63,
                     rssi = -97,
                     queued = 5,
@@ -51,9 +46,6 @@ class LoraFieldSampleTest {
                     boardsHeard = 3,
                     airUsedMs = null,
                     airBudgetMs = null,
-                    gatewaysHeard = 1,
-                    pocketLinks = 4,
-                    pocketSightings = 6,
                     internetCovered = 2,
                     queueFree = 14,
                     batteryPercent = 64,

@@ -695,10 +695,10 @@ interface MeshTransport {
     /**
      * Best-effort **long-range** fan-out of [wire] — a frame the reliable flood + store-and-forward custody
      * already carry — offered only to a plane with **no data path at all** ([shortRange] false, [neighbors]
-     * always empty; today the LoRa bridge). Such a plane never receives a frame by flood, custody sync or a
-     * re-serve, so this is its *only* path — which is why, unlike [fastFanout], it admits the sealed DM-form
-     * chat frames (`FrameFanout.shouldLongRangeFanout`, ADR 039). The transport size-gates and dedups; the
-     * receiver's [MeshRouter] SeenSet drops any copy that also arrives another way. Default no-op — a radio
+     * always empty; today the LoRa plane, which airs only its own user's frames). Such a plane never receives a
+     * frame by flood, custody sync or a re-serve, so this is its *only* path — which is why, unlike [fastFanout],
+     * it admits the sealed DM-form chat frames (`FrameFanout.shouldLongRangeFanout`, ADR 039). The transport
+     * size-gates and dedups; the receiver's [MeshRouter] SeenSet drops any copy that also arrives another way. Default no-op — a radio
      * with a data path (Bluetooth, Wi-Fi Aware) and the fakes ignore it.
      *
      * [hint] is what the originator knows and the plane cannot read off a sealed frame: a [FanoutHint.TICK]

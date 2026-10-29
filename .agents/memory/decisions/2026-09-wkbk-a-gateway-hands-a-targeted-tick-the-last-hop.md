@@ -103,3 +103,7 @@ Kept true by `MeshRouterTest.handsAPointToPointFrameTheLastHopToALinkedAddressee
 `aHandedOnFrameReportsTheAddresseeToOnRelayed`; and end to end by
 `LoraPocketLabTest.aFarPocketsTickReachesABoardLessAuthorBehindTheGateway`, now un-ignored, whose oracle
 is the plane the author records the tick on — the last hop was the link, not the air.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+No build since airs a targeted room tick over LoRa, so the gateway's last hop has nothing of a new build's to hand on. `MeshRouter.handOn` stays as written: it moves frames over links only, costs no air, and still carries an older build's aired tick home.

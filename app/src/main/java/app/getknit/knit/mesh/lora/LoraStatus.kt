@@ -18,7 +18,7 @@ internal data class LoraStatus(
     val lastSnr: Float? = null,
     val lastRssi: Int? = null,
     val queueFree: Int? = null,
-    /** People whose frames have reached us over LoRa — authors, so relayed and backfilled ones count too. */
+    /** People whose frames have reached us over LoRa — authors, so one an older build's gateway relayed counts too. */
     val heard: Int = 0,
     /** Radios we have heard transmit on our channel. This, not [heard], is "how many boards are in range". */
     val boardsHeard: Int = 0,
@@ -28,21 +28,9 @@ internal data class LoraStatus(
     val boardAir: BoardAir? = null,
     /** The airtime ledger: what the plane has spent this window against what it allows itself (ADR 044/054). */
     val airtime: AirtimeSnapshot? = null,
-    /** Whether this phone speaks for its pocket on the hop, or another board here does (ADR 044). */
-    val role: LoraGatewayPolicy.Role = LoraGatewayPolicy.Role.ACTIVE,
-    /** Peers a short-range plane holds a live link to — the election's input, so [role] can be explained. */
-    val pocketLinks: Int = 0,
-    /** LoRa gateways heard within the staleness window — the election's other input. */
-    val gatewaysHeard: Int = 0,
-    /**
-     * Peers a short-range plane has merely *sighted*. Nothing routes on this; it sits beside [pocketLinks]
-     * so the gap between "heard" and "linked" — the state that silenced a board in the field — is visible.
-     */
-    val pocketSightings: Int = 0,
     /**
      * Peers a connected spool was recently a path to — the Internet cover (ADR 2026-09.y5f3): DM-form frames
-     * to them stay off the air. Beside [pocketLinks] because both answer "why did this frame not fly?", and
-     * unlike it this one never moves the gateway role.
+     * to them stay off the air.
      */
     val internetCovered: Int = 0,
     /**

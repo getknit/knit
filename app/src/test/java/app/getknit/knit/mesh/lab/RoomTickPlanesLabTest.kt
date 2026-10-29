@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.spool.FakeSpool
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -18,8 +19,9 @@ import org.robolectric.RobolectricTestRunner
  * A Nearby-room post's ✓✓ reaching an author no short-range radio can see (ADR 2026-09.y5f3): the field day
  * where two posts crossed a LoRa board in seconds and their ticks waited 48 minutes for a Bluetooth link.
  * Two real stacks, each with the real LoRa plane over one [FakeMeshtasticAir] and — in the spool cases — the
- * real Internet plane over one [FakeSpool]. They meet over a link first (the beacon would do it too, minutes
- * later), then the link goes and only the air and the relay remain.
+ * real Internet plane over one [FakeSpool]. They meet over a link first (no profile rides the board any more, ADR
+ * 2026-10.rp3s), then the link goes and only the air and the relay remain. Since that ADR the air carries the post
+ * and never the tick: a room tick goes home over a link or the relay, or waits.
  *
  * Every scenario ends in the full oracle. The direct-push case re-links first: the author custodies the
  * tick it pulled while the acker never does, so custody parity is one ordinary re-serve away — which is
@@ -42,8 +44,14 @@ class RoomTickPlanesLabTest {
         lab.close()
     }
 
+    /**
+     * ADR 2026-10.rp3s: the room ✓✓ never rides LoRa. Bob's tick for a post that crossed on Alice's board waits out the
+     * ride hold with nowhere to go — no spool, no link, and a board that airs no room tick (`fastSend` refuses, and
+     * AckSync no longer reads a LoRa-only author as reachable over the air) — so it stays parked rather than being
+     * sealed into an owed entry nothing can carry. The link that comes back is what takes it home.
+     */
     @Test
-    fun aRoomTickReachesAnAuthorOnlyLoRaCanHearOnceTheRideHoldRunsOut() =
+    fun aRoomTickNeverRidesLoRaAndGoesHomeOverTheNextLink() =
         runBlocking {
             val air = FakeMeshtasticAir()
             val alice = lab.node("alice", air = air).apply { setDisplayName("Alice") }
@@ -57,12 +65,22 @@ class RoomTickPlanesLabTest {
             lab.await(1) { bob.roomPosts()[alice.nodeId].orEmpty().size }
             assertEquals(DeliveryPlane.LoRa, bob.receivedVia(Conversations.NEARBY, post))
 
-            // Nothing else goes bob → alice, so the ride hold runs out and the targeted path carries the tick.
-            assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(alice, post, bob))
-            // The live label alone, not `loraAired`: a `relay = false` tick is never custodied, so no bridge can air it.
-            assertEquals("one targeted send, not a flood", 1, bob.loraTx("send:chat"))
-            assertEquals("a relay = false tick is never custodied", 0, bob.custodiedChatsTo(alice))
+            // Well past the ride hold: nothing on the air for it, and the tick still waits for a ride.
+            assertFalse(
+                "a room tick aired: ${bob.loraLog}",
+                lab.tryAwait(1, timeoutMs = 3_000) {
+                    bob.metrics
+                        .lora()
+                        .loraSent
+                        .toInt()
+                },
+            )
+            assertEquals(0L, bob.metrics.lora().loraSent)
+            assertEquals("still parked for a link or the spool", 1, bob.manager.ackSync.ridingFor(alice.nodeId))
 
+            lab.link(alice, bob)
+            assertTrue("the link took it home", lab.awaitReceipt(alice, post, bob) != DeliveryPlane.LoRa)
+            assertEquals("and the board never carried it", 0L, bob.metrics.lora().loraSent)
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { Conversations.NEARBY }
         }
 
@@ -78,6 +96,7 @@ class RoomTickPlanesLabTest {
             val bob = lab.node("bob", limits, air = air, spool = spool).apply { setDisplayName("Bob") }
             lab.meetOnTheRelay(alice, bob, air)
             val bobFarBefore = bob.loraTx("far:chat")
+            val bobSentBefore = bob.metrics.lora().loraSent
             val aliceSkippedBefore = alice.metrics.lora().loraSkippedInternet
 
             assertTrue(alice.sendRoom("over the board"))
@@ -92,7 +111,7 @@ class RoomTickPlanesLabTest {
 
             assertEquals("the room tick rode the DM's receipt", DeliveryPlane.Internet, lab.awaitReceipt(alice, post, bob))
             assertEquals(DeliveryPlane.Internet, lab.awaitReceipt(alice, dm, bob))
-            assertEquals("nothing went on the air for it", 0, bob.loraTx("send:chat"))
+            assertEquals("nothing went on the air for it", bobSentBefore, bob.metrics.lora().loraSent)
             assertEquals(bobFarBefore, bob.loraTx("far:chat"))
             // Alice reads the tick off the relay a moment before Bob's own bookkeeping of the ride lands.
             assertTrue(
@@ -177,6 +196,7 @@ class RoomTickPlanesLabTest {
             // its spool copy accepted before that delivery's custody write landed, so it reads accounted and held
             // at once (harmless — Diagnostics' "aged" count reads one high). The tick is one more than that.
             val bandBefore = bob.dmScopeStatus(alice)?.accountedCount ?: 0
+            val bobSentBefore = bob.metrics.lora().loraSent
 
             assertTrue(alice.sendRoom("over the board"))
             val post = alice.ownMessageId(Conversations.NEARBY, "over the board")
@@ -202,7 +222,7 @@ class RoomTickPlanesLabTest {
                 "accounted instead, so bob's own heal loop never pulls it back",
                 lab.tryAwait(1) { if (bob.metrics.spool().spoolAccounted == accountedBefore + 1) 1 else 0 },
             )
-            assertEquals("and nothing on the air", 0, bob.loraTx("send:chat"))
+            assertEquals("and nothing on the air", bobSentBefore, bob.metrics.lora().loraSent)
             val settled =
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
                     if (bob.dmScopeStatus(alice)?.let {

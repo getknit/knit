@@ -39,7 +39,7 @@ behind each lives in `context/mesh-transport.md`, `context/wire-format.md`, and
   L2CAP socket. `MeshTransport.coveredByInternet` (ADR 2026-09.y5f3) is the third hint beside
   `suppressDataPath` and `onForeignReachable`: peers a connected spool recently heard from, so a plane with
   no data path keeps DM-form frames to them off the air. It is fed from spool presence only, forwarded to
-  every child, acted on by LoRa alone, and must never move the gateway role.
+  every child, and acted on by LoRa alone.
 - After changing the `MeshTransport` interface, run `:app:testDebugUnitTest` — a test double
   (`RecordingTransport` in `MeshRouterTest`) implements that interface and won't be caught by
   `assembleDebug`. Same trap on `ForwardStore` (`FakeForwardStore`, `FakeCustody`) and `RatchetStore`.

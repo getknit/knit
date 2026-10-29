@@ -8,6 +8,8 @@ topics: [lora, crypto, airtime]
 
 # ADR 056 — The key bootstrap gets a share of the window, not an exemption from it
 
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — no profile rides the plane, so the BOOTSTRAP share is gone.
+
 ADR 044 gave the LoRa plane an airtime governor and carved out one class from it: a `FrameClass.BOOTSTRAP`
 frame — a `profile`, ours or a relayed one — was admitted unconditionally. The argument was sound. Nothing a
 peer sends verifies without its author's profile, so a window that refuses the profile costs more airtime

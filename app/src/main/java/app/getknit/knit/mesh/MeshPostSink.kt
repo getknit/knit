@@ -6,7 +6,7 @@ import app.getknit.knit.mesh.crypto.XeddsaVerify
  * Delivers a post the bound board heard on its own primary (slot 0) channel into the Meshtastic room —
  * locally, and nowhere else.
  *
- * It is a seam for the same reason [BridgeFrameSource] and [FarPeerFrameSource] are: `mesh/lora/` is pure and
+ * It is a seam for the same reason [FarPeerFrameSource] is: `mesh/lora/` is pure and
  * imports neither Android nor the data layer, while delivering a post means writing a Room row. The transport
  * decides *whether* a packet is a post ([app.getknit.knit.mesh.lora.PublicChannelPolicy]); this decides what a
  * message row made of one looks like.

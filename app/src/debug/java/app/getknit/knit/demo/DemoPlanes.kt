@@ -115,7 +115,6 @@ object DemoPlanes {
         settings.setLoraChannelIndex(DemoLoraPlane.CHANNEL_INDEX)
         settings.setLoraEnabled(true)
         settings.setLoraDmEnabled(true)
-        settings.setLoraBridgeEnabled(true)
         // The record a real setup leaves behind (ADR 045): without it the screen offers "Set up this board"
         // over a board that is already set up, and Restore has none of the user's own values to put back.
         settings.setLoraBoardSetup(

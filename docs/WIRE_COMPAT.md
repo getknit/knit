@@ -124,7 +124,10 @@ if one ever happens they all ride it together and no single item has to justify 
 > bits: `0x01` legacy tagged-CBOR frame (kept forever), `0x02` burned, `0x03` compact frame / `0x04`
 > fragment (`mesh/link/FastFrameCodec`, emitted only toward peers advertising
 > `Protocol.CAP_FAST_COMPACT = 0x20`), `0x05` transcoded frame (`mesh/link/FrameTranscoder`, ADR 060, only
-> toward `Protocol.CAP_FRAME_TRANSCODE = 0x80`). `0x03`/`0x04` re-frame only the outer `WireEnvelope` —
+> toward `Protocol.CAP_FRAME_TRANSCODE = 0x80`), `0x10` **burned**: the LoRa bridge's gateway OFFER (`LoraCtl`,
+> ADR 044), retired with the bridge (ADR 2026-10.rp3s). Older builds still air it; this build counts it under
+> `loraRetiredCtl` and drops it before decode, and the tag is never minted again.
+> <!-- doc-lint: allow LoraCtl — the retired OFFER codec, named as the tag's history --> `0x03`/`0x04` re-frame only the outer `WireEnvelope` —
 > `signed`/`sig` pass through byte-exact (rule 4 holds by construction); `0x05` re-encodes `signed` itself
 > but the receiver **rebuilds the byte-identical canonical CBOR before verifying**, so the bytes that are
 > signed, stored and relayed still never change. Adding a tag + gating cap bit is therefore additive and

@@ -112,3 +112,7 @@ was held. §7's "newest 4, minus our acked" is split: our own unacked DMs, chose
 and spent from `LIVE`; then relayed frames, up to 4, on `BRIDGE` (`LIVE` for a linked pocket-mate's). One frame is
 re-offered at most once an hour, and a re-offer lifts a copy the bridge still has queued onto its own bucket. The
 old single read let our acked DMs and own sealed ctls take the slots before the filter ran.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+§8 (the first-hearing profile beacon) is gone: no profile rides the plane. The DM form, the long-range seam and the first-hearing re-offer of our own DMs stay until Stage 2; the re-offer of relayed frames is gone.

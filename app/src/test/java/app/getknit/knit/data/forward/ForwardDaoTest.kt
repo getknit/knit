@@ -34,20 +34,6 @@ class ForwardDaoTest : RoomDbTest() {
         }
 
     @Test
-    fun `liveRowsToFromOthers leaves out our own frames to that recipient`() =
-        runTest {
-            dao.insert(fwd("mine", senderId = "me", recipientId = "bob", sentAt = 9L))
-            dao.insert(fwd("carols", senderId = "carol", recipientId = "bob", sentAt = 5L))
-            dao.insert(fwd("daves", senderId = "dave", recipientId = "bob", sentAt = 7L))
-            dao.insert(fwd("expired", senderId = "carol", recipientId = "bob", sentAt = 8L, expiresAt = 50L))
-            dao.insert(fwd("to-erin", senderId = "carol", recipientId = "erin", sentAt = 6L))
-            dao.insert(fwd("receipt", senderId = "carol", recipientId = "bob", sentAt = 10L).copy(type = "receipt"))
-            dao.insert(fwd("room", senderId = "carol", recipientId = null, sentAt = 11L))
-            assertEquals(listOf("daves", "carols"), dao.liveRowsToFromOthers("bob", me = "me", now = 100L, limit = 10).map { it.id })
-            assertEquals(listOf("daves"), dao.liveRowsToFromOthers("bob", me = "me", now = 100L, limit = 1).map { it.id })
-        }
-
-    @Test
     fun `liveRowsByIds returns the live rows among the ids, newest first`() =
         runTest {
             dao.insert(fwd("a", sentAt = 1L))

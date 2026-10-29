@@ -9,15 +9,15 @@ package app.getknit.knit.mesh.lora
  * The queue sheds by **class** when full ([FrameClass]): from the lowest class present — the newcomer
  * included, so a frame that is alone at the bottom yields instead of evicting anything — and the **oldest
  * whole frame** within it (never a lone fragment, which would strand a half-delivered message). So a room
- * post never evicts a DM, and nothing evicts the profile bootstrap. A rate/duty-cycle NAK widens the gap for
+ * post never evicts a DM. A rate/duty-cycle NAK widens the gap for
  * a cool-down window, and since ADR 044 an injected [LoraAirtime] holds a rolling budget the queue is drained
  * against — so a frame can also wait because the plane has spent its share of the medium, not just because
  * the gap has not elapsed. Dequeue runs the same class order forwards (see [take]). Tested on the JVM
  * ([app.getknit.knit.mesh.lora.LoraPacePolicyTest]).
  *
  * **Every entry point is `@Synchronized`, because this queue has six writers on five coroutines.** `take`
- * runs on the pacer loop; `enqueue` on whichever coroutine sent (the composite's fan-out, the ctl-packet
- * handler's backfill, the gossip loop's OFFER, the link-state collector's beacon); `onQueueStatus` and
+ * runs on the pacer loop; `enqueue` on whichever coroutine sent (the composite's fan-out, the first-hearing
+ * re-offer, the linger sweep's re-probe, the public post and the auto-reply); `onQueueStatus` and
  * `evictOversize` on the link and queue collectors; `onNak` on the outcomes collector. `ArrayDeque` is not
  * thread-safe, and a structural change under `admitBest`'s index walk nulls the slot it is about to read —
  * field-observed on the lab P7 as `NullPointerException: … OutboundFrame.getBucket()` at
@@ -89,7 +89,11 @@ internal class LoraPacePolicy(
         return admit(frame)
     }
 
-    /** Whether a frame queued under [key] is waiting — the bridge's check before it would queue a second copy. */
+    /**
+     * Whether a frame queued under [key] is waiting, or on its way now — the re-offer's and the re-probe's check
+     * before they would queue a second copy of a DM (ADR 2026-10.rp3s: neither asks the fan-out's dedup slot, which
+     * records a transmission, not a hearing).
+     */
     @Synchronized
     fun hasQueued(key: String): Boolean = inFlight?.supersedes == key || queue.any { it.supersedes == key }
 
@@ -126,8 +130,8 @@ internal class LoraPacePolicy(
 
     /**
      * The frame [take] handed out and the pacer has not yet heard the end of ([done] or [requeue]). Off the
-     * queue while its first fragment is written, it must still count as queued to [hasQueued] and
-     * [upgradeQueued], or a serve queues a second copy beside it and a `Busy` requeue then lets both fly.
+     * queue while its first fragment is written, it must still count as queued to [hasQueued], or a re-offer
+     * queues a second copy beside it and a `Busy` requeue then lets both fly.
      */
     private var inFlight: OutboundFrame? = null
 
@@ -135,31 +139,6 @@ internal class LoraPacePolicy(
     @Synchronized
     fun done(frame: OutboundFrame) {
         if (inFlight === frame) inFlight = null
-    }
-
-    /**
-     * Puts [frame] in the place of a queued, not-yet-started copy of itself (same [OutboundFrame.supersedes]
-     * key) that waits on a different bucket, and says whether it did. The first-hearing re-offer's way past a
-     * copy the bridge queued on `BRIDGE` (ADR 2026-10.a4pm): that copy took the dedup slot, so the re-offer
-     * cannot simply queue its own, and a share the bridge has spent can hold it for a window while `LIVE` has
-     * air. In place, so it keeps its turn. Only ever a lift from `BRIDGE` to `LIVE`: false when there is no such
-     * copy, when the swap would not be that lift, when the queued copy holds a probe window, or when the board has
-     * taken part of it — a part-sent frame finishes as it is (feb2d5a4).
-     */
-    @Synchronized
-    fun upgradeQueued(frame: OutboundFrame): Boolean {
-        val key = frame.supersedes ?: return false
-        if (inFlight?.supersedes == key) return false // it is on its way now, on whichever bucket it took
-        val i = queue.indexOfFirst { it.supersedes == key }
-        if (i < 0) return false
-        val queued = queue[i]
-        // Lift only: BRIDGE to LIVE. Anything else could push a live copy down, and a queued probe holds a window
-        // the replacement does not carry (ADR 2026-10.a4pm).
-        if (queued.sentParts > 0 || queued.bucket != AirBucket.BRIDGE || frame.bucket != AirBucket.LIVE) return false
-        if (queued.probe != null) return false
-        queue[i] = frame
-        airtimeBlockedUntil = 0L // it may spend a bucket the queue was not asking for
-        return true
     }
 
     /**
@@ -205,13 +184,12 @@ internal class LoraPacePolicy(
      *
      * Dequeue is **by class, then FIFO within it** — the same order the queue sheds in, run forwards. ADR 039
      * left dequeue purely FIFO, which was right while everything on this plane was something a human had just
-     * typed. The bridge (ADR 044) broke that assumption: gossip offers and backfill arrive in bursts nobody is
-     * waiting for, and at a 3-second gap a burst of four puts a live message twelve seconds behind. Since the
-     * class order already states what matters most, running it on the way out too costs nothing and stops the
-     * background traffic from queue-jumping the foreground.
+     * typed. The bridge (ADR 044) broke that assumption, and since ADR 2026-10.rp3s the bridge is gone, but the
+     * order still says what matters most — a DM before a room post before a tick — and running it on the way out
+     * too costs nothing.
      *
      * A frame the airtime budget refuses is **skipped, not dropped** — it stays queued for a later window
-     * while a frame from a bucket with headroom goes now. Without the skip, one refused BRIDGE frame would
+     * while a frame from a bucket with headroom goes now. Without the skip, one refused PUBLIC post or tick would
      * block everything behind it until its budget recovered. A frame that never gets a window eventually ages
      * out through the ordinary class shedding instead. The one exception: nothing is skipped *past* a live frame
      * the window's total refused, or the smaller frames behind it would take the air it is waiting for, one
@@ -257,7 +235,7 @@ internal class LoraPacePolicy(
      * behind the room posts that kept taking that air. So the best-ranked such frame holds every frame ranked behind
      * it (class, then queue order) until the air it needs has come back. Only a [AirBucket.LIVE] frame holds, and only
      * on [LoraAirtime.Refusal.TOTAL]: a frame refused on its own share must never hold live traffic (that share
-     * exists so backfill cannot crowd it), and one no window would admit must never be waited for.
+     * exists so the public room cannot crowd it), and one no window would admit must never be waited for.
      */
     private fun admitBest(now: Long): Int {
         // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the air and
@@ -318,20 +296,6 @@ internal class LoraPacePolicy(
         return (held ?: mutableListOf()).also { it += frame.bucket }
     }
 
-    /**
-     * The payload sizes still owed by everything queued for [bucket] — air this frame's sender has committed
-     * to but the ledger has not recorded, because a frame is only booked when it actually leaves.
-     *
-     * The bridge asks this before it queues (ADR 2026-09.zkma). Its own admission test reads *recorded* air,
-     * which is what lets a whole round pass and then run out of window part-way down the queue — and the
-     * frame the queue reaches last is the one the backfill rank deliberately put first, since [FrameClass]
-     * orders a DM ahead of the room while [LoraFramePolicy.backfillRank] orders the room ahead of the DM.
-     * Counting what is already waiting closes that: a round can no longer promise more air than it has.
-     */
-    @Synchronized
-    fun pendingSizes(bucket: AirBucket): List<Int> =
-        queue.filter { it.bucket == bucket }.flatMap { frame -> frame.remaining.map { it.size } }
-
     @Synchronized
     fun onQueueStatus(free: Int) {
         boardFree = free
@@ -351,8 +315,9 @@ internal class LoraPacePolicy(
     private companion object {
         const val MIN_GAP_MS = 3_000L
 
-        // Raised from 12 with the bridge (ADR 044): backfill can enqueue a small burst behind live traffic,
-        // and class shedding — not the cap — is what protects the live frames. Doubled again with the 15-min
+        // Raised from 12 with the bridge (ADR 044, gone since ADR 2026-10.rp3s, which kept the cap): a re-offer
+        // can still enqueue a small burst behind live traffic, and class shedding — not the cap — is what protects
+        // the live frames. Doubled again with the 15-min
         // airtime window (ADR 054): a burst that outruns the window now waits ≤ 15 min for air, and a queue
         // that can hold that wait (≤ ~700 B a frame) sheds nothing a later window would have carried.
         const val QUEUE_CAP_FRAMES = 32
@@ -361,19 +326,16 @@ internal class LoraPacePolicy(
 }
 
 /**
- * The pacing class of a queued frame, highest first: the profile is the key bootstrap (nothing verifies
- * without it), the gossip offer is one packet that decides what the *next* several will be (dropping it
- * costs more air than sending it), a sealed DM outranks ambient room traffic, the Nearby room comes next,
- * and our own delivery tick ([TICK], ADR 054 — only a frame the originator vouched for, see
- * `FanoutHint`) is what the queue sheds first: feedback, not content, and it heals on re-delivery.
+ * The pacing class of a queued frame, highest first: a sealed DM outranks ambient room traffic, the Nearby room comes
+ * next, and our own delivery tick ([TICK], ADR 054 — only a frame the originator vouched for, see `FanoutHint`) is
+ * what the queue sheds first: feedback, not content, and it heals on re-delivery. The profile bootstrap and the
+ * gossip OFFER classes went with the bridge (ADR 2026-10.rp3s).
  *
- * This is the **queue-shedding** order only. What a frame costs against the rolling budget is
- * [AirBucket], which is orthogonal: a backfilled DM keeps DM class here — so a room post cannot evict it —
- * while spending from the bridge budget there. [LoraAirtime] reads one class beyond the bucket: a [TICK]
- * never spends the last share of a window. Note [BOOTSTRAP] outranks everything *in the queue* but is not
- * unmetered on the air — since ADR 056 it spends [AirBucket.BOOTSTRAP], a bounded share of the allowance.
+ * This is the **queue-shedding** order only. What a frame costs against the rolling budget is [AirBucket], which is
+ * orthogonal: a public post rides ROOM class here and spends [AirBucket.PUBLIC] there. [LoraAirtime] reads one class
+ * beyond the bucket: a [TICK] never spends the last share of a window.
  */
-internal enum class FrameClass { BOOTSTRAP, GOSSIP, DM, ROOM, TICK }
+internal enum class FrameClass { DM, ROOM, TICK }
 
 /**
  * Where a queued frame is going, which decides both the channel it is written to and the guard it must pass.
@@ -413,22 +375,26 @@ internal enum class Destination {
  * the plane spent its whole allowance re-delivering what that link had already carried.
  *
  * Each field is null/false on a path that never asked its question, because re-asking must only ever repeat a
- * gate, never add one: a targeted `relay = false` send is deliberately **not** role-gated (ADR 044's field
- * amendment), and gating it here would strand AckSync's ticks for their full 24 h of retries exactly as it
- * did across that field.
+ * gate, never add one: the public post and the auto-reply ask none of these, and a probe flew because its recipient
+ * was *not* heard, so asking it [reachGated] would refuse exactly the frame the probe exists to send.
  */
 internal data class RideGate(
     /** The addressee whose live link on a better plane makes this frame redundant, or null if never gated on one. */
     val recipientId: String? = null,
     /** Wall-clock instant past which the fan-out freshness gate would refuse this frame, or null when exempt. */
     val freshUntil: Long? = null,
-    /** Whether the enqueuing path stood down to a co-pocket gateway, and so must stand down here too. */
-    val roleGated: Boolean = false,
+    /**
+     * Who wrote this frame, on a path that asks [LoraFramePolicy.airs] (ADR 2026-10.rp3s): the send refuses it unless
+     * it is ours. Carried rather than settled at enqueue because a frame fanned before our own id was read could not
+     * be judged then — a room post typed during a Keystore backoff must still ride once the id lands, and a relayed
+     * frame fanned in that window must not.
+     */
+    val authorId: String? = null,
     /**
      * Whether the enqueuing path let this DM-form frame through only because [recipientId] was heard on this
      * plane (ADR 2026-10.a4pm), and so must drop it if the recipient lingers out while it waits. False on the
-     * probe, which flew precisely because the recipient was *not* heard, on our own sealed ctls (never gated),
-     * on the bridge backfill (gated on a far OFFER instead) and on everything not DM-form.
+     * probe and the re-probe, which flew precisely because the recipient was *not* heard, on our own sealed ctls
+     * (never gated) and on everything not DM-form.
      */
     val reachGated: Boolean = false,
 )
@@ -437,8 +403,8 @@ internal data class RideGate(
  * Why a queued frame was refused at the moment it reached the air rather than sent. One per [RideGate]
  * question, because "the queue held it until the answer changed" is only actionable if it says *which*
  * answer: [LINKED] and [INTERNET] mean the plane is doing its job, [UNHEARD] that the addressee went quiet,
- * [STALE] means the queue is running deeper than the freshness window, and [PASSIVE] means a co-pocket board
- * took the role mid-flight.
+ * [STALE] means the queue is running deeper than the freshness window, and [NOT_OWN] that a frame fanned before
+ * our own id was known turned out to be somebody else's.
  */
 internal enum class StaleAtSend {
     /** A better plane linked to the addressee while this waited; the link has carried it. */
@@ -456,8 +422,11 @@ internal enum class StaleAtSend {
     /** It aged past [LoraFramePolicy.FRESH_MS] in the queue; it is custody's business now, not a live plane's. */
     STALE,
 
-    /** We stood down to a co-pocket gateway after queuing it, and that board speaks for the pocket. */
-    PASSIVE,
+    /**
+     * Not ours (ADR 2026-10.rp3s): fanned before our own id was read, and the id now says somebody else wrote it.
+     * This plane airs only its own user's frames.
+     */
+    NOT_OWN,
 }
 
 /** A whole frame queued for the LoRa hop: its already-encoded fragment messages, a diagnostic label, its class. */
@@ -465,8 +434,8 @@ internal class OutboundFrame(
     val messages: List<ByteArray>,
     val label: String,
     val klass: FrameClass = FrameClass.ROOM,
-    /** Which rolling budget this frame spends from; see [AirBucket] and [AirBucket.defaultFor]. */
-    val bucket: AirBucket = AirBucket.defaultFor(klass),
+    /** Which rolling budget this frame spends from; see [AirBucket]. */
+    val bucket: AirBucket = AirBucket.LIVE,
     /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
     val destination: Destination = Destination.Knit,
     /** Whom it is addressed to: the broadcast address for everything but a [Destination.Reply]. */
@@ -475,19 +444,10 @@ internal class OutboundFrame(
      * A key identifying **the thing this frame is a snapshot of**, so that enqueuing a newer copy discards the
      * older one still waiting. Null for a frame that is an event rather than a state.
      *
-     * Two classes of frame are snapshots, and both were starving something before this existed. An **OFFER**
-     * names the custody set we hold; a superseded one announces a set we have since changed, so a far gateway
-     * would compute its backfill against a lie. A **profile** carries its author's current key material and
-     * `version`, and the far side takes newest-wins — so an older copy queued ahead of a newer one is not just
-     * useless, it is the wrong answer sent first.
-     *
-     * Unbounded, either would pile up behind a spent airtime share, and a queue that keeps every stale copy
-     * of one state is what turned a 15-minute bootstrap budget into a permanent gossip blackout on the lab
-     * fleet: 28 queued profiles, `loraOfferSent = 0`, and a gateway election that could never settle because
-     * `BOOTSTRAP` outranks `GOSSIP` in the dequeue and the freed air went to profiles every single window.
-     * [LoraAirtime.admits] already exempts the OFFER from the bridge share for the same reason — *"serving
-     * must not be able to starve it"* — and this is that rule's other half, in the queue rather than the
-     * budget.
+     * The OFFER and the profile were the snapshots this existed for (ADR 2026-09.xdm2), and both left this plane
+     * with the bridge (ADR 2026-10.rp3s). What still keys on it is a DM-form frame (`frameKey`): every copy of one
+     * frame the fan-out, the re-offer or the re-probe might queue is one copy, so [LoraPacePolicy.hasQueued] can
+     * see a copy still waiting.
      *
      * **A supersession is never a drop.** Nothing is lost that a newer frame does not already carry, so it
      * must not move `loraDroppedQueue`, whose job is to say when the plane shed something it wanted.
@@ -503,9 +463,9 @@ internal class OutboundFrame(
     /** The frame id a first-hearing re-offer stamped in its hourly memory, cleared again if refused at send. */
     val reofferId: String? = null,
     /**
-     * The sig-dedup slot the enqueuing path took for this frame (the fan-out, the bridge's serve, the re-offer),
-     * or null where it took none. Reopened when the frame is refused at send, for any [StaleAtSend] reason: it
-     * never flew, and the slot would turn the next re-offer or backfill away. `SeenSet.reopen` lets one more copy
+     * The sig-dedup slot the fan-out took for this frame, or null on every other path (ADR 2026-10.rp3s: only the
+     * fan-out reads and writes it). Reopened when the frame is refused at send, for any [StaleAtSend] reason: it
+     * never flew, and the slot would turn the next fan-out of the same bytes away. `SeenSet.reopen` lets one more copy
      * through per id per window, so a frame refused twice inside ten minutes keeps its slot the second time.
      */
     val sigKey: String? = null,

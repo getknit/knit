@@ -124,7 +124,9 @@ class CheckTest(unittest.TestCase):
             {"t": 1, "e": "lora_up", "dial": 4200, "tries": 1, "mtu": 512, "region": "EU_868", "relink": 95000},
             {"t": 2, "e": "lora_down", "reason": "GATT_DROP", "status": 8, "life": 600000},
             {"t": 3, "e": "lora_fail", "reason": "DIAL_TIMEOUT", "streak": 2, "wait": 20000},
+            # Retired with the bridge (ADR 2026-10.rp3s), but an older build's log still checks.
             {"t": 4, "e": "lora_role", "role": "PASSIVE", "pocket": 2, "gateways": 1},
+            {"t": 4, "e": "lora", "snr10": 65, "queued": 0, "heard": 1, "boards": 1, "covered": 0, "free": 16},
             {"t": 5, "e": "net", "route": "CELLULAR", "restricted": False},
         ):
             self.assertEqual([], fieldlog.validate(line), line)

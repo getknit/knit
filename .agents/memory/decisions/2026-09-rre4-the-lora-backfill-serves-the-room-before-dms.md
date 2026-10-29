@@ -8,7 +8,7 @@ topics: [lora, airtime, custody]
 
 # ADR 2026-09.rre4 — The LoRa backfill serves the room before DMs
 
-Status: Accepted (2026-09-02; `LoraFramePolicy.backfillRank` — `RANK_ROOM` 1, `RANK_DM` 2)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the backfill it ranked is gone. Was: Accepted (2026-09-02; `LoraFramePolicy.backfillRank` — `RANK_ROOM` 1, `RANK_DM` 2)
 
 ADR 044 gave the bridge's serve priority as profile → DM-form → room, and justified only the first step of
 it: "a frame the far side cannot verify is airtime thrown away". That is an argument for the profile and

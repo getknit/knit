@@ -8,7 +8,7 @@ topics: [lora, bridge, custody]
 
 # ADR 2026-09.zkma — The bridge offer and its backfill draw from one ranked list
 
-Status: Accepted (2026-09-05)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the offer and the backfill are gone. Was: Accepted (2026-09-05)
 
 ## What was observed
 

@@ -147,10 +147,28 @@ class ChatLoraIndicatorTest {
         compose.onNodeWithText("Long message — it may not reach people over LoRa").assertIsDisplayed()
     }
 
+    /**
+     * The room's budget is one LoRa packet (ADR 2026-10.rp3s): past it the post may not be carried, and the room's hint
+     * says so in its own words — a hedge, since prose deflates and a longer post often still fits.
+     */
     @Test
-    fun theRoomGetsItsLargerBudget() {
-        render(conversationId = Conversations.NEARBY, loraCarry = LoraCarry.Room, draft = "a".repeat(LoraSizeHint.DM_BODY_BYTES + 1))
+    fun aRoomPostAtItsOnePacketBudgetShowsNoHint() {
+        render(conversationId = Conversations.NEARBY, loraCarry = LoraCarry.Room, draft = "a".repeat(LoraSizeHint.ROOM_BODY_BYTES))
         compose.onNodeWithTag("chat_lora_size_hint").assertDoesNotExist()
+    }
+
+    @Test
+    fun theRoomWarnsAPostPastItsOnePacketBudgetMayNotBeCarried() {
+        render(conversationId = Conversations.NEARBY, loraCarry = LoraCarry.Room, draft = "a".repeat(LoraSizeHint.ROOM_BODY_BYTES + 1))
+        compose.onNodeWithTag("chat_lora_size_hint").assertIsDisplayed()
+        compose.onNodeWithText("Long posts, replies and attachments may not reach people over LoRa").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRoomReplyIsNeverCarriedWhateverItsLength() {
+        val reply = ReplyRef(messageId = "m0", authorId = "ana", author = "Ana", snippet = "see you at the gate")
+        render(conversationId = Conversations.NEARBY, loraCarry = LoraCarry.Room, draft = "ok", replyingTo = reply)
+        compose.onNodeWithText("Long posts, replies and attachments may not reach people over LoRa").assertIsDisplayed()
     }
 
     @Test

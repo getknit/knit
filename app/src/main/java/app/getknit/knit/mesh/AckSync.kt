@@ -37,9 +37,11 @@ import java.util.concurrent.ConcurrentHashMap
  *   45 s holds, so a receipt sealed in the same minute carries it first): a ride nobody took is sealed once
  *   and routed the cheapest way that exists — pushed straight into the author's spool scope when a connected
  *   spool has recently heard from them ([spoolPresent] / [spoolTick]: no custody row, no air), else
- *   `fastSend` over a fast plane that currently reaches them (LoRa's targeted path — one packet, retried as
- *   one owed entry on the backoff below), else it keeps waiting. A live link still ends the wait as one
- *   batched tick; an author reachable only through a relay, with no board and no spool, is the residual.
+ *   `fastSend` over a short-range fast plane that currently reaches them (`shortRangeReachable`: Wi-Fi Aware's
+ *   cue-only reach — one packet, retried as one owed entry on the backoff below), else it keeps waiting. An author
+ *   only the LoRa board can hear waits for a link or the spool: since ADR 2026-10.rp3s LoRa's `fastSend` airs no
+ *   tick. A live link still ends the wait as one batched tick; an author reachable only through a relay, with no
+ *   board and no spool, is the residual.
  * - **Absent, sealed-capable author** — the acks *batch* per author ([enqueue]) and, after [debounceMs]
  *   (a best-effort [flushScope] wake; [retryPending] on the heal heartbeat is the backstop), escalate as
  *   ONE sealed tick carrying every pending id (`MessageContent.acks`) handed to [originateTick] — signed
@@ -507,7 +509,11 @@ class AckSync(
             return
         }
         val viaSpool = spoolPresent(authorId)
-        val viaAir = !viaSpool && transport.reachable.value.any { it.nodeId == authorId }
+        // A short-range plane's reach only (ADR 2026-10.rp3s): LoRa's `fastSend` refuses every tick now, so an
+        // author the board alone has heard would be sealed into an owed entry nothing can carry. Their tick stays
+        // parked for a link or the spool instead. Wi-Fi Aware's cue-only peers still count — its `fastSend` reaches them.
+        val air = (transport as? CompositeMeshTransport)?.shortRangeReachable ?: transport.reachable
+        val viaAir = !viaSpool && air.value.any { it.nodeId == authorId }
         if (!viaSpool && !viaAir) return // nowhere to send it: keep waiting for a ride, a link or a sighting
         val batch = riding.remove(authorId) ?: return
         val ids = synchronized(batch) { LinkedHashMap(batch.ids) }

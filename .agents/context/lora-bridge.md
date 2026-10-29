@@ -1,8 +1,8 @@
 # LoRa bridge (Meshtastic over BLE) — the long-range Nearby-room + DM plane
 
-How Knit carries **broadcast (Nearby-room) frames and sealed 1:1 DMs** over LoRa via a Meshtastic board
-attached over BLE. The design rationale is ADR 038 (the plane) and ADR 039 (DMs); this file is the
-operational detail. Behind `BuildConfig.LORA_PLANE`, which is **on everywhere since 2.5.0** (ADR
+How Knit carries **its user's own Nearby-room posts and sealed 1:1 DMs** over LoRa via a Meshtastic board
+attached over BLE. The design rationale is ADR 038 (the plane), ADR 039 (DMs) and ADR 2026-10.rp3s (the board is an
+endpoint: it airs only what its own user wrote); this file is the operational detail. Behind `BuildConfig.LORA_PLANE`, which is **on everywhere since 2.5.0** (ADR
 2026-09.6gtm; `-PloraPlane=false` rebuilds the dark artifact 2.3.0–2.4.x shipped). Visible is not enabled:
 `SettingsStore.loraEnabled` still defaults false and nothing leaves over the radio until a board is paired
 and set up.
@@ -13,43 +13,45 @@ touch the plane.
 ## Shape
 
 **Nothing here ticks until a board is configured** (ADR 2026-09.5bqu). The child is in the composite on
-`BuildConfig.LORA_PLANE` alone, so on most installs it is started and never armed; `gossipLoop` and
-`lingerSweepLoop` therefore park on `awaitConfigured()` rather than running the ADR 044 election over an
-empty heard set once a minute forever. Losing the board runs the same `quiesce()` that `stop()` does —
-that is what makes the parking safe, since `recomputeReachable` is the only thing that ages `lastHeardAt`
-out, and a parked sweep would otherwise strand the last board's peers in `reachable` permanently.
+`BuildConfig.LORA_PLANE` alone, so on most installs it is started and never armed; `lingerSweepLoop` therefore parks
+on `awaitConfigured()` rather than sweeping an empty heard set once a minute forever. Losing the board runs the same
+`quiesce()` that `stop()` does — that is what makes the parking safe, since `recomputeReachable` is the only thing
+that ages `lastHeardAt` out, and a parked sweep would otherwise strand the last board's peers in `reachable`
+permanently.
 
 `LoraMeshTransport` (`mesh/lora/`, pure) is a **fast-plane-only** `CompositeMeshTransport` child, added
 LAST (lowest send-preference). `neighbors` is always empty, so the flood / custody digest sync / keyreq /
-blob pulls never touch the ~1 kbps link — `send`/`sendFile`/`sendDigest` are no-ops. Only
-`fastFanout`/`longRangeFanout`/`fastSend` ride it, gated by `LoraFramePolicy`:
+blob pulls never touch the ~1 kbps link — `send`/`sendFile`/`sendDigest` are no-ops, and since ADR 2026-10.rp3s so
+is `fastSend`. Only `fastFanout`/`longRangeFanout` ride it, gated by `LoraFramePolicy`:
 
-- **FANOUT** (`fastFanout` — the composite's coordination-plane blast — and `longRangeFanout` — the seam
-  reserved for a plane with no data path, ADR 039; both land in one internal `fanout`): broadcast `chat` +
-  broadcast `reaction` (recipientId == null && group == null), `profile`, and **DM-form chat** (`chat &&
-  recipientId != null && group == null`, any `relay`). The DM form is admitted opaque: a DM, its sealed
-  receipt/reaction, a session reset, a group-key seed and an escalated group tick are wire-indistinguishable
-  and all ride. `shouldLongRangeFanout` (`mesh/FrameFanout.kt`) is what feeds it, from `originateSigned` and
-  `onDeliver` — never widen `shouldFastFanout` for this; that predicate is the NAN coordination plane's.
+- **Whose (ADR 2026-10.rp3s).** The board is an endpoint: a frame rides only when `LoraFramePolicy.airs` says this
+  phone's user wrote it. The composite re-calls the fan-out on every relay and `InboundPipeline.onDeliver` re-fans
+  every DM-form frame it delivers — both plane-agnostic on purpose — and the admit rule refuses all of it. Until our own
+  id is read nothing is ours: a frame fanned then is judged on its kind alone and carries its author
+  (`RideGate.authorId`), and `sendFrame` refuses one that is not ours as `StaleAtSend.NOT_OWN` (the pacer waits for the
+  id). The deferred "Forward over LoRa" of a pocket-mate's room post is a second clause of `airs`, nowhere else.
+- **What** (`fastFanout` — the composite's coordination-plane blast — and `longRangeFanout` — the seam reserved for a
+  plane with no data path, ADR 039; both land in one internal `fanout`): a broadcast `chat` (recipientId == null &&
+  group == null) **that fits one packet** at the current `maxPayload` — a longer one is counted `loraRoomTooLong` and
+  rides the radios and the spool only — and **DM-form chat** (`chat && recipientId != null && group == null`, any
+  `relay`). The DM form is admitted opaque: a DM, its sealed receipt/reaction, a session reset, a group-key seed and an
+  escalated group tick are wire-indistinguishable and all ride. `shouldLongRangeFanout` (`mesh/FrameFanout.kt`) feeds
+  it — never widen `shouldFastFanout` for this; that predicate is the NAN coordination plane's. A room `reaction` and a
+  `profile` never ride (no key bootstrap crosses the plane, so a stranger heard only over LoRa stays in
+  `PendingInbound` and is never shown).
   **The recipient gate (ADR 054):** a DM-form frame addressed to us, or to a peer BLE/NAN holds a **live link**
-  to (`coveredByLink`, read off `linkedPeers` — links, never sightings), is skipped on this path and on the
-  bridge backfill before the sig-dedup slot is spent: the link carries it. Counted `loraSkippedLinked`. **The
-  second cover (ADR 2026-09.y5f3):** a DM-form frame to a peer a connected spool heard from within
-  `SPOOL_COVER_MS` (15 min) is skipped the same way — fan-out, backfill, targeted send and the first-hearing
-  re-offer alike, and a frame already queued is abandoned at dequeue (`StaleAtSend.INTERNET`) — because the
-  frame is in the spool anyway and the spool costs no air; the field day spent a window on DM copies the
-  spool had already delivered. Fed by `MeshTransport.coveredByInternet` (`internetPeers`, from
-  `MeshManager`'s spool-presence watch), counted `loraSkippedInternet`, shown as `internetCovered` in
-  `…debug.LORA`. A cover, never an election input: it does not touch `linkedPeers` or the role. The
-  originator's `FanoutHint` (`CONTENT`/`TICK`) rides beside the frame — see Pacing.
-- **TARGETED** (`fastSend`): `receipt`, and `chat && !wire.relay && recipientId == to` (AckSync's sealed
-  `CTL_RECEIPT` tick — a flooded DM never rides this path, so no `fastSend` caller can widen it). Since ADR
-  2026-09.y5f3 this is how a **room post's** ✓✓ reaches an author only the board can hear: the tick waits
-  `AckSync.RIDE_HOLD_MS` (60 s) for a frame already going that way, then — if no spool covers the author —
-  is sealed once and fast-sent here, one packet, class `TICK`, retried on the owed backoff. Between ADR aa27
-  (2026-09-05) and this it was never asked: "absent" meant no BLE/NAN link, and a LoRa-only author was absent
-  (zero `lora tx send:` on two phones over a whole field day). The Internet cover above is the one gate this
-  path has; ADR 044's "never gate `fastSend`" was about the role, and a cover is not a role.
+  to (`coveredByLink`, read off `linkedPeers`, fed only by `suppressDataPath` — links, never sightings), is skipped
+  before the sig-dedup slot is spent: the link carries it. Counted `loraSkippedLinked`. **The second cover (ADR
+  2026-09.y5f3):** a DM-form frame to a peer a connected spool heard from within `SPOOL_COVER_MS` (15 min) is skipped
+  the same way — fan-out and the first-hearing re-offer alike, and a frame already queued is abandoned at dequeue
+  (`StaleAtSend.INTERNET`) — because the frame is in the spool anyway and the spool costs no air. Fed by
+  `MeshTransport.coveredByInternet` (`internetPeers`, from `MeshManager`'s spool-presence watch), counted
+  `loraSkippedInternet`, shown as `internetCovered` in `…debug.LORA`. The originator's `FanoutHint`
+  (`CONTENT`/`CHAT`/`TICK`) rides beside the frame — see Pacing.
+- **No room ✓✓ (ADR 2026-10.rp3s).** `fastSend` refuses everything, so AckSync's cleartext receipt and its sealed
+  escalation never air. A room tick goes home over a link or the spool; `AckSync.escalateRide` reads
+  `shortRangeReachable`, so an author the board alone can hear keeps the tick parked rather than sealing it into an
+  owed entry nothing can carry. Room ✓✓ ids still ride an own DM tick as riders (`MeshManager`'s `riderCap`).
 
 Everything else (group-form chat, `groupupdate`/`groupleave`, `typing`, `blobreq`/`keyreq`) is refused.
 
@@ -83,34 +85,34 @@ chunked at 233 and every one came back `TOO_LARGE`. Inbound mirrors `WifiAwareTr
 custody / relay all run unchanged.
 
 > **`reachable` here is *reach*, never *nearby*, and only fresh frames feed it** (ADR 2026-09.2ajk).
-> The set is keyed on the frame **author**, and a gateway puts other people's frames on air, so a peer
-> with no board of its own is routinely in it. Nothing above the composite may read it as proximity:
+> The set is keyed on the frame **author**, and an older build's gateway still puts other people's frames on air, so
+> a peer with no board of its own can be in it. Nothing above the composite may read it as proximity:
 > `MeshController.neighbors` (the notification count, the Contacts online dot, Diagnostics' *Directly
 > connected*) is `CompositeMeshTransport.shortRangeReachable`; the full union is `MeshController.reachable`
 > and only Diagnostics' *Reachable long-range* reads it. Writes are gated on
 > `mesh/FramePresence.kt`'s `isPresenceEvidence` (shared with the Internet plane, which needed the same
 > rule) — 15 min for everything except `profile`, which gets 13 h (the
-> 12 h `PROFILE_REPUBLISH_MS` cadence plus slack) — because the ADR 044 backfill, the ADR 039 re-offer
-> and `onDeliver`'s re-fan of a frame the **Internet plane** just pulled off a spool all put old frames on
-> air, and taking those as presence showed a phone switched off for days as a live neighbour. It cannot
-> reuse `isFresh` (which returns true for every non-chat type), and `profile` cannot simply be excluded:
-> a board that comes up beacons its profile first, and that first hearing is what fires `reofferTo`. The
-> gate wraps **only** `noteReachable` — decode, dedup, delivery, custody and relay all still run.
+> 12 h `PROFILE_REPUBLISH_MS` cadence plus slack) — because a backfill, a re-offer and a re-fan of a frame the
+> **Internet plane** just pulled off a spool all put old frames on air, and taking those as presence showed a phone
+> switched off for days as a live neighbour. It cannot reuse `isFresh` (which returns true for every non-chat type).
+> The gate wraps **only** `noteReachable` — decode, dedup, delivery, custody and relay all still run.
 >
-> **A radio in our own pocket vouches for nobody** (ADR 2026-09.6gk8). `boardOwners` maps a radio to the
-> publisher of the OFFERs it airs; a fresh frame aired by our own board or by a board whose owner we hold a
-> live link to (`pocketKeys()`) is not presence, and `heardVia` withdraws an author the moment the radio
-> that last vouched for them turns out to be co-pocket (its OFFER heard, or `suppressDataPath` linking its
-> owner). Don't narrow this to "only the author's own board": a far gateway's airing of a board-less author
-> is exactly the reach ADR 2026-09.wkbk's last hop rides.
+> **Our own board vouches for nobody.** A fresh frame our own board airs back through a repeater is never presence.
+> The co-pocket withdrawal of ADR 2026-09.6gk8 (`boardOwners`, `heardVia`, `pocketKeys`) read an older build's
+> OFFERs to learn whose radio a board was, and left with them (ADR 2026-10.rp3s): an older build's gateway airing a
+> board-less pocket-mate's frame can put that pocket-mate in `reachable`. Nothing of ours airs on that alone except
+> own DMs, which the link cover still stops.
+> <!-- doc-lint: allow boardOwners — the retired co-pocket machinery, named as what left -->
+> <!-- doc-lint: allow heardVia — the retired co-pocket machinery, named as what left -->
+> <!-- doc-lint: allow pocketKeys — the retired co-pocket machinery, named as what left -->
 
 ## The layers
 
 ```
-LoraMeshTransport (pure)      fastFanout/longRangeFanout/fastSend · LoraFramePolicy (+ isFresh) · LoraFrameCodec ·
+LoraMeshTransport (pure)      fastFanout/longRangeFanout · LoraFramePolicy (airs + isFresh) · LoraFrameCodec ·
                               LoraPacePolicy (class shedding + LoraAirtime budget) · reachable(isPresenceEvidence, 45min linger) ·
                               boardsHeard + its RxQuality (the signal row, same 45min linger) ·
-                              beacon + reofferTo on first hearing · LoraGatewayPolicy/LoraGossipPolicy/LoraCtl (the bridge)
+                              reofferTo on first hearing · LoraDmProbe + LoraReprobe (the probe and the re-probe)
   └─ MeshtasticLink (seam)    state / packets / outcomes / queue · suspend send()
        └─ MeshtasticSession   pure actor: want_config handshake · drain-until-empty on FromNum · 180s heartbeat ·
           (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy) ·
@@ -204,194 +206,29 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   <!-- doc-lint: allow Config.SecurityConfig.packet_signature_policy — a Meshtastic protobuf field, not the app's Config -->
   <!-- doc-lint: allow NodeInfo.has_xeddsa_signed — a Meshtastic protobuf field, not the app's NodeInfo -->
 
-## Key bootstrap (the far side has never seen the author's profile)
-
-Two paths: (1) `MeshManager.watchReachable` already refloods our profile on a new `reachable` peer;
-(2) `LoraMeshTransport` beacons its own signed profile (`ProfileFrameSource` ← `MeshManager`) on
-session-up under a **5-min floor** and on first hearing a peer under a **60-s gap** (one timestamp, two
-gaps — ADR 039 §8: a peer that just appeared has demonstrably never heard us, and without a periodic beacon
-this is the only way a late arrival learns our key). The composite's self-profile `fastFanout` shares the
-5-min floor. `PendingInbound` (~2 min) replays the parked chat once the profile pins the key. A **sig-keyed
-SeenSet** (first 8 B of `sig`, 10 min) recorded on send *and* receive stops re-fanning a LoRa-received
-frame and bounds AckSync's 24 h verbatim tick retries. A cleartext `receipt` is rebuilt with a fresh id per attempt, so
-`fastSend` keys it on (recipient, acked id) instead (`targetedKey`, ADR 2026-09.6gk8), and AckSync backs off
-both forms on the same doubling schedule.
-
-## Bridging pockets (ADR 044)
-
-Two BLE/NAN cliques ("pockets") out of range of each other, one board-holder in each, boards in LoRa range.
-**Live traffic already crossed** before ADR 044 and still does with no new machinery: `InboundPipeline.onDeliver`
-re-fans every first-seen *relayed* frame, and `fanout` never checked authorship — so a post by any pocket-A
-member reaches A's gateway over BLE, crosses the hop, and floods pocket B from B's gateway. ADR 044 adds the
-three things that were missing.
-
-**A gateway role.** `LoraGatewayPolicy`: anything publishing a `LoraCtl` OFFER has a board; a publisher we
-hold a **live link** to (`suppressDataPath`, the higher-preference planes' `neighbors`) is a co-pocket rival,
-one we do not is the bridge peer and is never suppressed. Lowest publisher key wins; the rest go PASSIVE and
-suppress the **floodable** paths (fan-out, beacon, offer, backfill) — inbound is untouched, so a spare board
-still feeds its pocket, and `fastSend` is untouched too (a `relay = false` targeted tick is owed by one node,
-never flooded, so no co-pocket board has a copy to relay *or* to duplicate). Recovery: on a lost link, on a
-gateway ageing past `STALE_MS` (45 min), and on the 60-s sweep — being wrongly passive is total silence, so it
-must never need an event to recover. Closes ADR 038's "one board per clique" residual.
-
-> **It must be the link set, never `reachable`.** BLE publishes presence adverts far beyond L2CAP range and
-> Wi-Fi Aware keeps a peer reachable for 150 s after its last cue, so a sighting is not a data path — and
-> standing down is only safe toward a board our frames can actually be handed to. Electing on `reachable`
-> was field-observed (2026-08-25, two Pixels across a field): the higher-keyed one showed "listening", sent
-> nothing in either conversation, and its ✓✓ ticks never landed, with no peer carrying any of it. The same
-> audit moved ADR 039's two `foreignReachable` guards (`fastSend`'s "another plane covers this peer" and the
-> re-offer's "custody syncs there for real") onto the link set for the identical reason — custody's digest
-> exchange runs off `neighbors`, so a sighting never triggers it, and the `fastSend` one alone would have kept
-> those receipts stranded. `…debug.LORA` reports `role` with both its inputs plus `pocketSightings`, so the
-> gap between heard and linked is visible rather than inferred.
-
-**The bridge covers the targeted tick's last hop too** (ADR 2026-09.wkbk). A far pocket's room ✓✓ leaves its
-acker as the targeted `send:chat` — a `relay = false` frame addressed to one phone — and the near gateway
-hears it off the air like any other. If that phone is board-less and sits one link behind the gateway,
-nothing used to carry it the rest of the way: the router does not flood a `relay = false` frame,
-`InboundPipeline.onDeliver` drops one that is not ours, and a room tick never escalates into custody (ADR
-2026-09.aa27). `MeshRouter.handOn` now sends it over that link, once — DM-form chat only, split horizon,
-hop-capped, and keyed on `neighbors` rather than `reachable` for the reason the note above gives. It is not
-LoRa-specific machinery, but this plane is where it fires: the broadcast air is the only way a
-`relay = false` frame reaches a node that is not its addressee. **Dave's half is still open** — an acker
-with no board and no spool has nowhere to send a tick at all.
-
-**An airtime governor.** `LoraAirtime` (pure): time-on-air from the LoRa formula at the board's own preset
-(231 B at LongFast ≈ 2 s) **plus the signature 2.8 adds to anything under the cliff** — gated on the board's
-firmware (`LoraAirtime.signsPackets`, from the handshake's `DeviceMetadata`; unknown reads as signing, since
-under-charging can cost compliance where over-charging only costs throughput) **less whatever `padTo` dodges**
-(ADR 2026-09.mhs5 — the same governor that prices the cliff is the one the codec asks whether to pad past it), a rolling **15-minute window** (ADR 054 — it was an hour, and a burst of chat then
-blacked the plane out for the rest of it; the hourly total is unchanged, the worst straddling hour ≤ 6.25 %),
-and one allowance = `min(region duty cycle, 10 % politeness) × 0.5` of the window — **45 s of air at LongFast**.
-Those two ceilings are computed **independently** (ADR 067): the regional duty cycle is law and only the
-firmware's own `override_duty_cycle` lifts it, while the 10 % is Knit's manners toward everyone else on the
-shared band — which a dedicated RF slot makes vacuous. So a board on a dedicated slot in a 100 %-duty region
-gets **450 s a window**, one in EU_868 still gets 45 s, and the unlock is a constructor flag the transport
-turns on (`LoraAirtime` itself stays pure and is tested both ways). Only the slot `LoraSlot` derives counts; a
-slot pinned by hand keeps the ceiling and the room.
-`AirBucket.LIVE` may spend all of it; `AirBucket.BRIDGE` (backfill + the ADR 039 re-offer) is capped
-at 30 %, so backfill degrades before live chat does. The OFFER is **not** in that bucket: it books
-`AirBucket.GOSSIP` and is judged only against the window *total* (ADR 2026-09.t8t8 for the exemption,
-ADR 2026-09.7c8n for the bucket — booking an exempt class against the share it is exempt from put the whole
-cost of gossip on the one class with nowhere to fall back to, and at the Trickle floor that is ~44 % of
-serving's budget: field-observed 2026-09-07 at `bridgeMs 14026/13500` with `liveMs 0/45000`). An OFFER is not
-backfill, it is the packet that decides whether any backfill happens at all — including the far pocket's,
-whose air this budget does not pay for — so a gateway busy serving used to starve its own offers and thereby
-silence the other pocket entirely (field-observed 2026-09-04: `BRIDGE 13372/13500`, two transmitted offers
-against seven published, the far side hearing none and holding a room post ~30 min). What bounds gossip is the
-Trickle timer, not a share; a reserved *slice* of BRIDGE was rejected because it cannot be sized across presets
-(a 48-prefix OFFER is ~2 s at LongFast and ~13 s at LongSlow against the same 13.5 s budget). Only one OFFER is
-ever queued — it is enqueued with the `"offer"` supersedes key, so a newer one replaces the queued copy
-(`OutboundFrame.supersedes`, ADR 2026-09.xdm2, which retired `LoraPacePolicy.dropQueued`), since a superseded
-snapshot names a set we have since changed. Serving also asks the budget **before** it queues (`serveOne` → `Serve.NO_AIR`, which **skips that
-candidate** — ADR 2026-09.7c8n; it used to end the round, and since `backfillRank` puts the priciest
-candidate first, a window holding a one-packet DM but not a three-packet room post served nothing at all),
-so the hourly serve cap is no longer spent on frames that only class shedding will remove — and it asks
-against what is already **queued** for BRIDGE (`LoraPacePolicy.pendingSizes`) as well as what is recorded, so
-a round cannot promise more air than the window has left. Without that, a round passed admission whole and
-then ran out of window part-way down the queue, and the frame the queue reached last was always the room post
-the backfill rank had deliberately put *first* (`FrameClass` drains a DM before the room; `backfillRank`
-spends slots the other way). ADR 2026-09.zkma;
-`LoraBridgeTest.aRoundThatCannotPayForEverythingKeepsWhatTheRankChose`. `AirBucket.BOOTSTRAP` (a live `profile` fan-out, ours or
-relayed — paired to `FrameClass.BOOTSTRAP` by `AirBucket.defaultFor`) is capped at 25 % and is the **one class
-judged outside the total**, so the key bootstrap still rides a spent window (ADR 056). It used to be admitted
-unconditionally *and* recorded, which is a budget with no floor: on the lab gateway 79 % of every LoRa frame
-ever sent was a profile (see the re-fan gate below). A backfilled profile stays on `BRIDGE` — re-served
-history, not bootstrap. `FrameClass.TICK` (our own delivery receipts, see Pacing) never spends the last 25 %
-of a window. Region + preset
-are read off the board (`FromRadio.config` → `Config.LoRaConfig`, pinned by `MeshtasticProtoTest`; conservative
-5 % until reported). `LoraPacePolicy.take` consults it, skipping a refused frame rather than blocking behind
-it, and **dequeue is now by class then FIFO** (a reversal of ADR 039 §5 — bursts of backfill must not queue-jump
-a live message).
-<!-- doc-lint: allow LoraPacePolicy.dropQueued — the call xdm2 retired, named as history -->
-<!-- doc-lint: allow Config.LoRaConfig — a Meshtastic protobuf message, not the app's Config -->
-
-**Digest-driven backfill.** `LoraCtl` (tag **`0x10`**, beside `FastFrameCodec`'s `0x03`/`0x04`; an older build
-drops it as `UNKNOWN_TAG`, which is what makes this additive) carries an OFFER: publisher key + ≤ 48 4-byte id
-prefixes (`StoreDigest.hash64` truncated), never fragmented, one packet. `LoraGossipPolicy` is Trickle —
-5 → 15 min doubling, transmit in the interval's second half, snap to the floor on news, suppress only on **set
-equality** (a superset has not said what we needed to say). "News" includes a *heard* OFFER announcing a set
-that is not ours (ADR 2026-09.qsj6), which `onCtlPacket` follows with a `gossipWake` poke like the other two
-reset sites — without it the loop sleeps on the old due time, wakes past the reset interval's end and doubles.
-It snaps only a **backed-off** interval, so a divergence that cannot converge (serve cap spent, permanent
-superset) settles at the floor cadence instead of two gateways resetting each other into the window. Since
-ADR 2026-09.7c8n what that floor spends is `GOSSIP`, so an unconvergeable divergence no longer eats the
-serving budget that would end it — which is the loop it used to close;
-and a reset never moves an unspent transmit point *later* than the one its interval already picked.
-On a far gateway's OFFER: `BridgeFrameSource`
-(`MeshManager` over `ForwardStore.liveFrames`, already TTL- and quota-bounded, so no extra age gate) returns
-what the prefixes don't name, ranked profile → room → DM newest-first (ADR 2026-09.rre4 — the reverse of the
-pacing queue's `FrameClass` order, on purpose: the queue asks who transmits first, the rank asks which frames
-are worth a scarce slot, and a room post is readable by the whole far pocket for typically one packet against
-a DM's one addressee for two); ≤ 4 per offer, ≤ 12 per publisher per
-hour, and hard-bounded by the BRIDGE budget.
-
-> **The offer names the head of that same ranked list** (`LoraFramePolicy.bridgeOrder`, ADR 2026-09.zkma) —
-> one packet holds ~48 prefixes against a 1000-row store, so the offer is a *window*, and a frame it cannot
-> reach that the serve prefers is re-sent every round for ever. The window used to be the newest 48 by
-> `sentAt` while the serve preferred profiles, and a `profile`'s `sentAt` is a **publish stamp** hours old:
-> no profile was ever named, every profile looked missing, and all four slots went to profiles both pockets
-> already held — round after round, for as long as the pocket had 48 frames of recent chat, which is why it
-> read as intermittent. Field-observed 2026-09-05: `bridge served=4/4` both ways, hours apart, the same four
-> ids, three of them the recipient's **own** publishes, and a room post that only arrived when the phones
-> re-linked over BLE. The list also collapses each author's profiles to the newest — only that one carries a
-> usable key, and custody really did hold three. Regressions:
-> `LoraBridgeTest.aRoomPostCrossesAPocketWhoseOfferIsFullOfRecentChat` and
-> `onlyAnAuthorsNewestProfileIsWorthASlot`. Frames are re-wrapped verbatim like any custody
-re-serve — no wire change, no custody rule touched. `SettingsStore.loraBridgeEnabled` (default **on**, the
-"Bridge distant groups" switch) gates offering and serving together.
-
-> **`serveOne` consults neither dedup set** (ADR 2026-09.y8pu, and ADR 057 for `profileSeen` before it). An
-> OFFER is positive evidence the far gateway lacks this exact frame, which outranks either set's guess that
-> we need not send it. `sigSeen` in particular records that we *transmitted*, and on a plane with no acks
-> that is not evidence anyone *heard*: a fan-out into an empty sky spends the slot exactly as a heard one
-> does, and for the ten minutes after it the repair path used to skip the frame it was there to repair — the
-> field failure was a Nearby-room post sent out of LoRa range and never delivered on return (2026-09-02).
-> `serveOne` still **records** the signature, so a live fan-out inside the window doesn't duplicate what the
-> bridge just queued; the asymmetry is the point, since a fan-out is speculative and a backfill was asked
-> for. `reofferOne` keeps its refusal on purpose — a first hearing proves nothing about what the peer holds,
-> so without the dedup it would re-send on every 45-min linger. Regression:
-> `LoraBridgeTest.aRoomPostFannedOutToAnEmptySkyIsStillBackfilledInsideTheDedupWindow`.
-
-**Multi-hop is Meshtastic's job.** A frame injected at a far gateway can't be re-transmitted (sig dedup) and a
-second board there is PASSIVE, so a third pocket is reached by the board's own 3-hop flood, not by a second
-phone-level send.
-
-**One fan-out per publish (ADR 057).** A relayed `profile` used to be gated only by `sigSeen`, whose 10-minute
-TTL matches `MeshRouter`'s SeenSet — so a profile that kept arriving looked first-seen again on every lapse and
-re-fanned forever (`isFresh` exempts profiles from the staleness check on purpose: a profile's `sentAt` is a
-publish stamp, hours old by design). A second set, `profileSeen`, keyed on the **frame id** (stable per publish,
-new on republish) with `PROFILE_REFAN_MS` = 12 h = `MeshManager.PROFILE_REPUBLISH_MS`, now holds it. Checked
-before `sigSeen` and after `encodeOrNull` — a held profile must leave the signature slot free for the backfill,
-and an unencodable frame must not consume a window it never rode. `serveOne` is deliberately **not** gated:
-the digest-driven backfill is what repairs a genuinely lost profile now (this plane refuses `keyreq`, so a far
-pocket cannot ask) — the reasoning ADR 2026-09.y8pu later extended to `sigSeen`. Our own `sendSelfProfile` beacon is not gated either — its 5-min floor and 60-s
-first-hearing gap are event-driven, and "a new listener appeared" is exactly when re-sending is the point.
-Counter: `loraProfileRefanSkipped`.
-
 ## Pacing
 
 `LoraPacePolicy` (pure): 3 s min inter-packet gap, a 32-frame queue (ADR 054 — sized to hold a 15-minute
-wait), NAK back-off (rate/duty → a 60 s cool-down), hold while `queueFree == 0`, and (ADR 044) a hold while the
-frame's [AirBucket] budget is spent — a refused frame is skipped rather than blocking the queue behind it, except
-past a live frame the window's **total** refused: that one holds everything ranked behind it until the air it needs
-comes back (`LoraAirtime.refusal`, ADR 044's 2026-10-04 amendment). Otherwise one-packet room posts take each
-packet's worth the window hands back and a two-packet DM never fits.
-When full the queue **sheds by class** (`FrameClass`: BOOTSTRAP > GOSSIP > DM > ROOM > TICK): the oldest
-**whole** frame (never a lone fragment) of the lowest class present goes, the newcomer included — a room post
-alone at the bottom is `REFUSED` rather than evicting a DM, and nothing ever evicts the profile bootstrap
-(queue order only — since ADR 056 the bootstrap is metered on the air, and a profile refused by its share
-waits in the queue for the next window rather than being dropped).
-`TICK` is a frame **we** originated as a delivery receipt, said so by `FanoutHint.TICK` on
-`MeshTransport.longRangeFanout` (the transport cannot read a sealed frame); a relayed DM-form frame stays `DM`,
-and every `fastSend` frame is a tick by policy. Dequeue runs the same class order forwards since ADR 044
-(highest class first, FIFO within it — bursts of gossip/backfill must not queue-jump a live message). Both
-eviction and refusal count as `loraDroppedQueue`.
+wait), NAK back-off (rate/duty → a 60 s cool-down), hold while `queueFree == 0`, and a hold while the frame's
+`AirBucket` budget is spent — a refused frame is skipped rather than blocking the queue behind it, except past a
+live frame the window's **total** refused: that one holds everything ranked behind it until the air it needs comes
+back (`LoraAirtime.refusal`, ADR 044's 2026-10-04 amendment). Otherwise one-packet room posts take each packet's
+worth the window hands back and a two-packet DM never fits. Two buckets since ADR 2026-10.rp3s: `LIVE` (everything
+Knit of ours, the re-offer and the re-probe included) may spend the whole allowance, `PUBLIC` (the Meshtastic room's
+posts and the DM auto-reply) 15 % of it and the total. A booking a retired bucket left in the persisted ledger is
+restored as `LIVE` (`BRIDGE`, `GOSSIP`) or dropped (`BOOTSTRAP`, `AirBucket.restoredFrom`).
+When full the queue **sheds by class** (`FrameClass`: DM > ROOM > TICK): the oldest **whole** frame (never a lone
+fragment) of the lowest class present goes, the newcomer included — a room post alone at the bottom is `REFUSED`
+rather than evicting a DM. `TICK` is a frame **we** originated as a delivery receipt, said so by `FanoutHint.TICK` on
+`MeshTransport.longRangeFanout` (the transport cannot read a sealed frame). Dequeue runs the same class order forwards
+(highest class first, FIFO within it). Both eviction and refusal count as `loraDroppedQueue`. A DM-form frame keys
+every copy the plane might queue on its id (`frameKey`), so the re-offer and the re-probe see a copy still waiting
+(`hasQueued`, the frame in flight included) and do not queue a second.
 
 **Freshness gate** (fan-out paths only, room included): a `chat`/`reaction` whose `sentAt` is more than
 15 min old (`LoraFramePolicy.FRESH_MS`) is a custody re-serve and is not fanned — without it a newcomer's
 whole backfill re-fanned over the air, twelve frames at a time. Profiles (publish-stamped `sentAt`) and
-receipts are exempt, as are the targeted path (AckSync's verbatim retries) and the re-offer. It reads the
+receipts are exempt, as are the re-offer and the re-probe. It reads the
 injected `wallClock` (epoch) — the transport's `clock` is `elapsedRealtime` and is not comparable to a
 frame's `sentAt`. Counted with the sig-window rejections under `loraSuppressed`. `BleConnectArbiter` lets
 the board dial pause the mesh BLE scan for its connect window (scanning starves connects).
@@ -406,49 +243,40 @@ parks on `link.state`, never on its 1 s idle tick (#67).
 
 ## Limiters that outlive the process (ADR 2026-09.7svb)
 
-**A limiter that resets on launch is not a limiter.** Five of them are persisted through `LoraPlaneState`
-(a JSON blob under one settings key, `LoraPlaneStateStore`; `mesh/lora/` itself stays Android-free): the
-airtime ledger, the profile beacon's floor, the gossip Trickle interval, the per-publisher serve cap and the
-12 h `profileSeen` gate. Every one of them used to begin each launch empty, so a restart handed the plane a
-**fresh 45-second allowance** and re-ran every first-time behaviour against it — a self beacon, an OFFER at
-the Trickle floor rather than at the back-off the silence had earned, and a `reofferTo` batch per peer as
-each was heard "first" again. The duty cycle is law rather than politeness (ADR 067) and the ledger is the
-only thing enforcing it, so a crash loop, a force-stop or a lab reinstall cycle spent air nothing accounted
-for.
+**A limiter that resets on launch is not a limiter.** These are persisted through `LoraPlaneState` (a JSON blob under
+one settings key, `LoraPlaneStateStore`; `mesh/lora/` itself stays Android-free): the airtime ledger, the DM
+auto-reply's memory, the DM probe window and the re-offer's per-frame hour (`dmProbes` / `reoffered`, ADR
+2026-10.a4pm), and the re-probe's schedule (`reprobes`, ADR 2026-10.rp3s). They used to begin each launch empty, so a
+restart handed the plane a **fresh 45-second allowance** and re-ran every first-time behaviour against it. The duty
+cycle is law rather than politeness (ADR 067) and the ledger is the only thing enforcing it, so a crash loop, a
+force-stop or a lab reinstall cycle spent air nothing accounted for. The beacon floor, the gossip interval, the serve
+caps and the profile re-fan gate were persisted too, and left with the traffic they limited (ADR 2026-10.rp3s): a
+blob the last build wrote still loads, the store ignores the dropped keys, and every limiter this build keeps comes
+back (`LoraPlaneStateStoreTest`).
 
-- **The DM probe window and the re-offer's per-frame hour joined them** (ADR 2026-10.a4pm,
-  `LoraPlaneSnapshot.dmProbes` / `reoffered`): forgotten on launch, every restart would buy each unheard recipient
-  another probe and re-air the backlog on the next first hearing. Not cleared by `quiesce` — the restore runs once
-  per instance, so a clear on `stop()` would reopen every window for an in-process restart.
+- **None of them is cleared by `quiesce`** — the restore runs once per instance, so a clear on `stop()` would
+  reopen every window for an in-process restart.
 - **Stamps are wall-clock, converted at each end** (`WallShift`). `clock` is `elapsedRealtime`, which
   restarts at zero every boot: persisted directly it reads as the far future and ages nothing out. A
   snapshot stamped *ahead* of the wall clock is refused whole — the clock moved backwards, and one fresh
   window is the smaller error.
-- **Nothing transmits until it is back** (`awaitRestored`, on the pacer, `gossipLoop` and `beaconProfile`).
-  It releases on failure and behind a 5 s timeout: a store that never answers costs a window, not the plane.
-  The pacer also waits for the self id (`selfIdKnown`, resolved on its own coroutine at `start`): until it lands,
-  the recipient gate reads a DM addressed to us as uncovered and queues the relay's re-fan, and only the
-  send-time re-ask (`staleReason`) holding the id keeps it off the air (#141).
+- **Nothing transmits until it is back** (`awaitRestored`, on the pacer and the re-probe). It releases on failure
+  and behind a 5 s timeout: a store that never answers costs a window, not the plane. The pacer also waits for the
+  self id (`selfIdKnown`, resolved on its own coroutine at `start`): until it lands, nothing is ours, and only the
+  send-time re-ask (`staleReason`) holding the id keeps a frame that is not, or one addressed to us, off the air (#141).
 - **A booking carries its recorded cost, not its size** — a board swapped between two processes has a
   different preset, and the air was spent at the old one.
-- **The gossip Trickle interval is NOT persisted, and that was tried.** Carrying the back-off stalls the ADR
-  044 election: an OFFER is the only evidence anyone has a board, `LoraGatewayPolicy` is not persisted
-  (`quiesce` calls `forget`), and a restored interval that has since elapsed makes `ensureInterval` double it
-  and draw a fresh point — so the first OFFER lands up to 15 min out with every gateway ACTIVE and fanning
-  out everything. Lab fleet, 2026-09-10: `gossip=600000ms` restored, no OFFER in 90 s, P7 and P9 both
-  `gatewaysHeard: 0` beside `boardsHeard: 1`. A fresh timer offers within 2.5–5 min, and that OFFER is
-  charged to the persisted window — which is all the back-off was buying.
 - **`sigSeen` and `lastHeardAt` are deliberately not persisted.** A restored `sigSeen` would carry "we
   transmitted" across a restart, which on a plane with no acks is not evidence anyone heard (the ADR
   2026-09.y8pu reasoning); a restored `lastHeardAt` would claim `reachable` on evidence this process never
   saw (ADR 2026-09.2ajk). The restored ledger bounds what both would otherwise let through.
 - Writes are debounced 2 s behind a conflated wake (the pacer's 3 s floor bounds the rate anyway), plus one
-  on `stop()` taken **before** `quiesce()` empties the serve budgets. A kill inside the debounce loses the
-  last packet or two of the ledger. The restore runs **once per instance**: an in-process stop/start keeps
-  the live ledger rather than re-reading a staler blob.
+  on `stop()` taken **before** `quiesce()`. A kill inside the debounce loses the last packet or two of the ledger.
+  The restore runs **once per instance**: an in-process stop/start keeps the live ledger rather than re-reading a
+  staler blob.
 
 > **The pacer's monitor is taken outside the ledger's, never the other way round.** `LoraPacePolicy`,
-> `LoraAirtime` and `LoraGossipPolicy` are all `@Synchronized` on every entry point, because the queue has
+> `LoraAirtime`, `LoraDmProbe` and `LoraReprobe` are all `@Synchronized` on every entry point, because the queue has
 > six writers on five coroutines (`take` on the pacer; `enqueue` on whichever coroutine sent; `onQueueStatus`
 > / `evictOversize` / `onNak` on the link, queue and outcomes collectors) and the ledger has a seventh — the
 > `LoraPlaneState` save, whose `bookings` prunes. `ArrayDeque` is not thread-safe and nulls a slot on
@@ -460,7 +288,8 @@ for.
 ## DMs (ADR 039)
 
 A 1:1 DM rides as its ordinary sealed frame — nothing is re-encoded, the signature verifies unchanged, and
-the far side needs only the pinned profile (key + `CAP_RATCHET` + prekey) the beacon already carries; X3DH
+the far side needs only the pinned profile (key + `CAP_RATCHET` + prekey), which since ADR 2026-10.rp3s it must have
+from a radio, the spool or an older build's beacon — no profile rides the plane; X3DH
 attaches its init to every frame until the first reply, so no round trip is needed. The epoch ratchet
 tolerates a lossy hop by design (independent epochs, ≤ 200 skipped keys per epoch). Sizes
 (`CoordinationPlaneSizeBudgetTest.sealedDmsFitTheLoraHop`): a 100-char DM compacts to **387 B** steady-state
@@ -479,61 +308,80 @@ transcoded, ~218 B on `0x03`; at the MTU-255 ESP32 boards the latter needs the m
 lab Pixel 9's MTU-255 ESP32 board 2026-08-29 — `lora ready … mtu=255 maxPayload=228`, fragmented 228-B writes accepted).
 
 **A DM waits for its recipient to be heard (ADR 2026-10.a4pm).** A DM-form fan-out to a recipient not in
-`reachable` (author-keyed reach: a peer heard through a far gateway's airing counts, a co-pocket board's airing
-does not) is held, counted `loraUnheardHeld`, left in custody with its dedup slot free — the check sits after the
+`reachable` (author-keyed reach: a peer heard through a Meshtastic repeater or an older build's gateway counts, our
+own board's airing does not) is held, counted `loraUnheardHeld`, left in custody with its dedup slot free — the check sits after the
 covers and the freshness gate and **before** the slot. The plane cannot read a sealed frame, so the originator's
 `FanoutHint` decides what is gated: our own DM (`CHAT`, from `sendChat` and the pending-key flush only) is gated and
 may probe; our own ✓✓ (`TICK`) is **not** gated — it answers a DM that just reached us, is about one packet, and
 held it would be stranded (no message row to re-offer from, and a re-offered old DM does not make its author heard
 here); our own sealed ctls (`CONTENT` — reactions, resets, seeds, key replies, and the post-reset re-seal, whose
 custody copy is the old seal) are **not** gated either, because they have no message row for the re-offer to find
-(or would be re-offered unopenable) and draw no ✓✓; a relayed DM-form
-frame is gated, and may probe only when its author is a pocket-mate we hold a link to — the gateway's way to put
-a board-less pocket-mate's DMs to a quiet far peer on the air, at the price of sometimes spending the probe on
-that pocket-mate's tick. Until our own id is known nothing is gated (the send-time re-ask covers a DM to us). The first `CHAT` DM to an unheard recipient in each
+(or would be re-offered unopenable) and draw no ✓✓. A relayed DM-form frame never reaches the gate: the admit rule
+refuses it first (ADR 2026-10.rp3s). Until our own id is known nothing is gated (the send-time re-ask covers a DM to us). The first `CHAT` DM to an unheard recipient in each
 `DM_PROBE_WINDOW_MS` (15 min) rides anyway as the **probe** (`loraDmProbes`, `lora probe <label> -> <id>`): if the
 recipient is there, the probe makes us heard on their board, their sealed ✓✓ rides back and makes them heard on
 ours, and that first hearing re-offers what was held. A DM rather than a profile beacon on purpose: a recipient
-that already hears us (our room posts, our last beacon) never takes a beacon as a first hearing and never beacons
-back. The window is persisted with the other limiters (`LoraPlaneSnapshot.dmProbes`) and not cleared by
+that already hears us never takes a beacon as a first hearing and never beacons back.
+
+**The re-probe (ADR 2026-10.rp3s).** A recipient whose board was off when the probe flew, and who then has nothing to
+say, was made heard again by the beacons and OFFERs this plane no longer sends — without them every DM held behind a
+lost probe would wait for a radio or spool contact. `LoraReprobe` keeps a schedule per recipient an own DM went to
+(held, probed, or flown to them while heard), and the linger sweep (`reprobeDue`) re-airs the **newest** own unacked
+DM to a due recipient as a probe on `LIVE` (`lora reprobe <id> -> <recipient>`, `loraReprobed`): first one
+`DM_PROBE_WINDOW_MS` after the hold, then at a gap doubling to 4 h (`LoraReprobe.CAP_MS`). It shares the probe window
+with the fan-out's probe (`dmProbeAt.claim`), carries the covers but not the reach gate on its `RideGate`, and is
+deferred without doubling while the recipient is linked or spool-covered, or a copy of that DM is still queued
+(`hasQueued`). Only a board holder (`isBoardHolder`) is probed or re-probed at all: a recipient this plane hears
+(reach is author-keyed and fed only by fresh frames off their board), or one whose pinned profile names a board
+(`PeerEntity.loraNode`, supplied by `MeshManager.loraBoardHolders` as the transport's `boardHolders`). A DM to a
+board-less contact can be carried by nothing on the air and rides custody and the spool, but the contact is scheduled
+all the same and deferred at no air cost each due round, so a `loraNode` that arrives later is probed on the next one
+without a new DM. Until the holder source first reports, every recipient reads as not a holder *for now*: the reach
+gate holds without a probe and the re-probe defers, never forgets, so a restored schedule outlives a slow first
+emission. A failing source is caught, logged (`lora board holders failed`) and counted (`loraBoardHoldersFailed`), and
+the last set it gave stays in force. A recipient who keeps being heard has
+no first hearing coming, so a DM lost on its way to them is repaired instead (`repairHeard`, `lora repair <id> -> <id>`):
+once the newest own unacked DM to them is older than one gap and was not re-offered in the hour, it is re-aired as a
+re-offer (LIVE, `reofferedAt`, `hasQueued`, reach re-asked at send), and the gap still doubles. A first hearing resets the gap to the base, and so does an acked DM (the frame the last re-probe aired
+is no longer among the unacked ones); no unacked DM left drops the recipient, and nothing else does. The ✓✓ to the re-probe makes them heard,
+and the ordinary first-hearing re-offer carries the rest. NodeInfo and telemetry are never a hearing: `BoardQuiet`
+stretches them to hours, and the handshake replays a synthetic NodeDB. The schedule is persisted
+(`LoraPlaneSnapshot.reprobes`), so a restart keeps the backoff earned. The window is persisted with the other limiters (`LoraPlaneSnapshot.dmProbes`) and not cleared by
 `quiesce`. A queued frame that passed the gate carries `RideGate.reachGated` and is dropped `StaleAtSend.UNHEARD`
 if its recipient lingers out before it airs; the probe is never dropped for that. **Any** frame refused at send
 — and every frame dropped before its first fragment (a NAK or give-up on it, a missing config or a slot that is not
-Knit's, a frame the pacer sheds, refuses or evicts unqueued) — hands back the dedup slot it took (`abandon`; `OutboundFrame.sigKey`,
-the fan-out, serve and re-offer paths; once per id per window, which is what `SeenSet.reopen` gives): it never flew,
-and that slot would turn the next re-offer or backfill away. A probe gives back its window, a re-offer its hour. What it costs: if B hears A but A
-cannot hear B, A gets one DM per window through instead of every one; and **a recipient with LoRa DMs switched off
-never sends a ✓✓ back**, so (unless its room posts or beacon make it heard) only probes reach it. The room,
-`profile`, `fastSend` and the bridge backfill are not gated.
+Knit's, a frame the pacer sheds, refuses or evicts unqueued) — hands back what it took (`abandon`): the fan-out's dedup
+slot (`OutboundFrame.sigKey`, once per id per window, which is what `SeenSet.reopen` gives), a probe's window, a
+re-offer's hour. What it costs: if B hears A but A cannot hear B, A gets one DM per window through instead of every
+one; and **a recipient with LoRa DMs switched off never sends a ✓✓ back**, so (unless its room posts make it heard)
+only probes reach it. The room is not gated.
 
 **Re-offer on first hearing.** The plane has no custody sync, so a DM sent while the peer's board was off — or
-held by the reach gate above — would be lost to it. On first hearing a peer (once per 45-min linger), after the
-beacon, the transport pulls `FarPeerFrameSource.framesFor(peer)` and enqueues each verbatim, class DM, through
-a private path (`reofferTo`). `MeshManager` answers our own unacked DMs first — chosen by id off
-`MessageDao.unackedDmsTo`, newest first, over-fetched and capped at `FAR_REOFFER_OWN_LIMIT` (6) after
-`ForwardStore.liveFramesByIds`, so a row custody no longer holds takes no slot — then the newest live custody
-frames to the peer that others wrote, up to `FAR_REOFFER_RELAYED_LIMIT` (4, `liveFramesToFromOthers`; shared with
-relayed ✓✓s and ctls). Ours, and a linked board-less pocket-mate's, spend `LIVE` (live sends, held back); other
-relayed ones `BRIDGE`. One frame is re-offered at most once an hour across first hearings (`reofferedAt`,
-persisted as `LoraPlaneSnapshot.reoffered`), so a peer heard only now and then does not have the same backlog
-re-aired every linger cycle. Every copy of a DM-form frame — fan-out, serve, re-offer — is queued under one
-`supersedes` key (`frameKey`): when the bridge already queued a copy (taking the dedup slot) on a share it has
-spent, the re-offer lifts that copy from `BRIDGE` onto `LIVE` in place — that lift only, and never a copy holding a
-probe window (`LoraPacePolicy.upgradeQueued`, `lora
-reoffer:<id> lifted a queued copy onto LIVE`) — never a part-sent one; and the bridge skips a DM-form frame the
-pacer already holds (`LoraPacePolicy.hasQueued`) — the frame being written counts, until `done` or `requeue` — so
-it never pushes a queued probe down to `BRIDGE`. A frame put
-back after a busy board or a lost link goes through `LoraPacePolicy.requeue`, which supersedes nothing. Skipped for a peer another plane links
-(`linkedPeers`) or a spool covers — custody syncs to it for real there. Bounded: ≤ 10 frames × ≤ 3 packets per
-sighting on the 32-frame queue. Counted as `loraReoffered`. A six-DM batch is ~30 s of a 45 s window on `LIVE`, and
-DM ranks above the room and ticks, so a sighting's backlog can hold those for most of a window.
+held by the reach gate above — would be lost to it. On first hearing a peer (once per 45-min linger) the transport
+pulls `FarPeerFrameSource.framesFor(peer)` and enqueues each verbatim, class DM, on `LIVE`, through a private path
+(`reofferTo`). `MeshManager` answers our own unacked DMs only — chosen by id off `MessageDao.unackedDmsTo`, newest
+first, over-fetched and capped at `FAR_REOFFER_OWN_LIMIT` (6) after `ForwardStore.liveFramesByIds`, so a row custody no
+longer holds takes no slot; the frames others wrote that it used to add left with the bridge (ADR 2026-10.rp3s). One
+frame is re-offered at most once an hour across first hearings (`reofferedAt`, persisted as
+`LoraPlaneSnapshot.reoffered`), so a peer heard only now and then does not have the same backlog re-aired every linger
+cycle. The re-offer does **not** ask the fan-out's `sigSeen`: the probe that went out a minute ago into an empty sky is
+exactly the frame this first hearing exists to repair (the ADR 2026-09.y8pu reasoning, now that the bridge's serve is
+gone). The re-offer waits `REOFFER_SETTLE_MS` (2 s) after the first hearing, so the ✓✓ that caused it — often the
+probe's own — is applied before custody is read and the acknowledged probe is not re-aired. It asks `LoraPacePolicy.hasQueued` instead — every copy of a DM-form frame is queued under one `supersedes`
+key (`frameKey`), and the frame being written counts until `done` or `requeue` — so a copy still waiting is never
+doubled. A frame put back after a busy board or a lost link goes through `LoraPacePolicy.requeue`, which supersedes
+nothing. Skipped for a peer another plane links (`linkedPeers`) or a spool covers — custody syncs to it for real
+there. Bounded: ≤ 6 frames × ≤ 3 packets per sighting on the 32-frame queue. Counted as `loraReoffered`. A six-DM
+batch is ~30 s of a 45 s window on `LIVE`, and DM ranks above the room and ticks, so a sighting's backlog can hold
+those for most of a window.
 
 **What still doesn't cross:** group chat (group-form frames are refused; sealed group *machinery* — seeds,
 key req/ack, escalated ticks — crosses opaquely and is bounded by the group logic), `typing`, attachment
 bytes (a DM with an image arrives as text plus a loading placeholder until a radio/spool path exists —
 `blobreq` never rides LoRa; `AttachmentDeferPolicy` already ignores LoRa sightings), and DMs beyond the
-size ceiling. A board-less recipient behind another board-holder gets live DMs via that phone's relay but
-no re-offer (no routing table).
+size ceiling. A board-less recipient behind another board-holder gets nothing over LoRa from a build since ADR
+2026-10.rp3s: the board-holder airs only its own user's frames, so what reaches a board-less phone over LoRa is what
+its pocket-mate's board *hears* and the pocket floods to it.
 
 **The ✓✓ is coalesced (ADR 054).** A DM that arrived over the board does not seal its receipt at once:
 `InboundPipeline.acknowledge` holds it in `mesh/DmAckCoalescer` for ≤ 45 s (anchored on the oldest held id;
@@ -953,29 +801,32 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   `lora provision wrote chN 'Knit'` (or `reuse`) → the board reboots and the link reconnects → the channel
   index in settings now points at the Knit slot. Both boards must be provisioned before frames cross.
 - `…debug.LORA` (debug bridge): `--es address <MAC>` + `--es name <n>` binds a board, `--ei channel <idx>`,
-  `--ez on <true|false>`, `--ez bridge <true|false>`; no extras dumps
-  `state/boardNodeNum/snr/rssi/queueFree/queued/heard/role/pocketLinks/pocketSightings/gatewaysHeard/radio/airtime/counters`
+  `--ez on <true|false>`, `--ez dms <true|false>`, `--ez room <true|false>`; no extras dumps
+  `state/boardNodeNum/snr/rssi/queueFree/queued/heard/boardsHeard/internetCovered/radio/airtime/counters`
   (`airtime` also carries `dedicated`, true when the board is on its own RF slot and so off the politeness
-  ceiling — ADR 067; `liveMs`/`bridgeMs`/`bootstrapMs` against their budgets — `loraSent − loraDmSent −
-  loraOfferSent` is the profile + room count, which holds only because `loraOfferSent` counts what was
-  **transmitted** rather than what was enqueued (ADR 2026-09.t8t8), and profiles are the fragmented ones;
-  `loraProfileRefanSkipped` against `loraSent` is the re-fan redundancy). `loraAirtimeHeld` /
+  ceiling — ADR 067; `liveMs`/`publicMs` against their budgets — `loraSent − loraDmSent` is the room-post count,
+  since nothing else of ours rides; `loraRoomTooLong` the own posts kept off for needing two packets, `loraReprobed`
+  the re-probes, `loraRetiredCtl` an older build's OFFERs heard and dropped, `loraBoardHoldersFailed` the board-holder
+  source failing — non-zero, the re-probe may have stopped probing silent holders). `loraAirtimeHeld` /
   `loraAirtimeHeldByBucket` beside `queued` is what tells a starved plane from a quiet one: a spent bucket
   *holds* frames rather than dropping them, so no counter moves until the queue overflows and the drops all
   arrive at once. It is the
   two-board oracle. `…debug.LORATX --es text <s>` sends a raw payload straight to the board (board-side
   sanity via `meshtastic --noproto`). `…debug.LORAPROV` sets the board up headlessly; `--es mode dedicated`
   is ADR 067's dedicated-frequency setup and `--es mode restore` undoes either.
-- Broadcast: `…debug.SEND --es conv nearby --es text …` on A → appears on B within ~5–10 s; A's tick flips
-  ✓✓ (sealed tick over LoRa); a reaction crosses. Move B out of BLE/NAN range and repeat. Counters:
+- Broadcast: `…debug.SEND --es conv nearby --es text …` (one packet's worth) on A → appears on B within ~5–10 s;
+  no ✓✓ comes back over LoRa and no reaction crosses (ADR 2026-10.rp3s) — the tick waits for a link or the spool.
+  A post past the one-packet budget counts `loraRoomTooLong` and stays on the radios. Move B out of BLE/NAN range
+  and repeat. Counters:
   `loraSent/loraReceived/loraReassembled` climb, `loraNak == 0`, `loraDroppedQueue == 0` at chat pace,
   `loraTooBig` only for long posts. Diagnostics lists a LoRa-reachable node under **Reachable long-range**
   tagged `LoRa`, never under *Directly connected* (ADR 2026-09.2ajk).
 - DM (ADR 039): `…debug.SEND --es conv <peerId> --es text …` on A → appears on B within ~10 s; A's tick
   flips ✓✓ (the sealed receipt crossed back); `loraDmSent`/`loraDmReceived` climb on both, `loraTooBig == 0`.
   Reply from B (turnaround epoch) and a DM reaction cross; a 500-char DM counts `loraTooBig` and lands later
-  over BLE. Power B's board off, send two DMs from A, power it on → B beacons, A logs `reoffer` ×1 or ×2 (the
-  first DM may have gone out as the probe and still hold its dedup slot), both land, ✓✓ returns.
+  over BLE. The strand trial (ADR 2026-10.rp3s): power B's board off, send two DMs from A (the first goes as the
+  probe, the second is held), power it on with B silent → within one window A logs `lora reprobe <id> -> <B>`
+  (`loraReprobed 1`), B's ✓✓ makes B heard, A logs `reoffer` for the other, both land and A shows ✓✓ on both.
   The reach gate (ADR 2026-10.a4pm): two phones with boards, no short-range link, quiet past the 45-min linger →
   three DMs A→B read `loraDmProbes 1`, `loraUnheardHeld 2` on A, then `loraReoffered ≥ 2` and three ✓✓ once B's
   tick lands; B's board off, two more DMs → one more `lora probe` and nothing else of them on air for 15 min.
@@ -993,22 +844,12 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   the queue drains within 15 min, ticks yield first. Link B over BLE and the room notice goes quiet while
   `airtime.liveMs` stays put — the room speaks about a delayed audience, not about the ledger alone.
   (4) `loraNak == 0` throughout, EU boards included.
-- Bridge (ADR 044), the four-device trial: pocket A = board-holder + one more phone, pocket B likewise, the
-  two pockets out of BLE/NAN range of each other. `…debug.LORA` shows `role: ACTIVE` on both board-holders and
-  a real `radio` (region/preset off the board, not `(assumed)`). (1) A room post from A's **board-less** phone
-  reaches B's board-less phone in ~10 s — `loraSent`/`loraReceived` climb on the gateways only. (2) Power B's
-  board off, post twice in A, wait past `FRESH_MS` (15 min), power it back on → B offers, A logs
-  `lora bridge served=2`, both land, `loraBridged == 2`. (3) Pair a third board to A's second phone → it
-  reports `role: PASSIVE`, `loraPassive` climbs, its `loraSent` stays flat, and the bridge keeps working.
-  (4) Over an hour of chat pace: `airtime.liveMs` under `liveBudgetMs`, `bridgeMs` under `bridgeBudgetMs`,
-  `loraNak == 0`, `loraDroppedQueue == 0`. (5) `…debug.LORA --ez bridge false` → `loraOfferSent` stops
-  climbing and no backfill is served, while a live room post still crosses. (6) With `bridgeMs` at its budget
-  from serving, `lora tx offer` still appears on the gossip schedule and `loraOfferSent` matches that line
-  count; `loraAirtimeHeld` names `BRIDGE` while `queued` shows the depth, and `loraBridged` stops short of
-  `SERVE_CAP_PER_HOUR` rather than running to it with nothing landing (ADR 2026-09.t8t8). (7) `gossipMs`
-  climbs with the offers while `bridgeMs` does not, and a `served=0/4 (n over budget)` round is followed by
-  a cheaper frame crossing in the same round rather than a second `0/4`; each refusal names its own frame as
-  `lora bridge held bridge:<id>: <n>ms + <n>ms queued, BRIDGE <used>/<budget>` (ADR 2026-09.7c8n).
+- Endpoint (ADR 2026-10.rp3s), the pocket trial: A's board alone; B's board plus a board-less C linked to B over BLE,
+  out of BLE/NAN range of A. (1) A posts one packet's worth in the Nearby room → B and C both get it (B's board heard
+  it, the pocket flooded it); A's `loraSent` +1. (2) C posts → B gets it over the link, B's `loraSent` and `lora tx`
+  lines do not move, A never gets it. (3) Idle 30 min with every phone up: `meshtastic --listen` on A's board over
+  USB shows no `PRIVATE_APP` packet from B's board, and `…debug.LORA` on B reads `loraSent` and `airtime.totalMs` flat
+  — not the board's own `airUtilTx`, which counts Meshtastic's NodeInfo and telemetry too.
 
 ## First-session unknowns to confirm (assumptions, not blockers)
 

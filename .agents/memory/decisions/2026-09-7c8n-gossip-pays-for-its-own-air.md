@@ -8,8 +8,7 @@ topics: [lora, airtime, reliability]
 
 # ADR 2026-09.7c8n — Gossip pays for its own air, and a backfill round skips what it cannot afford
 
-Status: Accepted (2026-09-07; `AirBucket.GOSSIP`, `Serve.NO_AIR` skips the candidate instead of ending the
-round, the serve log names the reason, `AirtimeSnapshot.totalUsedMs`)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the GOSSIP bucket and the backfill round are gone. Was: Accepted (2026-09-07; `AirBucket.GOSSIP`, `Serve.NO_AIR` skips the candidate instead of ending the round, the serve log names the reason, `AirtimeSnapshot.totalUsedMs`)
 
 Two independent bugs with one symptom, both in the half of ADR 2026-09.t8t8 that decided *where the OFFER's
 air is booked*. A Nearby-room post crossed neither pocket for 50 minutes while the plane's window was 45 %

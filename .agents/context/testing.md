@@ -427,7 +427,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   still crosses. `KeyExchangeLabTest` flaked 1-in-8 on one core before that (job 4354: two frames released;
   locally: two parked).
 - **`LabLimits` carries the custody bounds** (`custodyTtlMs`, `custodyMaxRows`, `custodyMaxPerSender`, …,
-  `ForwardRepository`'s constructor) and the LoRa Trickle interval (`loraGossipMinMs` / `loraGossipMaxMs`).
+  `ForwardRepository`'s constructor) and the LoRa linger sweep (`loraLingerSweepMs`, which also runs the re-probe).
   Give every node in a scenario the same custody numbers — the digest is folded over what they keep.
 - **The second batch of classes** (2026-09-14, 45 scenarios): `GroupMembershipLabTest` (leave-rekey, the
   self-rejoin of ADR 2026-09.v6fu, the rejoiner's seed rejoining them itself since ADR 2026-09.mjaj — it used
@@ -476,15 +476,13 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   only come *after* something rather than never, hold the pipe inside the link instead
   (`MeshLab.link(a, b) { a.transport.hold(b.transport) }`: `arm` runs before either end lists the link, so
   no relay can name the peer ahead of the hold); `CustodyLabTest`'s receipt-first walk uses both shapes.
-- **First contact by board alone is minutes, not seconds**: a passive gateway fans nothing, a superseded
-  profile fan-out is dropped when the election flips, and the bridge budget (`BRIDGE_SHARE` of the 15-min
-  window) serves about one profile per window per gateway. LoRa scenarios meet everyone by radio first
-  (`meetThenSplit`), then cut the cross-pocket links; the slow path is the clock tier's to pin. And a Trickle
-  interval of a second spends the window on offers alone, so the tick that follows is deferred
-  (`loraTickDeferred`) — four to eight seconds is the lab's setting.
+- **First contact by board alone never happens**: no profile rides the board since ADR 2026-10.rp3s, so a stranger
+  heard only over LoRa is never shown. LoRa scenarios meet everyone by radio first (`meetThenSplit`), then cut the
+  cross-pocket links. A board airs only its own phone's frames, so a scenario asserting what crossed reads the
+  author's own board (`loraAired`, `loraTx`), never a pocket-mate's.
 - **A DM that arrived over the board is ticked through `DmAckCoalescer`'s 45 s hold** (ADR 054). A LoRa DM
   scenario whose oracle waits for that tick boots its nodes with `LabLimits(dmAckHoldMs = 1_000)` and keeps the
-  default oracle timeout, never a 60 s one (`aDmSentWhileTheFarBoardWasOffLandsThroughTheBridge`).
+  default oracle timeout, never a 60 s one (`aDmSentWhileTheFarBoardWasOffLandsByTheReprobe`).
 - **Every sealed frame carries the epoch key**, so an absent recipient opens whatever survives a custody
   quota without the conversation's first frames and asks for no reset — the quota is loss, never a wedge
   (`CustodyQuotaLabTest`; the "evicted init needs a reset" premise was wrong).

@@ -3,6 +3,7 @@ package app.getknit.knit.data.settings
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import app.getknit.knit.mesh.lora.AirBooking
 import app.getknit.knit.mesh.lora.LoraPlaneSnapshot
+import app.getknit.knit.mesh.lora.ReprobeStamp
 import app.getknit.knit.mesh.lora.SeenStamp
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -35,9 +36,8 @@ class LoraPlaneStateStoreTest {
         LoraPlaneSnapshot(
             savedAtWall = 1_700_000_000_000L,
             air = listOf(AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "CHAT")),
-            selfProfileAtWall = 1_699_999_000_000L,
-            profileSeen = listOf(SeenStamp("a1b2c3", 1_699_998_000_000L)),
             dmProbes = listOf(SeenStamp("d4e5f6", 1_699_997_000_000L)),
+            reprobes = listOf(ReprobeStamp("d4e5f6", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
         )
 
     @Test
@@ -79,6 +79,43 @@ class LoraPlaneStateStoreTest {
                 LoraPlaneSnapshot(
                     savedAtWall = 1_700_000_000_000L,
                     air = listOf(AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "CHAT")),
+                ),
+                LoraPlaneStateStore(settings).load(),
+            )
+        }
+
+    /**
+     * The bridge's limiters left the snapshot with the bridge (ADR 2026-10.rp3s): a blob the last build wrote, with
+     * its beacon floor, serve windows and profile re-fan stamps, must still hand back every limiter this build keeps —
+     * the ledger (with its retired buckets' names intact, for the transport to map), the auto-reply memory, the probe
+     * windows and the re-offer hours. Dropping any of them would hand the first launch after the upgrade free air.
+     */
+    @Test
+    fun aSnapshotTheBridgeBuildWroteKeepsEveryLimiterThisBuildStillHas() =
+        runTest {
+            val settings = newSettings()
+            settings.setLoraPlaneState(
+                """{"savedAtWall":1700000000000,""" +
+                    """"air":[{"atWall":1699999990000,"ms":412,"bucket":"BRIDGE"},{"atWall":1699999991000,"ms":90,"bucket":"LIVE"}],""" +
+                    """"selfProfileAtWall":1699999000000,""" +
+                    """"serve":[{"publisher":42,"startWall":1699999500000,"spent":3}],""" +
+                    """"profileSeen":[{"id":"profile-a-1","atWall":1699998000000}],""" +
+                    """"autoReplied":[{"id":"!0a0b0c0d","atWall":1699999100000}],""" +
+                    """"dmProbes":[{"id":"bob","atWall":1699999200000}],""" +
+                    """"reoffered":[{"id":"f1","atWall":1699999300000}]}""",
+            )
+
+            assertEquals(
+                LoraPlaneSnapshot(
+                    savedAtWall = 1_700_000_000_000L,
+                    air =
+                        listOf(
+                            AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "BRIDGE"),
+                            AirBooking(atWall = 1_699_999_991_000L, ms = 90L, bucket = "LIVE"),
+                        ),
+                    autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
+                    dmProbes = listOf(SeenStamp("bob", 1_699_999_200_000L)),
+                    reoffered = listOf(SeenStamp("f1", 1_699_999_300_000L)),
                 ),
                 LoraPlaneStateStore(settings).load(),
             )

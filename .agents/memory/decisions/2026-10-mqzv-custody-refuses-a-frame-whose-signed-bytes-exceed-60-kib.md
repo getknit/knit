@@ -14,7 +14,9 @@ and a sweep delete. #227. A paired change: knit-ios mirrors it in the same relea
 **What was observed.** A code audit, not the field. Custody counts frames and never bytes. Its 1,000 rows could hold
 about 500 MB of frames near the 512 KiB the radios accept, from a few pinned identities, and every replay that reads
 whole rows pulled that much out of the store at once: the digest answer, the group custody replays, the start replay
-and the spool push (`ForwardStore.liveFrames`, `liveGroupChatFrames`, `liveFramesToFromOthers`).
+and the spool push (`ForwardStore.liveFrames`, `liveGroupChatFrames`, `liveFramesToFromOthers` — the last removed
+with the LoRa bridge's relayed re-offer, ADR 2026-10.rp3s).
+<!-- doc-lint: allow liveFramesToFromOthers — the read this audit covered, since removed -->
 
 **What changed.**
 

@@ -1413,12 +1413,9 @@
         <item quantity="one">%d Person über LoRa erreichbar</item>
         <item quantity="other">%d Personen über LoRa erreichbar</item>
     </plurals>
-    <string name="lora_bridge_title">Entfernte Gruppen verbinden</string>
-    <string name="lora_bridge_subtitle">Gibt Nachrichten zwischen Gruppen weiter, die zu weit voneinander entfernt sind, um einander zu erreichen, auch solche, die du nicht gesendet hast. Dafür wird ein kleiner, begrenzter Teil der Sendezeit genutzt. Ist dies aus, empfängst du auch nicht mehr, was du verpasst hast.</string>
     <string name="lora_room_title">Meshtastic-Raum</string>
     <string name="lora_room_subtitle">Zeigt den eigenen Kanal deines Funkgeräts als Raum in Knit an, damit du alles, was dort sonst läuft, lesen und dich daran beteiligen kannst. Ist dies aus, ist der Raum ausgeblendet und stumm, und Knit ignoriert diesen Kanal – dein Board überträgt weiterhin Knits eigene Nachrichten.</string>
     <string name="lora_room_subtitle_dedicated">Ausgeblendet, solange dieses Board auf einer eigenen Frequenz ist: Kein öffentliches Funkgerät kann es empfangen, also gibt es keinen Kanal zum Lesen. Stelle das Board wieder her, um den Raum zurückzubekommen.</string>
-    <string name="lora_role_passive">Ein anderes Knit-Board in der Nähe übernimmt die Weitergabe – dieses hört nur zu</string>
     <string name="lora_airtime">Sendezeit: %1$d %% des aktuellen Budgets</string>
     <string name="lora_radio_config">Funkprofil %1$s</string>
     <string name="lora_public_channel">Primärkanal %1$s</string>
@@ -1600,6 +1597,7 @@
     <string name="chat_lora_group_title">Gruppenchats laufen nicht über LoRa</string>
     <string name="chat_lora_group_body">Über LoRa laufen der Raum „In der Nähe“ und private Nachrichten, aber keine Gruppenchats. Jemand hier wurde zuletzt per LoRa empfangen und sieht diese Nachrichten erst wieder in WLAN- oder Bluetooth-Reichweite oder über ein Internet-Relay. Nichts geht verloren – die Nachrichten warten auf diese Person.</string>
     <string name="chat_lora_long_message">Lange Nachricht – erreicht Personen über LoRa vielleicht nicht</string>
+    <string name="chat_lora_room_not_carried">Lange Beiträge, Antworten und Anhänge erreichen Personen über LoRa vielleicht nicht</string>
     <string name="chat_mesh_author">%1$s, im Meshtastic-Kanal</string>
     <string name="chat_mesh_author_contact">%1$s, im Meshtastic-Kanal – Identität nicht verifiziert</string>
     <string name="chat_mesh_author_action">Zeigen, warum dieser Name nicht verifiziert ist</string>

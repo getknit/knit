@@ -102,10 +102,6 @@ internal class DemoLoraPlane : LoraPlaneStatus {
                 known = true,
                 liveUsedMs = 62_000L,
                 liveBudgetMs = 180_000L,
-                bridgeUsedMs = 0L,
-                bridgeBudgetMs = 90_000L,
-                bootstrapUsedMs = 0L,
-                bootstrapBudgetMs = 45_000L,
             )
 
         private val DEMO_STATUS =

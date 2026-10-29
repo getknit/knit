@@ -8,7 +8,7 @@ topics: [lora, custody, reliability]
 
 # ADR 2026-09.y8pu — A LoRa fan-out nobody heard does not suppress its own backfill
 
-Status: Accepted (2026-09-02; `LoraMeshTransport.serveOne` no longer consults `sigSeen`)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the backfill it exempted is gone; the re-offer no longer consults `sigSeen` either. Was: Accepted (2026-09-02; `LoraMeshTransport.serveOne` no longer consults `sigSeen`)
 
 Field-observed 2026-09-02, a Pixel 9 out of BLE/NAN range of everything with a board of its own, and a
 Pixel 7 in another pocket. A Nearby-room post sent from the Pixel 9 while the two boards were out of LoRa

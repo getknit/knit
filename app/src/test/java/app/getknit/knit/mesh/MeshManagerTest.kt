@@ -1413,7 +1413,7 @@ class MeshManagerTest {
     }
 
     @Test
-    fun farPeerFramesAreOurUnackedDmsFirstThenTheRelayedOnes() =
+    fun farPeerFramesAreOurUnackedDmsAndNeverAnybodyElses() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.pin(rig.bob)
@@ -1430,10 +1430,40 @@ class MeshManagerTest {
 
             val ids = rig.manager.framesFor(rig.bob.nodeId).map { WireCodec.decodeEnvelope(it.signed)!!.id }
 
-            // Ours first (ADR 2026-10.a4pm: they are held live sends); our acked DM and our row-less (ctl) frame are
-            // dropped, and a relayed frame is always offered.
-            assertEquals(listOf(unacked.id, "relayed"), ids)
+            // Ours only (ADR 2026-10.a4pm: they are held live sends; ADR 2026-10.rp3s: the board airs nothing it did not
+            // write). Our acked DM and our row-less (ctl) frame are dropped, and the relayed frame is never offered.
+            assertEquals(listOf(unacked.id), ids)
             assertFalse(acked.id in ids)
+        }
+
+    /**
+     * The LoRa plane probes only a contact whose pinned profile names a board (ADR 2026-10.rp3s): the holder set is
+     * the peers with a `loraNode`, and it follows the table — a profile that names a board later adds its holder.
+     */
+    @Test
+    fun loraBoardHoldersAreThePeersWhoseProfileNamesABoardAndFollowTheTable() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val carol = party()
+            val table =
+                MutableStateFlow(
+                    listOf(
+                        PeerEntity(nodeId = rig.bob.nodeId, loraNode = 0x1234L),
+                        PeerEntity(nodeId = carol.nodeId),
+                    ),
+                )
+            coEvery { rig.peers.observePeers() } returns table
+            // One long-lived subscription, as the transport holds it: the second set must arrive on it, not on a re-read.
+            val holders = rig.manager.loraBoardHolders().stateIn(backgroundScope)
+
+            assertEquals("only the peer whose profile names a board", setOf(rig.bob.nodeId), holders.value)
+
+            table.value =
+                listOf(
+                    PeerEntity(nodeId = rig.bob.nodeId, loraNode = 0x1234L),
+                    PeerEntity(nodeId = carol.nodeId, loraNode = 0x5678L),
+                )
+            withTimeout(AWAIT_MS) { holders.first { it == setOf(rig.bob.nodeId, carol.nodeId) } }
         }
 
     /**
@@ -1595,16 +1625,16 @@ class MeshManagerTest {
             assertEquals("nothing sealed to a blocked peer", sealsAfterReset, rig.transport.sent.size)
         }
 
+    /** ADR 2026-10.rp3s: custody to a peer that others wrote is theirs to deliver — the board re-offers none of it. */
     @Test
-    fun relayedFarPeerFramesAreCappedAtTheirOwnLimit() =
+    fun relayedCustodyToAPeerIsNeverAFarPeerFrame() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             val carol = party()
             repeat(6) { i ->
                 rig.forwardStore.store(carried("r$i", carol.nodeId, rig.bob.nodeId, rig.now + i), ForwardStore.ORIGIN_RELAY, rig.now)
             }
-            val ids = rig.manager.framesFor(rig.bob.nodeId).map { WireCodec.decodeEnvelope(it.signed)!!.id }
-            assertEquals("the newest four (MeshManager.FAR_REOFFER_RELAYED_LIMIT)", listOf("r5", "r4", "r3", "r2"), ids)
+            assertEquals(emptyList<WireEnvelope>(), rig.manager.framesFor(rig.bob.nodeId))
         }
 
     // --- DM: deferred (pendingKey) when the recipient's key is not yet known ---

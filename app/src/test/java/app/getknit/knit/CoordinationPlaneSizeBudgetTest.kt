@@ -875,6 +875,37 @@ class CoordinationPlaneSizeBudgetTest {
         )
     }
 
+    /**
+     * The room's LoRa budget is **one packet** at the MTU-255 floor (ADR 2026-10.rp3s): a room post rides the board
+     * only when `LoraFrameCodec.encodeBest` fits it in one, so [LoraSizeHint.ROOM_BODY_BYTES] is the body that does
+     * whatever the words are. Pinned with incompressible text — uniformly random printable ASCII and random emoji —
+     * because the `0x05` deflate makes the fit content-dependent: ordinary prose deflates and fits more, so for it the
+     * hint errs toward warning, while for noise it must never fail to warn. Its reply and attachment reserves are
+     * larger than the whole budget, which is why the composer warns on any room reply or attachment.
+     */
+    @Test
+    fun aRoomPostAtTheHintBudgetFitsOneLoraPacketAtTheMtuFloor() {
+        val alice = party()
+        val random = Random(seed = 11)
+        val room = LoraSizeHint.ROOM_BODY_BYTES
+        val ascii = String(CharArray(room) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+        // Four-byte code points, so the byte budget is reached at a quarter of the characters.
+        val emoji =
+            buildString {
+                while (LoraSizeHint.utf8Length(this) + EMOJI_BYTES <= room) appendCodePoint(EMOJI_FIRST + random.nextInt(EMOJI_COUNT))
+            }
+        for ((label, body) in listOf("ascii" to ascii, "emoji" to emoji)) {
+            assertTrue("$label body is at most the budget", LoraSizeHint.utf8Length(body) <= room)
+            val parts = transcodedLoraParts(broadcastChat(alice, body), cap = esp32PayloadCap)
+            assertEquals("a $label room post at the hint budget is one LoRa packet at the MTU floor", 1, parts)
+        }
+        // And the budget is the honest one: a few bytes more noise and the post needs a second packet.
+        val over = String(CharArray(room + ROOM_SLACK_BYTES) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+        assertTrue("the budget is not slack", (transcodedLoraParts(broadcastChat(alice, over), cap = esp32PayloadCap) ?: 0) > 1)
+        assertTrue("a room reply has no room in one packet", LoraSizeHint.REPLY_RESERVE_BYTES >= room)
+        assertTrue("nor a room attachment", LoraSizeHint.ATTACHMENT_RESERVE_BYTES >= room)
+    }
+
     // --- budgets: the BLE side channel (one extended-advertising page = one AUX PDU, <= 3 fragments; #13) ---
 
     /** Page count for [wire] on the BLE side channel (the transcoded form), or null when nothing fits <= 3. */
@@ -1155,6 +1186,18 @@ class CoordinationPlaneSizeBudgetTest {
         val CAP_MAX = "👍".repeat(TextLimits.REACTION / 2)
         const val PRINTABLE_FIRST = 0x21
         const val PRINTABLE_COUNT = 0x5E
+
+        /** Emoji from the Emoticons block (U+1F600..U+1F64F): four UTF-8 bytes each, and no deflate gain. */
+        const val EMOJI_FIRST = 0x1F600
+        const val EMOJI_COUNT = 0x50
+        const val EMOJI_BYTES = 4
+
+        /**
+         * How far past the room budget a noise body must already need a second packet: the budget sits a few bytes
+         * under the measured one-packet maximum (109 B of random printable ASCII at 228, 2026-10-29): the hint warns a
+         * few bytes early on noise, and never stays quiet past what fits.
+         */
+        const val ROOM_SLACK_BYTES = 24
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
         const val SIG_TEMPLATE = "ED25519_RAW"
         const val SPK_ID = 1

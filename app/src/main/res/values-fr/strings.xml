@@ -1438,12 +1438,9 @@
         <item quantity="many">%d personnes joignables par LoRa</item>
         <item quantity="other">%d personnes joignables par LoRa</item>
     </plurals>
-    <string name="lora_bridge_title">Relier les groupes éloignés</string>
-    <string name="lora_bridge_subtitle">Transmettez les messages entre des groupes trop éloignés pour se joindre, y compris ceux que vous n’avez pas envoyés, en utilisant une petite part plafonnée du temps d’antenne. Si cette option est désactivée, vous ne recevez plus non plus ce que vous avez manqué.</string>
     <string name="lora_room_title">Salon Meshtastic</string>
     <string name="lora_room_subtitle">Affichez le canal de votre radio comme un salon dans Knit, pour lire tout ce qui s’y échange et y participer. Si cette option est désactivée, le salon est masqué et silencieux, et Knit ignore ce canal — votre carte transporte toujours les messages de Knit.</string>
     <string name="lora_room_subtitle_dedicated">Masqué tant que cette carte est sur une fréquence dédiée : aucune radio publique ne peut l’entendre, il n’y a donc aucun canal à lire. Restaurez la carte pour retrouver le salon.</string>
-    <string name="lora_role_passive">Une autre carte Knit à proximité assure le pont — celle-ci écoute</string>
     <string name="lora_airtime">Temps d’antenne : %1$d %% du budget actuel</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Canal principal %1$s</string>
@@ -1627,6 +1624,7 @@
     <string name="chat_lora_group_title">Les discussions de groupe ne passent pas par LoRa</string>
     <string name="chat_lora_group_body">La radio LoRa transporte le salon À proximité et les messages privés, pas les discussions de groupe. Une personne ici a été captée en dernier via LoRa : elle ne verra pas ces messages avant d’être de nouveau à portée Wi-Fi ou Bluetooth, ou joignable par un relais Internet. Rien n’est perdu — les messages l’attendent.</string>
     <string name="chat_lora_long_message">Message long — il risque de ne pas atteindre les personnes via LoRa</string>
+    <string name="chat_lora_room_not_carried">Les messages longs, les réponses et les pièces jointes risquent de ne pas atteindre les personnes via LoRa</string>
     <string name="chat_mesh_author">%1$s, sur le canal Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, sur le canal Meshtastic — identité non vérifiée</string>
     <string name="chat_mesh_author_action">Voir pourquoi ce nom n’est pas vérifié</string>

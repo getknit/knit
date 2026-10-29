@@ -54,24 +54,8 @@ interface ForwardStore {
     suspend fun liveIds(now: Long): List<String>
 
     /**
-     * The newest non-expired carried **chat** frames addressed to [recipientId] and written by anyone but [me],
-     * at most [limit] — the relayed half of the long-range re-offer (ADR 039, ADR 2026-10.a4pm). The default
-     * derives it from [liveFrames]; the Room implementation queries the indexed column.
-     */
-    suspend fun liveFramesToFromOthers(
-        recipientId: String,
-        me: String,
-        now: Long,
-        limit: Int,
-    ): List<CarriedFrame> =
-        liveFrames(now)
-            .filter { it.envelope.recipientId == recipientId && it.envelope.type == FrameType.CHAT && it.envelope.senderId != me }
-            .sortedWith(NEWEST_FIRST)
-            .take(limit)
-
-    /**
-     * The non-expired carried frames among [ids] (at [now]), newest first by `sentAt` — the own half of the
-     * long-range re-offer, chosen by id from our unacked DMs (ADR 2026-10.a4pm). The default derives it from
+     * The non-expired carried frames among [ids] (at [now]), newest first by `sentAt` — the long-range re-offer,
+     * chosen by id from our unacked DMs (ADR 2026-10.a4pm; its relayed half went with ADR 2026-10.rp3s). The default derives it from
      * [liveFrames]; the Room implementation reads the rows by key.
      */
     suspend fun liveFramesByIds(

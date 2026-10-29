@@ -55,7 +55,7 @@ git diff HEAD -- <those paths>
 Untracked files are new: read them whole. For a modified file read the **whole function** around each hunk and its
 callers: a defect here usually sits between the place a frame is admitted and the place it is sent, or between a
 policy and the loop that drives it, which can be a thousand lines apart in `LoraMeshTransport`. A change to a pure
-policy (`LoraAirtime`, `LoraPacePolicy`, `LoraFramePolicy`, `LoraGossipPolicy`, `LoraGatewayPolicy`, `BoardDialPolicy`)
+policy (`LoraAirtime`, `LoraPacePolicy`, `LoraFramePolicy`, `LoraDmProbe`, `LoraReprobe`, `BoardDialPolicy`)
 is in scope with its call sites — the policy is tested, the wiring isn't.
 
 ## Step 1: route every touched symbol to its decisions
@@ -83,8 +83,8 @@ explicitly; the incidents are the evidence that each one bit this plane:
    profiles), feb2d5a4 (a refused mid-fragment frame requeued whole and re-booked, then the pacer spun a core),
    21949dfd (a bridge round admitted more than its window), dce10916 (the 2.8 signature was not charged).
 2. **A gate asked at enqueue, not at send.** The queue is a time-delayed commitment — a frame can wait a whole window.
-   A link that comes up, a spool cover, the role and the self id can all change before it flies; the frame carries
-   the gates its own path asked (`RideGate`) and `sendFrame` re-asks them, and only those (a role gate on `fastSend`
+   A link that comes up, a spool cover, the author's ownership and the self id can all change before it flies; the
+   frame carries the gates its own path asked (`RideGate`) and `sendFrame` re-asks them, and only those (a role gate on `fastSend`
    re-strands ticks). Evidence: 3942257c (a link came up 4 s after enqueue; 22 packets aired what NAN had carried,
    ADR 2026-09.5dt2), cd73edce (the self id was unknown at start, so a DM to us read as uncovered, #141).
 3. **"We transmitted" read as "someone heard".** There are no acks. A dedup keyed on our own send must not block the
@@ -121,8 +121,8 @@ explicitly; the incidents are the evidence that each one bit this plane:
    cbbb1e0c (a 1 s pacer tick through an outage and a redial that blacked out the mesh scan, ADR 2026-09.hp88).
 9. **State that resets on launch, or persists when it must not.** A limiter that resets is not one, and its stamps
    are wall-clock (elapsed time restarts at boot). The opposite also shipped: a persisted Trickle interval stalled the
-   election, and a restored `sigSeen` or `lastHeardAt` would claim what this process never saw. A wrongly passive
-   gateway is total silence, so the role must recover without an event. Evidence: f11368ad (each launch got a fresh
+   election (gone since ADR 2026-10.rp3s), and a restored `sigSeen` or `lastHeardAt` would claim what this process
+   never saw. A schedule that must outlive a restart (the re-probe's backoff) is a limiter too. Evidence: f11368ad (each launch got a fresh
    45 s, ADR 2026-09.7svb), 947445e1 (both boards ACTIVE for minutes), d67886a0 (a heard inconsistent OFFER did not
    reset Trickle, ADR 2026-09.qsj6).
 10. **Shared mutable state in a policy.** The queue has six writers on five coroutines and the ledger a seventh; every
@@ -145,7 +145,7 @@ explicitly; the incidents are the evidence that each one bit this plane:
 Then two checks that are not shapes:
 
 - **Frozen strings and bytes.** `MeshtasticProto`'s field numbers and portnums (golden vectors), `KnitChannel`'s
-  derivation (`KnitChannelTest`), `LoraCtl`'s tag `0x10` and layout, `LoraFrameCodec`'s framing and the pad rule
+  derivation (`KnitChannelTest`), the burned tag `0x10` (`RETIRED_CTL_TAG`, dropped under `loraRetiredCtl`), `LoraFrameCodec`'s framing and the pad rule
   (`FastFrameCodecTest.aDeflatedFrameIgnoresTrailingBytesBecauseThePaddedLoraSenderDependsOnIt`), `HOP_LIMIT`
   (`everyPacketLeavesWithHopsToSpend`), `DmAutoReplyPolicy.TEXT`, `ProfileContent.loraNode` / `loraKey` (the iOS port
   reads them), `FieldEvent.Lora` (`FieldEventSchemaTest`), the `LoraPlaneState` JSON keys (a renamed key drops a
@@ -153,7 +153,8 @@ Then two checks that are not shapes:
   paired or deliberate change. For every changed `Log` text beginning `lora `, grep `.agents/context/lora-bridge.md`,
   `.agents/context/debug-bridge.md` and the LoRa ADRs for it: those recipes are how a trial is read.
 - **Build flags and switches.** `BuildConfig.LORA_PLANE` is on everywhere and gates only the ways in; `loraEnabled`
-  defaults false; the DM, bridge and room switches default on and each gates its own sends. The dedicated slot is
+  defaults false; the DM and room switches default on and each gates its own sends (the bridge switch is gone, ADR
+  2026-10.rp3s). The dedicated slot is
   `BuildConfig.DEBUG`-only (ADR 067). A path that transmits with its switch off, a second gate downstream of the seam,
   or a release path to the dedicated mode is a finding.
 
@@ -175,10 +176,10 @@ step 2: the fake air is exactly what these defects pass.
 
 The JVM cannot verify this plane; say what would. Per finding and for the change as a whole, name the stimulus, the
 phones and boards, the oracle and the pass condition. The tools, all in `lora-bridge.md` "On-device verification" and
-`.agents/context/debug-bridge.md`: `…debug.LORA` (the counters, `airtime`, `role`, `heard` against `boardsHeard`),
+`.agents/context/debug-bridge.md`: `…debug.LORA` (the counters, `airtime`, `heard` against `boardsHeard`),
 `…debug.LORATX` (a raw packet, `--ei hop`), `…debug.LORAPROV`, `…debug.SEND`; `meshtastic --info` / `--listen` on a
 board over USB (serial on a board wedges that board's BLE session); the two-phone DM trial, ADR 054's three-phone
-airtime trial, ADR 044's four-device two-pocket bridge trial, a stock third node for anything a Meshtastic client sees,
+airtime trial, ADR 2026-10.rp3s's pocket and strand trials, a stock third node for anything a Meshtastic client sees,
 a restart or reinstall cycle for persisted state, a board power-off for reconnect, and a field walk for anything at
 range. When the airtime row reads 100 %, compare `heard` with `boardsHeard` first. Write "none" only for a change with
 no behaviour on air, on a timer or on screen. Never run it yourself (`.agents/rules/devices.md`).
@@ -194,8 +195,8 @@ break a field first, per finding:
   firmware path, or the board fact below) — never an unsourced belief
 - **Breaks:** the symptom in the field (airtime row, a post that never crosses, a tick that never lands, a silent
   gateway), and under which conditions
-- **Fix:** the concrete change (name the existing helper when there is one: `RideGate`, `AirBucket.defaultFor`,
-  `supersedes`, `awaitConfigured`, `pocketKeys`, `isPresenceEvidence`)
+- **Fix:** the concrete change (name the existing helper when there is one: `RideGate`, `LoraFramePolicy.airs`,
+  `supersedes`, `hasQueued`, `awaitConfigured`, `isPresenceEvidence`)
 - **Confidence:** high (traced in code or documented) or medium (inferred; say what is unverified)
 
 End with the checks' line (`checks: <classes> — X passed, Y failed; frozen bytes: ok | moved: <what>`) and
@@ -240,26 +241,24 @@ Sourced; cite these by their ADR or sha, and treat anything not here or in an AD
 
 One line per invariant, by subsystem, with the ADR to read. Not exhaustive and not authoritative — step 1 is.
 
-- **Shape.** Fast-plane-only child, `neighbors` empty, `shortRange = false`; carries the room subset, `profile` and
-  DM-form chat, never group-form, `typing`, `blobreq`, `keyreq`; DM-form only through `longRangeFanout` (038, 039).
-  Inert until a board is configured; losing it quiesces like `stop()` (5bqu).
+- **Shape.** Fast-plane-only child, `neighbors` empty, `shortRange = false`, `fastSend` a no-op; an endpoint that airs
+  only its own user's frames (`LoraFramePolicy.airs`, nothing before the self id) — an own room post in one packet
+  and own DM-form chat, never a reaction, `profile`, receipt, group-form, `typing`, `blobreq`, `keyreq`; DM-form only
+  through `longRangeFanout` (038, 039, rp3s). Inert until a board is configured; losing it quiesces like `stop()` (5bqu).
 - **Size.** ≤ 3 fragments of ≤ 231 B; only the last packet of a deflated frame is padded past the cliff; `hop_limit`
   stated on every send (mhs5, 038).
-- **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min; LIVE all, BRIDGE 30 %, BOOTSTRAP 25 % outside the
-  total, GOSSIP against the total only, PUBLIC 15 %, TICK never the last 25 %; every spend booked (044, 054, 056,
-  t8t8, 7c8n). Class then FIFO; skip a refused frame, but a live frame the total refused holds what ranks behind it
-  (044's 2026-10-04 amendment). A newer snapshot replaces its queued copy (xdm2). Fresh ≤ 15 min on fan-out (039).
+- **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min; LIVE all, PUBLIC 15 %, TICK never the last 25 %; every
+  spend booked (044, 054, rp3s). Class then FIFO; skip a refused frame, but a live frame the total refused holds what
+  ranks behind it (044's 2026-10-04 amendment). Fresh ≤ 15 min on fan-out (039).
 - **Gates.** A DM-form frame to us or to a linked peer is skipped before its dedup slot; a spool-covered peer too
-  (054, y5f3). Each frame carries its own path's gates and `sendFrame` re-asks them; `fastSend` is never role-gated
-  (5dt2). The pacer waits for the self id (#141).
-- **Reach.** Author-keyed, fresh-only, 45-min linger; never proximity (2ajk). A co-pocket airing is nobody's reach; a
-  far gateway's is (6gk8, wkbk). Cleartext ticks back off and dedup on (recipient, acked id) (6gk8).
-- **Bridge.** Elected on the link set, lowest publisher wins, recovers on lost link, 45-min staleness and the 60 s
-  sweep (044). Trickle 5 → 15 min, suppress on set equality, reset on a heard inconsistent OFFER (qsj6). One OFFER
-  queued; the offer names the head of the serve's ranked list, profile → room → DM (rre4, zkma); `serveOne` ignores
-  both dedup sets (y8pu, 057); ≤ 4 per offer, ≤ 12 per publisher an hour.
-- **Persistence.** Ledger, beacon floor, serve caps, `profileSeen`, auto-reply memory persisted on the wall clock;
-  Trickle, `sigSeen`, `lastHeardAt` never; nothing transmits before the restore, 5 s bound (7svb).
+  (054, y5f3). Each frame carries its own path's gates and `sendFrame` re-asks them, the author included (`NOT_OWN`)
+  (5dt2, rp3s). The pacer waits for the self id (#141).
+- **Reach.** Author-keyed, fresh-only, 45-min linger; never proximity (2ajk); never our own board's airing. An own DM
+  to an unheard recipient probes once a window; a silent one is re-probed on a backoff to 4 h, the newest held DM on
+  LIVE (a4pm, rp3s). The re-offer and the re-probe ask `hasQueued`, never `sigSeen` (rp3s).
+- **Persistence.** Ledger, auto-reply memory, probe window, re-offer hour and re-probe schedule persisted on the wall
+  clock; `sigSeen`, `lastHeardAt` never; a retired bucket restores as LIVE; nothing transmits before the restore, 5 s
+  bound (7svb, rp3s).
 - **Board.** Setup never moves the radio or touches the primary; one admin transaction; Restore puts back what it
   recorded; `Knit abcd`, unmessagable, `LOCAL_ONLY`; dedicated slot debug-only (045, 049, emd7, 067). Battery off the
   handshake and telemetry, never polled (041). Three direct dials, then `autoConnect` plus an hourly net, pacer parked

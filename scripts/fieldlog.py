@@ -66,14 +66,17 @@ KINDS: dict[str, set[str] | None] = {
     "nan_dormant": {"on", "why"},
     "aware_switch": {"on"},
     "low_power": {"on", "why"},
+    # `role`, `gateways`, `pocket` and `sighted` (and the whole `lora_role` kind) are the pocket bridge's, which
+    # ADR 2026-10.rp3s removed; a build since writes none of them, and they stay accepted so an older build's log
+    # still checks.
     "lora": {
-        "role", "snr10", "rssi", "queued", "heard", "boards", "airUsed", "airBudget", "gateways", "pocket", "sighted",
-        "covered", "free", "battery", "powered", "chUtil10", "airTx10",
+        "snr10", "rssi", "queued", "heard", "boards", "airUsed", "airBudget", "covered", "free", "battery", "powered",
+        "chUtil10", "airTx10", "role", "gateways", "pocket", "sighted",
     },
     "lora_up": {"dial", "tries", "mtu", "region", "preset", "slot", "hops", "xeddsa", "relink"},
     "lora_down": {"reason", "status", "life"},
     "lora_fail": {"reason", "status", "streak", "wait"},
-    "lora_role": {"role", "pocket", "gateways"},
+    "lora_role": {"role", "pocket", "gateways"},  # retired with the bridge (ADR 2026-10.rp3s); older builds only
     "net": {"route", "restricted"},
     "spool_up": {"relay", "hello", "fails", "pow", "attach", "ent", "turn", "cast"},
     "spool_down": {"relay", "reason", "code", "life", "ours"},

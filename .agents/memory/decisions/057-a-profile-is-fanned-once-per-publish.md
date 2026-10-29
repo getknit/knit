@@ -8,6 +8,8 @@ topics: [profile, mesh, convergence]
 
 # ADR 057 — A profile is fanned once per publish, and a lost one is repaired by the digest, not by repetition
 
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — no profile rides the plane, so neither the re-fan gate nor its digest repair exists.
+
 ADR 056 bounded what the LoRa key bootstrap can spend. This is the other half: why it was spending it. Of the
 376 frames the lab gateway had ever put on the air, 296 were profiles — and they were not 296 different
 facts. They were a handful of profiles, re-fanned over and over.

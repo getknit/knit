@@ -70,7 +70,6 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onBack = onBack,
         onToggle = viewModel::onToggle,
         onToggleDms = viewModel::onToggleDms,
-        onToggleBridge = viewModel::onToggleBridge,
         onToggleRoom = viewModel::onToggleRoom,
         onPickBoard = viewModel::pickBoard,
         onForgetBoard = viewModel::forgetBoard,
@@ -92,7 +91,6 @@ internal fun LoraRadioScreenContent(
     onBack: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onToggleDms: (Boolean) -> Unit = {},
-    onToggleBridge: (Boolean) -> Unit = {},
     onToggleRoom: (Boolean) -> Unit = {},
     onPickBoard: (BoardOption) -> Unit = {},
     onForgetBoard: () -> Unit = {},
@@ -135,7 +133,6 @@ internal fun LoraRadioScreenContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             DmSwitchRow(enabled = state.dmEnabled, active = state.enabled, onToggle = onToggleDms)
-            BridgeSwitchRow(enabled = state.bridgeEnabled, active = state.enabled, onToggle = onToggleBridge)
             RoomSwitchRow(
                 enabled = state.roomEnabled,
                 active = state.enabled && !state.dedicated,
@@ -254,37 +251,6 @@ private fun DmSwitchRow(
             Text(stringResource(R.string.lora_dm_title), style = MaterialTheme.typography.titleMedium)
             Text(
                 text = stringResource(R.string.lora_dm_subtitle),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = enabled, onCheckedChange = null, enabled = active)
-    }
-}
-
-/**
- * The bridge switch (ADR 044): whether this board carries other groups' backlog across the hop, not just the
- * live traffic its own pocket generates. Inert while the plane is off.
- */
-@Composable
-private fun BridgeSwitchRow(
-    enabled: Boolean,
-    active: Boolean,
-    onToggle: (Boolean) -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .toggleable(value = enabled, enabled = active, onValueChange = onToggle, role = Role.Switch)
-                .testTag("lora_bridge_switch"),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(stringResource(R.string.lora_bridge_title), style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = stringResource(R.string.lora_bridge_subtitle),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -665,15 +631,6 @@ private fun StatusRow(state: LoraRadioUiState) {
                     style = detail,
                     color = muted,
                     modifier = Modifier.testTag("lora_airtime"),
-                )
-            }
-            // A spare board is not a broken one; say so, or its silent counters read as a fault.
-            if (state.bridgePassive) {
-                Text(
-                    text = stringResource(R.string.lora_role_passive),
-                    style = detail,
-                    color = muted,
-                    modifier = Modifier.testTag("lora_role_passive"),
                 )
             }
         }

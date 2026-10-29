@@ -2,116 +2,45 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
-import app.getknit.knit.mesh.protocol.WireEnvelope
 
 /**
- * Decides which mesh frames are worth an ~2.5-second LoRa airslot. On the fan-out path: the plaintext
- * **Nearby room** — broadcast `chat` and its cleartext `reaction` — the cleartext `profile` frame (the far side
- * must pin the author's key before it can verify anything), and, since ADR 039, **DM-form chat**: a `chat`
- * frame with a recipient and no group. That form is deliberately opaque — a 1:1 DM, its sealed receipt or
- * reaction, a session reset, a group-key seed and an escalated delivery tick are wire-indistinguishable
- * (ADR 016/018), so all of them ride and this policy never tries to tell them apart. On the targeted path:
- * the delivery **receipt** back to a message's author, in either form.
+ * Decides which mesh frames are worth an ~2.5-second LoRa airslot, and whose. Since ADR 2026-10.rp3s the board is an
+ * **endpoint**: it airs only frames this phone's user wrote ([airs]), never a pocket-mate's, a relayed frame or a
+ * custody re-serve of someone else's. Of those, two kinds ride: an own **Nearby-room** post (a broadcast `chat`,
+ * and only one that fits one packet — the transport asks that after encoding), and, since ADR 039, own **DM-form
+ * chat**: a `chat` frame with a recipient and no group. That form is deliberately opaque — a 1:1 DM, its sealed
+ * receipt or reaction, a session reset, a group-key seed and an escalated delivery tick are wire-indistinguishable
+ * (ADR 016/018), so all of them ride and this policy never tries to tell them apart.
  *
- * Everything else is refused: group-form chat (`group != null` — the plane carries no group conversation),
- * group metadata (useless without it), `typing` (worthless a moment later), and the point-to-point
- * `blobreq`/`keyreq`. Pure — decides on the already-decoded [RelayEnvelope], never re-encoding it
- * ([app.getknit.knit.mesh.lora.LoraFramePolicyTest]).
+ * Everything else is refused: the room's cleartext `reaction` (ADR 2026-10.rp3s: never worth the air), the
+ * `profile` (no key bootstrap rides this plane any more, so an author with no pinned key stays unshown), group-form
+ * chat (`group != null` — the plane carries no group conversation), group metadata (useless without it), `typing`
+ * (worthless a moment later), every receipt, and the point-to-point `blobreq`/`keyreq`. Pure — decides on the
+ * already-decoded [RelayEnvelope], never re-encoding it ([app.getknit.knit.mesh.lora.LoraFramePolicyTest]).
  */
 internal object LoraFramePolicy {
     /**
-     * How the frame is being offered: a flood-to-everyone fan-out, a targeted point-to-point send, or the
-     * bridge's digest-driven backfill of frames a far gateway is missing (ADR 044).
+     * Whether this plane may put a frame [authorId] wrote on the air at all: the one admit rule (ADR 2026-10.rp3s).
+     * A frame this phone's user wrote, and nothing else — so the board airs no pocket-mate's frame, no relayed DM-form frame and
+     * no custody re-serve of somebody else's, and the board's air is spent only on "my message to you". An own frame
+     * re-served back to us after a wipe counts as own; that is accepted.
+     *
+     * One named predicate on purpose: the deferred "Forward over LoRa" (a pocket-mate's room post the user chose to
+     * forward, `roadmap.md`) is a second clause here, and nowhere else. [selfId] is null until the plane has read
+     * our own id, and then nothing is ours. Keyed on the author rather than the envelope so the send-time re-ask
+     * (`RideGate.authorId`) asks the very same question.
      */
-    enum class Path { FANOUT, TARGETED, BACKFILL }
+    fun airs(
+        authorId: String,
+        selfId: String?,
+    ): Boolean = selfId != null && authorId == selfId
 
     /**
-     * Whether [env] (with its outer [wire], carrying the flood flag) may ride LoRa on [path]. On the
-     * targeted path, [to] is the intended recipient's node id, so a sealed delivery tick — a `relay = false`
-     * chat frame addressed to the author — is admitted while a flooded DM (`relay = true`) is not: a DM
-     * reaches this plane only through the fan-out path, so no `fastSend` caller can widen what it carries.
+     * Whether [env] is a kind of frame the fan-out carries: an own room post (broadcast `chat`) or own DM-form chat.
+     * Whose frame it is is [airs]'s question, and whether a room post fits one packet is the transport's, after it
+     * has encoded it.
      */
-    fun eligible(
-        env: RelayEnvelope,
-        wire: WireEnvelope,
-        path: Path,
-        to: String? = null,
-    ): Boolean =
-        when (path) {
-            // BACKFILL admits exactly what FANOUT does, and that is deliberate rather than incidental: the
-            // bridge re-serves history, so anything it carries must be something the live plane would also
-            // have carried. What separates the two is [isFresh], which the fan-out applies and the backfill
-            // does not — an old frame is the whole point there. Kept a distinct arm so a future widening of
-            // one is a decision about the other rather than a silent inheritance.
-            Path.FANOUT, Path.BACKFILL -> isBroadcastRoom(env) || isDmForm(env) || env.type == FrameType.PROFILE
-
-            Path.TARGETED -> env.type == FrameType.RECEIPT || isSealedTickTo(env, wire, to)
-        }
-
-    /**
-     * How a frame ranks when the bridge can only afford a few (ADR 044, reordered by ADR 2026-09.rre4).
-     * Lower is better.
-     *
-     * The cleartext `profile` still comes first, because nothing the far side receives verifies without the
-     * author's key — serving anything to a peer that cannot check its signature is airtime thrown away.
-     *
-     * The **room then outranks DM-form chat**, which is the reverse of the pacing queue's [FrameClass] order
-     * and deliberately so: the two answer different questions. The queue asks who transmits first once both
-     * frames are already paid for, and there a DM wins because one named person is waiting. The rank asks
-     * which frames are worth the *scarce* slots — four per offer — and there the room wins on both terms of
-     * the trade. A bridged room post is readable by every member of the far pocket, while a bridged DM has
-     * exactly one addressee (and `coveredByLink` has already dropped the ones a link would carry). It is
-     * also cheaper: a cleartext room post is typically one packet, a sealed DM two.
-     */
-    fun backfillRank(env: RelayEnvelope): Int =
-        when {
-            env.type == FrameType.PROFILE -> RANK_PROFILE
-            isDmForm(env) -> RANK_DM
-            else -> RANK_ROOM
-        }
-
-    private const val RANK_PROFILE = 0
-    private const val RANK_ROOM = 1
-    private const val RANK_DM = 2
-
-    /**
-     * The bridge's candidate list: the frames [frames] holds that are worth a slot, superseded profiles
-     * dropped, in [backfillRank] order and newest-first within a rank. **Both halves of the digest exchange
-     * must draw from this one list** — the OFFER names its head (one packet holds ~48 prefixes) and the
-     * serve picks the head of what the OFFER did not name — because a frame the offer cannot reach but the
-     * serve prefers is re-sent on every round, for ever.
-     *
-     * That is not hypothetical: the offer used to be the newest 48 frames by `sentAt` while the serve
-     * preferred profiles, and a `profile`'s `sentAt` is a **publish stamp** up to 12 h old. In any pocket
-     * with 48 frames of recent chat, no profile was ever named, so every profile looked missing to the far
-     * gateway for ever — and since profiles rank first, all four slots an offer buys went to profiles the
-     * peer already held, round after round, and no room post could ever cross. Field-observed on the lab
-     * boards (2026-09-05, ADR 2026-09.zkma): `bridge served=4/4` four times running, every frame a profile,
-     * three of them the *recipient's own*, while the Nearby-room post that was waiting never moved until the
-     * two phones came back into BLE range.
-     *
-     * Superseded profiles go for the same reason they are worthless: only the newest publish carries the key
-     * and prekey a far pocket needs, and holding three of one author's — the lab really did serve three —
-     * spends three of the four slots to say one thing. Dropping them is symmetric, so two nodes applying this
-     * rule agree about what is missing; keeping the *newest* is what makes a genuine republish still cross.
-     *
-     * Custody itself is untouched: this ranks what the ~1 kbps plane offers to carry, not what is stored.
-     */
-    fun <T> bridgeOrder(
-        frames: List<T>,
-        envelopeOf: (T) -> RelayEnvelope,
-    ): List<T> {
-        val newestProfile =
-            frames
-                .filter { envelopeOf(it).type == FrameType.PROFILE }
-                .groupBy { envelopeOf(it).senderId }
-                .mapValues { (_, theirs) -> theirs.maxOf { envelopeOf(it).sentAt } }
-        return frames
-            .filter { frame ->
-                val env = envelopeOf(frame)
-                env.type != FrameType.PROFILE || env.sentAt == newestProfile[env.senderId]
-            }.sortedWith(compareBy({ backfillRank(envelopeOf(it)) }, { -envelopeOf(it).sentAt }))
-    }
+    fun eligible(env: RelayEnvelope): Boolean = isBroadcastRoomChat(env) || isDmForm(env)
 
     /** DM-form chat: addressed to one recipient, no group — a DM, or any sealed ctl frame riding as one. */
     fun isDmForm(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId != null && env.group == null
@@ -120,8 +49,8 @@ internal object LoraFramePolicy {
      * Whether [env] is recent enough for a live plane at wall-clock [now]: a `chat` or `reaction` older than
      * [maxAgeMs] is a custody re-serve (the router's SeenSet lapses at 10 min, so a fresh flood never looks this
      * old) and stays custody's business — fanning it would spend a newcomer's whole backfill on the air. Every
-     * other type is exempt: a `profile`'s `sentAt` is its publish stamp (up to 12 h old, and the key bootstrap
-     * must never be refused), a `receipt` is one packet. A peer whose clock lags by more than the window has
+     * other type is exempt: none of them rides the fan-out any more ([eligible], ADR 2026-10.rp3s), and a `profile`'s
+     * `sentAt` is a publish stamp (up to 12 h old) that this age test would misread. A peer whose clock lags by more than the window has
      * its fresh frames kept off this plane only — they still ride the radios and custody.
      */
     fun isFresh(
@@ -145,16 +74,6 @@ internal object LoraFramePolicy {
      */
     const val FRESH_MS = 15 * 60_000L
 
-    /** The Nearby room: a chat or reaction with no DM recipient and no group. */
-    private fun isBroadcastRoom(env: RelayEnvelope): Boolean =
-        (env.type == FrameType.CHAT || env.type == FrameType.REACTION) &&
-            env.recipientId == null &&
-            env.group == null
-
-    /** A `relay = false` chat frame addressed to [to] — AckSync's sealed CTL_RECEIPT tick, never a flooded DM. */
-    private fun isSealedTickTo(
-        env: RelayEnvelope,
-        wire: WireEnvelope,
-        to: String?,
-    ): Boolean = env.type == FrameType.CHAT && !wire.relay && to != null && env.recipientId == to
+    /** A Nearby-room post: a chat with no DM recipient and no group. Its reactions are not this. */
+    fun isBroadcastRoomChat(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId == null && env.group == null
 }

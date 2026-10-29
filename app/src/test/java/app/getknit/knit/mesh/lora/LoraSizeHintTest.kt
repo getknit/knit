@@ -25,9 +25,11 @@ class LoraSizeHintTest {
             LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = false),
         )
         assertEquals(
-            LoraSizeHint.ROOM_BODY_BYTES - LoraSizeHint.ATTACHMENT_RESERVE_BYTES,
-            LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying = false, attached = true),
+            LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.ATTACHMENT_RESERVE_BYTES,
+            LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = false, attached = true),
         )
+        // The room's one-packet budget (ADR 2026-10.rp3s) is smaller than either reserve: nothing left, never negative.
+        assertEquals(0, LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying = false, attached = true))
         assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = true))
     }
 }

@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.chat
 
+import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.mesh.TransportKind
@@ -148,5 +149,14 @@ class LoraReachTest {
             LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.REPLY_RESERVE_BYTES,
             loraBudgetFor(LoraCarry.Dm, replying = true, attached = false),
         )
+        // The room's budget is one packet (ADR 2026-10.rp3s): a reply or an attachment leaves nothing — never carried.
+        assertEquals(0, loraBudgetFor(LoraCarry.Room, replying = true, attached = false))
+        assertEquals(0, loraBudgetFor(LoraCarry.Room, replying = false, attached = true))
+    }
+
+    @Test
+    fun `the room and a DM each word their own hint`() {
+        assertEquals(R.string.chat_lora_room_not_carried, loraHintFor(LoraCarry.Room))
+        assertEquals(R.string.chat_lora_long_message, loraHintFor(LoraCarry.Dm))
     }
 }

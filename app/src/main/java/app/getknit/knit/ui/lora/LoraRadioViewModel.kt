@@ -15,7 +15,6 @@ import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
-import app.getknit.knit.mesh.lora.LoraGatewayPolicy
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraSlot
 import app.getknit.knit.mesh.lora.ProvisionMode
@@ -80,7 +79,6 @@ data class LoraRadioUiState(
     val enabled: Boolean = false,
     /** Whether private messages ride LoRa too (`SettingsStore.loraDmEnabled`; meaningful only while [enabled]). */
     val dmEnabled: Boolean = true,
-    val bridgeEnabled: Boolean = true,
     /**
      * Whether the Meshtastic room is mirrored at all (`SettingsStore.loraRoomEnabled`; meaningful only while
      * [enabled]). Off, slot 0 is never read into a room and the room's row leaves the chat list.
@@ -100,8 +98,6 @@ data class LoraRadioUiState(
     val firmware: String? = null,
     /** The board's own battery, once it has reported one; null while not connected. */
     val battery: BoardBattery? = null,
-    /** True when another board in this BLE/NAN clique won the gateway election and this one only listens. */
-    val bridgePassive: Boolean = false,
     /** Airtime spent this hour as a percentage of the plane's own budget, or null before the link is up. */
     val airtimePercent: Int? = null,
     /** The board's region and modem preset, once its config stream has reported them. */
@@ -180,11 +176,10 @@ internal class LoraRadioViewModel(
     private val refresh = MutableStateFlow(0)
     private val showAll = MutableStateFlow(false)
 
-    /** The four per-plane switches, folded onto one arm so the state combine stays inside its five-flow arity. */
+    /** The three per-plane switches, folded onto one arm so the state combine stays inside its five-flow arity. */
     private data class Switches(
         val enabled: Boolean,
         val dms: Boolean,
-        val bridge: Boolean,
         val room: Boolean,
     )
 
@@ -192,7 +187,6 @@ internal class LoraRadioViewModel(
         combine(
             settings.loraEnabled,
             settings.loraDmEnabled,
-            settings.loraBridgeEnabled,
             settings.loraRoomEnabled,
             ::Switches,
         )
@@ -233,7 +227,6 @@ internal class LoraRadioViewModel(
             LoraRadioUiState(
                 enabled = switches.enabled,
                 dmEnabled = switches.dms,
-                bridgeEnabled = switches.bridge,
                 roomEnabled = switches.room,
                 boardName = picker.bonded.firstOrNull { it.address == address }?.name ?: address,
                 boardAddress = address,
@@ -246,7 +239,6 @@ internal class LoraRadioViewModel(
                 boardsHeard = status.boardsHeard,
                 firmware = ready?.board?.firmwareVersion,
                 battery = ready?.let { status.battery },
-                bridgePassive = status.role == LoraGatewayPolicy.Role.PASSIVE,
                 airtimePercent = ready?.let { status.airtime?.let(::airtimePercent) },
                 radioConfig = ready?.radio?.let { "${it.region} ${it.modemPreset}" },
                 channelName = channelName,
@@ -309,9 +301,8 @@ internal class LoraRadioViewModel(
 
     /**
      * Airtime spent this window as a percentage of what the plane allows itself — the LIVE budget, which is
-     * the whole allowance, so this reads as "how much of my radio time Knit has used". Every bucket counts,
-     * the bootstrap included: it is judged against its own share on admission, but the air it spends is the
-     * same air. Rounded up, so any spending at all shows as at least 1 %.
+     * the whole allowance, so this reads as "how much of my radio time Knit has used". Both buckets count: the
+     * public room's is a share of the same air. Rounded up, so any spending at all shows as at least 1 %.
      */
     private fun airtimePercent(air: AirtimeSnapshot): Int {
         val budget = air.liveBudgetMs
@@ -332,10 +323,6 @@ internal class LoraRadioViewModel(
 
     fun onToggle(on: Boolean) {
         viewModelScope.launch { settings.setLoraEnabled(on) }
-    }
-
-    fun onToggleBridge(on: Boolean) {
-        viewModelScope.launch { settings.setLoraBridgeEnabled(on) }
     }
 
     fun onToggleDms(on: Boolean) {

@@ -2,7 +2,6 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.legal.repoFile
-import app.getknit.knit.mesh.lora.LoraGatewayPolicy.Role
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_AUTH
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_CANCELLED
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_DIAL
@@ -53,11 +52,10 @@ class LoraFieldLogTest {
     private fun at(
         t: Long,
         state: LinkState,
-        role: Role = Role.ACTIVE,
-        pocketLinks: Int = 0,
+        internetCovered: Int = 0,
     ): List<FieldEvent> {
         now = t
-        return follower.next(LoraStatus(state = state, role = role, pocketLinks = pocketLinks, gatewaysHeard = 1))
+        return follower.next(LoraStatus(state = state, internetCovered = internetCovered))
     }
 
     // --- the classifier, against every word the session writes ---
@@ -147,7 +145,7 @@ class LoraFieldLogTest {
         // The session fills the radio in on a ready link (`ready.copy(radio = …)`), and the transport re-publishes
         // the same state on every status change: neither is a second up.
         assertEquals(emptyList<FieldEvent>(), at(1_200, ready(radio = radio.copy(hopLimit = 4))))
-        assertEquals(emptyList<FieldEvent>(), at(1_300, ready(radio = radio.copy(hopLimit = 4)), pocketLinks = 2))
+        assertEquals(emptyList<FieldEvent>(), at(1_300, ready(radio = radio.copy(hopLimit = 4)), internetCovered = 2))
     }
 
     @Test
@@ -181,7 +179,10 @@ class LoraFieldLogTest {
             first,
         )
         // Re-published with the plane's other fields moving: still one failure.
-        assertEquals(emptyList<FieldEvent>(), at(17_000, LinkState.Disconnected("$REASON_DIAL connect 133", 26_000, 2), pocketLinks = 1))
+        assertEquals(
+            emptyList<FieldEvent>(),
+            at(17_000, LinkState.Disconnected("$REASON_DIAL connect 133", 26_000, 2), internetCovered = 1),
+        )
         at(26_000, LinkState.Connecting)
         at(27_000, LinkState.Handshaking(null))
         val second = at(30_000, LinkState.Disconnected(REASON_HANDSHAKE_TIMEOUT, 30_000L + 20_000, 3))
@@ -265,20 +266,13 @@ class LoraFieldLogTest {
         assertEquals(emptyList<FieldEvent>(), at(2_000, LinkState.Idle))
     }
 
+    /** The gateway role left with the pocket bridge (ADR 2026-10.rp3s): no status change writes a `lora_role` line. */
     @Test
-    fun aRoleChangeIsALineButNotOnTheFirstSnapshotOrWhileStopped() {
-        assertEquals(emptyList<FieldEvent>(), at(0, LinkState.Connecting, role = Role.PASSIVE))
-        assertEquals(
-            listOf(FieldEvent.LoraRole(role = Role.ACTIVE, pocketLinks = 0, gatewaysHeard = 1)),
-            at(100, LinkState.Connecting, role = Role.ACTIVE),
-        )
-        assertEquals(emptyList<FieldEvent>(), at(200, LinkState.Connecting, role = Role.ACTIVE, pocketLinks = 3))
-        val both = at(300, ready(), role = Role.PASSIVE, pocketLinks = 3)
-        assertTrue(both.first() is FieldEvent.LoraUp)
-        assertEquals(FieldEvent.LoraRole(role = Role.PASSIVE, pocketLinks = 3, gatewaysHeard = 1), both[1])
-        // The stop resets the role to active with the link idle: no election, no line — and none on the way back.
-        assertEquals(listOf(FieldEvent.LoraDown(reason = LoraLinkEnd.STOPPED, lifeMs = 100)), at(400, LinkState.Idle, role = Role.ACTIVE))
-        assertEquals(emptyList<FieldEvent>(), at(500, LinkState.Connecting, role = Role.ACTIVE))
+    fun aStatusChangeWithTheLinkUnmovedWritesNoLine() {
+        assertEquals(emptyList<FieldEvent>(), at(0, LinkState.Connecting))
+        assertEquals(emptyList<FieldEvent>(), at(100, LinkState.Connecting, internetCovered = 3))
+        assertTrue(at(300, ready()).single() is FieldEvent.LoraUp)
+        assertEquals(emptyList<FieldEvent>(), at(400, ready(), internetCovered = 1))
     }
 
     @Test

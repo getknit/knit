@@ -63,8 +63,6 @@ import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.crypto.sealedContent
 import app.getknit.knit.mesh.link.FileIntake
-import app.getknit.knit.mesh.lora.LoraCtl
-import app.getknit.knit.mesh.lora.LoraFramePolicy
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
@@ -347,9 +345,7 @@ class MeshManager(
     TransferSignals,
     CallSignals,
     TurnSource,
-    ProfileFrameSource,
     FarPeerFrameSource,
-    BridgeFrameSource,
     MeshPostSink {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
@@ -4118,14 +4114,6 @@ class MeshManager(
         WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
 
     /**
-     * [ProfileFrameSource]: the current signed cleartext profile frame for the LoRa plane's key-bootstrap
-     * beacon. Builds and signs the same self-certifying frame the radio paths flood, WITHOUT originating or
-     * custodying it — the stable `profile-<me>-<publishedAt>` id makes re-hearing it a SeenSet no-op, so a
-     * beacon never floods the mesh a second time.
-     */
-    override suspend fun signedProfile(): WireEnvelope = ownProfile().first
-
-    /**
      * Our profile as every plane must put it on air: the custodied row for the current publish stamp when
      * there is one, else a fresh signing that is custodied here and now. One id, one set of bytes
      * (ADR 2026-09.y5f3): the mesh-in-a-box lab caught a LoRa beacon signing `profile-me-<stamp>` while a
@@ -4319,20 +4307,28 @@ class MeshManager(
     }
 
     /**
-     * [FarPeerFrameSource]: the carried DM-form frames worth re-offering to [nodeId] when a long-range plane
-     * first hears it (ADR 039, split by ADR 2026-10.a4pm), own first, then relayed:
-     *
-     * - **Own:** our newest [FAR_REOFFER_OWN_LIMIT] DMs to the peer it has not acked, chosen by id off
-     *   `unackedDmsTo` and read back from custody. Since the LoRa reach gate holds a DM to an unheard peer for
-     *   exactly this moment, this is how those DMs reach the air, so the cap is the larger one. Chosen by id
-     *   rather than filtered after a newest-N custody read, because that read let acked DMs and our own sealed
-     *   ctls (a ✓✓, a reaction — no unacked row) take the slots an unacked DM needed.
-     * - **Relayed:** the newest [FAR_REOFFER_RELAYED_LIMIT] live custody frames to the peer written by anyone
-     *   else; their fate is unknowable, so they are offered.
+     * The contacts whose pinned profile names a LoRa board (`PeerEntity.loraNode`) — the only recipients the LoRa plane
+     * probes or re-probes (ADR 2026-10.rp3s): a DM to anyone else can be carried by nothing on the air, so it rides
+     * custody and the spool without the plane spending a packet on asking. Late-bound into the transport by `di/MeshModule`.
+     */
+    fun loraBoardHolders(): Flow<Set<String>> =
+        peers
+            .observePeers()
+            .map { all -> all.filter { it.loraNode != null }.mapTo(HashSet()) { it.nodeId } }
+            .distinctUntilChanged()
+
+    /**
+     * [FarPeerFrameSource]: our own carried DMs worth re-offering to [nodeId] when a long-range plane first hears
+     * it, or re-probing it with while it stays silent (ADR 039, ADR 2026-10.a4pm, ADR 2026-10.rp3s): our newest
+     * [FAR_REOFFER_OWN_LIMIT] DMs to the peer it has not acked, chosen by id off `unackedDmsTo` and read back from
+     * custody. Since the LoRa reach gate holds a DM to an unheard peer for exactly this moment, this is how those
+     * DMs reach the air. Chosen by id rather than filtered after a newest-N custody read, because that read let acked
+     * DMs and our own sealed ctls (a ✓✓, a reaction — no unacked row) take the slots an unacked DM needed. Frames
+     * others wrote are not offered: the board airs only its own user's (ADR 2026-10.rp3s).
      *
      * Verbatim custody bytes re-wrapped like a custody re-serve: the receiver's SeenSet / exists-gate make a
      * duplicate harmless, and a re-delivered DM re-draws its receipt — which is how a tick lost over LoRa heals.
-     * The transport enqueues them in this order, FIFO within the DM class.
+     * Newest first; the transport enqueues them in this order, FIFO within the DM class.
      */
     override suspend fun framesFor(nodeId: String): List<WireEnvelope> {
         val now = clock()
@@ -4345,82 +4341,13 @@ class MeshManager(
                 .sortedByDescending { it.sentAt }
                 .take(FAR_REOFFER_OWN_LIMIT * 2)
                 .map { it.id }
-        val own =
-            if (ownIds.isEmpty()) {
-                emptyList()
-            } else {
-                forwardStore
-                    .liveFramesByIds(ownIds, now)
-                    .filter { it.envelope.recipientId == nodeId && it.envelope.senderId == me }
-                    .take(FAR_REOFFER_OWN_LIMIT)
-            }
-        val relayed = forwardStore.liveFramesToFromOthers(nodeId, me, now, FAR_REOFFER_RELAYED_LIMIT)
-        return (own + relayed).map { WireEnvelope(sig = it.sig, signed = it.signed) }
-    }
-
-    /**
-     * [BridgeFrameSource]: the id prefixes of the live frames a LoRa gateway could serve, for the body of its
-     * OFFER (ADR 044). Read straight off `liveFrames` — the set the ADR 006 TTL and quota rules already bound
-     * identically on every node — filtered to what the plane can actually carry, so a group frame never spends
-     * one of the ~48 prefix slots one packet holds.
-     *
-     * The head of [bridgeCandidates], which is [framesMissing]'s order too: the encoder truncates to fit, so
-     * whatever the offer cannot reach is what a far gateway will send us for ever, and the only safe frames to
-     * leave unnamed are the ones it would serve last (ADR 2026-09.zkma).
-     *
-     * `dms = true` here is deliberate even when the user has DMs off this plane. An offer says what we
-     * **hold**, not what we would send, and naming a DM we already have is what stops a far gateway serving
-     * us a copy of it. It leaks nothing: a prefix is a hash of a random 128-bit frame id. What the switch
-     * governs is [framesMissing], which is the side that puts bytes on the air.
-     */
-    override suspend fun offerPrefixes(limit: Int): IntArray =
-        bridgeCandidates(dms = true)
-            .take(limit)
-            .map { LoraCtl.prefixOf(StoreDigest.hash64(it.envelope.id)) }
-            .toIntArray()
-
-    /**
-     * [BridgeFrameSource]: the carriable frames we hold whose id prefix [theirPrefixes] does not name — what
-     * the publishing gateway is missing. Ranked by [LoraFramePolicy.backfillRank] (key bootstrap, then the
-     * room, then sealed DMs — ADR 2026-09.rre4) and newest-first within a rank, then capped at [limit]; the
-     * caller's airtime budget is the real bound and usually bites first. The rank is [bridgeCandidates]' own,
-     * so this and [offerPrefixes] can never disagree about which frames a truncated offer leaves out.
-     *
-     * A prefix that collides makes a frame look present when it is not, so it is skipped this round. That is
-     * the accepted cost of fitting a useful window into one packet (see [LoraCtl]); nothing here is a trust
-     * boundary — every frame carries the originator's signature and is verified at the far end as usual.
-     *
-     * Like [framesFor], the bytes are a verbatim re-wrap: no re-encoding, no new storage, no custody rule
-     * touched, so the content digest's inputs are identical on every node before and after (ADR 006).
-     */
-    override suspend fun framesMissing(
-        theirPrefixes: IntArray,
-        limit: Int,
-        dms: Boolean,
-    ): List<WireEnvelope> {
-        val have = theirPrefixes.toHashSet()
-        return bridgeCandidates(dms)
-            .filter { LoraCtl.prefixOf(StoreDigest.hash64(it.envelope.id)) !in have }
-            .take(limit)
+        if (ownIds.isEmpty()) return emptyList()
+        return forwardStore
+            .liveFramesByIds(ownIds, now)
+            .filter { it.envelope.recipientId == nodeId && it.envelope.senderId == me }
+            .sortedByDescending { it.envelope.sentAt }
+            .take(FAR_REOFFER_OWN_LIMIT)
             .map { WireEnvelope(sig = it.sig, signed = it.signed) }
-    }
-
-    /**
-     * The live custody frames the LoRa plane could carry, in [LoraFramePolicy.bridgeOrder] — the one place the
-     * bridge's frame-set rule is applied, so the offer and the serve can never disagree about what is eligible
-     * *or about which frames a one-packet offer has room to name*. Deliberately the plane's own
-     * [LoraFramePolicy] rather than a restatement of it here: a rule stated twice drifts.
-     */
-    private suspend fun bridgeCandidates(dms: Boolean): List<CarriedFrame> {
-        val carried = forwardStore.liveFrames(clock())
-        if (carried.isEmpty()) return emptyList()
-        val eligible =
-            carried.filter { frame ->
-                val wire = WireEnvelope(sig = frame.sig, signed = frame.signed)
-                LoraFramePolicy.eligible(frame.envelope, wire, LoraFramePolicy.Path.BACKFILL) &&
-                    (dms || !LoraFramePolicy.isDmForm(frame.envelope))
-            }
-        return LoraFramePolicy.bridgeOrder(eligible) { it.envelope }
     }
 
     /**
@@ -4674,14 +4601,11 @@ class MeshManager(
         /**
          * How many of our own unacked DMs a long-range plane re-offers per first hearing of a peer (≤ 3 packets
          * each, ADR 2026-10.a4pm). Six two-packet DMs are ~30 s, two thirds of a LongFast window on `LIVE`, which
-         * holds room posts and ticks behind it; with [FAR_REOFFER_RELAYED_LIMIT] one sighting adds at most 10
-         * frames to the pacer's 32-frame queue. A longer backlog has waited longer than a LoRa hop should carry
-         * and waits for a radio or spool contact (ADR 039 §7).
+         * holds room posts and ticks behind it; one sighting adds at most 6 frames to the pacer's 32-frame queue.
+         * A longer backlog has waited longer than a LoRa hop should carry and waits for a radio or spool contact
+         * (ADR 039 §7).
          */
         const val FAR_REOFFER_OWN_LIMIT = 6
-
-        /** How many relayed DM-form frames a long-range plane re-offers per first hearing of a peer (ADR 039). */
-        const val FAR_REOFFER_RELAYED_LIMIT = 4
 
         /** Per-(group, member) floor on proactive/responder seed re-sends (docs/GROUP_FORWARD_SECRECY.md #10). */
         const val SEED_RESEND_FLOOR_MS = 15 * 60_000L

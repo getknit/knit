@@ -74,3 +74,7 @@ with the profile key removed, because a starvation test that passes either way p
 `aProfileSupersedesOnlyItsOwnAuthorsOlderCopy` guards the other direction: one key for the whole class would
 drop a peer's only profile whenever anybody else republished, and that profile is the bootstrap without which
 the far side can decrypt nothing.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+The profile and OFFER snapshots it was for no longer ride the plane. `OutboundFrame.supersedes` and the part-sent rule stay, keyed now only on a DM-form frame's `frameKey`.

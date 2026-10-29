@@ -231,7 +231,7 @@ string (7 B) because `canCarry` decodes the payload on every fielded build; once
 break the field can go (ADR 060's transcoder already elides it *on the air* — the break reclaims it from the
 stored and signed form).
 
-**Watch out.** The recipient prefix changes what a relay sees: `isBroadcastRoom` (`LoraFramePolicy`,
+**Watch out.** The recipient prefix changes what a relay sees: `isBroadcastRoomChat` (`LoraFramePolicy`,
 `FrameFanout`, `InboundPipeline`) keys on `recipientId == null`, and `ForwardStore`'s DM custody rule
 keys on the full id. `ScopeFrames.seal` seals `signed` opaquely, so the spool plane is unaffected — but
 `docs/SPOOL_PROTOCOL.md` §13 vectors carry frame bytes and move with `GoldenVectorTest`.

@@ -174,3 +174,7 @@ changes while the window has room.
 Tests: `LoraPacePolicyTest`: the field case, a backfilled DM holding nothing, the classes above going, FIFO inside the
 class, nothing waiting on an oversized frame, held frames reported once. `LoraAirtimeTest`: each refusal reason.
 A negative control with the hold disabled fails three of them.
+
+## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
+
+Its gateway election, OFFER gossip, backfill and serve caps are gone with the pocket bridge: the board airs only its own user's frames. The airtime allowance, the 15-minute window (ADR 054) and the 2026-10-04 live-hold amendment stay; the `BRIDGE` share does not.

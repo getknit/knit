@@ -5,55 +5,46 @@ import kotlin.math.min
 import kotlin.math.pow
 
 /**
- * Which airtime budget a queued frame spends from. Orthogonal to [FrameClass], which is about *queue
- * shedding* — a backfilled DM keeps its DM class (so a room post never evicts it) while spending from the
- * [BRIDGE] budget (so backfill can never crowd live chat off the air).
+ * Which airtime budget a queued frame spends from. Orthogonal to [FrameClass], which is about *queue shedding*: a
+ * public post rides ROOM class there and spends [PUBLIC] here. Two buckets since ADR 2026-10.rp3s, which took the
+ * bridge's (`BRIDGE`), the gossip OFFER's (`GOSSIP`) and the profile bootstrap's (`BOOTSTRAP`) with the traffic
+ * they metered.
  */
 internal enum class AirBucket {
-    /** Somebody is waiting for this right now: the live fan-out and the targeted tick. */
+    /**
+     * This phone's user's own Knit traffic: the room post, the DM and its ✓✓, the first-hearing re-offer and the
+     * re-probe. May spend the whole allowance.
+     */
     LIVE,
 
     /**
-     * Nobody is waiting: the digest-driven backfill and the first-hearing re-offer. Judged against — and
-     * booked against — the share, which is the whole point of the bucket: backfill is the right thing to
-     * shed when the air runs short.
-     */
-    BRIDGE,
-
-    /**
-     * The gossip OFFER. Judged against the window total alone, like the bootstrap is judged against its own
-     * share alone: it is the packet that decides whether any backfill happens at all, so serving must never
-     * be able to starve it (ADR 2026-09.t8t8). It books **here** rather than against [BRIDGE] for the
-     * converse reason — see [LoraAirtime] and ADR 2026-09.7c8n.
-     */
-    GOSSIP,
-
-    /**
-     * The key bootstrap — a `profile` frame on the live fan-out, ours or a relayed one. Its own budget
-     * rather than a share of somebody else's, because it is the one class judged *outside* the total: see
-     * [LoraAirtime.admits]. The backfilled profile is not here — it keeps [BRIDGE], since a re-served
-     * profile is history like everything else the bridge carries.
-     */
-    BOOTSTRAP,
-
-    /**
-     * A Knit user's own post on the **foreign** mesh's public channel (the LongFast bridge's outbound half).
+     * A Knit user's own post on the **foreign** mesh's public channel (the Meshtastic room's outbound half), and
+     * the DM auto-reply.
      *
      * Its own budget because it is the one thing on this plane that spends Knit's airtime on an audience
      * that is not Knit: a busy public room must not be able to crowd the pocket's own chat off the band,
      * and the pocket's own chat must not be able to leave a user unable to answer somebody. Judged against
-     * the total as well, like [BRIDGE] — it is a share of the one allowance, not a second one beside it.
+     * the total as well — it is a share of the one allowance, not a second one beside it.
      */
     PUBLIC,
     ;
 
     companion object {
         /**
-         * Which budget a frame of [klass] spends from unless its caller says otherwise. Only the bootstrap
-         * is implied by its class: a backfilled DM keeps DM class while spending [BRIDGE], so every other
-         * pairing stays a decision at the call site.
+         * The bucket a persisted booking named [name] is restored onto, or null to drop it. The retired buckets of
+         * ADR 2026-10.rp3s come back as [LIVE] — air the last process spent is still owed to the window it spent it
+         * in, and dropping it would hand the first launch after the upgrade a fresh allowance (ADR 2026-09.7svb) —
+         * except `BOOTSTRAP`, which was judged outside the total and so never spent the allowance it would now
+         * be charged to. A name no build ever wrote is dropped, as it always was.
          */
-        fun defaultFor(klass: FrameClass): AirBucket = if (klass == FrameClass.BOOTSTRAP) BOOTSTRAP else LIVE
+        fun restoredFrom(name: String): AirBucket? =
+            when (name) {
+                RETIRED_BRIDGE, RETIRED_GOSSIP -> LIVE
+                else -> entries.firstOrNull { it.name == name }
+            }
+
+        private const val RETIRED_BRIDGE = "BRIDGE"
+        private const val RETIRED_GOSSIP = "GOSSIP"
     }
 }
 
@@ -93,14 +84,8 @@ internal data class AirtimeSnapshot(
     val known: Boolean,
     val liveUsedMs: Long,
     val liveBudgetMs: Long,
-    val bridgeUsedMs: Long,
-    val bridgeBudgetMs: Long,
-    val bootstrapUsedMs: Long,
-    val bootstrapBudgetMs: Long,
     val publicUsedMs: Long = 0L,
     val publicBudgetMs: Long = 0L,
-    val gossipUsedMs: Long = 0L,
-    val gossipBudgetMs: Long = 0L,
     /** Whether the board is on a dedicated RF slot, and so out from under the politeness ceiling (ADR 067). */
     val dedicated: Boolean = false,
     /** Whether the budget is charging for the signature 2.8 firmware adds to our small packets. */
@@ -108,11 +93,11 @@ internal data class AirtimeSnapshot(
 ) {
     /**
      * Every bucket's spend, which is what the window's one allowance is actually measured against — the
-     * shares below it are how that allowance is divided, not four allowances beside each other. Callers that
-     * want "how full is the window" must read this rather than adding up the buckets they happen to know
-     * about: two of them were summing three of five and under-reporting the plane's real utilization.
+     * public share is how that allowance is divided, not a second allowance beside it. Callers that want "how
+     * full is the window" must read this rather than adding up the buckets they happen to know about: two of them
+     * once summed three of five and under-reported the plane's real utilization.
      */
-    val totalUsedMs: Long get() = liveUsedMs + bridgeUsedMs + bootstrapUsedMs + publicUsedMs + gossipUsedMs
+    val totalUsedMs: Long get() = liveUsedMs + publicUsedMs
 }
 
 /**
@@ -121,52 +106,13 @@ internal data class AirtimeSnapshot(
  *
  * Before this existed the only regulator was reactive — the board's `DUTY_CYCLE_LIMIT` NAK, which arrives
  * *after* the medium has already been abused, and [LoraPacePolicy]'s fixed 3-second gap, which by itself
- * would allow ~1200 packets an hour (over 70 % duty). That was survivable while the plane only carried
- * frames a human had just typed; it is not once the bridge starts serving backfill nobody asked for.
+ * would allow ~1200 packets an hour (over 70 % duty).
  *
- * Several budgets come out of one number. [AirBucket.LIVE] may spend the whole allowance; [AirBucket.BRIDGE] is
- * capped at [bridgeShare] of it, so a busy bridge degrades into serving less history rather than into
- * delaying somebody's message. A [FrameClass.TICK] — our own delivery receipt — is refused once a window is
- * [tickTailShare] from spent, so the last of the air always goes to content (ADR 054): a ✓✓ heals on
- * re-delivery, a message somebody is waiting for does not.
- *
- * That [bridgeShare] cap is on **serving**, and the OFFER is exempt from it. The OFFER is not backfill: it is
- * the one packet that decides whether any backfill happens at all — including the far pocket's, whose air
- * this budget does not pay for — so a gateway whose offers never fly silences the other pocket rather than
- * merely serving it less. Serving is the right thing to shed under pressure; the packet that unlocks the
- * reverse direction is not. It is still charged against the **total**, which is the ceiling that is actually
- * law.
- *
- * It **books its own bucket** ([AirBucket.GOSSIP]) rather than [AirBucket.BRIDGE], and that is a correction
- * to ADR 2026-09.t8t8 rather than a change of mind about it (ADR 2026-09.7c8n). Recording an exempt class
- * against the share it is exempt from puts the whole cost of gossip on the one class with nowhere to fall
- * back to: at the Trickle floor three offers a window is ~6 s of a 13.5 s bridge budget, so serving loses
- * ~44 % of its share to packets it cannot refuse — and when the two gateways genuinely disagree, the floor
- * is exactly where Trickle sits. Field-observed 2026-09-07 with `bridgeMs` at **14026/13500** — past its own
- * budget, spent almost entirely on offers — while `liveMs` was 0/45000 and a Nearby-room post sat undelivered
- * for 50 minutes. Gossip is bounded by the timer, not by a share; charging it to a share only means
- * something else goes unsent.
- *
- * Both exemptions here are bounded, but not by the same thing, and the difference is the point.
- * [AirBucket.BOOTSTRAP] is bounded by a **share** because nothing else bounds it — a relayed profile arrives
- * as often as the horizon sends one. Gossip is bounded by a **timer**: `LoraGossipPolicy` is Trickle, one
- * transmit slot per interval over a five-minute floor, which is a harder ceiling than a share and is already
- * the mechanism that exists for exactly this. Giving it a slice of [bridgeShare] instead was rejected as
- * unsizeable: a full 48-prefix OFFER is ~2 s at LongFast and ~13 s at LongSlow against the same budget, so a
- * fractional reserve starves at slow presets and a time-sized one blocks serving outright at them — on both
- * gateways at once, which is the same deadlock wearing the other hat.
- *
- * [AirBucket.BOOTSTRAP] is the odd one, and the reason is worth stating. Nothing a peer sends verifies
- * without its author's `profile`, so a window that refuses the profile costs more airtime than it saves:
- * every frame that peer sends afterwards is undecodable and re-served forever. Until ADR 056 that argument
- * bought the bootstrap a blanket exemption — always admitted, still *recorded* — which is a budget with no
- * floor under it. On the lab gateway 79 % of every LoRa frame ever sent was a profile: a relayed one is
- * gated only by the 10-minute signature dedup, and the router's SeenSet lapses on the same 10 minutes, so
- * the same profile re-fanned every 10 minutes forever and blanked the plane for traffic a human had typed.
- * So the exemption is now bounded rather than removed: a bootstrap frame is judged against
- * [bootstrapShare] of the allowance **alone**, never against the total — it still rides when live is spent,
- * but it can never take more than its quarter, and [LoraPacePolicy] holds the refused ones in the queue for
- * the next window rather than dropping them.
+ * Two budgets come out of one number. [AirBucket.LIVE] may spend the whole allowance; [AirBucket.PUBLIC] is capped
+ * at [publicShare] of it and judged against the total as well. A [FrameClass.TICK] — our own delivery receipt — is
+ * refused once a window is [tickTailShare] from spent, so the last of the air always goes to content (ADR 054): a
+ * ✓✓ heals on re-delivery, a message somebody is waiting for does not. The bridge's, the gossip OFFER's and the
+ * profile bootstrap's shares (ADR 044, 2026-09.t8t8, 2026-09.7c8n, 056) left with that traffic (ADR 2026-10.rp3s).
  *
  * The allowance itself is `min(the region's duty cycle, a politeness ceiling) x a safety factor` of the
  * window. The region and modem preset are read off the board ([LoraRadioConfig]); until the handshake
@@ -197,10 +143,8 @@ internal data class AirtimeSnapshot(
 internal class LoraAirtime(
     private val windowMs: Long = WINDOW_MS,
     private val safety: Double = SAFETY,
-    private val bridgeShare: Double = BRIDGE_SHARE,
     private val politeCeilingPercent: Double = POLITE_CEILING_PERCENT,
     private val tickTailShare: Double = TICK_TAIL_SHARE,
-    private val bootstrapShare: Double = BOOTSTRAP_SHARE,
     private val publicShare: Double = PUBLIC_SHARE,
     /**
      * Whether a dedicated RF slot lifts the politeness ceiling. On in the transport; false by default so the
@@ -210,10 +154,7 @@ internal class LoraAirtime(
 ) : PacketCost {
     private val samples = ArrayDeque<Booking>()
     private var liveUsedMs = 0L
-    private var bridgeUsedMs = 0L
-    private var bootstrapUsedMs = 0L
     private var publicUsedMs = 0L
-    private var gossipUsedMs = 0L
 
     /** The board's radio settings, or null until the handshake reports them. */
     var radio: LoraRadioConfig? = null
@@ -335,16 +276,7 @@ internal class LoraAirtime(
     fun budgetMs(bucket: AirBucket): Long =
         when (bucket) {
             AirBucket.LIVE -> allowanceMs()
-
-            AirBucket.BRIDGE -> (allowanceMs() * bridgeShare).toLong()
-
-            AirBucket.BOOTSTRAP -> (allowanceMs() * bootstrapShare).toLong()
-
             AirBucket.PUBLIC -> (allowanceMs() * publicShare).toLong()
-
-            // No share of its own: the OFFER is bounded by the Trickle timer and by the window total, and
-            // reporting the total here is what the settings row and the `…debug.LORA` dump should show.
-            AirBucket.GOSSIP -> allowanceMs()
         }
 
     @Synchronized
@@ -355,21 +287,16 @@ internal class LoraAirtime(
         prune(now)
         return when (bucket) {
             AirBucket.LIVE -> liveUsedMs
-            AirBucket.BRIDGE -> bridgeUsedMs
-            AirBucket.BOOTSTRAP -> bootstrapUsedMs
             AirBucket.PUBLIC -> publicUsedMs
-            AirBucket.GOSSIP -> gossipUsedMs
         }
     }
 
     /**
      * Whether a whole frame — [payloadSizes] is one entry per packet it fragments into — fits [bucket]'s
      * budget. Admission is all-or-nothing per frame: half a fragmented message on the air is pure waste, so
-     * a frame that does not fit entirely waits rather than starting. A [FrameClass.TICK] stops at the tail,
-     * an [AirBucket.BOOTSTRAP] frame is judged against its own share alone, and an [AirBucket.GOSSIP] one is
-     * judged against nothing but the total (see the class doc for both). Note every bucket's spending counts
-     * against the **total** as well as its own budget: each is a share of the one allowance, not a second
-     * allowance beside it. [refusal] says why a frame does not fit.
+     * a frame that does not fit entirely waits rather than starting. A [FrameClass.TICK] stops at the tail. Note
+     * every bucket's spending counts against the **total** as well as its own budget: [AirBucket.PUBLIC] is a share
+     * of the one allowance, not a second allowance beside it. [refusal] says why a frame does not fit.
      */
     @Synchronized
     fun admits(
@@ -385,7 +312,7 @@ internal class LoraAirtime(
      * Why [admits] refuses a frame, or null when it fits. The pacer needs the reason, not just the verdict: a live
      * frame the [Refusal.TOTAL] refuses holds every frame ranked below it off the total until it has gone
      * ([LoraPacePolicy]), and a frame refused on its own [Refusal.SHARE] must never hold anything, or a spent
-     * backfill share would freeze live chat, the one thing that share exists to prevent.
+     * public share would freeze the pocket's own chat, the one thing that share exists to prevent.
      */
     @Synchronized
     fun refusal(
@@ -397,20 +324,12 @@ internal class LoraAirtime(
     ): Refusal? {
         prune(now)
         val cost = payloadSizes.sumOf { timeOnAirMs(it, signedUpTo) }
-        val used = liveUsedMs + bridgeUsedMs + bootstrapUsedMs + publicUsedMs + gossipUsedMs
+        val used = liveUsedMs + publicUsedMs
         val total = budgetMs(AirBucket.LIVE)
         val tickCeiling = (total * (1 - tickTailShare)).toLong()
         // A `when` rather than a ladder of early returns only because there are several answers; the order
-        // is the same and load-bearing. Note the TICK arm refuses but does not admit — a tick under the tail
-        // still has to pass the bridge test below it, exactly as it did when this was a guard clause.
+        // is the same and load-bearing.
         return when {
-            // The bootstrap alone is judged outside the total: a window that has spent itself on chat must
-            // still be able to hand a far pocket the key that makes that chat readable. Its own share is what
-            // stops that exemption from becoming the whole allowance (ADR 056).
-            bucket == AirBucket.BOOTSTRAP -> {
-                if (bootstrapUsedMs + cost <= budgetMs(AirBucket.BOOTSTRAP)) null else Refusal.SHARE
-            }
-
             // No window, however empty, would ever admit it: it must never be waited for.
             cost > total -> {
                 Refusal.NEVER
@@ -430,15 +349,6 @@ internal class LoraAirtime(
                 Refusal.TICK_TAIL
             }
 
-            // [AirBucket.GOSSIP] lands here and passes: the OFFER is not backfill, it is the one packet that
-            // decides whether any backfill happens at all — including the far pocket's, whose air this budget
-            // does not pay for — so serving must not be able to starve it (ADR 2026-09.t8t8). The total above
-            // still binds it. It used to reach that exemption as a [FrameClass.GOSSIP] frame *on this
-            // bucket*, which is what let it spend the share it was exempt from; ADR 2026-09.7c8n.
-            bucket == AirBucket.BRIDGE && bridgeUsedMs + cost > budgetMs(AirBucket.BRIDGE) -> {
-                Refusal.SHARE
-            }
-
             else -> {
                 null
             }
@@ -450,7 +360,7 @@ internal class LoraAirtime(
         /** The window's total is spent: the frame fits once enough of the window rolls off. */
         TOTAL,
 
-        /** The frame's own share is spent: [AirBucket.BOOTSTRAP], [AirBucket.BRIDGE] or [AirBucket.PUBLIC]. */
+        /** The frame's own share is spent: [AirBucket.PUBLIC]. */
         SHARE,
 
         /** A [FrameClass.TICK] inside the last [tickTailShare] of the window (ADR 054). */
@@ -498,10 +408,7 @@ internal class LoraAirtime(
     ) {
         samples.clear()
         liveUsedMs = 0L
-        bridgeUsedMs = 0L
-        bootstrapUsedMs = 0L
         publicUsedMs = 0L
-        gossipUsedMs = 0L
         bookings.sortedBy { it.atMs }.forEach { booking ->
             samples.addLast(booking)
             book(booking.bucket, booking.ms)
@@ -516,10 +423,7 @@ internal class LoraAirtime(
     ) {
         when (bucket) {
             AirBucket.LIVE -> liveUsedMs += ms
-            AirBucket.BRIDGE -> bridgeUsedMs += ms
-            AirBucket.BOOTSTRAP -> bootstrapUsedMs += ms
             AirBucket.PUBLIC -> publicUsedMs += ms
-            AirBucket.GOSSIP -> gossipUsedMs += ms
         }
     }
 
@@ -544,14 +448,8 @@ internal class LoraAirtime(
             known = cfg != null,
             liveUsedMs = liveUsedMs,
             liveBudgetMs = budgetMs(AirBucket.LIVE),
-            bridgeUsedMs = bridgeUsedMs,
-            bridgeBudgetMs = budgetMs(AirBucket.BRIDGE),
-            bootstrapUsedMs = bootstrapUsedMs,
-            bootstrapBudgetMs = budgetMs(AirBucket.BOOTSTRAP),
             publicUsedMs = publicUsedMs,
             publicBudgetMs = budgetMs(AirBucket.PUBLIC),
-            gossipUsedMs = gossipUsedMs,
-            gossipBudgetMs = budgetMs(AirBucket.GOSSIP),
             dedicated = dedicated(),
             signing = signing,
         )
@@ -604,25 +502,13 @@ internal class LoraAirtime(
          */
         const val SAFETY = 0.5
 
-        /** The share of the allowance reserved for gossip + backfill; live traffic may use all of it. */
-        const val BRIDGE_SHARE = 0.30
-
         /** The last share of a window a [FrameClass.TICK] may not spend — it is kept for content. */
         const val TICK_TAIL_SHARE = 0.25
 
         /**
-         * The share of the allowance the key bootstrap may spend, and the only budget it is judged against.
-         * A quarter is two `profile` frames per window (a profile is ~4.75 s of the 45 s a LongFast window
-         * allows) and eight an hour — far more than a bootstrap needs, since our own beacon already has a
-         * 5-minute floor and a relayed one a 10-minute dedup, while leaving three quarters of every window
-         * to traffic somebody is actually waiting for.
-         */
-        const val BOOTSTRAP_SHARE = 0.25
-
-        /**
          * The share of the allowance a Knit user's posts to the **foreign** public channel may spend.
          *
-         * Small on purpose, and small enough that the per-gateway floor is usually the binding limit rather
+         * Small on purpose, and small enough that the per-phone floor is usually the binding limit rather
          * than this: at LongFast a 200-byte signed post is ~1.9 s, so 15 % of a 45 s window is about three
          * posts every fifteen minutes — roughly twice what a 30 s floor allows, which is the right ordering.
          * A budget that bound first would make the refusal depend on what the *rest* of the plane had been

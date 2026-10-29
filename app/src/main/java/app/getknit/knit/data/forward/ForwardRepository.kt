@@ -257,16 +257,6 @@ class ForwardRepository(
 
     override suspend fun liveIds(now: Long): List<String> = dao.liveIds(now)
 
-    override suspend fun liveFramesToFromOthers(
-        recipientId: String,
-        me: String,
-        now: Long,
-        limit: Int,
-    ): List<CarriedFrame> =
-        dao.liveRowsToFromOthers(recipientId, me, now, limit).mapNotNull { row ->
-            WireCodec.decodeEnvelope(row.signed)?.let { CarriedFrame(it, row.sig, row.signed) }
-        }
-
     override suspend fun liveFramesByIds(
         ids: Collection<String>,
         now: Long,

@@ -55,7 +55,8 @@ import java.util.zip.Inflater
  * fielded receivers (MeshCore), and stays out of every Wi-Fi Aware, BLE and Meshtastic path.
  *
  * Tag registry (append-only, like capability bits): `0x01` legacy tagged-CBOR frame (forever), `0x02`
- * burned (a since-removed nudge), `0x03` compact, `0x04` fragment, `0x05` transcoded, `0x06` elided. Flag bits are append-only too: a
+ * burned (a since-removed nudge), `0x03` compact, `0x04` fragment, `0x05` transcoded, `0x06` elided; `0x10` burned
+ * (the LoRa bridge's retired OFFER, see below). Flag bits are append-only too: a
  * receiver drops any reserved bit it does not know, so a new bit is only ever emitted toward a peer whose
  * capabilities say it reads it (UNSIGNED rides behind `Protocol.CAP_CRYPTO_V3`). Tags stay non-printable
  * (`0x00..0x1F`) so untagged cues — whose first byte is a printable node-id char — remain
@@ -79,9 +80,10 @@ internal object FastFrameCodec {
     /** A single elided frame (layout above): the 0x05 header around an [IdElision] body. Not emitted yet. */
     const val TAG_ELIDED: Byte = 0x06
 
-    // Reserved elsewhere in this tag space: 0x10 is `LoraCtl.TAG`, the LoRa plane's gateway-to-gateway
-    // control packet (ADR 044). It never reaches this codec — it is dispatched before decode — but it shares
-    // the first byte, so don't mint a frame tag over it.
+    // Burned elsewhere in this tag space: 0x10 was the LoRa plane's gateway-to-gateway OFFER (ADR 044's
+    // `LoraCtl`), retired with the pocket bridge (ADR 2026-10.rp3s). Older builds still air it, and the LoRa plane
+    // drops it before decode (`LoraMeshTransport.RETIRED_CTL_TAG`), so it is never minted again — not as a frame
+    // tag, not as a control packet.
 
     /** Most parts one frame may split into — bounds reassembly state and the loss-probability cost. */
     const val MAX_PARTS = 3

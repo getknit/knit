@@ -14,7 +14,6 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.LinkPhy
-import app.getknit.knit.mesh.lora.LoraGatewayPolicy
 import app.getknit.knit.mesh.lora.LoraLinkEnd
 import app.getknit.knit.mesh.lora.LoraRegion
 import app.getknit.knit.mesh.lora.ModemPreset
@@ -165,9 +164,9 @@ class FieldEventSchemaTest {
         )
         assertEquals("""{"t":42,"e":"low_power","on":false}""", line(FieldEvent.LowPower(null)))
         assertEquals(
-            """{"t":42,"e":"lora","role":"ACTIVE","snr10":-75,"rssi":-118,"queued":2,"heard":9,"boards":3,""" +
+            """{"t":42,"e":"lora","snr10":-75,"rssi":-118,"queued":2,"heard":9,"boards":3,""" +
                 """"airUsed":4100,"airBudget":36000}""",
-            line(FieldEvent.Lora(LoraGatewayPolicy.Role.ACTIVE, -75, -118, 2, 9, 3, 4_100, 36_000)),
+            line(FieldEvent.Lora(-75, -118, 2, 9, 3, 4_100, 36_000)),
         )
     }
 
@@ -321,11 +320,10 @@ class FieldEventSchemaTest {
     @Test
     fun theLoraKindsKeepTheirLines() {
         assertEquals(
-            """{"t":42,"e":"lora","role":"PASSIVE","queued":0,"heard":2,"boards":1,"gateways":1,"pocket":3,"sighted":4,""" +
+            """{"t":42,"e":"lora","queued":0,"heard":2,"boards":1,""" +
                 """"covered":2,"free":14,"battery":71,"powered":false,"chUtil10":123,"airTx10":8}""",
             line(
                 FieldEvent.Lora(
-                    LoraGatewayPolicy.Role.PASSIVE,
                     null,
                     null,
                     0,
@@ -333,9 +331,6 @@ class FieldEventSchemaTest {
                     1,
                     null,
                     null,
-                    gatewaysHeard = 1,
-                    pocketLinks = 3,
-                    pocketSightings = 4,
                     internetCovered = 2,
                     queueFree = 14,
                     batteryPercent = 71,
@@ -370,10 +365,6 @@ class FieldEventSchemaTest {
         assertEquals(
             """{"t":42,"e":"lora_fail","reason":"DIAL_TIMEOUT","streak":3,"wait":20000}""",
             line(FieldEvent.LoraFail(LoraLinkEnd.DIAL_TIMEOUT, streak = 3, waitMs = 20_000)),
-        )
-        assertEquals(
-            """{"t":42,"e":"lora_role","role":"ACTIVE","pocket":0,"gateways":2}""",
-            line(FieldEvent.LoraRole(LoraGatewayPolicy.Role.ACTIVE, pocketLinks = 0, gatewaysHeard = 2)),
         )
     }
 

@@ -12,7 +12,6 @@ import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.ChannelInfo
 import app.getknit.knit.mesh.lora.LinkState
-import app.getknit.knit.mesh.lora.LoraGatewayPolicy
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraRadioConfig
 import app.getknit.knit.mesh.lora.LoraRegion
@@ -47,7 +46,6 @@ import org.junit.Test
 class LoraRadioViewModelTest {
     private val enabled = MutableStateFlow(true)
     private val dms = MutableStateFlow(true)
-    private val bridge = MutableStateFlow(true)
     private val room = MutableStateFlow(true)
     private val address = MutableStateFlow<String?>("AA:BB:CC:DD:EE:01")
     private val channel = MutableStateFlow(1)
@@ -56,7 +54,6 @@ class LoraRadioViewModelTest {
         mockk<SettingsStore>(relaxed = true) {
             every { loraEnabled } returns enabled
             every { loraDmEnabled } returns dms
-            every { loraBridgeEnabled } returns bridge
             every { loraRoomEnabled } returns room
             every { loraDeviceAddress } returns address
             every { loraChannelIndex } returns channel
@@ -204,19 +201,6 @@ class LoraRadioViewModelTest {
         }
 
     @Test
-    fun `the bridge switch reflects the stored setting and a tap writes it back`() =
-        runTest {
-            val vm = start()
-            assertTrue(vm.state.value.bridgeEnabled)
-            bridge.value = false
-            advanceUntilIdle()
-            assertFalse(vm.state.value.bridgeEnabled)
-            vm.onToggleBridge(true)
-            advanceUntilIdle()
-            io.mockk.coVerify { settings.setLoraBridgeEnabled(true) }
-        }
-
-    @Test
     fun `the room switch reflects the stored setting and a tap writes it back`() =
         runTest {
             val vm = start()
@@ -243,19 +227,6 @@ class LoraRadioViewModelTest {
             vm.onToggleRoom(true)
             advanceUntilIdle()
             io.mockk.verify(exactly = 1) { notifier.clearConversation(Conversations.MESHTASTIC) }
-        }
-
-    @Test
-    fun `a spare board reports the passive role, an active one does not`() =
-        runTest {
-            val vm = start()
-            status.value = LoraStatus(state = ready(emptyList()), role = LoraGatewayPolicy.Role.PASSIVE)
-            advanceUntilIdle()
-            assertTrue(vm.state.value.bridgePassive)
-
-            status.value = LoraStatus(state = ready(emptyList()), role = LoraGatewayPolicy.Role.ACTIVE)
-            advanceUntilIdle()
-            assertFalse(vm.state.value.bridgePassive)
         }
 
     @Test
@@ -294,10 +265,8 @@ class LoraRadioViewModelTest {
                     known = true,
                     liveUsedMs = 40_000,
                     liveBudgetMs = 100_000,
-                    bridgeUsedMs = 10_000,
-                    bridgeBudgetMs = 30_000,
-                    bootstrapUsedMs = 0,
-                    bootstrapBudgetMs = 25_000,
+                    publicUsedMs = 10_000,
+                    publicBudgetMs = 15_000,
                 )
             status.value = LoraStatus(state = ready(emptyList()), airtime = air)
             advanceUntilIdle()
@@ -323,10 +292,6 @@ class LoraRadioViewModelTest {
                             known = true,
                             liveUsedMs = 1,
                             liveBudgetMs = 100_000,
-                            bridgeUsedMs = 0,
-                            bridgeBudgetMs = 30_000,
-                            bootstrapUsedMs = 0,
-                            bootstrapBudgetMs = 25_000,
                         ),
                 )
             advanceUntilIdle()

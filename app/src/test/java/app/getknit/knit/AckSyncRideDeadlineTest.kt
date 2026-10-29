@@ -1,10 +1,14 @@
 package app.getknit.knit
 
 import app.getknit.knit.mesh.AckSync
+import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.FakeLoopTransport
+import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.protocol.FrameType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
@@ -102,6 +106,46 @@ class AckSyncRideDeadlineTest {
             assertEquals("past it the same bytes go again", 2, recorder.fastSent.size)
             assertArrayEquals(recorder.fastSent[0].signed, recorder.fastSent[1].signed)
             assertEquals("still one seal", 1, sealed.size)
+        }
+
+    /**
+     * ADR 2026-10.rp3s: the air route reads short-range reach only. An author the LoRa board alone has heard is not
+     * "reachable over the air" for a room tick any more — LoRa's `fastSend` refuses every tick — so the ride stays
+     * parked for a link or the spool rather than being sealed into an owed entry nothing can carry.
+     */
+    @Test
+    fun aRideToAnAuthorOnlyTheLoraPlaneHearsStaysParked() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val sealed = CopyOnWriteArrayList<List<String>>()
+            val recorder = FastSendRecorder(FakeLoopTransport("recip"))
+            val board =
+                object : MeshTransport by FakeLoopTransport("recip-board") {
+                    override val shortRange = false
+                    override val reachable: StateFlow<Set<Peer>> = MutableStateFlow(setOf(Peer("author")))
+                }
+            val composite = CompositeMeshTransport(listOf(recorder, board), backgroundScope)
+            val ack =
+                ackSyncOn(composite, "recip", clock = { clock }, canSeal = { true }) { a, ids ->
+                    sealed.add(ids)
+                    sealedWire("recip", a, ids)
+                }
+
+            ack.owe("m1", "author")
+            clock += AckSync.RIDE_HOLD_MS + 1
+            ack.retryPending()
+
+            assertTrue("the composite still reaches the author over the board", composite.reachable.value.any { it.nodeId == "author" })
+            assertTrue("nothing sealed", sealed.isEmpty())
+            assertTrue("nothing sent", recorder.fastSent.isEmpty())
+            assertEquals("still parked for a link or the spool", 1, ack.ridingFor("author"))
+
+            // A short-range plane that does reach the author is still the air route (Wi-Fi Aware's cue-only peers).
+            recorder.sighted.value = setOf(Peer("author"))
+            clock += 1
+            ack.retryPending()
+            assertEquals("sealed once for the air route", listOf(listOf("m1")), sealed)
+            assertEquals("and no longer parked", 0, ack.ridingFor("author"))
         }
 
     @Test

@@ -40,7 +40,6 @@ import app.getknit.knit.fieldlog.netEdges
 import app.getknit.knit.fieldlog.readBattery
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.BlobExchange
-import app.getknit.knit.mesh.BridgeFrameSource
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
 import app.getknit.knit.mesh.FarPeerFrameSource
@@ -52,7 +51,6 @@ import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.NOT_CONTENDED
 import app.getknit.knit.mesh.PartialBlobs
-import app.getknit.knit.mesh.ProfileFrameSource
 import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.SwitchableTransport
@@ -115,6 +113,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -373,9 +373,7 @@ val meshModule =
         // MeshManager supplies the signed profile frame for the LoRa key-bootstrap beacon (a third alias),
         // the carried DM-form frames the plane re-offers to a peer it first hears (a fourth), and the custody
         // window the bridge gossips about and serves from (a fifth, ADR 044).
-        single<ProfileFrameSource> { get<MeshManager>() }
         single<FarPeerFrameSource> { get<MeshManager>() }
-        single<BridgeFrameSource> { get<MeshManager>() }
         single<MeshPostSink> { get<MeshManager>() }
         // The Meshtastic room's outbound half. Bound to the LoRa transport, and reached from MeshManager
         // through a lambda for the same reason MeshPostSink is reached from the transport through one: the
@@ -386,21 +384,20 @@ val meshModule =
             LoraMeshTransport(
                 selfId = { get<Identity>().nodeId() },
                 link = get(),
-                // The three per-plane switches are folded first so the whole config stays inside `combine`'s
+                // The two per-plane switches are folded first so the whole config stays inside `combine`'s
                 // typed five-flow arity — the same fold ChatListViewModel/ChatViewModel make for the same reason.
                 config =
                     combine(
                         settings.loraEnabled,
                         settings.loraDeviceAddress,
                         settings.loraChannelIndex,
-                        combine(settings.loraDmEnabled, settings.loraBridgeEnabled, settings.loraRoomEnabled, ::Triple),
-                    ) { on, addr, ch, (dms, bridge, room) ->
-                        if (on && addr != null) LoraConfig(addr, ch, dms, bridge, room) else null
+                        combine(settings.loraDmEnabled, settings.loraRoomEnabled, ::Pair),
+                    ) { on, addr, ch, (dms, room) ->
+                        if (on && addr != null) LoraConfig(addr, ch, dms, room) else null
                     },
-                selfProfile = { get<ProfileFrameSource>().signedProfile() },
                 farFrames = { get<FarPeerFrameSource>().framesFor(it) },
-                offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },
-                framesMissing = { prefixes, limit, dms -> get<BridgeFrameSource>().framesMissing(prefixes, limit, dms) },
+                // Late-bound like the frame source: collected at start(), when the manager exists.
+                boardHolders = flow { emitAll(get<MeshManager>().loraBoardHolders()) },
                 onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
                 // The bound board's node number and signing key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.

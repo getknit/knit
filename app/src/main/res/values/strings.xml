@@ -1704,15 +1704,11 @@
         <item quantity="one">%d person reachable over LoRa</item>
         <item quantity="other">%d people reachable over LoRa</item>
     </plurals>
-    <!-- Bridging distant groups over LoRa (ADR 044). -->
-    <string name="lora_bridge_title">Bridge distant groups</string>
-    <string name="lora_bridge_subtitle">Pass on messages between groups too far apart to reach each other, including ones you did not send, using a small capped share of airtime. Off, you also stop receiving what you missed.</string>
     <!-- The Meshtastic room: mirroring the board's own primary channel into a room on this phone (ADR 2026-09.26q3). -->
     <string name="lora_room_title">Meshtastic room</string>
     <string name="lora_room_subtitle">Show your radio\'s own channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
     <!-- ADR 067: the room row's subtitle while the board is on a dedicated frequency. -->
     <string name="lora_room_subtitle_dedicated">Hidden while this board is on a dedicated frequency: no public radio can hear it, so there is no channel to read. Restore the board to get the room back.</string>
-    <string name="lora_role_passive">Another Knit board nearby is bridging — this one is listening</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
     <string name="lora_public_channel">Primary channel %1$s</string>
@@ -1927,6 +1923,8 @@
     <string name="chat_lora_group_title">Group chats don\'t travel over LoRa</string>
     <string name="chat_lora_group_body">The LoRa radio carries the Nearby room and private messages, not group chats. Someone here was last heard over LoRa, so they won\'t see these messages until they are back in Wi-Fi or Bluetooth range, or reachable through an Internet relay. Nothing is lost — the messages wait for them.</string>
     <string name="chat_lora_long_message">Long message — it may not reach people over LoRa</string>
+    <!-- The room's hint (ADR 2026-10.rp3s): LoRa carries a room post only in one packet, and never one with a reply or an attachment. A hedge: prose deflates, so a longer post often still fits. -->
+    <string name="chat_lora_room_not_carried">Long posts, replies and attachments may not reach people over LoRa</string>
 
     <!-- The Meshtastic room: the paired radio's primary channel, and who to believe about the names on it -->
     <string name="chat_mesh_author">%1$s, on the Meshtastic channel</string>

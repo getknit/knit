@@ -39,7 +39,7 @@ routing in `.agents/context/`; touch one only as far as the brief says.
 **Never, unless the brief says so in words:**
 
 - the wire — `protocol/`, `RelayEnvelope`, `FrameType`, a `Protocol.CAP_*` bit, the `0x03`/`0x04`/`0x05` codec tags,
-  `LoraCtl`'s `0x10` layout. A change that can only be made by breaking the wire goes in `docs/NEXT_WIRE_BREAK.md`, and
+  the burned `0x10` tag (`LoraMeshTransport.RETIRED_CTL_TAG`, ADR 2026-10.rp3s). A change that can only be made by breaking the wire goes in `docs/NEXT_WIRE_BREAK.md`, and
   you stop and report it;
 - a frozen constant — `KnitChannel`'s derivation and PSK, `MeshtasticProto`'s field numbers, portnums and golden
   vectors, `MAX_PAYLOAD` / `MAX_SIGNED_PAYLOAD`, `HOP_LIMIT`, `DmAutoReplyPolicy.TEXT`, the air shares and the
@@ -47,7 +47,7 @@ routing in `.agents/context/`; touch one only as far as the brief says.
   moving one is a decision for the caller;
 - `ProfileContent.loraNode` / `loraKey` or anything else in a profile — the iOS port reads them, so a change is a
   paired change (`.agents/rules/paired-change.md`), and the iOS half is never yours to edit;
-- `BuildConfig.LORA_PLANE`, the `SettingsStore` defaults (`loraEnabled` off; DM, bridge and room switches on), and the
+- `BuildConfig.LORA_PLANE`, the `SettingsStore` defaults (`loraEnabled` off; DM and room switches on), and the
   dedicated-slot mode's debug-only gate (ADR 067);
 - the `MeshTransport` interface — propose the change in your report instead;
 - an `android.*` import in `mesh/lora/` (it stays pure; `MeshtasticGatt` is the plane's only `android.bluetooth.*`
@@ -96,14 +96,14 @@ Before you edit, write down for yourself, for each behaviour the change adds or 
   radio's airing is not its author's presence, a sighting on BLE/NAN is not a data path, and a radio in our own pocket
   vouches for nobody.
 - **Who starves whom.** Walk the queue order, the backfill rank and the bucket shares together for a scarce window: a
-  one-packet frame class can hold a two-packet one out forever, and an OFFER that cannot fly silences the far pocket.
+  one-packet frame class can hold a two-packet one out forever, and a re-probe that cannot fly strands what is held.
 - **What a restart, a board reconnect, a board with no setup and a lost board do to it.** Which state persists
   (`LoraPlaneState`), which must not, and what runs while the link is down or no board is bound.
 - **What a stock Meshtastic client and the public band see.** Anything on slot 0 or in a `NodeInfo` is cleartext,
   stored by public MQTT servers; a unicast to a board gets a firmware ACK.
 
 Then shape the code the way this plane already does: put the decision in a pure policy (`LoraFramePolicy`,
-`LoraPacePolicy`, `LoraAirtime`, `LoraGossipPolicy`, `BoardDialPolicy` — no `android.*`, injected clock and wall clock)
+`LoraPacePolicy`, `LoraAirtime`, `LoraReprobe`, `BoardDialPolicy` — no `android.*`, injected clock and wall clock)
 with its own JVM test, keep `LoraMeshTransport` wiring thin, keep every policy entry point `@Synchronized` (the pacer's
 monitor outside the ledger's), and make the change additive on the wire (`docs/WIRE_COMPAT.md`).
 
@@ -114,7 +114,7 @@ monitor outside the ledger's), and make the change additive on the wire (`docs/W
 - A new frame path names its `FrameClass`, its `AirBucket` and its `RideGate`; a new counter goes in its
   `MeshMetrics` group and the `…debug.LORA` dump (`.agents/context/debug-bridge.md`).
 - Treat a `Log` line beginning `lora ` as an oracle: `lora-bridge.md`'s on-device recipes and the ADRs grep for them
-  (`lora pad`, `lora tx offer`, `lora bridge served=`, `lora bridge held`, `lora dial mode=`, `lora ready`). Prefer
+  (`lora pad`, `lora tx `, `lora probe`, `lora reprobe`, `lora room too long`, `lora dial mode=`, `lora ready`). Prefer
   adding a line to rewording one, and keep the `…debug.LORA` JSON keys stable.
 - A wait under `mesh/bluetooth/meshtastic/` is `elapsedWait` or sits under a `// stretches: <why>` line
   (`BluetoothWaitClockTest`); the board dial holds `BleConnectArbiter` for a direct dial's whole window and, in the

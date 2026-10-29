@@ -41,22 +41,6 @@ interface ForwardDao {
     suspend fun liveRows(now: Long): List<ForwardEntity>
 
     /**
-     * The newest live chat frames addressed to [recipientId] that someone other than [me] wrote — the relayed
-     * half of the long-range re-offer (ADR 2026-10.a4pm). Our own half is chosen by id ([liveRowsByIds]), so
-     * acked DMs and own sealed ctls no longer take slots an unacked DM needs.
-     */
-    @Query(
-        "SELECT * FROM forward_store WHERE recipientId = :recipientId AND senderId != :me AND type = 'chat' " +
-            "AND expiresAt >= :now ORDER BY sentAt DESC, id DESC LIMIT :limit",
-    )
-    suspend fun liveRowsToFromOthers(
-        recipientId: String,
-        me: String,
-        now: Long,
-        limit: Int,
-    ): List<ForwardEntity>
-
-    /**
      * The live rows among [ids], newest first; an id not held or expired by [now] is simply absent. Callers bound
      * [ids] (the re-offer asks for a dozen): every id is one bound parameter, and SQLite caps those per statement.
      */

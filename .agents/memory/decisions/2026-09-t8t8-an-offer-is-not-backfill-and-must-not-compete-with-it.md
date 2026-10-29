@@ -8,8 +8,7 @@ topics: [lora, airtime, reliability]
 
 # ADR 2026-09.t8t8 — An OFFER is not backfill and must not compete with it
 
-Status: Accepted (2026-09-04; `FrameClass.GOSSIP` exempt from the BRIDGE share, one OFFER queued at a time,
-`loraOfferSent` counted at transmit, serving asks the budget before it queues)
+Status: Superseded by ADR 2026-10.rp3s (2026-10-29) — the OFFER and the backfill are gone. Was: Accepted (2026-09-04; `FrameClass.GOSSIP` exempt from the BRIDGE share, one OFFER queued at a time, `loraOfferSent` counted at transmit, serving asks the budget before it queues)
 
 `publishOffer` enqueued the `LoraCtl` OFFER on `AirBucket.BRIDGE` — the same 30 % share `serveOne` spends
 serving a far gateway's backfill. So a gateway busy serving starved its own offers, and that is a worse
