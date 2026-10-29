@@ -355,7 +355,8 @@ Full compromise of a member device at time T exposes, per group:
    eventual, per §6.1, bounded by leave-frame convergence, not instantaneous.
 
 Metadata: `GroupRatchetHeader` shows relays exact per-sender send counts and epoch cadence; the
-roster already rides cleartext on every group frame (custody's member-targeted push requires it);
+roster already rides cleartext on every group frame (first-sight reconciliation and custody's group
+gate read it, and a custody back-fill hands it to non-members as the live flood does, ADR 2026-10.hr9f);
 a burst of N−1 ctl DMs after a leave is a legible rekey fingerprint. All accepted, same posture as
 v2's §9 non-goals. Blocked members still receive seeds (ADR 010: blocking is local presentation and
 must stay invisible); their inbound ctl frames die at the existing blocked gate — the one

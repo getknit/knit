@@ -253,6 +253,7 @@ carries; never renumber an old one.
 | [2026-10.gpa3](decisions/2026-10-gpa3-a-quote-is-checked-against-the-original-it-names.md) | A quote is checked against the original it names | chat, moderation, security |
 | [2026-10.gtmm](decisions/2026-10-gtmm-compose-previews-are-screenshot-tested-on-the-alpha-preview-plugin.md) | Compose previews are screenshot-tested on the alpha preview plugin | testing, toolchain, ui |
 | [2026-10.hmfe](decisions/2026-10-hmfe-a-short-video-is-re-encoded-small-before-it-is-sent.md) | A short video is re-encoded small before it is sent | attachments, wire, moderation |
+| [2026-10.hr9f](decisions/2026-10-hr9f-custody-serves-a-group-s-frames-to-any-peer.md) | Custody serves a group's frames to any peer | custody, groups |
 | [2026-10.j67x](decisions/2026-10-j67x-our-unanswered-reset-keeps-the-scope-it-replaced-and-may-refill-it-with-the-rese.md) | Our unanswered reset keeps the scope it replaced and may refill it with the reset alone | crypto, pfs, spool |
 | [2026-10.jbsa](decisions/2026-10-jbsa-conversation-shortcuts-follow-the-chat-list.md) | Conversation shortcuts follow the chat list | notifications, contacts, ui |
 | [2026-10.jend](decisions/2026-10-jend-a-meshcore-board-floods-only-the-nearby-room-and-keeps-dms-to-its-neighbours.md) | A MeshCore board floods only the Nearby room and keeps DMs to its neighbours | lora, meshcore, airtime |

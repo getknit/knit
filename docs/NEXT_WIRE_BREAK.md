@@ -305,13 +305,14 @@ fielded build, and every fielded member pins a first-seen group from the frame's
   `GroupInfo`, so this item rides with item 4 or not at all.
 
 The cleartext roster was never there for the vaccine purge (group frames were never vaccine-purged: no
-single recipient, no per-member ack). It was there for custody targeting and first-sight reconciliation,
-and both have since gained another route:
+single recipient, no per-member ack). It was there for custody targeting and first-sight reconciliation;
+custody targeting is gone, and first sight has gained another route:
 
-- **Custody targeting is an optimisation.** `ForwardSync.onNeighborAdded` offers a carried group frame only
-  to a roster member. Without the roster a carrier offers it to any neighbour, as it does a room post. The
-  live flood already sends every group frame to non-members, so this costs custody re-push airtime, not
-  correctness.
+- **Custody no longer targets.** Since ADR 2026-10.hr9f `ForwardSync.onDigest` serves a carried group frame
+  to any neighbour whose digest lacks it, as it does a room post. Member-only offers kept a non-member's
+  per-sender bucket short of the members', so it re-served them the older frames their quota had evicted at
+  every exchange (#176, #235). The roster on the frame is still read at store time (the group gate, ADR
+  2026-10.7mqm) and by the carrier's attachment pull, never by the serve.
 - **First sight has a sealed door.** Since ADR 2026-09.mjaj the seed carries the founding roster inside the
   DM ratchet (`GroupKeyPayload.group`, pinned through `pinRosterFromSeed`), so a member no longer needs the
   frame to learn the group. The frame's copy is the fallback for seeds from builds without that field, which
@@ -339,8 +340,9 @@ and both have since gained another route:
    frame ours" from the frame's roster (`ForwardRepository.carriedAttachments`, the `member` flag in
    `InboundPipeline.onCarriedFrame`, ADR 2026-10.js2p). After the break it reads the local group row, which
    the seed now pins before the first frame can be opened.
-4. **Drop the custody filter.** `ForwardSync`'s member-only offer goes; group frames are offered like room
-   posts, bounded by the same TTL and quota they already have.
+4. **The custody filter is already gone** (ADR 2026-10.hr9f): group frames are offered like room posts,
+   bounded by the same TTL and quota they already have. Custody's group gate (ADR 2026-10.7mqm) reads the
+   roster at store time, so it moves to whatever tag item 2 chooses.
 
 **Watch out.** This hides who is *in* a group, not who *talks* in it. `senderId` stays cleartext on every
 frame, `GroupRatchetHeader` still shows per-sender send counts and epoch cadence, and a departure is still a

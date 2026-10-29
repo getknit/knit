@@ -254,11 +254,7 @@ class RestoreLabTest {
             // Carol re-serves the old era's n = 1..4, each on the old mint's own stored key. The new era spent its keys at
             // the same four indices, and before #177 each spend took the old mint's key too: all four were lost.
             lab.link(carol, bob)
-            // Custody parity is judged between the two members only. Carol is apart from the restore until this last link,
-            // so the new era's group frames reach her only live, and a non-member is never back-filled a group's frames
-            // (`ForwardSync.onDigest` serves members only): the partition the design does not close. What Carol is here
-            // for is re-serving the old era to Bob, and the message half of the oracle is what shows that she did.
-            lab.assertConverged(listOf(alice, bob), atLeast = 12, carriers = listOf(carol), custodyAcross = listOf(alice, bob)) { group }
+            lab.assertConverged(listOf(alice, bob), atLeast = 12, carriers = listOf(carol)) { group }
         }
 
     private fun idOf(wire: WireEnvelope): String? = WireCodec.decodeEnvelope(wire.signed)?.takeIf { it.group != null }?.id

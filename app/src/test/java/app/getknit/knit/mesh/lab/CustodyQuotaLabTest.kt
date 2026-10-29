@@ -227,6 +227,69 @@ class CustodyQuotaLabTest {
             listOf(alice, bob, carol).forEach { assertTrue("${it.name}: the cap held", it.custodyIds().size <= 12) }
         }
 
+    /**
+     * #176 / #235: a non-member short of a member's posts keeps that member's DM after the members' quota evicted it.
+     * Five frames per sender everywhere. Carol, outside Alice and Bob's group, takes Alice's DM to Bob and is cut; Alice
+     * then posts six times to the group, so Alice's and Bob's buckets keep her newest five and drop the DM. Carol holds
+     * it still. When the three meet, the members back-fill Carol the posts (ADR 2026-10.hr9f), her own bucket evicts
+     * the DM, and she sends it over each of her links at most once — the meeting's diff, before the posts land. Served
+     * to members only, she never got the posts: her digest listed the DM at every exchange, it crossed both links once
+     * per seen window, each copy was evicted in the write that stored it (and drew Bob a fresh sealed receipt), and
+     * custody never agreed. Each pass of [pastSeenWindowsUntilCustodyAgrees] lets the crossing memo lapse, so the old
+     * rule crosses once per pass.
+     */
+    @Test
+    fun aNonMemberBackFilledAGroupDropsTheDmTheMembersEvicted() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxPerSender = 5)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            val group = alice.createGroup(bob)
+
+            // Bob relays the DM on to Carol: she custodies it, and his sealed receipt for it, before the cut.
+            assertTrue(alice.sendDm(bob, "d"))
+            val d = alice.ownMessageId(alice.dmWith(bob), "d")
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.second == "d" } }
+            lab.await(1) { if (d in carol.custodyIds()) 1 else 0 }
+            lab.awaitCustodyParity(bob, carol)
+            lab.unlink(bob, carol)
+
+            (1..6).forEach { assertTrue(alice.sendGroup(group, "post $it")) }
+            val posts = (1..6).map { alice.ownMessageId(group, "post $it") }
+            lab.await(6) { bob.decrypted(group).size }
+            listOf(alice, bob).forEach { awaitCustody(it, of = posts + d, holding = posts.drop(1)) }
+            assertTrue("carol, cut before the posts, still holds the DM", d in carol.custodyIds())
+            assertTrue("and none of the posts", posts.none { it in carol.custodyIds() })
+
+            // Bob's ticks go to the linked Alice point to point, kept nowhere: each is home before the link is cut, or the
+            // tick the cut catches in flight is the scenario's loss, not custody's.
+            posts.forEach { lab.awaitReceipt(alice, it, bob) }
+            lab.unlink(alice, bob)
+            pastSeenWindowsUntilCustodyAgrees(alice, bob, carol)
+
+            listOf(bob, alice).forEach { to ->
+                assertTrue(
+                    "carol sent the DM toward ${to.name} more than once: ${carol.transport.sent}",
+                    carol.copiesTo(to, d) <= 1,
+                )
+            }
+            lab.assertConverged(listOf(alice, bob), atLeast = 6, carriers = listOf(carol)) { group }
+            assertTrue("the evicted DM is held nowhere", listOf(alice, bob, carol).none { d in it.custodyIds() })
+        }
+
+    /** Frames [this] handed [to] under [id], each line "#seq <receiver> <type> <id> …" one delivered write. */
+    private fun LabNode.copiesTo(
+        to: LabNode,
+        id: String,
+    ): Int =
+        transport.sent.count { line ->
+            val cols = line.split(' ')
+            cols.getOrNull(3) == id && to.nodeId.startsWith(cols[1])
+        }
+
     /** Waits until each pair holds one confirmed session on both sides: the same root and era, opposite roles. */
     private suspend fun awaitSessionsSettled(vararg pairs: Pair<LabNode, LabNode>) {
         val settled =

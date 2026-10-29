@@ -15,10 +15,11 @@ import app.getknit.knit.mesh.protocol.isStorable
  *   relay floods the frame onward through the new topology. A cleartext delivery receipt from the addressed
  *   recipient purges the carried copy mesh-wide ([onAck]), and a DM that lands after its own receipt is
  *   refused on arrival ([onSeen]).
- * - **Group messages** are offered only to a roster member (the member set rides in cleartext on the
- *   frame); once any member receives it, the normal flood re-distributes it to the rest. A group has no
- *   single recipient and no reliable per-member ack, so it is never vaccine-purged — the TTL/cap sweep
- *   is its only bound.
+ * - **Group messages** are offered to any newcomer that lacks them, member or not, as a room post is (ADR
+ *   2026-10.hr9f). Member-only offers left a non-member that missed a member's posts live with a smaller bucket
+ *   for that member, so it kept the older frames every member's quota had evicted and re-served them at every
+ *   exchange, each evicted again in the write that stored it (#176, #235). A group has no single recipient and
+ *   no reliable per-member ack, so it is never vaccine-purged — the TTL/cap sweep is its only bound.
  * - **Broadcast-room** messages are offered to every newcomer (no destination to target), so two phones
  *   that meet only briefly backfill each other's ambient history. Like a group they have no ack, so the
  *   (shorter) TTL/cap sweep is their only bound.
@@ -115,10 +116,13 @@ class ForwardSync(
 
     /**
      * A neighbor advertised the custody ids it holds ([theirIds]): unicast it every carried frame **it lacks** —
-     * the set difference that replaces pushing the whole store. Targeting: offer a group message only to a roster
-     * member (a DM/broadcast goes to any newcomer). We DO re-serve a peer frames it authored when the diff shows
-     * it no longer holds them (custody wiped with the DB, e.g. the DatabaseKey unrecoverable-wrap path) — that is how a node's own sends
-     * reconverge, and it authenticates them against its own identity bundle ([MeshManager]). Each frame is
+     * the set difference that replaces pushing the whole store. No targeting: a DM, a group message and a room post
+     * all go to any peer whose digest lacks them (ADR 2026-10.hr9f). The per-sender and per-group buckets keep the
+     * same frames on two nodes only when the two hold the same set, so a group frame withheld from a non-member left
+     * it holding what the members had evicted, re-served to them at every exchange (#176). We DO re-serve a peer
+     * frames it authored when the diff shows it no longer holds them (custody wiped with the DB, e.g. the
+     * DatabaseKey unrecoverable-wrap path) — that is how a node's own sends reconverge, and it authenticates them
+     * against its own identity bundle ([MeshManager]). Each frame is
      * re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob; a duplicate that
      * races in is still dropped by the receiver's SeenSet, so a stale digest only ever costs bytes, never
      * correctness.
@@ -152,9 +156,9 @@ class ForwardSync(
                 // re-carries its own sends so the content digest reconverges; it authenticates the frame against
                 // its own identity bundle (see MeshManager.verifierBundle). The old `senderId == fromNodeId` skip
                 // assumed the author always has its own frame, which a wipe breaks — leaving each node permanently
-                // short its own sends.
-                val members = env.group?.members
-                env.id !in have && (members == null || fromNodeId in members) // group: members only (DM/broadcast: anyone)
+                // short its own sends. No member filter either (ADR 2026-10.hr9f): a group frame goes to a
+                // non-member that lacks it, or that carrier's bucket for the group's senders never matches theirs.
+                env.id !in have
             }
         keylessSenders(live, outgoing, have, fromNodeId).forEach { serveKey(it, peer) }
         outgoing.forEach { carried ->

@@ -14,7 +14,8 @@ chat cases (the delivery-critical ones); the metadata types ride the same custod
 (`ORIGIN_RELAY`) into the encrypted `forward_store` table, and when a neighbor joins (`watchNeighbors`
 newcomers → `ForwardSync.onNeighborAdded`) advertises the ids it holds, and the neighbor's digest reply
 (`ForwardSync.onDigest`) **unicasts** every carried frame the other lacks — the set difference, with no per-session
-memo and no author skip (a node's own sends re-converge that way after a wipe). Re-served frames re-enter the existing
+memo, no author skip (a node's own sends re-converge that way after a wipe) and no member filter (a group frame
+goes to a non-member that lacks it, ADR 2026-10.hr9f). Re-served frames re-enter the existing
 `handleInbound` path — deliver + relay, no separate delivery code. A frame `handleInbound` admits (marked seen) is
 delivered to the end under `NonCancellable`, whoever cancels the caller (ADR 2026-10.f82h): custody runs before the
 dispatch, so a cut delivery is one our digest already folds and no peer re-serves. Process death in that window
@@ -69,12 +70,17 @@ so batches structurally never `fastSend`), and is deliberately never downgraded 
 make the form an on-path link-state observable. Surfaced in Diagnostics/`…debug.STATE` as `receiptsResent` +
 `receiptsSealed` + `receiptsCustodied`; JVM-tested (`AckSyncTest`).
 
-**Group messages** carry a cleartext member roster (`RelayEnvelope.group.members`) on every frame, so custody
-exploits it: a node carries a group message whether or not it is itself a member (for other members who
-may be offline), but **push is member-targeted** — `onNeighborAdded` offers a carried group frame only to
-a roster member; once any member receives it, the normal flood re-distributes it to the rest, so there's
-no spraying group traffic at non-members. A group has no single recipient and no reliable per-member ack,
-so it is **never vaccine-purged** — the TTL/cap sweep is its only bound.
+**Group messages** carry a cleartext member roster (`RelayEnvelope.group.members`) on every frame. A node
+carries a group message whether or not it is itself a member (for other members who may be offline; the
+group gate, below, reads the roster at store time), and **serves it to any peer whose digest lacks it**,
+member or not, as it does a room post (ADR 2026-10.hr9f). The push used to be member-targeted, and that
+broke convergence: a non-member that missed a member's posts live never got them back-filled, so its
+per-sender bucket for that member was smaller than the members' and kept older frames — that member's DMs
+above all — which every member's quota had already evicted. It re-served them at every digest exchange, and
+each was evicted again in the write that stored it (#176, #235); on Wi-Fi Aware nearly every re-serve was
+admitted and re-flooded, and a DM re-served to its recipient drew a fresh sealed receipt. The per-sender and
+per-group buckets agree only over equal held sets. A group has no single recipient and no reliable
+per-member ack, so it is **never vaccine-purged** — the TTL/cap sweep is its only bound.
 
 **Broadcast-room messages** (`recipientId == null && group == null` — the natural discriminator, no schema
 column) are carried too and offered to **every** newcomer (no destination to target), gated only by the

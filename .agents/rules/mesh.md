@@ -338,7 +338,9 @@ pays for the cap from its own buckets. Both apply on **every** origin (`ORIGIN_S
 only; refuse a frame past its frame-global expiry or past the five-minute future window at store time; and carry a
 frame naming a group only when its members and departed derive to the group's id and its sender is a member (the
 group gate, in `ForwardRepository.store`, never in `canCarry`, which is also the spool plane's delivery gate). Every
-one of these reads the frame and the held set alone. Don't make the room or group trim fair: shipped builds and
+one of these reads the frame and the held set alone. And a digest reply serves every live frame the peer lacks, a
+group's to a non-member too (ADR 2026-10.hr9f): the buckets agree only over equal held sets, so a filter on who is
+served leaves that peer holding what the others evicted and re-serving it to them at every exchange. Don't make the room or group trim fair: shipped builds and
 knit-ios keep newest-N there, and a busy room at its quota would split old nodes from new ones for good. A change to
 any of them regenerates `vectors/custody-v1.json` and is a paired change with knit-ios. This makes the **TTL constants
 (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`) and the broadcast-chat classification

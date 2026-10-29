@@ -330,7 +330,10 @@ first. An iPhone link never boosts (its doorbell owns the parameters). Release b
   - **First copy to a dark pair:** the parked asks are released 2–3 s after their park.
   - **Boost off:** nothing parks.
   - **The open cost:** a dark pair's base-pace feed beside a lit one slows the lit copy from about 17 s to about 48 s.
-    And a non-member carrier pulls a group photo at once, often first.
+    And a non-member carrier pulls a group photo at once, often first. Since ADR 2026-10.hr9f a non-member is also
+    back-filled a group's frames by any holder, and pulls their photos at once when the author is not linked to it
+    (`CarrierPullPolicy` holds the pull only while the author is), behind the members (nsr7) and inside
+    `CARRIER_BLOB_BUDGET_BYTES`.
 - **The iPhone shape, before nsr7:** a DM from the dark P7 to the lit P3 passed 5/5 at 35–40 s. A group photo the
   iPhone also asked for was fed four ways at once and took 138 s. That run is what nsr7 fixes; its device cells are
   owed.

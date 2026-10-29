@@ -708,17 +708,41 @@ class ForwardSyncTest {
             assertTrue(k.keys.isEmpty())
         }
 
-    /** A key rides only with a backlog: nothing of the sender's goes out (all held, or a group the peer is not in). */
+    /**
+     * A key rides only with a backlog: nothing of the sender's goes out (all held — a group the peer is not in is
+     * served like anything else since ADR 2026-10.hr9f, so only the diff can withhold it).
+     */
     @Test
     fun onDigestServesNoKeyWhenNothingOfTheSendersGoesOut() =
         runTest {
             val k = KeyedSync()
             k.carry(post("r1", "a"), groupMsg("g1", "b", listOf("b", "c")))
 
-            k.sync.onDigest("z", listOf("r1"))
+            k.sync.onDigest("z", listOf("r1", "g1"))
 
             assertTrue(k.transport.sent.isEmpty())
             assertTrue(k.keys.isEmpty())
+        }
+
+    /**
+     * A group's backlog to a non-member is a backlog like any other (ADR 2026-10.hr9f): a sender whose profile custody
+     * no longer holds has their key served ahead of it (ADR 2026-09.g64k), or the non-member refuses what it cannot verify.
+     */
+    @Test
+    fun onDigestServesTheKeyAheadOfAGroupBacklogToANonMember() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(groupMsg("g1", "b", listOf("b", "c")), groupMsg("g2", "b", listOf("b", "c")))
+
+            k.sync.onDigest("z", emptyList())
+
+            assertEquals(listOf(Triple("b", "z", 0)), k.keys)
+            assertEquals(
+                setOf("g1", "g2"),
+                k.transport.sent
+                    .map { it.first.frameId() }
+                    .toSet(),
+            )
         }
 
     @Test
@@ -773,19 +797,26 @@ class ForwardSyncTest {
             assertEquals("a DM author that lost its own message is re-served it", listOf("m1"), transport.sent.map { it.first.frameId() })
         }
 
+    /**
+     * A group frame goes to any peer whose digest lacks it, member or not (ADR 2026-10.hr9f): a non-member left
+     * short of a member's posts keeps the older frames every member evicted and re-serves them at every exchange.
+     */
     @Test
-    fun memberTargetedPushOnlyOffersAGroupMessageToRosterMembers() =
+    fun aNonMemberThatLacksAGroupFrameIsServedIt() =
         runTest {
             val transport = RecordingTransport()
-            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+            val served = mutableListOf<Pair<String, String>>()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L }, onServed = { env, to -> served += env.id to to })
             val g = groupMsg("g1", sender = "a", members = listOf("a", "b", "c"))
             sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_SELF)
 
-            sync.onDigest("x", emptyList()) // not in the roster — must not be sprayed group traffic
-            assertTrue("a non-member is never offered a group message", transport.sent.isEmpty())
+            sync.onDigest("x", emptyList()) // not in the roster, and lacks the frame
+            assertEquals("a non-member that lacks a group frame is served it", listOf("g1"), transport.sent.map { it.first.frameId() })
+            assertEquals("to that peer", listOf("x"), transport.sent.map { it.second?.nodeId })
+            assertEquals("and the serve is reported once", listOf("g1" to "x"), served)
 
-            sync.onDigest("c", emptyList()) // a roster member — offered once
-            assertEquals(listOf("g1"), transport.sent.map { it.first.frameId() })
+            sync.onDigest("y", listOf("g1")) // a non-member that already holds it: the diff elides it
+            assertEquals("a peer holding the frame is not served it again", 1, transport.sent.size)
         }
 
     // --- TTL sweep ---

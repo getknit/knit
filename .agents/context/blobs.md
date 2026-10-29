@@ -208,6 +208,16 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   delivered — flooded, served or fetched (910f469b) — or the digests disagree for a `SeenSet` window after every key
   request. Reopening dropped ids on key arrival was tried and cannot work on Bluetooth: `LinkCrossings` will not write
   the same frame to one link twice inside the window. Lab: `StrangerBacklogLabTest`, `KeyExchangeLabTest`.
+- **When touching which peers `ForwardSync.onDigest` serves (its `outgoing` filter), or anything that would withhold
+  a carried frame from a peer whose digest lacks it:** READ ADR 2026-10.hr9f (amending ADR 006's convergence rule in
+  practice). A digest reply serves every live frame the peer lacks — a DM, a room post and a group's frame alike, to a
+  member or not, and to its own author (the wipe). The member-only group serve it replaced kept a non-member's sender
+  bucket short of the members', so it held what their quotas had evicted and re-served it at every exchange
+  (#176, #235). The roster still decides what custody stores (the group gate) and whether a carrier holds back a picture's
+  pull (`CarrierPullPolicy`, ADR 2026-10.g24x), never who is served. knit-ios owes the companion change
+  (`CustodySync.missing`'s roster check). Lab: `CustodyQuotaLabTest`'s
+  `aNonMemberBackFilledAGroupDropsTheDmTheMembersEvicted`; unit: `ForwardSyncTest`'s
+  `aNonMemberThatLacksAGroupFrameIsServedIt`.
 - **When touching how often a digest is written to a link (`FramedLink.sendDigest` / `writePendingDigest`,
   `digestsReplaced`), `ForwardSync`'s 60 s re-offer, or what a link carries ahead of a back-fill:** READ ADR
   2026-09.tjfb. A link holds at most one custody digest waiting to be written; a newer one replaces it (11b91371). The
