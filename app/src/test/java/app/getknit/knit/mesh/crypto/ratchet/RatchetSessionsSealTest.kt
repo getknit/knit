@@ -169,6 +169,29 @@ class RatchetSessionsSealTest {
             assertEquals("named", text(bob.open(checkNotNull(alice.seal("named", later, pkid = 1)), later + 1)))
         }
 
+    /**
+     * The tag a seal returns names the root that very seal committed (ADR 2026-10.8hn6): on first contact the session
+     * it initiated, which no read before it could see; the pair's root, so the peer that opens it holds the same; and
+     * after a reset re-roots, the new one.
+     */
+    @Test
+    fun aTaggedSealNamesTheRootItCommitted() =
+        runTest {
+            val (alice, bob) = pair()
+            assertNull(alice.sessions.rootTagFor(bob.nodeId))
+            val first = checkNotNull(alice.sessions.sealDmTagged(bob.nodeId, bob.ik.pub, alice.prekey(1), "hi".toByteArray(), AAD, T))
+            assertEquals(alice.sessions.rootTagFor(bob.nodeId), first.rootTag)
+            assertEquals("hi", text(bob.open(first.envelope, T + 1)))
+            assertEquals("the pair's root", first.rootTag, bob.sessions.rootTagFor(alice.nodeId))
+
+            val reset = bob.sessions.sealResetDm(alice.nodeId, alice.ik.pub, bob.prekey(1), "reset".toByteArray(), AAD, T + 2)
+            assertTrue("re-rooted: $reset", reset is ResetSeal.Sealed)
+            val after =
+                checkNotNull(bob.sessions.sealDmTagged(alice.nodeId, alice.ik.pub, bob.prekey(1), "again".toByteArray(), AAD, T + 3))
+            assertTrue(after.rootTag != first.rootTag)
+            assertEquals(bob.sessions.rootTagFor(alice.nodeId), after.rootTag)
+        }
+
     private companion object {
         const val T = 100_000_000L
         val AAD = "aad".toByteArray()

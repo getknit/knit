@@ -187,6 +187,11 @@ class InboundPipeline(
     // Holds the ✓✓ for a DM that arrived over the LoRa board so a burst becomes one tick and a reply can
     // carry the acks (ADR 054) — MeshManager's [DmAckCoalescer]; null (the rigs' default) acks instantly.
     private val dmAcks: DmAckCoalescer? = null,
+    // The sealed receipts we minted for DMs to us, so a re-delivery in the same era mints no other (#176, ADR
+    // 2026-10.8hn6); [holdsLive] answers whether one is still live in our own custody (`ForwardStore.frame`, never `has`).
+    // The rigs' default holds nothing, so every re-delivery re-acks there as it always did.
+    private val dmReAcks: DmReAckLedger = DmReAckLedger(),
+    private val holdsLive: suspend (frameId: String, now: Long) -> Boolean = { _, _ -> false },
     private val flushPending: suspend (String) -> Unit,
     private val classifyText: suspend (String, String, Boolean) -> Boolean,
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
@@ -304,8 +309,8 @@ class InboundPipeline(
         // that joins later. That includes a DM addressed to US: with sealed receipts nobody vaccine-
         // purges (a carrier can't read them), so the delivered DM stays live in every carrier's digest
         // for its full TTL — if the recipient didn't hold it too, every digest exchange would re-cue a
-        // re-serve of a frame we already delivered (the exists-gate would re-ack it, ~every SeenSet
-        // lapse, forever). Holding our own copy is what makes digests converge; a cleartext ack still
+        // re-serve of a frame we already delivered, and each copy past a SeenSet lapse would reach the
+        // exists-gate. Holding our own copy is what makes digests converge; a cleartext ack still
         // purges it right back out (see acknowledge's self-vaccinate). Group messages are carried for
         // members who may be offline whether or not we're a member; broadcast + cleartext metadata
         // frames back-fill ambient state. Runs before handleChat returns early and before the router
@@ -1137,12 +1142,15 @@ class InboundPipeline(
         // The already-have-it gate: custody re-serves the same ciphertext routinely (the 60s re-offer
         // loop; the SeenSet is in-memory, 10 min, per mesh session), and decrypt used to run on every
         // copy. Skipping it once the row exists is what lets the v2 ratchet actually DELETE used
-        // message keys (forward secrecy), and spares v1 an HPKE unwrap per re-serve. The ack still
-        // runs unconditionally, in whatever form acknowledge picks — rare now that we custody our own
-        // inbound DMs (digests match, so a re-serve means genuine divergence, e.g. our copy was
-        // quota-evicted), and re-custody above already restored the row for the next exchange.
+        // message keys (forward secrecy), and spares v1 an HPKE unwrap per re-serve. A re-delivery is
+        // rare now that we custody our own inbound DMs, but not gone: a carrier whose quota kept a DM ours
+        // evicted re-serves it every exchange, and a back-fill fed by two holders relays one holder's copy
+        // to us past our seen window (#176). Each gets acknowledge's answer, which for a DM to us off the
+        // board is bounded: one sealed receipt per session root, re-sealed only once ours has left our
+        // custody or its re-arm floor has passed (DmReAckLedger, ADR 2026-10.8hn6). Over LoRa, and for an
+        // author who reads only the cleartext form, every copy is still answered.
         if (signed && messages.exists(env.id)) {
-            acknowledge(env, me, plane)
+            acknowledge(env, me, plane, reDelivery = true)
             return
         }
         when {
@@ -3286,8 +3294,10 @@ class InboundPipeline(
                 notifyPendingRequests(me)
             }
         }
-        // Ack unconditionally (even on a re-delivery): the receipt floods back to the sender and, for a
-        // DM, doubles as the vaccine that purges this message from any carrier that missed the first ack.
+        // Ack every delivery this far, a concurrent copy that lost the commit race included (the pre-decrypt
+        // exists-gate answers the later re-deliveries, bounded per era). A cleartext receipt doubles as the
+        // vaccine that purges this DM from any carrier that missed the first ack; a sealed one purges nothing
+        // (ADR 018), and sealDmReceipt files it in the re-ack ledger for the exists-gate to read.
         if (ack) acknowledge(env, me, plane)
     }
 
@@ -3342,11 +3352,14 @@ class InboundPipeline(
      * group messages have no single recipient, so the tick is best-effort: a **point-to-point** receipt
      * (relay = false) straight back to the author, remembered by AckSync and re-sent until it lands (or ages
      * out) — the message itself converges via custody, but the tick otherwise had no delay-tolerance.
+     *
+     * [reDelivery] is the pre-decrypt exists-gate's call, for a DM whose row we already hold: see [answeredInEra].
      */
     private suspend fun acknowledge(
         env: RelayEnvelope,
         me: String,
         plane: DeliveryPlane,
+        reDelivery: Boolean = false,
     ) {
         if (env.recipientId == me) {
             // A DM off the board holds its ✓✓ (ADR 054): a burst from one author becomes one sealed tick and a
@@ -3357,6 +3370,10 @@ class InboundPipeline(
             if (plane == DeliveryPlane.LoRa && coalescer != null && canSealDmReceipt(env.senderId)) {
                 coalescer.hold(env.senderId, env.id)
                 metrics.onLoraTickDeferred()
+                return
+            }
+            if (reDelivery && answeredInEra(env, plane)) {
+                metrics.onReAckSkipped()
                 return
             }
             if (sealDmReceipt(env, me)) return
@@ -3400,6 +3417,27 @@ class InboundPipeline(
         forwardSync.onAck(ackId, me)
     }
 
+    /**
+     * Whether a re-delivered DM to us is already answered by a sealed receipt of ours in the session's current era
+     * (#176, ADR 2026-10.8hn6): one the ledger holds under the root we hold now, sealed less than its re-arm floor ago,
+     * and still live in our own custody, so every carrier that meets the author re-serves it. Any one of those failing
+     * re-seals: a new root after a reset (the old receipt was sealed into an era the author may have dropped), a
+     * receipt our quota or the TTL evicted (nobody re-serves it), or the floor passed (the author may hold our receipt
+     * in custody without ever having applied it). Never keyed on the copy's ratchet header or its signature: a
+     * verbatim re-serve after a reset carries the old era's header. Never over LoRa, whose re-offer heals a lost tick
+     * by its re-ack (ADR 039 §3, §7), and never for an author who reads only the cleartext receipt, which purges the DM
+     * and ends the loop itself.
+     */
+    private suspend fun answeredInEra(
+        env: RelayEnvelope,
+        plane: DeliveryPlane,
+    ): Boolean {
+        if (plane == DeliveryPlane.LoRa || !canSealDmReceipt(env.senderId)) return false
+        val now = clock()
+        val receiptId = dmReAcks.heldReceipt(env.id, ratchet.rootTagFor(env.senderId), now) ?: return false
+        return holdsLive(receiptId, now)
+    }
+
     /** Whether [authorId] could read a sealed receipt: a pinned bundle carrying `CAP_RATCHET` (the seal itself may still fail). */
     private suspend fun canSealDmReceipt(authorId: String): Boolean {
         val peer = peers.find(authorId) ?: return false
@@ -3415,6 +3453,11 @@ class InboundPipeline(
      * ctl payloads are v2-only by construction (the sealDm-direct precedent of every other ctl sender).
      * The session usually exists (we just opened the author's v2 DM); the prekey path covers a capable
      * author whose DM arrived v1 (e.g. sent before our profile landed on their side).
+     *
+     * A sealed receipt is filed in [dmReAcks] under [env]'s id alone (the room ids riding with it are AckSync's), with
+     * the root tag the seal itself committed under ([RatchetSessions.sealDmTagged]) — never a session read after it,
+     * since a reset adopted on the other delivery plane can commit in between and file the receipt in an era it was
+     * not sealed in.
      */
     private suspend fun sealDmReceipt(
         env: RelayEnvelope,
@@ -3439,8 +3482,8 @@ class InboundPipeline(
         val riding = ackSync.takeRiding(env.senderId, DmAckCoalescer.MAX_LORA_TICK_ACKS - 1)
         val content = MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = env.id, acks = riding.takeIf { it.isNotEmpty() })
         val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
-        val sealed =
-            ratchet.sealDm(
+        val tagged =
+            ratchet.sealDmTagged(
                 env.senderId,
                 bundle.dhPublicKey(),
                 peerSpk = prekey,
@@ -3454,6 +3497,7 @@ class InboundPipeline(
                     metrics.onReceiptSealedFallback()
                     return false
                 }
+        val sealed = tagged.envelope
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         originateTick(
             RelayEnvelope(
@@ -3466,6 +3510,7 @@ class InboundPipeline(
             ),
         )
         metrics.onReceiptSealed()
+        dmReAcks.record(env.id, tagged.rootTag, id, now)
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
         return true

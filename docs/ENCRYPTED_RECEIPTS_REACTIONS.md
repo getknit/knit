@@ -118,10 +118,12 @@ the frame bytes, identical at every observer:
 Two composition rules keep the populations digest-convergent:
 
 1. **The recipient custodies its own inbound DMs** (the carry gate's `isForMe` exclusion is gone).
-   Without this, every carrier's digest holds a delivered frame the recipient's digest never folds —
-   endless re-offers, and the exists-gate would re-ack each one (~a fresh sealed receipt per SeenSet
-   lapse, per DM, for 24 h). With it, digests match and a re-serve means genuine divergence (e.g.
-   quota eviction), self-healed by the re-custody that precedes dispatch.
+   Without this, every carrier's digest holds a delivered frame the recipient's digest never folds,
+   and the mesh re-offers it endlessly. With it, digests match, and a re-delivery takes genuine
+   divergence: a carrier whose quota kept a DM ours evicted, or a back-fill fed by two holders that
+   relays one holder's copy to us past our seen window (#176). Each such copy used to draw a fresh
+   sealed receipt per SeenSet lapse, per DM, for 24 h. Its re-ack is now bounded per era (§5, ADR
+   2026-10.8hn6).
 2. **A cleartext ack self-vaccinates**: after originating the legacy receipt, the recipient runs
    `ForwardSync.onAck` on itself — its own fresh custody row follows the identical rule every
    carrier applies to that receipt, and the ack tombstone refuses re-plants.
@@ -134,6 +136,7 @@ the purge left zero), bounded by the existing quotas (1000 global / 200 per send
 | Context | Condition | Receipt | Reaction |
 |---|---|---|---|
 | DM, author/peer capable | pinned bundle + `CAP_RATCHET` (+ prekey/session for the seal) | sealed ctl DM, `relay = true`, flooded + custodied, `sentAt` stamped (custody derives expiry from it) | sealed ctl DM, `relay = true` |
+| DM **re-delivered** (row already held, the exists-gate), author capable, not over LoRa | we sealed a receipt for this id under the session root held now, it is live in our own custody, and it is younger than its re-arm floor (15 min, doubling per same-era re-seal to 4 h) | **nothing new**: the held receipt answers it. Otherwise one sealed ctl DM as above, filed with the root its own seal committed under (ADR 2026-10.8hn6). Over LoRa every copy takes the row below | as above |
 | DM **delivered over the LoRa plane**, author capable (ADR 054) | as above, `DeliveryPlane.LoRa` | held ≤ 45 s in `DmAckCoalescer` (re-deliveries fold in), then ONE sealed ctl DM (`ack`/`acks`, ≤ 12 ids) originated `relay = true`, hinted `TICK`; a failed seal falls back per id to the cleartext receipt | as above |
 | DM delivered over LoRa, and we reply within the hold | author's profile carries `CAP_INLINE_ACK` | up to 4 ids ride **inline** as `acks` on the plain sealed reply (v2 arm only; 23 B each reserved out of the LoRa body budget); no standalone tick | — |
 | DM, incapable / seal failed | — | cleartext receipt (still purges everywhere, incl. self-vaccinate) | cleartext reaction |
@@ -171,8 +174,8 @@ plane** (a 16-ack batch already outgrows the ≤2-fragment compact budget — pi
 `CoordinationPlaneSizeBudgetTest` — so escalation goes through `originateSigned`, structurally never
 `fastSend`); **escalated ids are remembered** (a done-but-remembered ledger absorbs the exists-gate's
 re-ack on every custody re-serve, so nothing re-seals; a process restart forgets it, and the one
-duplicate custodied tick a re-serve can then mint is absorbed idempotently — the DM-receipt
-precedent); and **a failed flush falls back** (author unpinned between owe and flush → the ids
+duplicate custodied tick a re-serve can then mint is absorbed idempotently; the DM receipt's own
+memo, `DmReAckLedger`, makes the same trade, ADR 2026-10.8hn6); and **a failed flush falls back** (author unpinned between owe and flush → the ids
 re-materialize as per-id cleartext owed entries with their original timestamps). An author who links
 during the debounce gets the whole batch over the live link instead (`relay = false`, no custody
 rows). Cleartext ticks and the broadcast room never escalate: a cleartext receipt in custody would

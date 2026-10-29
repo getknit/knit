@@ -230,6 +230,9 @@ class InboundPipelineTest {
     private class FakeForwardStore : ForwardStore {
         private val frames = linkedMapOf<String, CarriedFrame>()
 
+        // id → how far [age] moved the row's expiry back.
+        private val aged = mutableMapOf<String, Long>()
+
         override suspend fun store(
             frame: CarriedFrame,
             origin: Int,
@@ -249,8 +252,24 @@ class InboundPipelineTest {
 
         override suspend fun has(id: String): Boolean = frames.containsKey(id)
 
+        // As `ForwardDao.liveRow` reads it (`expiresAt >= now`): a row past its frame-global expiry is not served though
+        // `has` still counts it unswept. DM-form rows only; the room's shorter TTL is not modelled.
+        override suspend fun frame(
+            id: String,
+            now: Long,
+        ): CarriedFrame? = frames[id]?.takeIf { now <= it.envelope.sentAt - (aged[id] ?: 0L) + ForwardRepository.DEFAULT_TTL_MS }
+
         override suspend fun remove(id: String) {
             frames.remove(id)
+        }
+
+        /** Re-dates the held row [id] [byMs] earlier, so its frame-global expiry passes while it stays unswept (`has` true). */
+        fun age(
+            id: String,
+            byMs: Long,
+        ) {
+            check(frames.containsKey(id))
+            aged[id] = byMs
         }
 
         override suspend fun sweepExpired(now: Long): Int = 0
@@ -383,6 +402,9 @@ class InboundPipelineTest {
         val originated = mutableListOf<RelayEnvelope>()
         val dmFlushes = mutableListOf<Pair<String, List<String>>>()
         val dmAcks = DmAckCoalescer(now = { nowMs }, flush = { a, ids -> dmFlushes += a to ids })
+
+        /** The sealed DM receipts the pipeline filed, so a test can read an entry's era and floor (ADR 2026-10.8hn6). */
+        val dmReAcks = DmReAckLedger()
 
         /**
          * The pipeline's clock. Fixed by default so every existing test behaves exactly as before; a test
@@ -532,7 +554,16 @@ class InboundPipelineTest {
                     groupRatchet = groupRatchet,
                     clock = { nowMs },
                     originate = { originated += it },
+                    // Our own receipt is custodied before it floods, as MeshManager.originateSigned does, so the re-ack
+                    // ledger's custody read (ADR 2026-10.8hn6) sees what production sees.
+                    originateTick = { tick ->
+                        originated += tick
+                        val wire = self.sign(tick)
+                        forwardStore.store(CarriedFrame(tick, wire.sig, wire.signed), ForwardStore.ORIGIN_SELF, nowMs)
+                    },
                     dmAcks = dmAcks,
+                    dmReAcks = dmReAcks,
+                    holdsLive = forwardStore::holdsLiveReceipt,
                     flushPending = { flushed += it },
                     classifyText = { text, _, isRoom ->
                         if (failClassify) error("moderation boom")
@@ -6961,7 +6992,7 @@ class InboundPipelineTest {
         private var reactionApplies = 0
 
         init {
-            coEvery { rig.ratchet.sealDm(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { rig.ratchet.sealDmTagged(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
                 if (arg<String>(0) == alice.nodeId) sealedToAlice += arg<ByteArray>(3) to arg<Int>(6)
                 callOriginal()
             }
@@ -7466,7 +7497,7 @@ class InboundPipelineTest {
         val lastSealScheme: Int? get() = sealed.lastOrNull()?.third
 
         init {
-            coEvery { rig.ratchet.sealDm(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { rig.ratchet.sealDmTagged(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
                 sealed += Triple(arg<String>(0), arg<ByteArray>(3), arg<Int>(6))
                 draws?.onSeal()
                 callOriginal()
@@ -8452,8 +8483,20 @@ class InboundPipelineTest {
             assertFalse(rig.forwardStore.has("v1-dm1"))
         }
 
+    /** The sealed receipt the pipeline sent [author] last: our own frame, a DM-form chat to them. */
+    private fun Rig.lastReceiptTo(author: Party): RelayEnvelope =
+        originated.last {
+            it.type == FrameType.CHAT &&
+                it.recipientId == author.nodeId
+        }
+
+    /**
+     * #176: a DM re-delivered past our seen window, inside the re-arm floor, is answered by the receipt we already
+     * sealed in this era and still hold in custody, so no second one is minted (ADR 2026-10.8hn6). This test used to
+     * pin the opposite: one sealed receipt per copy, each flooded and custodied for a day.
+     */
     @Test
-    fun aReServedDeliveredDmReAcksInTheSealedForm() =
+    fun aReServedDeliveredDmIsAnsweredByTheReceiptAlreadySealedInItsEra() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
@@ -8462,12 +8505,165 @@ class InboundPipelineTest {
             val dm = author.dm("v2-re1", "again")
 
             rig.deliver(alice, dm)
-            rig.deliver(alice, dm) // a custody re-serve after genuine divergence: exists-gate path
+            val receipt = rig.lastReceiptTo(alice)
+            rig.nowMs += DmReAckLedger.FLOOR_MS - 1
+            rig.deliver(alice, dm) // a custody re-serve past the router's window: exists-gate path
 
-            // Delivered once, re-acked per copy (the receipt custody is the recovery channel), both sealed.
             assertEquals("again", rig.msgMap["v2-re1"]?.body)
             assertFalse(rig.originated.any { it.type == FrameType.RECEIPT })
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals(receipt.id, rig.dmReAcks.entry("v2-re1")?.receiptId)
+        }
+
+    /** Our receipt is gone from our own custody (quota, a sweep): nobody re-serves it, so the re-delivery re-seals. */
+    @Test
+    fun aReServedDmWhoseReceiptLeftOurCustodyReAcks() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-gone", "evicted receipt")
+
+            rig.deliver(alice, dm)
+            val first = rig.lastReceiptTo(alice)
+            rig.forwardStore.remove(first.id)
+            rig.deliver(alice, dm)
+
             assertEquals(2L, rig.metrics.receipts().receiptsSealed)
+            val second = rig.lastReceiptTo(alice)
+            assertTrue("a fresh receipt, under its own id", second.id != first.id)
+            assertTrue("and custodied like the first", rig.forwardStore.has(second.id))
+            assertEquals(second.id, rig.dmReAcks.entry("v2-gone")?.receiptId)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** An expired receipt the sweep has not reached yet still counts in `has`; it is not live, so it re-seals. */
+    @Test
+    fun aReServedDmWhoseReceiptExpiredUnsweptReAcks() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-expired", "stale receipt")
+
+            rig.deliver(alice, dm)
+            val first = rig.lastReceiptTo(alice)
+            rig.forwardStore.age(first.id, ForwardRepository.DEFAULT_TTL_MS + 1)
+            assertTrue("unswept", rig.forwardStore.has(first.id))
+            rig.deliver(alice, dm)
+
+            assertEquals(2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * Held in custody is not applied at the author (it custodies a frame before it opens it), so past the floor a
+     * re-delivery re-seals even though ours is held, and the floor doubles for the next one.
+     */
+    @Test
+    fun aReServedDmPastItsFloorReAcksAndTheFloorDoubles() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-floor", "heal me")
+
+            rig.deliver(alice, dm)
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+            assertEquals("past 15 min, held or not", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1, rig.dmReAcks.entry("v2-floor")?.step)
+
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+            assertEquals("inside the doubled 30 min floor", 2L, rig.metrics.receipts().receiptsSealed)
+
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+            assertEquals(3L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(2, rig.dmReAcks.entry("v2-floor")?.step)
+        }
+
+    /**
+     * A reset re-roots the pair (here our own, through the real facade): the receipt we sealed under the old root may
+     * be unreadable to an author that dropped that era, so the next re-delivery seals exactly one under the new root,
+     * and a copy after that is answered by it.
+     */
+    @Test
+    fun aReServedDmAfterAResetDrawsExactlyOneReceiptInTheNewEra() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            val dm = V2Author(alice, rig).dm("v2-reset", "before the reset")
+
+            rig.deliver(alice, dm)
+            val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertEquals(oldTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
+
+            val reset =
+                rig.ratchet.sealResetDm(
+                    alice.nodeId,
+                    alice.bundle.dhPublicKey(),
+                    RatchetEngine.PeerPrekey(id = 2, pub = alicePrekey.pub),
+                    "reset".toByteArray(),
+                    "aad".toByteArray(),
+                    rig.nowMs,
+                )
+            assertTrue("re-rooted: $reset", reset is RatchetSessions.ResetSeal.Sealed)
+            val newTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertTrue(newTag != oldTag)
+
+            rig.deliver(alice, dm)
+            assertEquals("one receipt for the new era", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(newTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
+            assertEquals("a new era starts its own floor", 0, rig.dmReAcks.entry("v2-reset")?.step)
+
+            rig.deliver(alice, dm)
+            assertEquals("and only one", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * First contact: the author's DM arrived v1 and the receipt's own seal opened the session through the prekey path,
+     * so there was no root to read before it. The tag comes from that seal, and a second copy is answered by it.
+     */
+    @Test
+    fun aReceiptThatOpenedTheSessionAnswersTheNextCopy() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = rig.dmChat(alice, rig.self, id = "v1-first", body = "hello, stranger")
+            assertNull(rig.ratchet.rootTagFor(alice.nodeId))
+
+            rig.deliver(alice, dm)
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId)) { "the receipt's seal initiated the session" }
+            assertEquals(tag, rig.dmReAcks.entry("v1-first")?.rootTag)
+
+            rig.deliver(alice, dm)
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** A copy off the board still takes the coalescer whatever the ledger holds: LoRa heals a lost tick by its re-ack (ADR 039). */
+    @Test
+    fun aReServedDmOverLoraStillTakesTheCoalescer() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-lora", "heard twice")
+
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals(1L, rig.metrics.lora().loraTickDeferred)
+            assertEquals(listOf("v2-lora"), rig.dmAcks.pending(alice.nodeId))
         }
 
     @Test

@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -341,6 +342,82 @@ class SessionLabTest {
         runBlocking { tickAfterReset(apart = 2) }
 
     /**
+     * The author resets while a carrier back-fills its delivered DM to the recipient (#176, ADR 2026-10.8hn6). Alice's
+     * receipt for Bob's DM is sealed under their first root and never reaches him (lost on her link, so only a receipt
+     * of the new era can tick it). Bob then resets; the re-seal of unacked DMs runs only on the side that adopts a reset
+     * (ADR 2026-10.dmgw), and Alice has none, so nothing sends the DM again but custody: Dave, who lacks it, is fed by
+     * Carol and relays it to Alice as a fresh flood past her seen window, well inside her receipt's re-arm floor. Her
+     * receipt is still live in her custody, so only the root she now holds tells this copy apart from a same-era re-serve:
+     * she seals exactly one receipt, under the new root, and that one is what puts the tick on Bob.
+     */
+    @Test
+    fun anAuthorsResetDrawsOneFreshReceiptForADmACarrierBackFillsToTheRecipient() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            lab.linkAll(alice to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            // A confirmed session first, so Bob's reset replaces its root rather than re-sending an unanswered init; Alice
+            // opens it, so the DM below is the only one of Bob's a carrier can hand her back.
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol), conversation = thread)
+
+            // From here, Alice's chat frames to Bob are lost on the air until the stale set below is pinned.
+            alice.transport.lossy(bob.transport) { it.isChatFrom(alice.nodeId) }
+            val before = alice.custodyIds()
+            val sealed = alice.metrics.receipts().receiptsSealed
+            assertTrue(bob.sendDm(alice, "for alice"))
+            val dm = bob.ownMessageId(bob.dmWith(alice), "for alice")
+            lab.await(1) { alice.decrypted(alice.dmWith(bob)).count { it.first == dm } }
+            lab.await(1) { if (dm in carol.custodyIds()) 1 else 0 }
+            // Her first receipt: custodied by her and lost on the way to Bob.
+            lab.await(1) { if (alice.chatLost().any { it in alice.custodyIds() - before - dm }) 1 else 0 }
+            lab.await(1) { (alice.metrics.receipts().receiptsSealed - sealed).toInt() }
+
+            lab.unlink(alice, bob)
+            lab.unlink(bob, carol)
+            // Everything Alice lost so far stays lost to Bob: the receipt she sealed in the first era above all.
+            val stale = alice.chatLost()
+            val firstRoot = alice.session(bob)?.rootHash
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
+
+            assertNull("bob's reset went out", bob.resetSession(alice))
+            lab.link(alice, bob) { alice.transport.lossy(bob.transport) { WireCodec.decodeEnvelope(it.signed)?.id in stale } }
+            lab.await(1) {
+                val root = alice.session(bob)?.rootHash
+                if (root != null && root != firstRoot && root == bob.session(alice)?.rootHash) 1 else 0
+            }
+            alice.transport.awaitInboundDrained()
+            assertEquals("adopting Bob's reset sealed no receipt", sealed + 1, alice.metrics.receipts().receiptsSealed)
+            assertTrue("bob holds no tick for the DM yet", bob.missingAcks(bob.dmWith(alice), listOf(alice, bob)).isNotEmpty())
+
+            // Dave, who lacks the DM, links Alice with her frames to him held (her copy cannot cross first), then Carol.
+            lab.link(alice, dave) { alice.transport.hold(dave.transport) }
+            alice.transport.awaitNeighborsHandled()
+            dave.transport.awaitNeighborsHandled()
+            lab.link(carol, dave)
+            lab.await(1) {
+                dave.transport.sent.count { line ->
+                    line.split(' ').let { it.getOrNull(3) == dm && alice.nodeId.startsWith(it[1]) }
+                }
+            }
+            alice.transport.awaitInboundDrained()
+            // The counter moves after the receipt is sent, so the tick can land first; the end pins the count exactly.
+            lab.await(2) { (alice.metrics.receipts().receiptsSealed - sealed).toInt() }
+            lab.await(1) { if (bob.missingAcks(bob.dmWith(alice), listOf(alice, bob)).isEmpty()) 1 else 0 }
+            alice.transport.release(dave.transport)
+
+            // A clean link again (the lossy pipe goes with the old one), and Carol back with Bob, for the oracle.
+            lab.unlink(alice, bob)
+            lab.linkAll(alice to bob, bob to carol)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave), conversation = thread)
+            assertEquals("Alice sealed two receipts in all, one per era", sealed + 2, alice.metrics.receipts().receiptsSealed)
+        }
+
+    /**
      * The other direction: Alice sends three DMs to an absent Bob (Dave carries them), then forces a reset.
      * When Bob returns the three are sealed under an era the reset retired — pre-era to Bob, so no reset
      * storm — and they still have to reach him.
@@ -549,6 +626,13 @@ class SessionLabTest {
             ?.r
             ?.se == epoch
     }
+
+    /** The ids of the chat frames this node authored that its links lost ([LabTransport.lossy]). */
+    private fun LabNode.chatLost(): Set<String> =
+        transport.lost
+            .filter { it.isChatFrom(nodeId) }
+            .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+            .toSet()
 
     private fun WireEnvelope.isGroupFrame(): Boolean = WireCodec.decodeEnvelope(signed)?.group != null
 

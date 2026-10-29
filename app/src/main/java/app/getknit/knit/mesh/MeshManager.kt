@@ -652,6 +652,7 @@ class MeshManager(
             originate = ::originateSigned,
             originateTick = { originateSigned(it, FanoutHint.TICK) },
             dmAcks = dmAcks,
+            holdsLive = forwardStore::holdsLiveReceipt,
             flushPending = ::flushPendingFor,
             classifyText = ::isTextFlagged,
             resealUnacked = ::resealRecentDmsTo,
@@ -4567,6 +4568,7 @@ class MeshManager(
                     "groupSeedsHeld=${s.groups.groupSeedsHeld} groupSeedsReplayed=${s.groups.groupSeedsReplayed} " +
                     "receiptsResent=${s.receipts.receiptsResent} " +
                     "receiptsSealed=${s.receipts.receiptsSealed}/${s.receipts.receiptsSealedFallback} " +
+                    "reAcksSkipped=${s.receipts.receiptsReAckSkipped} " +
                     "dmSealedV3=${s.seals.dmSealedV3} ticksUnsigned=${s.receipts.ticksUnsigned} " +
                     "reactionsSealed=${s.seals.reactionsSealed}/${s.seals.reactionsSealedFallback} " +
                     "filesNan=${s.files.filesSentNan} filesBt=${s.files.filesSentBt} bulkTimeouts=${s.nan.nanBulkGraceTimeouts}",

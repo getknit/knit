@@ -18,7 +18,9 @@ import java.util.concurrent.ConcurrentHashMap
  * Deliberately **not** folded into [AckSync]: that class encodes the broadcast/group rules (ADR 033/053 — a
  * live-link form, verbatim retries, a done-ledger). A DM tick has none of those: nothing retries it (it is
  * custodied once), and re-acking on re-delivery is the LoRa healing channel (ADR 039 §3), so there is no
- * ledger to keep. Only the debounce shape is shared, and it is mirrored here in style rather than reused.
+ * ledger to keep. Only the debounce shape is shared, and it is mirrored here in style rather than reused. Off the
+ * board a re-delivery's sealed re-ack is bounded per era by [DmReAckLedger]; a flush here records nothing there, so
+ * a DM acked over LoRa costs at most one more receipt on a later re-delivery off it (ADR 2026-10.8hn6).
  *
  * In-memory only, like AckSync's ledger: a process death inside the hold loses the pending acks. Only a
  * re-delivery of the DM re-holds and re-ticks it, and since ADR 018 that is no longer a matter of course: we

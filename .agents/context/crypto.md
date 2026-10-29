@@ -38,7 +38,8 @@ LoRa plane (2026-09.ggq4).
   row — and the order is transaction outer, mutex inner, enforced inside both facades, never left to callers; one
   mutex serves both facades because seed adoption runs inside a DM commit. Deleting a used message key is safe only
   because a persisted frame never reaches decrypt again; a frame with no message row (a ctl, a tick) has no such
-  gate. A decrypt or verify failure never throws out of the inbound handler: `onDeliver` runs before the relay is
+  gate. The gate still acks what it stops; for a DM to us that ack is bounded per era (the re-ack entry below, ADR
+  2026-10.8hn6). A decrypt or verify failure never throws out of the inbound handler: `onDeliver` runs before the relay is
   scheduled. The guards are `runCatchingUnlessCancelled` (`mesh/MeshCoroutines.kt`), not `runCatching`: a caller's own
   cancellation is rethrown, never counted as `DECRYPT_FAILED` and never fed to `onRatchetFailure`, and the router runs
   an admitted delivery under `NonCancellable` so it never sees one (ADR 2026-10.f82h). `commitOpen` sets its in-memory
@@ -148,6 +149,16 @@ LoRa plane (2026-09.ggq4).
   by your own signed rejoin — nobody can add or remove anyone else. The seed carries the founding roster, so a
   member with no row pins the group from the seed through `reconcileGroup`'s one door (the relay-only case,
   #47); a seed without one (an older build's) is parked, never consumed.
+- **When touching the exists-gate's DM re-ack — `InboundPipeline.acknowledge`'s `reDelivery` / `answeredInEra`,
+  `InboundPipeline.sealDmReceipt`'s record, `DmReAckLedger`, `RatchetSessions.sealDmTagged` / `rootTagFor`:** READ ADR
+  2026-10.8hn6 (draft), then ADR 018, ADR 039 §3 and §7, and ADR 2026-10.dmgw's 2026-10-29 amendment. A re-delivered DM
+  to us draws a new sealed receipt only off LoRa (whose re-offer heals by re-acking), and only when the receipt we
+  sealed for its id is under another session root than the one held now, has left our own custody (`ForwardStore.frame`,
+  never `has`), or is older than its re-arm floor (15 min doubling to 4 h per same-era re-seal: the author custodies
+  before it opens, so held is not applied). The era comes from the seal itself, under the ratchet lock, never a read
+  after it; the memo records the DM's own id only, never the riding room ids. The bound holds while our receipts fit
+  our own per-sender custody bucket. Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases,
+  `CustodyLabTest.aDeliveredDmBackFilledToItsRecipientPastItsSeenWindowDrawsNoSecondReceipt`.
 - **When touching `CTL_RECEIPT` / `CTL_REACTION` / `CTL_PROFILE`, `AckSync.sealTick`, `MeshManager.sealDeliveryTick` /
   `sealDeliveryTickEnvelope`, `InboundPipeline.sealDmReceipt`, or the sealed profile's fan-out:** READ ADR 018, ADR
   020, ADR 033 and ADR 053, then `docs/ENCRYPTED_RECEIPTS_REACTIONS.md`. A ctl never takes the v1 wrap (a pre-ratchet

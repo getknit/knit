@@ -285,6 +285,7 @@ class MeshMetrics {
     private val dmSealedV1Fallback = AtomicLong()
     private val receiptsSealed = AtomicLong()
     private val receiptsSealedFallback = AtomicLong()
+    private val receiptsReAckSkipped = AtomicLong()
     private val receiptsCustodied = AtomicLong()
     private val receiptsCoalesced = AtomicLong()
     private val receiptsRidden = AtomicLong()
@@ -592,6 +593,14 @@ class MeshMetrics {
     /** A delivery receipt sealed as a v2 ctl DM (no vaccine-purge — the sealed-era custody contract). */
     fun onReceiptSealed() {
         receiptsSealed.incrementAndGet()
+    }
+
+    /**
+     * A re-delivered DM to us that drew no new sealed receipt: ours, sealed in the session's current era inside its
+     * re-arm floor, is still live in our custody (#176, ADR 2026-10.8hn6). Each one is a receipt not minted.
+     */
+    fun onReAckSkipped() {
+        receiptsReAckSkipped.incrementAndGet()
     }
 
     /** A seal-eligible receipt whose sealDm failed (no session + no usable prekey) — sent cleartext instead. */
@@ -1351,6 +1360,7 @@ class MeshMetrics {
             receiptsResent = receiptsResent.get(),
             receiptsSealed = receiptsSealed.get(),
             receiptsSealedFallback = receiptsSealedFallback.get(),
+            receiptsReAckSkipped = receiptsReAckSkipped.get(),
             receiptsCustodied = receiptsCustodied.get(),
             receiptsCoalesced = receiptsCoalesced.get(),
             receiptsRidden = receiptsRidden.get(),
@@ -1607,6 +1617,7 @@ class MeshMetrics {
             val receiptsResent: Long = 0,
             val receiptsSealed: Long = 0,
             val receiptsSealedFallback: Long = 0,
+            val receiptsReAckSkipped: Long = 0,
             val receiptsCustodied: Long = 0,
             val receiptsCoalesced: Long = 0,
             val receiptsRidden: Long = 0,

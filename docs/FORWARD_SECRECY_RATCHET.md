@@ -238,7 +238,9 @@ The mesh re-delivers verbatim ciphertext routinely (60 s re-offer loop; the floo
 in-memory, 10 min, reset per mesh session). Two consequences are baked in:
 
 - **The pre-decrypt exists-gate**: `decryptAndDeliver` short-circuits any encrypted chat whose
-  `env.id` is already in `messages` (ack still runs — the vaccine-purge semantics are untouched).
+  `env.id` is already in `messages` (the ack still runs, and a cleartext one still purges; a sealed DM
+  receipt is re-sealed only in a new session root, when ours has left our custody, or past its re-arm
+  floor, ADR 2026-10.8hn6).
   Without it, "delete the message key after use" would turn every custody re-serve into a
   `DECRYPT_FAILED`. It also spares v1 an HPKE unwrap per re-serve.
 - **The open ladder** (engine, pure), over the root candidates — the active root, then the draining

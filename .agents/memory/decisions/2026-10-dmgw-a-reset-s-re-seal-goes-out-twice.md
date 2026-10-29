@@ -60,3 +60,13 @@ that; and the pending pass lives in memory, so a process restart inside the wind
 never let the second pass record an entry of its own (a re-seal loop that burns a key per DM every eleven minutes),
 and never move the drain under `neighbors.isNotEmpty()` or onto a `delay`. Regression:
 `MeshManagerTest.aResetsResealGoesOutOnceMoreAfterTheDedupWindow`, `RestoreLabTest`'s relayed-restore scenarios.
+
+## Amendment 2026-10-29 — the second pass's re-ack is bounded per era (ADR 2026-10.8hn6)
+
+"What it costs" says that on a peer that already read the first copy but whose ✓✓ has not reached us, the exists-gate
+stops the second copy and re-acks it. It still stops it before decrypt. It no longer always re-acks: a re-delivered DM
+draws a new sealed receipt only in a new era, when the receipt the peer sealed for it has left the peer's own custody,
+or once the receipt is older than its re-arm floor (15 min, doubling). The reset this ADR re-seals for is a new era,
+so the first copy past it still earns one receipt under the new root. The second pass, eleven minutes later, finds
+that receipt held, in the same era and inside its floor, and seals nothing. Off LoRa, the second pass now buys one
+receipt in all at such a peer, where it used to buy two.

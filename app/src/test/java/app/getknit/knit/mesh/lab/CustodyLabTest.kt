@@ -1,10 +1,12 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.FrameType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -203,5 +205,65 @@ class CustodyLabTest {
             alice.custodyGate.release()
             assertTrue(slow.await())
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { Conversations.NEARBY }
+        }
+
+    /**
+     * #176's second path, the corrected two-holder recipe of its 2026-10-16 13:56 comment: a back-fill fed by two
+     * holders hands a delivered DM back to its recipient past her router's seen window. Alice, Bob and Carol all hold
+     * Bob's DM to Alice, and Alice's receipt has reached Bob. Ten minutes on, Dave, who lacks it, links Alice with
+     * her frames to him held (her own copy cannot cross first), then Carol, whose custody serves him the DM; his relay
+     * reaches Alice as a fresh flood. Her exists-gate used to seal a second receipt under a fresh id. Inside the re-arm
+     * floor, with her first receipt still live in her custody and the session root unchanged, it seals nothing
+     * (ADR 2026-10.8hn6).
+     */
+    @Test
+    fun aDeliveredDmBackFilledToItsRecipientPastItsSeenWindowDrawsNoSecondReceipt() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            lab.linkAll(alice to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+
+            assertTrue(bob.sendDm(alice, "for alice"))
+            val dm = bob.ownMessageId(bob.dmWith(alice), "for alice")
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol), conversation = thread)
+            // Her one receipt is counted only after its send returns, so Bob's tick (and the oracle) can come first.
+            lab.await(1) {
+                alice.metrics
+                    .receipts()
+                    .receiptsSealed
+                    .toInt()
+            }
+            val sealed = alice.metrics.receipts().receiptsSealed
+
+            // Everyone apart, and past Alice's seen window for the DM (cut first, so no late copy lands after the jump).
+            lab.unlink(alice, bob)
+            lab.unlink(bob, carol)
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
+
+            lab.link(alice, dave) { alice.transport.hold(dave.transport) }
+            alice.transport.awaitNeighborsHandled()
+            dave.transport.awaitNeighborsHandled()
+            lab.link(carol, dave)
+            // Dave's relay of Carol's copy landing on Alice, and her router finishing it, is the re-delivery.
+            lab.await(1) {
+                dave.transport.sent.count { line ->
+                    val cols = line.split(' ')
+                    cols.getOrNull(3) == dm && alice.nodeId.startsWith(cols[1])
+                }
+            }
+            alice.transport.awaitInboundDrained()
+            alice.transport.release(dave.transport)
+
+            lab.linkAll(alice to bob, bob to carol)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol, dave), conversation = thread)
+            assertEquals("Alice sealed one receipt for Bob's DM in all", sealed, alice.metrics.receipts().receiptsSealed)
+            assertTrue(
+                "Alice's exists-gate met Dave's copy and answered it with the receipt she holds",
+                alice.metrics.receipts().receiptsReAckSkipped >= 1,
+            )
         }
 }

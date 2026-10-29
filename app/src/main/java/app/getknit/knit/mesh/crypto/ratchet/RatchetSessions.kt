@@ -276,7 +276,31 @@ class RatchetSessions(
         now: Long,
         scheme: Int = EncEnvelope.VERSION_RATCHET,
         confirmedOnly: Boolean = false,
-    ): EncEnvelope? =
+    ): EncEnvelope? = sealDmTagged(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme, confirmedOnly)?.envelope
+
+    /**
+     * A sealed DM and the [RatchetCrypto.rootTag] of the session root it was sealed under — the root of the session
+     * this very seal committed, read inside the same critical section, so the first-contact seal that initiates the
+     * session names that session's root. The tag is the era a caller files the frame under (the sealed receipt's
+     * re-ack ledger, ADR 2026-10.8hn6); the root itself never leaves the facade. Compare it with [rootTagFor], never with
+     * a [sessionFor] read after the seal: a reset adopted on the other delivery plane can commit in between.
+     */
+    class TaggedSeal(
+        val envelope: EncEnvelope,
+        val rootTag: Long,
+    )
+
+    /** [sealDm], returning the root tag of the session the seal committed alongside the envelope ([TaggedSeal]). */
+    suspend fun sealDmTagged(
+        peerId: String,
+        peerIkPub: ByteArray,
+        peerSpk: RatchetEngine.PeerPrekey?,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+        scheme: Int = EncEnvelope.VERSION_RATCHET,
+        confirmedOnly: Boolean = false,
+    ): TaggedSeal? =
         locked {
             require(EncEnvelope.isDmRatchetVersion(scheme)) { "not a DM ratchet scheme: $scheme" }
             val existing = store.session(peerId)
@@ -297,23 +321,31 @@ class RatchetSessions(
                     ?: return@locked null
             store.commitSend(sealed.session, initiation?.epoch ?: sealed.newLocalEpoch)
             val h = sealed.header
-            EncEnvelope(
-                v = scheme,
-                // v3 derives its nonce; the field still rides, empty, so a pre-v3 build decodes (and carries) the frame.
-                nonce = sealed.nonce ?: ByteArray(0),
-                ct = sealed.ct,
-                keys = emptyList(),
-                r =
-                    RatchetHeader(
-                        se = h.se,
-                        ek = h.ek,
-                        pe = h.pe,
-                        n = h.n,
-                        init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
-                        flags = h.flags,
-                    ),
-            )
+            val envelope =
+                EncEnvelope(
+                    v = scheme,
+                    // v3 derives its nonce; the field still rides, empty, so a pre-v3 build decodes (and carries) the frame.
+                    nonce = sealed.nonce ?: ByteArray(0),
+                    ct = sealed.ct,
+                    keys = emptyList(),
+                    r =
+                        RatchetHeader(
+                            se = h.se,
+                            ek = h.ek,
+                            pe = h.pe,
+                            n = h.n,
+                            init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
+                            flags = h.flags,
+                        ),
+                )
+            TaggedSeal(envelope, RatchetCrypto.rootTag(sealed.session.root))
         }
+
+    /**
+     * The [RatchetCrypto.rootTag] of the session root held for [peerId] now, or null with no session — one locked read,
+     * the era a [TaggedSeal]'s tag is compared against (ADR 2026-10.8hn6). The root itself never leaves the facade.
+     */
+    suspend fun rootTagFor(peerId: String): Long? = locked { store.session(peerId)?.root?.let(RatchetCrypto::rootTag) }
 
     /**
      * Records an undecryptable v2 frame ([RatchetEngine.OpenOutcome.Failed.NO_SESSION] /

@@ -65,6 +65,9 @@ document:
   app could post one, and Knit can't screen either for nearby strangers.
 - Tapping a quote, a pinned message or a search result now lands on that message while someone is typing.
   It used to stop one message short, so after a photo or a long message the one you wanted sat off screen.
+- A phone outside a busy group no longer sends its members the same old messages over and over, and a message
+  you already have no longer sends its sender a new delivery tick every ten minutes. Both used airtime and
+  battery on every phone nearby.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 
