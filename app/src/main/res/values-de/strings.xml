@@ -25,26 +25,26 @@
     <string name="storage_alert_text">Der sichere Speicher dieses Smartphones hat nicht reagiert, deshalb konnte Knit deine Nachrichten nicht öffnen. Es wurde nichts gelöscht. Tippe, um es noch einmal zu versuchen.</string>
     <string name="storage_unavailable_title">Warten auf den sicheren Speicher</string>
     <string name="storage_unavailable_body">Der sichere Speicher dieses Smartphones hat nicht reagiert, deshalb kann Knit deine Nachrichten noch nicht öffnen. Es wurde nichts gelöscht. Versuche es gleich noch einmal – auch ein Neustart des Smartphones kann helfen.</string>
-    <string name="storage_unavailable_retry">Wiederholen</string>
+    <string name="storage_unavailable_retry">Versuche es nochmal</string>
     <string name="storage_unavailable_start_over">Neu beginnen</string>
     <string name="storage_start_over_title">Auf diesem Smartphone neu beginnen?</string>
     <string name="storage_start_over_body">Knit löscht alles, was es auf diesem Smartphone speichert: deine Identität, Kontakte, Gruppen, Nachrichten und Fotos. Danach richtet es sich neu ein, und deine Kontakte sehen jemanden, den sie nicht kennen. Wenn du ein Backup gespeichert hast, kannst du es wiederherstellen, sobald Knit wieder geöffnet ist. Braucht der Speicher nur Zeit, behält „Wiederholen“ alles.</string>
     <string name="storage_start_over_action">Löschen und neu beginnen</string>
     <string name="channel_open_to_chat_name">Offen für Chats</string>
-    <string name="channel_open_to_chat_desc">Hinweise, wenn jemand in der Nähe offen für Chats ist und du auch</string>
+    <string name="channel_open_to_chat_desc">Hinweise, wenn jemand in der Nähe offen zum Chatten ist und du auch</string>
     <string name="notif_open_to_chat_title_one">%1$s ist in der Nähe und offen für Chats</string>
     <plurals name="notif_open_to_chat_title">
         <item quantity="one">%d Person in der Nähe ist offen für Chats</item>
         <item quantity="other">%d Personen in der Nähe sind offen für Chats</item>
     </plurals>
-    <string name="notif_open_to_chat_body_one">Sag Hallo im Raum „In der Nähe“</string>
+    <string name="notif_open_to_chat_body_one">Sag Hallo im „lokaler Chat“</string>
     <string name="notif_open_to_chat_names_two">%1$s und %2$s</string>
     <plurals name="notif_open_to_chat_names_more">
         <item quantity="one">%1$s und %2$d weitere Person</item>
         <item quantity="other">%1$s und %2$d weitere Personen</item>
     </plurals>
-    <string name="channel_nearby_name">In der Nähe</string>
-    <string name="channel_nearby_desc">Nachrichten im öffentlichen Raum „In der Nähe“</string>
+    <string name="channel_nearby_name">Lokal</string>
+    <string name="channel_nearby_desc">Nachrichten im öffentlichen „lokal Chat“</string>
     <string name="channel_groups_name">Gruppennachrichten</string>
     <string name="channel_groups_desc">Nachrichten in deinen Gruppenchats</string>
     <string name="channel_dms_name">Direktnachrichten</string>
