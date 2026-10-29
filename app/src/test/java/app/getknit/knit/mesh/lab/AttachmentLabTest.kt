@@ -399,7 +399,7 @@ class AttachmentLabTest {
             assertTrue("Alice fed Carol a copy", alice.transport.files.none { it == "${carol.nodeId} ATTACHMENT $hash" })
             lab.unlink(bob, carol)
             lab.link(bob, carol)
-            lab.await(digests + 1) { bob.transport.digestsSent.count { it == carol.nodeId } } // the batch's last hook
+            lab.await(digests + 1) { bob.transport.digestsSent.count { it == carol.nodeId } } // the digest follows the batch's re-ask
             bob.reoffer()
             val asks = bob.transport.blobAsks.filter { it.hash == hash }
             assertEquals("one ask, of the author alone, none while the bytes stream in:\n$asks", listOf(alice.nodeId), asks.map { it.to })

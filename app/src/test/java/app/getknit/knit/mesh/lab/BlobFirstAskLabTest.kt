@@ -43,7 +43,7 @@ class BlobFirstAskLabTest {
     private fun LabNode.asksFor(hash: String) = transport.blobAsks.filter { it.hash == hash }.map { it.to }
 
     /**
-     * Waits until each node has run its link-up hooks toward each of its peers — its digest goes last. Custody parity
+     * Waits until each node has run its link-up blob re-ask toward each of its peers: its digest goes after it. Custody parity
      * can settle on the other ends' digests first, and a link-up batch still running re-arms wants from the database
      * and steps them: an ask this scenario did not mean to count.
      */

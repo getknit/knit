@@ -4,7 +4,9 @@ import app.getknit.knit.mesh.MeshRound
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -55,6 +57,13 @@ class ReofferLoopLabTest {
 
             alice.custodyGate.failLiveIds()
             lab.await(1) { alice.failedReoffers() }
+            // A round that read the ids before the gate failed them can still have its digest on the way. Its reply reads
+            // Bob's store when it is computed, so one held back past the DM below would serve it once the link is clean.
+            // Rounds run one after another and a failed one throws before it sends, so nothing sends another digest now.
+            withContext(Dispatchers.Default) {
+                bob.transport.awaitDigestsAnswered()
+                alice.transport.awaitInboundDrained()
+            }
 
             // Lost on the air, with the link up throughout. The DM is in Bob's custody before it is sent (#141).
             bob.transport.lossy(alice.transport) { it.isChatFrom(bob) }

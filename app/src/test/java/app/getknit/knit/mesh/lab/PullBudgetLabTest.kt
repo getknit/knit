@@ -93,7 +93,7 @@ class PullBudgetLabTest : StrandedLabBase() {
     ): Boolean {
         val n = lab.node("walker$round", querying.copy(custodyTtlMs = HOUR_MS)).apply { setDisplayName("Walker $round") }
         lab.link(n, bob)
-        lab.await(1) { if (n.nodeId in bob.transport.digestsSent) 1 else 0 } // Bob's link-up batch toward it, digest last
+        lab.await(1) { if (n.nodeId in bob.transport.digestsSent) 1 else 0 } // Bob's link-up re-ask toward it: the digest follows it
         val three = listOf(bob, carol, n)
         three.forEach { it.reoffer() }
         quiesce(three)

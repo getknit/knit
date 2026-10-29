@@ -43,7 +43,7 @@ class PictureFanoutLabTest {
 
     private fun LabNode.asksFor(hash: String) = transport.blobAsks.filter { it.hash == hash }
 
-    /** Waits until each node has run its link-up hooks toward each of its peers — its digest goes last. */
+    /** Waits until each node has run its link-up blob re-ask toward each of its peers: its digest goes after it. */
     private suspend fun awaitLinkUpHooks(vararg pairs: Pair<LabNode, LabNode>) =
         lab.await(1) { if (pairs.all { (node, peer) -> peer.nodeId in node.transport.digestsSent }) 1 else 0 }
 

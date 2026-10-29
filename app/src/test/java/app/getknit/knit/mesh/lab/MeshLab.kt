@@ -796,15 +796,32 @@ class MeshLab {
     }
 
     /**
-     * Waits until every pair in [nodes] has pinned the other's key and the custody stores of [nodes] agree —
-     * the two halves of the handshake a link-up starts (the profile push, then the digest exchange). Met means
-     * both: a scenario may cut a link the moment this returns, and a node with a board and no link then has
-     * nothing to fan an old profile stamp with (`RoomTickPlanesLabTest` found the stores still settling on
-     * one slow core). A node with a board also waits for its LoRa child to hold the radio's links
-     * ([LabNode.awaitBoardSawLinks]), as [unlink] does for a departure: the composite hands the link set over
-     * from a coroutine of its own, and under a stall the handshake can finish first — a DM sent next then met
-     * a board that still counted its peer as unlinked and aired it (`LoraPocketLabTest`'s linked-DM gate under
-     * chaos seed 279241075, 2026-09-28).
+     * Waits until the link-up among [nodes] is over: every pair has pinned the other's key, the custody stores
+     * agree, every node's newcomer hooks have run, and what those hooks sent has been handled. A scenario may act
+     * on the link the moment this returns: cut it, hold it, mint a group, count frames.
+     *
+     * - **Keys and custody.** The profile push and the digest exchange are the handshake's two halves, and met
+     *   means both: a node with a board and no link has nothing to fan an old profile stamp with
+     *   (`RoomTickPlanesLabTest` cut the link on the pins alone and found the stores still settling on one slow core).
+     * - **The newcomer hooks.** Parity does not mean a node's own hooks ran, since the other end's digest can settle
+     *   it. Per newcomer, `MeshManager.watchNeighbors` runs the profile push, the digest, the key re-ask, the tick
+     *   re-offer and the group-seed flush (`flushPendingGroupKeysFor`), so each node's link-up pass must return
+     *   ([LabTransport.awaitNeighborsHandled]). A late flush once re-sent a seed into a scenario's hold and stamped the
+     *   seed floor, and the scenario's key request then went unanswered (#201; #141's chaos seed 804399168).
+     * - **What the hooks sent.** Every node's pass returns before anything is drained: a hook's send has landed on the
+     *   peer by the time it returns. Each node then answers every digest it was handed
+     *   ([LabTransport.awaitDigestsAnswered]) and handles every frame ([LabTransport.awaitInboundDrained]). The reply
+     *   to a link-up digest reads the store when it is computed, so one a stall held back served a DM the scenario sent
+     *   after this returned, into a link it had just made lossy (`ReofferLoopLabTest`, chaos seed 297158421). Handling
+     *   a frame or a digest sends inline (a DM's receipt, the reply's frames), so the pass repeats until it has handed
+     *   none of [nodes] a new frame or digest, and fails if that takes longer than [AWAIT_MS]. A launched send is not
+     *   covered: a relay in its jitter, a tick behind `AckSync`'s debounce, a re-offer round.
+     * - **A node with a board gains nothing from those waits.** Its manager reads the link set through the composite's
+     *   `combine` and the digests and frames through its `merge`, so each signal comes early for it. It waits instead
+     *   for its LoRa child to hold the radio's links ([LabNode.awaitBoardSawLinks]), as [unlink] does for a departure:
+     *   the composite hands the link set over from a coroutine of its own, and under a stall the handshake can finish
+     *   first. A DM sent next then met a board that still counted its peer as unlinked, and aired it
+     *   (`LoraPocketLabTest`'s linked-DM gate under chaos seed 279241075, 2026-09-28).
      */
     suspend fun awaitAcquainted(vararg nodes: LabNode) {
         val pairs = nodes.flatMap { a -> nodes.filter { it !== a }.map { b -> a to b } }
@@ -813,6 +830,22 @@ class MeshLab {
         assertTrue("profiles never exchanged among ${nodes.map { it.name }}; missing $missing\n${report(nodes.toList())}", ok)
         awaitCustodyParity(*nodes)
         nodes.forEach { it.awaitBoardSawLinks() }
+        val handed = { nodes.sumOf { it.transport.framesReceived + it.transport.digestsReceived } }
+        val quiet =
+            withContext(Dispatchers.Default) {
+                nodes.forEach { it.transport.awaitNeighborsHandled() }
+                withTimeoutOrNull(AWAIT_MS) {
+                    do {
+                        val before = handed()
+                        nodes.forEach { it.transport.awaitDigestsAnswered() }
+                        nodes.forEach { it.transport.awaitInboundDrained() }
+                    } while (handed() != before)
+                } != null
+            }
+        check(quiet) {
+            "the link-up among ${nodes.map { it.name }} never went quiet: " +
+                nodes.joinToString { "${it.name} frames=${it.transport.framesReceived} digests=${it.transport.digestsReceived}" }
+        }
     }
 
     companion object {

@@ -186,6 +186,12 @@ class LabTransport(
     private val framesHandled = AtomicLong()
 
     /**
+     * How many frames this node has been handed so far, links and pages: what [awaitInboundDrained] waits to have
+     * handled. [MeshLab.awaitAcquainted] reads it, with [digestsReceived], to drain until no node is handed another.
+     */
+    val framesReceived: Long get() = framesIn.get()
+
+    /**
      * The inbound frames, counted out as the collector *finishes* each one: a direct collector (the router's
      * `collect { handleInbound(…) }`) returns from `emit` only once `handleInbound` has, so [awaitInboundDrained]
      * means "every frame this node was handed has been handled" — its custody writes and the sends it
@@ -232,6 +238,9 @@ class LabTransport(
     // Digests a peer advertised to this node against digests its collector has answered: [awaitDigestsAnswered].
     private val digestsIn = AtomicLong()
     private val digestsAnswered = AtomicLong()
+
+    /** How many custody digests peers have advertised to this node so far: what [awaitDigestsAnswered] waits to have answered. */
+    val digestsReceived: Long get() = digestsIn.get()
 
     /**
      * The custody digests peers advertised, counted out as the collector *finishes* each one, as [inbound] counts
@@ -470,8 +479,10 @@ class LabTransport(
     val files = CopyOnWriteArrayList<String>()
 
     /**
-     * Whom this node advertised its custody digest to, in send order — the newcomer hooks run it last, so a
-     * scenario that re-links "as the 60 s re-offer would" waits on it to know the whole batch has run.
+     * Whom this node advertised its custody digest to, in send order. A link-up pass sends it after the blob re-arm
+     * and re-ask and after the profile push, so a scenario that re-links "as the 60 s re-offer would" waits on it to
+     * know those have run. The key re-ask, the tick re-offer and the group-seed flush come after it: to know the
+     * whole pass has run, wait on [awaitNeighborsHandled].
      */
     val digestsSent = CopyOnWriteArrayList<String>()
 
@@ -559,9 +570,10 @@ class LabTransport(
      * Suspends until every live collector of [neighbors] has *returned* from the link set as last published —
      * [awaitNeighborsObserved] proves the hand-off, this proves the body ran to its end. For this node's manager
      * that is every newcomer hook `MeshManager.watchNeighbors` runs on a link-up: the profile push, the digest, the
-     * key and tick re-offers and, last, the group-seed flush, which sends a seed only once one exists. A scenario that
-     * mints a seed next and needs the link-up to have sent none of its own waits here. Early behind a composite's
-     * `combine` (a node with a board), as [awaitInboundDrained] is behind its `merge`.
+     * key and tick re-offers and, last, the group-seed flush, which sends a seed only once one exists.
+     * [MeshLab.awaitAcquainted] waits here on every node it is given, so a scenario that mints a seed next finds the
+     * link-up's own flush done (#201). Early behind a composite's `combine` (a node with a board), as
+     * [awaitInboundDrained] is behind its `merge`.
      */
     suspend fun awaitNeighborsHandled() {
         val target = links.value.generation
@@ -591,6 +603,7 @@ class LabTransport(
      * sent, and a send returns once the far end holds the frame, so the far end's [awaitInboundDrained] after this
      * means the exchange has landed. A digest handed to a node whose manager is not collecting is never answered,
      * and this fails on it rather than waits forever: not for a node stopped or restarted since it booted.
+     * [MeshLab.awaitAcquainted] waits here on every node it is given, so a link-up digest's reply is in before it returns.
      */
     suspend fun awaitDigestsAnswered() {
         val answered =

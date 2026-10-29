@@ -307,8 +307,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   await `blobs.exists(hash)` before asserting a hash has left it. `LabNode.reoffer()` runs
   one 60 s re-offer round now, the tick a lab clock jump never wakes. Every `sendFile`
   is logged in `files` as `to kind key` (the phone's `file …` line: one copy per (hash, link)), and
-  `digestsSent` names whom a node advertised its digest to — the newcomer batch's last hook, so a re-link
-  "as the 60 s re-offer would" waits on it before asserting what the batch did not send. `awaitDigestsAnswered()`
+  `digestsSent` names whom a node advertised its digest to. A link-up pass sends it after the blob re-arm and
+  re-ask, so a re-link "as the 60 s re-offer would" waits on it before asserting what the re-ask did not send; the
+  key re-ask, the tick re-offer and the seed flush come after it, and `awaitNeighborsHandled()` waits for the whole
+  pass (#201). `awaitDigestsAnswered()`
   waits until a node has answered every digest a peer advertised to it (the reply's frames are sent), so with every
   far end's `awaitInboundDrained()` after it the exchange has landed: read custody agreement there, not on the first
   poll that agrees, when the cap binds. A reply computed before an eviction is still on its way when the stores
@@ -535,10 +537,21 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   was last handed, and `unlink` / `restart` return only once every collector has been handed the departure
   (`awaitNeighborsObserved`); the 100 ms `SETTLE_MS` stays only for a node with a board, whose manager reads
   the composite's own `StateFlow` on top. Don't reintroduce a bare `delay` for this.
-- **`awaitAcquainted` means the whole handshake.** Pinned keys *and* custody parity among the nodes — a
-  scenario may cut a link the moment it returns. `RoomTickPlanesLabTest` cut the link on the pins alone and,
-  on one throttled core, stranded two of Alice's profile stamps on her side with only the air left to carry
-  them (the LoRa gossip is minutes); the oracle then waited on custody forever.
+- **`awaitAcquainted` means the whole link-up.** Pinned keys *and* custody parity among the nodes, then every node's
+  newcomer hooks returned, then what they sent handled. A scenario may cut, hold or count on the link the moment it
+  returns. `RoomTickPlanesLabTest` cut the link on the pins alone and, on one throttled core, stranded two of
+  Alice's profile stamps on her side with only the air left to carry them (the LoRa gossip is minutes); the oracle
+  then waited on custody forever. Parity alone was not enough either (#201): `watchNeighbors` runs the key re-ask,
+  the tick re-offer and the group-seed flush after the digest, and a flush still running re-sent a seed into
+  `SessionLabTest`'s hold and stamped the seed floor (#141's chaos seed 804399168). So `awaitAcquainted` waits for
+  `awaitNeighborsHandled()` on every node first, then has every node answer its digests (`awaitDigestsAnswered()`)
+  and drain its inbound, again until a pass hands none of them a new frame or digest, within `AWAIT_MS` (an inline
+  answer, such as a DM receipt or a digest reply's frames, lands too). The digest half came from the 20-run sweep of
+  this change: a link-up digest's reply reads the store when it is computed, so one a stall held back served
+  `ReofferLoopLabTest` the DM it sent next into a pipe it had just made lossy (seed 297158421; 2 in 200 runs on the
+  parent tree, none on this one). Launched sends (a relay in its jitter, a debounced tick) are not covered. A node
+  with a board gains nothing from these waits: its manager reads the composite's `combine` and `merge`, so they
+  return early, and it waits for its board to hold the radio's links instead.
 - **The CI runner is one slow vCPU**, and every relay jitter, tick and seal ordering a scenario assumed on a
   24-core box is randomized there. Reproduce a CI-only flake with the throttled loop, not on all cores:
   `systemd-run --user --scope -q -p CPUQuota=50% taskset -c 0 ./gradlew :app:testDebugUnitTest --tests '…' --rerun --no-daemon`
@@ -627,8 +640,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - **What the second sweep taught** (2026-09-25): `onDeliver` custodies **before** it dispatches, so custody
   parity says nothing about a handler having run — await `awaitInboundDrained()` before flipping what the
   handler reads (a block, a setting). Custody parity also does not mean a node's **own** link-up hooks ran (the
-  other end's digest can settle it); its digest to that peer does (`transport.digestsSent`), and
-  `watchNeighbors` re-asks blobs before it sends it. `broadcastProfile` bumps the version before it signs, and
+  other end's digest can settle it); its digest to that peer means its blob re-ask did (`transport.digestsSent`),
+  and `awaitAcquainted` now waits for the whole pass (#201). `broadcastProfile` bumps the version before it signs, and
   pushes and refloods move `framesOriginated`, so neither is the publish event: `published` waits for the
   custody row under the new stamp, written before the frame is originated. (A flood record on `LabTransport`
   would miss a board node: the composite never hands its child a null-target send.) Where the mesh legitimately
