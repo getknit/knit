@@ -483,8 +483,9 @@ class MeshManager(
 
     /**
      * A contact's direct link to [peerId] was adopted (ADR 2026-10.a5yj): a push answered to an earlier link of theirs may
-     * have died with it, so custody answers their next digest in full. A link replaced under a peer that stays a neighbour
-     * never shows in the neighbour set, so the newcomer pass alone would leave it to the seen window's lapse.
+     * have died with it, so custody answers their next digest in full. The only reset: a link replaced under a peer that
+     * stays a neighbour never shows in the neighbour set, and the newcomer pass runs after the link-up's first digests
+     * may have been answered, so a reset there pushed what the peer had not kept twice per link-up (#235).
      */
     fun onDirectLinkUp(peerId: String) = forwardSync.linked(setOf(peerId))
 
@@ -3600,8 +3601,9 @@ class MeshManager(
             // A newcomer holds no ask of ours — one sent before may have died with its old link — so each round
             // may ask it again (ADR 2026-10.f7gg). Ahead of the re-arm, whose wants step at once.
             blobExchange.linked(newcomers.map { it.nodeId })
-            // Likewise a push answered to a direct link's digest: the next one is answered in full (ADR 2026-10.a5yj).
-            forwardSync.linked(newcomers.map { it.nodeId })
+            // Not `forwardSync.linked`: a direct link's push memo is reset by the link plane as it adopts the link
+            // ([onDirectLinkUp]), ahead of the digests the link-up sets off. A second reset here lands after the first
+            // of those was answered, and pushed every frame the peer had not kept a second time each link-up (#235).
             if (newcomers.isNotEmpty()) rewantMissingBlobs()
             // Blobs we still need take their next step of asks, which reaches a newcomer at once in a round
             // already widened (ADR 2026-10.f7gg). Ahead of the per-newcomer hooks, so the digest stays the

@@ -3,9 +3,12 @@ package app.getknit.knit.mesh.lab
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.LinkArq
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
@@ -109,17 +112,42 @@ class LabFileGate {
 }
 
 /**
+ * What [LabLinkPlane] records of the frames and digests its plane carries: [LabNode.linkFrames], [LabNode.linkDigestsFrom],
+ * and the node's link-up count ([LabNode.linkUps]) each frame line is stamped with.
+ */
+internal class LabLinkRecord(
+    val frames: MutableList<String>,
+    val digestsFrom: MutableList<String>,
+    val linkUp: () -> Int,
+)
+
+/**
  * A node's direct-link plane as its composite sees it: the real [DirectLinkTransport], with every file it accepts to send
- * recorded in [files] as `to kind key` — `LabTransport.files`' line, the oracle for one copy per (hash, link) — and its
- * file hand-off to the manager run through [handOff]. Everything else is the plane's own, as the production switch
- * around it (`SwitchableTransport`) leaves it.
+ * recorded in [files] as `to kind key` — `LabTransport.files`' line, the oracle for one copy per (hash, link) — every
+ * frame handed to it for a peer it holds a link to, and every digest it took, in [record]; and its file hand-off to the
+ * manager run through [handOff]. Everything else is the plane's own, as the production switch around it
+ * (`SwitchableTransport`) leaves it.
  */
 internal class LabLinkPlane(
     private val plane: DirectLinkTransport,
     private val files: MutableList<String>,
     private val handOff: LabFileGate,
+    private val record: LabLinkRecord,
 ) : MeshTransport by plane {
     override val incomingFiles: Flow<ReceivedFile> = plane.incomingFiles.onEach { handOff.pass() }
+
+    // Counted as the plane hands it up, ahead of the composite's merge: that it arrived, never that it was answered.
+    override val incomingDigests: Flow<ReceivedDigest> = plane.incomingDigests.onEach { record.digestsFrom += it.fromNodeId }
+
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) {
+        if (to != null && plane.neighbors.value.any { it.nodeId == to.nodeId }) {
+            WireCodec.decodeEnvelope(wire.signed)?.let { record.frames += "${record.linkUp()} ${to.nodeId} ${it.id}" }
+        }
+        plane.send(wire, to)
+    }
 
     override suspend fun sendFile(
         file: File,

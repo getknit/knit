@@ -341,7 +341,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `lab.cutDirectLink(a, b)`, which drops them and ends both streams, then waits as `unlink` does (neither plane holds
   the link, both managers acted on it). There is no release: a link comes back as a fresh `directLink`, as a re-punch
   would. The link plane's files sent are `LabNode.linkFiles` (`to kind key`, the radio's `files` line, kept across
-  restarts), and `LabNode.linkFileGate` holds a file the link landed before the manager takes it — still landing on
+  restarts), its frames handed out for a linked peer `LabNode.linkFrames` (`linkUp to id`, `linkUp` being
+  `LabNode.linkUps` at the send: count a custody push's crossings per link-up there, since the receiver's seen window
+  hides a repeat), and the digests it took `LabNode.linkDigestsFrom` (on arrival, ahead of the composite's merge, so
+  never proof one was answered), and `LabNode.linkFileGate` holds a file the link landed before the manager takes it — still landing on
   the plane (#138) — so a scenario can stop a node mid-hand-off: `restart { linkFileGate.release() }`.
   `DirectLinkAttachmentLabTest` is the set (a DM photo over a link, proof and spool pushes). A composite merges its
   radio sets (`shortRangeNeighbors`, `shortRangeReachable`) on collectors of their own, so `awaitLinksActedOn` waits

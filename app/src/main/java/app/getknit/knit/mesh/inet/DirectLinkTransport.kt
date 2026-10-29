@@ -254,10 +254,12 @@ class DirectLinkTransport(
             )
         held[0] = link
         links.put(peer.nodeId, link)?.close()
-        link.start()
-        // Ahead of the neighbour set, so the reset lands before the digests this link-up sets off; a hook never ends a link.
+        // The reset first, then the neighbour set, then the reader: the peer's first digest is answered only after the memo
+        // is fresh and the composite can route the answer here (a push it dropped would still be remembered as made). What
+        // is sent before the start waits on the link's queue. A hook never ends a link.
         runCatching { onLinkUp(peer.nodeId) }.onFailure { log("link ${peer.nodeId.take(SHORT)}: link-up hook failed: $it") }
         publish()
+        link.start()
         log("link ${peer.nodeId.take(SHORT)}: framed")
     }
 
@@ -361,25 +363,26 @@ class DirectLinkTransport(
     // runs; the radios' own holds are their children's, asked beside this one.
     override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)
 
-    // Only a frame that is content is use: a blob control frame is the exchange's bookkeeping, which re-asks on its own
-    // rounds and would keep a link open for a blob nobody can supply.
-    // Use is a frame the far end did not write: a blob control frame is not (the exchange re-asks on its own rounds), nor
-    // is a frame handed back to its [author] — custody re-serves a phone its own sends when its digest lacks them, and an
-    // author that does not keep the copy is offered it again at the next round, which would hold the link open for it.
+    // Only a frame that is content is use. A blob control frame is the exchange's bookkeeping, which re-asks on its own
+    // rounds and would keep a link open for a blob nobody can supply. Nor is a frame handed back to its [author]: custody
+    // re-serves a sender's frames its full bucket has evicted, and the conversation a link exists for is never a phone's
+    // own sends. Defence in depth beside `LinkPushRounds`' not-kept memory (#235): it still covers the first round after
+    // each link-up and each lapse, and a far end on an older build that re-pushes every round.
     private fun isUse(
         env: RelayEnvelope,
         author: String?,
     ) = LinkPairFilter.blobHashes(env) == null && env.senderId != author
 
-    // A content frame crossed the link to or from [peerId]: the link is in use. Logged by type and id, never its content,
-    // so a link that outlived its idle wait names what kept it (a sealed tick reads as `chat`, as it does on the wire).
+    // A content frame crossed the link to or from [peerId]: the link is in use. Logged by type and the id's tail, never its
+    // content, so a link that outlived its idle wait names what kept it (a sealed tick reads as `chat`, as it does on the
+    // wire). The tail, since a profile's id opens with `profile-` and only its end tells one from the next.
     private fun used(
         peerId: String,
         env: RelayEnvelope,
         outbound: Boolean,
     ) {
         onUse(peerId)
-        log("link ${peerId.take(SHORT)}: ${if (outbound) "tx" else "rx"} ${env.type} ${env.id.take(SHORT)}")
+        log("link ${peerId.take(SHORT)}: ${if (outbound) "tx" else "rx"} ${env.type} …${env.id.takeLast(SHORT)}")
     }
 
     /** Whether the link to [peer] is moving a file either way: a link mid-file is in use, frame or no frame. */

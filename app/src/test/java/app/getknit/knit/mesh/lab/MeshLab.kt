@@ -423,6 +423,8 @@ class MeshLab {
         linkStreams += aStream
         linkStreams += bStream
         directLinks[pairKey(a, b)] = joined
+        a.linkUps.incrementAndGet()
+        b.linkUps.incrementAndGet()
         checkNotNull(a.link) { "${a.name} has no direct-link plane" }.adopt(b.nodeId, aStream, offerer = true)
         checkNotNull(b.link) { "${b.name} has no direct-link plane" }.adopt(a.nodeId, bStream, offerer = false)
         // The link planes themselves, never the merged set, which a radio entry left over could already satisfy.
@@ -1357,6 +1359,19 @@ class LabNode internal constructor(
      */
     val linkFiles = CopyOnWriteArrayList<String>()
 
+    /**
+     * Every frame this node's direct-link plane was handed for a peer it held a link to, as `linkUp to id` in send order
+     * ([LabLinkPlane]): counted where it leaves, since the receiver's seen window hides a repeat. `linkUp` is [linkUps] at
+     * the send, so a scenario counts a frame's crossings per link-up. The plane's own rule may still drop one.
+     */
+    val linkFrames = CopyOnWriteArrayList<String>()
+
+    /** The node id of every custody digest that arrived over this node's direct-link plane, in arrival order. */
+    val linkDigestsFrom = CopyOnWriteArrayList<String>()
+
+    /** How many direct links [MeshLab.directLink] has made to this node: the link-up a [linkFrames] line was sent in. */
+    val linkUps = AtomicInteger()
+
     /** This node's hand-off of a file its direct-link plane landed to the manager, holdable ([LabFileGate]). */
     val linkFileGate = LabFileGate()
 
@@ -1462,12 +1477,14 @@ class LabNode internal constructor(
     }
 
     // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. The
-    // link plane goes in recorded ([LabLinkPlane]): its files sent, and its hand-off to the manager through [linkFileGate].
+    // link plane goes in recorded ([LabLinkPlane]): its files and frames sent, the digests it took, and its hand-off to the
+    // manager through [linkFileGate].
     private fun compositeOver(scope: CoroutineScope): CompositeMeshTransport? =
         if (lora == null && link == null) {
             null
         } else {
-            CompositeMeshTransport(listOfNotNull(transport, lora, link?.let { LabLinkPlane(it, linkFiles, linkFileGate) }), scope)
+            val plane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get)) }
+            CompositeMeshTransport(listOfNotNull(transport, lora, plane), scope)
         }
 
     /**
@@ -2843,6 +2860,10 @@ class LabNode internal constructor(
 
     /** How many live frames of any type this node's custody holds from [senderId] — a [LabSybil]'s bucket. */
     suspend fun custodiedFrom(senderId: String): Int = forwardStore.liveFrames(now()).count { it.envelope.senderId == senderId }
+
+    /** The ids of every live custody frame [sender] wrote, of any type. */
+    suspend fun custodyIdsFrom(sender: LabNode): Set<String> =
+        forwardStore.liveFrames(now()).filter { it.envelope.senderId == sender.nodeId }.mapTo(HashSet()) { it.envelope.id }
 
     /** How many DM-form chat frames this node custodies from [sender] to [recipient] — what a carrier holds for an absent peer. */
     suspend fun custodiedChatsFrom(

@@ -246,8 +246,9 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `Candidate.radio`, or which set `CarrierPullPolicy`, `confirmHeld`, `canAskHolder` and `watchIncomingFiles` read:**
   READ ADR 2026-10.a5yj's custody-and-blobs amendment and `docs/DIRECT_LINKS.md` §7. A link is a link to send
   on, never a radio: everything that meant *near* reads the radio set. A digest is answered by the plane it crossed,
-  through that link's view (none: nothing); a link round that would push the same frames against the same digest
-  pushes nothing until either moves, a link-up, or the seen window. A link's peer is asked last and only for blobs its
+  through that link's view (none: nothing); a frame pushed that the peer's next digest still lacks is not pushed
+  again until its mark lapses (the seen window) or the peer links again, and the key serve covers only what still goes
+  out (the 2026-10-29 amendment, #235: never keyed on unchanged digests, which the receiver's own frames move). A link's peer is asked last and only for blobs its
   link carries, and its ask for one the link does not carry is neither served nor echoed (`BlobEvent.LinkRefused`); its
   copy never parks behind a radio feed. Its delivery is proof of a hold as a radio's is (`DeliveryPlane.provesHold`,
   the owner's call of 2026-10-27): a file off it is written under `DeliveryPlane.DirectLink` and noted in the arrival
@@ -255,7 +256,7 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   deferral's sighting (`AttachmentDeferPolicy`'s `directLinked`), read live, so a photo to it waits for that proof and
   goes up the round after the link goes. Unit: `ForwardSyncTest`'s
   direct-link cases, `BlobHolderQueryTest`'s direct-link cases, `BlobRepositoryTest`'s plane rule; lab:
-  `DirectLinkLabTest` (attachment cases owed).
+  `DirectLinkLabTest`, `DirectLinkPushLabTest` (a push the peer did not keep, once per link-up), attachment cases owed.
 
 ## Adding an entry
 

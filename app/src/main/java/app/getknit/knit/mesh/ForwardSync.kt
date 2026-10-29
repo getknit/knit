@@ -57,8 +57,8 @@ class ForwardSync(
     // arrival instead of carried to expiry, so custody doesn't depend on the order the two arrived in (#100).
     private val earlyAcks = SeenSet(ttlMillis = ACK_TOMBSTONE_TTL_MS, clock = clock)
 
-    // The last answer pushed to each peer's digest off a contact's direct link: a round that would push the same frames
-    // against the same digest pushes nothing ([LinkPushRounds]).
+    // What each peer's digests off a contact's direct link were pushed, and which pushes they did not keep: a frame the
+    // peer's next digest still lacks is not pushed again until its mark lapses or the peer links again ([LinkPushRounds]).
     private val linkRounds = LinkPushRounds()
 
     /**
@@ -123,7 +123,7 @@ class ForwardSync(
 
     /**
      * [peerIds] just linked, or linked again: a push answered to an earlier link of theirs may have died with it, so the
-     * next digest off a direct link is answered in full whatever the last round pushed ([LinkPushRounds]).
+     * next digest off a direct link is answered in full, whatever they were pushed and did not keep ([LinkPushRounds]).
      */
     fun linked(peerIds: Collection<String>) = linkRounds.forget(peerIds)
 
@@ -159,9 +159,10 @@ class ForwardSync(
      * digest crossed, never by which plane holds the peer when the answer goes: the peer's digest is filtered by the
      * same rule at its end, so an unfiltered answer would push every frame outside it as a gap — and a radio that drops
      * between the digest and the reply would carry them out over the link. A frame the view refuses is never sent, so it
-     * is never [onServed]. And a round that would push the same frames against the same digest as the last pushes
-     * nothing ([LinkPushRounds]): the two filtered views can differ for good (a full quota, the global cap, a frame dead
-     * on arrival, a receipt's tombstone), and each re-push was link use that kept an idle link open.
+     * is never [onServed]. And a frame pushed that the peer's next digest still lacks is not pushed again until its
+     * mark lapses or the peer links again ([LinkPushRounds], #235): the two filtered views can differ for good (a full
+     * per-sender bucket on one end, the global cap, a frame dead on arrival, a receipt's tombstone), and each re-push was
+     * link use that kept an idle link open. A round with nothing left to push sends nothing, a key included.
      */
     suspend fun onDigest(
         fromNodeId: String,
@@ -171,7 +172,8 @@ class ForwardSync(
         val view = if (via == TransportKind.DirectLink) transport.pairView(fromNodeId) ?: return else null
         val peer = transport.neighbors.value.find { it.nodeId == fromNodeId } ?: Peer(fromNodeId)
         val have = theirIds.toHashSet()
-        val live = store.liveFrames(clock()).sortedBy { it.envelope.type != FrameType.PROFILE }
+        val now = clock()
+        val live = store.liveFrames(now).sortedBy { it.envelope.type != FrameType.PROFILE }
         val outgoing =
             live.filter { carried ->
                 val env = carried.envelope
@@ -185,11 +187,20 @@ class ForwardSync(
                 // non-member that lacks it, or that carrier's bucket for the group's senders never matches theirs.
                 env.id !in have && (view == null || view.admits(env)) // a direct link: the pair's own frames only
             }
-        if (view != null && !linkRounds.pushes(fromNodeId, have, outgoing.mapTo(HashSet()) { it.envelope.id }, clock())) return
-        keylessSenders(live, outgoing, have, fromNodeId)
+        val pushing =
+            if (view == null) {
+                outgoing
+            } else {
+                val ids = outgoing.map { it.envelope.id }
+                val push = linkRounds.toPush(fromNodeId, have, ids, live.mapTo(HashSet()) { it.envelope.id }, now)
+                if (push.isEmpty()) return
+                outgoing.filter { it.envelope.id in push }
+            }
+        // Over what goes out only: a key for frames a link no longer pushes would be served for nothing.
+        keylessSenders(live, pushing, have, fromNodeId)
             .filter { view == null || view.admits(profileOf(it)) }
             .forEach { serveKey(it, peer) }
-        outgoing.forEach { carried ->
+        pushing.forEach { carried ->
             transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)
             onServed(carried.envelope, fromNodeId)
         }
@@ -267,53 +278,75 @@ class ForwardSync(
 }
 
 /**
- * The last push [ForwardSync.onDigest] answered each peer's direct-link digest with (ADR 2026-10.a5yj): their digest and
- * the ids we pushed against it. [pushes] says no to a round whose two sets are both the same as the last pushed round's,
- * inside [lapseMs] of it. Two filtered views can differ for good — the peer's per-sender quota (200) or the global cap
- * trims what we push, refuses it dead on arrival, or holds a receipt's tombstone for it — and an answer to an unchanged
- * digest then pushed the same frames every 60 s, each a frame sent and so link use: a link that only kept itself in sync
- * never idled out. Keyed on the pair of sets, never on a reason: any of those, or one not thought of, ends the same way.
+ * What [ForwardSync.onDigest] pushed each peer's direct-link digests, and which of those pushes the peer did not keep (ADR
+ * 2026-10.a5yj's 2026-10-29 amendment, #235). Two filtered views can differ for good: a sender's per-sender bucket (200)
+ * on one end is full and evicts its oldest with each new frame, while the far end's bucket for that sender, filled only
+ * through the link's view, is not; so the far end holds older frames the sender's end evicted, pushes them, and the
+ * receiver re-stores each and evicts it in the same write, or its router drops it as seen. The global cap, a frame dead on
+ * arrival and a receipt's tombstone end the same way. The receiver's digest moves with every frame it originates, so a
+ * rule keyed on both digests being unchanged re-pushed the gap every 60 s round, each frame link use: the 2026-10-28 P9 /
+ * P7 trial's link never idled out. Keyed on what the peer's next digest shows, never on a reason: any of those, or one not
+ * thought of, ends the same way.
  *
- * What ends a skip: either set changing (the peer took something, or we hold something new for it), the peer linking
- * again ([forget]; a push may have died with the old link), or [lapseMs] — the receiver's seen window
- * ([SeenSet.DEFAULT_TTL_MS]), inside which a frame it refused is deduped before it is read anyway. A link replaced under
- * the same node id while the peer stays a neighbour is seen too: the link plane reports each link it adopts
- * (`MeshManager.onDirectLinkUp`), which the composite's neighbour set cannot show. Bounded at
- * [maxPeers], least recent first. A per-node memo of what we sent, never an input to custody or the digest.
+ * [toPush] remembers the ids it let through to each peer. On that peer's next digest every one of them it still lacks is
+ * marked not kept, stamped when it was marked; a later digest that still lacks it does not refresh the stamp, and one that
+ * shows it does not clear it (that would cost a push per eviction). A marked id is not pushed again until its mark lapses
+ * [lapseMs] after it was set — the receiver's seen window ([SeenSet.DEFAULT_TTL_MS]), inside which its router drops a
+ * repeat before it is read anyway — and then it is pushed once more and judged again: a frame refused for a passing reason
+ * (a group post whose seed rode behind it in the same round, a full `PendingInbound`, an old groups read on either end,
+ * the composite routing a push nowhere) is not stranded for the link's life. "Pushed" means handed to
+ * `MeshTransport.send`, never delivered: a push lost on the way is that same passing reason. A digest that crossed a push
+ * marks it too, and costs the same one lapse.
+ *
+ * What clears a peer's memo: the peer linking again ([forget]; a push may have died with the old link), which
+ * `ForwardSync.linked` reports for every link the link plane adopts (`MeshManager.onDirectLinkUp`), a link replaced
+ * under the same node id while the peer stays a neighbour included. An id we no longer hold leaves the memo, so it is
+ * bounded by custody; peers are bounded at [maxPeers], least recent first. A per-node memo of what we sent, never an input
+ * to custody, the digest's fold or a radio digest's answer.
  */
 internal class LinkPushRounds(
     private val lapseMs: Long = SeenSet.DEFAULT_TTL_MS,
     private val maxPeers: Int = MAX_PEERS,
 ) {
-    private class Round(
-        val theirs: Set<String>,
-        val ours: Set<String>,
-        val at: Long,
-    )
+    private class Memo {
+        // The ids the last round handed to `send` for this peer.
+        var pushed: Set<String> = emptySet()
 
-    private val last =
-        object : LinkedHashMap<String, Round>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Round>): Boolean = size > maxPeers
+        // Ids the peer's digest lacked after we pushed them, with when each was marked.
+        val notKept = HashMap<String, Long>()
+    }
+
+    private val memos =
+        object : LinkedHashMap<String, Memo>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Memo>): Boolean = size > maxPeers
         }
 
-    /** Whether to push [ours] against [peer]'s digest [theirs] at [now]; a push said yes to is remembered. */
+    /**
+     * Which of [outgoing] to push [peer] against its digest [theirs] at [now], [live] being every id our custody holds:
+     * [outgoing] less every id the peer was pushed and did not keep. What it returns is remembered as pushed; an empty
+     * answer clears that.
+     */
     @Synchronized
-    fun pushes(
+    fun toPush(
         peer: String,
         theirs: Set<String>,
-        ours: Set<String>,
+        outgoing: Collection<String>,
+        live: Set<String>,
         now: Long,
-    ): Boolean {
-        val again = last[peer]?.let { it.theirs == theirs && it.ours == ours && now - it.at < lapseMs } == true
-        if (again) return false
-        last[peer] = Round(theirs, ours, now)
-        return true
+    ): Set<String> {
+        val memo = memos.getOrPut(peer) { Memo() }
+        memo.notKept.entries.removeAll { (id, at) -> id !in live || now - at >= lapseMs }
+        memo.pushed.forEach { id -> if (id !in theirs && id in live) memo.notKept.putIfAbsent(id, now) }
+        val push = outgoing.filterTo(LinkedHashSet()) { it !in memo.notKept }
+        memo.pushed = push
+        if (push.isEmpty() && memo.notKept.isEmpty()) memos.remove(peer)
+        return push
     }
 
     /** [peers] linked again: their next round pushes in full. */
     @Synchronized
     fun forget(peers: Collection<String>) {
-        last.keys.removeAll(peers.toSet())
+        memos.keys.removeAll(peers.toSet())
     }
 
     private companion object {

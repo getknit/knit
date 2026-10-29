@@ -95,11 +95,14 @@ not only the one-hop peers that happened to be present when each first flooded.
 amendment) carries the pair's own custody only. Its `sendDigest` filters our ids by the link's rule over their
 custody envelopes, and `onDigest` answers a digest stamped `TransportKind.DirectLink` through the same rule
 (`MeshTransport.pairView`) — frames the view admits, a key for a sender whose profile it would admit, nothing once the
-link is gone — so the two filtered digests agree when the two views do. When they cannot (a full quota, the global cap,
-a dead-on-arrival frame, a tombstone), `LinkPushRounds` keeps an unchanged round from pushing the same frames again until
-either set moves, the peer links again (a newcomer, or any link the link plane adopts: `MeshManager.onDirectLinkUp`), or
-the seen window passes: each push is link use, and the link would never idle
-out. Custody itself, the digest's fold and the carry gate are untouched.
+link is gone — so the two filtered digests agree when the two views do. When they cannot (one end's bucket for a sender
+full and evicting while the other's, filled only through the view, is not; the global cap, a dead-on-arrival frame, a
+tombstone), `LinkPushRounds` remembers what each round handed the peer, and a frame the peer's next digest still lacks is
+marked not kept and not pushed again until the mark lapses after the seen window, or the peer links again (any link the link
+plane adopts, reported as it adopts it: `MeshManager.onDirectLinkUp`). Keyed on what the peer kept, never on its digest being
+unchanged: the receiver's digest moves with every frame it writes, and that rule re-pushed the gap every round (#235,
+ADR 2026-10.a5yj's 2026-10-29 amendment). Each push is link use, and the link would never idle out. Custody itself, the
+digest's fold and the carry gate are untouched.
 
 ## Bounds (`ForwardRepository`)
 

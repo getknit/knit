@@ -1199,43 +1199,113 @@ class ForwardSyncTest {
         }
 
     /**
-     * Two filtered views can differ for good (a full quota, the global cap, a frame dead on arrival, a tombstone): a
-     * round that would push the same frames against the same digest pushes nothing, so a link that only keeps itself in
-     * sync idles out. Either set changing, the peer linking again, or the receiver's seen window passing pushes again.
+     * Two filtered views can differ for good (a full per-sender bucket on one end, the global cap, a frame dead on arrival,
+     * a tombstone): a frame pushed that the peer's next digest still lacks is not pushed again (#235, ADR 2026-10.a5yj's
+     * 2026-10-29 amendment) — not when their digest moves, which it does with every frame they originate, nor when ours
+     * does. The peer linking again, or the mark lapsing after the receiver's seen window, pushes it once more.
      */
     @Test
-    fun aDirectLinksUnchangedRoundPushesNothingUntilSomethingMoves() =
+    fun aDirectLinksPushThePeerDidNotKeepIsNotPushedAgainUntilItLapsesOrTheyLinkAgain() =
         runTest {
             val transport = RecordingTransport()
             var now = 0L
             val sync = ForwardSync(transport, FakeForwardStore(ttlMs = 60 * 60_000L), clock = { now })
             post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
             transport.views["z"] = SendersView(setOf("a", "b"))
-            val pushes = { transport.sent.count { it.first.frameId() == "r1" } }
+            val pushes = { id: String -> transport.sent.count { it.first.frameId() == id } }
 
             sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
             sync.onDigest("z", listOf("x"), TransportKind.DirectLink)
-            assertEquals("the same round again pushes nothing", 1, pushes())
+            assertEquals("their next digest lacks it: not kept, not pushed again", 1, pushes("r1"))
 
             sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("their digest moved", 2, pushes())
+            assertEquals("their digest moved, the gap stayed: nothing", 1, pushes("r1"))
 
             post("r2", "b").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
             sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("ours moved", 3, pushes())
+            assertEquals("ours moved: the new frame alone", listOf(1, 1), listOf(pushes("r1"), pushes("r2")))
 
             sync.linked(listOf("z"))
             sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("linked again: a push may have died with the old link", 4, pushes())
+            assertEquals("linked again: a push may have died with the old link", listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
+            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
+            assertEquals(listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
 
             now += SeenSet.DEFAULT_TTL_MS - 1
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals(4, pushes())
+            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("a digest that still lacks it never refreshes the mark", listOf(2, 2), listOf(pushes("r1"), pushes("r2")))
             now += 1
-            sync.onDigest("z", listOf("x", "y"), TransportKind.DirectLink)
-            assertEquals("past the receiver's seen window", 5, pushes())
+            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("the mark lapsed: pushed once more", listOf(3, 3), listOf(pushes("r1"), pushes("r2")))
+            sync.onDigest("z", listOf("x", "y", "w"), TransportKind.DirectLink)
+            assertEquals("and judged again", listOf(3, 3), listOf(pushes("r1"), pushes("r2")))
 
             sync.onDigest("z", listOf("x", "y"))
-            assertEquals("a radio's digest is never held back", 6, pushes())
+            assertEquals("a radio's digest is never held back", listOf(4, 4), listOf(pushes("r1"), pushes("r2")))
+        }
+
+    /** A frame the peer kept shows in its digest, so it leaves the diff: nothing is marked and nothing held back. */
+    @Test
+    fun aDirectLinksPushThePeerKeptIsNeverMarked() =
+        runTest {
+            val transport = RecordingTransport()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+            post("r1", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            transport.views["z"] = SendersView(setOf("a"))
+
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
+            post("r2", "a").let { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+            sync.onDigest("z", listOf("r1"), TransportKind.DirectLink)
+            assertEquals(listOf("r1", "r2"), transport.sent.map { it.first.frameId() })
+
+            // The peer kept r2 and has since evicted r1: r1 was never marked, so it goes again at once.
+            sync.onDigest("z", listOf("r2"), TransportKind.DirectLink)
+            assertEquals(listOf("r1", "r2", "r1"), transport.sent.map { it.first.frameId() })
+        }
+
+    /** An id our custody no longer holds leaves the memo: carried again later, it is pushed as a frame never pushed. */
+    @Test
+    fun aDirectLinksMemoForgetsAFrameWeNoLongerHold() =
+        runTest {
+            val transport = RecordingTransport()
+            val store = FakeForwardStore()
+            val sync = ForwardSync(transport, store, clock = { 0L })
+            val r1 = post("r1", "a")
+            sync.onSeen(wireOf(r1), r1, ForwardStore.ORIGIN_RELAY)
+            transport.views["z"] = SendersView(setOf("a"))
+            val pushes = { transport.sent.count { it.first.frameId() == "r1" } }
+
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            assertEquals(1, pushes())
+
+            store.remove("r1")
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            sync.onSeen(wireOf(r1), r1, ForwardStore.ORIGIN_RELAY)
+            sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            assertEquals("carried again, after it left custody", 2, pushes())
+        }
+
+    /**
+     * A key goes out over a direct link only for the frames this round pushes (ADR 2026-09.g64k): a sender whose frames
+     * the peer was pushed and did not keep is not keyed again with the next sender's.
+     */
+    @Test
+    fun aDirectLinksKeyServeCoversOnlyTheFramesItStillPushes() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "a"))
+            k.transport.views["z"] = SendersView(senders = setOf("a", "b"), profiles = setOf("a", "b"))
+
+            k.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            k.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+            assertEquals("nothing left to push: no key either", listOf(Triple("a", "z", 0)), k.keys)
+
+            k.carry(post("s1", "b"))
+            k.sync.onDigest("z", emptyList(), TransportKind.DirectLink)
+
+            assertEquals(listOf(Triple("a", "z", 0), Triple("b", "z", 1)), k.keys)
+            assertEquals(listOf("r1", "s1"), k.transport.sent.map { it.first.frameId() })
         }
 }

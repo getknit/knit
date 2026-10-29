@@ -273,7 +273,8 @@ the link when real traffic (a frame or a file) moved, and the idle close and the
 
 ## Amendment 2026-10-27 — custody and blobs over a link
 
-Status: stands (2026-10-27); the owner made a link delivery proof (ADR 2026-10.vy27).
+Status: stands (2026-10-27); the owner made a link delivery proof (ADR 2026-10.vy27). Its "link round that moves
+nothing" bullet is superseded by the 2026-10-29 amendment (a push the peer did not keep).
 
 A link is in `MeshTransport.neighbors` (a link to send on) and never in the radio set (`MeshTransport.radioLinked`,
 `CompositeMeshTransport.shortRangeNeighbors`). Every blob and custody rule that meant *near* now reads the radio set, and
@@ -619,3 +620,39 @@ The keepalive amendment's numbers set the rest:
   (64 KB, the typing cue's rule, which a link signal shares) an upload under way turns it away. Whether a link signal
   should skip that limit is left open until field logs show how often it does.
 
+## Amendment 2026-10-29 — a push the peer did not keep is not pushed again
+
+Status: draft (2026-10-29), for the maintainer's call; #235. Built and lab-checked (`DirectLinkPushLabTest`, which
+fails on the rule it replaces); the device trial is owed. Replaces the custody amendment's `LinkPushRounds` bullet.
+
+The miss: on the 2026-10-28 device trial (P9 and P7, link only) the link never idled out. The P9's 200 own frames, its
+per-sender bucket's whole quota, spanned 0.3–2.3 h. The P7's bucket for the P9, filled only through the link's view,
+was not full, so it held older admitted frames the P9 had evicted. Each round the P7's diff pushed them, the P9 stored
+each and evicted it in the same write (or its router dropped it as seen), and the next round found the same gap. The old
+rule skipped a round only when both the peer's digest and our pushed ids were unchanged, and the P9's digest moved with
+every frame it wrote, so every 60 s round re-pushed the lot, each frame link use. Any sender whose bucket the far end
+fills from outside the view loops the same way, not only the author.
+
+- **A push the peer's next digest still lacks is not kept** (`LinkPushRounds`, per link peer). We remember the ids
+  each round handed to `MeshTransport.send` for that peer (handed over, never known delivered). On that peer's next
+  digest each of them it lacks is marked not kept, stamped when it was marked. A later digest that still lacks it does
+  not refresh the stamp, and one that shows it does not clear it, which would cost a push per eviction.
+- **What goes out is the diff less what was not kept.** A round with nothing left sends nothing, and the key serve
+  (ADR 2026-09.g64k) runs over that remainder only, so no key goes out for frames we no longer push. The remainder is
+  recorded as pushed; an empty round clears it.
+- **A mark lapses after the receiver's seen window** (`SeenSet.DEFAULT_TTL_MS`): the frame is pushed once more and
+  judged again. A frame refused for a passing reason must not be stranded for the link's life: a group post whose seed
+  rode behind it in the same round, a full `PendingInbound`, an old groups read on either end, a push the composite
+  routed nowhere. Inside the window the receiver's router drops the repeat anyway. Doubling a frame's lapse each time it
+  is judged again was considered and left as a follow-up.
+- **Linking again clears the peer's memo**, from `MeshManager.onDirectLinkUp` alone (`ForwardSync.linked`), which the
+  link plane calls as it adopts the link, ahead of the digests the link-up sets off. The manager's newcomer pass reset
+  it too, after the first of those digests could have been answered, so each not-kept frame crossed twice per link-up
+  (the chaos sweep's seed 649081629); that second reset is gone. An id our custody no longer holds leaves the memo, so
+  it is bounded by custody; peers stay bounded at 64, least recent first.
+- **Still a memo of what we sent.** It is never an input to custody, the digest's fold or a radio digest's answer, and
+  every node's custody is what it was. The cost is one crossing of each such frame per link-up and per lapse, and a
+  frame its digest crossed (pushed, then marked by a digest sent before it landed) waits one lapse if it was lost.
+
+`DirectLinkTransport.isUse` not counting a frame handed back to its author stays, as defence in depth: it still covers
+the first round after each link-up and each lapse, and a far end on an older build that re-pushes every round.
