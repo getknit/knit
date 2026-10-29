@@ -450,9 +450,14 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with: { name: signed-release, path: signed }
-      # One directory per leg: unsigned/fdroid-unsigned-full/, unsigned/fdroid-unsigned-slim/.
+      # One directory per leg: unsigned/fdroid-unsigned-full/, unsigned/fdroid-unsigned-slim/. By name, not a
+      # `fdroid-unsigned-*` pattern: a pattern matching one artifact (a pre-release builds no slim leg)
+      # extracts it straight into `path`, with no per-artifact directory.
       - uses: actions/download-artifact@v8
-        with: { pattern: fdroid-unsigned-*, path: unsigned }
+        with: { name: fdroid-unsigned-full, path: unsigned/fdroid-unsigned-full }
+      - if: needs.preflight.outputs.prerelease != 'true'
+        uses: actions/download-artifact@v8
+        with: { name: fdroid-unsigned-slim, path: unsigned/fdroid-unsigned-slim }
 
       # THE gate. apksigcopier is the same tool fdroidserver's `fdroid verify` uses: it grafts the
       # signature off our APK onto F-Droid's unsigned rebuild and checks the result still verifies —
