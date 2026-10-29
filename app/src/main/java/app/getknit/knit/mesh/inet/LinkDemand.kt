@@ -34,6 +34,10 @@ class LinkDemand(
     private val prove: suspend (linkPeers: Set<String>) -> Unit = {},
     // When each contact last declined an offer of ours (`DirectLinks.declinedAt`, L-2-6).
     private val declinedAt: (peerId: String) -> Long? = { null },
+    // The up links that could give up their slot, by since when each has been idle (`DirectLinks.idleSince`), and how one
+    // is closed for a contact that waits (`DirectLinks.close`, YIELDED).
+    private val idleSince: () -> Map<String, Long> = { emptyMap() },
+    private val yieldLink: (peerId: String) -> Unit = {},
 ) {
     private val offering = ConcurrentHashMap.newKeySet<String>()
     private val quietUntil = ConcurrentHashMap<String, Long>()
@@ -63,7 +67,15 @@ class LinkDemand(
         val now = clock()
         val rows = pending(now - LinkDemandPolicy.FILE_WINDOW_MS, now)
         if (rows.isEmpty()) return
-        val due = LinkDemandPolicy.offers(rows, now, radioLinked, up(), offering.toSet(), lastUpAt, HashMap(quietUntil), declinedAt)
+        val upNow = up()
+        val quiet = HashMap(quietUntil)
+        // Every slot taken and a contact waiting: the link idle longest makes room, and the next round offers.
+        LinkDemandPolicy.evict(rows, now, radioLinked, upNow, idleSince(), offering.toSet(), lastUpAt, quiet, declinedAt)?.let {
+            log("link demand ${it.take(SHORT)}: yields its slot")
+            yieldLink(it)
+            return
+        }
+        val due = LinkDemandPolicy.offers(rows, now, radioLinked, upNow, offering.toSet(), lastUpAt, quiet, declinedAt)
         due.forEach { (peer, why) ->
             if (!offering.add(peer)) return@forEach
             scope.launch {

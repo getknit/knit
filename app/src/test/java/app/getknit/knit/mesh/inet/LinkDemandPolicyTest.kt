@@ -123,4 +123,33 @@ class LinkDemandPolicyTest {
         assertEquals(listOf("carol"), LinkDemandPolicy.due(rows, now, none, up = setOf("erin")))
         assertTrue(LinkDemandPolicy.due(rows, now, none, up = setOf("erin"), offering = setOf("frank")).isEmpty())
     }
+
+    // ---- a slot for a contact that waits ----
+
+    private val idleLong = now - LinkDemandPolicy.EVICT_IDLE_MS
+
+    @Test
+    fun withEverySlotTakenTheLinkIdleLongestGivesItsSlotToAContactThatWaits() {
+        val waiting = listOf(Pending("carol", waited))
+        val idle = mapOf("bob" to idleLong - 5_000, "dave" to idleLong)
+        assertEquals("bob", LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = idle))
+    }
+
+    @Test
+    fun noLinkGivesUpItsSlotWhileOneIsFreeOrNobodyWaits() {
+        val idle = mapOf("bob" to idleLong - 5_000)
+        assertEquals(null, LinkDemandPolicy.evict(listOf(Pending("carol", waited)), now, none, up = setOf("bob"), idleSince = idle))
+        // Full, but the only rows are the linked contacts' own.
+        assertEquals(null, LinkDemandPolicy.evict(listOf(Pending("bob", waited)), now, none, up = setOf("bob", "dave"), idleSince = idle))
+    }
+
+    @Test
+    fun aLinkIdleUnderAMinuteOrHeldOrMovingAFileKeepsItsSlot() {
+        val waiting = listOf(Pending("carol", waited))
+        val fresh = mapOf("bob" to idleLong + 1, "dave" to idleLong + 1)
+        assertEquals(null, LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = fresh))
+        // A held link or one moving a file is not among the idle ones at all: only dave can give way.
+        assertEquals("dave", LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = mapOf("dave" to idleLong)))
+        assertEquals(null, LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = emptyMap()))
+    }
 }

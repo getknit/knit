@@ -162,21 +162,86 @@ class LinkSessionTest {
         }
 
     @Test
-    fun anIdleLinkSendsNothingAndClosesAfterAMinuteWithABye() =
+    fun anIdleLinkKeepsItsPathWarmWithOneKeepaliveAndClosesAfterItsIdleWaitWithABye() =
         runTest {
-            val net = FakeLinkNet()
-            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            // NATs that forget a mapping 2 min after the last datagram out: the shortest idle-path life measured, which
+            // the idle wait outlasts.
+            val net = FakeLinkNet(mappingTtlMs = 120_000L, clock = { testScheduler.currentTime })
+            val got = mutableListOf<String>()
+            val pair =
+                link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7))) {
+                    got += String(it)
+                }
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
             val sent = pair.a.bytes().second
-            testScheduler.advanceTimeBy(LinkSession.IDLE_MS - 5_000L)
+            testScheduler.advanceTimeBy(LinkSession.HOLD_KEEPALIVE_MS - 5_000L)
+            assertEquals("a keepalive before its time", sent, pair.a.bytes().second)
+            testScheduler.advanceTimeBy(10_000L)
+            val keepalive = pair.a.bytes().second - sent
+            assertTrue("no keepalive in the idle wait", keepalive > 0)
+            testScheduler.advanceTimeBy(LinkSession.IDLE_MS - LinkSession.HOLD_KEEPALIVE_MS - 10_000L)
             assertEquals(State.UP, pair.a.state.value)
-            assertEquals("no keepalive while idle", sent, pair.a.bytes().second)
+            assertEquals(State.UP, pair.b.state.value)
+            assertEquals("more than one keepalive in the idle wait", keepalive, pair.a.bytes().second - sent)
+            // Past the mappings' two minutes, the path is still open: the keepalives held them. The frame is answered (a
+            // stream's ack), and it starts the idle wait over.
+            assertTrue(pair.a.sendData("late in the wait".toByteArray()))
+            testScheduler.advanceTimeBy(100)
+            assertEquals(listOf("late in the wait"), got)
+            assertTrue(pair.b.sendData(byteArrayOf(0)))
             pair.a.state.first { it == State.CLOSED }
             pair.b.state.first { it == State.CLOSED }
             // Whichever end idles out first says so with a BYE, which closes the other.
             val reasons = setOf(pair.a.endReason, pair.b.endReason)
             assertTrue("$reasons", EndReason.IDLE in reasons && reasons.all { it == EndReason.IDLE || it == EndReason.BYE })
+        }
+
+    @Test
+    fun theFirstFrameAfterAQuietSpellWaitsOutItsOwnAnswer() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            // Quiet past the silence bound since the last thing heard (the keepalives at 90 s), then a frame whose answer
+            // takes a waking modem's 3 s: the question is the frame's, not the quiet's.
+            testScheduler.advanceTimeBy(LinkSession.HOLD_KEEPALIVE_MS + LinkSession.SILENCE_MS + 10_000L)
+            assertTrue(pair.a.sendData(byteArrayOf(1)))
+            testScheduler.advanceTimeBy(3_000L)
+            assertTrue(pair.b.sendData(byteArrayOf(2)))
+            testScheduler.advanceTimeBy(1_000L)
+            assertEquals(State.UP, pair.a.state.value)
+            assertEquals(State.UP, pair.b.state.value)
+        }
+
+    @Test
+    fun aLinkIsIdleSinceItsLastDataButNeverWhileHeldOrMovingAFile() =
+        runTest {
+            val net = FakeLinkNet()
+            var moving = false
+            val pair =
+                link(
+                    net,
+                    net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)),
+                    net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)),
+                    busy = { moving },
+                )
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            testScheduler.advanceTimeBy(10_000L)
+            assertTrue(pair.a.sendData(byteArrayOf(1)))
+            val sent = testScheduler.currentTime
+            testScheduler.advanceTimeBy(20_000L)
+            assertEquals(sent, pair.a.idleSince())
+            moving = true
+            assertEquals(null, pair.a.idleSince())
+            moving = false
+            pair.a.holdFor(DirectLinks.HOLD_TTL_MS)
+            assertEquals(null, pair.a.idleSince())
+            // Its hold over, it is idle from the hold's end.
+            testScheduler.advanceTimeBy(DirectLinks.HOLD_TTL_MS)
+            assertEquals(sent + 20_000L + DirectLinks.HOLD_TTL_MS, pair.a.idleSince())
         }
 
     @Test
@@ -192,8 +257,8 @@ class LinkSessionTest {
                 )
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
-            // A transport's digests and acks: DATA every 20 s, both ways, for well past the minute. None of it is use.
-            repeat(4) {
+            // A transport's digests and acks: DATA every 20 s, both ways, for well past the idle wait. None of it is use.
+            repeat((LinkSession.IDLE_MS / 20_000L).toInt() + 1) {
                 pair.a.sendData(byteArrayOf(1))
                 pair.b.sendData(byteArrayOf(2))
                 testScheduler.advanceTimeBy(20_000L)
@@ -253,7 +318,7 @@ class LinkSessionTest {
             // Three minutes of a file's stream, with no frame either way: the link holds.
             stream(3 * 60_000L)
             assertEquals(State.UP, pair.a.state.value)
-            // The file is in, the stream goes on (acks, a digest): the minute starts now, and ends the link.
+            // The file is in, the stream goes on (acks, a digest): the idle wait starts now, and ends the link.
             moving = false
             stream(LinkSession.IDLE_MS - 20_000L)
             assertEquals(State.UP, pair.a.state.value)
@@ -292,12 +357,34 @@ class LinkSessionTest {
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
             pair.b.close(sayBye = false)
-            // Data keeps the link from idling out, but nothing comes back: past the silence bound it is gone.
+            // Data keeps the link from idling out, but nothing comes back: its first unanswered DATA starts the clock, and
+            // the link is gone a silence bound later — long before the bound on hearing nothing at all.
+            testScheduler.advanceTimeBy(LinkSession.ANSWER_GRACE_MS)
+            val asked = testScheduler.currentTime
             while (pair.a.state.value == State.UP) {
                 pair.a.sendData(byteArrayOf(1))
                 testScheduler.advanceTimeBy(10_000L)
             }
             assertEquals(EndReason.SILENT, pair.a.endReason)
+            val after = testScheduler.currentTime - asked
+            assertTrue("ended ${after}ms after its first question", after <= LinkSession.SILENCE_MS + 10_000L)
+        }
+
+    @Test
+    fun oneUnansweredFrameEndsTheLinkASilenceBoundAfterItWent() =
+        runTest {
+            val net = FakeLinkNet()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            pair.b.close(sayBye = false)
+            testScheduler.advanceTimeBy(30_000L)
+            assertTrue(pair.a.sendData(byteArrayOf(1)))
+            val asked = testScheduler.currentTime
+            pair.a.state.first { it == State.CLOSED }
+            assertEquals(EndReason.SILENT, pair.a.endReason)
+            val after = testScheduler.currentTime - asked
+            assertTrue("ended ${after}ms after the frame", after in LinkSession.SILENCE_MS..LinkSession.SILENCE_MS + 6_000L)
         }
 
     @Test

@@ -14,9 +14,12 @@ and the entry is fixed.
   (`DIRECT_LINKS_WIRED`, `DIRECT_LINK_CAPABILITIES`), `Protocol.CAP_INET_LINK` or `BuildConfig.DIRECT_LINKS`:** READ ADR
   2026-10.a5yj and `docs/DIRECT_LINKS.md`. Contacts only, an opt-in, on demand, never standing; UDP with IPv6 first and no
   TURN — a punch that finds no path gives up in ten seconds and the frames keep riding the spool. No standing keepalive
-  (the a5yj 2026-10-27 amendment): `LinkSession.IDLE_MS` closes an idle link, and only a held one
-  (`DirectLinks.hold`, a live session) sends `HOLD_KEEPALIVE_MS` keepalives — don't add a keepalive back without new
-  mapping-life measurements. A contact is answered as often as it uses the links; only answers that came to nothing
+  (the a5yj 2026-10-27 amendment, and its idle-wait amendment): `LinkSession.IDLE_MS` (180 s) closes an idle link,
+  which sends `HOLD_KEEPALIVE_MS` keepalives only within that wait (its 3 min outlast the 2-min path life measured), as a
+  held one (`DirectLinks.hold`, a live session) does for as long as it is held — don't keep a link past its idle wait,
+  or shorten the keepalive, without new mapping-life measurements. A dead path is a question unanswered
+  (`LinkSession.SILENCE_MS` from the first DATA sent after the last datagram heard), never mere quiet, so the first
+  frame after a quiet spell waits out its own answer. A contact is answered as often as it uses the links; only answers that came to nothing
   (no path, or a link that carried no data) are budgeted, `DirectLinks.EMPTY_ANSWERS_PER_HOUR` per contact — never a
   flat answer cap, which would starve a busy chat now that idle links close — and a blocked contact is never answered. A peer's candidates
   are checked before anything is sent to them (`PunchPolicy.sane`, at most eight), the reflexive address is learnt on
@@ -40,6 +43,12 @@ and the entry is fixed.
   so never read the first row. A refusal by shared groups read over `DirectLinkTransport.GROUPS_REREAD_MS` ago is
   decided again on a fresh read, so a group made since never waits a re-offer round for its first post. Only frames and
   files are use; digests and handshakes keep nothing open.
+- **When touching `LinkDemandPolicy.evict` / `EVICT_IDLE_MS`, `DirectLinks.idleSince` / `close(reason)`,
+  `LinkSession.idleSince`, `LinkSession.EndReason.YIELDED`, `LinkPeers.queuedAhead`, `ScopeSync.sigQueuedAhead`, the
+  `link_try` `sent` / `queued` fields or `ScopeSync.sig`'s log line:** READ ADR 2026-10.a5yj's idle-wait amendment. A
+  link gives up its slot only when every slot is taken, a contact waits, and it has been idle a minute or more — never
+  a held one or one moving a file. Every offer of ours records where its seconds went and what it queued behind; one the
+  spools refused after it gathered is a NO_SIG line with its `queued`, never silence.
 - **When touching `LinkDemand`, `LinkDemandPolicy`, `MeshLinkPending`, `LinkHolderProof`, `DirectLinks.lastUpAt`,
   `MeshManager.attachmentStuck` / `proveStuckOverLinks`, `ScopeSync.refusesUpload`, `MessageDao.unackedDmsBetween` /
   `ownDmAttachmentsBetween` /

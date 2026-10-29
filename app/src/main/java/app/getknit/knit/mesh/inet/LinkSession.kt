@@ -29,13 +29,15 @@ import java.util.concurrent.atomic.AtomicLong
  * told about — so a NAT that rebinds the peer's port, or a peer that answered from an address it never listed, is
  * followed at once, and only an authenticated datagram can move it.
  *
- * **Liveness.** A link exists to move something, so it sends no keepalive: one that has carried no DATA either way
- * (under a transport, no frame or file: [noteUse]) for [idleMs] closes with a BYE ([EndReason.IDLE]), well inside the
- * shortest idle-path life measured (2–4 min behind a home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive
- * amendment), and one that hears nothing that opens for [silenceMs] while it sends ends [EndReason.SILENT]. A **held**
- * link ([hold], [holdFor]: a live session, such as a walkie, that must outlast its pauses) does not idle out: it sends a
- * keepalive after [holdKeepaliveMs] with nothing sent and ends after [holdSilenceMs] hearing nothing; once its hold ends
- * it idles out as any link does, its idle and its silence counted from that end. A BYE ends either at once.
+ * **Liveness.** A link exists to move something: one that has carried no DATA either way (under a transport, no frame
+ * or file: [noteUse]) for [idleMs] closes with a BYE ([EndReason.IDLE]). That wait outlasts the shortest idle-path life
+ * measured (2 min behind a home router's IPv6 firewall, ADR 2026-10.a5yj's keepalive amendment), so meanwhile the link
+ * keeps its path warm as a held one does: a keepalive after [holdKeepaliveMs] with nothing sent — one each way in a whole
+ * idle wait. A link that sent DATA and has heard nothing that opens for [silenceMs] since lost its path and ends
+ * [EndReason.SILENT] (a stream's own probes keep going while its data is unanswered, so a path dead mid-transfer is
+ * found within that); one that hears nothing at all for [holdSilenceMs] ends so too. A **held** link ([hold],
+ * [holdFor]: a live session, such as a walkie, that must outlast its pauses) does not idle out; once its hold ends it
+ * idles out as any link does, its idle and its silence counted from that end. A BYE ends either at once.
  * Every datagram is one [LinkLane] seal, so the counter is shared by every path and nothing is ever sealed twice.
  */
 class LinkSession(
@@ -62,8 +64,8 @@ class LinkSession(
     /** Where a session stands. */
     enum class State { PUNCHING, UP, CLOSED }
 
-    /** Why a session closed. */
-    enum class EndReason { NO_PATH, IDLE, SILENT, BYE, LOCAL }
+    /** Why a session closed. [YIELDED]: idle, it gave its slot to a contact waiting for one (`LinkDemandPolicy.evict`). */
+    enum class EndReason { NO_PATH, IDLE, SILENT, BYE, LOCAL, YIELDED }
 
     /** How the punch went: up through a target of [kind] (null: an address the peer never listed), or not. */
     sealed interface Outcome {
@@ -100,6 +102,10 @@ class LinkSession(
     @Volatile private var lastHeard = started
 
     @Volatile private var lastSent = started
+
+    // When this end first sent DATA (a stream's segment, ack or probe) [ANSWER_GRACE_MS] or more after the last datagram it
+    // heard: a question the path has not answered yet. 0 while none is open; anything heard closes it.
+    @Volatile private var questionAt = 0L
 
     // The last DATA either way, or the moment the link came up: what an idle close counts from.
     @Volatile private var lastData = started
@@ -145,7 +151,9 @@ class LinkSession(
     /** Sends one data payload over the link; false when it is not up. */
     fun sendData(payload: ByteArray): Boolean {
         if (state.value != State.UP) return false
-        if (dataIsUse) lastData = clock()
+        val now = clock()
+        if (dataIsUse) lastData = now
+        if (questionAt == 0L && now - lastHeard >= ANSWER_GRACE_MS) questionAt = now
         return sendTo(endpoint, byteArrayOf(DATA) + payload).also { if (it && dataIsUse) carriedData = true }
     }
 
@@ -177,6 +185,12 @@ class LinkSession(
         synchronized(stateLock) { if (until > heldUntil) heldUntil = until }
     }
 
+    /**
+     * Since when this link has been idle — its last DATA either way, or the end of its last hold — or null while it is
+     * held or its transport is moving a file: what a demand weighs when it frees a slot for a contact that waits.
+     */
+    fun idleSince(): Long? = if (state.value != State.UP || clock() < heldUntil || busy()) null else maxOf(lastData, heldUntil)
+
     /** Closes the session, telling the peer with a BYE when [sayBye] and the link is up. Idempotent. */
     fun close(
         reason: EndReason = EndReason.LOCAL,
@@ -207,30 +221,35 @@ class LinkSession(
         if (_state.value == State.UP) watch()
     }
 
-    // The link's liveness while it is up: an idle close, or a held link's keepalive, and the silence bound of each.
+    // The link's liveness while it is up: an unheld link's idle close, the silence bounds, and the keepalive that keeps a
+    // quiet path warm, held or not.
     private suspend fun watch() {
         while (scope.isActive && _state.value == State.UP) {
             val now = clock()
             val until = heldUntil
-            val next =
-                if (now < until) {
-                    if (now - lastHeard >= holdSilenceMs) return close(EndReason.SILENT, sayBye = false)
-                    if (now - lastSent >= holdKeepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
-                    minOf(holdKeepaliveMs - (clock() - lastSent), holdSilenceMs - (clock() - lastHeard))
-                } else {
-                    if (busy()) lastData = now
-                    // A hold that ended counts as data and as heard up to its end: a released link gets its whole idle,
-                    // and a held one that heard a keepalive a minute ago is not taken for gone the moment it is let go.
-                    val dataAt = maxOf(lastData, until)
-                    val heardAt = maxOf(lastHeard, until)
-                    if (now - dataAt >= idleMs) return close(EndReason.IDLE)
-                    if (now - heardAt >= silenceMs) return close(EndReason.SILENT, sayBye = false)
-                    minOf(idleMs - (now - dataAt), silenceMs - (now - heardAt))
-                }
-            // Never past [MAX_TICK_MS], so a hold taken or released mid-wait is acted on promptly.
+            // A hold that ended counts as data and as heard up to its end: a released link gets its whole idle, and a
+            // held one that heard a keepalive a minute ago is not taken for gone the moment it is let go.
+            val heardAt = if (now < until) lastHeard else maxOf(lastHeard, until)
+            var next = holdSilenceMs - (now - heardAt)
+            if (now >= until) {
+                if (busy()) lastData = now
+                val dataAt = maxOf(lastData, until)
+                if (now - dataAt >= idleMs) return close(EndReason.IDLE)
+                next = minOf(next, idleMs - (now - dataAt))
+            }
+            if (unanswered(now) || now - heardAt >= holdSilenceMs) return close(EndReason.SILENT, sayBye = false)
+            if (now - lastSent >= holdKeepaliveMs) sendTo(endpoint, byteArrayOf(KEEPALIVE))
+            next = minOf(next, holdKeepaliveMs - (clock() - lastSent))
+            // Never past [MAX_TICK_MS], so a hold taken or released mid-wait, or a question gone unanswered, is acted on
+            // promptly.
             delay(next.coerceIn(MIN_TICK_MS, MAX_TICK_MS))
         }
     }
+
+    // Whether DATA this end sent has gone unanswered for [silenceMs]: its path is gone. Counted from the question, never from
+    // the last datagram heard, so the first frame after a quiet spell waits out its own answer (a modem waking from a
+    // minute's silence takes about 2 s), and an ack sent straight back to what it heard is no question at all.
+    private fun unanswered(now: Long): Boolean = questionAt != 0L && now - questionAt >= silenceMs
 
     private suspend fun read() {
         while (scope.isActive && _state.value != State.CLOSED) {
@@ -243,6 +262,7 @@ class LinkSession(
         val plain = lane.open(datagram.data)?.takeIf { it.isNotEmpty() } ?: return
         bytesIn.addAndGet(datagram.data.size.toLong())
         lastHeard = clock()
+        questionAt = 0L
         val from = datagram.address to datagram.port
         val nonced = plain.size == 1 + Long.SIZE_BYTES
         when (plain[0]) {
@@ -389,16 +409,25 @@ class LinkSession(
     }
 
     companion object {
-        /** A link that has carried no DATA either way for this long closes: well inside the 2 min an idle path lived. */
-        const val IDLE_MS = 60_000L
+        /**
+         * A link that has carried no DATA either way for this long closes: three minutes, so a conversation's next frame
+         * or file finds the link still up. Past the 2 min an idle path was measured to live, so it keeps a keepalive.
+         */
+        const val IDLE_MS = 180_000L
 
-        /** A link that sends but hears nothing for this long is gone. */
+        /** A link that sent DATA and has heard nothing since for this long is gone. */
         const val SILENCE_MS = 65_000L
 
-        /** A held link's keepalive after this long with nothing sent: under the 2–4 min a home router held an idle path. */
+        /** How long after the last datagram heard this end's DATA must go to count as a question unanswered. */
+        const val ANSWER_GRACE_MS = 1_000L
+
+        /**
+         * A quiet link's keepalive (held, or inside its idle wait) after this long with nothing sent: under the 2–4 min a
+         * home router held an idle path.
+         */
         const val HOLD_KEEPALIVE_MS = 90_000L
 
-        /** A held link that hears nothing for this long — two of the peer's keepalives missed — is gone. */
+        /** A link that hears nothing at all for this long — two of the peer's keepalives missed — is gone. */
         const val HOLD_SILENCE_MS = 200_000L
 
         private const val RECEIVE_SLICE_MS = 1_000

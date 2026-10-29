@@ -627,6 +627,9 @@ class SpoolConnection(
      */
     fun canSig(scopeHex: String): Boolean = sig != null && isReady && isSubscribed(scopeHex)
 
+    /** The bytes queued on this connection's socket now, not yet written: what a live record waits behind. */
+    fun queuedBytes(): Long = link.queued()
+
     /**
      * Sends one sig (§7.8): no `q`, no [pending] entry, no answer awaited, no strike — [castOut]'s rule. False, and
      * nothing sent, when [canSig] does not hold, when [data] is over the advertised `maxBytes`, when the advertised rate

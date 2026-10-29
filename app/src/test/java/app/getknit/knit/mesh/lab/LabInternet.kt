@@ -15,8 +15,10 @@ import java.util.Collections
  * its own per node, and every link stream the nodes' `DirectLinks` open. The streams run the real ARQ on a scope of the
  * lab's own, on a monotonic clock — a calendar jump ([LabClock.advance]) never moves an ARQ timer, and a node's shutdown,
  * which cancels its session, never strands a reader parked in one ([close] ends them all, as `MeshLab.directLink`'s are).
- * Everything else of a link runs on the lab clock, as `DirectLinks` and `LinkSession` do: a jump of a minute while a link
- * is up idles it out (60 s) or closes it silent (65 s), and any jump while an attempt punches ends it NO_PATH — jump
+ * Everything else of a link runs on the lab clock, as `DirectLinks` and `LinkSession` do: a jump past
+ * `LinkSession.IDLE_MS` while a link is up idles it out; one of `LinkSession.SILENCE_MS` or more closes it SILENT only
+ * while DATA it sent is unanswered, and one of `LinkSession.HOLD_SILENCE_MS` whatever it sent; one of
+ * `LinkSession.HOLD_KEEPALIVE_MS` or more sends a keepalive; and any jump while an attempt punches ends it NO_PATH — jump
  * only before an offer or once a link is meant to go.
  */
 class LabInternet {

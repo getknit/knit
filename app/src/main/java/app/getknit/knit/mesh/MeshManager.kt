@@ -4356,6 +4356,9 @@ class MeshManager(
      */
     fun canSignalLink(peerId: String): Boolean = scopeSync?.canSig(peerId) == true
 
+    /** The bytes a link signal to [peerId] would wait behind on the busiest sig-carrying spool socket ([ScopeSync.sigQueuedAhead]). */
+    fun linkSignalQueued(peerId: String): Long? = scopeSync?.sigQueuedAhead(peerId)
+
     /**
      * Sends one direct-link [signal] (an OFFER or an ANSWER, ADR 2026-10.a5yj, experimental) to [peerId] as a sig
      * through every connected spool that advertises sigs ([ScopeSync.sig], C-7.8-17), which no ticket gates. True when

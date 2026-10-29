@@ -308,8 +308,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     launch, on demand — the way to prove a leftover is gone without waiting out a restart.
 - `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj; a debug build with
   `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
-  `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (a 90 s keepalive instead
-  of the 60 s idle close) or releases it — this phone's end only, so hold both or the other idles out and sends BYE; `--es op try --es peer <nodeId>` offers that contact a link now, past its
+  `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (its 90 s keepalive with no
+  180 s idle close) or releases it — this phone's end only, so hold both or the other idles out and sends BYE; `--es op try --es peer <nodeId>` offers that contact a link now, past its
   backoff, and answers once the attempt ends
   with `outcome` (UP / NO_PATH / NO_ANSWER / NO_SIG / NOT_QUALIFIED / OFF / BUSY / SUPERSEDED / DECLINED: the peer's
   switch is off and it said so, L-2-6); `--es op close --es peer
@@ -334,7 +334,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   link's stream (`LinkArq`) and times it until every byte is acknowledged; read `bulk` (`bytes`, `ms`, `mbps`, `done`,
   `segments`, `retransmits`, `srtt`, `cwnd`, and `lossEvents` / `timeouts` / `spurious`: window halvings, timer expiries,
   and segments presumed lost that were acknowledged before going again) with a bare `LINK` once `measuring` is false. The peer's `drained` (bytes its
-  end of each peer's stream read) must reach the same count. A link idles out 60 s after the run.
+  end of each peer's stream read) must reach the same count. A link idles out 180 s after the run.
   Links also open by themselves (L-7-7, the spool first): a message of ours a contact has not ticked in 20 s, with no
   radio between the phones, has the demand offer them a link — logcat `KnitLink: link demand <id6>: <outcome>`. The
   offer rides a spool too, so only a spool that carries casts but not the message (a pair scope homed at a relay one

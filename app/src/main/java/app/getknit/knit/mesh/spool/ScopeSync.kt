@@ -632,7 +632,17 @@ class ScopeSync(
         val scope = sigScope(conversationId) ?: return 0
         if (!ScopeFrames.sigEligible(env, selfId(), scope, inbound = false)) return 0
         val data = ScopeFrames.sealSig(scope, sig, signed)
-        return workers.values.count { it.sigOut(scope, data) }
+        return workers.values.count { worker ->
+            val ahead = worker.queuedBytes()
+            worker.sigOut(scope, data).also { sent ->
+                // A link's signal is live and on a clock (the offer's answer wait): each spool's take, and the bytes it
+                // had queued ahead of it, which on a slow uplink is where the seconds go. Typing cues are left out.
+                if (env.type == FrameType.LINK) {
+                    val took = if (sent) "sent" else "not sent"
+                    log("${SpoolUrl.host(worker.url)}: sig link ${env.id.take(LOG_HASH_CHARS)} ${data.size}B $took, ${ahead}B queued ahead")
+                }
+            }
+        }
     }
 
     /**
@@ -643,6 +653,16 @@ class ScopeSync(
     fun canSig(conversationId: String): Boolean {
         val scope = sigScope(conversationId) ?: return false
         return workers.values.any { it.canSig(scope) }
+    }
+
+    /**
+     * The bytes queued on the busiest socket among the connected spools a sig of [conversationId]'s would leave through
+     * ([canSig]'s), or null with none: what a live signal waits behind, and past `SpoolConnection.CAST_QUEUE_LIMIT` is
+     * refused by. For the field log.
+     */
+    fun sigQueuedAhead(conversationId: String): Long? {
+        val scope = sigScope(conversationId) ?: return null
+        return workers.values.filter { it.canSig(scope) }.maxOfOrNull { it.queuedBytes() }
     }
 
     /**
@@ -1223,6 +1243,9 @@ class ScopeSync(
             val conn = connection ?: return false
             return scope.belongsAt(url) && spoolDigests.containsKey(scope.idHex) && conn.canSig(scope.idHex)
         }
+
+        /** The bytes queued on the live connection's socket now (0 with none). */
+        fun queuedBytes(): Long = connection?.queuedBytes() ?: 0L
 
         /** Sends one sealed sig for [scope] on the live connection; false when it would not leave here. */
         fun sigOut(

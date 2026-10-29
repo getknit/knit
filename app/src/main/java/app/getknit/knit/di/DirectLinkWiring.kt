@@ -17,6 +17,7 @@ import app.getknit.knit.mesh.inet.DirectLinks
 import app.getknit.knit.mesh.inet.LinkDatagrams
 import app.getknit.knit.mesh.inet.LinkDemand
 import app.getknit.knit.mesh.inet.LinkPeers
+import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.inet.MeshLinkPending
 import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.power.LowPowerSource
@@ -61,9 +62,10 @@ fun directLinkModule(): Module? = if (DIRECT_LINKS_WIRED) directLinkGraph() else
 fun Scope.onLinkSignal(
     sender: String,
     signal: LinkSignal,
+    sentAt: Long,
 ) {
     if (DIRECT_LINKS_WIRED) {
-        runCatching { getKoin().getOrNull<DirectLinks>()?.onSignal(sender, signal) }
+        runCatching { getKoin().getOrNull<DirectLinks>()?.onSignal(sender, signal, sentAt) }
             .onFailure { Log.w(TAG, "link signal dropped: ${it.javaClass.simpleName}") }
     }
 }
@@ -186,6 +188,8 @@ private fun Module.linkDemand() =
             // The sender's proof of a photo the link carried because no spool would take it (L-7-7, ADR 2026-10.vy27).
             prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
             declinedAt = links::declinedAt,
+            idleSince = links::idleSince,
+            yieldLink = { peer -> links.close(peer, LinkSession.EndReason.YIELDED) },
         ).also { it.start() }
     }
 
@@ -208,6 +212,8 @@ private class MeshLinkPeers(
     override suspend fun mayOffer(peerId: String) = mesh.mayOfferLink(peerId)
 
     override fun canSignal(peerId: String) = mesh.canSignalLink(peerId)
+
+    override fun queuedAhead(peerId: String) = mesh.linkSignalQueued(peerId)
 
     override fun stunUrls() = mesh.stunUrls()
 

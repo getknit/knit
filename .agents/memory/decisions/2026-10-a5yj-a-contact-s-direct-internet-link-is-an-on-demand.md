@@ -502,7 +502,7 @@ and a ticket on an `ent` spool (`docs/DIRECT_LINKS.md` L-7-8):
   (`DirectLinkTransport.holdLink`, `DirectLinks.raise`) while the radios have no path to the peer
   (`MeshManager.talkRadioPath`, `di/DirectLinkWiring`). An up link is held 25 s past each ask
   (`DirectLinks.HOLD_TTL_MS`, `LinkSession.holdFor`), so it keeps through the pauses between bursts, lets go within
-  25 s of the hang-up and idles out a minute later. With none up, an offer starts on `offer`'s own rules: the switch,
+  25 s of the hang-up and idles out three minutes later (the idle-wait amendment). With none up, an offer starts on `offer`'s own rules: the switch,
   low-power mode, who qualifies, the sig lane, the backoff and the contact's answer budget. Both phones ask at the
   ring, so their offers cross as a rule, and the crossing had a hole the lab found: the higher id's offer could reach
   the lower id after its own link was up, and answering it closed that link without a word while the higher id kept
@@ -582,4 +582,40 @@ way to ask. Neither phone said anything to its person, and only the P7's field l
   - the answering end writes a line for every offer it does not answer: DECLINED, OFF (low-power or paused) or BUDGET.
 
   So the P9's side of that miss would have read as three declines, and the P7's as one.
+
+## Amendment 2026-10-28 — a link waits three minutes before it idles out
+
+Status: stands (2026-10-28); the maintainer's call, ahead of extensive field testing. Built and lab-checked; the
+battery cost of the one keepalive is to be read in the field logs.
+
+**An idle link closes after 180 s with no DATA either way** (`LinkSession.IDLE_MS`, was 60 s). In a conversation, the
+next frame or file often comes a minute or two after the last, and an offer costs a sig round through a spool. On a poor
+uplink that round took about 11 s in the 16:27 P7 run; the sig's new log line names the bytes queued ahead of it,
+which will say whether the socket's queue was why. A link still up meets that frame at once.
+
+The keepalive amendment's numbers set the rest:
+
+- **A keepalive in the wait.** Three minutes outlast the shortest idle-path life measured (2 min behind a home router's
+  IPv6 firewall). So within its idle wait a link sends the held link's keepalive, after `HOLD_KEEPALIVE_MS` (90 s) with
+  nothing sent: one each way per idle wait, and still never a standing keepalive.
+- **Silence is an unanswered question, not quiet.** The old rule ended any link that heard nothing for 65 s. Beside a
+  180 s wait it would have ended every idle link silently before the idle close. Now a link ends `SILENT` when DATA it
+  sent went unanswered for `SILENCE_MS` (65 s), counted from the first DATA it sent 1 s or more after the last datagram
+  it heard (`ANSWER_GRACE_MS`), so an ack straight back is no question. A stream whose data is unanswered keeps probing,
+  so a path dead mid-transfer is still found in about a minute, as the P7's was. Counting from the question, never from
+  the quiet, lets the first frame after a quiet spell wait out its own answer: a modem waking from a minute's silence
+  takes about 2 s.
+- **A link that hears nothing at all** for `HOLD_SILENCE_MS` (200 s) ends too.
+- **The Phase 0 gap measurement's links** stay keepalive-free, since a keepalive would refresh the very mappings they time.
+- **A link idle a minute gives way.** Three minutes would hold each of the demand's two slots (`LinkDemandPolicy.MAX_LINKS`)
+  three times as long, and a third contact's photo could wait minutes for an offer. So when both slots are taken and a
+  contact waits, the link idle longest closes to make room (`LinkDemandPolicy.evict`, `LinkSession.EndReason.YIELDED`).
+  It must have been idle `EVICT_IDLE_MS` (60 s) or more, and be neither held (a walkie's) nor moving a file. Under
+  contention a link therefore lives about as long as it did before the wait grew, and two contacts never take turns
+  closing each other's links.
+- **Field logs say where an offer's seconds went.** Each offer of ours records its `sent` time (gathering, sealing and
+  the handoff to the spools) and the bytes `queued` ahead of it on the busiest sig-carrying spool socket. An offer the
+  spools refused after it gathered is recorded too, as NO_SIG with its `queued`: past `SpoolConnection.CAST_QUEUE_LIMIT`
+  (64 KB, the typing cue's rule, which a link signal shares) an upload under way turns it away. Whether a link signal
+  should skip that limit is left open until field logs show how often it does.
 

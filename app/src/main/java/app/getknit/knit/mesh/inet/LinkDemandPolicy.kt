@@ -23,7 +23,10 @@ import app.getknit.knit.data.forward.ForwardRepository
  *    links off, and only something newer asks again;
  *  - no offer to them is in flight, and they are not resting after a refusal that sent nothing ([due]'s `quietUntil`).
  *
- * At most [MAX_LINKS] links are up or being offered at once, the longest-waiting contacts first. A message older than
+ * At most [MAX_LINKS] links are up or being offered at once, the longest-waiting contacts first. When they are all
+ * taken and a contact waits, the link idle longest gives up its slot ([evict]) — but only one idle [EVICT_IDLE_MS] or
+ * more, so under contention a link lives about as long as it did before the idle wait grew to three minutes, and two
+ * contacts never take turns closing each other's links. A message older than
  * [WINDOW_MS] is the spool's to deliver whenever the contact is back: a link is for a conversation going on now. A file
  * no spool carries has no such second path, so it is offered for as long as custody keeps its frame, at the links'
  * backoff (`PunchPolicy.backoffMs`, capped at half an hour). Pure: the database's rows, the radios and the links are its
@@ -54,6 +57,9 @@ object LinkDemandPolicy {
 
     /** How many links this phone keeps up, or offers, at once on demand. */
     const val MAX_LINKS = 2
+
+    /** How long a link must have been idle before it gives up its slot to a contact waiting for one. */
+    const val EVICT_IDLE_MS = 60_000L
 
     /**
      * The contacts to offer a link now, longest-waiting first, each with the [LinkWhy] of its longest-waiting row, from
@@ -102,6 +108,35 @@ object LinkDemandPolicy {
         declinedAt: (String) -> Long? = { null },
         maxLinks: Int = MAX_LINKS,
     ): List<String> = offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks).map { it.first }
+
+    /**
+     * The up link to close now so a waiting contact can have its slot, or null: every slot is taken ([up] and
+     * [offering]), [offers] would offer some contact one were a slot free, and among [idleSince] (`DirectLinks.idleSince`:
+     * the links neither held nor moving a file, by since when they have been idle) the one idle longest has been so for
+     * [EVICT_IDLE_MS] or more. The other inputs are [offers]'.
+     */
+    @Suppress("LongParameterList") // [offers]' inputs and the links' idleness
+    fun evict(
+        pending: List<Pending>,
+        now: Long,
+        radioLinked: (String) -> Boolean,
+        up: Set<String>,
+        idleSince: Map<String, Long>,
+        offering: Set<String> = emptySet(),
+        lastUpAt: (String) -> Long? = { null },
+        quietUntil: Map<String, Long> = emptyMap(),
+        declinedAt: (String) -> Long? = { null },
+        maxLinks: Int = MAX_LINKS,
+    ): String? {
+        val taken = up.size + offering.size
+        if (taken < maxLinks) return null
+        val waiting = offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks = taken + 1)
+        if (waiting.isEmpty()) return null
+        return idleSince
+            .filter { (peer, since) -> peer in up && now - since >= EVICT_IDLE_MS }
+            .minByOrNull { it.value }
+            ?.key
+    }
 
     // How old a row of [why] may be, from its time, and call for a link.
     private fun windowOf(why: LinkWhy): LongRange =

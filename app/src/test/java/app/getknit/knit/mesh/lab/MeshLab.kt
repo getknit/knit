@@ -101,6 +101,7 @@ import app.getknit.knit.mesh.inet.FakeLinkNet
 import app.getknit.knit.mesh.inet.LinkArq
 import app.getknit.knit.mesh.inet.LinkDemand
 import app.getknit.knit.mesh.inet.LinkPeers
+import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.inet.MeshLinkPending
 import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.link.FileIntake
@@ -1433,6 +1434,8 @@ class LabNode internal constructor(
                 log = { linkLog += it },
                 prove = { manager.proveStuckOverLinks(it) },
                 declinedAt = built::declinedAt,
+                idleSince = built::idleSince,
+                yieldLink = { peer -> built.close(peer, LinkSession.EndReason.YIELDED) },
             )
     }
 
@@ -1441,6 +1444,8 @@ class LabNode internal constructor(
         override suspend fun mayOffer(peerId: String) = manager.mayOfferLink(peerId)
 
         override fun canSignal(peerId: String) = manager.canSignalLink(peerId)
+
+        override fun queuedAhead(peerId: String) = manager.linkSignalQueued(peerId)
 
         override fun stunUrls() = manager.stunUrls()
 
@@ -1730,7 +1735,7 @@ class LabNode internal constructor(
                 onCallTalk = { _, chunk, _, _, viaRelay -> heardTalk(chunk, viaRelay) },
                 // A node on the lab's Internet takes links as `di/DirectLinkWiring` wires them: the bit in its profile, and
                 // each opened signal handed to its links, resolved late.
-                onLinkSignal = { sender, signal, _ -> links?.onSignal(sender, signal) },
+                onLinkSignal = { sender, signal, sentAt -> links?.onSignal(sender, signal, sentAt) },
                 extraCapabilities = if (internet != null) Protocol.CAP_INET_LINK else 0L,
             )
         buildLinks(scope, meshTransport)

@@ -722,9 +722,11 @@ sealed interface FieldEvent {
      * `LinkOutcome`; [path] the `LinkPath` the link came up on (none unless it did); [net] and [peerNet] the `LinkNet`
      * both ends were on; [ms] from the attempt's start (the offer, or the answer's) to the outcome, [rtt] the first
      * probe's round trip. [v6], [reflexive] and [host] say which kinds of candidate this phone offered. [why] is the
-     * `LinkWhy` that called for an offer of ours. An offer this phone did not answer is a line too, with no path and no
-     * time: declined (links off), or held back (low-power, a pause, the contact's answers spent). Never an address: a
-     * candidate is named by its kind alone.
+     * `LinkWhy` that called for an offer of ours, and [sentMs] when, from its start, the offer left for the spools: the
+     * rest of [ms] up to the answer is the spools' lanes and the contact's own gathering; [queuedBytes] the bytes queued
+     * ahead of it on the busiest spool socket it could leave through, past whose limit it is refused (NO_SIG). An offer
+     * this phone did not answer is a line too, with no path and no time: declined (links off), or held back (low-power,
+     * a pause, the contact's answers spent). Never an address: a candidate is named by its kind alone.
      */
     @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
     data class LinkTry(
@@ -740,6 +742,8 @@ sealed interface FieldEvent {
         val reflexive: Boolean,
         val host: Boolean,
         val why: Enum<*>? = null,
+        val sentMs: Long? = null,
+        val queuedBytes: Long? = null,
     ) : FieldEvent {
         override val kind get() = "link_try"
 
@@ -756,6 +760,8 @@ sealed interface FieldEvent {
             out.flag("reflexive", reflexive)
             out.flag("host", host)
             why?.let { out.enum("why", it) }
+            sentMs?.let { out.num("sent", it) }
+            queuedBytes?.let { out.num("queued", it) }
         }
     }
 

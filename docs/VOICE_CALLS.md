@@ -911,7 +911,7 @@ its media (`REASON_MEDIA`).
     quiet one, so a held link comes round every 30 s or so, and the hold raises it again at once.
   - **A direct link.** Where the radios have no path to the peer (C-3.11-6), the same hold raises a contact's direct
     link where both phones have them on (`docs/DIRECT_LINKS.md` L-7-8), or holds the one that is up for 25 s past each
-    renewal (`DirectLinks.raise`), so it keeps through the pauses between bursts, and idles out a minute after the
+    renewal (`DirectLinks.raise`), so it keeps through the pauses between bursts, and idles out three minutes after the
     hold ends. Where the radios have a path, no link is raised or held.
   - **No link at a send.** A chunk retries for up to 2.5 s, past the recycle's gap of about 1.9 s. A chunk to a neighbour goes over its
   quickest link (`MeshTransport.sendLive`): Wi-Fi Aware when that radio holds one, else Bluetooth. Every other frame

@@ -19,6 +19,7 @@ class LinkDemandTest {
     private val offers = mutableListOf<String>()
     private val windows = mutableListOf<Pair<Long, Long>>()
     private val whys = mutableListOf<LinkWhy>()
+    private val yielded = mutableListOf<String>()
     private val proofRounds = mutableListOf<Set<String>>()
 
     private fun TestScope.demand(
@@ -26,6 +27,7 @@ class LinkDemandTest {
         active: () -> Boolean = { true },
         up: () -> Set<String> = { emptySet() },
         declinedAt: (String) -> Long? = { null },
+        idleSince: () -> Map<String, Long> = { emptyMap() },
         answer: suspend (String) -> LinkOutcome,
     ) = LinkDemand(
         pending = { since, until -> rows.also { windows += since to until } },
@@ -42,6 +44,8 @@ class LinkDemandTest {
         clock = { testScheduler.currentTime },
         prove = { peers -> proofRounds += peers },
         declinedAt = declinedAt,
+        idleSince = idleSince,
+        yieldLink = { yielded += it },
     )
 
     @Test
@@ -53,6 +57,28 @@ class LinkDemandTest {
             demand(listOf(Pending("carol", 0L, LinkWhy.FILE)), declinedAt = { 1L }) { LinkOutcome.UP }.round()
             runCurrent()
             assertEquals("carol declined after that file", listOf("bob"), offers)
+        }
+
+    @Test
+    fun withBothSlotsTakenARoundClosesTheLinkIdleLongestAndOffersNothingYet() =
+        runTest {
+            advanceTo(LinkDemandPolicy.EVICT_IDLE_MS + 10_000L)
+            val d =
+                demand(
+                    listOf(Pending("carol", 0L, LinkWhy.FILE)),
+                    // The links follow the yield: a round that read them again would see the slot free.
+                    up = { setOf("bob", "dave") - yielded.toSet() },
+                    idleSince = { mapOf("bob" to 0L, "dave" to 5_000L) - yielded.toSet() },
+                ) { LinkOutcome.UP }
+            d.round()
+            runCurrent()
+            assertEquals(listOf("bob"), yielded)
+            assertTrue("offered before the slot was free: $offers", offers.isEmpty())
+            // The next round fills the freed slot, and gives up no other.
+            d.round()
+            runCurrent()
+            assertEquals(listOf("carol"), offers)
+            assertEquals(listOf("bob"), yielded)
         }
 
     @Test

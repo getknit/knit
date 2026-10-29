@@ -75,6 +75,12 @@ interface LinkPeers {
         peerId: String,
         signal: LinkSignal,
     ): Boolean
+
+    /**
+     * The bytes queued ahead on the busiest socket of the spools a signal to [peerId] would leave through, or null with
+     * none: for the field log, since a signal waits behind them, and past a spool's queue limit is refused there.
+     */
+    fun queuedAhead(peerId: String): Long? = null
 }
 
 /** The lane's two keys for one attempt, this end's send key first: [STANDARD] is `mesh/crypto/LinkKeys` (L-5-1). */
@@ -363,6 +369,7 @@ class DirectLinks(
         val started = clock()
         val port = datagrams.open() ?: return finish(peerId, attempt, LinkOutcome.NO_PORT)
         val own = LinkGather.candidates(port, peers.stunUrls(), clock, random)
+        val gatheredMs = clock() - started
         // Crossed while it gathered: the contact's own offer was answered here, which supersedes this one, or is being.
         // Sent anyway, it would reach a contact whose link to us may be up by then, and cost it that link.
         if (synchronized(crossing) { attempt.answer.isCompleted || peerId in answering }) {
@@ -370,32 +377,52 @@ class DirectLinks(
             return finish(peerId, attempt, LinkOutcome.SUPERSEDED)
         }
         val offer = signal(LinkSignal.PHASE_OFFER, attempt.linkId, attempt.kOffer, own)
+        val queued = peers.queuedAhead(peerId)
         if (!peers.send(peerId, offer)) {
+            // Gathered, and then no spool took it: most likely its socket's queue was past the limit (an upload under
+            // way), which only this line tells a field log from a missing sig lane.
             port.close()
+            record(peerId, true, LinkOutcome.NO_SIG, null, null, clock() - started, own, why = why, queued = queued)
             return finish(peerId, attempt, LinkOutcome.NO_SIG)
         }
+        // Where an attempt's seconds went: gathering, sealing and handing the offer to the spools, then the wait.
+        val sentMs = clock() - started
+        log("link offer → ${peerId.take(SHORT)} gathered in ${gatheredMs}ms (${own.size} candidates), sent at ${sentMs}ms")
         val answer = withTimeoutOrNull(ANSWER_WAIT_MS) { attempt.answer.await() }
         if (answer == null) {
             port.close()
             val superseded = attempt.answer.isCompleted
             val outcome = if (superseded) LinkOutcome.SUPERSEDED else LinkOutcome.NO_ANSWER
-            if (!superseded) record(peerId, true, outcome, null, null, clock() - started, own, why = why)
+            if (!superseded) record(peerId, true, outcome, null, null, clock() - started, own, why = why, sentMs = sentMs, queued = queued)
             return finish(peerId, attempt, outcome)
         }
+        log("link answer ← ${peerId.take(SHORT)} at ${clock() - started}ms")
         if (answer.ph == LinkSignal.PHASE_DECLINE) {
             // Its person has links off: nothing older than now is offered for again, and no backoff — this is not the
             // network's doing, and the next thing worth a link asks once more.
             port.close()
             attempt.kOffer.fill(0)
             declined[peerId] = clock()
-            record(peerId, true, LinkOutcome.DECLINED, null, LinkNet.of(answer.nt), clock() - started, own, why = why)
+            record(
+                peerId,
+                true,
+                LinkOutcome.DECLINED,
+                null,
+                LinkNet.of(answer.nt),
+                clock() - started,
+                own,
+                why = why,
+                sentMs = sentMs,
+                queued = queued,
+            )
             return finish(peerId, attempt, LinkOutcome.DECLINED)
         }
         val (send, recv) = keys.derive(true, attempt.kOffer, answer.k, attempt.linkId, selfId(), peerId)
         attempt.kOffer.fill(0)
         answer.k.fill(0)
         val (session, socket) = session(peerId, port, send, recv, attempt.linkId, answer, own)
-        val outcome = run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own, why = why)
+        val outcome =
+            run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own, why = why, sentMs = sentMs, queued = queued)
         return finish(peerId, attempt, outcome)
     }
 
@@ -414,12 +441,17 @@ class DirectLinks(
         return null
     }
 
-    /** One signal from a contact, opened by the pipeline (`onLinkSignal`); never waits. */
+    /**
+     * One signal from a contact, opened by the pipeline (`onLinkSignal`); never waits. [sentAt] is the frame's stamp by
+     * the sender's clock, logged as the signal's age here: what the spools' lanes took, give or take the clocks' skew.
+     */
     fun onSignal(
         senderId: String,
         signal: LinkSignal,
+        sentAt: Long? = null,
     ) {
         if (signal.id.size != LinkSignal.ID_BYTES) return
+        sentAt?.let { log("link signal ${signal.ph} ← ${senderId.take(SHORT)} ${clock() - it}ms after its stamp") }
         val keyed = signal.k.size == LinkSignal.KEY_BYTES
         when (signal.ph) {
             LinkSignal.PHASE_OFFER -> {
@@ -477,9 +509,18 @@ class DirectLinks(
     }
 
     /** Closes the link to [peerId], if one is up, with a BYE. */
-    fun close(peerId: String) {
-        links.value[peerId]?.close()
+    fun close(
+        peerId: String,
+        reason: LinkSession.EndReason = LinkSession.EndReason.LOCAL,
+    ) {
+        links.value[peerId]?.close(reason)
     }
+
+    /**
+     * The up links that could give their slot to a contact waiting for one, by peer: since when each has been idle
+     * ([LinkSession.idleSince]). A held link (a walkie's) and one moving a file are never among them.
+     */
+    fun idleSince(): Map<String, Long> = buildMap { links.value.forEach { (peer, session) -> session.idleSince()?.let { put(peer, it) } } }
 
     /** Closes every link and drops every pending attempt (the mesh is stopping). */
     fun stop() {
@@ -601,6 +642,9 @@ class DirectLinks(
                     clock,
                     idleMs = FOREVER_MS,
                     silenceMs = FOREVER_MS,
+                    // Nothing keeps a measured path warm: a keepalive would refresh the very mappings the gaps time.
+                    holdKeepaliveMs = FOREVER_MS,
+                    holdSilenceMs = FOREVER_MS,
                     dataIsUse = dataIsUse,
                     busy = { linkBusy(peerId) },
                 )
@@ -639,16 +683,19 @@ class DirectLinks(
         own: List<LinkCandidate>,
         alreadyStarted: Boolean = false,
         why: LinkWhy? = null,
+        sentMs: Long? = null,
+        queued: Long? = null,
     ): LinkOutcome {
         if (!alreadyStarted) session.start()
         val outcome = session.awaitOutcome()
         if (outcome !is LinkSession.Outcome.Up) {
-            record(peerId, offerer, LinkOutcome.NO_PATH, null, peerNet, clock() - startedAt, own, why = why)
+            val ms = clock() - startedAt
+            record(peerId, offerer, LinkOutcome.NO_PATH, null, peerNet, ms, own, why = why, sentMs = sentMs, queued = queued)
             if (!offerer) noteEmpty(peerId)
             return LinkOutcome.NO_PATH
         }
         val path = outcome.kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
-        record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs, why)
+        record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs, why, sentMs, queued)
         val upAt = clock()
         sockets[peerId] = socket
         if (offerer) offeredUpAt[peerId] = upAt else offeredUpAt.remove(peerId)
@@ -732,6 +779,8 @@ class DirectLinks(
         own: List<LinkCandidate>,
         rttMs: Long? = null,
         why: LinkWhy? = null,
+        sentMs: Long? = null,
+        queued: Long? = null,
     ) {
         log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms ${why ?: ""}")
         lastTries[peerId] = Try(clock(), offerer, outcome, path, peerNet, ms, rttMs, why)
@@ -749,6 +798,8 @@ class DirectLinks(
                 reflexive = own.any { it.kind == LinkCandidate.Kind.V4_REFLEXIVE },
                 host = own.any { it.kind == LinkCandidate.Kind.HOST },
                 why = why,
+                sentMs = sentMs,
+                queuedBytes = queued,
             ),
         )
     }

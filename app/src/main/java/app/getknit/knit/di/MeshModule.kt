@@ -526,7 +526,7 @@ val meshModule =
                     }
                 },
                 // A direct link's offer or answer (ADR 2026-10.a5yj) goes the same late-bound, never-throwing way.
-                onLinkSignal = { sender, signal, _ -> onLinkSignal(sender, signal) },
+                onLinkSignal = { sender, signal, sentAt -> onLinkSignal(sender, signal, sentAt) },
                 extraCapabilities = CALL_CAPABILITIES or DIRECT_LINK_CAPABILITIES,
                 // Getting tickets is Knit Anywhere's (ANYWHERE_WIRED): without it this phone holds no key and asks no issuer.
                 ticketKeys = if (ANYWHERE_WIRED) get<TicketKeyStore>() else null,

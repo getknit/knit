@@ -46,6 +46,8 @@ class DirectLinksTest {
         var signalOk = true
         var signals = 0
         var stun = listOf("stun:stun.example")
+        var sendRefused = false
+        var queued: Long? = null
     }
 
     private fun TestScope.pair(
@@ -64,11 +66,13 @@ class DirectLinksTest {
 
                     override fun stunUrls() = me.stun
 
+                    override fun queuedAhead(peerId: String) = me.queued
+
                     override suspend fun send(
                         peerId: String,
                         signal: LinkSignal,
                     ): Boolean {
-                        if (!me.signalOk) return false
+                        if (!me.signalOk || me.sendRefused) return false
                         me.signals++
                         val bytes = checkNotNull(LinkSignals.encode(signal)) { "a well-formed signal" }
                         scope.launch {
@@ -296,6 +300,26 @@ class DirectLinksTest {
             assertEquals(LinkOutcome.NO_SIG, a.links.offer(b.id))
             assertEquals(0, a.signals)
             assertEquals(LinkOutcome.OFF, a.links.offer(a.id))
+        }
+
+    @Test
+    fun anOfferNoSpoolTookIsOnTheRecordWithTheQueueItMetAndEveryOfferSaysItsQueue() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            // An upload fills the spool socket: the lane is there, the offer gathers, and the spool refuses it at the send.
+            a.sendRefused = true
+            a.queued = 70_000L
+            assertEquals(LinkOutcome.NO_SIG, a.links.offer(b.id, why = LinkWhy.FILE))
+            val refused = tries(a).single()
+            assertEquals(LinkOutcome.NO_SIG to 70_000L, refused.outcome to refused.queuedBytes)
+            assertEquals(LinkWhy.FILE, refused.why)
+            // The queue drained: the next offer goes, and its line says what it waited behind.
+            a.sendRefused = false
+            a.queued = 1_200L
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            assertEquals(1_200L, tries(a).last().queuedBytes)
+            assertNotNull(tries(a).last().sentMs)
         }
 
     @Test
