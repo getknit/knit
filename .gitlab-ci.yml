@@ -1,7 +1,7 @@
 # Knit — GitLab CI. Stages: build -> test -> verify, but ordered by `needs:`: the test jobs wait for
 # build:debug alone (its build cache, see .android) and the verify jobs wait for nothing, so a slow
 # build:release holds up nothing but itself.
-# Bleeding-edge toolchain (AGP 9.4.1 / Kotlin 2.4.21 / JDK 21 / compileSdk 37.1).
+# Bleeding-edge toolchain (AGP 9.5.0 / Kotlin 2.4.21 / JDK 21 / compileSdk 37.1).
 # Static analysis (detekt/ktlint) and coverage (Kover) run as Gradle plugins via `./gradlew` tasks.
 
 stages:
@@ -28,7 +28,7 @@ variables:
   CMDLINE_TOOLS_VERSION: "11076708"   # commandlinetools-linux revision
   # Keep in lockstep with app/build.gradle.kts `compileSdk` and `buildToolsVersion` — the minor matters,
   # `android-37` is a different package from `android-37.1`, and build-tools is pinned there (above AGP
-  # 9.4.1's 36.0.0 default), so the two move independently of each other but never of the build file.
+  # 9.5.0's 36.0.0 default), so the two move independently of each other but never of the build file.
   # Both must resolve in F-Droid's buildserver image first: .agents/context/distribution.md.
   ANDROID_COMPILE_SDK: "37.1"
   ANDROID_BUILD_TOOLS: "37.0.0"

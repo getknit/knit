@@ -315,7 +315,7 @@ for Google Play once they do. To try it from source, see [Build](#-build).
 | Area | Choice |
 |------|--------|
 | Language / UI | Kotlin 2.4.21 · Jetpack Compose (Material 3) + Navigation Compose |
-| Build | AGP 9.4.1 / Gradle 9.7.1 · JDK 21 · minSdk 29 / targetSdk 36 / compileSdk 37.1 |
+| Build | AGP 9.5.0 / Gradle 9.7.1 · JDK 21 · minSdk 29 / targetSdk 36 / compileSdk 37.1 |
 | DI | Koin (pure-Kotlin, no Gradle plugin) |
 | Storage | Room 3 + SQLCipher (encrypted at rest) · DataStore |
 | Wire format | kotlinx.serialization **CBOR** (layered `WireEnvelope`) |

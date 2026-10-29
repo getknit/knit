@@ -49,7 +49,7 @@ bash scripts/egress-check.sh --variant debug --control  # ...the debug build, th
     `.github/workflows/qodana-report.yml` posts the findings (`scripts/qodana-pr-report.py`): only those that
     main's own latest run lacks too, because the baseline drifts behind main between re-adoptions. Two traps, both already
     handled and both worth knowing before you touch the config:
-    - Qodana 2026.2 refuses AGP > 9.1.0 and this project is on 9.4.1. `qodana.yaml` sets
+    - Qodana 2026.2 refuses AGP > 9.1.0 and this project is on 9.5.0. `qodana.yaml` sets
       `gradle.ide.support.future.agp.versions` to suppress that check — load-bearing, and its banner
       explains the one blind spot it leaves (`@Preview` reads as unused; the baseline absorbs it).
     - **Never cache the IDE's project state** (`.qodana/cache/{idea,android,262}`). Restoring it drops

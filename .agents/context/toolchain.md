@@ -1,6 +1,6 @@
 # Toolchain (bleeding-edge — do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.4.1, Gradle 9.7.1, Kotlin 2.4.21,
+This project intentionally runs on very new tooling (AGP 9.5.0, Gradle 9.7.1, Kotlin 2.4.21,
 Compose BOM 2026.09.00, compileSdk 37.1). That forces several non-obvious choices. **Read this before
 changing build config, dependencies, or the DI graph.**
 
@@ -35,7 +35,7 @@ Bumping `compileSdk` means installing that exact platform everywhere the build r
 of the package name (`platforms;android-37.1` ≠ `platforms;android-37`), and three files name it
 literally: `.gitlab-ci.yml`'s `ANDROID_COMPILE_SDK`, `qodana.yaml`'s bootstrap `sdkmanager` line, and the
 F-Droid-image reproducibility job in `.github/workflows/release.yml`. Build-tools is pinned next to it
-(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.4.1's 36.0.0 default — it decides
+(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.5.0's 36.0.0 default — it decides
 no packaged byte, it is pinned so every builder installs the package the build uses) and the same three
 files carry that pin. Both packages must resolve in F-Droid's buildserver image before either moves;
 `context/distribution.md` has the check.
@@ -50,12 +50,12 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Built-in Kotlin is overridden to 2.4.21, not AGP's bundled 2.2.10.** AGP 9.4.1 ships KGP 2.2.10,
+- **Built-in Kotlin is overridden to 2.4.21, not AGP's bundled 2.2.10.** AGP 9.5.0 ships KGP 2.2.10,
   whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
   pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.21 on the buildscript classpath
   (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.21 — a supported combo
   (Kotlin 2.4 requires AGP 9.1+ per Google's AGP/Kotlin matrix). **Bumping AGP does not move Kotlin**:
-  the 9.4 line we now build on still bundles it (9.3 did too), so the override — not an AGP bump — is
+  the 9.5 line we now build on still bundles it (9.3 and 9.4 did too), so the override — not an AGP bump — is
   the lever. Keep KGP and the `ksp` version in lockstep with `kotlin`; KSP adopted independent (KSP2)
   versioning at 2.3.0 (decoupled, Kotlin 2.2+), so it no longer uses the old `<kotlin>-<ksp>` scheme.
 - **The new DSL / Variant API is already on; AGP 10 changes nothing here.** `android.newDsl` has
@@ -87,10 +87,9 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   2.10.0-beta.0), so `releaseRuntimeClasspath` carries it and a shipped artifact rides the RC, and 1.0.1, the newest stable, reverts a call switched to speaker during setup
   (where a walkie starts) and can start an audio call on speaker on Android 14-16. Move it to 1.1.0 when that goes
   stable. So `cameraX` stays on 1.6.2 (1.7.0 is
-  alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha), `activity-compose` on 1.13.0
-  (1.14.0 is alpha), and AGP on 9.4.1 (9.5.0 is
-  alpha). `navigation-compose` was held at 2.9.8 by this rule until 2.10.0 went stable, `robolectric`
-  at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did. `datastore` was the fourth exception
+  alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha) and `activity-compose` on 1.13.0
+  (1.14.0 is alpha). `navigation-compose` was held at 2.9.8 by this rule until 2.10.0 went stable, AGP at
+  9.4.1 until 9.5.0 did, `robolectric` at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did. `datastore` was the fourth exception
   until 1.3.0 went stable (2026-10-21): no stable line before it carried the fix for a `data` collector that
   subscribes mid-write and never sees the write (b/431787506, work item #97: `watchProfileChanges` missed a rename
   made while the mesh started; 1.2.1 still has it), so it sat on alpha03, then alpha11 once alpha03's
