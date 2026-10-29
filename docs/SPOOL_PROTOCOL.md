@@ -384,7 +384,7 @@ sealOkm    = HKDF(ikm = pairSecret, info = "knit/scope/v1/seal"    ‖ ctx, L = 
 | **C-3.5-2** | A pair scope carries exactly the §4.4 DM frame set, with the pending peer as the counterpart. It has no rule of its own.                                                                      |
 | **C-3.5-3** | A pair scope exists to establish the session. Once the DM scope (§3.1) exists it supersedes the pair scope; a member MUST NOT rely on a pair scope for anything else.                        |
 | **C-3.5-4** | A member SHOULD hold at most `maxPairScopes` (§12) pair scopes at once.                                                                                                                       |
-| **C-3.5-5** | The pair secret is a static-static agreement used for nothing else; every derivation from it is labeled under `knit/scope/v1/…` (B-2-8) and never mixes with the ratchet's `knit/dm/v2/…`. |
+| **C-3.5-5** | The pair secret is a static-static agreement; every derivation from it is labeled, under `knit/scope/v1/…` (B-2-8) or the LoRa plane's compact-DM family `knit/lora/v1/…` (ADR 2026-10.x9fa: a directional key, nonce key and pairTag, `info = label ‖ sender ‖ recipient`), and never mixes with the ratchet's `knit/dm/v2/…`. Since that ADR the identity DH key also authenticates traffic, not only scope names. |
 
 > **Why the identity keys.** They are the one input both parties hold *before* a session: the card is
 > self-certifying (the node id is the hash of the bundle it carries), so a pinned card is exactly the

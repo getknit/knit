@@ -1,17 +1,16 @@
 package app.getknit.knit.mesh.lora
 
 /**
- * How long a draft may be before it risks not fitting the LoRa hop — the composer's "long message" hint
- * (ADR 040). A DM's hop carries at most 3 × 227 = 681 compact bytes (`LoraFrameCodec`); a room post rides only in
- * **one** packet (ADR 2026-10.rp3s), so its budget is what one packet at the MTU-255 floor (228 B) holds. Everything
- * above the body — envelope, signature, the X3DH init a DM carries until the peer's first reply — is fixed cost, so a
- * body budget is the honest way to say it before the send. The budgets are deliberately below the true
- * ceilings (a 100-char DM is 439 B with its init; ≈ 335 characters fit) and are pinned by
- * `CoordinationPlaneSizeBudgetTest`, which builds real frames at exactly these sizes and checks they fit in
- * the transcoded `0x05` form the plane sends (ADR 060 — untranscoded, a DM at this budget lands a byte or two
- * over the ceiling), so the hint errs toward warning (a longer draft may still fit) and never over-promises. The
- * reserves are what a quoted reply (two ids, an author, a 120-char snippet) and an attachment reference
- * (hash + key + MIME) add inside the same frame. Pure — the composer calls it per keystroke.
+ * How long a draft may be before it risks not riding the LoRa hop — the composer's "long message" hint (ADR 040). Both
+ * budgets are now **one packet** at the MTU-255 floor: a room post rides only in one (ADR 2026-10.rp3s), and a DM rides
+ * only as one compact pair-sealed unicast (ADR 2026-10.x9fa) — 228 B less what `want_ack` adds to its BLE write, less
+ * the 51 bytes of header and GCM tag around its plaintext, which leaves 175 B for the v3 compact content. Everything
+ * above the body is fixed cost, so a body budget is the honest way to say it before the send. The budgets are pinned by
+ * `CoordinationPlaneSizeBudgetTest`, which builds real content at exactly these sizes with incompressible text, so the
+ * hint never over-promises; a longer draft is not carried over LoRa at all (the signed copy still travels the radios,
+ * custody and the spool). The reserves are what a quoted reply (two ids, an author, a 120-char snippet) and an
+ * attachment reference (hash + key + MIME) add inside the same frame — both larger than a one-packet budget leaves, so a
+ * reply or an attachment never rides LoRa. Pure — the composer calls it per keystroke.
  */
 object LoraSizeHint {
     /**
@@ -23,8 +22,14 @@ object LoraSizeHint {
      */
     const val ROOM_BODY_BYTES = 100
 
-    /** A sealed DM, with the session-initial X3DH init still attached (the worst case until the first reply). */
-    const val DM_BODY_BYTES = 320
+    /**
+     * A DM's body **and** the inline acks it may carry (`MeshManager.inlineAcksFor` spends what the body leaves, at
+     * `INLINE_ACK_BYTES` each), as compact content in one packet at the MTU-255 floor (ADR 2026-10.x9fa): 175 B of
+     * plaintext, less the v3 layout's field headers, with a few bytes' margin. Measured with random printable ASCII and
+     * random four-byte emoji, with and without the full four inline acks. No X3DH init rides the compact form, so the
+     * first DM of a session costs what the hundredth does.
+     */
+    const val DM_BODY_BYTES = 160
 
     /** What a quoted reply costs beside the body (`ReplyRef`: message id, author id, name, 120-char snippet). */
     const val REPLY_RESERVE_BYTES = 260

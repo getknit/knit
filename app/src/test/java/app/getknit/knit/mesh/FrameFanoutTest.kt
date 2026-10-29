@@ -11,8 +11,9 @@ import org.junit.Test
 /**
  * The fan-out predicates split every frame across the planes that have **no data path**:
  * [shouldFastFanout] (the room + cleartext metadata, fanned to every neighbor), [shouldFastSend] (sealed
- * DM-form chat, targeted at its addressee) and [shouldLongRangeFanout] (the same DM-form set, over LoRa —
- * ADR 039). The load-bearing invariant is that the two *coordination-plane* arms are disjoint: a frame that
+ * DM-form chat, targeted at its addressee). The LoRa plane's long-range arm is gone (ADR 2026-10.x9fa): our own DMs
+ * ride it compact, offered by their sender. The load-bearing invariant is that the two *coordination-plane* arms are
+ * disjoint: a frame that
  * rode both would be fanned at every neighbor and unicast at one of them, doubling the ~255 B channel's
  * load for one frame.
  */
@@ -44,10 +45,9 @@ class FrameFanoutTest {
         }
 
     @Test
-    fun aDmFormChatRidesTheTargetedCoordinationArmAndTheLongRangePlane() {
+    fun aDmFormChatRidesTheTargetedCoordinationArm() {
         val dm = env(FrameType.CHAT, recipientId = "bob")
         assertTrue(shouldFastSend(dm))
-        assertTrue(shouldLongRangeFanout(dm))
         assertFalse(shouldFastFanout(dm)) // never the fanned arm — it is addressed to exactly one node
     }
 
@@ -56,7 +56,6 @@ class FrameFanoutTest {
         for (e in listOf(env(FrameType.CHAT), env(FrameType.REACTION), env(FrameType.RECEIPT), env(FrameType.PROFILE))) {
             assertTrue(e.type, shouldFastFanout(e))
             assertFalse(e.type, shouldFastSend(e))
-            assertFalse(e.type, shouldLongRangeFanout(e))
         }
     }
 
@@ -65,7 +64,6 @@ class FrameFanoutTest {
         val g = env(FrameType.CHAT, group = group)
         assertFalse(shouldFastFanout(g))
         assertFalse(shouldFastSend(g)) // sealed to a sender-key chain, and past the channel's budget
-        assertFalse(shouldLongRangeFanout(g))
     }
 
     @Test
@@ -75,7 +73,6 @@ class FrameFanoutTest {
         for (e in listOf(env(FrameType.BLOB_REQ), env(FrameType.KEY_REQ), env(FrameType.TYPING, recipientId = "bob"))) {
             assertFalse(e.type, shouldFastFanout(e))
             assertFalse(e.type, shouldFastSend(e))
-            assertFalse(e.type, shouldLongRangeFanout(e))
         }
     }
 
@@ -83,14 +80,6 @@ class FrameFanoutTest {
     fun theTwoCoordinationPlaneArmsAreDisjoint() {
         val both = everyShape().filter { shouldFastFanout(it) && shouldFastSend(it) }
         assertEquals(emptyList<RelayEnvelope>(), both)
-    }
-
-    /** The targeted arm admits exactly what LoRa's does — the whole opaque DM form, none of it singled out. */
-    @Test
-    fun theTargetedArmMatchesTheLongRangeSet() {
-        for (e in everyShape()) {
-            assertEquals("${e.type} recipient=${e.recipientId} group=${e.group?.id}", shouldLongRangeFanout(e), shouldFastSend(e))
-        }
     }
 
     /** A DM-form frame always names the peer the targeted send needs; the call sites depend on it. */

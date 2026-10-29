@@ -25,7 +25,7 @@ LoRa plane (2026-09.ggq4).
 - **When touching `CryptoScheme`, `EncEnvelope.v`, `Protocol.CAP_RATCHET` / `CAP_CRYPTO_V3`, `RatchetCrypto.messageNonce`,
   `MessageContentV2`, `MessageCrypto`, or `InboundPipeline.verifyInbound` / `canCarry`:** READ ADR 005, ADR 016,
   ADR 059, FSR §5 and `docs/WIRE_COMPAT.md`. One Ed25519 signature authenticates every flooded frame, verified
-  byte-exact over the received `signed` bytes before any decrypt; the one unsigned shape is v3's live-link tick
+  byte-exact over the received `signed` bytes before any decrypt; the one unsigned `WireEnvelope` shape is v3's live-link tick
   (`relay = false`, DM-form chat to us from a pinned sender), checked before the plaintext branch and the exists-gate,
   delivered only if it opens as a `CTL_RECEIPT`, and never fed to the reset heuristic. The scheme is chosen per peer
   from the pinned profile's bits; v3 sends `nonce` and `keys` empty, never absent, because `canCarry` decodes the
@@ -157,7 +157,10 @@ LoRa plane (2026-09.ggq4).
   never `has`), or is older than its re-arm floor (15 min doubling to 4 h per same-era re-seal: the author custodies
   before it opens, so held is not applied). The era comes from the seal itself, under the ratchet lock, never a read
   after it; the memo records the DM's own id only, never the riding room ids. The bound holds while our receipts fit
-  our own per-sender custody bucket. Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases,
+  our own per-sender custody bucket. Both doors a re-delivery takes pass `reDelivery` (the exists-gate, and
+  `loraDirectCopyTaken` for a marked signed copy), and a re-seal is an answer (`sealAnswer`, x9fa's 2026-10-29
+  amendment): declined and held under our own unanswered reset; a decline and a held tick's flush record nothing.
+  Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases,
   `CustodyLabTest.aDeliveredDmBackFilledToItsRecipientPastItsSeenWindowDrawsNoSecondReceipt`.
 - **When touching `CTL_RECEIPT` / `CTL_REACTION` / `CTL_PROFILE`, `AckSync.sealTick`, `MeshManager.sealDeliveryTick` /
   `sealDeliveryTickEnvelope`, `InboundPipeline.sealDmReceipt`, or the sealed profile's fan-out:** READ ADR 018, ADR
@@ -222,6 +225,33 @@ LoRa plane (2026-09.ggq4).
   loop floored at 15 min (45763fb6), and the orphaned self session and seed rows outlived the fix (8333c858).
   `MeshLab.assertConverged` asserts no node holds either.
   <!-- doc-lint: allow openNewEpoch — the ADR's name for today's Ladder.openFresh -->
+
+- **When touching `mesh/crypto/LoraDirectSeal`, the `knit/lora/v1/…` labels, `LoraDirectCrypto` / `LoraDirectInbox` /
+  `LoraDirectSource`, `InboundPipeline.deliverLoraDirect` / `loraDirectCopyTaken` / `ratchetOnly`, the `lora_direct_seen`
+  table (`LoraDirectSeenRepository`), `Protocol.CAP_LORA_DIRECT`, `MeshManager.offerLoraDirect` / `loraDirectSource` /
+  `loraBoardMap` / `watchLoraPairs` / `bindLoraDirect`, `LORA_DIRECT_TICK_ACKS`, or `vectors/lora-direct-v1.json`:** READ
+  ADR 2026-10.x9fa (its crypto half) and `docs/SPOOL_PROTOCOL.md` C-3.5-5. The compact LoRa door is no `WireEnvelope`:
+  a pair-sealed packet keyed by the static identity agreement under directional `knit/lora/v1/…` labels, the sender
+  named by the pairTag index over pinned peers (never ourselves) and the AEAD, a `sentAt` outside 24 h back / 5 min
+  forward refused at open, and no failure on it ever reset evidence. It takes a message, a `CTL_RECEIPT` or a
+  `CTL_REACTION` and nothing else. A message it delivers is marked in `lora_direct_seen`, checked in `decryptAndDeliver`
+  **before** the exists-gate: the signed copy then opens through the ratchet alone (peek + commit, writing only
+  `ratchetDone` and shed inline acks), so no skipped key is left and an init carried only by LoRa is still processed; a
+  failed ratchet-only open is `LORA_DIRECT_RATCHET_MISSED`, never `onRatchetFailure`. A marked id is refused on the
+  compact door whether or not its row exists (deleted stays deleted). Offers ride beside the signed copy only, toward a
+  pinned profile with the bit, inside 23 h; the bit is ours only while the plane and its DM switch are on. Regression:
+  `LoraDirectSealTest`, `LoraDirectVectorTest`, `InboundPipelineTest`'s compact-door cases, `MeshManagerTest`'s compact
+  cases, `LoraDirectLabTest`.
+- **When touching `RatchetSessions.sealAnswer` / `sealCtl` / `AnswerSeal`, what a ✓✓ or a DM reaction is sealed with, or
+  `MeshManager.HeldReactions` / `flushHeldReactions`:** READ ADR 2026-10.x9fa's 2026-10-29 amendment. A ctl that answers
+  a compact-delivered DM is sealed only under a session the peer holds (ours as responder, or ours once answered),
+  decided under the session lock; otherwise it is declined, nothing persisted, and the caller sends the compact copy
+  alone — never a cleartext or v1 fallback (ADR 018), never a fresh init. Every re-delivery's re-ack is an answer too,
+  bounded per era by ADR 2026-10.8hn6's ledger. A ✓✓ is re-drawn by the signed copy's re-ack;
+  a reaction is held until the root moves; a ✓✓ sealed by any path drops its ids from the hold. With no session it
+  declines even on an undecodable prekey. Residue: #189, the race winner's intro answer still carries its init (the
+  held `LoraDirectLabTest` scenario). Regression: `RatchetSessionsSealTest`'s answer cases, `MeshManagerTest`'s
+  no-session tick and reaction cases, `RestoreLabTest` under `KNIT_LAB_BOARDS=1`.
 
 ## Adding an entry
 

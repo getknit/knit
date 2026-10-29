@@ -254,11 +254,14 @@ internal object BoardBytes {
         bitfield: UInt? = null,
         signature: ByteArray? = null,
         xeddsaSigned: Boolean = false,
+        to: UInt = MeshtasticProto.BROADCAST,
+        rxTime: UInt? = null,
+        rxRssi: Int? = null,
     ): ByteArray =
         ProtoWriter()
             .message(2) {
                 fixed32(1, from)
-                fixed32(2, MeshtasticProto.BROADCAST)
+                fixed32(2, to)
                 varint(3, channel)
                 message(4) {
                     varint(1, portnum)
@@ -271,6 +274,8 @@ internal object BoardBytes {
                     if (signature != null) bytes(10, signature)
                 }
                 fixed32(6, id)
+                if (rxTime != null) fixed32(7, rxTime)
+                if (rxRssi != null) varint(12, rxRssi)
                 if (xeddsaSigned) bool(22, true)
             }.toByteArray()
 
@@ -280,6 +285,30 @@ internal object BoardBytes {
         requestId: UInt,
         reason: RoutingError,
     ): ByteArray = packet(from, 0, MeshtasticProto.PORT_ROUTING, ProtoWriter().varint(3, reason.code).toByteArray(), requestId = requestId)
+
+    /**
+     * A ROUTING_APP ACK (`error_reason` NONE, so an empty `Routing`) for our packet [requestId], from [from]: the
+     * destination's board for a real one, a relay or our own board for an implicit one. Heard off the air, with an RSSI.
+     */
+    fun ack(
+        from: UInt,
+        requestId: UInt,
+        to: UInt = 0xABCDu,
+    ): ByteArray = packet(from, 0, MeshtasticProto.PORT_ROUTING, ByteArray(0), requestId = requestId, to = to, rxRssi = -90)
+
+    /** Whether a ToRadio{packet} asks for `want_ack` (MeshPacket field 10). */
+    fun wantsAck(toRadio: ByteArray): Boolean {
+        if (!isPacket(toRadio)) return false
+        val reader = ProtoReader(toRadio)
+        reader.readTag()
+        val mp = reader.sub()
+        while (mp.hasMore) {
+            val tag = mp.readTag()
+            if (tag ushr WireType.FIELD_SHIFT == 10) return mp.readVarint32() != 0
+            mp.skip(tag and WireType.MASK)
+        }
+        return false
+    }
 
     /** The `to`, `portnum`, and `Data.payload` of a ToRadio{packet}, or null when [toRadio] isn't a packet. */
     data class OutboundData(

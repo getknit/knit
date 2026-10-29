@@ -82,3 +82,14 @@ Regressions: `DmAutoReplyPolicyTest` (the caps, the restore, the bound), `LoraMe
 `aDmTheRoomsAirShareCannotCarryIsRefusedNotQueued`, `theSendersAnsweredOutliveTheProcess`. Counters:
 `autoReplyHeard` / `autoReplySent` / `autoReplyRefusedByReason` in `…debug.LORA`. Not yet seen on
 hardware: a device trial needs a third, stock node to DM a Knit board — CHECK `roadmap.md`.
+
+## Amendment 2026-10-29: the legacy-DM refusal is the text port's alone (ADR 2026-10.x9fa)
+
+"Current firmware refuses a channel-keyed DM outright" overstated it. Firmware `develop`'s `Router::perhapsDecode`
+rejects a channel-keyed packet addressed to us only when its portnum is `TEXT_MESSAGE_APP` (and the owner is not
+licensed): `isToUs(p) && decodedtmp.portnum == TEXT_MESSAGE_APP` → "Rejecting legacy DM", `DECODE_FAILURE`. PKI is
+attempted only for a packet on `channel == 0`. So a `PRIVATE_APP` unicast on a Knit secondary decodes and is acked
+normally, which is what ADR 2026-10.x9fa's compact DM rides on. Nothing here changes: the auto-reply still routes on
+the text port and the address, still answers on index 0, and is still the one direct send without `want_ack`
+(`LinkDestination.Direct(ack = false)`). It is no longer the plane's only unicast. The 2.8 board trial of the compact
+DM is what confirms the reading on hardware.

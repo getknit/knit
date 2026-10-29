@@ -467,4 +467,20 @@ class LoraPacePolicyTest {
         assertEquals(LoraPacePolicy.Admission.REFUSED, pace.requeue(requeued))
         assertEquals(listOf(requeued), pace.drainShed())
     }
+
+    @Test
+    fun airGivenBackEndsTheWindowDeferralAtOnce() {
+        // A compact DM's ack refunds what it did not fly (ADR 2026-10.x9fa): the pacer must not sleep to the window's roll.
+        val airtime = LoraAirtime()
+        val pace = LoraPacePolicy(minGapMs = 0, airtime = airtime)
+        val size = 200
+        val ms = airtime.timeOnAirMs(size, LoraAirtime.UNSIGNED)
+        while (airtime.admits(AirBucket.LIVE, FrameClass.DM, listOf(size), 0)) airtime.record(AirBucket.LIVE, size, 0, LoraAirtime.UNSIGNED)
+        pace.enqueue(OutboundFrame(listOf(ByteArray(size)), "held", FrameClass.DM))
+        assertNull(pace.take(1))
+        assertTrue("deferred to the window's roll", pace.nextDueAt() > 1)
+        airtime.refund(AirBucket.LIVE, 0, ms, 1)
+        pace.onAirReturned()
+        assertNotNull(pace.take(1))
+    }
 }

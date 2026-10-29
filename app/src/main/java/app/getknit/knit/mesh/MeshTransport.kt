@@ -9,29 +9,6 @@ import kotlinx.coroutines.flow.emptyFlow
 import java.io.File
 
 /**
- * What the originator of a [MeshTransport.longRangeFanout] frame knows about it that the plane cannot read
- * off the sealed bytes. Only a frame *we* originate carries a hint; everything relayed is [CONTENT], because
- * a DM, its ✓✓, a reaction and a group-key seed are wire-indistinguishable (ADR 039 §3) and the plane must
- * not guess.
- */
-enum class FanoutHint {
-    /**
-     * Anything we cannot classify — a relayed frame, or one of our own sealed ctls (a reaction, a session
-     * reset, a seed or key reply) — worth its airslot.
-     */
-    CONTENT,
-
-    /**
-     * One of our own 1:1 messages — a DM the user wrote, sent or re-sealed. The one kind that draws a ✓✓ back,
-     * so the one a plane that waits for its recipient to be heard may probe with (ADR 2026-10.a4pm).
-     */
-    CHAT,
-
-    /** Our own delivery receipt: feedback, not content. A scarce medium sheds it first and never spends its last air on it. */
-    TICK,
-}
-
-/**
  * A directly-connected mesh neighbor, identified by its node id. [protoVersion]/[capabilities] are the
  * peer's advertised protocol version and feature bits parsed from the endpoint-info advert (Wi-Fi Aware
  * `serviceSpecificInfo` / the BLE service-data payload; see
@@ -690,25 +667,6 @@ interface MeshTransport {
     fun fastSend(
         wire: WireEnvelope,
         to: Peer,
-    ) {}
-
-    /**
-     * Best-effort **long-range** fan-out of [wire] — a frame the reliable flood + store-and-forward custody
-     * already carry — offered only to a plane with **no data path at all** ([shortRange] false, [neighbors]
-     * always empty; today the LoRa plane, which airs only its own user's frames). Such a plane never receives a
-     * frame by flood, custody sync or a re-serve, so this is its *only* path — which is why, unlike [fastFanout],
-     * it admits the sealed DM-form chat frames (`FrameFanout.shouldLongRangeFanout`, ADR 039). The transport
-     * size-gates and dedups; the receiver's [MeshRouter] SeenSet drops any copy that also arrives another way. Default no-op — a radio
-     * with a data path (Bluetooth, Wi-Fi Aware) and the fakes ignore it.
-     *
-     * [hint] is what the originator knows and the plane cannot read off a sealed frame: a [FanoutHint.TICK]
-     * is our own delivery receipt, which a scarce medium may shed before content (ADR 054), and a
-     * [FanoutHint.CHAT] our own DM, the one frame whose ✓✓ can tell the plane its recipient is there (ADR
-     * 2026-10.a4pm). A relayed frame is opaque and stays [FanoutHint.CONTENT].
-     */
-    fun longRangeFanout(
-        wire: WireEnvelope,
-        hint: FanoutHint = FanoutHint.CONTENT,
     ) {}
 
     /**

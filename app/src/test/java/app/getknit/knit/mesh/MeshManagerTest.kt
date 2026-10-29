@@ -36,7 +36,9 @@ import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
@@ -46,6 +48,10 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.lora.BoardAddr
+import app.getknit.knit.mesh.lora.DirectKind
+import app.getknit.knit.mesh.lora.LoraBoardHolder
+import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.BodyStyle
@@ -64,6 +70,7 @@ import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
+import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
@@ -86,7 +93,9 @@ import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.RegistryConfiguration
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.spyk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -169,8 +178,6 @@ class MeshManagerTest {
         // Appended by the manager's session coroutines (a real Default thread) while a test's `await` poll
         // reads them from another: snapshot-iterated, so a read never trips over a write in flight.
         val sent = CopyOnWriteArrayList<Pair<WireEnvelope, Peer?>>()
-        val longRangeFanouts = CopyOnWriteArrayList<WireEnvelope>()
-        val longRangeHints = CopyOnWriteArrayList<FanoutHint>()
         val fastFanouts = CopyOnWriteArrayList<WireEnvelope>()
         val fastSends = CopyOnWriteArrayList<Pair<WireEnvelope, Peer>>()
         val internetCovers = CopyOnWriteArrayList<Set<String>>()
@@ -254,14 +261,6 @@ class MeshManagerTest {
 
         override fun coveredByInternet(peers: Set<String>) {
             internetCovers += peers
-        }
-
-        override fun longRangeFanout(
-            wire: WireEnvelope,
-            hint: FanoutHint,
-        ) {
-            longRangeFanouts += wire
-            longRangeHints += hint
         }
 
         override suspend fun sendFile(
@@ -430,6 +429,8 @@ class MeshManagerTest {
     private inner class Rig(
         private val scope: CoroutineScope,
         val commons: FakeCommonsStore? = null,
+        // When set, stands in for the ratchet facade's `rootChanges`, so a test can say "a root moved" for a peer.
+        private val rootChanges: MutableSharedFlow<String>? = null,
     ) {
         val me = party()
         val bob = party()
@@ -493,6 +494,13 @@ class MeshManagerTest {
          */
         val loraBoard = MutableStateFlow<LoraBoard?>(null)
 
+        /** The LoRa plane's two switches (ADR 2026-10.x9fa): the profile names the board and claims the compact door by them. */
+        val loraEnabled = MutableStateFlow(true)
+        val loraDmEnabled = MutableStateFlow(true)
+
+        /** Every compact copy the manager offered the LoRa plane, once [bindLora] has bound a sink (ADR 2026-10.x9fa). */
+        val loraOffers = CopyOnWriteArrayList<LoraOffer>()
+
         // Hoisted so a test can pre-shape group-ratchet state (e.g. a stale outbox ack) around the
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
@@ -522,6 +530,8 @@ class MeshManagerTest {
             coEvery { identity.nodeId() } returns me.nodeId
             coEvery { settings.displayName } returns displayName
             coEvery { settings.loraBoard } returns loraBoard
+            coEvery { settings.loraEnabled } returns loraEnabled
+            coEvery { settings.loraDmEnabled } returns loraDmEnabled
             coEvery { settings.bluetoothDownloadLimitBytes } returns bluetoothDownloadLimit
             // The local delivery of anything we originate runs the inbound path, whose first act is a
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
@@ -566,7 +576,10 @@ class MeshManagerTest {
                         store = RatchetRepository(db.ratchetDao(), clock = { now }),
                         dhIdentityPriv = { ByteArray(32) { 1 } }, // send-path tests never derive
                         spkPrivFor = { null },
-                    ),
+                    ).let { real ->
+                        val tap = rootChanges ?: return@let real
+                        spyk(real).also { every { it.rootChanges } returns tap }
+                    },
                 groupRatchet = groupRatchet,
                 groupRoots = groupRoots,
                 scope = scope,
@@ -583,6 +596,36 @@ class MeshManagerTest {
                 commons = commons,
                 extraCapabilities = extraCapabilities,
             )
+
+        /**
+         * Binds the compact-DM seams as `di/MeshModule` does on a build with the LoRa plane: a sink recording every offer
+         * into [loraOffers], and a pair seal (whose index the send path only tops up). Unbound, nothing is offered.
+         */
+        fun bindLora() {
+            val sink =
+                object : LoraDirectSink {
+                    override fun offer(
+                        recipientId: String,
+                        frameId: String,
+                        sentAtMs: Long,
+                        plaintext: ByteArray,
+                        kind: DirectKind,
+                    ) {
+                        loraOffers += LoraOffer(recipientId, frameId, sentAtMs, plaintext, kind)
+                    }
+                }
+            manager.bindLoraDirect(sink = { sink }, seal = LoraDirectSeal(ownDhPrivate = { ByteArray(32) { 1 } }, clock = { clockNow }))
+        }
+
+        /**
+         * Gives this phone a confirmed session with [p] — the state it holds once [p] has answered (ADR 2026-10.x9fa): a
+         * ✓✓ or a reaction is sealed only as an answer, under a session the peer holds, never as a fresh init.
+         */
+        suspend fun answered(p: Party) {
+            val prekey = RatchetEngine.PeerPrekey(1, RatchetCrypto.generateKeyPair().pub)
+            val init = RatchetEngine().initiate(p.nodeId, ByteArray(32) { 1 }, p.bundle.dhPublicKey(), prekey, now)
+            RatchetRepository(db.ratchetDao(), clock = { now }).commitSend(init.session.copy(confirmed = true), init.epoch)
+        }
 
         /** Pins [p]'s real key under its nodeId, as the profile handler would once its profile arrives. */
         fun pin(p: Party) {
@@ -690,8 +733,9 @@ class MeshManagerTest {
          * Waits until [MeshManager.watchProfileChanges] is collecting. `start()` launches that watcher and
          * the custody seed as siblings on `Dispatchers.Default`, so awaiting the seed does not order the
          * watcher: an edit written before its `combine` subscribes arrives as that combine's *initial*
-         * value, `drop(1)` swallows it as the stored one, and nothing floods for the rest of the test.
-         * [SettingsStore.avatarUpdatedAt] has no other collector in the manager, so one subscriber is it.
+         * value, which the watcher takes as the state it starts from rather than an edit, and nothing
+         * floods for it. [SettingsStore.avatarUpdatedAt] has no other collector in the manager, so one
+         * subscriber is it.
          */
         suspend fun awaitProfileWatcher() = await(1) { avatarUpdatedAt.subscriptionCount.value }
 
@@ -1248,6 +1292,7 @@ class MeshManagerTest {
     fun broadcastMessageIsStoredPlaintextFloodedAndCustodyCaptured() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
+            rig.bindLora()
 
             val ok = rig.manager.sendChat("gm mesh")
             advanceUntilIdle()
@@ -1270,7 +1315,7 @@ class MeshManagerTest {
             assertEquals("the room is plaintext — body rides in the clear", "gm mesh", content.body)
             assertNull("and is not encrypted", content.enc)
             assertTrue("the message is captured for store-and-forward custody", rig.forwardStore.has(frame.id))
-            assertTrue("a room post is not offered to the long-range plane (ADR 039)", rig.transport.longRangeFanouts.isEmpty())
+            assertTrue("a room post is never offered compact (ADR 2026-10.x9fa)", rig.loraOffers.isEmpty())
         }
 
     /**
@@ -1302,6 +1347,7 @@ class MeshManagerTest {
     fun directMessageIsEncryptedToRecipientAndOnlyTheyCanDecryptIt() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
+            rig.bindLora()
             rig.pin(rig.bob)
 
             val ok = rig.manager.sendChat("meet at 8", recipientId = rig.bob.nodeId)
@@ -1323,9 +1369,9 @@ class MeshManagerTest {
             val opened = rig.bob.crypto.open(content.enc!!, header, rig.bob.nodeId)
             assertNotNull("the addressed recipient can decrypt", opened)
             assertEquals("meet at 8", opened!!.body)
-            // ADR 039: a DM is also offered to the long-range (LoRa) plane, exactly once, as the same signed bytes.
-            val far = rig.transport.longRangeFanouts.single()
-            assertEquals(frame.id, WireCodec.decodeEnvelope(far.signed)!!.id)
+            // ADR 2026-10.x9fa: nothing compact toward a pinned profile without CAP_LORA_DIRECT — their board would ack it
+            // and their phone throw it away.
+            assertTrue(rig.loraOffers.isEmpty())
             // ...and to the targeted coordination-plane arm, exactly once, addressed to the recipient and never
             // fanned at every neighbor (FrameFanout.shouldFastSend). Same signed bytes on both planes.
             val (near, to) = rig.transport.fastSends.single()
@@ -1391,162 +1437,544 @@ class MeshManagerTest {
             assertFalse("nothing to seal to", rig.manager.sendCallSignal("nobody", payload))
         }
 
-    // --- the long-range re-offer set (FarPeerFrameSource, ADR 039) ---
+    // --- the compact LoRa copy (ADR 2026-10.x9fa) ---
 
-    /** A carried frame from [sender] to [recipient] as custody would hold it (the fake store never verifies). */
-    private fun carried(
-        id: String,
-        sender: String,
-        recipient: String,
-        sentAt: Long,
-    ): CarriedFrame {
-        val env =
-            RelayEnvelope(
-                type = FrameType.CHAT,
-                id = id,
-                senderId = sender,
-                sentAt = sentAt,
-                recipientId = recipient,
-                payload = WireCodec.encodePayload(ChatContent(body = "")),
-            )
-        return CarriedFrame(env, sig = ByteArray(64), signed = WireCodec.encodeEnvelope(env))
-    }
+    /** Pins [p] as a peer whose profile claims the compact door: every bit of this build plus [Protocol.CAP_LORA_DIRECT]. */
+    private fun Rig.pinLoraDirect(p: Party) =
+        pinWithCaps(
+            p,
+            RatchetCrypto.generateKeyPair().pub,
+            Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT,
+        )
 
+    /**
+     * A DM to a peer that claims the compact door is offered compact beside the signed copy (Crypto 4): the same frame id
+     * and stamp, and the content the signed copy sealed — read back off the signed frame by the recipient and off the
+     * compact plaintext, which must say the same thing.
+     */
     @Test
-    fun farPeerFramesAreOurUnackedDmsAndNeverAnybodyElses() =
+    fun aDmToAPeerWithTheCapabilityIsOfferedCompactWithTheSignedCopysContent() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
-            rig.pin(rig.bob)
-            val carol = party()
-            assertTrue(rig.manager.sendChat("still unacked", recipientId = rig.bob.nodeId))
-            rig.clockNow += 1_000
-            assertTrue(rig.manager.sendChat("already acked", recipientId = rig.bob.nodeId))
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val held = FrameId.new()
+            rig.manager.dmAcks.hold(rig.bob.nodeId, held)
+
+            assertTrue(rig.manager.sendChat("meet at 8", recipientId = rig.bob.nodeId))
             advanceUntilIdle()
-            val (unacked, acked) = rig.saved
-            rig.forwardStore.store(carried("relayed", carol.nodeId, rig.bob.nodeId, rig.now + 5_000), ForwardStore.ORIGIN_RELAY, rig.now)
-            rig.forwardStore.store(carried("own-ctl", rig.me.nodeId, rig.bob.nodeId, rig.now + 9_000), ForwardStore.ORIGIN_SELF, rig.now)
-            rig.forwardStore.store(carried("to-carol", rig.me.nodeId, carol.nodeId, rig.now + 9_500), ForwardStore.ORIGIN_SELF, rig.now)
-            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(unacked)
 
-            val ids = rig.manager.framesFor(rig.bob.nodeId).map { WireCodec.decodeEnvelope(it.signed)!!.id }
+            val frame = rig.sentChatFrames().single()
+            val offer = rig.loraOffers.single()
+            assertEquals(rig.bob.nodeId, offer.recipientId)
+            assertEquals(DirectKind.MESSAGE, offer.kind)
+            assertEquals("one id and one stamp for both copies", frame.id to frame.sentAt, offer.frameId to offer.sentAt)
+            val compact = checkNotNull(MessageContentV2.decode(offer.plaintext))
+            assertEquals("meet at 8", compact.body)
+            assertNull(compact.ctl)
+            assertEquals("the inline ack the signed copy carried rides the compact one too", listOf(held), compact.acks)
+            assertTrue("one packet's worth", offer.plaintext.size <= LORA_DIRECT_PLAINTEXT_BYTES)
+        }
 
-            // Ours only (ADR 2026-10.a4pm: they are held live sends; ADR 2026-10.rp3s: the board airs nothing it did not
-            // write). Our acked DM and our row-less (ctl) frame are dropped, and the relayed frame is never offered.
-            assertEquals(listOf(unacked.id), ids)
-            assertFalse(acked.id in ids)
+    /** Crypto 4: a compact copy sheds its inline acks rather than its packet — they ride the signed copy anyway. */
+    @Test
+    fun aCompactCopyShedsItsInlineAcksToFitOnePacket() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            repeat(MAX_INLINE_ACKS) { rig.manager.dmAcks.hold(rig.bob.nodeId, FrameId.new()) }
+            // The composer's budget counts the body and its styles, not its mentions: four of them and four inline acks
+            // are past one packet (about 200 B), the mentions alone are not (about 130 B).
+            val mentions = List(4) { Mention(nodeId = party().nodeId, name = "abcdefghij") }
+
+            assertTrue(rig.manager.sendChat("hi", mentions = mentions, recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            val signed = rig.sentChatFrames().single()
+            assertEquals("the signed copy carried all four", MAX_INLINE_ACKS.toLong(), rig.metrics.receipts().receiptsCoalesced)
+            val offer = rig.loraOffers.single()
+            assertEquals(signed.id, offer.frameId)
+            val compact = checkNotNull(MessageContentV2.decode(offer.plaintext))
+            assertEquals("hi", compact.body)
+            assertEquals(mentions, compact.mentions)
+            assertNull("shed", compact.acks)
+            assertTrue(offer.plaintext.size <= LORA_DIRECT_PLAINTEXT_BYTES)
+        }
+
+    /** Nothing compact toward a group, toward a peer without the capability, or from a manager no plane is bound to. */
+    @Test
+    fun noCompactCopyWithoutTheCapabilityOrABoundPlane() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinLoraDirect(rig.bob)
+            assertTrue(rig.manager.sendChat("unbound", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+            assertTrue("no sink bound, nothing offered", rig.loraOffers.isEmpty())
+
+            rig.bindLora()
+            val carol = party()
+            rig.pinCryptoV3(carol, RatchetCrypto.generateKeyPair().pub)
+            assertTrue(rig.manager.sendChat("no door", recipientId = carol.nodeId))
+            advanceUntilIdle()
+            assertTrue("carol's profile does not claim it", rig.loraOffers.isEmpty())
+        }
+
+    /** A DM reaction rides compact as [DirectKind.REACTION], under the sealed reaction's own id and stamp. */
+    @Test
+    fun aDmReactionIsOfferedCompact() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val target = FrameId.new()
+
+            rig.manager.sendReaction(target, "👍", recipientId = rig.bob.nodeId, group = null)
+            advanceUntilIdle()
+
+            val frame = rig.sentChatFrames().single()
+            val offer = rig.loraOffers.single()
+            assertEquals(DirectKind.REACTION, offer.kind)
+            assertEquals(frame.id, offer.frameId)
+            val compact = checkNotNull(MessageContentV2.decode(offer.plaintext))
+            assertEquals(MessageContent.CTL_REACTION, compact.ctl)
+            assertEquals(target, compact.rp?.messageId)
+            assertEquals("👍", compact.rp?.emoji)
         }
 
     /**
-     * The LoRa plane probes only a contact whose pinned profile names a board (ADR 2026-10.rp3s): the holder set is
-     * the peers with a `loraNode`, and it follows the table — a profile that names a board later adds its holder.
+     * The ctl-seal gate (ADR 2026-10.x9fa): with no session bob holds yet, the coalesced ✓✓ for DMs that came over the board
+     * opens none — no signed tick, no cleartext receipt — and only its compact copy goes, under a fresh id.
      */
     @Test
-    fun loraBoardHoldersAreThePeersWhoseProfileNamesABoardAndFollowTheTable() =
+    fun aCoalescedTickWithNoSessionToAnswerUnderGoesCompactOnly() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val held = List(2) { FrameId.new() }
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertTrue("no signed tick, no init", rig.sentChatFrames().isEmpty())
+            assertTrue("and no cleartext receipt", rig.sentFrames().none { it.type == FrameType.RECEIPT })
+            val compact = rig.loraOffers.single()
+            assertEquals(DirectKind.RECEIPT, compact.kind)
+            assertEquals(held, checkNotNull(MessageContentV2.decode(compact.plaintext)).acks)
+            assertNull("bob's ratchet started nothing", rig.db.ratchetDao().session(rig.bob.nodeId))
+        }
+
+    /** A DM reaction with no session to answer under airs compact, is never flooded cleartext, and opens no session. */
+    @Test
+    fun aDmReactionWithNoSessionToAnswerUnderGoesCompactAndIsHeld() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+
+            rig.manager.sendReaction(FrameId.new(), "👍", recipientId = rig.bob.nodeId, group = null)
+            advanceUntilIdle()
+
+            assertEquals(DirectKind.REACTION, rig.loraOffers.single().kind)
+            assertTrue(rig.sentChatFrames().isEmpty())
+            assertTrue("never the cleartext flood", rig.sentReactionFrames().isEmpty())
+            assertNull(rig.db.ratchetDao().session(rig.bob.nodeId))
+
+            // Bob answers; the held reaction goes signed, and its compact copy is not aired a second time.
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("one signed reaction", 1, rig.sentChatFrames().size)
+            assertEquals("one compact copy in all", 1, rig.loraOffers.size)
+        }
+
+    /** The compact ✓✓ carries the DM ids alone: room ticks riding the signed tick never air (rp3s). */
+    @Test
+    fun theCompactTickCarriesNoRoomRiders() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val dm = FrameId.new()
+            val riders = List(2) { FrameId.new() }
+            rig.manager.dmAcks.hold(rig.bob.nodeId, dm)
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, riders)
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertEquals("the riders rode the signed tick", 2L, rig.metrics.receipts().receiptsRidden)
+            val compact = checkNotNull(MessageContentV2.decode(rig.loraOffers.single().plaintext))
+            assertEquals(listOf(dm), listOfNotNull(compact.ack) + compact.acks.orEmpty())
+        }
+
+    /** An AckSync group escalation is never offered compact: a group ✓✓ never airs (rp3s). */
+    @Test
+    fun aGroupEscalationIsNeverOfferedCompact() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            rig.manager.ackSync.owe(FrameId.new(), rig.bob.nodeId, escalatable = true)
+            rig.clockNow += AckSync.TICK_BATCH_DEBOUNCE_MS + 1
+            rig.manager.ackSync.retryPending()
+            advanceUntilIdle()
+
+            assertEquals("the escalated tick went signed", 1, rig.sentChatFrames().size)
+            assertTrue(rig.loraOffers.isEmpty())
+        }
+
+    /**
+     * A held ✓✓ sealed meanwhile by another path — here the coalescer's flush once the session was answered — is not
+     * sealed again when the hold is flushed: a seal releases the id from the hold. A second seal would spend a chain key
+     * on an id already answered (shape 9 in `crypto-reviewer.md`: a re-seal that burns keys).
+     */
+    @Test
+    fun aHeldTickSealedMeanwhileIsNotSealedAgain() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinLoraDirect(rig.bob)
+            val id = FrameId.new()
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(id))
+            rig.answered(rig.bob)
+            rig.manager.dmAcks.hold(rig.bob.nodeId, id)
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            assertEquals(1, rig.sentChatFrames().size)
+
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("exactly one signed ✓✓ for it", 1, rig.sentChatFrames().size)
+        }
+
+    /** A root moving for the author ([RatchetSessions.rootChanges]) is what seals a held ✓✓: the manager's own collector. */
+    @Test
+    fun aRootChangeSealsTheHeldTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val roots = MutableSharedFlow<String>(extraBufferCapacity = 8)
+            val rig = Rig(backgroundScope, rootChanges = roots)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            rig.pinLoraDirect(rig.bob)
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(FrameId.new()))
+            rig.answered(rig.bob)
+            rig.manager.start()
+            assertTrue("held until the root moves", rig.sentChatFrames().isEmpty())
+
+            rig.await(1) { roots.subscriptionCount.value }
+            roots.emit(rig.bob.nodeId)
+            rig.await(1) { rig.sentChatFrames().size }
+            assertEquals(rig.bob.nodeId, rig.sentChatFrames().single().recipientId)
+            rig.manager.stop()
+        }
+
+    /** A held ✓✓ still declined at the flush is held again, and sealed exactly once when a later flush finds the session. */
+    @Test
+    fun aHeldTickStillDeclinedIsHeldAgainAndSealedOnceAnswered() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinLoraDirect(rig.bob)
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(FrameId.new()))
+
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertTrue("still nothing to answer under", rig.sentFrames().none { it.type == FrameType.CHAT || it.type == FrameType.RECEIPT })
+
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("the re-held id sealed", 1, rig.sentChatFrames().size)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("and not again", 1, rig.sentChatFrames().size)
+        }
+
+    /** A held ✓✓ whose author can no longer read a sealed tick (the ratchet bit gone) goes as the legacy receipt. */
+    @Test
+    fun aHeldTickForAnAuthorWhoCannotReadASealedOneGoesCleartext() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             val carol = party()
+            rig.pinWithCaps(carol, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_RATCHET.inv())
+            val id = FrameId.new()
+            rig.manager.holdDeclinedTicks(carol.nodeId, listOf(id))
+
+            rig.manager.flushHeldReactions(carol.nodeId)
+            advanceUntilIdle()
+            assertTrue(rig.sentChatFrames().isEmpty())
+            assertEquals("the legacy receipt", 1, rig.sentFrames().count { it.type == FrameType.RECEIPT })
+        }
+
+    /** [HeldReactions] keeps the newest stamp per message, whatever order they were declined in; other messages stand apart. */
+    @Test
+    fun heldReactionsKeepTheNewestPerMessage() {
+        val held = HeldReactions()
+
+        fun reaction(
+            message: String,
+            emoji: String,
+        ) = MessageContent(body = "", ctl = MessageContent.CTL_REACTION, rp = ReactionPayload(messageId = message, emoji = emoji))
+        held.hold("bob", reaction("m1", "👍"), at = 2)
+        held.hold("bob", reaction("m1", "❤️"), at = 3)
+        held.hold("bob", reaction("m1", "😮"), at = 1) // older, declined later: never replaces the newer
+        held.hold("bob", reaction("m2", "👍"), at = 1)
+        val taken = held.take("bob")
+        assertEquals(listOf("m1" to "❤️", "m2" to "👍"), taken.map { (c, _) -> c.rp?.messageId to c.rp?.emoji })
+        assertEquals(listOf(3L, 1L), taken.map { it.second })
+        assertTrue("taken once", held.take("bob").isEmpty())
+    }
+
+    /** Two declined reactions to one message hold the newer only: one signed reaction once the session is answered. */
+    @Test
+    fun twoDeclinedReactionsToOneMessageSealOnlyTheNewer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val message = FrameId.new()
+            rig.manager.sendReaction(message, "👍", recipientId = rig.bob.nodeId, group = null)
+            rig.clockNow += 1_000
+            val newerAt = rig.clockNow
+            rig.manager.sendReaction(message, "❤️", recipientId = rig.bob.nodeId, group = null)
+            advanceUntilIdle()
+            assertEquals("each aired compact as it was declined", 2, rig.loraOffers.size)
+            assertTrue(rig.sentChatFrames().isEmpty())
+
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            // Sealed under its original stamp (`sealDmReaction` stamps `sentAt` with the hold's `at`): the ❤️'s, not the 👍's.
+            assertEquals("one signed reaction, the newer", newerAt, rig.sentChatFrames().single().sentAt)
+            assertEquals("no compact copy re-aired", 2, rig.loraOffers.size)
+        }
+
+    /**
+     * No cleartext receipt where a sealed one was declined: a cleartext receipt purges the DM's signed copy from every
+     * custody, so the ratchet step it carries is a frame nobody will re-serve (shape 8 in `crypto-reviewer.md`). With
+     * no session, a ratchet-capable author whose prekey will not decode still gets no cleartext receipt for a
+     * compact-delivered DM, while an author without the ratchet bit keeps the legacy receipt, the only ✓✓ it reads.
+     */
+    @Test
+    fun aNoSessionTickDeclinesForARatchetPeerAndStaysLegacyForAV1Peer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            coEvery { rig.peers.find(rig.bob.nodeId) } returns
+                PeerEntity(
+                    nodeId = rig.bob.nodeId,
+                    pubKey = rig.bob.bundle.encoded,
+                    capabilities = Protocol.LOCAL_CAPABILITIES,
+                    prekeyId = 1,
+                    prekeyPub = "not-base64!!!",
+                    prekeyProfileAt = 1L,
+                    updatedAt = 1L,
+                )
+            rig.manager.dmAcks.hold(rig.bob.nodeId, FrameId.new())
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            assertTrue(
+                "declined: no receipt of any form",
+                rig.sentFrames().none { it.type == FrameType.RECEIPT || it.type == FrameType.CHAT },
+            )
+
+            val carol = party()
+            rig.pinWithCaps(carol, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_RATCHET.inv())
+            rig.manager.dmAcks.hold(carol.nodeId, FrameId.new())
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+            assertEquals("the v1 peer's legacy receipt", 1, rig.sentFrames().count { it.type == FrameType.RECEIPT })
+        }
+
+    /**
+     * Crypto 5: a coalesced flush past one packet's ids leaves as several compact ticks of at most [LORA_DIRECT_TICK_ACKS]
+     * ids, riders included, covering every id once; the signed tick stays one frame at `MAX_LORA_TICK_ACKS`.
+     */
+    @Test
+    fun aCoalescedFlushPastOnePacketLeavesAsSeveralCompactTicks() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val held = List(DmAckCoalescer.MAX_LORA_TICK_ACKS) { FrameId.new() }
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
+            advanceUntilIdle()
+
+            assertEquals("the signed tick is one frame", 1, rig.sentChatFrames().size)
+            val ticks = rig.loraOffers.toList()
+            assertEquals(2, ticks.size)
+            assertTrue(ticks.all { it.kind == DirectKind.RECEIPT })
+            assertEquals("the first under the signed tick's id", rig.sentChatFrames().single().id, ticks.first().frameId)
+            val carried = ticks.map { checkNotNull(MessageContentV2.decode(it.plaintext)) }
+            assertTrue(carried.all { listOfNotNull(it.ack).size + it.acks.orEmpty().size <= LORA_DIRECT_TICK_ACKS })
+            assertEquals(held, carried.flatMap { listOfNotNull(it.ack) + it.acks.orEmpty() })
+            assertTrue("each one packet", ticks.all { it.plaintext.size <= LORA_DIRECT_PLAINTEXT_BYTES })
+        }
+
+    /**
+     * Crypto 6: a DM that waited on its key past the window the far phone takes a compact copy in is flushed signed
+     * only; one inside it goes compact too. The post-reset re-seal never does: it repairs the ratchet, which the compact
+     * leg never rode.
+     */
+    @Test
+    fun thePendingFlushOffersCompactInsideTheWindowAndTheResetResealNever() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val fresh = rig.dmRow("fresh", sentAt = rig.now)
+            val stale = rig.dmRow("stale", sentAt = rig.now - LORA_DIRECT_SEND_WINDOW_MS)
+            coEvery { rig.messages.pendingForRecipient(rig.bob.nodeId) } returns listOf(fresh, stale)
+
+            rig.manager.flushPendingFor(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("both flooded signed", 2, rig.sentChatFrames().size)
+            assertEquals(listOf(fresh.id), rig.loraOffers.map { it.frameId })
+
+            rig.loraOffers.clear()
+            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(fresh)
+            rig.manager.resealRecentDmsTo(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertTrue(rig.loraOffers.isEmpty())
+        }
+
+    /** One of our DM rows to bob, as `sendChat` writes it. */
+    private fun Rig.dmRow(
+        body: String,
+        sentAt: Long,
+    ) = MessageEntity(
+        id = FrameId.new(),
+        senderId = me.nodeId,
+        recipientId = bob.nodeId,
+        conversationId = bob.nodeId,
+        body = body,
+        sentAt = sentAt,
+        received = false,
+    )
+
+    /**
+     * [MeshManager.loraDirectSource] (Crypto 6): our unacked DMs inside the window, newest first, as compact plaintext with
+     * no inline acks and only those that fit one packet; `isUnacked` asks the row again — ours, a DM, no ✓✓, not parked
+     * on its key, still young.
+     */
+    @Test
+    fun theLoraSourceIsOurYoungUnackedDmsThatFitOnePacketNewestFirst() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val older = rig.dmRow("older", sentAt = rig.now - 60_000)
+            val newer = rig.dmRow("newer", sentAt = rig.now - 1_000)
+            val long = rig.dmRow("y".repeat(LORA_DIRECT_PLAINTEXT_BYTES), sentAt = rig.now)
+            val stale = rig.dmRow("stale", sentAt = rig.now - LORA_DIRECT_SEND_WINDOW_MS)
+            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(older, stale, long, newer)
+            val source = rig.manager.loraDirectSource()
+
+            val due = source.unackedTo(rig.bob.nodeId, limit = 3)
+            assertEquals(listOf(newer.id, older.id), due.map { it.frameId })
+            assertEquals(listOf("newer", "older"), due.map { MessageContentV2.decode(it.plaintext)?.body })
+            assertEquals(listOf(newer.sentAt, older.sentAt), due.map { it.sentAtMs })
+            assertEquals(listOf(newer.id), source.unackedTo(rig.bob.nodeId, limit = 1).map { it.frameId })
+
+            coEvery { rig.messages.find(newer.id) } returns newer
+            coEvery { rig.messages.find(older.id) } returns older.copy(received = true)
+            coEvery { rig.messages.find(stale.id) } returns stale
+            assertTrue(source.isUnacked(newer.id))
+            assertFalse("acked", source.isUnacked(older.id))
+            assertFalse("past the window", source.isUnacked(stale.id))
+            assertFalse("not ours to know", source.isUnacked(FrameId.new()))
+        }
+
+    /**
+     * [MeshManager.loraBoardMap] (ADR 2026-10.x9fa): pinned peers whose profile names a board, the capability read off the
+     * pinned profile, a board two profiles name going to the newer claim alone, never ourselves, and the map following the
+     * table on one subscription.
+     */
+    @Test
+    fun theBoardMapRanksAContactBeforeAStrangerThenTheNewestClaimAndNeverHoldsOurOwnBoard() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val carol = party()
+            val dave = party()
+
+            fun row(
+                p: Party,
+                node: Long?,
+                caps: Long?,
+                at: Long,
+            ) = PeerEntity(nodeId = p.nodeId, pubKey = p.bundle.encoded, loraNode = node, capabilities = caps, updatedAt = at)
             val table =
                 MutableStateFlow(
                     listOf(
-                        PeerEntity(nodeId = rig.bob.nodeId, loraNode = 0x1234L),
-                        PeerEntity(nodeId = carol.nodeId),
+                        row(rig.bob, 0x1234L, Protocol.CAP_LORA_DIRECT, 5L),
+                        // An older claim to bob's board: carol held it before him.
+                        row(carol, 0x1234L, Protocol.CAP_LORA_DIRECT, 2L),
+                        row(dave, 0x5678L, Protocol.LOCAL_CAPABILITIES, 3L),
+                        // Our own row (a pre-fix self pin) and an unpinned claimant never count.
+                        row(rig.me, 0x9999L, Protocol.CAP_LORA_DIRECT, 9L),
+                        PeerEntity(nodeId = "unpinned", loraNode = 0x4444L, updatedAt = 1L),
                     ),
                 )
             coEvery { rig.peers.observePeers() } returns table
-            // One long-lived subscription, as the transport holds it: the second set must arrive on it, not on a re-read.
-            val holders = rig.manager.loraBoardHolders().stateIn(backgroundScope)
+            val accepted = MutableStateFlow(emptySet<String>())
+            coEvery { rig.settings.acceptedConversations } returns accepted
+            coEvery { rig.messages.observeConversationsIAuthoredIn(any()) } returns MutableStateFlow(emptyList())
+            val map = rig.manager.loraBoardMap().stateIn(backgroundScope)
 
-            assertEquals("only the peer whose profile names a board", setOf(rig.bob.nodeId), holders.value)
+            assertEquals(
+                mapOf(
+                    rig.bob.nodeId to LoraBoardHolder(BoardAddr(0x1234u), direct = true, profileVersion = 5L),
+                    dave.nodeId to LoraBoardHolder(BoardAddr(0x5678u), direct = false, profileVersion = 3L),
+                ),
+                map.value,
+            )
 
-            table.value =
-                listOf(
-                    PeerEntity(nodeId = rig.bob.nodeId, loraNode = 0x1234L),
-                    PeerEntity(nodeId = carol.nodeId, loraNode = 0x5678L),
-                )
-            withTimeout(AWAIT_MS) { holders.first { it == setOf(rig.bob.nodeId, carol.nodeId) } }
+            table.value = listOf(row(rig.bob, 0x1234L, Protocol.CAP_LORA_DIRECT, 5L), row(carol, 0x1234L, Protocol.CAP_LORA_DIRECT, 7L))
+            withTimeout(AWAIT_MS) { map.first { it.keys == setOf(carol.nodeId) } }
+
+            // A contact outranks a stranger's newer claim: bob's thread is accepted, carol is a stranger.
+            accepted.value = setOf(rig.bob.nodeId)
+            withTimeout(AWAIT_MS) { map.first { it.keys == setOf(rig.bob.nodeId) } }
+
+            // Our own board is nobody's, whatever stale claim still names it.
+            rig.loraBoard.value = LoraBoard(0x1234L, null)
+            withTimeout(AWAIT_MS) { map.first { it.isEmpty() } }
         }
 
     /**
-     * The latent bug the split fixed: the old read took the newest four custody frames to the peer and only then
-     * dropped our acked DMs and our own sealed ctls, so a ✓✓ or a reaction we sent could take every slot an
-     * unacked DM needed. Our half is now chosen by id off the unacked rows, up to its own cap.
+     * Our profile names the board only while the plane is on, and claims [Protocol.CAP_LORA_DIRECT] only while its DM
+     * switch is on too, and only on a manager bound to read `0x11` (ADR 2026-10.x9fa).
      */
     @Test
-    fun ourUnackedDmsAreNotCrowdedOutByNewerAckedFramesOrOwnCtls() =
+    fun theProfileNamesTheBoardWhilePlaneIsOnAndClaimsTheDoorWhileDmsAreToo() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
-            rig.pin(rig.bob)
-            val ownLimit = 6 // MeshManager.FAR_REOFFER_OWN_LIMIT (the companion is private)
-            repeat(ownLimit + 2) { i ->
-                assertTrue(rig.manager.sendChat("unacked $i", recipientId = rig.bob.nodeId))
-                rig.clockNow += 1_000
-            }
-            advanceUntilIdle()
-            val unacked = rig.saved.toList()
-            // Newer than every DM: our own sealed ctls to bob, which have no message row of their own.
-            repeat(6) { i ->
-                rig.forwardStore.store(
-                    carried("own-ctl-$i", rig.me.nodeId, rig.bob.nodeId, rig.now + 60_000 + i),
-                    ForwardStore.ORIGIN_SELF,
-                    rig.now,
-                )
-            }
-            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns unacked
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            rig.loraBoard.value = LoraBoard(0x1234L, null)
 
-            val ids = rig.manager.framesFor(rig.bob.nodeId).map { WireCodec.decodeEnvelope(it.signed)!!.id }
+            fun latest(): ProfileContent = WireCodec.decodePayload<ProfileContent>(rig.custodiedProfiles().last().payload)!!
 
-            val newest = unacked.sortedByDescending { it.sentAt }.take(ownLimit).map { it.id }
-            assertEquals("our newest unacked DMs, newest first, up to the own cap", newest, ids)
-            assertTrue("no ctl took a slot", ids.none { it.startsWith("own-ctl") })
-        }
+            rig.bindLora()
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            assertEquals(0x1234L, latest().loraNode)
+            assertTrue((latest().capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT != 0L)
 
-    /** An unacked DM whose custody row is gone takes no slot: the over-fetch leaves it to an older one still held. */
-    @Test
-    fun anUnackedDmCustodyNoLongerHoldsLeavesItsSlotToAnOlderOne() =
-        runTest(UnconfinedTestDispatcher()) {
-            val rig = Rig(backgroundScope)
-            rig.pin(rig.bob)
-            repeat(7) { i ->
-                assertTrue(rig.manager.sendChat("unacked $i", recipientId = rig.bob.nodeId))
-                rig.clockNow += 1_000
-            }
-            advanceUntilIdle()
-            val unacked = rig.saved.toList()
-            val newest = unacked.maxBy { it.sentAt }
-            rig.forwardStore.remove(newest.id) // evicted, or past its TTL
-            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns unacked
+            rig.loraDmEnabled.value = false
+            rig.await(2) { rig.custodiedProfiles().size }
+            assertEquals("the board still named", 0x1234L, latest().loraNode)
+            assertEquals("the door no longer claimed", 0L, (latest().capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT)
 
-            val ids = rig.manager.framesFor(rig.bob.nodeId).map { WireCodec.decodeEnvelope(it.signed)!!.id }
-
-            val held = unacked.filter { it.id != newest.id }.sortedByDescending { it.sentAt }.map { it.id }
-            assertEquals("the six still held, the oldest included", held, ids)
-        }
-
-    /**
-     * ADR 2026-10.a4pm's hint: a DM that never flew (parked on its key, sealed now) is the user's message and may
-     * probe; the post-reset re-seal is not, because custody keeps the first-stored seal of that id, so a held
-     * re-seal would be re-offered as bytes the reset peer cannot open.
-     */
-    @Test
-    fun thePendingFlushHintsChatAndThePostResetResealHintsContent() =
-        runTest(UnconfinedTestDispatcher()) {
-            val rig = Rig(backgroundScope)
-            rig.pin(rig.bob)
-            assertTrue(rig.manager.sendChat("hello", recipientId = rig.bob.nodeId))
-            advanceUntilIdle()
-            val row = rig.saved.single()
-            rig.transport.longRangeHints.clear()
-
-            coEvery { rig.messages.pendingForRecipient(rig.bob.nodeId) } returns listOf(row)
-            rig.manager.flushPendingFor(rig.bob.nodeId)
-            advanceUntilIdle()
-            assertEquals(listOf(FanoutHint.CHAT), rig.transport.longRangeHints)
-
-            rig.transport.longRangeHints.clear()
-            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(row)
-            rig.manager.resealRecentDmsTo(rig.bob.nodeId)
-            advanceUntilIdle()
-            assertEquals(listOf(FanoutHint.CONTENT), rig.transport.longRangeHints)
+            rig.loraEnabled.value = false
+            rig.await(3) { rig.custodiedProfiles().size }
+            assertNull("no board named while the plane is off", latest().loraNode)
+            rig.manager.stop()
         }
 
     /**
@@ -1625,18 +2053,6 @@ class MeshManagerTest {
             assertEquals("nothing sealed to a blocked peer", sealsAfterReset, rig.transport.sent.size)
         }
 
-    /** ADR 2026-10.rp3s: custody to a peer that others wrote is theirs to deliver — the board re-offers none of it. */
-    @Test
-    fun relayedCustodyToAPeerIsNeverAFarPeerFrame() =
-        runTest(UnconfinedTestDispatcher()) {
-            val rig = Rig(backgroundScope)
-            val carol = party()
-            repeat(6) { i ->
-                rig.forwardStore.store(carried("r$i", carol.nodeId, rig.bob.nodeId, rig.now + i), ForwardStore.ORIGIN_RELAY, rig.now)
-            }
-            assertEquals(emptyList<WireEnvelope>(), rig.manager.framesFor(rig.bob.nodeId))
-        }
-
     // --- DM: deferred (pendingKey) when the recipient's key is not yet known ---
 
     @Test
@@ -1661,6 +2077,7 @@ class MeshManagerTest {
     fun groupMessageEncryptsOnlyToMembersWithKeysAndCarriesTheRoster() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
+            rig.bindLora()
             val carol = party() // a member WITH a published key
             rig.pin(carol)
             // "dave" has no key (peers.find defaults to null) → excluded from the wrapped-key set.
@@ -1673,7 +2090,7 @@ class MeshManagerTest {
             assertTrue(ok)
             val frame = rig.sentChatFrames().single()
             assertEquals("the roster rides on the frame so members can rebuild the group", members, frame.group?.members)
-            assertTrue("group-form chat never rides the long-range plane (ADR 039)", rig.transport.longRangeFanouts.isEmpty())
+            assertTrue("group-form chat is never offered compact (ADR 2026-10.x9fa)", rig.loraOffers.isEmpty())
 
             val content = WireCodec.decodePayload<ChatContent>(frame.payload)!!
             val enc = content.enc!!
@@ -2204,21 +2621,31 @@ class MeshManagerTest {
             )
     }
 
-    /** ADR 054: LoRa-held receipts flush as ONE originated sealed tick, hinted TICK for the board, counted as coalesced. */
+    /**
+     * ADR 054: LoRa-held receipts flush as ONE originated sealed tick, counted as coalesced — and, toward a peer whose
+     * profile claims the compact door, its compact copy back over the board under the signed tick's id (ADR 2026-10.x9fa).
+     */
     @Test
-    fun heldLoraReceiptsFlushAsOneHintedTick() =
+    fun heldLoraReceiptsFlushAsOneTickAndItsCompactCopy() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
-            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
-            rig.manager.dmAcks.hold(rig.bob.nodeId, "in-1")
-            rig.manager.dmAcks.hold(rig.bob.nodeId, "in-2")
+            rig.bindLora()
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT)
+            rig.answered(rig.bob)
+            val held = List(2) { FrameId.new() }
+            held.forEach { rig.manager.dmAcks.hold(rig.bob.nodeId, it) }
             rig.clockNow += DmAckCoalescer.HOLD_MS
             rig.manager.dmAcks.flushDue()
             advanceUntilIdle()
 
             val tick = rig.sentChatFrames().single()
             assertEquals(rig.bob.nodeId, tick.recipientId)
-            assertEquals(listOf(FanoutHint.TICK), rig.transport.longRangeHints)
+            val compact = rig.loraOffers.single()
+            assertEquals(DirectKind.RECEIPT, compact.kind)
+            assertEquals("under the signed tick's own id and stamp", tick.id to tick.sentAt, compact.frameId to compact.sentAt)
+            val content = checkNotNull(MessageContentV2.decode(compact.plaintext))
+            assertEquals(MessageContent.CTL_RECEIPT, content.ctl)
+            assertEquals(held, content.acks)
             assertEquals(1L, rig.metrics.receipts().receiptsCustodied)
             assertEquals(1L, rig.metrics.receipts().receiptsCoalesced)
             assertTrue(
@@ -2266,7 +2693,6 @@ class MeshManagerTest {
                     .isEmpty(),
             )
             assertEquals(2L, rig.metrics.receipts().receiptsCoalesced)
-            assertEquals("a reply is our own DM, never a tick", listOf(FanoutHint.CHAT, FanoutHint.CHAT), rig.transport.longRangeHints)
 
             val carol = party()
             rig.pinWithCaps(carol, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_INLINE_ACK.inv())
@@ -2305,6 +2731,7 @@ class MeshManagerTest {
             // 19:11 toward the same absent author. One frame, already sealed to them and already custodied.
             val rig = Rig(backgroundScope)
             rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             rig.manager.dmAcks.hold(rig.bob.nodeId, "dm-1")
             rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf("room-1", "room-2"))
             rig.clockNow += DmAckCoalescer.HOLD_MS
@@ -2324,6 +2751,7 @@ class MeshManagerTest {
             // twelve ids in all; aa27 let up to 64 riders onto it (ADR 2026-09.y5f3 caps the riders).
             val rig = Rig(backgroundScope)
             rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             repeat(DmAckCoalescer.MAX_LORA_TICK_ACKS) { rig.manager.dmAcks.hold(rig.bob.nodeId, "dm-$it") }
             rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, List(5) { "room-$it" })
             rig.clockNow += DmAckCoalescer.HOLD_MS
@@ -2503,6 +2931,7 @@ class MeshManagerTest {
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.pinCryptoV3(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             rig.manager.dmAcks.hold(rig.bob.nodeId, FrameId.new())
             rig.manager.dmAcks.hold(rig.bob.nodeId, FrameId.new())
             rig.clockNow += DmAckCoalescer.HOLD_MS
@@ -2525,6 +2954,7 @@ class MeshManagerTest {
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.pinCryptoV3(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             rig.manager.dmAcks.hold(rig.bob.nodeId, "not-a-frame-id")
             rig.clockNow += DmAckCoalescer.HOLD_MS
             rig.manager.dmAcks.flushDue()
@@ -3030,6 +3460,7 @@ class MeshManagerTest {
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
 
             rig.manager.sendReaction("m1", "👍", recipientId = rig.bob.nodeId)
             advanceUntilIdle()
@@ -3114,6 +3545,7 @@ class MeshManagerTest {
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             coEvery { rig.reactions.currentEmoji("m1", rig.me.nodeId) } returns "👍" // same emoji → toggle off
 
             rig.manager.sendReaction("m1", "👍", recipientId = rig.bob.nodeId)
@@ -3146,7 +3578,14 @@ class MeshManagerTest {
             advanceUntilIdle()
 
             assertTrue("no v1 EncEnvelope for a ctl payload, ever", rig.sentChatFrames().isEmpty())
-            assertEquals(1, rig.sentReactionFrames().size)
+            // A ratchet-capable peer with no session is an answer to wait on (ADR 2026-10.x9fa), whatever its prekey: held,
+            // not flooded cleartext. Only a peer without the ratchet bit takes the legacy frame.
+            assertTrue(rig.sentReactionFrames().isEmpty())
+            rig.pinWithCaps(rig.bob, RatchetCrypto.generateKeyPair().pub, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_RATCHET.inv())
+            rig.manager.sendReaction("m2", "👍", recipientId = rig.bob.nodeId)
+            advanceUntilIdle()
+            assertTrue(rig.sentChatFrames().isEmpty())
+            assertEquals("the v1 peer's legacy frame", 1, rig.sentReactionFrames().size)
             assertEquals(1L, rig.metrics.seals().reactionsSealedFallback)
         }
 
@@ -3192,6 +3631,7 @@ class MeshManagerTest {
             // An open emoji set is no wire change: a 10-code-point ZWJ sequence is just a longer string.
             val rig = Rig(backgroundScope)
             rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.answered(rig.bob)
             val kiss = "\uD83D\uDC69\uD83C\uDFFD\u200D\u2764\uFE0F\u200D\uD83D\uDC8B\u200D\uD83D\uDC68\uD83C\uDFFC"
 
             rig.manager.sendReaction("m1", kiss, recipientId = rig.bob.nodeId)
@@ -4121,3 +4561,12 @@ class MeshManagerTest {
             )
         }
 }
+
+/** One compact copy the manager offered the LoRa plane ([LoraDirectSink.offer]). */
+internal class LoraOffer(
+    val recipientId: String,
+    val frameId: String,
+    val sentAt: Long,
+    val plaintext: ByteArray,
+    val kind: DirectKind,
+)

@@ -14,6 +14,7 @@ import kotlin.random.Random
  * the executable pin on the field numbers the board interop depends on. The property loops assert the
  * decoder is total: no input, however hostile, throws.
  */
+@Suppress("LargeClass") // one golden vector per message and field the board interop depends on
 class MeshtasticProtoTest {
     private fun hex(s: String): ByteArray =
         s
@@ -85,6 +86,48 @@ class MeshtasticProtoTest {
             "0A 16 15 FF FF FF FF 22 08 08 80 02 12 03 01 02 03 35 EF BE AD DE 48 03",
             bytes.hex(),
         )
+    }
+
+    @Test
+    fun encodeDirectUnicastWithWantAck() {
+        // A compact DM (ADR 2026-10.x9fa): `to` the destination's board, the Knit secondary, PRIVATE_APP, hop_limit, and
+        // want_ack (MeshPacket field 10, tag 0x50) appended last — everything before it is the broadcast's layout.
+        val bytes =
+            MeshtasticProto.encodePacket(
+                OutboundPacket(
+                    to = 0x1234abcdu,
+                    channelIndex = 1,
+                    id = 0xDEADBEEFu,
+                    payload = byteArrayOf(0x11, 2, 3),
+                    hopLimit = 3,
+                    wantAck = true,
+                ),
+            )
+        assertEquals(
+            "0A 1A 15 CD AB 34 12 18 01 22 08 08 80 02 12 03 11 02 03 35 EF BE AD DE 48 03 50 01",
+            bytes.hex(),
+        )
+        assertEquals("want_ack costs its tag and a one-byte bool", 2, MeshtasticProto.WANT_ACK_FIELD_BYTES)
+    }
+
+    @Test
+    fun wantAckOffLeavesEveryOtherPacketByteForByteAsItWas() {
+        val packet = OutboundPacket(channelIndex = 1, id = 0xDEADBEEFu, payload = byteArrayOf(1, 2, 3), hopLimit = 3)
+        assertEquals(
+            "0A 18 15 FF FF FF FF 18 01 22 08 08 80 02 12 03 01 02 03 35 EF BE AD DE 48 03",
+            MeshtasticProto.encodePacket(packet).hex(),
+        )
+    }
+
+    @Test
+    fun aPacketsRxTimeDecodesAndAbsentOrZeroIsNull() {
+        // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, rx_time (field 7, fixed32) = 1_700_000_000 }
+        val timed = MeshtasticProto.decodeFromRadio(hex("12 11 0D 34 12 00 00 22 05 08 01 12 01 41 3D 00 F1 53 65")) as FromRadio.Packet
+        assertEquals(1_700_000_000u, timed.packet.rxTime)
+        val untimed = MeshtasticProto.decodeFromRadio(hex("12 0C 0D 34 12 00 00 22 05 08 01 12 01 41")) as FromRadio.Packet
+        assertNull(untimed.packet.rxTime)
+        val zero = MeshtasticProto.decodeFromRadio(hex("12 11 0D 34 12 00 00 22 05 08 01 12 01 41 3D 00 00 00 00")) as FromRadio.Packet
+        assertNull("a board with no clock reports 0: no time", zero.packet.rxTime)
     }
 
     @Test

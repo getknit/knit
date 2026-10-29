@@ -215,8 +215,10 @@ class SessionLabTest {
      * the tick is what Bob adopts the reset from; Bob's answer to that new init is what confirms Alice.
      */
     private suspend fun tickAfterReset(apart: Int) {
-        val alice = lab.node("alice").apply { setDisplayName("Alice") }
-        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        // No board on either, whatever the run: the subject is the signed tick alice seals on her unanswered reset. With a
+        // board bob's DMs reach her compact first, and their ✓✓ is an answer the gate declines there (ADR 2026-10.x9fa).
+        val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
         lab.link(alice, bob)
         lab.awaitAcquainted(alice, bob)
         assertTrue(alice.sendDm(bob, "hello"))
@@ -315,7 +317,12 @@ class SessionLabTest {
             alice.transport.release(bob.transport) { batch ->
                 batch.sortedByDescending { WireCodec.decodeEnvelope(it.signed)?.id == reset } // the reset first
             }
-            lab.await(apart.size) { bob.decrypted(bob.dmWith(alice)).count { it.second in apart } }
+            // With boards (`KNIT_LAB_BOARDS=1`) the apart DMs' rows came compact before the link, so the oracle is that their
+            // signed copies ran the ratchet (`lora_direct_seen`), not that a row exists; without, the rows are the oracle.
+            lab.await(apart.size) {
+                val read = bob.decrypted(bob.dmWith(alice)).map { it.first }.toSet()
+                apartIds.count { id -> bob.loraSeen(id)?.ratchetDone ?: (id in read) }
+            }
             assertEquals("bob read the apart DMs after adopting", alice.session(bob)?.rootHash, bob.session(alice)?.rootHash)
 
             // Turnarounds until Alice's restarted numbering has sealed past the old era's epoch, each DM awaited by text.
@@ -464,8 +471,10 @@ class SessionLabTest {
      * not the lab calendar, and a jump past 48 h before a restart reaps receive state — lab-lint's own rule.)
      */
     private suspend fun framesSealedAgainstARetiredEpoch(bobInitiates: Boolean) {
-        val alice = lab.node("alice").apply { setDisplayName("Alice") }
-        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        // No board on either, whatever the run: the link's epoch filter is this scenario's subject, and a compact copy of
+        // the reactions would cross the air around it.
+        val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
         lab.link(alice, bob)
         lab.awaitAcquainted(alice, bob)
         val (first, second) = if (bobInitiates) bob to alice else alice to bob

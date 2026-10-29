@@ -1025,9 +1025,6 @@
     <string name="diagnostics_metric_lora_nak">LoRa-NAKs</string>
     <string name="diagnostics_metric_lora_dm_sent">Gesendete private LoRa-Nachrichten</string>
     <string name="diagnostics_metric_lora_dm_received">Empfangene private LoRa-Nachrichten</string>
-    <string name="diagnostics_metric_lora_reoffered">Erneut angebotene private LoRa-Nachrichten</string>
-    <string name="diagnostics_metric_lora_dm_probes">Als Sondierung gesendete private LoRa-Nachrichten</string>
-    <string name="diagnostics_metric_lora_unheard_held">Zurückgehaltene private LoRa-Nachrichten (Kontakt nicht empfangen)</string>
     <string name="diagnostics_metric_spool_bridged">Über Internet-Relays empfangene Nachrichten</string>
     <string name="diagnostics_metric_spool_invalid">In Quarantäne verschobene Relay-Blobs</string>
     <string name="diagnostics_metric_spool_errors">Relay-Fehler</string>
@@ -1596,7 +1593,7 @@
     <string name="chat_lora_group">Gruppenchats laufen nicht über LoRa – entfernte Mitglieder bekommen sie später</string>
     <string name="chat_lora_group_title">Gruppenchats laufen nicht über LoRa</string>
     <string name="chat_lora_group_body">Über LoRa laufen der Raum „In der Nähe“ und private Nachrichten, aber keine Gruppenchats. Jemand hier wurde zuletzt per LoRa empfangen und sieht diese Nachrichten erst wieder in WLAN- oder Bluetooth-Reichweite oder über ein Internet-Relay. Nichts geht verloren – die Nachrichten warten auf diese Person.</string>
-    <string name="chat_lora_long_message">Lange Nachricht – erreicht Personen über LoRa vielleicht nicht</string>
+    <string name="chat_lora_long_message">Lange Nachrichten, Antworten und Anhänge erreichen Personen über LoRa vielleicht nicht</string>
     <string name="chat_lora_room_not_carried">Lange Beiträge, Antworten und Anhänge erreichen Personen über LoRa vielleicht nicht</string>
     <string name="chat_mesh_author">%1$s, im Meshtastic-Kanal</string>
     <string name="chat_mesh_author_contact">%1$s, im Meshtastic-Kanal – Identität nicht verifiziert</string>

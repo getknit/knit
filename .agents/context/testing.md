@@ -480,9 +480,20 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   heard only over LoRa is never shown. LoRa scenarios meet everyone by radio first (`meetThenSplit`), then cut the
   cross-pocket links. A board airs only its own phone's frames, so a scenario asserting what crossed reads the
   author's own board (`loraAired`, `loraTx`), never a pocket-mate's.
+- **Boards in every scenario is a manual sweep** (ADR 2026-10.x9fa): `KNIT_LAB_BOARDS=1` gives every node a board on
+  one shared `boardsAir` (a `quickAir`, and a DM ✓✓ hold capped at 1 s), so a scenario written for links alone also runs with compact DMs and ticks
+  racing its signed copies — the restore and session shapes that first showed the answer gate's need. A node that must
+  stay board-less in that sweep (one whose subject is a signed-only path, or a carrier) says `lab.node(name,
+  board = false)`. No CI job sets the variable: run it by hand (`KNIT_LAB_BOARDS=1 scripts/lab-chaos.sh --tests
+  SessionLabTest --tests RestoreLabTest --tests LoraDirectLabTest --runs 10`) after a change to the crypto or LoRa
+  planes; env vars are not Gradle inputs, so a re-run needs `--rerun`. A LoRa scenario's own air is
+  `MeshLab.quickAir()` — the destination board acks in 50 ms and an unanswered unicast retries every 300 ms, the
+  firmware's minute compressed — and its boards come up provisioned on `MeshLab.KNIT_SLOT`, since a compact DM is never
+  sent from slot 0. `FakeMeshtasticAir` runs a want_ack unicast on its link's scope and only once `send` returned, so a
+  board's outcome never reaches the transport before the flight it names.
 - **A DM that arrived over the board is ticked through `DmAckCoalescer`'s 45 s hold** (ADR 054). A LoRa DM
   scenario whose oracle waits for that tick boots its nodes with `LabLimits(dmAckHoldMs = 1_000)` and keeps the
-  default oracle timeout, never a 60 s one (`aDmSentWhileTheFarBoardWasOffLandsByTheReprobe`).
+  default oracle timeout, never a 60 s one.
 - **Every sealed frame carries the epoch key**, so an absent recipient opens whatever survives a custody
   quota without the conversation's first frames and asks for no reset — the quota is loss, never a wedge
   (`CustodyQuotaLabTest`; the "evicted init needs a reset" premise was wrong).
@@ -748,8 +759,8 @@ before "simplifying":
   case here runs inside `runTest { }` — and `Migration.migrate` is suspend too (`KnitMigrations`). **DB v1 is the frozen launch baseline** — there is **no** destructive fallback: from
   v1 forward every `@Database` bump MUST add a tested `Migration` to `KnitMigrations` (`data/KnitMigrations.kt`,
   appended to `ALL`) and a from→to case to `KnitDatabaseMigrationTest` — a missing migration throws at
-  open time (caught here in CI), never silently wipes. The DB is at **v27** today, with twenty-six migrations
-  (`MIGRATION_1_2` … `MIGRATION_26_27`) and a `KnitDatabaseMigrationTest` case for each, plus a current-schema
+  open time (caught here in CI), never silently wipes. The DB is at **v28** today, with twenty-seven migrations
+  (`MIGRATION_1_2` … `MIGRATION_27_28`) and a `KnitDatabaseMigrationTest` case for each, plus a current-schema
   smoke test whose `CURRENT_VERSION` must be bumped by hand (`SqlCipherDriverUpgradeTest` reads
   `KNIT_DB_SCHEMA_VERSION`). Keep the version count down while a branch is
   unreleased — fold its schema churn into one bump before merging, the way `MIGRATION_9_10` carries the whole

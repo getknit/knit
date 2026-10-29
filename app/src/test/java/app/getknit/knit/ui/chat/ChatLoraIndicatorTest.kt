@@ -144,7 +144,7 @@ class ChatLoraIndicatorTest {
     fun aDraftPastTheBudgetShowsTheHint() {
         render(loraCarry = LoraCarry.Dm, draft = "a".repeat(LoraSizeHint.DM_BODY_BYTES + 1))
         compose.onNodeWithTag("chat_lora_size_hint").assertIsDisplayed()
-        compose.onNodeWithText("Long message — it may not reach people over LoRa").assertIsDisplayed()
+        compose.onNodeWithText("Long messages, replies and attachments may not reach people over LoRa").assertIsDisplayed()
     }
 
     /**
@@ -174,7 +174,8 @@ class ChatLoraIndicatorTest {
     @Test
     fun aReplyShrinksTheBudget() {
         val reply = ReplyRef(messageId = "m0", authorId = "ana", author = "Ana", snippet = "see you at the gate")
-        val body = "a".repeat(LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.REPLY_RESERVE_BYTES + 1)
+        // A DM rides as one compact packet (ADR 2026-10.x9fa): a reply leaves no room, so any reply draws the hint.
+        val body = "a"
         render(loraCarry = LoraCarry.Dm, draft = body, replyingTo = reply)
         compose.onNodeWithTag("chat_lora_size_hint").assertIsDisplayed()
     }

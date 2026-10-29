@@ -520,4 +520,23 @@ class LoraAirtimeTest {
         assertEquals(LoraAirtime.Refusal.TICK_TAIL, air.refusal(AirBucket.LIVE, FrameClass.TICK, packet, now))
         assertNull("content still has the tail", air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now))
     }
+
+    @Test
+    fun aRefundGivesBackOnlyTheExactBookingsAndNoMoreThanAsked() {
+        // A compact DM is booked for every airing at send; its ack refunds the unflown ones (ADR 2026-10.x9fa).
+        val air = LoraAirtime()
+        val ms = air.timeOnAirMs(60, LoraAirtime.UNSIGNED)
+        repeat(5) { air.record(AirBucket.LIVE, 60, 1_000, LoraAirtime.UNSIGNED) }
+        air.record(AirBucket.LIVE, 60, 2_000, LoraAirtime.UNSIGNED) // another send's: not this one's to give back
+        assertEquals(3, air.refund(AirBucket.LIVE, 1_000, ms, 3))
+        assertEquals(3 * ms, air.snapshot(2_000).liveUsedMs)
+        assertEquals("only two of its own were left", 2, air.refund(AirBucket.LIVE, 1_000, ms, 9))
+        assertEquals(ms, air.snapshot(2_000).liveUsedMs)
+    }
+
+    @Test
+    fun theContentionSlotIsTheFirmwaresAtThePreset() {
+        // `RadioInterface::computeSlotTimeMsec`: 4.5 symbols of an SX126x CAD plus 7.6 ms; LongFast's symbol is 8.192 ms.
+        assertEquals(4.5 * 8.192 + 7.6, LoraAirtime().slotTimeMs(), 0.001)
+    }
 }

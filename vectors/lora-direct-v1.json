@@ -1,0 +1,42 @@
+{
+  "about": "Compact LoRa DM (ADR 2026-10.x9fa). pairSecret = X25519(alice.agreementScalar, bob's X25519 key). Each direction: HKDF-SHA256(ikm = pairSecret, salt = 32 zero bytes, info = label || senderId || recipientId, L) with labels knit/lora/v1/key (32), knit/lora/v1/nonce (32), knit/lora/v1/tag (4), node ids as their 16 raw bytes. nonce = HKDF-SHA256(ikm = nonceKey, salt = 32 zero bytes, info = frameId (16) || salt (8), 12). packet = 0x11 || pairTag (4) || salt (8) || frameId (16) || sentAt (u48 BE, ms) || AES-256-GCM(key, nonce, plaintext, aad) with its 16-byte tag; aad = the 35 header bytes || senderId (16) || recipientId (16). The plaintext is v3 compact content (MessageContentV2). A receiver finds the sender by the pairTag among its pinned peers and refuses a sentAt older than 24 h or more than 5 min ahead of its own clock.",
+  "identities": {
+    "alice": {
+      "signingSeed": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3da",
+      "agreementScalar": "020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4db",
+      "bundle": "omZzaWdQdWJYIOQDCZjP1a0XI8Fp+VaqC564YZtZkr1hLCr0KOvHn43wZ2hwa2VQdWJYIHPnmXHJEQApcjYyqAtwe/T2LBJXYzRuHocY1sDcw6o6",
+      "nodeId": "4cgq2pnhh6p3j3afwsue3chrpi"
+    },
+    "bob": {
+      "signingSeed": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc",
+      "agreementScalar": "040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dd",
+      "bundle": "omZzaWdQdWJYIHVcTLklbKfNxKz9xs/u2oSQF+W5+VFOmRkb1n4LDUJ2Z2hwa2VQdWJYIPdOW7dRXVZSdJZ6912ISX3G/H/NYH2p3ZGmF9uGrQEQ",
+      "nodeId": "raunzp43s3sncyojiezgg7ulna"
+    }
+  },
+  "pairSecret": "2c8b718baba2a0f61566c1f98a529acf5b4b65e4d2a80b4459508331df334c23",
+  "derivations": {
+    "aliceToBob": {
+      "info": "label ‖ 4cgq2pnhh6p3j3afwsue3chrpi (16 B) ‖ raunzp43s3sncyojiezgg7ulna (16 B)",
+      "key": "76df4a7bb6ed1a62e64927457b921bfcc7ae435b26e0e05e9d8fe528281457d9",
+      "nonceKey": "0790b9c3ebd87140c871905abe243a98c0e1f5a004d96c70c6141c915572c888",
+      "pairTag": "34875da4"
+    },
+    "bobToAlice": {
+      "info": "label ‖ raunzp43s3sncyojiezgg7ulna (16 B) ‖ 4cgq2pnhh6p3j3afwsue3chrpi (16 B)",
+      "key": "8d6f48cb72efd317235f5831483bec42c41cf22c56d1eeba03871606831827be",
+      "nonceKey": "defff4abe2ba1f72326c6007a1e70800a30c17f4533ac4c43514579b430ad7fe",
+      "pairTag": "0d1f606c"
+    }
+  },
+  "aliceToBob": {
+    "frameId": "HyYtNDtCSVBXXmVsc3qBiA",
+    "sentAt": 1790000000000,
+    "salt": "2930373e454c535a",
+    "body": "See you at the north gate",
+    "plaintext": "a101781953656520796f7520617420746865206e6f7274682067617465",
+    "nonce": "6d1046891c77f35f16fe814d",
+    "aad": "1134875da42930373e454c535a1f262d343b424950575e656c737a818801a0c4506c00e08d0d3da73f9fb4ec05b4a84d88f17a8828dcbf9b96e4d161c94132637e8b68",
+    "packet": "1134875da42930373e454c535a1f262d343b424950575e656c737a818801a0c4506c005389f7d5273f35eb81b4f293f90859673a7d03c8b4a5ce82878155a225fcd9caa4681ae0cae69e8cf4e78268c1"
+  }
+}

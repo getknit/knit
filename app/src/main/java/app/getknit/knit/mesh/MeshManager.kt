@@ -39,6 +39,7 @@ import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.LoraBoard
@@ -49,7 +50,9 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
@@ -63,7 +66,18 @@ import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.crypto.sealedContent
 import app.getknit.knit.mesh.link.FileIntake
+import app.getknit.knit.mesh.lora.BoardAddr
+import app.getknit.knit.mesh.lora.DirectDm
+import app.getknit.knit.mesh.lora.DirectKind
+import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
+import app.getknit.knit.mesh.lora.LoraBoardHolder
+import app.getknit.knit.mesh.lora.LoraBoardMap
+import app.getknit.knit.mesh.lora.LoraDirectSink
+import app.getknit.knit.mesh.lora.LoraDirectSource
+import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
+import app.getknit.knit.mesh.lora.MeshtasticProto
+import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -169,6 +183,29 @@ internal const val INLINE_ACK_BYTES = 23
 
 /** Most receipts one reply carries inline (ADR 054) — beyond this the standalone coalesced tick is the cheaper form. */
 internal const val MAX_INLINE_ACKS = 4
+
+/**
+ * The plaintext one compact LoRa DM carries at the MTU-255 floor (ADR 2026-10.x9fa): the floor's payload, less what
+ * `want_ack` adds to the unicast's `ToRadio` and the 51 bytes of header and GCM tag around the content — 175 B. What a
+ * compact copy sheds its inline acks to fit, and what the coalesced ✓✓'s compact ticks are sized against.
+ */
+internal val LORA_DIRECT_PLAINTEXT_BYTES: Int =
+    LoraMeshTransport.PRE_READY_PAYLOAD - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+
+/**
+ * Most ids one compact ✓✓ carries, riders included (Crypto 5): a v3 `CTL_RECEIPT` holds each as its 16 raw bytes and a
+ * one-byte header, and [LORA_DIRECT_PLAINTEXT_BYTES] less the receipt's fixed fields leaves room for ten. Pinned by
+ * `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor` (ten fit, eleven do not). A coalesced
+ * flush past it leaves as several compact ticks; the signed tick keeps `DmAckCoalescer.MAX_LORA_TICK_ACKS`.
+ */
+internal const val LORA_DIRECT_TICK_ACKS = 10
+
+/**
+ * How old a DM of ours may be and still ride LoRa compact (Crypto 6): an hour inside the receiver's window
+ * ([LoraDirectSeal.WINDOW_MS], custody's 24 h), so a resend or a re-probe never airs a packet the far phone refuses as
+ * stale after its board acked it.
+ */
+internal val LORA_DIRECT_SEND_WINDOW_MS: Long = LoraDirectSeal.WINDOW_MS - 60 * 60_000L
 
 /**
  * Orchestrates the mesh: owns the [MeshTransport] and [MeshRouter], handles delivery of new frames
@@ -345,11 +382,35 @@ class MeshManager(
     TransferSignals,
     CallSignals,
     TurnSource,
-    FarPeerFrameSource,
     MeshPostSink {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
     private var sessionScope: CoroutineScope? = null
+
+    /**
+     * Where the compact LoRa copy of a DM, a DM reaction or a ✓✓ we just sealed is offered (ADR 2026-10.x9fa) — the LoRa
+     * transport's [LoraDirectSink], resolved at call time because the transport and this manager construct each other.
+     * Null in a build without the plane and in every rig that binds none ([bindLoraDirect]).
+     */
+    @Volatile
+    private var loraDirectSink: () -> LoraDirectSink? = { null }
+
+    /** The pair seal the plane seals and opens compact DMs with; its index is kept off the peer table ([watchLoraPairs]). */
+    @Volatile
+    private var loraSeal: LoraDirectSeal? = null
+
+    /**
+     * Binds the compact-DM seams (ADR 2026-10.x9fa), before [start]: `di/MeshModule` where the build carries the LoRa
+     * plane, and the lab for a node with a board. Unbound, nothing is offered compact, the seal's index is never built and
+     * our profile never claims [Protocol.CAP_LORA_DIRECT]: a build that cannot read `0x11` must not say it can.
+     */
+    internal fun bindLoraDirect(
+        sink: () -> LoraDirectSink?,
+        seal: LoraDirectSeal,
+    ) {
+        loraDirectSink = sink
+        loraSeal = seal
+    }
 
     // Serialises the database re-arm and the user's tap (ADR 2026-10.js2p): see [rewantMissingBlobsLocked].
     private val rewantLock = Mutex()
@@ -511,7 +572,7 @@ class MeshManager(
             metrics = metrics,
             sealTick = { authorId, ackIds -> sealDeliveryTick(authorId, ackIds) },
             canSeal = { authorId -> canSealTickTo(authorId) },
-            originateTick = { authorId, ackIds -> originateDeliveryTick(authorId, ackIds) },
+            originateTick = { authorId, ackIds -> originateDeliveryTick(authorId, ackIds) == TickSent.SENT },
             flushScope = { sessionScope },
             debounceMs = tickDebounceMs,
             rideHoldMs = rideHoldMs,
@@ -522,8 +583,9 @@ class MeshManager(
 
     // The ✓✓ for a DM that arrived over the LoRa board waits here (ADR 054): a burst from one author becomes
     // one sealed tick, and a reply we send meanwhile carries the acks inline (sendChat). The flush is the
-    // group escalation's own path — one originated ctl frame, hinted TICK so the board ranks it as feedback —
-    // falling back per id to the cleartext receipt, exactly as AckSync does. heal() is the backstop timer.
+    // group escalation's own path — one originated ctl frame, and its compact copies back over the board in one-packet
+    // ticks (ADR 2026-10.x9fa, ranked as feedback there) — falling back per id to the cleartext receipt, exactly as
+    // AckSync does. heal() is the backstop timer.
     internal val dmAcks =
         DmAckCoalescer(
             now = clock,
@@ -609,6 +671,9 @@ class MeshManager(
      */
     internal val scopeConfigs: ScopeConfigRepository = ScopeConfigRepository(db, clock)
 
+    /** The DMs a compact LoRa copy delivered (ADR 2026-10.x9fa): written by the pipeline, swept with the ratchet's keys. */
+    private val loraSeen = LoraDirectSeenRepository(db)
+
     // The inbound half of the mesh: verify → custody → dispatch → deliver/ack, plus the store-and-forward
     // carry gate and the avatar/group-photo/attachment screening. MeshManager still OWNS the DTN services
     // above and the outbound origination choke; the pipeline receives the services by reference and reaches
@@ -651,7 +716,9 @@ class MeshManager(
             groupRatchet = groupRatchet,
             clock = clock,
             originate = ::originateSigned,
-            originateTick = { originateSigned(it, FanoutHint.TICK) },
+            offerLoraReceipt = ::offerLoraReceipt,
+            holdDeclinedTick = { authorId, ackId -> holdDeclinedTicks(authorId, listOf(ackId)) },
+            releaseHeldTicks = { authorId, ids -> releaseHeldTicks(authorId, ids) },
             dmAcks = dmAcks,
             holdsLive = forwardStore::holdsLiveReceipt,
             flushPending = ::flushPendingFor,
@@ -678,6 +745,7 @@ class MeshManager(
             commonsTitle = { commons?.find(it)?.name },
             noteVerified = ::noteVerified,
             scopeConfigs = scopeConfigs,
+            loraSeen = loraSeen,
         )
 
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and are
@@ -1023,6 +1091,14 @@ class MeshManager(
         relayedPresence.start()
         router = newRouter(session)
         router.start()
+        // Ahead of the transport, so the LoRa plane's first compact DM finds its pair index built or building.
+        loraSeal?.let { watchLoraPairs(session, it) }
+        // A held reaction's session answered (ADR 2026-10.x9fa): its signed copy goes now.
+        session.launch {
+            ratchet.rootChanges.collect { peer ->
+                runRound({ Log.w(TAG, "held reactions failed: ${it.message}") }) { flushHeldReactions(peer) }
+            }
+        }
         transport.start()
         watchNeighbors(session)
         // A link that ended a file's stream frees its parked asks at once (ADR 2026-10.g24x).
@@ -1330,6 +1406,7 @@ class MeshManager(
             sessionScope?.launch {
                 sweepExpired()
                 keyExchange.retryMissing()
+                (heldReactions.peers() + heldTicks.keys).distinct().forEach { flushHeldReactions(it) }
                 ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
                 dmAcks.flushDue() // tick the LoRa-held DM receipts whose hold has run out (ADR 054)
                 if (clock() - lastRetentionSweepAt >= HealFloors.RETENTION_SWEEP_MS) sweepKeyRetention()
@@ -1355,6 +1432,8 @@ class MeshManager(
         ratchet.sweep(clock())
         groupRatchet.sweep(clock())
         groupRoots.sweep(clock())
+        // The compact LoRa marks (ADR 2026-10.x9fa): 48 h on our own clock, past every copy that can still reach us.
+        loraSeen.sweep(clock())
     }
 
     /**
@@ -1634,20 +1713,28 @@ class MeshManager(
                     attachmentHash = sealedAttachment?.hash,
                 ),
             ),
-            chatHint(recipientId, group),
         )
+        offerChatLoraDirect(row, group, envelope, inlineIds)
         return true
     }
 
     /**
-     * A DM the user wrote is [FanoutHint.CHAT]: the one DM-form frame that draws a ✓✓, so the LoRa reach gate may
-     * probe with it (ADR 2026-10.a4pm). A group or room frame never rides the long-range plane, so it keeps the
-     * default.
+     * The compact copy of a DM [sendChat] just sealed, for the LoRa plane (ADR 2026-10.x9fa): beside the signed one and
+     * never instead of it, under the same id and stamp, with the content the signed copy sealed — the inline acks
+     * included when its v2/v3 arm carried them, which is the only arm that does.
      */
-    private fun chatHint(
-        recipientId: String?,
+    private suspend fun offerChatLoraDirect(
+        row: MessageEntity,
         group: GroupInfo?,
-    ): FanoutHint = if (recipientId != null && group == null) FanoutHint.CHAT else FanoutHint.CONTENT
+        envelope: EncEnvelope,
+        inlineIds: List<String>,
+    ) {
+        val recipientId = row.recipientId
+        if (recipientId == null || group != null) return
+        val carried = EncEnvelope.isDmRatchetVersion(envelope.v) && inlineIds.isNotEmpty()
+        val content = row.sealedContent().copy(acks = inlineIds.takeIf { carried })
+        offerLoraDirect(recipientId, row.id, row.sentAt, content, DirectKind.MESSAGE)
+    }
 
     /** Builds a [FrameType.CHAT] routing envelope wrapping the given [content] payload. */
     private fun chatEnvelope(
@@ -2288,10 +2375,21 @@ class MeshManager(
     private suspend fun sealDeliveryTickEnvelope(
         authorId: String,
         ackIds: List<String>,
-    ): SealedTick? {
-        val peer = peers.find(authorId) ?: return null
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return null
-        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return null
+    ): SealedTick? = (sealTick(authorId, ackIds, answer = false) as? TickSeal.Sealed)?.tick
+
+    /**
+     * [sealDeliveryTickEnvelope]'s body. With [answer] — a ✓✓ for DMs a compact LoRa copy delivered (ADR 2026-10.x9fa) —
+     * it seals only under a session the author holds ([RatchetSessions.sealAnswer]) and says so when it declines, so the
+     * caller sends the board's compact ticks alone rather than a fresh init or a cleartext receipt.
+     */
+    private suspend fun sealTick(
+        authorId: String,
+        ackIds: List<String>,
+        answer: Boolean,
+    ): TickSeal {
+        val peer = peers.find(authorId) ?: return TickSeal.CannotSeal
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return TickSeal.CannotSeal
+        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return TickSeal.CannotSeal
         val me = identity.nodeId()
         val id = FrameId.new()
         val now = clock()
@@ -2302,26 +2400,62 @@ class MeshManager(
                 else -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = ackIds)
             }.sealBytes(peer.readsCryptoV3())
         val sealed =
-            ratchet.sealDm(authorId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme)
-                ?: run {
-                    metrics.onReceiptSealedFallback()
-                    return null
+            when (
+                val outcome =
+                    ratchet.sealCtl(
+                        answer,
+                        authorId,
+                        bundle.dhPublicKey(),
+                        ratchetPrekeyOf(peer),
+                        plaintext,
+                        aad,
+                        now,
+                        scheme,
+                    )
+            ) {
+                is RatchetSessions.AnswerSeal.Sealed -> {
+                    // Whatever this tick covers is answered now: a held copy of it must not be sealed again (shape 9).
+                    releaseHeldTicks(authorId, ackIds)
+                    outcome.env
                 }
+
+                RatchetSessions.AnswerSeal.Declined -> {
+                    return TickSeal.Declined
+                }
+
+                RatchetSessions.AnswerSeal.CannotSeal -> {
+                    metrics.onReceiptSealedFallback()
+                    return TickSeal.CannotSeal
+                }
+            }
         metrics.onReceiptSealed()
         val v3 = scheme == EncEnvelope.VERSION_DM_V3
         if (v3) metrics.onDmSealedV3()
-        return SealedTick(
-            env =
-                RelayEnvelope(
-                    type = FrameType.CHAT,
-                    id = id,
-                    senderId = me,
-                    sentAt = now,
-                    recipientId = authorId,
-                    payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
-                ),
-            v3 = v3,
+        return TickSeal.Sealed(
+            SealedTick(
+                env =
+                    RelayEnvelope(
+                        type = FrameType.CHAT,
+                        id = id,
+                        senderId = me,
+                        sentAt = now,
+                        recipientId = authorId,
+                        payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+                    ),
+                v3 = v3,
+            ),
         )
+    }
+
+    /** What [sealTick] made of a tick: sealed, declined as an answer with nothing to answer under, or impossible. */
+    private sealed interface TickSeal {
+        class Sealed(
+            val tick: SealedTick,
+        ) : TickSeal
+
+        data object Declined : TickSeal
+
+        data object CannotSeal : TickSeal
     }
 
     /**
@@ -2360,23 +2494,46 @@ class MeshManager(
         authorId: String,
         ackIds: List<String>,
         riderCap: Int = AckSync.MAX_BATCH_ACKS,
-    ): Boolean {
+        // The DM ✓✓ for DMs that came over the board ([flushDmAcks]): sealed as an answer only, and offered back over
+        // LoRa compact. AckSync's group and commons escalations are neither — a room or group ✓✓ never airs (rp3s).
+        fromBoard: Boolean = false,
+        // Sealed as an answer without the compact offer: a held ✓✓'s retry ([flushHeldTicks]).
+        answer: Boolean = fromBoard,
+    ): TickSent {
         // The best carrier there is (ADR 2026-09.aa27): this frame is already sealed to that author, already
         // originated and already custodied, so the room ticks waiting for a ride cost it a few bytes and no
         // row of their own. [riderCap] is the hop's: a frame built for the 3-packet LoRa hop takes at most
         // `DmAckCoalescer.MAX_LORA_TICK_ACKS` ids in all, riders included (ADR 2026-09.y5f3).
         val riding = ackSync.takeRiding(authorId, riderCap - ackIds.size)
-        val tick = sealDeliveryTickEnvelope(authorId, ackIds + riding)
-        if (tick == null) {
-            ackSync.giveBackRiding(authorId, riding)
-            return false
-        }
-        originateSigned(tick.env, FanoutHint.TICK)
+        val tick =
+            when (val sealed = sealTick(authorId, ackIds + riding, answer = answer)) {
+                is TickSeal.Sealed -> {
+                    sealed.tick
+                }
+
+                TickSeal.Declined -> {
+                    ackSync.giveBackRiding(authorId, riding)
+                    return TickSent.DECLINED
+                }
+
+                TickSeal.CannotSeal -> {
+                    ackSync.giveBackRiding(authorId, riding)
+                    return TickSent.CANNOT_SEAL
+                }
+            }
+        originateSigned(tick.env)
         metrics.onReceiptCustodied()
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
-        return true
+        // Its compact copies for the LoRa plane (ADR 2026-10.x9fa): the same ids, in one-packet ticks — the DM path only.
+        // The DM ids alone: the room ticks riding the signed tick never air (ADR 2026-10.rp3s), and one past ten would cost
+        // the compact ✓✓ a second packet.
+        if (fromBoard) offerLoraTicks(authorId, tick.env.id, tick.env.sentAt, ackIds)
+        return TickSent.SENT
     }
+
+    /** What [originateDeliveryTick] did with a tick. */
+    private enum class TickSent { SENT, DECLINED, CANNOT_SEAL }
 
     /**
      * The ride deadline's spool form (ADR 2026-09.y5f3): the same sealed tick, **signed** and `relay = false`
@@ -2477,12 +2634,24 @@ class MeshManager(
         // row of their own. Field case: the pocket member that owed two room ticks originated exactly this
         // frame 3 minutes later for an unrelated DM ack, and they would have crossed there instead of
         // waiting 45 minutes for a link.
-        if (originateDeliveryTick(authorId, ackIds, riderCap = DmAckCoalescer.MAX_LORA_TICK_ACKS)) {
-            metrics.onReceiptCoalesced(ackIds.size - 1)
-            return
+        when (originateDeliveryTick(authorId, ackIds, riderCap = DmAckCoalescer.MAX_LORA_TICK_ACKS, fromBoard = true)) {
+            TickSent.SENT -> {
+                metrics.onReceiptCoalesced(ackIds.size - 1)
+            }
+
+            // No session the author holds yet (ADR 2026-10.x9fa): the board's compact ticks alone, under a fresh id, and
+            // never the cleartext receipt — a sealed tick is not downgraded (ADR 018). The signed ✓✓ is the re-ack each
+            // DM's signed copy draws once its ratchet-only open lands (`InboundPipeline.loraDirectCopyTaken`).
+            TickSent.DECLINED -> {
+                offerLoraTicks(authorId, FrameId.new(), clock(), ackIds)
+                holdDeclinedTicks(authorId, ackIds)
+            }
+
+            TickSent.CANNOT_SEAL -> {
+                val me = identity.nodeId()
+                ackIds.forEach { pipeline.ackCleartext(it, me) }
+            }
         }
-        val me = identity.nodeId()
-        ackIds.forEach { pipeline.ackCleartext(it, me) }
     }
 
     /**
@@ -2692,6 +2861,9 @@ class MeshManager(
         me: String,
         now: Long,
         content: MessageContent,
+        // A held reaction's retry: its compact copy aired when it was first declined, and a second decline re-holds it
+        // without airing it again.
+        retry: Boolean = false,
     ): Boolean {
         val peer = peers.find(recipientId)
         val bundle = peer?.pubKey?.let { PublicKeyBundle.decode(it) }
@@ -2700,7 +2872,24 @@ class MeshManager(
         val id = FrameId.new()
         val aad = MessageCrypto.header(id, me, now, recipientId)
         val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
-        val sealed = ratchet.sealDm(recipientId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme) ?: return false
+        val sealed =
+            when (val outcome = ratchet.sealAnswer(recipientId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, now, scheme)) {
+                is RatchetSessions.AnswerSeal.Sealed -> {
+                    outcome.env
+                }
+
+                // A reaction answers the peer (ADR 2026-10.x9fa): with no session they hold yet it must not open one, nor
+                // fall back to the cleartext flood. Its compact copy airs now; the signed one waits for the session.
+                RatchetSessions.AnswerSeal.Declined -> {
+                    if (!retry) offerLoraDirect(recipientId, FrameId.new(), now, content, DirectKind.REACTION)
+                    heldReactions.hold(recipientId, content, now)
+                    return true
+                }
+
+                RatchetSessions.AnswerSeal.CannotSeal -> {
+                    return false
+                }
+            }
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         originateSigned(
             RelayEnvelope(
@@ -2713,7 +2902,78 @@ class MeshManager(
             ),
         )
         metrics.onReactionSealed()
+        // A held reaction's retry: its compact copy aired when it was first declined.
+        if (!retry) offerLoraDirect(recipientId, id, now, content, DirectKind.REACTION)
         return true
+    }
+
+    /**
+     * DM reactions whose signed copy [sealDmReaction] declined — no session the peer holds yet (ADR 2026-10.x9fa) — kept
+     * until one is: re-sealed under their original stamp when the session's root moves ([RatchetSessions.rootChanges])
+     * and on every heal, the newest per message only (a reaction is last-writer-wins on its stamp). In memory: a process
+     * that dies first loses the signed copy, while the compact copy already aired; the peer's next frame confirms and a
+     * later reaction goes signed as ever.
+     */
+    private val heldReactions = HeldReactions()
+
+    internal suspend fun flushHeldReactions(peerId: String) {
+        flushHeldTicks(peerId)
+        val held = heldReactions.take(peerId)
+        if (held.isEmpty()) return
+        val me = identity.nodeId()
+        held.forEach { (content, at) ->
+            if (!sealDmReaction(peerId, me, at, content, retry = true)) Log.w(TAG, "held reaction to $peerId could not be sealed")
+        }
+    }
+
+    /**
+     * The ✓✓ ids whose signed tick was declined — no session the author holds yet (ADR 2026-10.x9fa) — kept per author
+     * until one is, and sealed then as one answer, with no compact copy (theirs already aired, or was covered). Without
+     * this a decline at the coalescer's flush or at the signed copy's re-ack, with the session answered only later, lost
+     * the signed ✓✓ for good wherever the compact one could not cross. In memory, like [heldReactions]; bounded per author.
+     */
+    private val heldTicks = ConcurrentHashMap<String, MutableSet<String>>()
+
+    /** Holds [ids] for [authorId]'s signed ✓✓ until a session they hold exists; the pipeline's re-ack lands here too. */
+    internal fun holdDeclinedTicks(
+        authorId: String,
+        ids: Collection<String>,
+    ) {
+        val held = heldTicks.computeIfAbsent(authorId) { java.util.Collections.synchronizedSet(LinkedHashSet()) }
+        synchronized(held) {
+            held += ids
+            while (held.size > MAX_HELD_TICKS) held.remove(held.first())
+        }
+    }
+
+    /** Drops [ids] from [authorId]'s held ✓✓: a tick or a receipt covering them was just sealed and sent. */
+    internal fun releaseHeldTicks(
+        authorId: String,
+        ids: Collection<String>,
+    ) {
+        val held = heldTicks[authorId] ?: return
+        synchronized(held) { held.removeAll(ids.toSet()) }
+    }
+
+    private suspend fun flushHeldTicks(authorId: String) {
+        val held = heldTicks.remove(authorId) ?: return
+        val ids = synchronized(held) { held.toList() }
+        ids.chunked(DmAckCoalescer.MAX_LORA_TICK_ACKS).forEach { chunk ->
+            when (originateDeliveryTick(authorId, chunk, riderCap = chunk.size, answer = true)) {
+                TickSent.SENT -> {}
+
+                TickSent.DECLINED -> {
+                    holdDeclinedTicks(authorId, chunk)
+                }
+
+                // The author can no longer read a sealed tick at all (no pin, or the ratchet bit gone): the legacy receipt,
+                // as `flushDmAcks` sends one — the only ✓✓ such a peer reads.
+                TickSent.CANNOT_SEAL -> {
+                    val me = identity.nodeId()
+                    chunk.forEach { pipeline.ackCleartext(it, me) }
+                }
+            }
+        }
     }
 
     /**
@@ -3361,15 +3621,16 @@ class MeshManager(
         session.launch {
             var first = true
             // Five flows, each one settings edit: the board's number and key arrive as one value
-            // (SettingsStore.loraBoard), so a bind or an unbind is one emission here, never two.
+            // (SettingsStore.loraBoard), so a bind or an unbind is one emission here, never two — folded with the two
+            // switches that decide whether the profile names it and claims the compact door ([ownLora]).
             combine(
                 settings.displayName,
                 settings.status,
                 settings.avatarUpdatedAt,
                 settings.openToChat,
-                settings.loraBoard,
-            ) { name, status, avatarAt, openToChat, board ->
-                OwnPresentation(name, status, avatarAt, openToChat, board)
+                combine(settings.loraBoard, settings.loraEnabled, settings.loraDmEnabled, ::ownLora),
+            ) { name, status, avatarAt, openToChat, lora ->
+                OwnPresentation(name, status, avatarAt, openToChat, lora)
             }
                 // Distinct BEFORE the first value is set aside, never after: every one of the five flows is a
                 // projection of the one DataStore, which re-emits on a write to ANY key — so the seed's own
@@ -3408,12 +3669,34 @@ class MeshManager(
             held.status != normalizeSingleLine(live.status).clampToUtf16(TextLimits.STATUS) ||
             held.avatarHash != settings.ownAvatarHash.first() ||
             held.openToChat != live.openToChat ||
-            held.loraNode != live.board?.node ||
-            held.loraKey != live.board?.key ||
+            held.loraNode != live.lora.board?.node ||
+            held.loraKey != live.lora.board?.key ||
             // A build that gained or lost a capability bit (CAP_CALL) reuses the held frame for the current stamp,
-            // so peers would not see the change until an edit or the 12 h republish.
-            held.capabilities != (Protocol.LOCAL_CAPABILITIES or extraCapabilities)
+            // so peers would not see the change until an edit or the 12 h republish. So does a switch that moved
+            // CAP_LORA_DIRECT while the mesh was stopped.
+            held.capabilities != capabilitiesWith(live.lora.direct)
     }
+
+    /**
+     * What our profile says about LoRa (ADR 2026-10.x9fa): the bound [board] only while the plane is switched on — a
+     * profile that names a board the phone is not listening to would have contacts address compact DMs its board acks
+     * and nobody reads — and [Protocol.CAP_LORA_DIRECT] only while the DM switch is on too, and only on a build bound to
+     * read `0x11` ([bindLoraDirect]). With DMs off our ✓✓ would never ride back compact, and the sender's re-probe would
+     * ask that board for ever.
+     */
+    private fun ownLora(
+        board: LoraBoard?,
+        enabled: Boolean,
+        dms: Boolean,
+    ): OwnLora = OwnLora(board = board.takeIf { enabled }, direct = enabled && dms && loraSeal != null)
+
+    /** [ownLora] as the settings read now: what the next profile we sign carries. */
+    private suspend fun currentLora(): OwnLora =
+        ownLora(settings.loraBoard.first(), settings.loraEnabled.first(), settings.loraDmEnabled.first())
+
+    /** Our profile's capability bits: the build's, the wired extras, and the compact door when [direct]. */
+    private fun capabilitiesWith(direct: Boolean): Long =
+        Protocol.LOCAL_CAPABILITIES or extraCapabilities or (if (direct) Protocol.CAP_LORA_DIRECT else 0L)
 
     private fun watchIncomingFiles(session: CoroutineScope) {
         session.launch {
@@ -3575,7 +3858,7 @@ class MeshManager(
         version: Long,
         avatarHash: String?,
     ): MessageContent {
-        val board = settings.loraBoard.first()
+        val board = currentLora().board
         return MessageContent(
             body = "",
             ctl = MessageContent.CTL_PROFILE,
@@ -3995,8 +4278,10 @@ class MeshManager(
         // The current signed prekey rides every profile (v2 DM bootstrap) — its detached signature lets
         // receivers verify it against the bundle even stored apart from this frame.
         val spk = identity.currentPrekey(clock())
-        // One snapshot for both board fields: the number and key of the board this profile names must agree.
-        val board = settings.loraBoard.first()
+        // One snapshot for both board fields: the number and key of the board this profile names must agree — and only
+        // while the plane is on, with the compact door claimed only while its DM switch is too (ADR 2026-10.x9fa).
+        val lora = currentLora()
+        val board = lora.board
         val content =
             ProfileContent(
                 // Normalize/cap defensively: covers legacy values stored before the field gained a cap and
@@ -4007,7 +4292,7 @@ class MeshManager(
                 pubKey = identity.publicKeyBundle(),
                 deviceTag = identity.deviceTag(),
                 protoVersion = Protocol.VERSION,
-                capabilities = Protocol.LOCAL_CAPABILITIES or extraCapabilities,
+                capabilities = capabilitiesWith(lora.direct),
                 prekey = PrekeyInfo(id = spk.id, pub = spk.pub, sig = spk.sig),
                 version = version,
                 openToChat = settings.openToChat.first(),
@@ -4061,23 +4346,19 @@ class MeshManager(
      * so we re-offer it to neighbors that join later. The single origination choke; non-storable frames
      * are simply not carried.
      */
-    private suspend fun originateSigned(
-        env: RelayEnvelope,
-        hint: FanoutHint = FanoutHint.CONTENT,
-    ) {
+    private suspend fun originateSigned(env: RelayEnvelope) {
         // The targeted sibling inside: a sealed DM-form frame goes straight to its addressee over the
         // coordination plane, so it does not wait on an NDP that may not exist. Size-gated and no-op'd by the
         // transport when the peer isn't coordination-plane reachable; custody is still the reliable path.
         // Our own sends are the latency-sensitive case, so the Internet plane is nudged instead of waiting
         // for its tick. Relayed frames ride the next heal round — they are already in flight on the radios.
-        originateWire(sign(env), env, hint)
+        originateWire(sign(env), env)
     }
 
     /** [originateSigned] for a wire already signed — the custodied profile, whose bytes must not be re-minted. */
     private suspend fun originateWire(
         wire: WireEnvelope,
         env: RelayEnvelope,
-        hint: FanoutHint = FanoutHint.CONTENT,
     ) {
         // Custody first, then the air (#141): a link that comes up between the two learns of the frame from one of
         // them — the flood reads the links as they are when it goes out, and the newcomer's digest exchange reads a
@@ -4087,7 +4368,8 @@ class MeshManager(
         router.originate(wire, env.id)
         if (shouldFastFanout(env)) transport.fastFanout(wire)
         env.recipientId?.let { if (shouldFastSend(env)) transport.fastSend(wire, Peer(it)) }
-        if (shouldLongRangeFanout(env)) transport.longRangeFanout(wire, hint)
+        // No long-range fan-out: the signed copy never rides LoRa. Our own DMs, reactions and ✓✓ are offered there compact
+        // by the sender of each (`offerLoraDirect`, ADR 2026-10.x9fa); every other DM-form ctl stays off it.
         scopeSync?.onCustodyChanged()
     }
 
@@ -4307,47 +4589,205 @@ class MeshManager(
     }
 
     /**
-     * The contacts whose pinned profile names a LoRa board (`PeerEntity.loraNode`) — the only recipients the LoRa plane
-     * probes or re-probes (ADR 2026-10.rp3s): a DM to anyone else can be carried by nothing on the air, so it rides
-     * custody and the spool without the plane spending a packet on asking. Late-bound into the transport by `di/MeshModule`.
+     * The LoRa plane's board map (ADR 2026-10.x9fa): every pinned peer whose profile names a board, by node id, with the
+     * board as [BoardAddr], whether that pinned profile carries [Protocol.CAP_LORA_DIRECT] (without it their board would
+     * ack a packet their app throws away) and the profile version a refusal is told apart by, ranked by [boardHolders].
+     * Late-bound into the transport by `di/MeshModule`, which collects it only while a board is configured.
      */
-    fun loraBoardHolders(): Flow<Set<String>> =
-        peers
-            .observePeers()
-            .map { all -> all.filter { it.loraNode != null }.mapTo(HashSet()) { it.nodeId } }
-            .distinctUntilChanged()
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal fun loraBoardMap(): LoraBoardMap =
+        flow {
+            val me = identity.nodeId()
+            emitAll(
+                combine(
+                    peers.observePeers(),
+                    settings.acceptedConversations,
+                    messages.observeConversationsIAuthoredIn(me),
+                    settings.loraBoard,
+                ) { all, accepted, authored, ownBoard ->
+                    boardHolders(all, me, accepted + authored, ownBoard?.node)
+                },
+            )
+        }.distinctUntilChanged()
 
     /**
-     * [FarPeerFrameSource]: our own carried DMs worth re-offering to [nodeId] when a long-range plane first hears
-     * it, or re-probing it with while it stays silent (ADR 039, ADR 2026-10.a4pm, ADR 2026-10.rp3s): our newest
-     * [FAR_REOFFER_OWN_LIMIT] DMs to the peer it has not acked, chosen by id off `unackedDmsTo` and read back from
-     * custody. Since the LoRa reach gate holds a DM to an unheard peer for exactly this moment, this is how those
-     * DMs reach the air. Chosen by id rather than filtered after a newest-N custody read, because that read let acked
-     * DMs and our own sealed ctls (a ✓✓, a reaction — no unacked row) take the slots an unacked DM needed. Frames
-     * others wrote are not offered: the board airs only its own user's (ADR 2026-10.rp3s).
-     *
-     * Verbatim custody bytes re-wrapped like a custody re-serve: the receiver's SeenSet / exists-gate make a
-     * duplicate harmless, and a re-delivered DM re-draws its receipt — which is how a tick lost over LoRa heals.
-     * Newest first; the transport enqueues them in this order, FIFO within the DM class.
+     * [loraBoardMap]'s rule over one snapshot. A board two profiles claim goes to a **contact** first — verified, an
+     * accepted conversation, or a DM we wrote in — and only within a rank to the newer claim (`PeerDao.findByLoraNode`'s
+     * rule): a stranger's newer profile naming a contact's board must not take that contact's LoRa leg (ADR 2026-10.x9fa).
+     * Our own board is nobody's, whoever's stale claim still names it after it changed hands, and so is ourselves, a
+     * peer with no pinned key, and a number no board can have. Ties go to the larger node id, so every emission agrees.
      */
-    override suspend fun framesFor(nodeId: String): List<WireEnvelope> {
-        val now = clock()
-        val me = identity.nodeId()
-        // Over-fetched, then capped after the custody read: an unacked row whose frame custody no longer holds
-        // (evicted, or past its TTL) must not take a slot from an older one it still does.
-        val ownIds =
-            messages
-                .unackedDmsTo(nodeId, me, since = now - RESEAL_WINDOW_MS)
-                .sortedByDescending { it.sentAt }
-                .take(FAR_REOFFER_OWN_LIMIT * 2)
-                .map { it.id }
-        if (ownIds.isEmpty()) return emptyList()
-        return forwardStore
-            .liveFramesByIds(ownIds, now)
-            .filter { it.envelope.recipientId == nodeId && it.envelope.senderId == me }
-            .sortedByDescending { it.envelope.sentAt }
-            .take(FAR_REOFFER_OWN_LIMIT)
-            .map { WireEnvelope(sig = it.sig, signed = it.signed) }
+    private fun boardHolders(
+        all: List<PeerEntity>,
+        me: String,
+        known: Set<String>,
+        ownBoard: Long?,
+    ): Map<String, LoraBoardHolder> =
+        all
+            .filter { peer ->
+                val node = peer.loraNode
+                peer.nodeId != me && peer.pubKey != null && node != null && isBoardNumber(node) && node != ownBoard
+            }.groupBy { it.loraNode }
+            .values
+            .map { claims ->
+                claims.maxWith(compareBy<PeerEntity>({ it.verified || it.nodeId in known }, { it.updatedAt }, { it.nodeId }))
+            }.associate { peer ->
+                peer.nodeId to
+                    LoraBoardHolder(
+                        addr = BoardAddr(checkNotNull(peer.loraNode).toUInt()),
+                        direct = (peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT != 0L,
+                        profileVersion = peer.updatedAt,
+                    )
+            }
+
+    /** A node number a board can hold: not 0 (unset) and not the broadcast address, inside a `u32`. */
+    private fun isBoardNumber(node: Long): Boolean = node in 1L until BROADCAST_NODE
+
+    /**
+     * Our own DMs still without their ✓✓, as the compact plaintext the LoRa plane re-airs (ADR 2026-10.x9fa) — after a
+     * hearing and on the re-probe. Off `unackedDmsTo` and [MessageEntity.sealedContent], the one builder every seal
+     * reads, with no inline acks (they rode the first copy, and a ✓✓ we owe now is the coalescer's). Only rows inside
+     * [LORA_DIRECT_SEND_WINDOW_MS] (Crypto 6) — a resend the far phone would refuse as stale after its board acked it is
+     * air for nothing — and only those whose compact form fits one packet at the MTU floor: a longer DM never rode
+     * compact, and asking again with it would only count it too long again. Each call asks the database afresh: the
+     * plane re-asks [LoraDirectSource.isUnacked] at send, never behind a timer.
+     */
+    internal fun loraDirectSource(): LoraDirectSource =
+        object : LoraDirectSource {
+            override suspend fun unackedTo(
+                peerId: String,
+                limit: Int,
+            ): List<DirectDm> {
+                if (peerId in settings.blockedNodeIds.first()) return emptyList()
+                val since = clock() - LORA_DIRECT_SEND_WINDOW_MS
+                return messages
+                    .unackedDmsTo(peerId, identity.nodeId(), since = since)
+                    .asSequence()
+                    .filter { it.sentAt > since }
+                    .sortedByDescending { it.sentAt }
+                    .mapNotNull { row ->
+                        compactPlaintext(row.sealedContent())
+                            ?.takeIf { it.size <= LORA_DIRECT_PLAINTEXT_BYTES }
+                            ?.let { DirectDm(row.id, row.sentAt, it) }
+                    }.take(limit)
+                    .toList()
+            }
+
+            override suspend fun isUnacked(frameId: String): Boolean {
+                val row = messages.find(frameId) ?: return false
+                return row.senderId == identity.nodeId() &&
+                    row.recipientId != null &&
+                    !row.received &&
+                    !row.pendingKey &&
+                    row.sentAt > clock() - LORA_DIRECT_SEND_WINDOW_MS
+            }
+        }
+
+    /** A compact LoRa DM our board took and the seal opened (`LoraDirectInbox`, ADR 2026-10.x9fa): the pipeline delivers it. */
+    internal suspend fun deliverLoraDirect(opened: OpenedDirect) = pipeline.deliverLoraDirect(opened)
+
+    /**
+     * Offers the compact copy of something we just sealed for [recipientId] to the LoRa plane (ADR 2026-10.x9fa) — beside
+     * the signed copy, which custody, the spool and the links carry as ever, and never instead of it. [content] is what
+     * the signed copy sealed, under its id and stamp. Only toward a pinned profile carrying [Protocol.CAP_LORA_DIRECT],
+     * and only inside [LORA_DIRECT_SEND_WINDOW_MS]; whether a packet goes on the air is then the plane's own gates (the
+     * board map, the covers, its reach marks, one packet). A content the compact layout cannot hold canonically has no
+     * compact copy at all.
+     */
+    private suspend fun offerLoraDirect(
+        recipientId: String,
+        frameId: String,
+        sentAt: Long,
+        content: MessageContent,
+        kind: DirectKind,
+    ) {
+        val sink = loraDirectSink() ?: return
+        if (clock() - sentAt >= LORA_DIRECT_SEND_WINDOW_MS) return
+        val peer = peers.find(recipientId) ?: return
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT == 0L) return
+        val plaintext = compactPlaintext(content) ?: return
+        // A peer pinned a moment ago is in the seal's index before the peer table's flow comes round.
+        peer.pubKey?.let { PublicKeyBundle.decode(it) }?.let { loraSeal?.learn(recipientId, it.dhPublicKey()) }
+        sink.offer(recipientId, frameId, sentAt, plaintext, kind)
+    }
+
+    /**
+     * [content] in the v3 compact layout, the inline acks shed when that is what it takes to fit one packet at the MTU
+     * floor (Crypto 4: they are idempotent and ride the signed copy). Null when the layout has no canonical form for it.
+     * Still too long, it goes to the plane as it is, which counts it `loraDirectTooLong` against its own payload cap.
+     */
+    private fun compactPlaintext(content: MessageContent): ByteArray? {
+        val whole = MessageContentV2.encodeOrNull(content) ?: return null
+        if (whole.size <= LORA_DIRECT_PLAINTEXT_BYTES || content.ctl != null || content.acks.isNullOrEmpty()) return whole
+        return MessageContentV2.encodeOrNull(content.copy(acks = null))
+    }
+
+    /**
+     * The compact copies of a sealed ✓✓ covering [ids] (Crypto 5): one-packet ticks of at most [LORA_DIRECT_TICK_ACKS]
+     * ids each, the first under the signed tick's own id ([firstId]) and the rest under fresh ones, all stamped
+     * [sentAt]. A receipt keeps no `lora_direct_seen` mark on the far side, so a fresh id costs nothing there.
+     */
+    private suspend fun offerLoraTicks(
+        authorId: String,
+        firstId: String,
+        sentAt: Long,
+        ids: List<String>,
+    ) {
+        if (loraDirectSink() == null) return
+        ids.distinct().chunked(LORA_DIRECT_TICK_ACKS).forEachIndexed { i, chunk ->
+            val content =
+                when (chunk.size) {
+                    1 -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = chunk.single())
+                    else -> MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = chunk)
+                }
+            offerLoraDirect(authorId, if (i == 0) firstId else FrameId.new(), sentAt, content, DirectKind.RECEIPT)
+        }
+    }
+
+    /** `InboundPipeline.sealDmReceipt`'s compact copy, for a DM that came over the board with no coalescer holding it. */
+    private suspend fun offerLoraReceipt(
+        authorId: String,
+        frameId: String,
+        sentAt: Long,
+        content: MessageContent,
+    ) = offerLoraTicks(authorId, frameId, sentAt, listOfNotNull(content.ack) + content.acks.orEmpty())
+
+    /**
+     * Keeps [seal]'s pair index on the peer table (ADR 2026-10.x9fa): every pinned peer's identity key, ourselves never,
+     * re-derived only for a key that changed. Only while the LoRa plane is switched on: off, the index is emptied and no
+     * pair is derived, since nothing can arrive compact without a board. Guarded like every session collector: a pass
+     * that throws is logged and the next emission tries again.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun watchLoraPairs(
+        session: CoroutineScope,
+        seal: LoraDirectSeal,
+    ) {
+        session.launch {
+            val me = identity.nodeId()
+            settings.loraEnabled
+                .distinctUntilChanged()
+                .flatMapLatest { on ->
+                    if (!on) {
+                        flowOf(emptyMap())
+                    } else {
+                        peers.observePeers().map { all ->
+                            all.filter { it.nodeId != me }.mapNotNull { p -> p.pubKey?.let { p.nodeId to it } }.toMap()
+                        }
+                    }
+                }.distinctUntilChanged()
+                .collect { pinned ->
+                    runRound(onFailure = { Log.w(TAG, "lora pair index failed: ${it.javaClass.simpleName}") }) {
+                        seal.rebuild(
+                            me,
+                            pinned
+                                .mapNotNull { (id, bundle) ->
+                                    PublicKeyBundle.decode(bundle)?.let { id to it.dhPublicKey() }
+                                }.toMap(),
+                        )
+                    }
+                }
+        }
     }
 
     /**
@@ -4392,8 +4832,12 @@ class MeshManager(
         if (recipientId in settings.blockedNodeIds.first()) return
         val me = identity.nodeId()
         messages.pendingForRecipient(recipientId).forEach { row ->
-            // This DM never flew, and custody takes these fresh bytes: the user's message, probe-eligible (ADR 2026-10.a4pm).
-            if (resealAndFlood(row, recipientId, me, FanoutHint.CHAT)) messages.clearPending(row.id)
+            // This DM never flew, and custody takes these fresh bytes. Its compact copy goes too (ADR 2026-10.x9fa), unless
+            // it waited past the window the far phone takes one in.
+            if (resealAndFlood(row, recipientId, me)) {
+                messages.clearPending(row.id)
+                offerLoraDirect(recipientId, row.id, row.sentAt, row.sealedContent(), DirectKind.MESSAGE)
+            }
         }
     }
 
@@ -4476,11 +4920,9 @@ class MeshManager(
         recipientId: String,
     ) {
         val me = identity.nodeId()
-        // CONTENT, not CHAT: custody keeps the first-stored seal of this id (`ForwardSync.onSeen` returns early on
-        // `has(id)`), so a re-seal the LoRa reach gate held would later be re-offered as the old bytes the reset
-        // peer cannot open. Exempt, the fresh seal flies now (ADR 2026-10.a4pm) — and, sharing the frame's key, it
-        // replaces an old-seal copy still queued, which is the copy worth losing.
-        rows.forEach { row -> resealAndFlood(row, recipientId, me, FanoutHint.CONTENT) }
+        // No compact copy: a reset repairs the ratchet, and the compact leg never rode it (ADR 2026-10.x9fa). The DMs
+        // still unacked are the LoRa plane's to re-air from its own source — its re-probe and its resend on hearing.
+        rows.forEach { row -> resealAndFlood(row, recipientId, me) }
     }
 
     /**
@@ -4493,7 +4935,6 @@ class MeshManager(
         row: MessageEntity,
         recipientId: String,
         me: String,
-        hint: FanoutHint,
     ): Boolean {
         // The one builder sendChat seals through too, so a re-seal carries every sealed field the first send did
         // (a file's name and size were dropped here once — #131).
@@ -4514,7 +4955,6 @@ class MeshManager(
                     attachmentHash = row.attachmentHash,
                 ),
             ),
-            hint, // the caller's: see flushPendingFor and resealRecentDmsTo (ADR 2026-10.a4pm)
         )
         return true
     }
@@ -4598,14 +5038,11 @@ class MeshManager(
 
         const val RESEAL_WINDOW_MS = 24 * 60 * 60_000L
 
-        /**
-         * How many of our own unacked DMs a long-range plane re-offers per first hearing of a peer (≤ 3 packets
-         * each, ADR 2026-10.a4pm). Six two-packet DMs are ~30 s, two thirds of a LongFast window on `LIVE`, which
-         * holds room posts and ticks behind it; one sighting adds at most 6 frames to the pacer's 32-frame queue.
-         * A longer backlog has waited longer than a LoRa hop should carry and waits for a radio or spool contact
-         * (ADR 039 §7).
-         */
-        const val FAR_REOFFER_OWN_LIMIT = 6
+        /** Most ✓✓ ids held per author while no session they hold exists ([heldTicks]); the oldest go first. */
+        private const val MAX_HELD_TICKS = 64
+
+        /** Meshtastic's broadcast address (`0xFFFFFFFF`): never a board a profile can name. */
+        private const val BROADCAST_NODE = 0xFFFF_FFFFL
 
         /** Per-(group, member) floor on proactive/responder seed re-sends (docs/GROUP_FORWARD_SECRECY.md #10). */
         const val SEED_RESEND_FLOOR_MS = 15 * 60_000L
@@ -4648,7 +5085,13 @@ private data class OwnPresentation(
     val status: String,
     val avatarUpdatedAt: Long,
     val openToChat: Boolean,
+    val lora: OwnLora,
+)
+
+/** What our profile says about LoRa: the board it names, if any, and whether it claims the compact door (`MeshManager.ownLora`). */
+private data class OwnLora(
     val board: LoraBoard?,
+    val direct: Boolean,
 )
 
 /** `"<peerId>|<millis>"` entries ↔ a peer→stamp map, the intro driver's two settings sets. */
@@ -4662,3 +5105,36 @@ private fun decodeStamped(entries: Set<String>): Map<String, Long> =
         }.toMap()
 
 private fun encodeStamped(map: Map<String, Long>): Set<String> = map.mapTo(mutableSetOf()) { (peerId, stamp) -> "$peerId|$stamp" }
+
+/** [MeshManager]'s declined DM reactions, per peer and message, the newest stamp only. */
+internal class HeldReactions {
+    private val byPeer = HashMap<String, LinkedHashMap<String, Pair<MessageContent, Long>>>()
+
+    @Synchronized
+    fun hold(
+        peerId: String,
+        content: MessageContent,
+        at: Long,
+    ) {
+        val messageId = content.rp?.messageId ?: return
+        val held = byPeer.getOrPut(peerId) { LinkedHashMap() }
+        if ((held[messageId]?.second ?: Long.MIN_VALUE) <= at) held[messageId] = content to at
+        while (held.size > MAX_PER_PEER) held.remove(held.keys.first())
+    }
+
+    @Synchronized
+    fun take(peerId: String): List<Pair<MessageContent, Long>> =
+        byPeer
+            .remove(peerId)
+            ?.values
+            ?.toList()
+            .orEmpty()
+
+    @Synchronized
+    fun peers(): List<String> = byPeer.keys.toList()
+
+    private companion object {
+        /** A reaction per message; a peer we tap at all day before they answer keeps the newest 64. */
+        const val MAX_PER_PEER = 64
+    }
+}

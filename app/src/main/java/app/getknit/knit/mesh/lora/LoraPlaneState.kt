@@ -9,10 +9,10 @@ import kotlinx.serialization.Serializable
  * allowance** and re-ran every "first time" behaviour against it. The regional duty cycle is law rather than
  * politeness (ADR 067) and the airtime ledger is the only thing enforcing it, so a crash loop, a force-stop or a
  * reinstall cycle spent air that nothing was accounting for — in the lab, where a reinstall lands many times a day,
- * continuously (ADR 2026-09.7svb). What persists now: the ledger, the DM auto-reply's memory, the reach gate's probe
- * window, the re-offer's per-frame hour and the re-probe's backoff. The beacon floor, the serve caps and the profile
- * re-fan gate went with the traffic they limited (ADR 2026-10.rp3s); a blob an older build wrote still loads, its
- * dropped keys ignored by the store.
+ * continuously (ADR 2026-09.7svb). What persists now: the ledger, the DM auto-reply's memory and the re-probe's
+ * backoff. The beacon floor, the serve caps and the profile re-fan gate went with the traffic they limited (ADR
+ * 2026-10.rp3s), the probe window and the re-offer's hour with the reach gate (ADR 2026-10.x9fa); a blob an older build
+ * wrote still loads, its dropped keys ignored by the store.
  *
  * The seam is an interface here rather than a store because `mesh/lora/` is Android-free: the implementation
  * is a JSON blob in the settings DataStore (`SettingsStore.loraPlaneState`), and every rule about what a
@@ -53,13 +53,10 @@ internal data class LoraPlaneSnapshot(
     /** The Meshtastic nodes the DM auto-reply has answered inside its window, by `!hex` id ([DmAutoReplyPolicy]). */
     val autoReplied: List<SeenStamp> = emptyList(),
     /**
-     * The recipients a DM was last put on the air to as a probe, inside the probe window, by node id
-     * ([LoraDmProbe], ADR 2026-10.a4pm). Defaulted, so a blob an older build wrote loads with no probes spent.
+     * The re-probe's backoff per peer with own DMs unacked ([LoraReprobe], ADR 2026-10.rp3s, ADR 2026-10.x9fa). Defaulted.
+     * The probe window (`dmProbes`) and the re-offer's hour (`reoffered`) a Stage-1 build wrote went with the reach
+     * gate; the store ignores those keys, so its blob still loads.
      */
-    val dmProbes: List<SeenStamp> = emptyList(),
-    /** The DM-form frames the first-hearing re-offer aired within its hour, by frame id (ADR 2026-10.a4pm). Defaulted. */
-    val reoffered: List<SeenStamp> = emptyList(),
-    /** The re-probe's backoff per silent recipient ([LoraReprobe], ADR 2026-10.rp3s). Defaulted. */
     val reprobes: List<ReprobeStamp> = emptyList(),
 )
 
@@ -75,7 +72,7 @@ internal data class AirBooking(
     val bucket: String,
 )
 
-/** One stamped id that outlives the process — the auto-reply's memory, a probe's window, a re-offer's hour. */
+/** One stamped id that outlives the process — the auto-reply's memory. */
 @Serializable
 internal data class SeenStamp(
     val id: String,

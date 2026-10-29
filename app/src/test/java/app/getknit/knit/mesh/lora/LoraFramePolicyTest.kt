@@ -47,10 +47,10 @@ class LoraFramePolicyTest {
     }
 
     @Test
-    fun dmFormChatFansOutButGroupFormDoesNot() {
-        // ADR 039: a sealed DM-form chat rides the long-range plane, whatever it really is (a DM, or a sealed
-        // receipt/reaction/ctl riding as one — the policy cannot and must not tell them apart).
-        assertTrue("a DM chat rides LoRa", fanout(env(FrameType.CHAT, recipientId = "bob")))
+    fun neitherDmFormNorGroupFormChatFansOut() {
+        // ADR 2026-10.x9fa: our DMs ride compact, offered beside the signed copy; no DM-form mesh frame airs, whatever
+        // it really is (a DM, or a sealed receipt/reaction/ctl riding as one).
+        assertFalse("a DM-form chat never rides the fan-out", fanout(env(FrameType.CHAT, recipientId = "bob")))
         assertTrue(LoraFramePolicy.isDmForm(env(FrameType.CHAT, recipientId = "bob")))
         assertFalse(LoraFramePolicy.isDmForm(env(FrameType.CHAT)))
         assertFalse(

@@ -28,6 +28,7 @@ import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LabelAnchors
 import app.getknit.knit.data.LabelFade
+import app.getknit.knit.data.LocalMessageDelete
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
@@ -82,18 +83,24 @@ import app.getknit.knit.mesh.SPOOL_COVER_MS
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.ContactCard
+import app.getknit.knit.mesh.crypto.LoraDirectSeal
+import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
+import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
+import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
 import app.getknit.knit.mesh.lora.LoraConfig
+import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -103,6 +110,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
@@ -140,7 +148,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
@@ -193,6 +203,14 @@ class MeshLab {
     internal val chaos: LabChaos? = LabChaos.current?.also { println("meshlab $it") }
 
     /**
+     * Every node a board on one shared air, when the run asks for it (`KNIT_LAB_BOARDS=1`): the sweep that runs the
+     * session, custody and restore scenarios with compact LoRa DMs in play (ADR 2026-10.x9fa) without a copy of each.
+     * A scenario that hands a node its own air keeps it. Null — the default — leaves every other node board-less.
+     */
+    private val boardsAir: FakeMeshtasticAir? =
+        if (System.getenv(BOARDS_ENV) == "1") quickAir().also { println("meshlab every node a board ($BOARDS_ENV)") } else null
+
+    /**
      * Creates and starts a node — its own identity, database and settings file — and returns once its router
      * is listening, so a link made next cannot lose the profile push (see [LabTransport.collecting]).
      */
@@ -223,15 +241,28 @@ class MeshLab {
         // the real home store and the issuer, in place of [spool]. Null keeps every scope at every relay, as before.
         publicRelays: LabPublicRelays? = null,
         home: String? = null,
+        // False keeps a boards-everywhere run ([boardsAir]) off this node: a scenario whose subject is a radio path the
+        // compact LoRa copy would short-cut (an epoch filter on a link, a node that must read only through the ratchet).
+        board: Boolean = true,
     ): LabNode {
         val started = System.nanoTime()
+        val board = air ?: boardsAir?.takeIf { board }
+        // A boards-everywhere run holds a DM's tick a second, not the field's 45 s: the scenarios' own waits are the lab's.
+        val held =
+            if (air == null &&
+                boardsAir != null
+            ) {
+                limits.copy(dmAckHoldMs = minOf(limits.dmAckHoldMs, BOARDS_ACK_HOLD_MS))
+            } else {
+                limits
+            }
         val node =
             LabNode(
                 name,
                 context,
                 File(dir, name).apply { mkdirs() },
-                limits,
-                air,
+                held,
+                board,
                 spool,
                 spoolOptIn,
                 commons,
@@ -320,6 +351,15 @@ class MeshLab {
         // scenario left holding is released first: the delivery parked at it cannot be cancelled (ADR 2026-10.f82h),
         // and the scope join would wait out its bound on it and bury the scenario's own failure under that one.
         nodes.forEach { it.custodyGate.release() }
+        // What the boards-everywhere sweep exercised, so a green run says whether a DM ever went compact in it.
+        if (boardsAir != null) {
+            println(
+                "meshlab boards: " +
+                    nodes.joinToString { n ->
+                        "${n.name} direct=${n.metrics.lora().loraDirectSent}/${n.metrics.lora().loraDirectDelivered}"
+                    },
+            )
+        }
         val failures = nodes.mapNotNull { runCatching { it.shutdown() }.exceptionOrNull() }
         dir.deleteRecursively()
         failures.firstOrNull()?.let { first -> throw first.apply { failures.drop(1).forEach(::addSuppressed) } }
@@ -853,6 +893,26 @@ class MeshLab {
     }
 
     companion object {
+        /** The environment switch for a boards-everywhere run ([boardsAir]). */
+        const val BOARDS_ENV = "KNIT_LAB_BOARDS"
+
+        /** The DM tick hold a boards-everywhere run gives a node with no limits of its own for it. */
+        const val BOARDS_ACK_HOLD_MS = 1_000L
+
+        /** The Knit channel's slot on every lab board: a provisioned secondary, as ADR 045 leaves a real one. */
+        const val KNIT_SLOT = 1
+
+        /**
+         * An air whose boards answer in lab time rather than LongFast's: the destination's ACK 50 ms after a unicast
+         * lands and a retry every 300 ms, so a board that is off gives up in 1.5 s instead of the field's ~40 s. Only the
+         * timing is shortened; every outcome, retry and airing is the firmware's (`FakeMeshtasticAir`).
+         */
+        internal fun quickAir(): FakeMeshtasticAir =
+            FakeMeshtasticAir().apply {
+                ackDelayMs = 50L
+                retransmitMs = 300L
+            }
+
         /**
          * How long a scenario waits for anything it expects. A convergence takes a few hundred ms on a
          * workstation and a few seconds on one core, so this is headroom for the CI runner — one shared
@@ -1144,6 +1204,10 @@ class LabNode internal constructor(
     internal var lora: LoraMeshTransport? = null
         private set
 
+    /** This boot's board on the shared air, or null without one — what a scenario drops, replays into or brings back. */
+    internal var boardLink: FakeMeshtasticLink? = null
+        private set
+
     /** The composite the manager runs on when the node has a board ([lora] beside the radio), else null. */
     private var composite: CompositeMeshTransport? = null
 
@@ -1197,6 +1261,10 @@ class LabNode internal constructor(
     var callLog: List<String> = emptyList()
         private set
     lateinit var manager: MeshManager
+        private set
+
+    /** This boot's notifier — a relaxed mock, so a scenario can count what the person was shown (`coVerify`). */
+    lateinit var notifier: Notifier
         private set
     lateinit var messages: MessageRepository
         private set
@@ -1317,33 +1385,19 @@ class LabNode internal constructor(
         val blobStore = MeshBlobStore(blobs, messages, imageScreening, File(dir, "blobtx"))
         attachments = AttachmentStore(context, blobs, imageScreening, AttachmentIdentities(messages, blobs))
         val notifier = mockk<Notifier>(relaxed = true)
+        this.notifier = notifier
         // THE ratchet lock + the transaction that encloses it, shared by both session services (di/MeshModule).
         val ratchetMutex = Mutex()
         val transactor =
             object : SessionTransactor {
                 override suspend fun <T> transact(block: suspend () -> T): T = db.withWriteTransaction { block() }
             }
-        // The LoRa child is built the way `di/MeshModule` builds it — the real transport over the fake air,
-        // its frame source late-bound to the manager exactly as the DI lambda is — and composed with the
-        // radio through the real composite, so the covers and the fast-plane dispatch are the production ones.
-        lora =
-            air?.let { air ->
-                LoraMeshTransport(
-                    selfId = { nodeId },
-                    link = FakeMeshtasticLink(loraNodeNum(), air),
-                    config = MutableStateFlow(LoraConfig("AA:$name", 0)),
-                    farFrames = { manager.framesFor(it) },
-                    onPublicPost = { manager.onPublicPostHeard(it) },
-                    scope = scope,
-                    metrics = metrics,
-                    clock = now,
-                    wallClock = now,
-                    log = { loraLog += it },
-                    // No inter-packet gap: the scenario's clock is the wall clock.
-                    pace = LoraPacePolicy(minGapMs = 0),
-                    lingerSweepMs = limits.loraLingerSweepMs,
-                )
-            }
+        // The LoRa child is built the way `di/MeshModule` builds it — the real transport over the fake air, its compact-DM
+        // seams bound to the real pair seal and, late, to this node's manager (ADR 2026-10.x9fa) — and composed with the
+        // radio through the real composite, so the fast-plane dispatch is the production one. The board comes up
+        // provisioned, Knit on slot 1 as ADR 045 leaves it (a compact DM never goes from slot 0), with the plane switched on
+        // so the profile names it, and reports itself bound so the profile carries its node number.
+        lora = air?.let { boardOn(it, scope) }
         composite = lora?.let { CompositeMeshTransport(listOf(transport, it), scope) }
         val meshTransport: MeshTransport = composite ?: transport
         manager =
@@ -1410,6 +1464,7 @@ class LabNode internal constructor(
                 onCallSignal = { sender, payload, sentAt -> calls.onSignal(sender, payload, sentAt) },
                 onCallTalk = { _, chunk, _, _, viaRelay -> heardTalk(chunk, viaRelay) },
             )
+        bindBoard()
         val callLines = CopyOnWriteArrayList<String>().also { callLog = it }
         calls =
             CallManager(
@@ -1440,6 +1495,56 @@ class LabNode internal constructor(
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }
         }
+    }
+
+    /**
+     * This node's LoRa plane over [air], built as `di/MeshModule` builds it: the board provisioned with Knit on
+     * [MeshLab.KNIT_SLOT], the compact-DM seams bound to a fresh pair seal ([boardSeal]) and, late, to this boot's manager
+     * (ADR 2026-10.x9fa).
+     */
+    private suspend fun boardOn(
+        air: FakeMeshtasticAir,
+        scope: CoroutineScope,
+    ): LoraMeshTransport {
+        // The plane switched on, so the profile names the board this boot binds and claims the compact door.
+        settings.setLoraEnabled(true)
+        val seal = LoraDirectSeal(ownDhPrivate = keyStore::dhIdentityPrivate, clock = now).also { boardSeal = it }
+        return LoraMeshTransport(
+            selfId = { nodeId },
+            link = FakeMeshtasticLink(loraNodeNum(), air, scope = scope, provisionedSlot = MeshLab.KNIT_SLOT).also { boardLink = it },
+            config = MutableStateFlow(LoraConfig("AA:$name", MeshLab.KNIT_SLOT)),
+            crypto = seal,
+            inbox = { manager.deliverLoraDirect(it) },
+            source =
+                object : LoraDirectSource {
+                    override suspend fun unackedTo(
+                        peerId: String,
+                        limit: Int,
+                    ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit)
+
+                    override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
+                },
+            boardMap = flow { emitAll(manager.loraBoardMap()) },
+            onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.signingKey) },
+            onPublicPost = { manager.onPublicPostHeard(it) },
+            scope = scope,
+            metrics = metrics,
+            clock = now,
+            wallClock = now,
+            log = { loraLog += it },
+            // No inter-packet gap: the scenario's clock is the wall clock.
+            pace = LoraPacePolicy(minGapMs = 0),
+            lingerSweepMs = limits.loraLingerSweepMs,
+        )
+    }
+
+    /** This boot's pair seal, beside [lora]; null without a board. */
+    private var boardSeal: LoraDirectSeal? = null
+
+    /** Binds the manager to this boot's board and seal, as `di/MeshModule` does on a build with the plane; nothing without one. */
+    private fun bindBoard() {
+        val board = lora ?: return
+        manager.bindLoraDirect(sink = { board }, seal = checkNotNull(boardSeal))
     }
 
     /**
@@ -2334,8 +2439,8 @@ class LabNode internal constructor(
                 .joinToString("\n         ")
         return "\n    lora: sent=${s.loraSent} received=${s.loraReceived} suppressed=${s.loraSuppressed} " +
             "roomTooLong=${s.loraRoomTooLong} retiredCtl=${s.loraRetiredCtl} nak=${s.loraNak} dropped=${s.loraDroppedQueue} " +
-            "stale=${s.loraStaleAtSendByReason} unheard=${s.loraUnheardHeld} probes=${s.loraDmProbes} " +
-            "reoffered=${s.loraReoffered} reprobed=${s.loraReprobed} tickDeferred=${s.loraTickDeferred} reassembled=${s.loraReassembled} " +
+            "stale=${s.loraStaleAtSendByReason} direct=${s.loraDirectSent}/${s.loraDirectAcked}/${s.loraDirectUnreachable} " +
+            "reprobed=${s.loraReprobed} tickDeferred=${s.loraTickDeferred} reassembled=${s.loraReassembled} " +
             "frag=${s.loraFragSent}\n    rx/tx: $lines"
     }
 
@@ -2407,6 +2512,103 @@ class LabNode internal constructor(
         forwardStore.liveFrames(now()).count {
             it.envelope.type == FrameType.CHAT && it.envelope.senderId == sender.nodeId && it.envelope.recipientId == recipient.nodeId
         }
+
+    /** This node's board on the air, by its Meshtastic node number (what [FakeMeshtasticAir.knitAirings] counts). */
+    internal val boardNum: UInt get() = loraNodeNum()
+
+    /**
+     * 1 once this node holds [peer]'s profile naming [peer]'s board and claiming the compact door (ADR 2026-10.x9fa) — the
+     * two things `MeshManager.loraBoardMap` needs before a compact DM can go — else 0. A `tryAwait` count.
+     */
+    suspend fun knowsBoardOf(peer: LabNode): Int {
+        val row = peers.find(peer.nodeId) ?: return 0
+        val claims = (row.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT != 0L
+        return if (row.loraNode == peer.boardNum.toLong() && claims) 1 else 0
+    }
+
+    /**
+     * 1 once this node's board is ready to exchange compact DMs with [peer]: its board map names [peer]'s board with the
+     * capability, and its pair seal's index holds [peer] — both kept off the peer table by collectors of their own, so a
+     * pin in the database is not yet either. Else 0; a `tryAwait` count.
+     */
+    fun boardReadyFor(peer: LabNode): Int {
+        val holder = lora?.boardHolderOf(peer.nodeId)
+        val sealed = boardSeal?.knows(peer.nodeId) == true
+        return if (holder?.direct == true && holder.addr.node == peer.boardNum && sealed) 1 else 0
+    }
+
+    /**
+     * The DM-form ctl frames [author] sealed to anyone that carry an X3DH init without `FLAG_RESET`, among what this node
+     * custodies — a ✓✓ or a reaction sealed as a fresh init or on an unanswered one (ADR 2026-10.x9fa's answer gate says
+     * there are none). A ctl is a frame with no message row on its author's side.
+     */
+    suspend fun initBearingCtlsFrom(author: LabNode): List<String> =
+        forwardStore
+            .liveFrames(now())
+            .filter { it.envelope.senderId == author.nodeId && it.envelope.type == FrameType.CHAT && it.envelope.recipientId != null }
+            .filter { frame ->
+                val r = WireCodec.decodePayload<ChatContent>(frame.envelope.payload)?.enc?.r
+                r?.init != null && r.flags and RatchetHeader.FLAG_RESET == 0 && author.messages.find(frame.envelope.id) == null
+            }.map { it.envelope.id }
+
+    /**
+     * The ctls [author] sealed to [to] that this node custodies, a reset aside: frames with no message row on the author's
+     * side (a ✓✓, a reaction, a profile) and no `FLAG_RESET` — what a signed ✓✓ leaves behind once it is sealed.
+     */
+    suspend fun ctlsFromTo(
+        author: LabNode,
+        to: LabNode,
+    ): Set<String> =
+        forwardStore
+            .liveFrames(now())
+            .filter { it.envelope.senderId == author.nodeId && it.envelope.recipientId == to.nodeId && it.envelope.type == FrameType.CHAT }
+            .filter { frame ->
+                val r = WireCodec.decodePayload<ChatContent>(frame.envelope.payload)?.enc?.r
+                (r == null || r.flags and RatchetHeader.FLAG_RESET == 0) && author.messages.find(frame.envelope.id) == null
+            }.mapTo(HashSet()) { it.envelope.id }
+
+    /**
+     * What [frame], a DM-form ctl [author] sealed to this node, says — opened by a peek on this node's ratchet, which
+     * commits nothing (`RatchetSessions.peekOpen`), so its key is still there for the real open. Peek while the frame is
+     * held off this node (`LabTransport.held`): once it is delivered, its key is spent and this answers null.
+     */
+    suspend fun peekDmCtl(
+        frame: WireEnvelope,
+        author: LabNode,
+    ): MessageContent? {
+        val env = WireCodec.decodeEnvelope(frame.signed) ?: return null
+        val enc = WireCodec.decodePayload<ChatContent>(env.payload)?.enc ?: return null
+        val header = enc.r ?: return null
+        val ik = peer(author)?.pubKey?.let { PublicKeyBundle.decode(it) }?.dhPublicKey() ?: return null
+        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, env.recipientId.orEmpty())
+        val nonce = enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }
+        val peek =
+            RatchetSessions(
+                store = RatchetRepository(db.ratchetDao()),
+                dhIdentityPriv = keyStore::dhIdentityPrivate,
+                spkPrivFor = keyStore::prekeyPrivFor,
+            ).peekOpen(nodeId, author.nodeId, ik, header, nonce, enc.ct, aad, now(), env.sentAt)
+        val opened = peek as? RatchetEngine.OpenOutcome.Opened ?: return null
+        return if (enc.v ==
+            EncEnvelope.VERSION_DM_V3
+        ) {
+            MessageContentV2.decode(opened.plaintext)
+        } else {
+            MessageContent.decode(opened.plaintext)
+        }
+    }
+
+    /** How many skipped DM ratchet keys this node holds, every peer together — what a never-opened signed copy leaves. */
+    suspend fun skippedDmKeys(): Int = db.ratchetDao().countSkippedKeys()
+
+    /** The `lora_direct_seen` mark for [frameId] (ADR 2026-10.x9fa), or null. */
+    suspend fun loraSeen(frameId: String) = db.loraDirectSeenDao().find(frameId)
+
+    /** Deletes [messageId] from this phone only, as the chat's long-press Delete does (`LocalMessageDelete`). */
+    suspend fun deleteLocally(messageId: String) {
+        val hash = messages.find(messageId)?.attachmentHash
+        LocalMessageDelete(messages, reactionStore, receipts, blobs, PinRepository(db.pinDao(), db)).delete(messageId, hash)
+    }
 
     /** How many `lora tx <label>…` lines this boot logged — what the board actually put on the air. */
     fun loraTx(label: String): Int = loraLog.count { it.startsWith("lora tx $label") }
@@ -2645,7 +2847,7 @@ class LabNode internal constructor(
         val EXPLICIT = ImageVerdict(allowed = false, score = 0.99f)
 
         /** The LoRa log lines worth reading on a failure — the radio's own traffic, not the bridge loop's bookkeeping. */
-        val LORA_LOG_KEYS = listOf("rx ", "ready", "far:", "fanout:", "reoffer", "probe", "too long", "drop", "stale")
+        val LORA_LOG_KEYS = listOf("rx ", "ready", "direct", "fanout:", "resend", "probe", "too long", "drop", "stale")
     }
 }
 

@@ -42,6 +42,10 @@ lines.
   the mesh has no clone tolerance — and the copy says so. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
+- **When touching the `lora_direct_seen` table (`data/ratchet/LoraDirectSeen.kt`, DB v28):** READ ADR 2026-10.x9fa and
+  `.agents/context/crypto.md`'s compact-door entry. It is ratchet state — which DMs a compact LoRa copy delivered and
+  whether the signed copy's ratchet step has run — so it is `BackupTables.TRANSIENT`, never carried, and swept 48 h after
+  arrival on our own clock. `LocalMessageDelete` must never touch it: a held id is what keeps a deleted DM deleted.
 - **When touching `mesh/CloneWatch`, the self branch of `InboundPipeline.handleProfile`, the `clone_`
   settings keys, `ui/chatlist/CloneBanner`, the Settings clone row, or `ui/signout/`:** READ ADR
   2026-09.ypcc. One backup restored onto two phones is detected from the **profile stamp alone** — a

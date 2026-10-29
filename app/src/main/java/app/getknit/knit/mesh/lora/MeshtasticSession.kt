@@ -96,6 +96,15 @@ internal class MeshtasticSession(
     // Pending sends awaiting their queueStatus, keyed by our packet id, so a late NAK can still be matched.
     private val pending = HashMap<UInt, CompletableDeferred<SendResult>>()
 
+    /**
+     * The board each acknowledged direct send went to, by packet id, so its `Routing` answer can be told apart: the
+     * destination's own ACK from an implicit one, its refusal from our board's (ADR 2026-10.x9fa). Insertion-ordered
+     * and bounded at [MAX_DIRECT_AWAITED], oldest dropped — an answer that never comes must not grow it — and
+     * cleared by [stop]. Not cleared by a re-handshake: the board may still answer a packet it took before the link
+     * flapped. Touched only on the actor coroutine (the send and the drain both run there).
+     */
+    private val directTo = LinkedHashMap<UInt, UInt>()
+
     override fun start(address: String) {
         if (this.address == address && loopJob?.isActive == true) return
         stop()
@@ -108,6 +117,7 @@ internal class MeshtasticSession(
         loopJob = null
         address = null
         failAllPending(SendResult.NotReady(LinkState.Idle))
+        directTo.clear()
         _battery.value = null
         _boardAir.value = null
         _nodes.value = emptyMap()
@@ -119,13 +129,13 @@ internal class MeshtasticSession(
         channelIndex: Int,
         portnum: Int,
         hopLimit: Int?,
-        to: UInt,
+        destination: LinkDestination,
     ): SendResult {
         if (payload.size > MeshtasticProto.MAX_PAYLOAD) return SendResult.TooLarge
         val st = _state.value
         if (st !is LinkState.Ready) return SendResult.NotReady(st)
         val reply = CompletableDeferred<SendResult>()
-        inbox.send(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply, to))
+        inbox.send(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply, destination))
         return reply.await()
     }
 
@@ -435,9 +445,12 @@ internal class MeshtasticSession(
         val self = board?.myNodeNum == packet.from
         when {
             // Routing NAKs originate from our OWN board's node (it generates the error), so they are matched
-            // before the self-echo arm below — otherwise `from == myNodeNum` would swallow them.
+            // before the self-echo arm below — otherwise `from == myNodeNum` would swallow them. A direct send's
+            // ACK comes from its destination's board instead, and that packet is also a hearing of that board, so
+            // it goes on to the transport too, where only the hearing hook reads a ROUTING packet (ADR 2026-10.x9fa).
             data.portnum == MeshtasticProto.PORT_ROUTING -> {
-                routeNak(data)
+                routeNak(packet, data)
+                if (!self) emit(packet, data)
             }
 
             // The board's own device telemetry (its battery) is addressed from itself too: read, never surfaced.
@@ -449,32 +462,42 @@ internal class MeshtasticSession(
 
             // our own broadcast echoed back (belt-and-suspenders)
 
-            // A node broadcasting its own `User` feeds the name directory a bridged post reads, and is not
-            // itself worth surfacing — the transport has no use for the raw NODEINFO bytes.
+            // A node broadcasting its own `User` feeds the name directory a bridged post reads. Surfaced as well, for
+            // the transport's hearing hook alone (ADR 2026-10.x9fa): a packet off a contact's board is evidence the
+            // board is on the air, whatever its portnum.
             data.portnum == MeshtasticProto.PORT_NODEINFO -> {
                 noteNodeName(packet.from, BoardOwnerRaw(data.payload).owner)
+                emit(packet, data)
             }
 
             else -> {
-                _packets.tryEmit(
-                    ReceivedPacket(
-                        from = packet.from,
-                        to = packet.to,
-                        id = packet.id,
-                        channelIndex = packet.channel,
-                        portnum = data.portnum,
-                        payload = data.payload,
-                        rxSnr = packet.rxSnr,
-                        rxRssi = packet.rxRssi,
-                        hopsAway = packet.hopsAway,
-                        viaMqtt = packet.viaMqtt,
-                        signature = data.signature,
-                        signedFields = data.signedFields,
-                        boardVerified = packet.xeddsaSigned,
-                    ),
-                )
+                emit(packet, data)
             }
         }
+    }
+
+    private fun emit(
+        packet: MeshPacket,
+        data: MeshData,
+    ) {
+        _packets.tryEmit(
+            ReceivedPacket(
+                from = packet.from,
+                to = packet.to,
+                id = packet.id,
+                channelIndex = packet.channel,
+                portnum = data.portnum,
+                payload = data.payload,
+                rxSnr = packet.rxSnr,
+                rxRssi = packet.rxRssi,
+                hopsAway = packet.hopsAway,
+                viaMqtt = packet.viaMqtt,
+                signature = data.signature,
+                signedFields = data.signedFields,
+                boardVerified = packet.xeddsaSigned,
+                rxTime = packet.rxTime,
+            ),
+        )
     }
 
     /**
@@ -520,14 +543,64 @@ internal class MeshtasticSession(
         }
     }
 
-    private fun routeNak(data: MeshData) {
+    /**
+     * One `Routing` packet about our packet `request_id` (ADR 2026-10.x9fa). For a direct send ([directTo]) the sender
+     * decides what it means: `NONE` from the destination's board is [PacketOutcome.Acked] by it, from anyone else
+     * (a relay, our own board hearing it repeated) an implicit ack; the firmware giving up is
+     * [PacketOutcome.Unreachable]; any other error is a refusal, the destination's or ours. For a broadcast an error
+     * is today's NAK — folded into the send while it still waits, a late [PacketOutcome.Refused] after — and a `NONE`
+     * says nothing, since a broadcast never asks for an ack.
+     */
+    private fun routeNak(
+        packet: MeshPacket,
+        data: MeshData,
+    ) {
+        val id = data.requestId
         val reason = MeshtasticProto.decodeRouting(data.payload) ?: RoutingError.UNKNOWN
-        val waiter = pending.remove(data.requestId)
-        if (waiter != null) {
-            waiter.complete(SendResult.Nak(data.requestId, reason))
-        } else {
-            _outcomes.tryEmit(PacketOutcome(data.requestId, reason))
+        val destination = directTo[id]
+        if (destination != null) {
+            routeDirect(id, packet.from == destination, reason)
+            return
         }
+        if (reason == RoutingError.NONE) return
+        val waiter = pending.remove(id)
+        if (waiter != null) {
+            waiter.complete(SendResult.Nak(id, reason))
+        } else {
+            _outcomes.tryEmit(PacketOutcome.Refused(id, reason))
+        }
+    }
+
+    private fun routeDirect(
+        id: UInt,
+        fromDestination: Boolean,
+        reason: RoutingError,
+    ) {
+        val outcome =
+            when {
+                reason == RoutingError.NONE -> {
+                    PacketOutcome.Acked(id, byDestination = fromDestination)
+                }
+
+                reason == RoutingError.MAX_RETRANSMIT || reason == RoutingError.NO_RESPONSE -> {
+                    PacketOutcome.Unreachable(id)
+                }
+
+                else -> {
+                    // A refusal by our own board before the packet left (NO_CHANNEL, TOO_LARGE) can arrive while the
+                    // send still waits on its queueStatus: fold it in there, as a broadcast's is.
+                    val waiter = if (fromDestination) null else pending.remove(id)
+                    if (waiter != null) {
+                        directTo.remove(id)
+                        waiter.complete(SendResult.Nak(id, reason))
+                        return
+                    }
+                    PacketOutcome.Refused(id, reason, byDestination = fromDestination)
+                }
+            }
+        // The wait ends on every answer but an implicit ack, which only says somebody heard it repeated.
+        if (outcome !is PacketOutcome.Acked || outcome.byDestination) directTo.remove(id)
+        _outcomes.tryEmit(outcome)
     }
 
     private fun onQueueStatus(
@@ -558,15 +631,20 @@ internal class MeshtasticSession(
         }
         val id = ids.next()
         pending[id] = cmd.reply
+        val direct = cmd.destination as? LinkDestination.Direct
         val packet =
             OutboundPacket(
-                to = cmd.to,
+                to = direct?.addr?.node ?: MeshtasticProto.BROADCAST,
                 channelIndex = cmd.channelIndex,
                 id = id,
                 portnum = cmd.portnum,
                 payload = cmd.payload,
                 hopLimit = cmd.hopLimit,
+                wantAck = direct?.ack == true,
             )
+        // Before the write: the destination's answer can only come later, but our board's own refusal can arrive in
+        // the drain below, and has to be told from the destination's.
+        if (packet.wantAck) awaitDirect(id, packet.to)
         when (val write = channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS)) {
             is GattResult.Ok -> {
                 lastWriteAt = now()
@@ -574,14 +652,24 @@ internal class MeshtasticSession(
 
             else -> {
                 pending.remove(id)
+                directTo.remove(id)
                 cmd.reply.complete(SendResult.NotReady(_state.value))
                 return classify(address, write) ?: SessionEnd(reason = "$REASON_SEND_WRITE $write")
             }
         }
         val end = drain(address, channel, awaitId = id)
         // Still pending after the drain (no matching queueStatus came back) → time it out; the transport retries.
-        pending.remove(id)?.complete(SendResult.Timeout)
+        // A direct send stays awaited: the board may have taken it, and its answer is still worth reading.
+        pending.remove(id)?.complete(SendResult.Timeout(id))
         return end
+    }
+
+    private fun awaitDirect(
+        id: UInt,
+        to: UInt,
+    ) {
+        directTo[id] = to
+        while (directTo.size > MAX_DIRECT_AWAITED) directTo.remove(directTo.keys.first())
     }
 
     // --- channel provisioning (an AdminMessage to the local node, over portnum ADMIN) ---
@@ -1275,7 +1363,7 @@ internal class MeshtasticSession(
             val hopLimit: Int?,
             val payload: ByteArray,
             val reply: CompletableDeferred<SendResult>,
-            val to: UInt = MeshtasticProto.BROADCAST,
+            val destination: LinkDestination = LinkDestination.Broadcast,
         ) : Cmd
 
         class Provision(
@@ -1355,6 +1443,12 @@ internal class MeshtasticSession(
         private const val MALFORMED_OWNER = "board sent a name this build cannot read"
         private const val PACKET_BUFFER = 256
         private const val OUTCOME_BUFFER = 64
+
+        /**
+         * The most direct sends awaiting their board's answer at once. The transport keeps at most one in flight per
+         * unconfirmed peer and its queue holds 32, so this is slack; it bounds a board that never answers.
+         */
+        private const val MAX_DIRECT_AWAITED = 64
 
         /**
          * How many other nodes' names the directory holds. A dense urban mesh runs to thousands and the phone

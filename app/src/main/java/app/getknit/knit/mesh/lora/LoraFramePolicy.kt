@@ -6,17 +6,15 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
 /**
  * Decides which mesh frames are worth an ~2.5-second LoRa airslot, and whose. Since ADR 2026-10.rp3s the board is an
  * **endpoint**: it airs only frames this phone's user wrote ([airs]), never a pocket-mate's, a relayed frame or a
- * custody re-serve of someone else's. Of those, two kinds ride: an own **Nearby-room** post (a broadcast `chat`,
- * and only one that fits one packet — the transport asks that after encoding), and, since ADR 039, own **DM-form
- * chat**: a `chat` frame with a recipient and no group. That form is deliberately opaque — a 1:1 DM, its sealed
- * receipt or reaction, a session reset, a group-key seed and an escalated delivery tick are wire-indistinguishable
- * (ADR 016/018), so all of them ride and this policy never tries to tell them apart.
+ * custody re-serve of someone else's. Of the mesh's frames one kind rides the fan-out: an own **Nearby-room** post (a
+ * broadcast `chat`, and only one that fits one packet — the transport asks that after encoding).
  *
- * Everything else is refused: the room's cleartext `reaction` (ADR 2026-10.rp3s: never worth the air), the
- * `profile` (no key bootstrap rides this plane any more, so an author with no pinned key stays unshown), group-form
- * chat (`group != null` — the plane carries no group conversation), group metadata (useless without it), `typing`
- * (worthless a moment later), every receipt, and the point-to-point `blobreq`/`keyreq`. Pure — decides on the
- * already-decoded [RelayEnvelope], never re-encoding it ([app.getknit.knit.mesh.lora.LoraFramePolicyTest]).
+ * Our own DMs no longer ride as mesh frames at all (ADR 2026-10.x9fa): a DM, its ✓✓ and a DM reaction leave as a
+ * compact pair-sealed unicast offered beside the signed copy (`LoraDirectSink`), and every other DM-form frame — a
+ * session reset, a seed, a key reply, an intro — travels custody, the spool and the links only. So everything else is
+ * refused here: DM-form chat, the room's cleartext `reaction`, the `profile`, group-form chat, group metadata,
+ * `typing`, every receipt, and the point-to-point `blobreq`/`keyreq`. Pure — decides on the already-decoded
+ * [RelayEnvelope], never re-encoding it ([app.getknit.knit.mesh.lora.LoraFramePolicyTest]).
  */
 internal object LoraFramePolicy {
     /**
@@ -36,13 +34,16 @@ internal object LoraFramePolicy {
     ): Boolean = selfId != null && authorId == selfId
 
     /**
-     * Whether [env] is a kind of frame the fan-out carries: an own room post (broadcast `chat`) or own DM-form chat.
-     * Whose frame it is is [airs]'s question, and whether a room post fits one packet is the transport's, after it
-     * has encoded it.
+     * Whether [env] is a kind of frame the fan-out carries: an own room post (broadcast `chat`), and nothing else since
+     * our DMs ride compact (ADR 2026-10.x9fa). Whose frame it is is [airs]'s question, and whether a room post fits one
+     * packet is the transport's, after it has encoded it.
      */
-    fun eligible(env: RelayEnvelope): Boolean = isBroadcastRoomChat(env) || isDmForm(env)
+    fun eligible(env: RelayEnvelope): Boolean = isBroadcastRoomChat(env)
 
-    /** DM-form chat: addressed to one recipient, no group — a DM, or any sealed ctl frame riding as one. */
+    /**
+     * DM-form chat: addressed to one recipient, no group — a DM, or any sealed ctl frame riding as one. Never aired
+     * since ADR 2026-10.x9fa; still read on receive, where an older build's board airs them.
+     */
     fun isDmForm(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId != null && env.group == null
 
     /**

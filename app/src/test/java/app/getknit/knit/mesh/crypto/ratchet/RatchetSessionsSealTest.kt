@@ -78,6 +78,79 @@ class RatchetSessionsSealTest {
         return a to b
     }
 
+    /**
+     * `sealAnswer` (ADR 2026-10.x9fa): a ✓✓ or a reaction to a compact-delivered DM is sealed only under a session the
+     * peer holds — never as a fresh init, never under our own init still unanswered — and says so, persisting nothing.
+     * Once the peer has answered, or once we hold their init as responder, it seals like `sealDm`.
+     */
+    @Test
+    fun anAnswerIsSealedOnlyUnderASessionThePeerHolds() =
+        runTest {
+            val (a, b) = pair()
+
+            suspend fun sealAnswer(side: Side) =
+                side.sessions.sealAnswer(side.peer.nodeId, side.peer.ik.pub, side.prekey(1), "ack".toByteArray(), AAD, T)
+
+            assertSame("no session: declined", RatchetSessions.AnswerSeal.Declined, sealAnswer(a))
+            assertNull("and nothing persisted", a.store.session(b.nodeId))
+
+            val first = checkNotNull(a.seal("hello", T))
+            assertSame("our own init unanswered: declined", RatchetSessions.AnswerSeal.Declined, sealAnswer(a))
+
+            assertTrue(b.open(first, T) is OpenOutcome.Opened)
+            val fromB = sealAnswer(b) as RatchetSessions.AnswerSeal.Sealed
+            assertNull("the responder's answer carries no init", fromB.env.r?.init)
+            assertTrue(a.open(fromB.env, T) is OpenOutcome.Opened)
+            val fromA = sealAnswer(a) as RatchetSessions.AnswerSeal.Sealed
+            assertNull("answered, ours seals without an init", fromA.env.r?.init)
+        }
+
+    /**
+     * No session and no prekey to start one is still a decline, never `CannotSeal`: every caller has checked the peer
+     * reads the ratchet, and a cleartext receipt in its place would purge a compact-first DM's signed copy everywhere.
+     */
+    @Test
+    fun anAnswerWithNoSessionAndNoPrekeyIsDeclined() =
+        runTest {
+            val (a, b) = pair()
+            assertSame(
+                RatchetSessions.AnswerSeal.Declined,
+                a.sessions.sealAnswer(b.nodeId, b.ik.pub, null, "ack".toByteArray(), AAD, T),
+            )
+            assertNull(a.store.session(b.nodeId))
+        }
+
+    /** Our own reset over a confirmed session is our init unanswered again: an answer waits for the peer's reply. */
+    @Test
+    fun anAnswerOnOurOwnUnansweredResetIsDeclinedUntilThePeerAnswersIt() =
+        runTest {
+            val (a, b) = pair()
+            assertTrue(b.open(checkNotNull(a.seal("hello", T)), T) is OpenOutcome.Opened)
+            assertTrue(a.open(checkNotNull(b.seal("hi", T)), T) is OpenOutcome.Opened)
+            assertTrue(checkNotNull(a.store.session(b.nodeId)).confirmed)
+
+            val reset =
+                a.sessions.sealResetDm(
+                    b.nodeId,
+                    b.ik.pub,
+                    a.prekey(1),
+                    "reset".toByteArray(),
+                    AAD,
+                    T + RESET_GAP,
+                ) as ResetSeal.Sealed
+            val after = checkNotNull(a.store.session(b.nodeId))
+            assertSame(
+                RatchetSessions.AnswerSeal.Declined,
+                a.sessions.sealAnswer(b.nodeId, b.ik.pub, a.prekey(1), "ack".toByteArray(), AAD, T + RESET_GAP),
+            )
+            assertEquals("nothing persisted", after.sendCount, checkNotNull(a.store.session(b.nodeId)).sendCount)
+
+            assertTrue(b.open(reset.envelope, T + RESET_GAP) is OpenOutcome.Opened)
+            assertTrue(a.open(checkNotNull(b.seal("answer", T + RESET_GAP)), T + RESET_GAP) is OpenOutcome.Opened)
+            val sealed = a.sessions.sealAnswer(b.nodeId, b.ik.pub, a.prekey(1), "ack".toByteArray(), AAD, T + RESET_GAP)
+            assertNull((sealed as RatchetSessions.AnswerSeal.Sealed).env.r?.init)
+        }
+
     @After
     fun closeDbs() {
         sides.forEach { it.db.close() }
@@ -194,6 +267,9 @@ class RatchetSessionsSealTest {
 
     private companion object {
         const val T = 100_000_000L
+
+        /** Past every replacement floor the peer applies, so the reset is adopted, never refused. */
+        const val RESET_GAP = 2 * 60 * 60_000L
         val AAD = "aad".toByteArray()
     }
 }

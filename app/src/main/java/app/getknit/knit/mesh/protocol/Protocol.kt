@@ -179,6 +179,18 @@ object Protocol {
      */
     const val CAP_WALKIE = 0x8000L
 
+    /**
+     * Compact LoRa DMs (ADR 2026-10.x9fa): this phone reads a pair-sealed `0x11` unicast its board takes, and its board
+     * is one a compact DM may be addressed to. A send-time input like [CAP_RATCHET], read from the **pinned** profile
+     * only — the board acknowledges a unicast whatever the phone behind it does with it, so a sender that went on the
+     * profile's `loraNode` alone would have its packet acked by the board of a phone that throws it away.
+     *
+     * **Never in [LOCAL_CAPABILITIES]:** OR-ed into our own profile by `MeshManager` only while the LoRa plane and its DM
+     * switch are both on (`SettingsStore.loraEnabled` and `loraDmEnabled`), the same moment the profile names the board
+     * at all. Android-only for now (`docs/WIRE_COMPAT.md`); above the 8 bits a BLE advert carries.
+     */
+    const val CAP_LORA_DIRECT = 0x10000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or

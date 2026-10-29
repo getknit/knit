@@ -550,18 +550,6 @@ class CompositeMeshTransport(
         for (child in children) child.coveredByInternet(peers)
     }
 
-    /**
-     * The long-range fan-out goes to every child and each decides for itself (the interface default is a
-     * no-op; only a plane with no data path overrides it). Deliberately NO `send(wire, null)` fallback for a
-     * link child — the router's flood already carries the frame over its links, so that would only double-flood.
-     */
-    override fun longRangeFanout(
-        wire: WireEnvelope,
-        hint: FanoutHint,
-    ) {
-        for (child in children) child.longRangeFanout(wire, hint)
-    }
-
     // A live frame (a walkie chunk) rides the high-throughput child when it holds a link to [to]: an NDP's latency is
     // a Wi-Fi radio's, not a connection interval's. Everything else keeps the Bluetooth-first order of [send].
     override suspend fun sendLive(

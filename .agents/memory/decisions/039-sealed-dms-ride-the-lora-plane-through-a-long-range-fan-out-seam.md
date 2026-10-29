@@ -11,6 +11,8 @@ topics: [lora, crypto, dm]
 Status: Accepted (2026-08-24; `MeshTransport.longRangeFanout`, `mesh/lora/`, `FarPeerFrameSource`,
 `SettingsStore.loraDmEnabled`)
 
+**Superseded in part by ADR 2026-10.x9fa (2026-10-29):** the DM form — a DM rides LoRa as one compact pair-sealed unicast, never as its signed frame through `longRangeFanout` — and the first-hearing re-offer.
+
 ADR 038 shipped the LoRa bridge carrying only the cleartext Nearby room and deferred DMs: a Nearby-only LoRa
 peer showed up in the contact picker, and a DM to it stranded in custody until radio or spool contact. This
 lands 1:1 DMs on the plane. A DM is a `chat` frame with a recipient and no group, sealed under the v2

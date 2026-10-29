@@ -42,6 +42,8 @@ import app.getknit.knit.data.ratchet.GroupRootDao
 import app.getknit.knit.data.ratchet.GroupRootEntity
 import app.getknit.knit.data.ratchet.GroupSendChainEntity
 import app.getknit.knit.data.ratchet.GroupSkippedKeyEntity
+import app.getknit.knit.data.ratchet.LoraDirectSeenDao
+import app.getknit.knit.data.ratchet.LoraDirectSeenEntity
 import app.getknit.knit.data.ratchet.RatchetDao
 import app.getknit.knit.data.ratchet.RatchetLocalEpochEntity
 import app.getknit.knit.data.ratchet.RatchetRecvEpochEntity
@@ -61,7 +63,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 27
+internal const val KNIT_DB_SCHEMA_VERSION = 28
 
 @Database(
     entities = [
@@ -76,7 +78,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 27
         CommonsMemberEntity::class, MetPeerEntity::class, SavedFileEntity::class,
         PeerProfileEntity::class, GroupMemberClockEntity::class, PeerBadgeEntity::class,
         AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
-        PinEntity::class,
+        PinEntity::class, LoraDirectSeenEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -250,6 +252,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 27
     //     `MessageDao.setTranslation`, and the languages its author declared on the frame (`bodyLang`, `authorReads`),
     //     written once on insert. Local only, not in `messages_fts`, carried in a backup with the row. Null or false on
     //     existing rows; migrated by KnitMigrations.MIGRATION_26_27.
+    // v28: one `lora_direct_seen` table — the DMs whose row a compact LoRa copy wrote, or that a compact copy could still
+    //     bring back, keyed by frame id with the authenticated sender, our arrival clock and whether the signed copy's
+    //     ratchet step has run (ADR 2026-10.x9fa). Local only and never in a backup (ratchet state); swept 48 h on.
+    //     Empty on arrival; migrated by KnitMigrations.MIGRATION_27_28.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -293,6 +299,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun scopeConfigDao(): ScopeConfigDao
 
     abstract fun pinDao(): PinDao
+
+    abstract fun loraDirectSeenDao(): LoraDirectSeenDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

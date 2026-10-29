@@ -113,7 +113,9 @@ class RestoreLabTest {
     @Test
     fun aRestoredNodeBehindARelayGetsWhatCrossedItInsideTheDedupWindow() =
         runBlocking {
-            val (alice, bob, carol) = relayedPair()
+            // No board on bob, whatever the run: the routers' dedup window over the relay is the subject, and a compact
+            // copy of the three would reach him around it.
+            val (alice, bob, carol) = relayedPair(bobBoard = false)
             bob.restoreFromBackup()
             val sent = sendThreeWhileBobIsAway(alice, bob, carol)
 
@@ -154,14 +156,19 @@ class RestoreLabTest {
         }
 
     /** Alice – Carol – Bob in a line, with a confirmed DM session between the two ends. */
-    private suspend fun relayedPair(): Triple<LabNode, LabNode, LabNode> {
+    private suspend fun relayedPair(bobBoard: Boolean = true): Triple<LabNode, LabNode, LabNode> {
         val alice = lab.node("alice").apply { setDisplayName("Alice") }
-        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        val bob = lab.node("bob", board = bobBoard).apply { setDisplayName("Bob") }
         val carol = lab.node("carol").apply { setDisplayName("Carol") }
         lab.linkAll(alice to carol, carol to bob)
         lab.awaitAcquainted(alice, bob, carol)
         assertTrue(alice.sendDm(bob, "before"))
         lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+        // Bob answers under alice's session, never a race of his own: a compact copy can land his row before her signed
+        // one reaches his ratchet, and a race stamped now refuses the restore's reset under the replacement floors. The
+        // race itself is #189 (a winner's intro answer, re-served to a restored loser, wins `resolveRace`): parked with
+        // its rule, as `LoraDirectLabTest`'s scenario (j) is, so this pair waits it out rather than meets it.
+        lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
         assertTrue(bob.sendDm(alice, "before too"))
         lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
         return Triple(alice, bob, carol)

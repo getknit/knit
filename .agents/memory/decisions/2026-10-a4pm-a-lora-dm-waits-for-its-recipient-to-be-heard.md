@@ -8,7 +8,7 @@ topics: [lora, dm]
 
 # ADR 2026-10.a4pm — A LoRa DM waits for its recipient to be heard
 
-Status: Proposed (2026-10-10; JVM-tested, device trial owed; `FanoutHint.CHAT`, `LoraMeshTransport.reachGate` /
+Status: Superseded by ADR 2026-10.x9fa (2026-10-29), never device-trialled. Proposed 2026-10-10 (JVM-tested; it named `FanoutHint.CHAT`, `LoraMeshTransport.reachGate` /
 `unheardRecipient` / `dmProbeAt` / `DM_PROBE_WINDOW_MS` / `frameKey` / `reofferedAt` / `REOFFER_MEMORY_MS`,
 `LoraDmProbe`, `LoraPacePolicy.upgradeQueued`, `RideGate.reachGated`, `StaleAtSend.UNHEARD`, `OutboundFrame.sigKey`,
 `LoraPlaneSnapshot.dmProbes` / `reoffered`, `MeshManager.framesFor` / `FAR_REOFFER_OWN_LIMIT` /

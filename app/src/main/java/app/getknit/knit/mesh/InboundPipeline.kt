@@ -37,6 +37,7 @@ import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.InboundSettings
@@ -65,6 +66,7 @@ import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.MeshtasticProto
+import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
@@ -113,6 +115,8 @@ import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
 import app.getknit.knit.notifications.reactionNotificationKey
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -186,9 +190,22 @@ class InboundPipeline(
     // anchor). Defaults to the real clock; mirrors the house convention — MeshManager, ForwardSync, AckSync.
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val originate: suspend (RelayEnvelope) -> Unit,
-    // The same choke for a frame that is our own delivery receipt, so the long-range plane can rank it as
-    // feedback rather than content (`FanoutHint.TICK`, ADR 054). Defaults to [originate] for the test rigs.
+    // The same choke for a frame that is our own delivery receipt. One door of its own so a rig can tell a tick from
+    // content; MeshManager hands it [originate] itself since ADR 2026-10.x9fa took the long-range ranking off frames.
     private val originateTick: suspend (RelayEnvelope) -> Unit = originate,
+    // The compact LoRa copy of a sealed ✓✓ we just originated toward an author whose DM came over the board (ADR
+    // 2026-10.x9fa) — MeshManager.offerLoraDirectReceipt, which asks the board map and the plane's own gates. The
+    // content is the signed tick's own; nothing in the rigs' default goes anywhere.
+    private val offerLoraReceipt: suspend (authorId: String, frameId: String, sentAt: Long, content: MessageContent) -> Unit =
+        { _, _, _, _ -> },
+    // A ✓✓ declined as an answer (no session the author holds yet, ADR 2026-10.x9fa): MeshManager holds the id and seals
+    // it once the session is answered. Nothing in the rigs' default.
+    private val holdDeclinedTick: (authorId: String, ackId: String) -> Unit = { _, _ -> },
+    // A ✓✓ sealed and sent for these ids: MeshManager lets go of any held copy, so none is sealed twice.
+    private val releaseHeldTicks: (authorId: String, ackIds: List<String>) -> Unit = { _, _ -> },
+    // The DMs a compact LoRa copy delivered (ADR 2026-10.x9fa): what lets the signed copy still run its ratchet step
+    // without rewriting the row, and what keeps a deleted one deleted. Over [db] by default, which every rig wants.
+    private val loraSeen: LoraDirectSeenRepository = LoraDirectSeenRepository(db),
     // Holds the ✓✓ for a DM that arrived over the LoRa board so a burst becomes one tick and a reply can
     // carry the acks (ADR 054) — MeshManager's [DmAckCoalescer]; null (the rigs' default) acks instantly.
     private val dmAcks: DmAckCoalescer? = null,
@@ -347,10 +364,8 @@ class InboundPipeline(
         if (wire.relay) {
             env.recipientId?.let { if (shouldFastSend(env) && it != fromNodeId) transport.fastSend(wire, Peer(it)) }
         }
-        // The long-range sibling: a sealed DM-form frame re-fans over a plane with no data path (LoRa) for the
-        // same once-per-node reason; that plane's own sig-keyed dedup keeps a frame heard over it from bouncing
-        // straight back onto it.
-        if (wire.relay && shouldLongRangeFanout(env)) transport.longRangeFanout(wire)
+        // No long-range sibling: the LoRa plane airs only its own user's frames (ADR 2026-10.rp3s), and since ADR
+        // 2026-10.x9fa our own DMs leave it as compact pair-sealed unicasts offered by MeshManager, never as this frame.
         // Completes the no-throw contract: a per-type handler must NEVER throw out of onDeliver. The router
         // schedules the relay only *after* this returns, so an escape would silently stop this node forwarding
         // the frame (a propagation black hole). verifyInbound/decrypt are already guarded individually; this
@@ -1047,6 +1062,117 @@ class InboundPipeline(
     }
 
     /**
+     * One compact LoRa DM our board took and [app.getknit.knit.mesh.crypto.LoraDirectSeal] opened (ADR 2026-10.x9fa) —
+     * the `LoraDirectInbox` door. The **trust boundary** is the seal's: the packet authenticated under the pair key of
+     * [OpenedDirect.peerId], whom the pairTag index named and never the packet, inside the replay window. Nothing here
+     * is a `WireEnvelope`: the [RelayEnvelope] built below carries [deliverChat]'s four reads (id, sender, recipient,
+     * sentAt) with the sender from the index and the recipient us, and is never originated, custodied or relayed.
+     * Nothing here feeds the reset heuristic, and no ratchet is touched: the signed copy still opens through
+     * `lora_direct_seen`'s branch of [decryptAndDeliver] when it arrives.
+     *
+     * Exactly three shapes are taken, decoded with the v3 compact schema (Crypto 3); anything else — a reset, a seed, a
+     * profile, a scope config, a transfer, a call, a plaintext that will not decode — is dropped as
+     * [DropReason.LORA_DIRECT_REFUSED]:
+     * - **a message** (`ctl` null): refused and acked if `lora_direct_seen` holds its id (delivered, or delivered and
+     *   deleted — a replay inside the window must not bring a row back) or the row exists (its signed copy came first:
+     *   this re-ack is how a lost compact ✓✓ is retried). Otherwise [deliverChat] — moderation, the quote judge, the
+     *   notification, the attachment's pull — with a persist that writes the row, its mark and its inline acks in one
+     *   transaction, then the ✓✓ through [acknowledge] on [DeliveryPlane.LoRa] (the coalescer, ADR 054).
+     * - **a `CTL_RECEIPT`**: [applySealedReceipt] per id, whose `recipientOf(ackId) == sender` guard is the pair's own.
+     * - **a `CTL_REACTION`**: [applySealedReaction], last-writer-wins on the sender's stamp; [noticeReaction] after
+     *   the commit. Receipts and reactions keep no mark: both are idempotent.
+     *
+     * A blocked sender gets nothing, not even a ✓✓, as on the signed path's DM arm. Serialised per process
+     * ([loraDirectLock]): the plane delivers each packet on its own coroutine, and two copies of one id must not both
+     * pass the gates and notify twice. Never throws.
+     */
+    internal suspend fun deliverLoraDirect(opened: OpenedDirect) {
+        runCatchingUnlessCancelled { loraDirectLock.withLock { deliverLoraDirectLocked(opened) } }
+            .onFailure { Log.w(TAG, "lora direct ${opened.frameId} from ${opened.peerId}: ${it.message}") }
+    }
+
+    /** Serialises [deliverLoraDirect]: never taken inside a transaction, and nothing under it takes the ratchet mutex. */
+    private val loraDirectLock = Mutex()
+
+    @Suppress("ReturnCount") // a refusal ladder, as decryptAndDeliverV2's
+    private suspend fun deliverLoraDirectLocked(opened: OpenedDirect) {
+        val me = identity.nodeId()
+        val sender = opened.peerId
+        if (sender == me) return // the index never holds us (45763fb6); belt and braces
+        val plain = MessageContentV2.decode(opened.plaintext)
+        if (plain == null || !plain.isSupported() || !admitsLoraDirect(plain)) {
+            metrics.onDropped(DropReason.LORA_DIRECT_REFUSED)
+            return
+        }
+        if (sender in settings.blockedNodeIds.first()) return
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = opened.frameId,
+                senderId = sender,
+                sentAt = opened.sentAtMs,
+                recipientId = me,
+                payload = ByteArray(0),
+            )
+        val plane = DeliveryPlane.LoRa
+        when (plain.ctl) {
+            MessageContent.CTL_RECEIPT -> {
+                db.withWriteTransaction {
+                    (listOfNotNull(plain.ack) + plain.acks.orEmpty())
+                        .distinct()
+                        .take(MAX_RECEIPT_ACKS)
+                        .forEach { applySealedReceipt(env, it, plane) }
+                }
+            }
+
+            MessageContent.CTL_REACTION -> {
+                db.withWriteTransaction { applySealedReaction(env, plain.rp) }?.let { noticeReaction(env, it) }
+            }
+
+            else -> {
+                deliverLoraDirectChat(env, plain, me, plane)
+            }
+        }
+    }
+
+    /** The compact door's shapes (Crypto 3): a message, a receipt or a reaction, and none of the payloads only a ctl carries. */
+    private fun admitsLoraDirect(plain: MessageContent): Boolean =
+        (plain.ctl == null || plain.ctl == MessageContent.CTL_RECEIPT || plain.ctl == MessageContent.CTL_REACTION) &&
+            plain.gk == null &&
+            plain.sc == null &&
+            plain.pr == null &&
+            plain.xf == null &&
+            plain.cl == null
+
+    private suspend fun deliverLoraDirectChat(
+        env: RelayEnvelope,
+        plain: MessageContent,
+        me: String,
+        plane: DeliveryPlane,
+    ) {
+        if (loraSeen.find(env.id) != null || messages.exists(env.id)) {
+            acknowledge(env, me, plane)
+            return
+        }
+        deliverChat(
+            env,
+            plaintextContent(ChatContent(body = ""), plain),
+            me,
+            Conversations.idFor(env.senderId, me, me),
+            plane,
+            plain,
+            persist = { row ->
+                db.withWriteTransaction {
+                    if (loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = false)) {
+                        messages.saveIfAbsent(row)
+                        applyInlineAcks(env, plain, plane)
+                    }
+                }
+            },
+        )
+    }
+
+    /**
      * What a heard post's XEdDSA signature proves, decided here and nowhere else (`MessageEntity.ORIGIN_*`).
      *
      * The strong answer needs two things a contact's own signed profile supplied: the claim that they hold
@@ -1170,12 +1296,10 @@ class InboundPipeline(
         // evicted re-serves it every exchange, and a back-fill fed by two holders relays one holder's copy
         // to us past our seen window (#176). Each gets acknowledge's answer, which for a DM to us off the
         // board is bounded: one sealed receipt per session root, re-sealed only once ours has left our
-        // custody or its re-arm floor has passed (DmReAckLedger, ADR 2026-10.8hn6). Over LoRa, and for an
-        // author who reads only the cleartext form, every copy is still answered.
-        if (signed && messages.exists(env.id)) {
-            acknowledge(env, me, plane, reDelivery = true)
-            return
-        }
+        // custody or its re-arm floor has passed (DmReAckLedger, ADR 2026-10.8hn6), and sealed only as an
+        // answer under a session the author holds (ADR 2026-10.x9fa). For an author who reads only the
+        // cleartext form, every copy is still answered.
+        if (signed && alreadyDelivered(env, enc, me, plane)) return
         when {
             // v2's two forms share the version and split on addressing (see EncEnvelope's kdoc):
             // group-addressed carries the sender-key header `g`, a DM the epoch-ratchet header `r`. The
@@ -1213,6 +1337,101 @@ class InboundPipeline(
                 deliverChat(env, plaintextContent(content, plain), me, conversationId, plane, plain, via = source?.fromNodeId)
             }
         }
+    }
+
+    /**
+     * The two gates a signed frame meets before any decrypt, true when one took it. A DM a compact LoRa copy already
+     * delivered (ADR 2026-10.x9fa) is judged first: past the exists-gate its signed copy would be acked unopened, its
+     * message key left a skipped key and an X3DH init it carries never processed. The exists-gate's re-ack is also the
+     * ✓✓'s one retry over LoRa: a compact copy landing after its signed copy comes through `deliverLoraDirect`'s twin
+     * of this gate and is acked again, which re-sends a compact ✓✓ that was lost.
+     */
+    private suspend fun alreadyDelivered(
+        env: RelayEnvelope,
+        enc: EncEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+    ): Boolean {
+        if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) return true
+        if (!messages.exists(env.id)) return false
+        acknowledge(env, me, plane, reDelivery = true)
+        return true
+    }
+
+    /**
+     * The signed copy of a DM whose row a compact LoRa copy wrote (`lora_direct_seen`, ADR 2026-10.x9fa), or that one
+     * could still bring back: true when it was taken here, and the caller stops. A marked v2/v3 copy whose ratchet step
+     * has not run opens through the ratchet alone ([ratchetOnly]); a copy whose step already ran, and a v1 copy, have
+     * nothing left to do. Either way it is acked exactly as the exists-gate acks a re-served DM. Only a mark from the
+     * same authenticated sender counts: a frame id is cleartext on the air, and another peer's frame under it is not this
+     * DM's copy.
+     */
+    private suspend fun loraDirectCopyTaken(
+        env: RelayEnvelope,
+        enc: EncEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+    ): Boolean {
+        if (env.recipientId != me) return false
+        val mark = loraSeen.find(env.id) ?: return false
+        if (mark.peerId != env.senderId) return false
+        if (!mark.ratchetDone && EncEnvelope.isDmRatchetVersion(enc.v)) {
+            runCatchingUnlessCancelled { ratchetOnly(env, enc, me, plane) }.onFailure {
+                metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
+                Log.w(TAG, "lora direct ratchet-only ${env.id}: ${it.message}")
+            }
+        }
+        // An answer: sealed only under a session the author holds (`RatchetSessions.sealAnswer`). After a ratchet-only
+        // open that took their init it is ours as responder; after one that failed (a restore's old era) it is declined,
+        // and nothing cleartext goes in its place — the compact ✓✓ already answered over the board. And a re-delivery:
+        // every signed-first DM from a pinned peer is marked, so a re-served signed copy lands here, not at the
+        // exists-gate, and the once-per-era bound (ADR 2026-10.8hn6) must hold here too or #176's loop is back for
+        // every pinned author. The ledger only skips where a receipt sealed in the root held now is still live.
+        acknowledge(env, me, plane, reDelivery = true)
+        return true
+    }
+
+    /**
+     * The ratchet step of a signed DM whose message a compact LoRa copy already delivered (ADR 2026-10.x9fa, Crypto 1):
+     * the same lock-free peek and committed re-open [decryptAndDeliverV2] runs, so the session advances, an X3DH init is
+     * processed and the key is consumed exactly as it would be with no LoRa leg — and the commit writes nothing but the
+     * mark's `ratchetDone` and the inline acks the compact copy may have shed to fit one packet (idempotent; they ride
+     * this copy). No row, no moderation, no notification. A failed open is its own count and **never** feeds
+     * [onRatchetFailure]: the message itself already landed, and a peer whose session we cannot follow shows it again on
+     * the next ordinary frame, where the heuristic's evidence rules apply. [IntroSync.onPeerFrameOpened] still runs after
+     * the commit (ADR 2026-09.pz9g): an init answered here is answered once.
+     */
+    @Suppress("ReturnCount") // the same gate ladder as decryptAndDeliverV2
+    private suspend fun ratchetOnly(
+        env: RelayEnvelope,
+        enc: EncEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+    ) {
+        val wireHeader = enc.r
+        val peerIkPub = pinnedDhKey(env.senderId)
+        if (wireHeader == null || !nonceShapeValid(enc) || peerIkPub == null) {
+            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
+            return
+        }
+        val nonce = enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }
+        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, env.recipientId.orEmpty())
+        val now = System.currentTimeMillis()
+        val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt)
+        if (peek !is RatchetEngine.OpenOutcome.Opened) {
+            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
+            Log.w(TAG, "lora direct ratchet-only ${env.id}: $peek")
+            return
+        }
+        val plain = decodePlaintext(enc, peek.plaintext)
+        val committed =
+            db.withWriteTransaction {
+                ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt) {
+                    loraSeen.markRatchetDone(env.id)
+                    if (plain != null && plain.ctl == null) applyInlineAcks(env, plain, plane)
+                }
+            }
+        if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
     }
 
     /** The decrypted [MessageContent] substituted into the cleartext [ChatContent] shell for delivery. */
@@ -1319,23 +1538,34 @@ class InboundPipeline(
             plane,
             plain,
             via = source?.fromNodeId,
-            persist = persistWithInlineAcks(env, plain, plane, commit),
+            persist = persistWithInlineAcks(env, plain, plane, commit, markSeen = true),
         )
     }
 
     /**
      * The v2 persist hook: the message row and the receipts the reply carries inline (ADR 054's piggyback)
-     * land in one commit — the same per-id guard as a sealed tick, txn outer and session lock inner.
+     * land in one commit — the same per-id guard as a sealed tick, txn outer and session lock inner. A compact LoRa
+     * copy that wrote the row while this copy was being opened (ADR 2026-10.x9fa) keeps it: the commit then only marks
+     * the ratchet step done, as [ratchetOnly] would have. With [markSeen], a first arrival is marked done at once — every
+     * signed DM from a pinned peer, whatever the capability we hold for them says: a stale profile must not let a compact
+     * copy their board re-airs later bring back a row deleted since (one row for 48 h each).
      */
     private fun persistWithInlineAcks(
         env: RelayEnvelope,
         plain: MessageContent,
         plane: DeliveryPlane,
         commit: suspend (suspend () -> Unit) -> Boolean,
+        markSeen: Boolean = false,
     ): suspend (MessageEntity) -> Unit =
         { row ->
             commit {
-                messages.save(row)
+                val compactFirst = loraSeen.find(env.id)?.takeIf { it.peerId == env.senderId } != null
+                if (compactFirst) {
+                    loraSeen.markRatchetDone(env.id)
+                } else {
+                    messages.save(row)
+                    if (markSeen) loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = true)
+                }
                 applyInlineAcks(env, plain, plane)
             }
         }
@@ -3385,13 +3615,18 @@ class InboundPipeline(
      * (relay = false) straight back to the author, remembered by AckSync and re-sent until it lands (or ages
      * out) — the message itself converges via custody, but the tick otherwise had no delay-tolerance.
      *
-     * [reDelivery] is the pre-decrypt exists-gate's call, for a DM whose row we already hold: see [answeredInEra].
+     * [reDelivery] is a signed copy of a DM whose row we already hold — the exists-gate's call, or a marked copy's
+     * ([loraDirectCopyTaken]): see [answeredInEra]. It always seals as an [answer].
      */
     private suspend fun acknowledge(
         env: RelayEnvelope,
         me: String,
         plane: DeliveryPlane,
         reDelivery: Boolean = false,
+        // A ✓✓ for a DM a compact LoRa copy delivered, and every re-seal of a ✓✓ for a DM we already hold: sealed only
+        // as an answer ([RatchetSessions.sealAnswer]), never as a fresh init nor on our own unanswered init or reset, and
+        // never downgraded to cleartext when declined. Every LoRa-plane ack is one, and so is every re-delivery's.
+        answer: Boolean = reDelivery || plane == DeliveryPlane.LoRa,
     ) {
         if (env.recipientId == me) {
             // A DM off the board holds its ✓✓ (ADR 054): a burst from one author becomes one sealed tick and a
@@ -3408,7 +3643,7 @@ class InboundPipeline(
                 metrics.onReAckSkipped()
                 return
             }
-            if (sealDmReceipt(env, me)) return
+            if (sealDmReceipt(env, me, plane, answer) != ReceiptSeal.CANNOT_SEAL) return
             ackCleartext(env.id, me)
         } else {
             // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author when
@@ -3487,23 +3722,25 @@ class InboundPipeline(
      * author whose DM arrived v1 (e.g. sent before our profile landed on their side).
      *
      * A sealed receipt is filed in [dmReAcks] under [env]'s id alone (the room ids riding with it are AckSync's), with
-     * the root tag the seal itself committed under ([RatchetSessions.sealDmTagged]) — never a session read after it,
-     * since a reset adopted on the other delivery plane can commit in between and file the receipt in an era it was
-     * not sealed in.
+     * the root tag the seal itself committed under ([RatchetSessions.AnswerSeal.Sealed.rootTag]) — never a session read
+     * after it, since a reset adopted on the other delivery plane can commit in between and file the receipt in an era
+     * it was not sealed in. A declined answer files nothing: only a receipt that was sealed and sent can answer a later
+     * copy, so a ✓✓ held for later is never skipped by the ledger (ADR 2026-10.8hn6, x9fa's answer gate).
+     *
+     * A DM that came over the board ([plane] LoRa — only where no coalescer holds its ✓✓, since MeshManager's batches
+     * through `originateDeliveryTick`) also offers the tick's compact copy back over LoRa (ADR 2026-10.x9fa): the same
+     * content, id and stamp as the signed tick, which still floods, custodies and rides the spool.
      */
     private suspend fun sealDmReceipt(
         env: RelayEnvelope,
         me: String,
-    ): Boolean {
-        val peer = peers.find(env.senderId) ?: return false
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return false
-        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return false
-        val prekey =
-            peer.prekeyId?.let { pkid ->
-                peer.prekeyPub
-                    ?.let { runCatching { b64d(it) }.getOrNull() }
-                    ?.let { RatchetEngine.PeerPrekey(id = pkid, pub = it) }
-            }
+        plane: DeliveryPlane,
+        answer: Boolean,
+    ): ReceiptSeal {
+        val peer = peers.find(env.senderId) ?: return ReceiptSeal.CANNOT_SEAL
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return ReceiptSeal.CANNOT_SEAL
+        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return ReceiptSeal.CANNOT_SEAL
+        val prekey = pinnedPrekey(peer)
         val now = clock()
         val id = FrameId.new()
         val aad = MessageCrypto.header(id, me, now, env.senderId)
@@ -3515,21 +3752,29 @@ class InboundPipeline(
         val content = MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = env.id, acks = riding.takeIf { it.isNotEmpty() })
         val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
         val tagged =
-            ratchet.sealDmTagged(
-                env.senderId,
-                bundle.dhPublicKey(),
-                peerSpk = prekey,
-                plaintext = plaintext,
-                aad = aad,
-                now = now,
-                scheme = scheme,
-            )
-                ?: run {
+            when (val outcome = ratchet.sealCtl(answer, env.senderId, bundle.dhPublicKey(), prekey, plaintext, aad, now, scheme)) {
+                is RatchetSessions.AnswerSeal.Sealed -> {
+                    releaseHeldTicks(env.senderId, listOf(env.id))
+                    outcome
+                }
+
+                RatchetSessions.AnswerSeal.Declined -> {
+                    // Nothing to answer under yet: the board's compact tick alone, under a fresh id, and the signed ✓✓
+                    // left to the re-ack once the signed copy opens (ADR 2026-10.x9fa). The room riders wait for another.
+                    ackSync.giveBackRiding(env.senderId, riding)
+                    if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, FrameId.new(), now, content.copy(acks = null))
+                    holdDeclinedTick(env.senderId, env.id)
+                    metrics.onReceiptHeld()
+                    return ReceiptSeal.DECLINED
+                }
+
+                RatchetSessions.AnswerSeal.CannotSeal -> {
                     ackSync.giveBackRiding(env.senderId, riding)
                     metrics.onReceiptSealedFallback()
-                    return false
+                    return ReceiptSeal.CANNOT_SEAL
                 }
-        val sealed = tagged.envelope
+            }
+        val sealed = tagged.env
         if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
         originateTick(
             RelayEnvelope(
@@ -3541,12 +3786,24 @@ class InboundPipeline(
                 payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
             ),
         )
+        // The DM's own id alone over the board: the room riders ride the signed tick and never air (ADR 2026-10.rp3s).
+        if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, id, now, content.copy(acks = null))
         metrics.onReceiptSealed()
         dmReAcks.record(env.id, tagged.rootTag, id, now)
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
-        return true
+        return ReceiptSeal.SENT
     }
+
+    /** [peer]'s pinned signed prekey as the ratchet takes it, or null when none is pinned or it will not decode. */
+    private fun pinnedPrekey(peer: PeerEntity): RatchetEngine.PeerPrekey? {
+        val pkid = peer.prekeyId ?: return null
+        val pub = peer.prekeyPub?.let { runCatching { b64d(it) }.getOrNull() } ?: return null
+        return RatchetEngine.PeerPrekey(id = pkid, pub = pub)
+    }
+
+    /** What [sealDmReceipt] did: sealed and sent, declined as an answer with no session to answer under, or impossible. */
+    private enum class ReceiptSeal { SENT, DECLINED, CANNOT_SEAL }
 
     /**
      * Voice-call signaling (experimental), handed to the call layer post-commit — and, like a transfer offer, only

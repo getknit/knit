@@ -55,7 +55,7 @@ git diff HEAD -- <those paths>
 Untracked files are new: read them whole. For a modified file read the **whole function** around each hunk and its
 callers: a defect here usually sits between the place a frame is admitted and the place it is sent, or between a
 policy and the loop that drives it, which can be a thousand lines apart in `LoraMeshTransport`. A change to a pure
-policy (`LoraAirtime`, `LoraPacePolicy`, `LoraFramePolicy`, `LoraDmProbe`, `LoraReprobe`, `BoardDialPolicy`)
+policy (`LoraAirtime`, `LoraPacePolicy`, `LoraFramePolicy`, `LoraDirectPolicy`, `LoraReprobe`, `BoardDialPolicy`)
 is in scope with its call sites — the policy is tested, the wiring isn't.
 
 ## Step 1: route every touched symbol to its decisions
@@ -87,8 +87,11 @@ explicitly; the incidents are the evidence that each one bit this plane:
    frame carries the gates its own path asked (`RideGate`) and `sendFrame` re-asks them, and only those (a role gate on `fastSend`
    re-strands ticks). Evidence: 3942257c (a link came up 4 s after enqueue; 22 packets aired what NAN had carried,
    ADR 2026-09.5dt2), cd73edce (the self id was unknown at start, so a DM to us read as uncovered, #141).
-3. **"We transmitted" read as "someone heard".** There are no acks. A dedup keyed on our own send must not block the
-   repair path, and a dedup that lapses or never matches re-sends forever. Evidence: 567470ad (a fan-out into an empty
+3. **"We transmitted" read as "someone heard".** A broadcast has no acks. A compact DM has the firmware's, and they
+   are a radio's, never a phone's: a destination's ACK says its board took the packet, whatever its phone is doing, and
+   an implicit ACK (a relay or our own board hearing it repeated) is never trusted as delivery. The re-probe keys on
+   the ✓✓, not the ACK (ADR 2026-10.x9fa). A dedup keyed on our own send must not block the repair path, and a dedup
+   that lapses or never matches re-sends forever. Evidence: 567470ad (a fan-out into an empty
    sky held its own backfill off for 10 min, ADR 2026-09.y8pu), 582f884c (a profile re-fanned on every 10-min SeenSet
    lapse, ADR 057), 31a313e3 (a cleartext tick rebuilt with a fresh id per attempt never deduplicated).
 4. **Airing or sighting read as presence or as a data path.** `reachable` is author-keyed reach, fed only by fresh
@@ -147,7 +150,8 @@ Then two checks that are not shapes:
 - **Frozen strings and bytes.** `MeshtasticProto`'s field numbers and portnums (golden vectors), `KnitChannel`'s
   derivation (`KnitChannelTest`), the burned tag `0x10` (`RETIRED_CTL_TAG`, dropped under `loraRetiredCtl`), `LoraFrameCodec`'s framing and the pad rule
   (`FastFrameCodecTest.aDeflatedFrameIgnoresTrailingBytesBecauseThePaddedLoraSenderDependsOnIt`), `HOP_LIMIT`
-  (`everyPacketLeavesWithHopsToSpend`), `DmAutoReplyPolicy.TEXT`, `ProfileContent.loraNode` / `loraKey` (the iOS port
+  (`everyPacketLeavesWithHopsToSpend`), `LORA_DIRECT_TAG` `0x11` and the `want_ack` / `rx_time` golden vectors
+  (`MeshtasticProtoTest`, ADR 2026-10.x9fa), `DmAutoReplyPolicy.TEXT`, `ProfileContent.loraNode` / `loraKey` (the iOS port
   reads them), `FieldEvent.Lora` (`FieldEventSchemaTest`), the `LoraPlaneState` JSON keys (a renamed key drops a
   persisted ledger) and the `…debug.LORA` dump's keys. Any of these changing is a finding unless the brief made it a
   paired or deliberate change. For every changed `Log` text beginning `lora `, grep `.agents/context/lora-bridge.md`,
@@ -226,12 +230,21 @@ Sourced; cite these by their ADR or sha, and treat anything not here or in an AD
   board's `airUtilTx` is all its TX over an **hour**; `LoraAirtime` is Knit's over 15 minutes — not comparable.
 - Flow control is `queueStatus{free}` after each packet and on heartbeat; a board out of slots refuses the rest of a
   frame mid-fragment (feb2d5a4). NAKs: NO_CHANNEL 6, TOO_LARGE 7, DUTY_CYCLE_LIMIT 9, RATE_LIMIT_EXCEEDED 38.
-- The handshake replays one synthetic POSITION/TELEMETRY per NodeDB entry with stale SNR and no RSSI (19feb2ed).
+- The handshake replays one synthetic POSITION/TELEMETRY per NodeDB entry with stale SNR and no `rx_rssi`, its
+  `rx_time` the node's `last_heard` (19feb2ed); `rx_time` is optional on 2.8 (zero on a board with no clock).
   `rebooted` or an unsolicited `my_info` means re-handshake; an admin `commit_edit_settings` reboots the board; the
   admin `session_passkey` lives 300 s.
 - A unicast `TEXT_MESSAGE_APP` to the board is ACKed by the firmware whatever Knit does; a phone-originated unicast on
   channel 0 is PKI-encrypted when the board holds the destination's key, else NAKs `PKI_UNKNOWN_PUBKEY`;
-  `is_unmessagable` reaches only clients that honour it (4n5p, emd7).
+  `is_unmessagable` reaches only clients that honour it (4n5p, emd7). The legacy-DM refusal in
+  `Router::perhapsDecode` is `TEXT_MESSAGE_APP` only, and PKI is tried only on channel 0, so a `PRIVATE_APP` unicast on
+  a secondary decodes and is acked (4n5p's 2026-10-29 amendment, x9fa).
+- A `want_ack` unicast the phone originates gets `NUM_RELIABLE_UNICAST_ATTEMPTS = 5` attempts on 2.8
+  (`NextHopRouter.h:115`), 3 on 2.7.26, then `MAX_RETRANSMIT` about one gap after the last. The gap is
+  `RadioInterface::getRetransmissionMsec`: `2·air + (2^CW + 2·CWmax + 2^((CWmax+CWmin)/2))·slot + 4500 ms`, `CWmin = 3`,
+  `CWmax = 8`, `CW` from channel utilisation, slot `(4 CAD symbols + 0.5)·symbol + 7.6 ms` ≈ 44.5 ms at LongFast. An
+  overheard relay of it is an implicit ACK that stops the retries
+  (`ReliableRouter::perhapsGenerateImplicitAckForOwnOverheard`), so silence can follow it (x9fa).
 - A bonded board starts SMP when the ACL comes up, and `STATE_CONNECTED` reaches the app before the link is
   encrypted: an Exchange MTU sent at once comes back `(23, status 6)` (b407293d). `autoConnect` waits at low duty and may never fire on some
   stacks (hp88). The rest of the GATT stack is `bluetooth-reviewer`'s.
@@ -242,22 +255,24 @@ Sourced; cite these by their ADR or sha, and treat anything not here or in an AD
 One line per invariant, by subsystem, with the ADR to read. Not exhaustive and not authoritative — step 1 is.
 
 - **Shape.** Fast-plane-only child, `neighbors` empty, `shortRange = false`, `fastSend` a no-op; an endpoint that airs
-  only its own user's frames (`LoraFramePolicy.airs`, nothing before the self id) — an own room post in one packet
-  and own DM-form chat, never a reaction, `profile`, receipt, group-form, `typing`, `blobreq`, `keyreq`; DM-form only
-  through `longRangeFanout` (038, 039, rp3s). Inert until a board is configured; losing it quiesces like `stop()` (5bqu).
+  only its own user's frames (`LoraFramePolicy.airs`, nothing before the self id) — an own room post in one packet,
+  and own DMs, their ✓✓ and DM reactions as compact `0x11` unicasts offered through `LoraDirectSink`; never a DM-form
+  mesh frame, a room reaction, `profile`, group-form, `typing`, `blobreq`, `keyreq` (038, rp3s, x9fa). Inert until a board is configured; losing it quiesces like `stop()` (5bqu).
 - **Size.** ≤ 3 fragments of ≤ 231 B; only the last packet of a deflated frame is padded past the cliff; `hop_limit`
   stated on every send (mhs5, 038).
 - **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min; LIVE all, PUBLIC 15 %, TICK never the last 25 %; every
   spend booked (044, 054, rp3s). Class then FIFO; skip a refused frame, but a live frame the total refused holds what
   ranks behind it (044's 2026-10-04 amendment). Fresh ≤ 15 min on fan-out (039).
-- **Gates.** A DM-form frame to us or to a linked peer is skipped before its dedup slot; a spool-covered peer too
-  (054, y5f3). Each frame carries its own path's gates and `sendFrame` re-asks them, the author included (`NOT_OWN`)
-  (5dt2, rp3s). The pacer waits for the self id (#141).
-- **Reach.** Author-keyed, fresh-only, 45-min linger; never proximity (2ajk); never our own board's airing. An own DM
-  to an unheard recipient probes once a window; a silent one is re-probed on a backoff to 4 h, the newest held DM on
-  LIVE (a4pm, rp3s). The re-offer and the re-probe ask `hasQueued`, never `sigSeen` (rp3s).
-- **Persistence.** Ledger, auto-reply memory, probe window, re-offer hour and re-probe schedule persisted on the wall
-  clock; `sigSeen`, `lastHeardAt` never; a retired bucket restores as LIVE; nothing transmits before the restore, 5 s
+- **Gates.** A compact DM to us, to a linked peer or to a spool-covered peer never airs (054, y5f3). Each frame carries
+  its own path's gates and `sendFrame` re-asks them: the author (`NOT_OWN`, rp3s), and for a compact DM
+  `RideGate.direct` / `reachHeld` / `unackedFrameId` (5dt2, x9fa). The pacer waits for the self id (#141).
+- **Reach.** Author-keyed, fresh-only, 45-min linger; never proximity (2ajk); never our own board's airing, never a
+  board's ACK. Per-board marks for compact DMs (`LoraDirectPolicy`): reachable on the destination's ACK, unreachable on
+  a give-up or no outcome, refused on its refusal; one send in flight per unconfirmed board; no probe window. The
+  re-probe re-airs the newest DM without its ✓✓ on a backoff to 4 h; it and the resend ask `hasQueued`, never `sigSeen`
+  (rp3s, x9fa).
+- **Persistence.** Ledger, auto-reply memory and re-probe schedule persisted on the wall clock; `sigSeen`,
+  `lastHeardAt` and the per-board reach marks never; a retired bucket restores as LIVE; nothing transmits before the restore, 5 s
   bound (7svb, rp3s).
 - **Board.** Setup never moves the radio or touches the primary; one admin transaction; Restore puts back what it
   recorded; `Knit abcd`, unmessagable, `LOCAL_ONLY`; dedicated slot debug-only (045, 049, emd7, 067). Battery off the
@@ -265,7 +280,7 @@ One line per invariant, by subsystem, with the ADR to read. Not exhaustive and n
   on `link.state` (hp88).
 - **Room.** A local mirror of slot 0: nothing minted, custodied or fanned out; words alone; attribution resolved once
   at ingest, unverified unless the profile's board key verifies the signature; `meshpost` burned (26q3, 9469, ggq4,
-  sre4); a switch, off means unread (x52a). A DM to a set-up board gets one fixed PKI unicast, the plane's only
-  unicast (4n5p).
+  sre4); a switch, off means unread (x52a). A DM to a set-up board gets one fixed PKI unicast, the one direct send
+  without `want_ack` (4n5p).
 - **Face.** `InboundFrame.kind` is presentation only, never `fromNodeId`; a spent-window notice publishes on the
   spending send; a group's LoRa notice reads its roster (040, ursc, 6ww7).

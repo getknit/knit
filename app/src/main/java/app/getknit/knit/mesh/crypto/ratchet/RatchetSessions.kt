@@ -302,44 +302,126 @@ class RatchetSessions(
         confirmedOnly: Boolean = false,
     ): TaggedSeal? =
         locked {
-            require(EncEnvelope.isDmRatchetVersion(scheme)) { "not a DM ratchet scheme: $scheme" }
             val existing = store.session(peerId)
             if (confirmedOnly && existing?.confirmed != true) return@locked null
-            val initiation =
-                if (existing == null) {
-                    peerSpk ?: return@locked null
-                    // Read outside the catch: only X25519's refusal of a peer key is "cannot seal", never our own key store.
-                    val ownIk = dhIdentityPriv()
-                    refusedAsNull(peerId) { engine.initiate(peerId, ownIk, peerIkPub, peerSpk, now) } ?: return@locked null
-                } else {
-                    null
-                }
-            val session = initiation?.session ?: existing ?: return@locked null
-            val base = engine.prekeyBase(session, peerSpk)
-            val sealed =
-                refusedAsNull(peerId) { engine.seal(session, plaintext, aad, base, now, v3 = scheme == EncEnvelope.VERSION_DM_V3) }
-                    ?: return@locked null
-            store.commitSend(sealed.session, initiation?.epoch ?: sealed.newLocalEpoch)
-            val h = sealed.header
-            val envelope =
-                EncEnvelope(
-                    v = scheme,
-                    // v3 derives its nonce; the field still rides, empty, so a pre-v3 build decodes (and carries) the frame.
-                    nonce = sealed.nonce ?: ByteArray(0),
-                    ct = sealed.ct,
-                    keys = emptyList(),
-                    r =
-                        RatchetHeader(
-                            se = h.se,
-                            ek = h.ek,
-                            pe = h.pe,
-                            n = h.n,
-                            init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
-                            flags = h.flags,
-                        ),
-                )
-            TaggedSeal(envelope, RatchetCrypto.rootTag(sealed.session.root))
+            sealUnderLock(existing, peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)
         }
+
+    /** What [sealAnswer] made of one ctl: sealed, declined (nothing to answer under yet), or impossible as [sealDm]'s null. */
+    sealed interface AnswerSeal {
+        /** Sealed, with the [RatchetCrypto.rootTag] of the root the seal committed under — [TaggedSeal.rootTag]'s era. */
+        class Sealed(
+            val env: EncEnvelope,
+            val rootTag: Long,
+        ) : AnswerSeal
+
+        /**
+         * No session with the peer, or only our own init still unanswered: a frame sealed now would carry an init — a
+         * fresh X3DH, or an unflagged copy of our first contact or our reset (#90). Nothing is persisted, and the caller
+         * must neither fall back to a cleartext or v1 form (a sealed tick is never downgraded, ADR 018) nor drop what it
+         * owes for good: it waits for the session to be answered.
+         */
+        data object Declined : AnswerSeal
+
+        /**
+         * Under a session the peer holds, the seal still failed: a key X25519 refuses. With no session it is never this —
+         * every caller has already checked the peer reads the ratchet, and a missing or undecodable prekey is [Declined],
+         * so a compact-first DM never draws a cleartext receipt that purges its signed copy from every carrier.
+         */
+        data object CannotSeal : AnswerSeal
+    }
+
+    /**
+     * Seals a ctl that **answers** the peer — a ✓✓ or a reaction to a DM a compact LoRa copy delivered (ADR 2026-10.x9fa)
+     * — only under a session the peer already holds: one we hold as responder, or ours once they answered it. Decided
+     * here, under the lock, never by a caller's pre-check. A compact copy carries no init, so the first frame we answer
+     * with must not start one: every LoRa first contact would be a both-initiate race, and a race leaves frames carrying
+     * the loser's init in custody for a day — which, re-served to a node that has since restored and sent its flagged
+     * reset, wins `resolveRace` against that reset and splits the pair (`RestoreLabTest` with boards, seed 2000).
+     */
+    suspend fun sealAnswer(
+        peerId: String,
+        peerIkPub: ByteArray,
+        peerSpk: RatchetEngine.PeerPrekey?,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+        scheme: Int = EncEnvelope.VERSION_RATCHET,
+    ): AnswerSeal =
+        locked {
+            val existing = store.session(peerId)
+            if (existing == null || (existing.weAreInitiator && !existing.confirmed)) return@locked AnswerSeal.Declined
+            sealUnderLock(existing, peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)
+                ?.let { AnswerSeal.Sealed(it.envelope, it.rootTag) } ?: AnswerSeal.CannotSeal
+        }
+
+    /** [sealAnswer] when [answer], else [sealDm] read as an [AnswerSeal]: the one call a ctl sender that may be either makes. */
+    suspend fun sealCtl(
+        answer: Boolean,
+        peerId: String,
+        peerIkPub: ByteArray,
+        peerSpk: RatchetEngine.PeerPrekey?,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+        scheme: Int,
+    ): AnswerSeal =
+        if (answer) {
+            sealAnswer(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)
+        } else {
+            sealDmTagged(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)?.let { AnswerSeal.Sealed(it.envelope, it.rootTag) }
+                ?: AnswerSeal.CannotSeal
+        }
+
+    /** [sealDmTagged]'s body, the caller holding [locked] and having read [existing]: the envelope and the root it committed under. */
+    @Suppress("ReturnCount") // each refusal is its own early return, as the body read inline under `locked` before
+    private suspend fun sealUnderLock(
+        existing: RatchetEngine.SessionState?,
+        peerId: String,
+        peerIkPub: ByteArray,
+        peerSpk: RatchetEngine.PeerPrekey?,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+        scheme: Int,
+    ): TaggedSeal? {
+        require(EncEnvelope.isDmRatchetVersion(scheme)) { "not a DM ratchet scheme: $scheme" }
+        val initiation =
+            if (existing == null) {
+                peerSpk ?: return null
+                // Read outside the catch: only X25519's refusal of a peer key is "cannot seal", never our own key store.
+                val ownIk = dhIdentityPriv()
+                refusedAsNull(peerId) { engine.initiate(peerId, ownIk, peerIkPub, peerSpk, now) } ?: return null
+            } else {
+                null
+            }
+        val session = initiation?.session ?: existing ?: return null
+        val base = engine.prekeyBase(session, peerSpk)
+        val sealed =
+            refusedAsNull(peerId) { engine.seal(session, plaintext, aad, base, now, v3 = scheme == EncEnvelope.VERSION_DM_V3) }
+                ?: return null
+        store.commitSend(sealed.session, initiation?.epoch ?: sealed.newLocalEpoch)
+        val h = sealed.header
+        val envelope =
+            EncEnvelope(
+                v = scheme,
+                // v3 derives its nonce; the field still rides, empty, so a pre-v3 build decodes (and carries) the frame.
+                nonce = sealed.nonce ?: ByteArray(0),
+                ct = sealed.ct,
+                keys = emptyList(),
+                r =
+                    RatchetHeader(
+                        se = h.se,
+                        ek = h.ek,
+                        pe = h.pe,
+                        n = h.n,
+                        init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
+                        flags = h.flags,
+                    ),
+            )
+        // Read from the seal itself, inside the lock that committed it (ADR 2026-10.8hn6): never from a later sessionFor.
+        return TaggedSeal(envelope, RatchetCrypto.rootTag(sealed.session.root))
+    }
 
     /**
      * The [RatchetCrypto.rootTag] of the session root held for [peerId] now, or null with no session — one locked read,

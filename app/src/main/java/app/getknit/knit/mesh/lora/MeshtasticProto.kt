@@ -222,8 +222,11 @@ internal object MeshtasticProto {
 
     /**
      * `ToRadio { packet = MeshPacket { … Data { portnum, payload } } }`. [OutboundPacket.hopLimit] omitted
-     * (0) rides the node's configured default; `want_ack` is left false — a broadcast ack is meaningless and
-     * only costs airtime.
+     * arrives as zero on 2.8, not the node's default (`LoraMeshTransport.HOP_LIMIT`). `want_ack` (field 10) is set
+     * only on a direct unicast ([OutboundPacket.wantAck], ADR 2026-10.x9fa): the firmware then retries it until the
+     * destination's board answers and reports the outcome as a `Routing` packet. A broadcast never asks: its ack is
+     * meaningless and only costs airtime. Written last, after `hop_limit`, so every packet without it is byte-for-byte
+     * what it was.
      */
     fun encodePacket(packet: OutboundPacket): ByteArray =
         ProtoWriter()
@@ -237,7 +240,17 @@ internal object MeshtasticProto {
                 }
                 fixed32(MP_ID, packet.id)
                 if (packet.hopLimit != null) varint(MP_HOP_LIMIT, packet.hopLimit)
+                if (packet.wantAck) bool(MP_WANT_ACK, true)
             }.toByteArray()
+
+    /**
+     * What `want_ack` adds to a `ToRadio`: its tag and a one-byte bool. Not in [PACKET_OVERHEAD], which every
+     * broadcast's payload cap is measured against; a direct unicast takes it off its own cap instead
+     * (`LoraMeshTransport.directPayloadCap`), so its BLE write is never longer than a full broadcast's.
+     */
+    val WANT_ACK_FIELD_BYTES: Int =
+        encodePacket(OutboundPacket(channelIndex = 0, id = 1u, payload = ByteArray(0), wantAck = true)).size -
+            encodePacket(OutboundPacket(channelIndex = 0, id = 1u, payload = ByteArray(0))).size
 
     // --- Admin (phone → local board): an AdminMessage rides a Data{portnum = ADMIN} packet addressed to self ---
 
@@ -438,7 +451,7 @@ internal object MeshtasticProto {
             reason
         }.getOrNull()
 
-    @Suppress("CyclomaticComplexMethod") // one `when` branch per MeshPacket field the bridge reads; a flat wire decoder
+    @Suppress("CyclomaticComplexMethod", "LongMethod") // one `when` branch per MeshPacket field the plane reads; a flat wire decoder
     private fun decodeMeshPacket(reader: ProtoReader): MeshPacket {
         var from = 0u
         var to = 0u
@@ -452,6 +465,7 @@ internal object MeshtasticProto {
         var hopStart = 0
         var viaMqtt = false
         var xeddsaSigned = false
+        var rxTime = 0u
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -478,6 +492,10 @@ internal object MeshtasticProto {
 
                 MP_ID -> {
                     id = reader.readFixed32()
+                }
+
+                MP_RX_TIME -> {
+                    rxTime = reader.readFixed32()
                 }
 
                 MP_RX_SNR -> {
@@ -509,7 +527,21 @@ internal object MeshtasticProto {
                 }
             }
         }
-        return MeshPacket(from, to, channel, id, decoded, encrypted, rxSnr, rxRssi, hopLimit, hopStart, viaMqtt, xeddsaSigned)
+        return MeshPacket(
+            from,
+            to,
+            channel,
+            id,
+            decoded,
+            encrypted,
+            rxSnr,
+            rxRssi,
+            hopLimit,
+            hopStart,
+            viaMqtt,
+            xeddsaSigned,
+            rxTime = rxTime.takeIf { it != 0u },
+        )
     }
 
     private fun decodeData(reader: ProtoReader): MeshData {
@@ -763,8 +795,18 @@ internal object MeshtasticProto {
     private const val MP_DECODED = 4
     private const val MP_ENCRYPTED = 5
     private const val MP_ID = 6
+
+    /**
+     * `MeshPacket.rx_time` (fixed32, epoch seconds): when the receiving board took the packet off the air, by its own
+     * clock — zero when it has none. Read so a hearing can tell a live packet from one the board queued for the phone
+     * while it was away and replays at reconnect (ADR 2026-10.x9fa).
+     */
+    private const val MP_RX_TIME = 7
     private const val MP_RX_SNR = 8
     private const val MP_HOP_LIMIT = 9
+
+    /** `MeshPacket.want_ack`: ask the destination's board to acknowledge, and the firmware to retry until it does. */
+    private const val MP_WANT_ACK = 10
     private const val MP_RX_RSSI = 12
     private const val MP_VIA_MQTT = 14
     private const val MP_HOP_START = 15
@@ -850,7 +892,7 @@ internal object MeshtasticProto {
     private const val DM_AIR_UTIL_TX = 4
 }
 
-/** A `MeshPacket` we send: broadcast, one `Data` sub-message, a client-assigned [id] for NAK correlation. */
+/** A `MeshPacket` we send: one `Data` sub-message to [to] (broadcast by default), a client-assigned [id] for NAK and ACK correlation. */
 internal data class OutboundPacket(
     val to: UInt = MeshtasticProto.BROADCAST,
     val channelIndex: Int,
@@ -860,6 +902,8 @@ internal data class OutboundPacket(
     val hopLimit: Int? = null,
     /** Set on an admin request so the local node returns a response (the passkey / get-channel reply). */
     val wantResponse: Boolean = false,
+    /** `MeshPacket.want_ack`: a direct unicast asks its destination's board to acknowledge (ADR 2026-10.x9fa). */
+    val wantAck: Boolean = false,
 )
 
 /** One channel Knit writes to the board via `set_channel`: a slot with a name + AES PSK, at some [role]. */
@@ -974,6 +1018,12 @@ internal class MeshPacket(
      * the board's key never reaches the phone at all — the firmware drops it, whatever its policy.
      */
     val xeddsaSigned: Boolean = false,
+    /**
+     * `MeshPacket.rx_time`, epoch **seconds** on the receiving board's clock, or null when the board reported none
+     * (no clock set). A packet the board queued for the phone while it was away keeps the time it was heard, which is
+     * what tells that replay from a live hearing.
+     */
+    val rxTime: UInt? = null,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null

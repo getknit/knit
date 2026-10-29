@@ -34,6 +34,8 @@ object FieldCounters {
                 put("receiptsCustodied", receiptsCustodied)
                 put("receiptsRidden", receiptsRidden)
                 put("receiptsSpooled", receiptsSpooled)
+                put("ridesUnrouted", ridesUnrouted)
+                put("receiptsHeld", receiptsHeld)
             }
             with(s.files) {
                 put("filesSentNan", filesSentNan)
@@ -116,15 +118,18 @@ object FieldCounters {
                 put("loraSuppressed", loraSuppressed)
                 put("loraNak", loraNak)
                 put("loraSessionUps", loraSessionUps)
-                put("loraDmSent", loraDmSent)
                 put("loraDmReceived", loraDmReceived)
-                put("loraReoffered", loraReoffered)
                 put("loraSkippedLinked", loraSkippedLinked)
                 put("loraSkippedInternet", loraSkippedInternet)
-                put("loraUnheardHeld", loraUnheardHeld)
-                put("loraDmProbes", loraDmProbes)
                 put("loraStaleAtSend", loraStaleAtSend)
                 put("loraTickDeferred", loraTickDeferred)
+                // Compact DMs (ADR 2026-10.x9fa): what aired, what a board acked, what nothing answered.
+                put("loraDirectSent", loraDirectSent)
+                put("loraDirectAcked", loraDirectAcked)
+                put("loraDirectUnreachable", loraDirectUnreachable)
+                put("loraDirectNoOutcome", loraDirectNoOutcome)
+                put("loraDirectDelivered", loraDirectDelivered)
+                put("loraDirectResent", loraDirectResent)
             }
         }
 

@@ -11,6 +11,8 @@ topics: [lora, custody, airtime]
 Status: Accepted (2026-08-27; `mesh/lora/LoraMeshTransport.coveredByLink`, `LoraAirtime`/`LoraPacePolicy`,
 `MeshTransport.FanoutHint`, `mesh/DmAckCoalescer`, `Protocol.CAP_INLINE_ACK`, `LoraReach.LoraOnlySaturated`)
 
+**Superseded in part by ADR 2026-10.x9fa (2026-10-29):** the DM parts — the `FanoutHint.TICK` class of a DM-form tick (the compact ✓✓ is `DirectKind.RECEIPT`) and the recipient gate on DM-form frames; the link and spool covers now guard the compact DM.
+
 Field report: casually texting one person over the mesh drove the LoRa airtime budget to 100 %, after which a
 LoRa-only peer stopped receiving anything for up to an hour. The person being texted was on a **Bluetooth
 link**. Three causes, all in code, none of them the radio:

@@ -36,7 +36,6 @@ class LoraPlaneStateStoreTest {
         LoraPlaneSnapshot(
             savedAtWall = 1_700_000_000_000L,
             air = listOf(AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "CHAT")),
-            dmProbes = listOf(SeenStamp("d4e5f6", 1_699_997_000_000L)),
             reprobes = listOf(ReprobeStamp("d4e5f6", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
         )
 
@@ -87,8 +86,9 @@ class LoraPlaneStateStoreTest {
     /**
      * The bridge's limiters left the snapshot with the bridge (ADR 2026-10.rp3s): a blob the last build wrote, with
      * its beacon floor, serve windows and profile re-fan stamps, must still hand back every limiter this build keeps —
-     * the ledger (with its retired buckets' names intact, for the transport to map), the auto-reply memory, the probe
-     * windows and the re-offer hours. Dropping any of them would hand the first launch after the upgrade free air.
+     * the ledger (with its retired buckets' names intact, for the transport to map) and the auto-reply memory. The probe
+     * windows and re-offer hours went with the reach gate (ADR 2026-10.x9fa) and are ignored the same way. Dropping a
+     * kept limiter would hand the first launch after the upgrade free air.
      */
     @Test
     fun aSnapshotTheBridgeBuildWroteKeepsEveryLimiterThisBuildStillHas() =
@@ -114,8 +114,30 @@ class LoraPlaneStateStoreTest {
                             AirBooking(atWall = 1_699_999_991_000L, ms = 90L, bucket = "LIVE"),
                         ),
                     autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
-                    dmProbes = listOf(SeenStamp("bob", 1_699_999_200_000L)),
-                    reoffered = listOf(SeenStamp("f1", 1_699_999_300_000L)),
+                ),
+                LoraPlaneStateStore(settings).load(),
+            )
+        }
+
+    /**
+     * A blob the reach-gate build wrote (ADR 2026-10.a4pm) carries the probe windows and the re-offer hours this build no
+     * longer keeps (ADR 2026-10.x9fa): it still loads, and the re-probe's schedule — kept, under its own keys — comes
+     * back whole.
+     */
+    @Test
+    fun aSnapshotTheReachGateBuildWroteKeepsItsReprobeSchedule() =
+        runTest {
+            val settings = newSettings()
+            settings.setLoraPlaneState(
+                """{"savedAtWall":1700000000000,"air":[],""" +
+                    """"dmProbes":[{"id":"bob","atWall":1699999200000}],""" +
+                    """"reoffered":[{"id":"f1","atWall":1699999300000}],""" +
+                    """"reprobes":[{"id":"bob","dueAtWall":1700000900000,"gapMs":1800000,"lastFrameId":"f1"}]}""",
+            )
+            assertEquals(
+                LoraPlaneSnapshot(
+                    savedAtWall = 1_700_000_000_000L,
+                    reprobes = listOf(ReprobeStamp("bob", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
                 ),
                 LoraPlaneStateStore(settings).load(),
             )

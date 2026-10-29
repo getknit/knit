@@ -29,8 +29,8 @@ internal data class LoraStatus(
     /** The airtime ledger: what the plane has spent this window against what it allows itself (ADR 044/054). */
     val airtime: AirtimeSnapshot? = null,
     /**
-     * Peers a connected spool was recently a path to — the Internet cover (ADR 2026-09.y5f3): DM-form frames
-     * to them stay off the air.
+     * Peers a connected spool was recently a path to — the Internet cover (ADR 2026-09.y5f3): compact DMs to them stay
+     * off the air.
      */
     val internetCovered: Int = 0,
     /**
@@ -39,4 +39,9 @@ internal data class LoraStatus(
      * until the queue overflows and the drops arrive all at once (2026-09-04).
      */
     val queued: Int = 0,
+    /**
+     * What the peers' boards said to our compact DMs (ADR 2026-10.x9fa): how many are marked reachable, unreachable or
+     * refused, how many sends wait on an answer and how many offers are parked behind one. About radios, never people.
+     */
+    val direct: DirectReachCounts = DirectReachCounts(),
 )

@@ -126,6 +126,7 @@ internal val CAPABILITY_BITS: List<Pair<String, Long>> =
         "CAP_BLOB_HAVE" to Protocol.CAP_BLOB_HAVE,
         "CAP_CALL" to Protocol.CAP_CALL,
         "CAP_WALKIE" to Protocol.CAP_WALKIE,
+        "CAP_LORA_DIRECT" to Protocol.CAP_LORA_DIRECT,
     )
 
 /** The bits [mask] holds with their names, lowest first; a bit with no name is named by its hex value. */

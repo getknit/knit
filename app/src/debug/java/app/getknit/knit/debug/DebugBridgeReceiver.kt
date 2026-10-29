@@ -1664,6 +1664,8 @@ class DebugBridgeReceiver :
             .put("receiptsCoalesced", snap.receipts.receiptsCoalesced)
             .put("receiptsRidden", snap.receipts.receiptsRidden)
             .put("receiptsSpooled", snap.receipts.receiptsSpooled)
+            .put("ridesUnrouted", snap.receipts.ridesUnrouted)
+            .put("receiptsHeld", snap.receipts.receiptsHeld)
             .put("reactionsSealed", snap.seals.reactionsSealed)
             .put("reactionsSealedFallback", snap.seals.reactionsSealedFallback)
             .put("dropsByReason", JSONObject(snap.frames.dropsByReason.mapKeys { it.key.name }))
@@ -1733,10 +1735,9 @@ class DebugBridgeReceiver :
             .put("loraNak", snap.lora.loraNak)
             .put("loraNakByReason", JSONObject(snap.lora.loraNakByReason))
             .put("loraSessionUps", snap.lora.loraSessionUps)
-            .put("loraDmSent", snap.lora.loraDmSent)
+            // DM-form mesh frames an older build's board still airs; this build sends its DMs compact (below).
             .put("loraDmReceived", snap.lora.loraDmReceived)
-            .put("loraReoffered", snap.lora.loraReoffered)
-            // A held DM re-aired as a probe to a recipient who stayed silent (ADR 2026-10.rp3s).
+            // The newest own DM without its ✓✓ re-aired compact when its schedule fell due (ADR 2026-10.rp3s / x9fa).
             .put("loraReprobed", snap.lora.loraReprobed)
             // An own room post kept off the air because it needs more than one packet (ADR 2026-10.rp3s).
             .put("loraRoomTooLong", snap.lora.loraRoomTooLong)
@@ -1744,16 +1745,31 @@ class DebugBridgeReceiver :
             .put("loraRetiredCtl", snap.lora.loraRetiredCtl)
             // Fanned before our own id was read and past the few then admitted (ADR 2026-10.rp3s): a stalling id read.
             .put("loraPreIdRefused", snap.lora.loraPreIdRefused)
-            // The board-holder source failed (ADR 2026-10.rp3s): non-zero, the re-probe may have stopped probing.
+            // The board map's source failed (ADR 2026-10.x9fa): non-zero and climbing, compact DMs may have stopped.
             .put("loraBoardHoldersFailed", snap.lora.loraBoardHoldersFailed)
             .put("loraSkippedLinked", snap.lora.loraSkippedLinked)
             .put("loraSkippedInternet", snap.lora.loraSkippedInternet)
-            // A DM-form frame to a recipient this plane has not heard: held in custody for the first-hearing
-            // re-offer, except the one probe per recipient per window (ADR 2026-10.a4pm).
-            .put("loraUnheardHeld", snap.lora.loraUnheardHeld)
-            .put("loraDmProbes", snap.lora.loraDmProbes)
-            // The same gates as `loraSkippedLinked`, asked again at the moment of sending: how much air the
-            // queue would have spent on frames whose answer changed while they waited (LINKED/INTERNET/UNHEARD/STALE/NOT_OWN).
+            // Compact DMs (ADR 2026-10.x9fa): one pair-sealed unicast per DM. `Sent` is what the board took, `Acked`
+            // what a destination's board answered (its radio, never its phone), `ImplicitAck` a relay's echo (counted,
+            // never trusted), `Unreachable`/`NoOutcome` a give-up or silence (the board is marked unreachable and offers
+            // are `Held` until it is heard), `Resent` the hearing's resend and the re-probe. Receive side: `Delivered`,
+            // and what was dropped as a `Stranger`, `AuthFailed` or `ClockRefused`.
+            .put("loraDirectSent", snap.lora.loraDirectSent)
+            .put("loraDirectAcked", snap.lora.loraDirectAcked)
+            .put("loraDirectImplicitAck", snap.lora.loraDirectImplicitAck)
+            .put("loraDirectUnreachable", snap.lora.loraDirectUnreachable)
+            .put("loraDirectNoOutcome", snap.lora.loraDirectNoOutcome)
+            .put("loraDirectHeld", snap.lora.loraDirectHeld)
+            .put("loraDirectTooLong", snap.lora.loraDirectTooLong)
+            .put("loraDirectSlotZero", snap.lora.loraDirectSlotZero)
+            .put("loraDirectResent", snap.lora.loraDirectResent)
+            .put("loraDirectDelivered", snap.lora.loraDirectDelivered)
+            .put("loraDirectStranger", snap.lora.loraDirectStranger)
+            .put("loraDirectAuthFailed", snap.lora.loraDirectAuthFailed)
+            .put("loraDirectClockRefused", snap.lora.loraDirectClockRefused)
+            // The same gates as `loraSkippedLinked`, asked again at the moment of sending: how much air the queue would
+            // have spent on frames whose answer changed while they waited (LINKED/INTERNET/STALE/NOT_OWN, and a compact
+            // DM's NOT_DIRECT/HELD/ACKED/SLOT_ZERO).
             .put("loraStaleAtSend", snap.lora.loraStaleAtSend)
             .put("loraStaleAtSendByReason", JSONObject(snap.lora.loraStaleAtSendByReason))
             .put("loraTickDeferred", snap.lora.loraTickDeferred)
@@ -2330,9 +2346,19 @@ class DebugBridgeReceiver :
             .put("queued", status.queued)
             .put("heard", status.heard) // frame authors, an older build's relayed ones included
             .put("boardsHeard", status.boardsHeard) // radios on air — "how many boards can I hear"
-            // Peers a connected spool covers: DM-form frames to them stay off the air (ADR 2026-09.y5f3).
+            // Peers a connected spool covers: compact DMs to them stay off the air (ADR 2026-09.y5f3).
             .put("internetCovered", status.internetCovered)
-            .put("radio", status.airtime?.let { "${it.region}/${it.preset}${if (it.known) "" else " (assumed)"}" } ?: JSONObject.NULL)
+            // What the peers' boards said to our compact DMs (ADR 2026-10.x9fa) — radios, never people: marked
+            // reachable / unreachable / refused, sends awaiting an answer, offers parked behind one.
+            .put(
+                "direct",
+                JSONObject()
+                    .put("reachable", status.direct.reachable)
+                    .put("unreachable", status.direct.unreachable)
+                    .put("refused", status.direct.refused)
+                    .put("inFlight", status.direct.inFlight)
+                    .put("parked", status.direct.parked),
+            ).put("radio", status.airtime?.let { "${it.region}/${it.preset}${if (it.known) "" else " (assumed)"}" } ?: JSONObject.NULL)
             // ADR 067: true means the board is on its own RF slot, so the budgets below are off the
             // politeness ceiling and bounded only by the region's duty cycle.
             .put("dedicated", status.airtime?.dedicated ?: JSONObject.NULL)

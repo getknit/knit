@@ -126,7 +126,16 @@ if one ever happens they all ride it together and no single item has to justify 
 > `Protocol.CAP_FAST_COMPACT = 0x20`), `0x05` transcoded frame (`mesh/link/FrameTranscoder`, ADR 060, only
 > toward `Protocol.CAP_FRAME_TRANSCODE = 0x80`), `0x10` **burned**: the LoRa bridge's gateway OFFER (`LoraCtl`,
 > ADR 044), retired with the bridge (ADR 2026-10.rp3s). Older builds still air it; this build counts it under
-> `loraRetiredCtl` and drops it before decode, and the tag is never minted again.
+> `loraRetiredCtl` and drops it before decode, and the tag is never minted again. `0x11` is the LoRa plane's
+> **compact DM** (ADR 2026-10.x9fa): `tag | pairTag 4 | salt 8 | frameId 16 | sentAt u48 6 | AES-256-GCM` around the
+> v3 compact content, one Meshtastic unicast with `want_ack` to the recipient's board on the Knit secondary. It is
+> LoRa-only and **not a `WireEnvelope`** — never relayed, custodied or verified as one, so ADR 059's "the only unsigned
+> shape is the tick" is untouched — and the sender sends it only to a pinned profile carrying `Protocol.CAP_LORA_DIRECT
+> = 0x10000` (the next append-only bit); an older build that hears one anyway drops it as `UNKNOWN_TAG`. The bit is a
+> send-time input read off the **pinned** profile, never a link's copy, and is OR-ed into our own profile only while
+> the LoRa plane and its DM switch are both on (the profile names the board, `loraNode`, only while the plane is on). It
+> is **Android-only** for now: knit-ios neither sets it nor reads `0x11`, so no compact DM is ever addressed to an
+> iPhone. The seal (`knit/lora/v1/…` derivations off the identity pair secret) is pinned by `vectors/lora-direct-v1.json`.
 > <!-- doc-lint: allow LoraCtl — the retired OFFER codec, named as the tag's history --> `0x03`/`0x04` re-frame only the outer `WireEnvelope` —
 > `signed`/`sig` pass through byte-exact (rule 4 holds by construction); `0x05` re-encodes `signed` itself
 > but the receiver **rebuilds the byte-identical canonical CBOR before verifying**, so the bytes that are

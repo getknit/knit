@@ -44,26 +44,14 @@ internal fun shouldFastFanout(env: RelayEnvelope): Boolean =
  * Why it matters: with no NDP and no Bluetooth a node's broadcast room chat still flows over this plane
  * while every DM, group-key seed and `CTL_GROUP_KEY_REQ` — all this same form — sits undeliverable in its
  * own custody with the peer sitting in `cueTarget` the whole time (three-Pixel capture, 2026-09-07;
- * ADR 2026-09.9dnk). Same set as [shouldLongRangeFanout] by construction, and for the same reason: on a
- * plane with no data path, fan-out is the only path a frame can take. Kept as two predicates rather than
- * one shared helper because they answer different questions about different planes, and will drift apart
- * the first time one plane's budget changes.
+ * ADR 2026-09.9dnk). The LoRa plane, which has no data path at all, used to admit the same set through a
+ * long-range fan-out of its own; since ADR 2026-10.x9fa it carries none of these frames — our own DMs, reactions
+ * and ✓✓ leave it as compact pair-sealed unicasts their sender offers — so this is the one targeted predicate.
  *
  * Best-effort and unacknowledged, like the rest of the fast path — a latency layer over the NDP flood +
  * custody, never a replacement for it, and the receiver's SeenSet drops whichever copy loses the race.
  */
 internal fun shouldFastSend(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId != null && env.group == null
-
-/**
- * Whether [env] should *also* ride [MeshTransport.longRangeFanout] — the fan-out reserved for a plane with
- * **no data path at all** (the LoRa bridge, ADR 039), for which it is the only path a frame can take. It
- * admits exactly the **DM-form** chat frames [shouldFastFanout] excludes: `chat` with a recipient and no
- * group. That form is deliberately opaque — a real DM, its sealed receipt or reaction, a session reset, a
- * group-key seed and an escalated delivery tick are wire-indistinguishable (ADR 016/018), so all of them
- * ride and none is singled out. Group-form chat (`group != null`) stays out: the long-range plane carries no
- * group conversation, so its frames would only burn airtime. Disjoint from [shouldFastFanout] by construction.
- */
-internal fun shouldLongRangeFanout(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId != null && env.group == null
 
 /**
  * Pull-time soft cap on bytes held *purely* to custody other peers' images (a carried frame references

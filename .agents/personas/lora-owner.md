@@ -92,8 +92,9 @@ Before you edit, write down for yourself, for each behaviour the change adds or 
 - **When each gate is asked.** A frame can sit in the queue for a whole window: a gate asked at enqueue (a link, a
   spool cover, the role, freshness, the self id) must be carried on the frame and asked again at `sendFrame`, but only
   the gates its own path asked.
-- **What "heard" and "reached" each mean.** This plane has no acks: a transmission is not evidence anyone heard it, a
-  radio's airing is not its author's presence, a sighting on BLE/NAN is not a data path, and a radio in our own pocket
+- **What "heard" and "reached" each mean.** A broadcast has no acks: a transmission is not evidence anyone heard it.
+  A compact DM's firmware ACK is its destination's radio, never its phone, and an implicit ACK is never delivery
+  (ADR 2026-10.x9fa). A radio's airing is not its author's presence, a sighting on BLE/NAN is not a data path, and a radio in our own pocket
   vouches for nobody.
 - **Who starves whom.** Walk the queue order, the backfill rank and the bucket shares together for a scarce window: a
   one-packet frame class can hold a two-packet one out forever, and a re-probe that cannot fly strands what is held.
@@ -114,7 +115,7 @@ monitor outside the ledger's), and make the change additive on the wire (`docs/W
 - A new frame path names its `FrameClass`, its `AirBucket` and its `RideGate`; a new counter goes in its
   `MeshMetrics` group and the `…debug.LORA` dump (`.agents/context/debug-bridge.md`).
 - Treat a `Log` line beginning `lora ` as an oracle: `lora-bridge.md`'s on-device recipes and the ADRs grep for them
-  (`lora pad`, `lora tx `, `lora probe`, `lora reprobe`, `lora room too long`, `lora dial mode=`, `lora ready`). Prefer
+  (`lora pad`, `lora tx `, `lora direct `, `lora resend`, `lora reprobe`, `lora room too long`, `lora dial mode=`, `lora ready`). Prefer
   adding a line to rewording one, and keep the `…debug.LORA` JSON keys stable.
 - A wait under `mesh/bluetooth/meshtastic/` is `elapsedWait` or sits under a `// stretches: <why>` line
   (`BluetoothWaitClockTest`); the board dial holds `BleConnectArbiter` for a direct dial's whole window and, in the

@@ -3,7 +3,6 @@ package app.getknit.knit
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.BulkRoute
 import app.getknit.knit.mesh.CompositeMeshTransport
-import app.getknit.knit.mesh.FanoutHint
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
@@ -126,8 +125,6 @@ class CompositeMeshTransportTest {
         val sentFiles = mutableListOf<Pair<Peer, FileMeta>>()
         val sentDigests = mutableListOf<Pair<Peer, List<String>>>()
         val fastFanouts = mutableListOf<WireEnvelope>()
-        val longRangeFanouts = mutableListOf<WireEnvelope>()
-        val longRangeHints = mutableListOf<FanoutHint>()
         val fastSends = mutableListOf<Peer>()
         val suppressCalls = mutableListOf<Set<String>>()
         val foreignCalls = mutableListOf<Set<String>>()
@@ -195,14 +192,6 @@ class CompositeMeshTransportTest {
 
         override fun fastFanout(wire: WireEnvelope) {
             fastFanouts += wire
-        }
-
-        override fun longRangeFanout(
-            wire: WireEnvelope,
-            hint: FanoutHint,
-        ) {
-            longRangeFanouts += wire
-            longRangeHints += hint
         }
 
         override fun fastSend(
@@ -873,27 +862,6 @@ class CompositeMeshTransportTest {
             advanceUntilIdle()
             assertEquals("NAN gets the coordination-plane blast", 1, nan.fastFanouts.size)
             assertEquals("a child with no fast plane gets a normal flood instead", listOf<Peer?>(null), linkOnly.sends.map { it.second })
-        }
-
-    @Test
-    fun longRangeFanoutReachesEveryChildAndNeverFallsBackToSend() =
-        runTest(UnconfinedTestDispatcher()) {
-            val linkOnly = FakeChild(hasFastPlane = false)
-            val nan = FakeChild(hasFastPlane = true)
-            val composite = CompositeMeshTransport(listOf(linkOnly, nan), backgroundScope)
-            linkOnly.setNeighbors(Peer("p"))
-            advanceUntilIdle()
-            composite.longRangeFanout(wire())
-            composite.longRangeFanout(wire(), FanoutHint.TICK)
-            advanceUntilIdle()
-            // Every child is offered the frame and decides for itself (only a no-data-path plane acts on it) —
-            // there is no send() fallback: the router's flood already carries a DM over a link child's links.
-            assertEquals(2, linkOnly.longRangeFanouts.size)
-            assertEquals(2, nan.longRangeFanouts.size)
-            // The originator's hint reaches every child unchanged (ADR 054).
-            assertEquals(listOf(FanoutHint.CONTENT, FanoutHint.TICK), nan.longRangeHints)
-            assertTrue("no flood duplicate over the link child", linkOnly.sends.isEmpty())
-            assertTrue("the coordination-plane blast is a different path", nan.fastFanouts.isEmpty())
         }
 
     @Test

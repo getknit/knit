@@ -514,7 +514,10 @@ class AckSync(
         // parked for a link or the spool instead. Wi-Fi Aware's cue-only peers still count — its `fastSend` reaches them.
         val air = (transport as? CompositeMeshTransport)?.shortRangeReachable ?: transport.reachable
         val viaAir = !viaSpool && air.value.any { it.nodeId == authorId }
-        if (!viaSpool && !viaAir) return // nowhere to send it: keep waiting for a ride, a link or a sighting
+        if (!viaSpool && !viaAir) {
+            metrics.onRideUnrouted() // nowhere to send it: keep waiting for a ride, a link or a sighting
+            return
+        }
         val batch = riding.remove(authorId) ?: return
         val ids = synchronized(batch) { LinkedHashMap(batch.ids) }
         if (ids.isEmpty()) return

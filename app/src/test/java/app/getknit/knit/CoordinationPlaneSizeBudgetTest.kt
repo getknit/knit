@@ -4,9 +4,12 @@ import app.getknit.knit.data.message.REPLY_SNIPPET_MAX
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.DmAckCoalescer
 import app.getknit.knit.mesh.INLINE_ACK_BYTES
+import app.getknit.knit.mesh.LORA_DIRECT_PLAINTEXT_BYTES
+import app.getknit.knit.mesh.LORA_DIRECT_TICK_ACKS
 import app.getknit.knit.mesh.MAX_INLINE_ACKS
 import app.getknit.knit.mesh.bluetooth.BleSideChannel
 import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
@@ -16,6 +19,7 @@ import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FrameTranscoder
 import app.getknit.knit.mesh.link.IdElision
+import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
 import app.getknit.knit.mesh.lora.LoraFrameCodec
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
@@ -906,6 +910,79 @@ class CoordinationPlaneSizeBudgetTest {
         assertTrue("nor a room attachment", LoraSizeHint.ATTACHMENT_RESERVE_BYTES >= room)
     }
 
+    /**
+     * A DM's LoRa budget is **one compact packet** at the MTU-255 floor (ADR 2026-10.x9fa): the pair-sealed unicast carries
+     * the v3 compact content inside [LORA_DIRECT_OVERHEAD] bytes of header and tag, and its `ToRadio` grows by
+     * `want_ack`, so the plaintext cap is the floor's payload less both. [LoraSizeHint.DM_BODY_BYTES] covers the body
+     * and the inline acks `MeshManager.inlineAcksFor` may spend out of it, at [INLINE_ACK_BYTES] each — pinned here with
+     * incompressible bodies (random printable ASCII, random four-byte emoji: the compact content is not deflated, but
+     * the hint must not depend on that) at every ack count, and shown not to be slack.
+     */
+    @Test
+    fun aDmAtTheHintBudgetIsOneCompactPacketAtTheMtuFloor() {
+        val cap = esp32PayloadCap - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+        val budget = LoraSizeHint.DM_BODY_BYTES
+        val random = Random(seed = 13)
+
+        fun ascii(bytes: Int) = String(CharArray(bytes) { (PRINTABLE_FIRST + random.nextInt(PRINTABLE_COUNT)).toChar() })
+
+        fun emoji(bytes: Int) =
+            buildString {
+                while (LoraSizeHint.utf8Length(this) + EMOJI_BYTES <= bytes) appendCodePoint(EMOJI_FIRST + random.nextInt(EMOJI_COUNT))
+            }
+
+        fun plaintext(
+            body: String,
+            acks: Int,
+        ): Int {
+            val content = MessageContent(body = body, acks = List(acks) { FrameId.new() }.takeIf { it.isNotEmpty() })
+            return content
+                .sealBytes(v3 = true)
+                .also { assertEquals(EncEnvelope.VERSION_DM_V3, it.scheme) }
+                .plaintext.size
+        }
+        for (acks in 0..MAX_INLINE_ACKS) {
+            val bodyBytes = budget - acks * INLINE_ACK_BYTES
+            for ((label, body) in listOf("ascii" to ascii(bodyBytes), "emoji" to emoji(bodyBytes))) {
+                val size = plaintext(body, acks)
+                println("lora-direct: $label body=${LoraSizeHint.utf8Length(body)}B acks=$acks plaintext=${size}B cap=${cap}B")
+                assertTrue("a $label DM at the budget with $acks inline acks is one compact packet ($size > $cap)", size <= cap)
+            }
+        }
+        assertTrue("the budget is not slack", plaintext(ascii(budget + DM_SLACK_BYTES), acks = 0) > cap)
+        assertTrue("a DM reply has no room in one packet", LoraSizeHint.REPLY_RESERVE_BYTES >= budget)
+        assertTrue("nor a DM attachment", LoraSizeHint.ATTACHMENT_RESERVE_BYTES >= budget)
+    }
+
+    /**
+     * Crypto 5 (ADR 2026-10.x9fa): the coalesced ✓✓'s compact copy is one packet at the MTU floor. `MeshManager`
+     * splits a flush into ticks of at most [LORA_DIRECT_TICK_ACKS] ids, riders included, each a v3 `CTL_RECEIPT` inside
+     * [LORA_DIRECT_PLAINTEXT_BYTES] — the floor's payload less `want_ack` and the 51 bytes around the content. The cap is
+     * exact: one id more is past the packet. A single id rides `ack`, which is never larger.
+     */
+    @Test
+    fun aCompactTickAtItsCapIsOnePacketAtTheMtuFloor() {
+        val cap = esp32PayloadCap - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+        assertEquals("the manager's budget is this floor's", cap, LORA_DIRECT_PLAINTEXT_BYTES)
+
+        fun tick(ids: Int): Int {
+            val acks = List(ids) { FrameId.new() }
+            val content =
+                if (ids == 1) {
+                    MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = acks.single())
+                } else {
+                    MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = acks)
+                }
+            return checkNotNull(MessageContentV2.encodeOrNull(content)).size
+        }
+        val full = tick(LORA_DIRECT_TICK_ACKS)
+        println("lora-direct tick: ${LORA_DIRECT_TICK_ACKS} ids = ${full}B, one id = ${tick(1)}B, cap ${cap}B")
+        assertTrue("$LORA_DIRECT_TICK_ACKS ids are one packet ($full > $cap)", full <= cap)
+        assertTrue("and the cap is not slack", tick(LORA_DIRECT_TICK_ACKS + 1) > cap)
+        assertTrue(tick(1) <= cap)
+        assertTrue("the signed tick keeps its own, larger cap", DmAckCoalescer.MAX_LORA_TICK_ACKS > LORA_DIRECT_TICK_ACKS)
+    }
+
     // --- budgets: the BLE side channel (one extended-advertising page = one AUX PDU, <= 3 fragments; #13) ---
 
     /** Page count for [wire] on the BLE side channel (the transcoded form), or null when nothing fits <= 3. */
@@ -1191,6 +1268,9 @@ class CoordinationPlaneSizeBudgetTest {
         const val EMOJI_FIRST = 0x1F600
         const val EMOJI_COUNT = 0x50
         const val EMOJI_BYTES = 4
+
+        /** How far past [LoraSizeHint.DM_BODY_BYTES] a body must go before it no longer fits one compact packet. */
+        const val DM_SLACK_BYTES = 20
 
         /**
          * How far past the room budget a noise body must already need a second packet: the budget sits a few bytes

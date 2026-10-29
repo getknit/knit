@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.crypto.XeddsaVerify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -130,7 +131,14 @@ class MeshtasticSessionTest {
             runCurrent()
 
             val unicast =
-                async { session.send(byteArrayOf(1), channelIndex = 0, portnum = MeshtasticProto.PORT_TEXT_MESSAGE, to = 0x1234abcdu) }
+                async {
+                    session.send(
+                        byteArrayOf(1),
+                        channelIndex = 0,
+                        portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                        destination = LinkDestination.Direct(BoardAddr(0x1234abcdu), ack = false),
+                    )
+                }
             runCurrent()
             assertTrue(unicast.await() is SendResult.Queued)
             val broadcast = async { session.send(byteArrayOf(2), channelIndex = 1) }
@@ -139,6 +147,7 @@ class MeshtasticSessionTest {
 
             val packets = ch.writes.filter(BoardBytes::isPacket)
             assertEquals(listOf(0x1234abcdu, MeshtasticProto.BROADCAST), packets.map(BoardBytes::packetTo))
+            assertEquals("the auto-reply never asks for an ack", listOf(false, false), packets.map(BoardBytes::wantsAck))
             session.stop()
         }
 
@@ -167,6 +176,187 @@ class MeshtasticSessionTest {
             runCurrent()
             val result = send.await()
             assertEquals(SendResult.Nak(1000u, RoutingError.NO_CHANNEL), result)
+            session.stop()
+        }
+
+    // --- direct sends: want_ack and the Routing answer (ADR 2026-10.x9fa) ---
+
+    /** A session whose board queues every packet: the shape the direct-send tests share. */
+    private fun TestScope.queueingSession(ch: FakeGattChannel): MeshtasticSession {
+        ch.onWrite = { bytes ->
+            if (BoardBytes.isWantConfig(bytes)) {
+                ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                ch.enqueueRead(BoardBytes.channel(1, "knit", 2))
+                ch.enqueueRead(BoardBytes.configComplete(nonce))
+            } else if (BoardBytes.isPacket(bytes)) {
+                ch.enqueueRead(BoardBytes.queueStatus(free = 15, maxlen = 16, meshPacketId = BoardBytes.packetId(bytes)))
+            }
+        }
+        return session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+    }
+
+    private suspend fun TestScope.sendDirect(
+        session: MeshtasticSession,
+        to: UInt,
+    ): UInt {
+        val send = async { session.send(byteArrayOf(0x11, 2, 3), channelIndex = 1, destination = LinkDestination.Direct(BoardAddr(to))) }
+        runCurrent()
+        return (send.await() as SendResult.Queued).id
+    }
+
+    private fun TestScope.board(
+        ch: FakeGattChannel,
+        bytes: ByteArray,
+    ) {
+        ch.enqueueRead(bytes)
+        ch.notify()
+        runCurrent()
+    }
+
+    @Test
+    fun aDirectSendAsksForAnAckAndTheDestinationsAckEndsItAsAcked() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            val packets = mutableListOf<ReceivedPacket>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            backgroundScope.launch { session.packets.collect { packets += it } }
+            session.start("AA")
+            runCurrent()
+
+            val id = sendDirect(session, to = 0x1234u)
+            val written = ch.writes.last(BoardBytes::isPacket)
+            assertTrue("a direct send asks for want_ack", BoardBytes.wantsAck(written))
+            assertEquals(0x1234u, BoardBytes.packetTo(written))
+
+            board(ch, BoardBytes.ack(from = 0x1234u, requestId = id))
+            assertEquals(listOf<PacketOutcome>(PacketOutcome.Acked(id, byDestination = true)), outcomes)
+            // The ACK is RF from the destination's board: surfaced for the transport's hearing hook.
+            assertEquals(listOf(MeshtasticProto.PORT_ROUTING), packets.map { it.portnum })
+            assertEquals(0x1234u, packets.single().from)
+
+            // Answered: a second ACK for the same packet is not an outcome any more.
+            board(ch, BoardBytes.ack(from = 0x1234u, requestId = id))
+            assertEquals(1, outcomes.size)
+            session.stop()
+        }
+
+    @Test
+    fun anAckFromAnyoneButTheDestinationIsImplicitAndTheWaitGoesOn() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            session.start("AA")
+            runCurrent()
+            val id = sendDirect(session, to = 0x1234u)
+
+            board(ch, BoardBytes.ack(from = 0xABCDu, requestId = id)) // our own board heard it repeated
+            board(ch, BoardBytes.ack(from = 0x7777u, requestId = id)) // a relay
+            board(ch, BoardBytes.ack(from = 0x1234u, requestId = id)) // the destination
+            assertEquals(
+                listOf(
+                    PacketOutcome.Acked(id, byDestination = false),
+                    PacketOutcome.Acked(id, byDestination = false),
+                    PacketOutcome.Acked(id, byDestination = true),
+                ),
+                outcomes,
+            )
+            session.stop()
+        }
+
+    @Test
+    fun theFirmwareGivingUpIsUnreachableAndTheDestinationsRefusalIsItsOwn() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            session.start("AA")
+            runCurrent()
+            val lost = sendDirect(session, to = 0x1234u)
+            val refused = sendDirect(session, to = 0x5678u)
+            val quiet = sendDirect(session, to = 0x9abcu)
+
+            board(ch, BoardBytes.nak(from = 0xABCDu, requestId = lost, reason = RoutingError.MAX_RETRANSMIT))
+            board(ch, BoardBytes.nak(from = 0x5678u, requestId = refused, reason = RoutingError.NO_CHANNEL))
+            board(ch, BoardBytes.nak(from = 0xABCDu, requestId = quiet, reason = RoutingError.DUTY_CYCLE_LIMIT))
+            assertEquals(
+                listOf(
+                    PacketOutcome.Unreachable(lost),
+                    PacketOutcome.Refused(refused, RoutingError.NO_CHANNEL, byDestination = true),
+                    PacketOutcome.Refused(quiet, RoutingError.DUTY_CYCLE_LIMIT, byDestination = false),
+                ),
+                outcomes,
+            )
+            session.stop()
+        }
+
+    @Test
+    fun aBroadcastsRoutingNoneIsNoOutcomeAndItsLateNakIsARefusal() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            session.start("AA")
+            runCurrent()
+            val send = async { session.send(byteArrayOf(3), channelIndex = 1) }
+            runCurrent()
+            val id = (send.await() as SendResult.Queued).id
+            assertFalse("a broadcast never asks for an ack", BoardBytes.wantsAck(ch.writes.last(BoardBytes::isPacket)))
+
+            board(ch, BoardBytes.ack(from = 0xABCDu, requestId = id))
+            assertTrue("NONE about a broadcast says nothing", outcomes.isEmpty())
+            board(ch, BoardBytes.nak(from = 0xABCDu, requestId = id, reason = RoutingError.DUTY_CYCLE_LIMIT))
+            assertEquals(listOf<PacketOutcome>(PacketOutcome.Refused(id, RoutingError.DUTY_CYCLE_LIMIT)), outcomes)
+            session.stop()
+        }
+
+    @Test
+    fun aNodeInfoFromAnotherBoardFeedsTheNamesAndSurfacesForTheHearingHook() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val packets = mutableListOf<ReceivedPacket>()
+            backgroundScope.launch { session.packets.collect { packets += it } }
+            session.start("AA")
+            runCurrent()
+            val user =
+                ProtoWriter()
+                    .string(MeshtasticProto.USER_LONG_NAME, "Knit 1234")
+                    .string(MeshtasticProto.USER_SHORT_NAME, "K1")
+                    .toByteArray()
+            board(ch, BoardBytes.packet(from = 0x1234u, channel = 0, portnum = MeshtasticProto.PORT_NODEINFO, payload = user, rxRssi = -70))
+            assertEquals("Knit 1234", session.nodes.value[0x1234u]?.longName)
+            assertEquals(listOf(MeshtasticProto.PORT_NODEINFO), packets.map { it.portnum })
+            assertEquals(-70, packets.single().rxRssi)
+            session.stop()
+        }
+
+    @Test
+    fun aPacketsRxTimeSurfacesAndAnAbsentOneIsNull() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val packets = mutableListOf<ReceivedPacket>()
+            backgroundScope.launch { session.packets.collect { packets += it } }
+            session.start("AA")
+            runCurrent()
+            board(
+                ch,
+                BoardBytes.packet(
+                    from = 0x1234u,
+                    channel = 1,
+                    portnum = MeshtasticProto.PORT_PRIVATE_APP,
+                    payload = byteArrayOf(9),
+                    rxTime = 1_700_000_000u,
+                ),
+            )
+            board(ch, BoardBytes.packet(from = 0x1234u, channel = 1, portnum = MeshtasticProto.PORT_PRIVATE_APP, payload = byteArrayOf(9)))
+            assertEquals(listOf(1_700_000_000u, null), packets.map { it.rxTime })
             session.stop()
         }
 

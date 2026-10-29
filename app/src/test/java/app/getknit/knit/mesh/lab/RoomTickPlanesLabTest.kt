@@ -7,7 +7,6 @@ import app.getknit.knit.mesh.spool.FakeSpool
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -59,23 +58,19 @@ class RoomTickPlanesLabTest {
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             lab.unlink(alice, bob)
+            // Read before the post exists: the hold's one wake fires `rideHoldMs` after bob takes it, which a stalled
+            // run can pass before the receipt checks below return (seed 455287199).
+            val unroutedBefore = bob.metrics.receipts().ridesUnrouted
 
             assertTrue(alice.sendRoom("over the board"))
             val post = alice.ownMessageId(Conversations.NEARBY, "over the board")
             lab.await(1) { bob.roomPosts()[alice.nodeId].orEmpty().size }
             assertEquals(DeliveryPlane.LoRa, bob.receivedVia(Conversations.NEARBY, post))
 
-            // Well past the ride hold: nothing on the air for it, and the tick still waits for a ride.
-            assertFalse(
-                "a room tick aired: ${bob.loraLog}",
-                lab.tryAwait(1, timeoutMs = 3_000) {
-                    bob.metrics
-                        .lora()
-                        .loraSent
-                        .toInt()
-                },
-            )
-            assertEquals(0L, bob.metrics.lora().loraSent)
+            // Past the ride hold: the due hold was judged and found no route (`ridesUnrouted`), so nothing went on the
+            // air for it and the tick still waits for a ride.
+            lab.await(1) { (bob.metrics.receipts().ridesUnrouted - unroutedBefore).toInt() }
+            assertEquals("a room tick aired: ${bob.loraLog}", 0L, bob.metrics.lora().loraSent)
             assertEquals("still parked for a link or the spool", 1, bob.manager.ackSync.ridingFor(alice.nodeId))
 
             lab.link(alice, bob)
@@ -95,7 +90,7 @@ class RoomTickPlanesLabTest {
             val alice = lab.node("alice", limits, air = air, spool = spool).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", limits, air = air, spool = spool).apply { setDisplayName("Bob") }
             lab.meetOnTheRelay(alice, bob, air)
-            val bobFarBefore = bob.loraTx("far:chat")
+            val bobDirectBefore = bob.loraTx("direct:")
             val bobSentBefore = bob.metrics.lora().loraSent
             val aliceSkippedBefore = alice.metrics.lora().loraSkippedInternet
 
@@ -107,12 +102,13 @@ class RoomTickPlanesLabTest {
             val dm = alice.ownMessageId(alice.dmWith(bob), "and now over the relay")
             lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.first == dm } }
             assertEquals("the DM took the relay", DeliveryPlane.Internet, bob.receivedVia(bob.dmWith(alice), dm))
+            // Its compact copy was offered (ADR 2026-10.x9fa) and kept off the air: the relay carries the signed one for free.
             assertTrue("and its LoRa copy was never sent", alice.metrics.lora().loraSkippedInternet > aliceSkippedBefore)
 
             assertEquals("the room tick rode the DM's receipt", DeliveryPlane.Internet, lab.awaitReceipt(alice, post, bob))
             assertEquals(DeliveryPlane.Internet, lab.awaitReceipt(alice, dm, bob))
             assertEquals("nothing went on the air for it", bobSentBefore, bob.metrics.lora().loraSent)
-            assertEquals(bobFarBefore, bob.loraTx("far:chat"))
+            assertEquals(bobDirectBefore, bob.loraTx("direct:"))
             // Alice reads the tick off the relay a moment before Bob's own bookkeeping of the ride lands.
             assertTrue(
                 "the ride was never counted",
@@ -134,8 +130,9 @@ class RoomTickPlanesLabTest {
         runBlocking {
             // #196: the relays' master switch off left the last present set published, so the board went on
             // treating the peer as covered by the Internet and never aired a DM to it. Both phones leave, as in
-            // the field (the other phone reachable only over LoRa); each one's own cover must lapse.
-            val air = FakeMeshtasticAir()
+            // the field (the other phone reachable only over LoRa); each one's own cover must lapse. Boards answering in lab
+            // time: a DM the meeting offered compact into its dark air ends in seconds, not a LongFast minute.
+            val air = MeshLab.quickAir()
             val spool = FakeSpool()
             // A DM that arrived over the board is ticked through DmAckCoalescer's 45 s hold (ADR 054); the oracle
             // waits for that tick, so the pair holds it for a second instead.
@@ -153,13 +150,16 @@ class RoomTickPlanesLabTest {
                 assertTrue("${node.name}'s board kept the cover of a relay it left", lab.tryAwait(1) { 1 - node.internetCovered() })
             }
             val skippedBefore = alice.metrics.lora().loraSkippedInternet
-            // Reachable only over LoRa means heard there: Bob's board speaks first. Unheard, the DM could ride only
-            // as the window's probe (ADR 2026-10.a4pm), and the meeting can have spent it — its first DM fans out
-            // before Bob's spool presence reaches Alice's board whenever the relay is slow to show him, and goes as
-            // the probe into the dark air. This DM would then be held for a hearing nothing here provokes.
-            assertTrue(bob.sendRoom("on the board"))
-            assertTrue("alice's board never heard bob", lab.tryAwait(1) { alice.hearsOnTheBoard(bob) })
-
+            // The meeting's own DMs can have been offered compact while its air was dark, before the other's spool presence
+            // covered them: one gives up and marks the other's board unreachable, which holds the next offer — alice's DM,
+            // or bob's ✓✓ for it (ADR 2026-10.x9fa). Wait those out, then let each board speak: hearing it clears the mark.
+            lab.await(1) { alice.boardReadyFor(bob) }
+            lab.await(1) { bob.boardReadyFor(alice) }
+            val boards = listOf(alice, bob).map { checkNotNull(it.lora) }
+            assertTrue("a dark send never ended", lab.tryAwait(1) { if (boards.all { it.status.value.direct.inFlight == 0 }) 1 else 0 })
+            assertTrue(alice.sendRoom("on alice's board"))
+            assertTrue(bob.sendRoom("on bob's board"))
+            assertTrue("a board was never heard", lab.tryAwait(1) { if (boards.all { it.status.value.direct.unreachable == 0 }) 1 else 0 })
             assertTrue(alice.sendDm(bob, "over the board now"))
             val dm = alice.ownMessageId(alice.dmWith(bob), "over the board now")
             lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.first == dm } }
@@ -167,15 +167,14 @@ class RoomTickPlanesLabTest {
             assertEquals("and its receipt came back the same way", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm, bob))
             assertEquals("nothing was kept off the board for a relay", skippedBefore, alice.metrics.lora().loraSkippedInternet)
 
+            // The signed copies never ride LoRa, so custody converges only where they can cross: a link, here (the relays
+            // are off). Before ADR 2026-10.x9fa the signed DM itself rode the board and bob custodied it off the air.
+            lab.link(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 5) { it.dmWith(if (it === alice) bob else alice) }
         }
 
     /** How many peers [this] node's board counts as covered by the Internet: 1 or 0 here, a `tryAwait` count. */
     private fun LabNode.internetCovered(): Int = checkNotNull(lora) { "$name has no board" }.status.value.internetCovered
-
-    /** 1 once [this] node's board has heard [peer] within the linger — the reach its DM gate reads — else 0. */
-    private fun LabNode.hearsOnTheBoard(peer: LabNode): Int =
-        if (checkNotNull(lora) { "$name has no board" }.reachable.value.any { it.nodeId == peer.nodeId }) 1 else 0
 
     @Test
     fun aRoomTickWithNoRideIsPushedStraightToTheSpoolWhenItsAuthorIsThere() =

@@ -19,7 +19,14 @@ internal interface MeshtasticLink {
     /** Inbound mesh packets, already decoded; `tryEmit`ted like the radio transports' `_inbound`. */
     val packets: SharedFlow<ReceivedPacket>
 
-    /** Late NAKs (seconds after the send returned) keyed by our packet id — e.g. a duty-cycle refusal. */
+    /**
+     * What became of a packet after [send] returned, keyed by the handle [SendResult.Queued.id]: a late refusal (a
+     * duty-cycle NAK), and for a [LinkDestination.Direct] send the destination's answer — [PacketOutcome.Acked],
+     * [PacketOutcome.Unreachable] once the firmware gave up retrying, or [PacketOutcome.Refused] by the destination's
+     * own board. A link may also report [PacketOutcome.NoOutcome] for a direct send it stopped waiting on (MeshCore
+     * reports only a confirmation, never a failure); the Meshtastic session never does, and the transport keeps its
+     * own deadline either way (ADR 2026-10.x9fa).
+     */
     val outcomes: SharedFlow<PacketOutcome>
 
     /** The board's transmit-queue headroom from the latest `queueStatus`; null until first reported. */
@@ -51,18 +58,20 @@ internal interface MeshtasticLink {
     val nodes: StateFlow<Map<UInt, BoardOwner>>
 
     /**
-     * Enqueues one packet on the board. Returns synchronously once the board acknowledges (or refuses) it.
+     * Enqueues one packet on the board. Returns synchronously once the board takes (or refuses) it; a taken packet's
+     * [SendResult.Queued.id] is the handle its later [outcomes] carry.
      *
-     * [to] is the broadcast address for everything Knit sends but the DM auto-reply ([DmAutoReplyPolicy]),
-     * which is addressed to one node. A unicast on channel 0 is the firmware's cue to encrypt to that node's
-     * public key when it holds one (`Router::perhapsEncode`), so the reply reads the way the DM it answers did.
+     * [destination] is [LinkDestination.Broadcast] for the room and every Knit broadcast. A [LinkDestination.Direct]
+     * send is addressed to one board: the DM auto-reply ([DmAutoReplyPolicy]) unacknowledged on channel 0, where the
+     * firmware encrypts it to that node's key when it holds one (`Router::perhapsEncode`), and a compact DM
+     * (ADR 2026-10.x9fa) acknowledged on the Knit secondary, where it does not.
      */
     suspend fun send(
         payload: ByteArray,
         channelIndex: Int,
         portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
         hopLimit: Int? = null,
-        to: UInt = MeshtasticProto.BROADCAST,
+        destination: LinkDestination = LinkDestination.Broadcast,
     ): SendResult
 
     /**
@@ -237,6 +246,34 @@ internal data class BoardInfo(
     val hasXeddsa: Boolean? = null,
 )
 
+/**
+ * One board on the air, as the link addresses it (ADR 2026-10.x9fa). Opaque above the link on purpose: a Meshtastic
+ * board is its 32-bit node number, and a MeshCore board will be a public-key prefix — nothing in the transport may
+ * read the number, only compare and hand the address back.
+ */
+@JvmInline
+internal value class BoardAddr(
+    val node: UInt,
+)
+
+/**
+ * Where one packet goes: the whole channel, or one board. Not the pacer's `Destination`, which says which *channel*
+ * a queued frame is written to and which guard it passes; this is the link's addressing alone.
+ */
+internal sealed interface LinkDestination {
+    /** Every board on the channel — the room, a Knit broadcast. */
+    data object Broadcast : LinkDestination
+
+    /**
+     * One board. [ack] asks its board to acknowledge (`want_ack`): the firmware retries until it does or gives up,
+     * and the outcome arrives on [MeshtasticLink.outcomes]. The DM auto-reply is direct without it.
+     */
+    data class Direct(
+        val addr: BoardAddr,
+        val ack: Boolean = true,
+    ) : LinkDestination
+}
+
 /** One inbound packet the board handed the phone. */
 internal class ReceivedPacket(
     val from: UInt,
@@ -248,7 +285,7 @@ internal class ReceivedPacket(
     val rxSnr: Float?,
     val rxRssi: Int?,
     val hopsAway: Int?,
-    /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. Read by the bridge only. */
+    /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. */
     val viaMqtt: Boolean = false,
     /**
      * `Data.xeddsa_signature` — the sender board's 64-byte XEdDSA signature over the packet and its whole `Data`
@@ -267,6 +304,12 @@ internal class ReceivedPacket(
      * the board's key is learned off the air, never from a Knit profile.
      */
     val boardVerified: Boolean = false,
+    /**
+     * `MeshPacket.rx_time` in epoch **seconds** by the receiving board's clock, or null when it has none. Old against
+     * the phone's wall clock means the board heard it a while ago and is only now handing it over — its to-phone queue
+     * replayed at reconnect — which the hearing hook must not take as the radio being there now (ADR 2026-10.x9fa).
+     */
+    val rxTime: UInt? = null,
 )
 
 /**
@@ -336,21 +379,62 @@ internal sealed interface SendResult {
         val state: LinkState,
     ) : SendResult
 
-    /** The write went out but no correlated `queueStatus` came back in time. */
-    data object Timeout : SendResult
+    /**
+     * The write went out but no correlated `queueStatus` came back in time. [id] is the handle the session gave the
+     * packet: the board may have taken it, and a direct send's answer will arrive under it (ADR 2026-10.x9fa).
+     */
+    data class Timeout(
+        val id: UInt,
+    ) : SendResult
 }
 
-/** A NAK that arrived after [MeshtasticLink.send] had already returned. */
-internal data class PacketOutcome(
-    val id: UInt,
-    val reason: RoutingError,
-)
+/**
+ * What became of a packet after [MeshtasticLink.send] returned, by its handle [id] (ADR 2026-10.x9fa). The board-neutral
+ * minimum a direct DM needs, so a MeshCore board can report the same four answers.
+ */
+internal sealed interface PacketOutcome {
+    val id: UInt
+
+    /**
+     * An acknowledgement for a direct send. [byDestination] true is the destination's own board answering: the packet
+     * reached its radio, which says nothing about its phone. False is an implicit ack — a relay, or our own board,
+     * heard it repeated — which a caller may count and must never take as delivery or as the end of the wait.
+     */
+    data class Acked(
+        override val id: UInt,
+        val byDestination: Boolean,
+    ) : PacketOutcome
+
+    /** The firmware retried a direct send and gave up (`MAX_RETRANSMIT`, `NO_RESPONSE`): nothing answered. */
+    data class Unreachable(
+        override val id: UInt,
+    ) : PacketOutcome
+
+    /**
+     * A refusal: [byDestination] true is the destination's board refusing what reached it (a `NO_CHANNEL` after it
+     * was Restored); false is our own board or a relay refusing it (a duty-cycle or rate NAK, a send's late refusal).
+     */
+    data class Refused(
+        override val id: UInt,
+        val reason: RoutingError,
+        val byDestination: Boolean = false,
+    ) : PacketOutcome
+
+    /** The link stopped waiting on a direct send with no answer at all. The transport keeps a deadline of its own too. */
+    data class NoOutcome(
+        override val id: UInt,
+    ) : PacketOutcome
+}
 
 /** The board + channel the LoRa plane is bound to, derived from settings; null means the plane is off. */
 internal data class LoraConfig(
     val address: String,
     val channelIndex: Int,
-    /** Whether sealed DM-form chat may ride this plane (`SettingsStore.loraDmEnabled`, ADR 039); the room always does. */
+    /**
+     * Whether our own DMs may ride this plane, as compact unicasts (`SettingsStore.loraDmEnabled`, ADR 2026-10.x9fa);
+     * the room always does. Gates our sends only: a compact DM addressed to us is read whatever this says, since our
+     * board has already acknowledged it.
+     */
     val dms: Boolean = true,
     /**
      * Whether the board's primary (slot 0) channel is mirrored into the Meshtastic room at all

@@ -1042,9 +1042,6 @@
     <string name="diagnostics_metric_lora_nak">NAKs LoRa</string>
     <string name="diagnostics_metric_lora_dm_sent">Mensagens privadas LoRa enviadas</string>
     <string name="diagnostics_metric_lora_dm_received">Mensagens privadas LoRa recebidas</string>
-    <string name="diagnostics_metric_lora_reoffered">Mensagens privadas LoRa reoferecidas</string>
-    <string name="diagnostics_metric_lora_dm_probes">Mensagens privadas LoRa enviadas como sonda</string>
-    <string name="diagnostics_metric_lora_unheard_held">Mensagens privadas LoRa retidas para um contato não ouvido</string>
     <string name="diagnostics_metric_spool_bridged">Mensagens recebidas via retransmissores pela internet</string>
     <string name="diagnostics_metric_spool_invalid">Blobs de retransmissor em quarentena</string>
     <string name="diagnostics_metric_spool_errors">Erros de retransmissor</string>
@@ -1623,7 +1620,7 @@
     <string name="chat_lora_group">Conversas em grupo não viajam por LoRa — membros distantes recebem depois</string>
     <string name="chat_lora_group_title">Conversas em grupo não viajam por LoRa</string>
     <string name="chat_lora_group_body">O rádio LoRa leva a sala Por perto e as mensagens privadas, não as conversas em grupo. O último sinal de alguém aqui veio por LoRa, então essa pessoa não verá estas mensagens até voltar ao alcance do Wi-Fi ou Bluetooth, ou até poder ser alcançada por um retransmissor da internet. Nada se perde — as mensagens esperam por ela.</string>
-    <string name="chat_lora_long_message">Mensagem longa — pode não chegar a quem está por LoRa</string>
+    <string name="chat_lora_long_message">Mensagens longas, respostas e anexos podem não chegar a quem está por LoRa</string>
     <string name="chat_lora_room_not_carried">Publicações longas, respostas e anexos podem não chegar a quem está por LoRa</string>
     <string name="chat_mesh_author">%1$s, no canal Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, no canal Meshtastic — identidade não verificada</string>

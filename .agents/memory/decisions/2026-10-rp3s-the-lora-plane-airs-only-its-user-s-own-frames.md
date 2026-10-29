@@ -14,6 +14,8 @@ Supersedes ADR 044 in part (the gateway election, the gossip and the backfill), 
 ADR 2026-09.y5f3, ADR 2026-09.wkbk, the profile and OFFER half of ADR 2026-09.xdm2, and the pocket and cleartext-tick
 halves of ADR 2026-09.6gk8.
 
+**Superseded in part by ADR 2026-10.x9fa (2026-10-29):** the probe, the first-hearing re-offer and the heard-loss repair; the re-probe is kept, re-keyed on DMs without their ✓✓.
+
 **Context:** The plane treated the board as one more mesh plane. Every frame aired byte-exact as a flood at hop 3,
 and the plane aired a great deal its user never wrote: a pocket-mate's frames (the ADR 044 bridge), OFFER gossip and
 the backfill it drove, re-offers of relayed DMs, the profile beacon and every relayed profile, and a ✓✓ from every

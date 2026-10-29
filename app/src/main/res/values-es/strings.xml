@@ -1042,9 +1042,6 @@
     <string name="diagnostics_metric_lora_nak">NAK de LoRa</string>
     <string name="diagnostics_metric_lora_dm_sent">Mensajes privados LoRa enviados</string>
     <string name="diagnostics_metric_lora_dm_received">Mensajes privados LoRa recibidos</string>
-    <string name="diagnostics_metric_lora_reoffered">Mensajes privados LoRa ofrecidos de nuevo</string>
-    <string name="diagnostics_metric_lora_dm_probes">Mensajes privados LoRa enviados como sondeo</string>
-    <string name="diagnostics_metric_lora_unheard_held">Mensajes privados LoRa retenidos para un contacto no detectado</string>
     <string name="diagnostics_metric_spool_bridged">Mensajes recibidos por retransmisores de Internet</string>
     <string name="diagnostics_metric_spool_invalid">Blobs de retransmisor en cuarentena</string>
     <string name="diagnostics_metric_spool_errors">Errores de retransmisor</string>
@@ -1623,7 +1620,7 @@
     <string name="chat_lora_group">Los chats de grupo no viajan por LoRa: quienes están lejos los recibirán después</string>
     <string name="chat_lora_group_title">Los chats de grupo no viajan por LoRa</string>
     <string name="chat_lora_group_body">La radio LoRa lleva la sala Cerca y los mensajes privados, no los chats de grupo. La última señal de alguien de aquí llegó por LoRa, así que no verá estos mensajes hasta que vuelva al alcance de Wi-Fi o Bluetooth, o se pueda llegar a esa persona por un retransmisor de Internet. No se pierde nada: los mensajes la esperan.</string>
-    <string name="chat_lora_long_message">Mensaje largo: podría no llegar a las personas por LoRa</string>
+    <string name="chat_lora_long_message">Los mensajes largos, las respuestas y los adjuntos podrían no llegar a las personas por LoRa</string>
     <string name="chat_lora_room_not_carried">Las publicaciones largas, las respuestas y los adjuntos podrían no llegar a las personas por LoRa</string>
     <string name="chat_mesh_author">%1$s, en el canal de Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, en el canal de Meshtastic — identidad no verificada</string>

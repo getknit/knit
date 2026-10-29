@@ -59,6 +59,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.link.FileIntake
+import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
 import app.getknit.knit.mesh.protocol.BlobHaveContent
@@ -288,6 +289,8 @@ class InboundPipelineTest {
         spyRatchet: Boolean = false,
         // The facade's engine — a vector replay injects the recorded draws for the party's own seals.
         ratchetEngine: RatchetEngine = RatchetEngine(),
+        // False wires no DM ✓✓ coalescer, as a pipeline with no LoRa plane runs: a LoRa DM's ✓✓ is sealed at once.
+        withDmAcks: Boolean = true,
     ) {
         val transport = FakeLoopTransport(self.nodeId)
         val metrics = MeshMetrics()
@@ -407,6 +410,15 @@ class InboundPipelineTest {
 
         /** The sealed DM receipts the pipeline filed, so a test can read an entry's era and floor (ADR 2026-10.8hn6). */
         val dmReAcks = DmReAckLedger()
+
+        /** `(authorId, frameId, content)` of every compact ✓✓ the pipeline offered the board (ADR 2026-10.x9fa). */
+        val loraReceipts = mutableListOf<Triple<String, String, MessageContent>>()
+
+        /** `(authorId, ackId)` of every ✓✓ declined as an answer and handed to MeshManager's hold. */
+        val heldTicks = mutableListOf<Pair<String, String>>()
+
+        /** `(authorId, ackIds)` of every ✓✓ sealed and sent, for MeshManager to let go of a held copy. */
+        val releasedTicks = mutableListOf<Pair<String, List<String>>>()
 
         /**
          * The pipeline's clock. Fixed by default so every existing test behaves exactly as before; a test
@@ -563,9 +575,12 @@ class InboundPipelineTest {
                         val wire = self.sign(tick)
                         forwardStore.store(CarriedFrame(tick, wire.sig, wire.signed), ForwardStore.ORIGIN_SELF, nowMs)
                     },
-                    dmAcks = dmAcks,
+                    dmAcks = dmAcks.takeIf { withDmAcks },
                     dmReAcks = dmReAcks,
                     holdsLive = forwardStore::holdsLiveReceipt,
+                    offerLoraReceipt = { author, frameId, _, content -> loraReceipts += Triple(author, frameId, content) },
+                    holdDeclinedTick = { author, ackId -> heldTicks += author to ackId },
+                    releaseHeldTicks = { author, ackIds -> releasedTicks += author to ackIds },
                     flushPending = { flushed += it },
                     classifyText = { text, _, isRoom ->
                         if (failClassify) error("moderation boom")
@@ -6406,6 +6421,314 @@ class InboundPipelineTest {
             assertEquals("the establishment reported once; the re-serve never reached the ratchet", listOf(alice.nodeId), rig.rootChanges)
         }
 
+    // --- the compact LoRa door (ADR 2026-10.x9fa) ---
+
+    /** What the seal hands the pipeline for a compact copy of [content] from [from]: the sender is the index's, never the packet's. */
+    private fun openedFrom(
+        from: Party,
+        id: String,
+        content: MessageContent,
+        sentAt: Long = 5L,
+    ): OpenedDirect = OpenedDirect(from.nodeId, id, sentAt, checkNotNull(MessageContentV2.encodeOrNull(content)))
+
+    /** [alice] as a contact whose board may carry a compact copy: ratchet-capable, accepted, and claiming the door. */
+    private fun Rig.pinLoraPeer(alice: Party) {
+        pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+        peerMap[alice.nodeId] = peerMap.getValue(alice.nodeId).copy(capabilities = Protocol.LOCAL_CAPABILITIES or Protocol.CAP_LORA_DIRECT)
+        settings.accepted.value = settings.accepted.value + alice.nodeId
+    }
+
+    private suspend fun Rig.seen(id: String) = db.loraDirectSeenDao().find(id)
+
+    @Test
+    fun aCompactDmIsDeliveredOnceMarkedAndItsTickHeldForTheBoard() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val id = FrameId.new()
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "over the air")))
+
+            val row = checkNotNull(rig.msgMap[id])
+            assertEquals("over the air", row.body)
+            assertEquals(alice.nodeId, row.senderId)
+            assertEquals(rig.self.nodeId, row.recipientId)
+            assertEquals(alice.nodeId, row.conversationId)
+            assertEquals(DeliveryPlane.LoRa.code, row.receivedVia)
+            val mark = checkNotNull(rig.seen(id))
+            assertEquals(alice.nodeId, mark.peerId)
+            assertFalse("the signed copy's ratchet step is still owed", mark.ratchetDone)
+            assertEquals("the ✓✓ waits for the board's coalesced tick (ADR 054)", listOf(id), rig.dmAcks.pending(alice.nodeId))
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals(1L, rig.metrics.lora().loraTickDeferred)
+
+            // The packet replayed (a resend, a re-probe, a captured copy): refused before anything is written, acked again
+            // — a second deferral into the same pending id (the coalescer's set holds it once either way).
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "over the air, again")))
+            assertEquals("over the air", rig.msgMap[id]?.body)
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals("acked again", 2L, rig.metrics.lora().loraTickDeferred)
+            assertEquals(listOf(id), rig.dmAcks.pending(alice.nodeId))
+        }
+
+    /**
+     * Crypto 1: the signed copy of a DM the compact copy delivered opens through the ratchet alone — the key it would
+     * have left skipped is consumed, the row the compact copy wrote is not rewritten, and the inline ack the compact copy
+     * shed is applied off the signed one.
+     */
+    @Test
+    fun theSignedCopyOfACompactDmRunsTheRatchetAloneAndLeavesNoSkippedKey() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val mine = FrameId.new()
+            rig.msgMap[mine] =
+                MessageEntity(
+                    id = mine,
+                    senderId = rig.self.nodeId,
+                    recipientId = alice.nodeId,
+                    conversationId = alice.nodeId,
+                    body = "q",
+                    sentAt = 1L,
+                    received = false,
+                )
+            val author = V2Author(alice, rig)
+            val (id0, id1) = FrameId.new() to FrameId.new()
+            val signed0 = author.dm(id0, "first", acks = listOf(mine), v3 = true)
+            val signed1 = author.dm(id1, "second", v3 = true)
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id0, MessageContent(body = "first")))
+            rig.deliver(alice, signed1)
+            assertEquals("second", rig.msgMap[id1]?.body)
+            assertTrue(
+                "index 0 is a skipped key while its signed copy is out",
+                rig.ratchetStore.skippedKeys(alice.nodeId, 1, 0).isNotEmpty(),
+            )
+            assertTrue("no ack applied yet", rig.receiptMap.isEmpty())
+
+            rig.deliver(alice, signed0)
+
+            assertTrue("consumed by the ratchet-only open", rig.ratchetStore.skippedKeys(alice.nodeId, 1, 0).isEmpty())
+            assertEquals("the compact copy's row stands", DeliveryPlane.LoRa.code, rig.msgMap[id0]?.receivedVia)
+            assertTrue(checkNotNull(rig.seen(id0)).ratchetDone)
+            assertEquals("the inline ack rode the signed copy", setOf(mine to alice.nodeId), rig.receiptMap.keys)
+            coVerify(exactly = 2) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals(0L, rig.drops(DropReason.LORA_DIRECT_RATCHET_MISSED))
+        }
+
+    /**
+     * Q1: every frame of the opening run by LoRa, the X3DH init with it. The signed copy's ratchet-only open processes the
+     * init, so the session confirms (and is reported to the spool plane) exactly as it would have without the LoRa leg,
+     * and the next DM, signed only, opens through the ratchet.
+     */
+    @Test
+    fun anOpeningRunThatCameByLoraStillEstablishesTheSessionWhenItsSignedCopyLands() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val author = V2Author(alice, rig)
+            val id = FrameId.new()
+            val signed = author.dm(id, "hello", v3 = true)
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "hello")))
+            assertNull("no session from the compact copy", rig.ratchetStore.session(alice.nodeId))
+
+            rig.deliver(alice, signed)
+            val session = checkNotNull(rig.ratchetStore.session(alice.nodeId))
+            assertTrue(session.confirmed && !session.weAreInitiator)
+            assertEquals(listOf(alice.nodeId), rig.rootChanges)
+
+            val next = FrameId.new()
+            rig.deliver(alice, author.dm(next, "on the ratchet", v3 = true))
+            assertEquals("on the ratchet", rig.msgMap[next]?.body)
+        }
+
+    /** A ratchet-only open that fails is its own count and never reset evidence (Crypto 1); the row and the ack stand. */
+    @Test
+    fun aFailedRatchetOnlyOpenIsCountedAndNeverFeedsTheResetHeuristic() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val author = V2Author(alice, rig)
+            repeat(RatchetSessions.RESET_DISTINCT_FRAMES) {
+                val id = FrameId.new()
+                rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "unreadable $it")))
+                // A signed copy the ratchet cannot open: no init, a base epoch we never minted.
+                rig.deliver(
+                    alice,
+                    author.dm(
+                        id,
+                        "unreadable $it",
+                        v3 = true,
+                    ) { h -> RatchetHeader(se = h.se, ek = h.ek, pe = 1, n = h.n, init = null, flags = h.flags) },
+                )
+            }
+
+            assertEquals(RatchetSessions.RESET_DISTINCT_FRAMES.toLong(), rig.drops(DropReason.LORA_DIRECT_RATCHET_MISSED))
+            // onRatchetFailure counts one of these before it ever asks the heuristic: none, so three distinct failed ids
+            // were never evidence.
+            assertEquals(
+                0L,
+                rig.drops(DropReason.RATCHET_NO_SESSION) + rig.drops(DropReason.RATCHET_EPOCH_GONE) +
+                    rig.drops(DropReason.RATCHET_AEAD_FAIL),
+            )
+            assertEquals(RatchetSessions.RESET_DISTINCT_FRAMES, rig.msgMap.size)
+            // The re-ack is an answer with no session to answer under: declined, and never the cleartext receipt — each
+            // id held for MeshManager to seal once a session is answered, none released.
+            assertTrue(rig.originated.none { it.type == FrameType.RECEIPT })
+            assertEquals(
+                rig.msgMap.keys
+                    .map { alice.nodeId to it }
+                    .toSet(),
+                rig.heldTicks.toSet(),
+            )
+            assertEquals(RatchetSessions.RESET_DISTINCT_FRAMES, rig.heldTicks.size)
+            assertTrue(rig.releasedTicks.isEmpty())
+            assertNull("nor a fresh init of ours", rig.ratchetStore.session(alice.nodeId))
+        }
+
+    /** Every signed-first DM from a pinned peer is marked, whatever capability we hold for them (a stale profile). */
+    @Test
+    fun aSignedFirstDmIsMarkedWhateverCapabilityWeHoldForItsSender() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val id = FrameId.new()
+            rig.deliver(alice, V2Author(alice, rig).dm(id, "no door claimed", v3 = true))
+            assertTrue(checkNotNull(rig.seen(id)).ratchetDone)
+            rig.msgMap.remove(id)
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "no door claimed")))
+            assertNull("a re-aired compact copy cannot bring it back", rig.msgMap[id])
+        }
+
+    /** Crypto 2 / Q2: a deleted compact-delivered DM stays deleted whatever copy comes next, and nothing notifies again. */
+    @Test
+    fun aDeletedCompactDmStaysDeletedWhenItsPacketReplaysOrItsSignedCopyLands() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val author = V2Author(alice, rig)
+            val id = FrameId.new()
+            val signed = author.dm(id, "delete me", v3 = true)
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "delete me")))
+            rig.msgMap.remove(id) // LocalMessageDelete: the row goes, the mark stays
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "delete me")))
+            assertNull("the replay brings nothing back", rig.msgMap[id])
+            rig.deliver(alice, signed)
+            assertNull("nor does the signed copy", rig.msgMap[id])
+            assertTrue("whose ratchet step still ran", checkNotNull(rig.seen(id)).ratchetDone)
+            assertTrue(checkNotNull(rig.ratchetStore.session(alice.nodeId)).confirmed)
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    /**
+     * A signed copy that lands first marks the id toward a peer that claims the door, so a compact copy their board airs
+     * later neither rewrites the row nor resurrects it once deleted — and is acked again, the lost compact ✓✓'s retry.
+     */
+    @Test
+    fun aSignedCopyThatLandsFirstKeepsALateCompactCopyFromRewritingOrResurrecting() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val id = FrameId.new()
+            rig.deliver(alice, V2Author(alice, rig).dm(id, "signed first", v3 = true))
+            assertTrue(checkNotNull(rig.seen(id)).ratchetDone)
+            val plane = rig.msgMap.getValue(id).receivedVia
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "signed first")))
+            assertEquals("not rewritten", plane, rig.msgMap.getValue(id).receivedVia)
+            assertEquals("re-acked over the board", listOf(id), rig.dmAcks.pending(alice.nodeId))
+
+            rig.msgMap.remove(id)
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "signed first")))
+            assertNull(rig.msgMap[id])
+        }
+
+    /** Q3: a compact ✓✓ ticks only what its authenticated sender was sent; a compact reaction applies under its stamp. */
+    @Test
+    fun compactReceiptsAndReactionsApplyUnderThePairsOwnSender() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinLoraPeer(alice)
+            val toAlice = FrameId.new()
+            val toCarol = FrameId.new()
+            for ((id, to) in listOf(toAlice to alice, toCarol to carol)) {
+                rig.msgMap[id] =
+                    MessageEntity(
+                        id = id,
+                        senderId = rig.self.nodeId,
+                        recipientId = to.nodeId,
+                        conversationId = to.nodeId,
+                        body = "x",
+                        sentAt = 1L,
+                        received = false,
+                    )
+            }
+
+            rig.pipeline.deliverLoraDirect(
+                openedFrom(
+                    alice,
+                    FrameId.new(),
+                    MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, acks = listOf(toAlice, toCarol)),
+                ),
+            )
+            assertEquals("alice may tick her own, never carol's", setOf(toAlice to alice.nodeId), rig.receiptMap.keys)
+            assertEquals(DeliveryPlane.LoRa.code, rig.receiptMap.getValue(toAlice to alice.nodeId).via)
+
+            val reaction = FrameId.new()
+            rig.pipeline.deliverLoraDirect(
+                openedFrom(
+                    alice,
+                    reaction,
+                    MessageContent(body = "", ctl = MessageContent.CTL_REACTION, rp = ReactionPayload(toAlice, "👍")),
+                    sentAt = 9L,
+                ),
+            )
+            coVerify { rig.reactions.apply(ReactionEntity(toAlice, alice.nodeId, "👍", 9L)) }
+            assertNull("receipts and reactions keep no mark", rig.seen(reaction))
+            assertEquals(0L, rig.drops(DropReason.LORA_DIRECT_REFUSED))
+        }
+
+    /** Crypto 3: the compact door takes a message, a receipt or a reaction, and nothing else; a blocked sender, nothing. */
+    @Test
+    fun everyOtherShapeIsRefusedAtTheCompactDoorAndABlockedSenderGetsNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val refused =
+                listOf(
+                    MessageContent(body = "", ctl = MessageContent.CTL_SESSION_RESET),
+                    MessageContent(
+                        body = "",
+                        ctl = MessageContent.CTL_PROFILE,
+                        pr = ProfilePayload(name = "Mallory", status = "", version = 9L),
+                    ),
+                    MessageContent(body = "", ctl = 99),
+                )
+            refused.forEach { rig.pipeline.deliverLoraDirect(openedFrom(alice, FrameId.new(), it)) }
+            rig.pipeline.deliverLoraDirect(OpenedDirect(alice.nodeId, FrameId.new(), 5L, byteArrayOf(0x7F, 0x01)))
+            assertEquals(4L, rig.drops(DropReason.LORA_DIRECT_REFUSED))
+            assertTrue(rig.msgMap.isEmpty())
+
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val id = FrameId.new()
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "from a blocked contact")))
+            assertNull(rig.msgMap[id])
+            assertNull(rig.seen(id))
+            assertTrue("no ✓✓ to a blocked sender", rig.dmAcks.pending(alice.nodeId).isEmpty())
+        }
+
     @Test
     fun aV2EnvelopeWithoutItsHeaderIsBadHeaderNotACrash() =
         runTest {
@@ -8529,6 +8852,34 @@ class InboundPipelineTest {
             assertEquals("and a re-serve of the post parks nothing", 0, rig.ackSync.ridingFor(alice.nodeId))
         }
 
+    /**
+     * A DM off the board with no coalescer to hold its ✓✓ (ADR 2026-10.x9fa): the signed tick is sealed at once and takes
+     * the room riders, while its compact copy offered to the board names the DM alone — under the signed tick's own id
+     * and stamp, so the two dedupe as one — and the id is released from any hold.
+     */
+    @Test
+    fun aLoraDmWithNoCoalescerOffersACompactTickNamingOnlyTheDm() =
+        runTest {
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.ackSync.giveBackRiding(alice.nodeId, listOf("room-1", "room-2"))
+            val author = V2Author(alice, rig)
+
+            rig.deliver(alice, author.dm("lora-dm", "over the hills"), kind = TransportKind.LoRa)
+
+            val signed = rig.originated.single { it.type == FrameType.CHAT && it.recipientId == alice.nodeId }
+            assertEquals("the riders rode the signed tick", 2L, rig.metrics.receipts().receiptsRidden)
+            val (to, frameId, content) = rig.loraReceipts.single()
+            assertEquals(alice.nodeId, to)
+            assertEquals("under the signed tick's id", signed.id, frameId)
+            assertEquals(MessageContent.CTL_RECEIPT, content.ctl)
+            assertEquals("lora-dm", content.ack)
+            assertNull("no room rider goes on the air", content.acks)
+            assertEquals(listOf(alice.nodeId to listOf("lora-dm")), rig.releasedTicks)
+            assertTrue(rig.heldTicks.isEmpty())
+        }
+
     // --- crypto scheme v3 and the unsigned door (ADR 059) ---
 
     /** The unsigned form of [env]: `relay = false`, an empty signature — what `MeshManager.sealDeliveryTick` sends a v3 author. */
@@ -9006,23 +9357,58 @@ class InboundPipelineTest {
         }
 
     /**
-     * A reset re-roots the pair (here our own, through the real facade): the receipt we sealed under the old root may
-     * be unreadable to an author that dropped that era, so the next re-delivery seals exactly one under the new root,
-     * and a copy after that is answered by it.
+     * A reset re-roots the pair (here the author's, adopted as a replacement): the receipt we sealed under the old root
+     * may be unreadable to an author that dropped that era, so the next re-delivery seals exactly one under the new root,
+     * and a copy after that is answered by it. The re-delivery is a verbatim re-serve of the old era's frame: it never
+     * reaches the ratchet (the signed-first mark takes it), so the era is read from the facade, never from the copy.
      */
     @Test
     fun aReServedDmAfterAResetDrawsExactlyOneReceiptInTheNewEra() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
-            val alicePrekey = RatchetCrypto.generateKeyPair()
-            rig.pinRatchetCapable(alice, alicePrekey.pub)
-            val dm = V2Author(alice, rig).dm("v2-reset", "before the reset")
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig, at = 5L).dm("v2-reset", "before the reset")
 
             rig.deliver(alice, dm)
             val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
             assertEquals(oldTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
 
+            rig.deliver(alice, V2Author(alice, rig, at = 60_000L).dm("v2-reset-ctl", "", ctl = MessageContent.CTL_SESSION_RESET))
+            assertEquals("the author's replacement was adopted", 60_000L, rig.ratchetStore.session(alice.nodeId)?.establishedAt)
+            val newTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertTrue(newTag != oldTag)
+            rig.releasedTicks.clear()
+
+            rig.deliver(alice, dm)
+            assertEquals("one receipt for the new era", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(newTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
+            assertEquals("a new era starts its own floor", 0, rig.dmReAcks.entry("v2-reset")?.step)
+            assertEquals("a sealed re-ack lets go of any held copy", listOf(alice.nodeId to listOf("v2-reset")), rig.releasedTicks)
+
+            rig.deliver(alice, dm)
+            assertEquals("and only one", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * Our own reset, still unanswered (ADR 2026-10.8hn6 meets x9fa's answer gate): the new era's receipt would ride our
+     * reset's init unflagged, which the author's incidental floor refuses (#90), so the re-delivery seals nothing, falls
+     * back to nothing cleartext, and hands the ✓✓ to MeshManager's hold, sealed once the root moves or on a heal. The
+     * ledger is neither consulted to skip it (its entry is the old era's) nor written: only a receipt that was sealed
+     * files an era, so the held ✓✓ can never be skipped as already answered.
+     */
+    @Test
+    fun aReServedDmUnderOurOwnUnansweredResetIsHeldNeitherSealedNorSkipped() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            val dm = V2Author(alice, rig).dm("v2-ours", "before our reset")
+
+            rig.deliver(alice, dm)
+            val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
             val reset =
                 rig.ratchet.sealResetDm(
                     alice.nodeId,
@@ -9033,17 +9419,19 @@ class InboundPipelineTest {
                     rig.nowMs,
                 )
             assertTrue("re-rooted: $reset", reset is RatchetSessions.ResetSeal.Sealed)
-            val newTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
-            assertTrue(newTag != oldTag)
+            assertTrue(checkNotNull(rig.ratchet.rootTagFor(alice.nodeId)) != oldTag)
+            val sent = rig.originated.size
 
             rig.deliver(alice, dm)
-            assertEquals("one receipt for the new era", 2L, rig.metrics.receipts().receiptsSealed)
-            assertEquals(newTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
-            assertEquals("a new era starts its own floor", 0, rig.dmReAcks.entry("v2-reset")?.step)
-
+            rig.nowMs += DmReAckLedger.MAX_FLOOR_MS
             rig.deliver(alice, dm)
-            assertEquals("and only one", 2L, rig.metrics.receipts().receiptsSealed)
-            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+
+            assertEquals("no receipt under our unanswered reset", 1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals("and no skip: the ledger holds the old era only", 0L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals("nothing originated, cleartext or sealed", sent, rig.originated.size)
+            assertEquals(listOf(alice.nodeId to "v2-ours", alice.nodeId to "v2-ours"), rig.heldTicks)
+            assertEquals("a decline files no era", oldTag, rig.dmReAcks.entry("v2-ours")?.rootTag)
+            assertEquals(0, rig.dmReAcks.entry("v2-ours")?.step)
         }
 
     /**

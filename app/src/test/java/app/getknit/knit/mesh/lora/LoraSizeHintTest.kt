@@ -19,17 +19,15 @@ class LoraSizeHintTest {
 
     @Test
     fun `a reply and an attachment each take their reserve off the budget, never below zero`() {
+        val base = 400
+        assertEquals(base, LoraSizeHint.budget(base, replying = false, attached = false))
+        assertEquals(base - LoraSizeHint.REPLY_RESERVE_BYTES, LoraSizeHint.budget(base, replying = true, attached = false))
+        assertEquals(base - LoraSizeHint.ATTACHMENT_RESERVE_BYTES, LoraSizeHint.budget(base, replying = false, attached = true))
         assertEquals(LoraSizeHint.DM_BODY_BYTES, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = false, attached = false))
-        assertEquals(
-            LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.REPLY_RESERVE_BYTES,
-            LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = false),
-        )
-        assertEquals(
-            LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.ATTACHMENT_RESERVE_BYTES,
-            LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = false, attached = true),
-        )
-        // The room's one-packet budget (ADR 2026-10.rp3s) is smaller than either reserve: nothing left, never negative.
+        // Both one-packet budgets (ADR 2026-10.rp3s, ADR 2026-10.x9fa) are smaller than either reserve: nothing left,
+        // never negative — a reply or an attachment never rides LoRa.
         assertEquals(0, LoraSizeHint.budget(LoraSizeHint.ROOM_BODY_BYTES, replying = false, attached = true))
-        assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = true))
+        assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = true, attached = false))
+        assertEquals(0, LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying = false, attached = true))
     }
 }

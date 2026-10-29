@@ -250,6 +250,18 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   <!-- doc-lint: allow loraBridgeRefused — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraPassive — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
   <!-- doc-lint: allow loraProfileRefanSkipped — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
+  Since ADR 2026-10.x9fa (DMs ride as compact unicasts) `loraDmSent`, `loraReoffered`, `loraUnheardHeld` and
+  `loraDmProbes` are gone with the reach gate, and `loraNak` no longer counts a `Routing` `NONE`. New: a `direct`
+  object (`reachable`/`unreachable`/`refused` boards, `inFlight` sends awaiting an answer, `parked` offers) and the
+  `loraDirect*` counters — `Sent`, `Acked` (the destination's own board), `ImplicitAck` (counted, never trusted),
+  `Unreachable`, `NoOutcome`, `Held`, `TooLong`, `SlotZero`, `Resent`, and on receive `Delivered`, `Stranger`,
+  `AuthFailed`, `ClockRefused`. `loraStaleAtSendByReason` can now read `NOT_DIRECT`/`HELD`/`ACKED`/`SLOT_ZERO`, never
+  `UNHEARD`. `loraBoardHoldersFailed` now means the board map's source failed.
+  <!-- doc-lint: allow loraDmSent — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraReoffered — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraUnheardHeld — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraDmProbes — a dump key ADR 2026-10.x9fa removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow UNHEARD — a stale-at-send reason ADR 2026-10.x9fa removed, named so an old trial log can be read -->
   `…debug.LORATX --es text <s>`
   sends a raw payload straight to the board (bypassing the frame codec) to confirm the board transmits via
   `meshtastic --noproto`; `--ei hop <n>` sets `MeshPacket.hop_limit` explicitly, which the production path

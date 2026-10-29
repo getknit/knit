@@ -832,6 +832,25 @@ class LabTransport(
         }
     }
 
+    /**
+     * Delivers the first [count] frames parked for [to], in send order, and keeps holding the rest and whatever
+     * parks meanwhile — for a scenario that read [held] and must let through exactly what it read, never a frame
+     * that parked after the read. Returns the frames delivered.
+     */
+    suspend fun releaseFirst(
+        to: LabTransport,
+        count: Int,
+    ): List<WireEnvelope> {
+        val pipe = pipe(to)
+        val first =
+            synchronized(pipe.held) {
+                val n = minOf(count, pipe.held.size)
+                pipe.held.take(n).also { repeat(n) { pipe.held.removeAt(0) } }
+            }
+        deliverHeld(pipe, first)
+        return first
+    }
+
     /** Takes what is parked; with [open], an empty take also stops holding, under the same lock. */
     private fun takeHeld(
         pipe: Pipe,

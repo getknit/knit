@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v27) creates and opens from the exported JSON`() =
+    fun `the current schema (v28) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -1021,12 +1021,48 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 27 to 28 keeps every message and adds the empty lora_direct_seen table`() =
+        runTest {
+            helper.createDatabase(27).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(
+                        ") ",
+                        ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged, translationFlagged, " +
+                            "translationGuessed) ",
+                    ) +
+                        "VALUES ('m1','n1','peer-1','meet at the gate',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0,0,0)",
+                )
+                c.execSQL("INSERT INTO pins (messageId, pinnedAt) VALUES ('m1',5)")
+            }
+            helper.runMigrationsAndValidate(28, listOf(KnitMigrations.MIGRATION_27_28)).use { c ->
+                val counts = "SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM pins), (SELECT COUNT(*) FROM lora_direct_seen)"
+                c.prepare(counts).use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                    assertEquals(1L, s.getLong(1))
+                    // ADR 2026-10.x9fa: no build before this took a compact copy.
+                    assertEquals(0L, s.getLong(2))
+                }
+                // Keyed by frame id alone, with no FK to messages: a row outlives a deleted message on purpose (it is what
+                // keeps the deletion), and a second copy of one frame keeps the first row.
+                c.execSQL("INSERT INTO lora_direct_seen (frameId, peerId, arrivedAt, ratchetDone) VALUES ('gone','peer-1',10,0)")
+                c.execSQL("INSERT OR IGNORE INTO lora_direct_seen (frameId, peerId, arrivedAt, ratchetDone) VALUES ('gone','peer-2',11,1)")
+                c.prepare("SELECT COUNT(*), MAX(peerId), MAX(ratchetDone) FROM lora_direct_seen").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                    assertEquals("peer-1", s.getText(1))
+                    assertEquals(0L, s.getLong(2))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 27
+        const val CURRENT_VERSION = 28
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

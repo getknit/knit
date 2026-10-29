@@ -52,6 +52,9 @@ object BackupTables {
             "group_recv_chains",
             "group_skipped_keys",
             "group_key_sends",
+            // Which DMs a compact LoRa copy delivered and whether the signed copy's ratchet step ran (ADR 2026-10.x9fa):
+            // ratchet state, which a restore re-derives from nothing like the sessions it describes.
+            "lora_direct_seen",
         )
 
     /**

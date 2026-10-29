@@ -678,6 +678,22 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v28 — one empty `lora_direct_seen` table (ADR 2026-10.x9fa): the DMs a compact LoRa copy delivered, so the signed
+     * copy still runs its ratchet step without rewriting the row, and a deleted one stays deleted. No build before this
+     * took a compact copy, so there is nothing to fill. The SQL must stay byte-equivalent to what Room generates for
+     * `app/schemas/**/28.json`.
+     */
+    val MIGRATION_27_28 =
+        object : Migration(27, 28) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `lora_direct_seen` (`frameId` TEXT NOT NULL, `peerId` TEXT NOT NULL, " +
+                        "`arrivedAt` INTEGER NOT NULL, `ratchetDone` INTEGER NOT NULL, PRIMARY KEY(`frameId`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -707,5 +723,6 @@ object KnitMigrations {
             MIGRATION_24_25,
             MIGRATION_25_26,
             MIGRATION_26_27,
+            MIGRATION_27_28,
         )
 }

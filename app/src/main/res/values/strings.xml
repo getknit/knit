@@ -1241,9 +1241,6 @@
     <string name="diagnostics_metric_lora_nak">LoRa NAKs</string>
     <string name="diagnostics_metric_lora_dm_sent">LoRa private messages sent</string>
     <string name="diagnostics_metric_lora_dm_received">LoRa private messages received</string>
-    <string name="diagnostics_metric_lora_reoffered">LoRa private messages re-offered</string>
-    <string name="diagnostics_metric_lora_dm_probes">LoRa private messages sent as a probe</string>
-    <string name="diagnostics_metric_lora_unheard_held">LoRa private messages held for an unheard contact</string>
     <string name="diagnostics_metric_spool_bridged">Messages received via Internet relays</string>
     <string name="diagnostics_metric_spool_invalid">Relay blobs quarantined</string>
     <string name="diagnostics_metric_spool_errors">Relay errors</string>
@@ -1922,7 +1919,7 @@
     <string name="chat_lora_group">Group chats don\'t travel over LoRa — distant members get these later</string>
     <string name="chat_lora_group_title">Group chats don\'t travel over LoRa</string>
     <string name="chat_lora_group_body">The LoRa radio carries the Nearby room and private messages, not group chats. Someone here was last heard over LoRa, so they won\'t see these messages until they are back in Wi-Fi or Bluetooth range, or reachable through an Internet relay. Nothing is lost — the messages wait for them.</string>
-    <string name="chat_lora_long_message">Long message — it may not reach people over LoRa</string>
+    <string name="chat_lora_long_message">Long messages, replies and attachments may not reach people over LoRa</string>
     <!-- The room's hint (ADR 2026-10.rp3s): LoRa carries a room post only in one packet, and never one with a reply or an attachment. A hedge: prose deflates, so a longer post often still fits. -->
     <string name="chat_lora_room_not_carried">Long posts, replies and attachments may not reach people over LoRa</string>
 

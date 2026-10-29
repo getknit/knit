@@ -42,7 +42,6 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
-import app.getknit.knit.mesh.FarPeerFrameSource
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
@@ -61,12 +60,17 @@ import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.meshtastic.BondedBoardDirectory
 import app.getknit.knit.mesh.bluetooth.meshtastic.MeshtasticGatt
 import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
+import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
 import app.getknit.knit.mesh.lora.BoardDirectory
+import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.LoraConfig
+import app.getknit.knit.mesh.lora.LoraDirectInbox
+import app.getknit.knit.mesh.lora.LoraDirectSink
+import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraStatusRepository
@@ -370,15 +374,17 @@ val meshModule =
         }
         // Demo builds fake the bonded list (no adapter on an emulator); production reads the real one.
         single<BoardDirectory> { demoBoardDirectoryOrNull() ?: BondedBoardDirectory(androidContext()) }
-        // MeshManager supplies the signed profile frame for the LoRa key-bootstrap beacon (a third alias),
-        // the carried DM-form frames the plane re-offers to a peer it first hears (a fourth), and the custody
-        // window the bridge gossips about and serves from (a fifth, ADR 044).
-        single<FarPeerFrameSource> { get<MeshManager>() }
         single<MeshPostSink> { get<MeshManager>() }
+        // Where MeshManager offers the compact copy of a DM it sealed (ADR 2026-10.x9fa). Bound to the LoRa transport;
+        // a caller resolves it late (a lambda), since the transport and the manager construct each other.
+        single<LoraDirectSink> { get<LoraMeshTransport>() }
         // The Meshtastic room's outbound half. Bound to the LoRa transport, and reached from MeshManager
         // through a lambda for the same reason MeshPostSink is reached from the transport through one: the
         // two ends construct each other, so exactly one of the two edges has to resolve late.
         single<PublicChannelSink> { get<LoraMeshTransport>() }
+        // The compact DM's pair seal (ADR 2026-10.x9fa): the transport seals and opens with it, and MeshManager keeps its
+        // pair index on the peer table. Lazy like the rest of the plane, so a build without it never derives a pair.
+        single { LoraDirectSeal(ownDhPrivate = get<IdentityKeyStore>()::dhIdentityPrivate) }
         single {
             val settings = get<SettingsStore>()
             LoraMeshTransport(
@@ -395,9 +401,21 @@ val meshModule =
                     ) { on, addr, ch, (dms, room) ->
                         if (on && addr != null) LoraConfig(addr, ch, dms, room) else null
                     },
-                farFrames = { get<FarPeerFrameSource>().framesFor(it) },
-                // Late-bound like the frame source: collected at start(), when the manager exists.
-                boardHolders = flow { emitAll(get<MeshManager>().loraBoardHolders()) },
+                // The compact-DM seams (ADR 2026-10.x9fa). Everything MeshManager owns is reached late, at call time, since
+                // the manager is built over the composite this transport is a child of.
+                crypto = get<LoraDirectSeal>(),
+                inbox = LoraDirectInbox { get<MeshManager>().deliverLoraDirect(it) },
+                source =
+                    object : LoraDirectSource {
+                        override suspend fun unackedTo(
+                            peerId: String,
+                            limit: Int,
+                        ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit)
+
+                        override suspend fun isUnacked(frameId: String): Boolean = get<MeshManager>().loraDirectSource().isUnacked(frameId)
+                    },
+                // Collected at start(), and only while a board is configured, when the manager exists.
+                boardMap = flow { emitAll(get<MeshManager>().loraBoardMap()) },
                 onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
                 // The bound board's node number and signing key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
@@ -513,7 +531,11 @@ val meshModule =
                 // The home relay (ADR 2026-10.8kfx); the directory is read only where the build says it is live.
                 homes = get<HomeStore>(),
                 directory = if (BuildConfig.SPOOL_DIRECTORY) AndroidPublicSpoolDirectory(get()) else null,
-            )
+            ).also { manager ->
+                // The compact LoRa DM (ADR 2026-10.x9fa), where the build carries the plane: the transport is reached at
+                // call time, the seam the two constructions need one late edge for. Unbound, the profile never claims it.
+                if (BuildConfig.LORA_PLANE) manager.bindLoraDirect(sink = { get<LoraDirectSink>() }, seal = get())
+            }
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not
         // the concrete orchestrator) so they can be tested against a fake; the same singleton backs both keys.

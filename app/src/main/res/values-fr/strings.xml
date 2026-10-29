@@ -1042,9 +1042,6 @@
     <string name="diagnostics_metric_lora_nak">NAK LoRa</string>
     <string name="diagnostics_metric_lora_dm_sent">Messages privés LoRa envoyés</string>
     <string name="diagnostics_metric_lora_dm_received">Messages privés LoRa reçus</string>
-    <string name="diagnostics_metric_lora_reoffered">Messages privés LoRa proposés à nouveau</string>
-    <string name="diagnostics_metric_lora_dm_probes">Messages privés LoRa envoyés comme sonde</string>
-    <string name="diagnostics_metric_lora_unheard_held">Messages privés LoRa retenus pour un contact non capté</string>
     <string name="diagnostics_metric_spool_bridged">Messages reçus via les relais Internet</string>
     <string name="diagnostics_metric_spool_invalid">Blobs de relais mis en quarantaine</string>
     <string name="diagnostics_metric_spool_errors">Erreurs de relais</string>
@@ -1623,7 +1620,7 @@
     <string name="chat_lora_group">Les discussions de groupe ne passent pas par LoRa — les membres éloignés les recevront plus tard</string>
     <string name="chat_lora_group_title">Les discussions de groupe ne passent pas par LoRa</string>
     <string name="chat_lora_group_body">La radio LoRa transporte le salon À proximité et les messages privés, pas les discussions de groupe. Une personne ici a été captée en dernier via LoRa : elle ne verra pas ces messages avant d’être de nouveau à portée Wi-Fi ou Bluetooth, ou joignable par un relais Internet. Rien n’est perdu — les messages l’attendent.</string>
-    <string name="chat_lora_long_message">Message long — il risque de ne pas atteindre les personnes via LoRa</string>
+    <string name="chat_lora_long_message">Les messages longs, les réponses et les pièces jointes risquent de ne pas atteindre les personnes via LoRa</string>
     <string name="chat_lora_room_not_carried">Les messages longs, les réponses et les pièces jointes risquent de ne pas atteindre les personnes via LoRa</string>
     <string name="chat_mesh_author">%1$s, sur le canal Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, sur le canal Meshtastic — identité non vérifiée</string>

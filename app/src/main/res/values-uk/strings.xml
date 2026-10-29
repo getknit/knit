@@ -1059,9 +1059,6 @@
     <string name="diagnostics_metric_lora_nak">NAK у LoRa</string>
     <string name="diagnostics_metric_lora_dm_sent">Надіслані особисті повідомлення LoRa</string>
     <string name="diagnostics_metric_lora_dm_received">Отримані особисті повідомлення LoRa</string>
-    <string name="diagnostics_metric_lora_reoffered">Повторно запропоновані особисті повідомлення LoRa</string>
-    <string name="diagnostics_metric_lora_dm_probes">Особисті повідомлення LoRa, надіслані як проба</string>
-    <string name="diagnostics_metric_lora_unheard_held">Особисті повідомлення LoRa, затримані для контакту, якого не чути</string>
     <string name="diagnostics_metric_spool_bridged">Повідомлення, отримані через інтернет-ретранслятори</string>
     <string name="diagnostics_metric_spool_invalid">Блоби з ретранслятора на карантині</string>
     <string name="diagnostics_metric_spool_errors">Помилки ретрансляторів</string>
@@ -1650,7 +1647,7 @@
     <string name="chat_lora_group">Групові чати не передаються через LoRa — віддалені учасники отримають їх пізніше</string>
     <string name="chat_lora_group_title">Групові чати не передаються через LoRa</string>
     <string name="chat_lora_group_body">Радіо LoRa передає кімнату «Поруч» та особисті повідомлення, але не групові чати. Від когось тут останній сигнал надійшов через LoRa, тож ця людина побачить ці повідомлення, лише коли знову буде в зоні дії Wi-Fi чи Bluetooth або стане доступною через інтернет-ретранслятор. Нічого не втрачається — повідомлення на неї чекають.</string>
-    <string name="chat_lora_long_message">Довге повідомлення — може не дійти через LoRa</string>
+    <string name="chat_lora_long_message">Довгі повідомлення, відповіді та вкладення можуть не дійти через LoRa</string>
     <string name="chat_lora_room_not_carried">Довгі дописи, відповіді та вкладення можуть не дійти через LoRa</string>
     <string name="chat_mesh_author">%1$s, у каналі Meshtastic</string>
     <string name="chat_mesh_author_contact">%1$s, у каналі Meshtastic — особу не перевірено</string>

@@ -65,6 +65,9 @@ document:
 - Your LoRa board now sends only messages you write, and the Bridge distant groups switch is gone. Friends
   without a board still see what yours hears, but their posts no longer go out through it. Long Nearby posts
   may not go over LoRa at all, and reactions and delivery checkmarks never do.
+- DMs over LoRa now go straight to your contact's board in one short packet, and the delivery checkmark comes
+  back the same way. Only short DMs to contacts with a board travel like this, and older versions of Knit no
+  longer get your DMs over LoRa.
 
 ### Fixed
 

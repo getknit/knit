@@ -688,22 +688,14 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
             if (metrics.lora.loraNak > 0) {
                 MetricRow(stringResource(R.string.diagnostics_metric_lora_nak), metrics.lora.loraNak.toString())
             }
-            // Sealed DM-form frames (ADR 039): a DM that crossed kilometres with no radio in range.
-            if (metrics.lora.loraDmSent > 0) {
-                MetricRow(stringResource(R.string.diagnostics_metric_lora_dm_sent), metrics.lora.loraDmSent.toString())
+            // Compact DMs (ADR 2026-10.x9fa): a DM that crossed kilometres with no radio in range, as one unicast each way.
+            if (metrics.lora.loraDirectSent > 0) {
+                MetricRow(stringResource(R.string.diagnostics_metric_lora_dm_sent), metrics.lora.loraDirectSent.toString())
             }
-            if (metrics.lora.loraDmReceived > 0) {
-                MetricRow(stringResource(R.string.diagnostics_metric_lora_dm_received), metrics.lora.loraDmReceived.toString())
-            }
-            if (metrics.lora.loraReoffered > 0) {
-                MetricRow(stringResource(R.string.diagnostics_metric_lora_reoffered), metrics.lora.loraReoffered.toString())
-            }
-            // A DM to a recipient the board has not heard: one probe per window, the rest held for the re-offer.
-            if (metrics.lora.loraDmProbes > 0) {
-                MetricRow(stringResource(R.string.diagnostics_metric_lora_dm_probes), metrics.lora.loraDmProbes.toString())
-            }
-            if (metrics.lora.loraUnheardHeld > 0) {
-                MetricRow(stringResource(R.string.diagnostics_metric_lora_unheard_held), metrics.lora.loraUnheardHeld.toString())
+            // Received: opened compact DMs, plus an older build's DM-form frames.
+            val dmsReceived = metrics.lora.loraDirectDelivered + metrics.lora.loraDmReceived
+            if (dmsReceived > 0) {
+                MetricRow(stringResource(R.string.diagnostics_metric_lora_dm_received), dmsReceived.toString())
             }
         }
         // Bluetooth connect failures: shown only once any occur, with a per-reason breakdown, so an

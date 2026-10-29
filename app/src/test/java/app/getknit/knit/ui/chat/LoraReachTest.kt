@@ -145,11 +145,10 @@ class LoraReachTest {
         assertNull(loraBudgetFor(LoraCarry.None, replying = false, attached = false))
         assertEquals(LoraSizeHint.ROOM_BODY_BYTES, loraBudgetFor(LoraCarry.Room, replying = false, attached = false))
         assertEquals(LoraSizeHint.DM_BODY_BYTES, loraBudgetFor(LoraCarry.Dm, replying = false, attached = false))
-        assertEquals(
-            LoraSizeHint.DM_BODY_BYTES - LoraSizeHint.REPLY_RESERVE_BYTES,
-            loraBudgetFor(LoraCarry.Dm, replying = true, attached = false),
-        )
-        // The room's budget is one packet (ADR 2026-10.rp3s): a reply or an attachment leaves nothing — never carried.
+        // Both budgets are one packet (ADR 2026-10.rp3s, ADR 2026-10.x9fa): a reply or an attachment leaves nothing —
+        // never carried.
+        assertEquals(0, loraBudgetFor(LoraCarry.Dm, replying = true, attached = false))
+        assertEquals(0, loraBudgetFor(LoraCarry.Dm, replying = false, attached = true))
         assertEquals(0, loraBudgetFor(LoraCarry.Room, replying = true, attached = false))
         assertEquals(0, loraBudgetFor(LoraCarry.Room, replying = false, attached = true))
     }

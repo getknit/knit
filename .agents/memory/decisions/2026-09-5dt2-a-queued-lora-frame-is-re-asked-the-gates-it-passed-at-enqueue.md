@@ -10,6 +10,8 @@ topics: [lora, airtime]
 
 Status: Accepted (2026-09-09)
 
+**Superseded in part by ADR 2026-10.x9fa (2026-10-29):** `RideGate.reachGated` and `StaleAtSend.UNHEARD` are gone with the reach gate; a compact DM's gates are re-asked at send through `RideGate.direct` / `reachHeld` / `unackedFrameId`.
+
 The airtime row on a lab Pixel 7 read **100 %** while the phone sat alone in a room. The number was
 honest — `totalMs 44629 / liveBudgetMs 45000` — and so was the ledger behind it: the rolling window
 drained on schedule fifteen minutes later, and every sample reconciled to the packet against the log. The

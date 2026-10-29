@@ -321,8 +321,15 @@ doc). **Don't start a deferred item without explicit direction.**
   with the phones out of BLE/NAN range) — the GATT layer has no host test. **A DM waits for its recipient to be
   heard** (2026-10-10, ADR 2026-10.a4pm, proposed): a DM-form fan-out rides only to a peer in `reachable`, except
   one probe DM per recipient per 15 min; the re-offer (own unacked ≤ 6 on `LIVE`; relayed ones went with ADR
-  2026-10.rp3s, which also added the backed-off re-probe) delivers the rest on the recipient's first hearing. **Still owed:** its two-phone trial in `context/lora-bridge.md`
-  (`loraDmProbes 1`, `loraUnheardHeld 2`, then `loraReoffered ≥ 2` and three ✓✓). **Knit-provisioned channel
+  2026-10.rp3s, which also added the backed-off re-probe) delivers the rest on the recipient's first hearing. **Superseded**
+  (2026-10-29, ADR 2026-10.x9fa, proposed): a DM, its ✓✓ and a DM reaction ride as one compact pair-sealed unicast with
+  `want_ack` to a pinned board holder with the capability; the firmware's ack and give-up replace the reach gate, the
+  probe and the re-offer. Stage 2a (the LoRa half) and Stage 2b (the pair seal, `lora_direct_seen` and delivery, the
+  offers in `MeshManager`, the long-range fan-out seam deleted) are built, JVM- and lab-tested. **Still owed:** the 2.8 board trial in `context/lora-bridge.md`'s DM recipe — a
+  `PRIVATE_APP` unicast on the Knit secondary arrives un-PKI'd and is acked, far board off → `MAX_RETRANSMIT` →
+  unreachable → cleared on hearing → delivered, one packet per DM measured, and the firmware's retry count read off the
+  air. **MeshCore** gets from it the board-neutral seam (`LinkDestination`, `BoardAddr`, `PacketOutcome`), a DM form
+  that fits its 164-B cap (113 B of plaintext) and the per-peer reach marks its "heard at hop 0" set plugs into. **Knit-provisioned channel
   SHIPPED** (2026-08-24): "Set up Knit channel" (or `…debug.LORAPROV`) writes the derived `KnitChannel` as a
   secondary channel over the Meshtastic admin API — the user no longer hand-configures the boards;
   region/modem-preset still set once at flash. **Board setup REWORKED** (2026-08-26, ADR 045): a single

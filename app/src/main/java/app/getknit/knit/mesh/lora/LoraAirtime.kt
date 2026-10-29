@@ -220,6 +220,19 @@ internal class LoraAirtime(
     }
 
     /**
+     * The firmware's contention slot at this board's preset (`RadioInterface::computeSlotTimeMsec`, firmware
+     * `src/mesh/RadioInterface.cpp`, v2.8.1): a channel-activity scan of four symbols plus half a symbol on an SX126x, plus
+     * 7.6 ms of propagation, turnaround and MAC time — ≈ 44.5 ms at LongFast. What a reliable unicast's retransmit gap
+     * is counted in (`LoraDirectPolicy.retransmitMs`, ADR 2026-10.x9fa).
+     */
+    @Synchronized
+    fun slotTimeMs(): Double {
+        val preset = radio?.modemPreset ?: ModemPreset.LONG_FAST
+        val symbolMs = 2.0.pow(preset.spreadFactor) * MS_PER_SECOND / preset.bandwidthHz
+        return (CAD_SYMBOLS + CAD_TAIL_SYMBOLS) * symbolMs + SLOT_TURNAROUND_MS
+    }
+
+    /**
      * The signature the board will bolt onto this packet, or 0. Mirrors the firmware's own `signedDataFits`
      * gate: it signs what still fits signed and sends the rest as it always did, so this is a *cliff* rather
      * than a ramp — a 165-byte payload costs 66 bytes more than a 166-byte one.
@@ -370,6 +383,31 @@ internal class LoraAirtime(
         NEVER,
     }
 
+    /**
+     * Gives back up to [count] bookings of exactly [ms] made at [atMs] against [bucket] — the airings a compact DM was
+     * booked for at send and did not need, its destination having acked it sooner (ADR 2026-10.x9fa). A booking the
+     * window has already rolled off is gone anyway. Returns how many came back.
+     */
+    @Synchronized
+    fun refund(
+        bucket: AirBucket,
+        atMs: Long,
+        ms: Long,
+        count: Int,
+    ): Int {
+        var left = count
+        val it = samples.iterator()
+        while (left > 0 && it.hasNext()) {
+            val booking = it.next()
+            if (booking.atMs == atMs && booking.ms == ms && booking.bucket == bucket) {
+                it.remove()
+                book(bucket, -ms)
+                left--
+            }
+        }
+        return count - left
+    }
+
     /** Books [payloadBytes] of air against [bucket]. Called once the board has actually accepted the write. */
     @Synchronized
     fun record(
@@ -467,6 +505,12 @@ internal class LoraAirtime(
 
     companion object {
         /**
+         * The signature cliff of a packet the firmware never signs: a unicast (ADR 2026-10.x9fa). 2.8 signs only the
+         * non-PKI **broadcasts** it originates, so a compact DM and the destination's ACK are priced bare.
+         */
+        const val UNSIGNED = 0
+
+        /**
          * Whether [version] — the board's `DeviceMetadata.firmware_version`, e.g. `"2.8.0.7239fe8"` — is
          * firmware that signs the broadcasts it originates. Signing arrived in **2.8**; anything older adds
          * nothing to our packets and must not be charged for it, or the plane quietly loses a third of its
@@ -543,5 +587,11 @@ internal class LoraAirtime(
 
         /** 16 preamble symbols (the firmware's setting) plus the 4.25-symbol sync word. */
         private const val PREAMBLE_SYMBOLS = 20.25
+
+        // The contention slot (`RadioInterface::computeSlotTimeMsec`): an SX126x CAD of four symbols, half a symbol of
+        // processing, and 0.2 + 0.4 + 7 ms of propagation, turnaround and MAC time.
+        private const val CAD_SYMBOLS = 4
+        private const val CAD_TAIL_SYMBOLS = 0.5
+        private const val SLOT_TURNAROUND_MS = 7.6
     }
 }

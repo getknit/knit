@@ -179,8 +179,8 @@ fun loraCarryFor(
 
 /**
  * The composer's body budget in bytes for [carry], or null when the draft would not ride LoRa at all. Zero means no
- * draft of this shape rides, whatever its length: a room post with a reply or an attachment, since the room's budget
- * is one packet (ADR 2026-10.rp3s) and either reserve is larger than that, or a DM carrying both.
+ * draft of this shape rides, whatever its length: a post or a DM with a reply or an attachment, since both budgets are
+ * one packet (ADR 2026-10.rp3s, ADR 2026-10.x9fa) and either reserve is larger than that.
  */
 fun loraBudgetFor(
     carry: LoraCarry,
@@ -194,10 +194,11 @@ fun loraBudgetFor(
     }
 
 /**
- * The words for a draft past [loraBudgetFor]'s budget. Both are hedges. The room's names what it covers (ADR
- * 2026-10.rp3s): LoRa carries a room post only in one packet and never with a reply or an attachment — but the budget is
- * the incompressible worst case and prose deflates, so a longer post often still fits, and the hint errs toward warning.
- * A DM's budget sits under the real three-packet ceiling.
+ * The words for a draft past [loraBudgetFor]'s budget. Both are hedges, and both name what they cover: LoRa carries a
+ * room post only in one packet (ADR 2026-10.rp3s) and a DM only as one compact packet (ADR 2026-10.x9fa), and neither
+ * with a reply or an attachment. The room's budget is the incompressible worst case and prose deflates, so a longer post
+ * often still fits; a DM's leaves room for the inline acks it may carry, so a longer one sometimes does. Either way the
+ * hint errs toward warning, and a DM that does not ride LoRa still travels the radios, custody and the spool.
  */
 @StringRes
 fun loraHintFor(carry: LoraCarry): Int =

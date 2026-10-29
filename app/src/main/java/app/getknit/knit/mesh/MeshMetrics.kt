@@ -134,6 +134,22 @@ enum class DropReason {
      * frame.
      */
     POINT_TO_POINT_FLOODED,
+
+    /**
+     * A compact LoRa DM that opened under its pair key and was refused at delivery (`InboundPipeline.deliverLoraDirect`,
+     * ADR 2026-10.x9fa): a plaintext that is not v3 compact content this build reads, or one that is anything but a
+     * message, a `CTL_RECEIPT` or a `CTL_REACTION` — a reset, a seed, a profile, a scope config, a transfer or a call
+     * never ride that door. Never reset-triggering: the compact door is no `WireEnvelope` and never touches a ratchet.
+     */
+    LORA_DIRECT_REFUSED,
+
+    /**
+     * The signed copy of a DM a compact LoRa copy already delivered, whose ratchet-only open (`InboundPipeline`'s
+     * `lora_direct_seen` branch, ADR 2026-10.x9fa) failed. Nothing is written and the copy is acked as the exists-gate
+     * acks it. Never reset-triggering: the message itself already landed, so the failure says nothing a reset could
+     * repair that the peer's next frame will not show again on the ordinary path.
+     */
+    LORA_DIRECT_RATCHET_MISSED,
 }
 
 /**
@@ -289,6 +305,8 @@ class MeshMetrics {
     private val receiptsCustodied = AtomicLong()
     private val receiptsCoalesced = AtomicLong()
     private val receiptsRidden = AtomicLong()
+    private val ridesUnrouted = AtomicLong()
+    private val receiptsHeld = AtomicLong()
     private val receiptsSpooled = AtomicLong()
     private val reactionsSealed = AtomicLong()
     private val reactionsSealedFallback = AtomicLong()
@@ -376,9 +394,7 @@ class MeshMetrics {
     private val loraNak = AtomicLong()
     private val loraNakByReason = ConcurrentHashMap<String, AtomicLong>()
     private val loraSessionUps = AtomicLong()
-    private val loraDmSent = AtomicLong()
     private val loraDmReceived = AtomicLong()
-    private val loraReoffered = AtomicLong()
     private val loraReprobed = AtomicLong()
     private val loraRoomTooLong = AtomicLong()
     private val loraRetiredCtl = AtomicLong()
@@ -386,11 +402,24 @@ class MeshMetrics {
     private val loraBoardHoldersFailed = AtomicLong()
     private val loraSkippedLinked = AtomicLong()
     private val loraSkippedInternet = AtomicLong()
-    private val loraUnheardHeld = AtomicLong()
-    private val loraDmProbes = AtomicLong()
     private val loraStaleAtSend = AtomicLong()
     private val loraStaleAtSendByReason = ConcurrentHashMap<String, AtomicLong>()
     private val loraTickDeferred = AtomicLong()
+
+    // Compact DMs (ADR 2026-10.x9fa): one pair-sealed unicast per DM, acked by the destination's board.
+    private val loraDirectSent = AtomicLong()
+    private val loraDirectAcked = AtomicLong()
+    private val loraDirectImplicitAck = AtomicLong()
+    private val loraDirectUnreachable = AtomicLong()
+    private val loraDirectNoOutcome = AtomicLong()
+    private val loraDirectHeld = AtomicLong()
+    private val loraDirectTooLong = AtomicLong()
+    private val loraDirectSlotZero = AtomicLong()
+    private val loraDirectStranger = AtomicLong()
+    private val loraDirectAuthFailed = AtomicLong()
+    private val loraDirectClockRefused = AtomicLong()
+    private val loraDirectDelivered = AtomicLong()
+    private val loraDirectResent = AtomicLong()
 
     // The Meshtastic room's inbound half: how much chat the board's primary channel actually carries, how
     // much of it arrives off an MQTT uplink, and what the filters turn away. Nothing here transmits, so none
@@ -643,6 +672,23 @@ class MeshMetrics {
      */
     fun onReceiptRidden(count: Int) {
         receiptsRidden.addAndGet(count.toLong())
+    }
+
+    /**
+     * A due room-tick hold that found no route — no link, no spool, no short-range plane reaching its author — and
+     * stayed parked (`AckSync.escalateRide`, ADR 2026-10.rp3s). Counted per pass, so it climbs while an author stays out
+     * of reach: the signal that the hold was judged, not merely not yet due.
+     */
+    fun onRideUnrouted() {
+        ridesUnrouted.incrementAndGet()
+    }
+
+    /**
+     * A DM ✓✓ the pipeline declined as an answer — no session the author holds yet (ADR 2026-10.x9fa) — and handed to
+     * MeshManager's hold, to be sealed once one is. Counted after the hand-off: the signal that a re-ack was judged.
+     */
+    fun onReceiptHeld() {
+        receiptsHeld.incrementAndGet()
     }
 
     /**
@@ -1140,29 +1186,90 @@ class MeshMetrics {
     }
 
     /**
-     * A **DM-form** frame sent over LoRa (ADR 039) — a sealed chat addressed to one peer. The transport cannot
-     * read it, so this counts real DMs and their sealed receipts/reactions/ctl frames alike.
+     * A DM-form mesh frame received over LoRa: an older build's board still airs its DMs that way (ADR 039). This build
+     * sends none — its DMs ride compact ([onLoraDirectSent], ADR 2026-10.x9fa).
      */
-    fun onLoraDmSent() {
-        loraDmSent.incrementAndGet()
-    }
-
-    /** A DM-form frame received over LoRa — same opacity caveat as [onLoraDmSent]. */
     fun onLoraDmReceived() {
         loraDmReceived.incrementAndGet()
     }
 
-    /** A carried DM-form frame re-offered over LoRa to a peer just heard for the first time (ADR 039). */
-    fun onLoraReoffered() {
-        loraReoffered.incrementAndGet()
-    }
-
     /**
-     * A held DM re-aired as a probe to a recipient who stayed silent (ADR 2026-10.rp3s, `LoraReprobe`): one per
-     * recipient per backed-off gap. Against [onLoraDmProbe] it says how often the first probe was not enough.
+     * The newest of our DMs still without its ✓✓ re-aired compact to a peer whose schedule fell due (ADR 2026-10.rp3s,
+     * re-keyed by ADR 2026-10.x9fa, `LoraReprobe`): one per peer per backed-off gap, whatever their board said.
      */
     fun onLoraReprobed() {
         loraReprobed.incrementAndGet()
+    }
+
+    /**
+     * A compact DM, DM reaction or ✓✓ the board took for the air (ADR 2026-10.x9fa): one pair-sealed unicast with
+     * `want_ack`, its retries the firmware's. Against [onLoraDirectAcked] it is the share that reached a board.
+     */
+    fun onLoraDirectSent() {
+        loraDirectSent.incrementAndGet()
+    }
+
+    /** The destination's own board acked a compact DM: it reached that radio — never evidence its phone read it. */
+    fun onLoraDirectAcked() {
+        loraDirectAcked.incrementAndGet()
+    }
+
+    /**
+     * An implicit ack for a compact DM: a relay, or our own board, heard it repeated. Counted, never trusted — it ends
+     * no wait and marks nobody reachable.
+     */
+    fun onLoraDirectImplicitAck() {
+        loraDirectImplicitAck.incrementAndGet()
+    }
+
+    /** The firmware gave up retrying a compact DM (`MAX_RETRANSMIT` / `NO_RESPONSE`): its board is marked unreachable. */
+    fun onLoraDirectUnreachable() {
+        loraDirectUnreachable.incrementAndGet()
+    }
+
+    /** A compact DM nothing answered before its deadline: booked and marked as if the firmware had given up. */
+    fun onLoraDirectNoOutcome() {
+        loraDirectNoOutcome.incrementAndGet()
+    }
+
+    /** A compact DM offered to a peer marked unreachable or refused, held for the next hearing or re-probe. */
+    fun onLoraDirectHeld() {
+        loraDirectHeld.incrementAndGet()
+    }
+
+    /** A compact DM past one packet: not carried over LoRa; the signed copy still travels the other planes. */
+    fun onLoraDirectTooLong() {
+        loraDirectTooLong.incrementAndGet()
+    }
+
+    /** A compact DM refused because the plane is bound to slot 0, where the firmware would PKI-encrypt it. */
+    fun onLoraDirectSlotZero() {
+        loraDirectSlotZero.incrementAndGet()
+    }
+
+    /** A compact DM addressed to our board whose pairTag matches no pinned peer: dropped. */
+    fun onLoraDirectStranger() {
+        loraDirectStranger.incrementAndGet()
+    }
+
+    /** A compact DM whose pairTag matched and whose seal did not authenticate: forged, damaged or reflected. */
+    fun onLoraDirectAuthFailed() {
+        loraDirectAuthFailed.incrementAndGet()
+    }
+
+    /** An authenticated compact DM stamped outside the replay window (older than custody's TTL, or in the future). */
+    fun onLoraDirectClockRefused() {
+        loraDirectClockRefused.incrementAndGet()
+    }
+
+    /** A compact DM opened and handed to the pipeline. */
+    fun onLoraDirectDelivered() {
+        loraDirectDelivered.incrementAndGet()
+    }
+
+    /** A compact DM re-aired: after its board was heard again, or by the re-probe. */
+    fun onLoraDirectResent() {
+        loraDirectResent.incrementAndGet()
     }
 
     /**
@@ -1191,56 +1298,37 @@ class MeshMetrics {
     }
 
     /**
-     * The board-holder source (`MeshManager.loraBoardHolders`) failed and stopped reporting (ADR 2026-10.rp3s). The
-     * last set it gave stays in force; with none, the re-probe only defers. Non-zero says the plane may have stopped
-     * probing silent board holders while the row reads Ready.
+     * The board map's source failed (ADR 2026-10.rp3s, ADR 2026-10.x9fa). The last map it gave stays in force and the
+     * source is asked again every few minutes; with none, no compact DM goes and the re-probe only defers. Non-zero and
+     * climbing says DMs may have stopped riding LoRa while the row reads Ready.
      */
     fun onLoraBoardHoldersFailed() {
         loraBoardHoldersFailed.incrementAndGet()
     }
 
     /**
-     * A DM-form frame kept off LoRa because its recipient is us or a peer a higher-preference plane holds a
-     * live link to (ADR 054) — the link carries it. Climbing while texting a pocket-mate is the gate working;
-     * climbing while a far peer starves means the link set is wrong.
+     * A compact DM kept off LoRa because its recipient is us or a peer a higher-preference plane holds a live link to
+     * (ADR 054) — the link carries the signed copy. Climbing while texting a pocket-mate is the gate working; climbing
+     * while a far peer starves means the link set is wrong.
      */
     fun onLoraSkippedLinked() {
         loraSkippedLinked.incrementAndGet()
     }
 
     /**
-     * A DM-form frame kept off LoRa because its recipient was seen on a connected spool within
-     * `SPOOL_COVER_MS` (ADR 2026-09.y5f3) — the spool carries it, for free. Split from [onLoraSkippedLinked]
-     * on purpose: climbing here while the phones are far apart is airtime saved, climbing there is a link.
+     * A compact DM kept off LoRa because its recipient was seen on a connected spool within `SPOOL_COVER_MS` (ADR
+     * 2026-09.y5f3) — the spool carries the signed copy, for free. Split from [onLoraSkippedLinked] on purpose:
+     * climbing here while the phones are far apart is airtime saved, climbing there is a link.
      */
     fun onLoraSkippedInternet() {
         loraSkippedInternet.incrementAndGet()
     }
 
     /**
-     * A DM-form frame kept off LoRa because its recipient has not been heard on this plane within the linger
-     * and its probe window was already spent (ADR 2026-10.a4pm) — it stays in custody, and the recipient's
-     * first hearing re-offers it. Climbing while a far peer is switched off is airtime saved; climbing while
-     * that peer is in range and talking means `reachable` is not being fed.
-     */
-    fun onLoraUnheardHeld() {
-        loraUnheardHeld.incrementAndGet()
-    }
-
-    /**
-     * A DM put on the air to a recipient this plane has not heard, as the one probe of its window
-     * (ADR 2026-10.a4pm): if the recipient is there, its ✓✓ makes it heard and the DMs held behind the probe
-     * follow through the re-offer. At most one per recipient per window; against [onLoraUnheardHeld] it
-     * says how much the gate kept back.
-     */
-    fun onLoraDmProbe() {
-        loraDmProbes.incrementAndGet()
-    }
-
-    /**
      * A queued frame was refused at the moment it reached the air, because an enqueue-time gate had since
-     * changed its answer (`StaleAtSend`: the addressee linked on a better plane or a spool, went unheard, the frame
-     * aged past the freshness window, or it turned out not to be ours).
+     * changed its answer (`StaleAtSend`: the addressee linked on a better plane or a spool, a compact DM's own gates
+     * moved — not a direct board holder, held, acked meanwhile, slot 0 — the frame aged past the freshness window, or it
+     * turned out not to be ours).
      *
      * Deliberately not folded into [onLoraSkippedLinked] or [onLoraSuppressed]: those say the gate refused a
      * frame before it ever queued, this says the queue held it until the answer moved, and only the split
@@ -1388,6 +1476,8 @@ class MeshMetrics {
             receiptsCustodied = receiptsCustodied.get(),
             receiptsCoalesced = receiptsCoalesced.get(),
             receiptsRidden = receiptsRidden.get(),
+            ridesUnrouted = ridesUnrouted.get(),
+            receiptsHeld = receiptsHeld.get(),
             receiptsSpooled = receiptsSpooled.get(),
             ticksUnsigned = ticksUnsigned.get(),
         )
@@ -1535,9 +1625,7 @@ class MeshMetrics {
             loraNak = loraNak.get(),
             loraNakByReason = loraNakByReason.mapValues { it.value.get() },
             loraSessionUps = loraSessionUps.get(),
-            loraDmSent = loraDmSent.get(),
             loraDmReceived = loraDmReceived.get(),
-            loraReoffered = loraReoffered.get(),
             loraReprobed = loraReprobed.get(),
             loraRoomTooLong = loraRoomTooLong.get(),
             loraRetiredCtl = loraRetiredCtl.get(),
@@ -1545,11 +1633,22 @@ class MeshMetrics {
             loraBoardHoldersFailed = loraBoardHoldersFailed.get(),
             loraSkippedLinked = loraSkippedLinked.get(),
             loraSkippedInternet = loraSkippedInternet.get(),
-            loraUnheardHeld = loraUnheardHeld.get(),
-            loraDmProbes = loraDmProbes.get(),
             loraStaleAtSend = loraStaleAtSend.get(),
             loraStaleAtSendByReason = loraStaleAtSendByReason.mapValues { it.value.get() },
             loraTickDeferred = loraTickDeferred.get(),
+            loraDirectSent = loraDirectSent.get(),
+            loraDirectAcked = loraDirectAcked.get(),
+            loraDirectImplicitAck = loraDirectImplicitAck.get(),
+            loraDirectUnreachable = loraDirectUnreachable.get(),
+            loraDirectNoOutcome = loraDirectNoOutcome.get(),
+            loraDirectHeld = loraDirectHeld.get(),
+            loraDirectTooLong = loraDirectTooLong.get(),
+            loraDirectSlotZero = loraDirectSlotZero.get(),
+            loraDirectStranger = loraDirectStranger.get(),
+            loraDirectAuthFailed = loraDirectAuthFailed.get(),
+            loraDirectClockRefused = loraDirectClockRefused.get(),
+            loraDirectDelivered = loraDirectDelivered.get(),
+            loraDirectResent = loraDirectResent.get(),
         )
 
     /** The [Snapshot.Meshtastic] counters alone, read now. */
@@ -1650,6 +1749,8 @@ class MeshMetrics {
             val receiptsCustodied: Long = 0,
             val receiptsCoalesced: Long = 0,
             val receiptsRidden: Long = 0,
+            val ridesUnrouted: Long = 0,
+            val receiptsHeld: Long = 0,
             val receiptsSpooled: Long = 0,
             val ticksUnsigned: Long = 0,
         )
@@ -1806,9 +1907,7 @@ class MeshMetrics {
             val loraNak: Long = 0,
             val loraNakByReason: Map<String, Long> = emptyMap(),
             val loraSessionUps: Long = 0,
-            val loraDmSent: Long = 0,
             val loraDmReceived: Long = 0,
-            val loraReoffered: Long = 0,
             val loraReprobed: Long = 0,
             val loraRoomTooLong: Long = 0,
             val loraRetiredCtl: Long = 0,
@@ -1816,11 +1915,22 @@ class MeshMetrics {
             val loraBoardHoldersFailed: Long = 0,
             val loraSkippedLinked: Long = 0,
             val loraSkippedInternet: Long = 0,
-            val loraUnheardHeld: Long = 0,
-            val loraDmProbes: Long = 0,
             val loraStaleAtSend: Long = 0,
             val loraStaleAtSendByReason: Map<String, Long> = emptyMap(),
             val loraTickDeferred: Long = 0,
+            val loraDirectSent: Long = 0,
+            val loraDirectAcked: Long = 0,
+            val loraDirectImplicitAck: Long = 0,
+            val loraDirectUnreachable: Long = 0,
+            val loraDirectNoOutcome: Long = 0,
+            val loraDirectHeld: Long = 0,
+            val loraDirectTooLong: Long = 0,
+            val loraDirectSlotZero: Long = 0,
+            val loraDirectStranger: Long = 0,
+            val loraDirectAuthFailed: Long = 0,
+            val loraDirectClockRefused: Long = 0,
+            val loraDirectDelivered: Long = 0,
+            val loraDirectResent: Long = 0,
         )
 
         /**
