@@ -9,9 +9,11 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Opens direct links on demand, the spool first and a link as the last resort (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md`
- * L-7-7): every [ROUND_MS] while the link plane runs ([active]), reads which of our recent messages contacts have not
- * ticked, and which of our DM attachments no spool will take ([pending]), and offers a link to each contact
- * [LinkDemandPolicy] finds due, one offer per contact at a time. A contact the links refused before anything went out
+ * L-7-7 and L-7-9): every [ROUND_MS] while the link plane runs ([active]), reads which of our recent messages contacts
+ * have not ticked, which of our DM attachments no spool will take, and which DM attachments of theirs we want and nobody
+ * brings ([pending], over the last [LinkDemandPolicy.FILE_WINDOW_MS]), and offers a link to each contact
+ * [LinkDemandPolicy] finds due, one offer per contact at a time, saying why. A contact that declined (its person has links
+ * off, [declinedAt]) is offered again only for something newer. A contact the links refused before anything went out
  * (not qualified, no sig lane, no port, off) rests [QUIET_MS], so a round never asks again for what it was just told; a
  * punch that failed rests on the links' own backoff. Each round also asks every contact a link holds now about our DM
  * attachments to them that no spool takes ([prove], `LinkHolderProof`), ahead of any offer: the link that carried such a
@@ -20,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Suppress("LongParameterList") // the seams the rule reads and the one it acts through
 class LinkDemand(
     private val pending: suspend (since: Long, until: Long) -> List<LinkDemandPolicy.Pending>,
-    private val offer: suspend (peerId: String) -> LinkOutcome,
+    private val offer: suspend (peerId: String, why: LinkWhy) -> LinkOutcome,
     private val up: () -> Set<String>,
     private val lastUpAt: (peerId: String) -> Long?,
     private val radioLinked: (peerId: String) -> Boolean,
@@ -30,6 +32,8 @@ class LinkDemand(
     private val log: (String) -> Unit = {},
     // The proof round over the contacts a link holds now (`MeshManager.proveStuckOverLinks`); it filters out the radio's.
     private val prove: suspend (linkPeers: Set<String>) -> Unit = {},
+    // When each contact last declined an offer of ours (`DirectLinks.declinedAt`, L-2-6).
+    private val declinedAt: (peerId: String) -> Long? = { null },
 ) {
     private val offering = ConcurrentHashMap.newKeySet<String>()
     private val quietUntil = ConcurrentHashMap<String, Long>()
@@ -57,16 +61,17 @@ class LinkDemand(
             }
         }
         val now = clock()
-        val rows = pending(now - LinkDemandPolicy.WINDOW_MS, now)
+        val rows = pending(now - LinkDemandPolicy.FILE_WINDOW_MS, now)
         if (rows.isEmpty()) return
-        val due = LinkDemandPolicy.due(rows, now, radioLinked, up(), offering.toSet(), lastUpAt, HashMap(quietUntil))
-        due.forEach { peer ->
+        val due = LinkDemandPolicy.offers(rows, now, radioLinked, up(), offering.toSet(), lastUpAt, HashMap(quietUntil), declinedAt)
+        due.forEach { (peer, why) ->
             if (!offering.add(peer)) return@forEach
             scope.launch {
                 try {
-                    val outcome = offer(peer)
+                    val outcome = offer(peer, why)
                     if (outcome in QUIET) quietUntil[peer] = clock() + QUIET_MS
-                    log("link demand ${peer.take(SHORT)}: $outcome")
+                    // A contact waiting out its backoff is asked every round for a day: only an attempt is worth a line.
+                    if (outcome != LinkOutcome.BACKOFF) log("link demand ${peer.take(SHORT)} $why: $outcome")
                 } finally {
                     offering.remove(peer)
                 }

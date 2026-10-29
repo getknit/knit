@@ -79,7 +79,6 @@ fun Scope.directLinkPlane(): MeshTransport {
     return SwitchableTransport(get<DirectLinkTransport>(), off, get(), { msg -> Log.i(TAG, msg) })
 }
 
-@OptIn(ExperimentalCoroutinesApi::class) // flatMapLatest
 private fun directLinkGraph(): Module =
     module {
         single<LinkDatagrams> { AndroidLinkDatagrams(get<AndroidInternetGate>()) }
@@ -110,48 +109,56 @@ private fun directLinkGraph(): Module =
                 log = { Log.d(TAG, it) },
             )
         }
-        single {
-            val settings = get<SettingsStore>()
-            val scope = get<CoroutineScope>()
-            val identity = get<Identity>()
-            val on = settings.directLinksEnabled.stateIn(scope, SharingStarted.Eagerly, false)
-            val pausedUntil = settings.meshPausedUntil.stateIn(scope, SharingStarted.Eagerly, null)
-            val lowPower = get<LowPowerSource>().posture.map { it.active }.stateIn(scope, SharingStarted.Eagerly, false)
-            val links =
-                DirectLinks(
-                    selfId = { identity.nodeId() },
-                    datagrams = get(),
-                    peers = MeshLinkPeers(this),
-                    // Low-power mode opens and answers none (ADR 2026-10.a5yj), as it holds the link plane off.
-                    enabled = {
-                        on.value && !lowPower.value && MeshPause.activeDeadline(pausedUntil.value, System.currentTimeMillis()) == null
-                    },
-                    scope = scope,
-                    clock = System::currentTimeMillis,
-                    // Each up link's stream goes to the transport, the offerer writing the first HELLO.
-                    onStream = { peer, socket, offerer -> get<DirectLinkTransport>().adopt(peer, socket, offerer) },
-                    linkBusy = { peer -> get<DirectLinkTransport>().busy(peer) },
-                    fieldLog = FieldRecorder { event -> get<FieldLog>().record(event) },
-                    log = { Log.d(TAG, it) },
-                )
-            // Switched off or paused: every link closes and every pending attempt ends. A new default network: every
-            // backoff starts over — collected only while the switch is on, so an off phone registers no callback.
-            scope.launch { on.collect { if (!it) links.stop() } }
-            scope.launch {
-                pausedUntil.collect { if (MeshPause.activeDeadline(it, System.currentTimeMillis()) != null) links.stop() }
-            }
-            scope.launch { lowPower.collect { if (it) links.stop() } }
-            val routeChanges = get<InternetGate>().routeChanges
-            scope.launch {
-                on.flatMapLatest { if (it) routeChanges else emptyFlow() }.collect { links.onRouteChanged() }
-            }
-            links
-        }
+        directLinks()
         linkDemand()
     }
 
-// The spool first, a link as the last resort (L-7-7): offers a contact a link when something of ours to them has gone
-// unticked, while the link plane runs. The composite is resolved late, as everywhere here.
+// The links themselves: on while the person's switch is, and neither low-power mode nor a pause holds them off.
+@OptIn(ExperimentalCoroutinesApi::class) // flatMapLatest
+private fun Module.directLinks() =
+    single {
+        val settings = get<SettingsStore>()
+        val scope = get<CoroutineScope>()
+        val identity = get<Identity>()
+        val on = settings.directLinksEnabled.stateIn(scope, SharingStarted.Eagerly, false)
+        val pausedUntil = settings.meshPausedUntil.stateIn(scope, SharingStarted.Eagerly, null)
+        val lowPower = get<LowPowerSource>().posture.map { it.active }.stateIn(scope, SharingStarted.Eagerly, false)
+        val links =
+            DirectLinks(
+                selfId = { identity.nodeId() },
+                datagrams = get(),
+                peers = MeshLinkPeers(this),
+                // Low-power mode opens and answers none (ADR 2026-10.a5yj), as it holds the link plane off.
+                enabled = {
+                    on.value && !lowPower.value && MeshPause.activeDeadline(pausedUntil.value, System.currentTimeMillis()) == null
+                },
+                scope = scope,
+                // The person's switch off: a contact's offer gets a DECLINE (L-2-6); low-power and a pause say nothing.
+                declining = { !on.value },
+                clock = System::currentTimeMillis,
+                // Each up link's stream goes to the transport, the offerer writing the first HELLO.
+                onStream = { peer, socket, offerer -> get<DirectLinkTransport>().adopt(peer, socket, offerer) },
+                linkBusy = { peer -> get<DirectLinkTransport>().busy(peer) },
+                fieldLog = FieldRecorder { event -> get<FieldLog>().record(event) },
+                log = { Log.d(TAG, it) },
+            )
+        // Switched off or paused: every link closes and every pending attempt ends. A new default network: every
+        // backoff starts over — collected only while the switch is on, so an off phone registers no callback.
+        scope.launch { on.collect { if (!it) links.stop() } }
+        scope.launch {
+            pausedUntil.collect { if (MeshPause.activeDeadline(it, System.currentTimeMillis()) != null) links.stop() }
+        }
+        scope.launch { lowPower.collect { if (it) links.stop() } }
+        val routeChanges = get<InternetGate>().routeChanges
+        scope.launch {
+            on.flatMapLatest { if (it) routeChanges else emptyFlow() }.collect { links.onRouteChanged() }
+        }
+        links
+    }
+
+// The spool first, a link as the last resort (L-7-7, L-7-9): offers a contact a link when something of ours to them has
+// gone unticked, or a file either way has no other way across, while the link plane runs. The composite is resolved
+// late, as everywhere here.
 private fun Module.linkDemand() =
     single {
         val links = get<DirectLinks>()
@@ -159,10 +166,16 @@ private fun Module.linkDemand() =
         val identity = get<Identity>()
         val groups = get<GroupRepository>()
         val pending =
-            MeshLinkPending(get(), get(), groups::find) { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) }
+            MeshLinkPending(
+                get(),
+                get(),
+                groups::find,
+                stuck = { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) },
+                wanted = { _, hash -> getKoin().get<MeshManager>().attachmentWanted(hash) },
+            )
         LinkDemand(
             pending = { since, until -> pending.between(identity.nodeId(), since, until) },
-            offer = { links.offer(it) },
+            offer = { peer, why -> links.offer(peer, why = why) },
             up = { links.links.value.keys },
             lastUpAt = links::lastUpAt,
             radioLinked = { getKoin().get<MeshTransport>().radioLinked(it) },
@@ -172,6 +185,7 @@ private fun Module.linkDemand() =
             log = { Log.d(TAG, it) },
             // The sender's proof of a photo the link carried because no spool would take it (L-7-7, ADR 2026-10.vy27).
             prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
+            declinedAt = links::declinedAt,
         ).also { it.start() }
     }
 

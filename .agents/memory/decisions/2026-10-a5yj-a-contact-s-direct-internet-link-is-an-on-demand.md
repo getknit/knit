@@ -539,3 +539,47 @@ What would reopen it is a device trial over cellular in which either of two thin
 later than the 400 ms prebuffer allows, or the reports turn the cast on beside a link that is up. The fix then is a
 datagram of the lane's own for `talk`, sealed once, never retransmitted and never behind the stream, not a second
 stream.
+
+## Amendment 2026-10-28 — a declined offer, a file's whole day, and the receiving end's ask
+
+Status: stands (2026-10-28); the maintainer's call, after a field miss the same day. Built and lab-checked
+(`InternetLinkLabTest`); the device check is owed.
+
+The miss: the P7, out in the field with no files ticket, sent the P9 a photo. Its demand offered a link at once, as
+L-7-7 says. The P9's links switch was off, so it dropped each offer without a word. The P7 offered four times in eight
+minutes (a 1, 2 and 4 min backoff), its 15-minute window closed before the 8-minute wait ran out, and the photo sat
+unsent. The P9's switch went on in between, which changed nothing, since the P7 had stopped offering and the P9 had no
+way to ask. Neither phone said anything to its person, and only the P7's field log recorded the attempts.
+
+- **A switched-off phone declines** (`docs/DIRECT_LINKS.md` L-2-6, `LinkSignal.PHASE_DECLINE`). It answers an OFFER
+  with a DECLINE: the offer's id, an empty key, no candidates, sealed and sent as an ANSWER is (`LinkSignals` admits
+  that shape and no other keyless one).
+  - **The offerer stops.** It ends the attempt at once with no backoff, and offers that contact again only for something
+    newer than the decline (`DirectLinks.declinedAt`, `LinkDemandPolicy`): a message or file sent after it, the next
+    walkie call, or the contact's own offer or link.
+  - **The cost to the contact** is one fact it learns: this phone has links off. It already learns that a link was
+    refused; it learns it sooner.
+  - **Only the person's switch declines.** Low-power mode and a pause pass instead, sending nothing: they end on their
+    own, and the offerer's backoff waits them out.
+  - **Bounded.** A contact is declined at most `DirectLinks.DECLINES_PER_HOUR` (6) times an hour.
+  - **Older builds.** One opens and commits the DECLINE, so both ends spend the same chain step, then refuses its shape
+    at decode (`PAYLOAD_DECODE_FAILED`); its offerer times out as before.
+- **A file no spool carries is offered for its whole day.** It is offered for custody's keep, 24 h
+  (`LinkDemandPolicy.FILE_WINDOW_MS`), the window the sender's proof already used. Before, it shared the 15 minutes of
+  an unticked message, whose spool copy is the real path.
+  - **The backoff is capped at 30 min** (`PunchPolicy.MAX_BACKOFF_MS`, was 6 h). An offline contact therefore costs
+    about fifty offers over that day at most, and a contact that comes back is asked again within half an hour.
+  - **Messages keep their 15 minutes.**
+- **The receiving end asks too** (L-7-9). A DM attachment of a contact's that the blob exchange still wants, that this
+  phone holds none of, and that no plane is streaming in has `LinkWhy.WANT` called for it a minute after its message
+  arrived, for 24 h, under L-7-7's other rules.
+  - **Over the link, the photo's own ask reaches its sender**, the one phone sure to hold it.
+  - **This is what makes the decline safe.** Once a decliner switches its links on, the sender has nothing newer to offer
+    for. A sig that crosses one way only is no reason for it: a link needs an OFFER and an ANSWER, so a one-way lane fails
+    whoever offers. Both ends offering at once is the crossing L-2-5 already settles.
+- **Each end records what happened** (`docs/FIELD_LOG.md` `link_try`):
+  - the offerer's line names its trigger (`why`: MANUAL, TICK, FILE, WANT, WALKIE), and its DECLINED outcome;
+  - the answering end writes a line for every offer it does not answer: DECLINED, OFF (low-power or paused) or BUDGET.
+
+  So the P9's side of that miss would have read as three declines, and the P7's as one.
+

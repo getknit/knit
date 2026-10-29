@@ -13,16 +13,26 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * What a direct link's demand reads (`docs/DIRECT_LINKS.md` L-7-7), against the real SQL: our DMs still unticked, and
- * for our group posts every member who has not acked them — never someone else's message, a status row, a DM still
- * waiting on its key, a message outside the window, or a group we left.
+ * What a direct link's demand reads (`docs/DIRECT_LINKS.md` L-7-7, L-7-9), against the real SQL: our DMs still
+ * unticked, and for our group posts every member who has not acked them — never someone else's message, a status row, a
+ * DM still waiting on its key, a message outside the window, or a group we left — and the files either way that call for
+ * a link.
  */
 class MeshLinkPendingTest : RoomDbTest() {
     private val messages by lazy { MessageRepository(db.messageDao()) }
     private val receipts by lazy { MessageReceiptRepository(db.messageReceiptDao(), messages, db) }
     private val groups = mutableMapOf<String, GroupEntity>()
     private val stuck = mutableSetOf<String>()
-    private val pending by lazy { MeshLinkPending(messages, receipts, group = { groups[it] }, stuck = { _, hash -> hash in stuck }) }
+    private val wanted = mutableSetOf<String>()
+    private val pending by lazy {
+        MeshLinkPending(
+            messages,
+            receipts,
+            group = { groups[it] },
+            stuck = { _, hash -> hash in stuck },
+            wanted = { _, hash -> hash in wanted },
+        )
+    }
 
     private fun dm(
         id: String,
@@ -96,7 +106,38 @@ class MeshLinkPendingTest : RoomDbTest() {
             dao.upsert(dm("m3", "dave", sentAt = 100, received = true))
             stuck += "H1"
 
-            assertEquals(listOf(Pending("bob", 100, bulk = true)), pending.between(ME, since = 50, until = 200))
+            assertEquals(listOf(Pending("bob", 100, LinkWhy.FILE)), pending.between(ME, since = 50, until = 200))
+        }
+
+    @Test
+    fun aDmAttachmentOfTheirsWeWantIsPendingByWhenItArrivedAndNoOtherAttachment() =
+        runTest {
+            val dao = db.messageDao()
+            // Sent long ago by its own clock, arrived here at 150: the row's time is ours.
+            dao.upsert(dm("m1", ME, sentAt = 5, from = "bob").copy(attachmentHash = "H1", arrivedAt = 150))
+            dao.upsert(dm("m2", ME, sentAt = 5, from = "carol").copy(attachmentHash = "H2", arrivedAt = 150))
+            dao.upsert(dm("m3", ME, sentAt = 5, from = "dave").copy(attachmentHash = "H3", arrivedAt = 10))
+            // Ours, stamped as arrived (a copy of our own sent from another device carries one): never WANT.
+            dao.upsert(dm("m4", "erin", sentAt = 150, received = true).copy(attachmentHash = "H4", arrivedAt = 150))
+            dao.upsert(dm("m5", ME, sentAt = 150, from = ME, received = true).copy(attachmentHash = "H5", arrivedAt = 150))
+            // A contact's group post: a group's picture is never a DM's to ask its sender for.
+            dao.upsert(post("p1", "g-1", sentAt = 5, from = "bob").copy(attachmentHash = "H6", arrivedAt = 150))
+            wanted += setOf("H1", "H3", "H4", "H5", "H6")
+
+            assertEquals(listOf(Pending("bob", 150, LinkWhy.WANT)), pending.between(ME, since = 50, until = 200))
+        }
+
+    @Test
+    fun aFileIsReadOverTheWholeRangeButAMessageOnlyOverItsLastWindow() =
+        runTest {
+            val dao = db.messageDao()
+            val until = 10 * LinkDemandPolicy.WINDOW_MS
+            val early = until - 2 * LinkDemandPolicy.WINDOW_MS
+            dao.upsert(dm("m1", "bob", sentAt = early))
+            dao.upsert(dm("m2", "carol", sentAt = early, received = true).copy(attachmentHash = "H1"))
+            stuck += "H1"
+
+            assertEquals(listOf(Pending("carol", early, LinkWhy.FILE)), pending.between(ME, since = 0, until = until))
         }
 
     private companion object {

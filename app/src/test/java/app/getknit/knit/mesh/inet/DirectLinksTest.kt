@@ -41,6 +41,7 @@ class DirectLinksTest {
         lateinit var links: DirectLinks
         val lines = mutableListOf<FieldEvent>()
         var enabled = true
+        var declining = false
         var qualifies = true
         var signalOk = true
         var signals = 0
@@ -84,6 +85,7 @@ class DirectLinksTest {
                     peers = peers,
                     enabled = { me.enabled },
                     scope = scope,
+                    declining = { me.declining },
                     clock = { testScheduler.currentTime },
                     fieldLog = FieldRecorder { me.lines += it },
                     random = java.util.Random(me.id.hashCode().toLong()),
@@ -110,6 +112,9 @@ class DirectLinksTest {
 
     private fun tries(phone: Phone) = phone.lines.filterIsInstance<FieldEvent.LinkTry>()
 
+    // The offers [phone] answered: its tries less the ones it held back.
+    private fun answered(phone: Phone) = tries(phone).count { it.outcome != LinkOutcome.BUDGET && it.outcome != LinkOutcome.OFF }
+
     @Test
     fun anOfferIsAnsweredAndBothEndsHoldTheLink() =
         runTest {
@@ -127,7 +132,7 @@ class DirectLinksTest {
         }
 
     @Test
-    fun aContactWithLinksOffIsNeverAnsweredAndWaitsOutItsBackoff() =
+    fun aContactInLowPowerOrPausedIsNeverAnsweredAndWaitsOutItsBackoff() =
         runTest {
             val net = FakeLinkNet().withStun()
             val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
@@ -138,7 +143,84 @@ class DirectLinksTest {
             testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
             assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id))
             assertEquals(2, a.signals)
-            assertTrue(tries(b).isEmpty())
+            // Nothing went back, and each offer it held back is on its record.
+            assertEquals(0, b.signals)
+            assertEquals(listOf(LinkOutcome.OFF, LinkOutcome.OFF), tries(b).map { it.outcome })
+            assertTrue(tries(b).none { it.out })
+        }
+
+    @Test
+    fun aContactWithItsSwitchOffDeclinesAtOnceWithNoBackoffAndItsNextOfferClearsIt() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            b.enabled = false
+            b.declining = true
+            val started = testScheduler.currentTime
+            assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id, why = LinkWhy.FILE))
+            assertTrue("waited out the answer", testScheduler.currentTime - started < DirectLinks.ANSWER_WAIT_MS)
+            assertNotNull(a.links.declinedAt(b.id))
+            val mine = tries(a).single()
+            assertEquals(LinkOutcome.DECLINED to LinkWhy.FILE, mine.outcome to mine.why)
+            assertEquals(LinkOutcome.DECLINED, tries(b).single().outcome)
+            assertFalse(tries(b).single().out)
+            // No backoff: the next thing worth a link asks at once (the demand decides what is newer).
+            assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id))
+            // Its person switches links on and offers: our record of its decline goes, and the link comes up.
+            b.enabled = true
+            b.declining = false
+            assertEquals(LinkOutcome.UP, b.links.offer(a.id))
+            assertEquals(null, a.links.declinedAt(b.id))
+        }
+
+    @Test
+    fun aDeclinersOwnOfferClearsTheDeclineEvenWhenItsLinkNeverComesUp() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
+            b.enabled = false
+            b.declining = true
+            assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id))
+            b.enabled = true
+            b.declining = false
+            assertEquals(LinkOutcome.NO_PATH, b.links.offer(a.id))
+            assertEquals(null, a.links.declinedAt(b.id))
+        }
+
+    @Test
+    fun aContactsDeclinesAreCappedAnHourAndItsOffersPastThatPassUnanswered() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            b.enabled = false
+            b.declining = true
+            repeat(DirectLinks.DECLINES_PER_HOUR) { assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id, force = true)) }
+            assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id, force = true))
+            assertEquals(DirectLinks.DECLINES_PER_HOUR, b.signals)
+            testScheduler.advanceTimeBy(60 * 60_000L)
+            assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id, force = true))
+        }
+
+    @Test
+    fun aWalkiesAsksOfferADeclinerOnceASessionAndTheNextSessionOnceMore() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            b.enabled = false
+            b.declining = true
+            repeat(ASKS) {
+                assertFalse(a.links.raise(b.id))
+                testScheduler.advanceTimeBy(ASK_MS)
+            }
+            assertEquals("one offer the whole session", 1, a.signals)
+            // The call ends; the next one, past a hold's gap, asks once more.
+            testScheduler.advanceTimeBy(DirectLinks.HOLD_TTL_MS + ASK_MS)
+            repeat(3) {
+                a.links.raise(b.id)
+                testScheduler.advanceTimeBy(ASK_MS)
+            }
+            assertEquals(2, a.signals)
+            assertEquals(listOf(LinkWhy.WALKIE, LinkWhy.WALKIE), a.lines.filterIsInstance<FieldEvent.LinkTry>().map { it.why })
         }
 
     @Test
@@ -291,7 +373,8 @@ class DirectLinksTest {
             val net = FakeLinkNet().withStun()
             val (a, b) = pair(net.phone(Nat.SYMMETRIC, v4(81, 2, 3, 4)), net.phone(Nat.SYMMETRIC, v4(91, 5, 6, 7)))
             repeat(DirectLinks.EMPTY_ANSWERS_PER_HOUR + 2) { a.links.offer(b.id, force = true) }
-            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, tries(b).size)
+            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, answered(b))
+            assertEquals(2, tries(b).count { it.outcome == LinkOutcome.BUDGET })
         }
 
     @Test
@@ -326,7 +409,8 @@ class DirectLinksTest {
                 b.links.links.first { a.id !in it }
             }
             assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id, force = true))
-            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, tries(b).size)
+            assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, answered(b))
+            assertEquals(LinkOutcome.BUDGET, tries(b).last().outcome)
             testScheduler.advanceTimeBy(60 * 60_000L)
             assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
         }

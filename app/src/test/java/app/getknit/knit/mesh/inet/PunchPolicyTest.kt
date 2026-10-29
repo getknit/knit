@@ -59,10 +59,12 @@ class PunchPolicyTest {
     }
 
     @Test
-    fun backoffDoublesFromAMinuteAndStopsAtSixHours() {
+    fun backoffDoublesFromAMinuteAndStopsAtHalfAnHour() {
         assertEquals(0L, PunchPolicy.backoffMs(0))
         assertEquals(60_000L, PunchPolicy.backoffMs(1))
         assertEquals(120_000L, PunchPolicy.backoffMs(2))
+        assertEquals(16 * 60_000L, PunchPolicy.backoffMs(5))
+        assertEquals(30 * 60_000L, PunchPolicy.backoffMs(6))
         assertEquals(PunchPolicy.MAX_BACKOFF_MS, PunchPolicy.backoffMs(10))
         assertEquals(PunchPolicy.MAX_BACKOFF_MS, PunchPolicy.backoffMs(Int.MAX_VALUE))
     }

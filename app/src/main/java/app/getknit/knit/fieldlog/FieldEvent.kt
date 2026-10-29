@@ -721,8 +721,10 @@ sealed interface FieldEvent {
      * A direct link attempt's punch ended (ADR 2026-10.a5yj): [out] when this phone offered. [outcome] is a
      * `LinkOutcome`; [path] the `LinkPath` the link came up on (none unless it did); [net] and [peerNet] the `LinkNet`
      * both ends were on; [ms] from the attempt's start (the offer, or the answer's) to the outcome, [rtt] the first
-     * probe's round trip. [v6], [reflexive] and [host] say which kinds of candidate this phone offered. Never an
-     * address: a candidate is named by its kind alone.
+     * probe's round trip. [v6], [reflexive] and [host] say which kinds of candidate this phone offered. [why] is the
+     * `LinkWhy` that called for an offer of ours. An offer this phone did not answer is a line too, with no path and no
+     * time: declined (links off), or held back (low-power, a pause, the contact's answers spent). Never an address: a
+     * candidate is named by its kind alone.
      */
     @Suppress("LongParameterList") // one field per column of the line; a holder would only rename the list
     data class LinkTry(
@@ -737,6 +739,7 @@ sealed interface FieldEvent {
         val v6: Boolean,
         val reflexive: Boolean,
         val host: Boolean,
+        val why: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "link_try"
 
@@ -752,6 +755,7 @@ sealed interface FieldEvent {
             out.flag("v6", v6)
             out.flag("reflexive", reflexive)
             out.flag("host", host)
+            why?.let { out.enum("why", it) }
         }
     }
 

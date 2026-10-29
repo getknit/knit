@@ -86,6 +86,15 @@ and the entry is fixed.
   listener counts it as the speaker's own way (`viaRelay` false), never a relay's, or every burst over a link would
   turn the cast on. It rides the one ordered stream: a lane datagram for `talk` is the named fix if a cellular trial
   shows bursts stalling, never a second stream.
+- **When touching `LinkSignal.PHASE_DECLINE`, `DirectLinks.declinedAt` / `declining` / `DECLINES_PER_HOUR`,
+  `LinkOutcome.DECLINED` / `BUDGET`, `LinkWhy`, `LinkDemandPolicy.FILE_WINDOW_MS` / `WANT_WAIT_MS` / `offers`,
+  `MeshManager.attachmentWanted`, `MessageDao.peerDmAttachmentsArrivedBetween` or `PunchPolicy.MAX_BACKOFF_MS`:** READ ADR
+  2026-10.a5yj's decline amendment and `docs/DIRECT_LINKS.md` L-2-6, L-7-7 and L-7-9. Only the person's switch declines
+  (low-power and a pause pass, saying nothing); a decline is never backed off and holds until something newer than it,
+  never on a timer. A file no spool carries is offered for custody's 24 h at a backoff capped at 30 min; a message keeps
+  its 15 min. The receiving end's WANT reads the blob exchange's own want, so a download the person's limits hold back
+  never calls a link. Every offer not answered is a `link_try` line on the answering end, and every offer of ours names
+  its `why`.
 - **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
   `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28
   amendment. A link shows its own face (two arrows, "over a direct link"), never the Internet's: a link on one network

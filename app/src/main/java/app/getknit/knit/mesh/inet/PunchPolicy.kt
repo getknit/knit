@@ -67,8 +67,11 @@ object PunchPolicy {
     /** The first wait before a contact is tried again after an attempt failed; it doubles per failure. */
     const val FIRST_BACKOFF_MS = 60_000L
 
-    /** The longest a contact waits between attempts. */
-    const val MAX_BACKOFF_MS = 6 * 60 * 60_000L
+    /**
+     * The longest a contact waits between attempts: half an hour, so a photo no spool takes is offered for about fifty
+     * times over its day (`LinkDemandPolicy.FILE_WINDOW_MS`) at most, and a contact back online waits no longer.
+     */
+    const val MAX_BACKOFF_MS = 30 * 60_000L
 
     private const val FAST_PROBE_MS = 200L
     private const val SLOW_PROBE_MS = 500L
@@ -111,7 +114,7 @@ object PunchPolicy {
     /** Whether an attempt [elapsedMs] old with no authenticated answer gives up. */
     fun givesUp(elapsedMs: Long): Boolean = elapsedMs >= GIVE_UP_MS
 
-    /** How long a contact waits after its [failures]-th failed attempt in a row (1 = the first): 1 min doubling to 6 h. */
+    /** How long a contact waits after its [failures]-th failed attempt in a row (1 = the first): 1 min doubling to 30 min. */
     fun backoffMs(failures: Int): Long {
         if (failures <= 0) return 0L
         val doublings = (failures - 1).coerceAtMost(MAX_DOUBLINGS)

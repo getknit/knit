@@ -290,7 +290,7 @@
     <string name="call_walkie_link_none">Ainda sem conexão com %1$s. Conectando…</string>
     <string name="call_walkie_link_spool">Sem conexão por rádio com %1$s. Indo pelo seu retransmissor</string>
     <string name="call_walkie_link_direct_link">Sem conexão por rádio com %1$s. Indo por link direto</string>
-    <string name="call_walkie_link_mesh">Sem conexão direta com %1$s. Indo por outros celulares</string>
+    <string name="call_walkie_link_mesh">Sem conexão por rádio com %1$s. Indo por outros celulares</string>
     <string name="call_talk_recording">Falando %1$d:%2$02d</string>
     <string name="call_talk_sending">Enviando…</string>
     <string name="call_talk_hearing">%1$s está falando…</string>

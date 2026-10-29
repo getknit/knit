@@ -22,9 +22,19 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * How a direct link attempt ended, for the field log and the debug bridge. [NO_SIG]: no connected spool that carries the
- * pair's DM scope advertises sigs, the one lane a signal rides (C-7.8-17), so nothing was sealed or sent.
+ * pair's DM scope advertises sigs, the one lane a signal rides (C-7.8-17), so nothing was sealed or sent. [DECLINED]: the
+ * contact's person has links switched off, and said so (L-2-6) — or, on the answering end, this phone said so. On the
+ * answering end, an offer held back is recorded too: [OFF] for low-power mode or a pause, which say nothing back, and
+ * [BUDGET] for a contact whose answers this hour came to nothing too often.
  */
-enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_SIG, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED }
+enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_SIG, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED, DECLINED, BUDGET }
+
+/**
+ * Why this phone offered a link, for the field log (`link_try`'s `why`): the person's try from the debug bridge
+ * ([MANUAL]); a message of ours a contact has not ticked ([TICK]); a DM attachment of ours no spool will take ([FILE]); a
+ * DM attachment of theirs we want and nobody brings ([WANT]); a walkie call with no radio path ([WALKIE]).
+ */
+enum class LinkWhy { MANUAL, TICK, FILE, WANT, WALKIE }
 
 /** The path a link came up on: a candidate's kind, or an address the peer never listed. */
 enum class LinkPath { V6_TEMPORARY, V6, HOST, V4_REFLEXIVE, PEER_REFLEXIVE }
@@ -106,7 +116,10 @@ fun interface LaneKeys {
  * [EMPTY_ANSWERS_PER_HOUR] an hour per contact, so a contact cannot keep this phone's modem waking for nothing, while one
  * that writes many times an hour is answered every time. One answer per contact is in flight at once. A contact this
  * person does not want to hear from is blocked: its signals are dropped unopened (`InboundPipeline`), never answered.
- * Nothing here runs while [enabled] says no.
+ * Nothing here runs while [enabled] says no, but an offer that arrives then is recorded, and answered with a DECLINE when
+ * the person has links switched off ([declining], `docs/DIRECT_LINKS.md` L-2-6): the offerer stops offering until it has
+ * something newer, rather than waiting out a backoff for an answer that will not come. A DECLINE received is kept
+ * ([declinedAt]) until the contact's next offer or link.
  */
 class DirectLinks(
     private val selfId: suspend () -> String,
@@ -115,6 +128,9 @@ class DirectLinks(
     private val keys: LaneKeys = LaneKeys.STANDARD,
     private val enabled: () -> Boolean,
     private val scope: CoroutineScope,
+    // Whether an offer gets a DECLINE back (L-2-6): the person has links switched off. Low-power mode and a pause make
+    // [enabled] false too, but say nothing: they pass, and the offerer's backoff waits them out.
+    private val declining: () -> Boolean = { false },
     private val clock: () -> Long,
     private val streams: LinkStream = LinkStream.arq(scope, clock),
     // What takes each link's stream once the link is up — the transport that runs `FramedLink` over it, told whether
@@ -143,6 +159,15 @@ class DirectLinks(
     // When the up link this end offered to each contact came up: a contact's offer soon after it crossed ours.
     private val offeredUpAt = ConcurrentHashMap<String, Long>()
 
+    // Per contact: when it last declined an offer of ours, cleared by its next offer or link; and when this phone sent each
+    // of its recent declines (at most [DECLINES_PER_HOUR]).
+    private val declined = ConcurrentHashMap<String, Long>()
+    private val declines = ConcurrentHashMap<String, MutableList<Long>>()
+
+    // A live session's asks ([raise]) per contact: the last one, and the first of the run it belongs to.
+    private val lastAskAt = ConcurrentHashMap<String, Long>()
+    private val asksSince = ConcurrentHashMap<String, Long>()
+
     // Taken by [offer] placing its attempt and checking it before the send, and by [answer] deciding a crossing: each
     // reads the other's half whole — an attempt placed, or an answer under way — never one half-made.
     private val crossing = Any()
@@ -156,6 +181,7 @@ class DirectLinks(
         val peerNet: LinkNet?,
         val ms: Long,
         val rttMs: Long?,
+        val why: LinkWhy? = null,
     )
 
     private val lastTries = ConcurrentHashMap<String, Try>()
@@ -315,12 +341,20 @@ class DirectLinks(
     fun lastUpAt(peerId: String): Long? = if (links.value.containsKey(peerId)) clock() else lastDownAt[peerId]
 
     /**
-     * Offers [peerId] a link and runs the attempt to its outcome. [force] skips the backoff (the debug bridge's try).
+     * When [peerId] last declined an offer of ours (L-2-6), or null: none since its last offer to us or link with us. Its
+     * person has links off, so nothing older than the decline is offered for again (`LinkDemandPolicy`).
      */
-    @Suppress("ReturnCount") // a ladder of refusals ahead of the attempt
+    fun declinedAt(peerId: String): Long? = declined[peerId]
+
+    /**
+     * Offers [peerId] a link and runs the attempt to its outcome. [force] skips the backoff (the debug bridge's try);
+     * [why] is what called for it, for the field log.
+     */
+    @Suppress("ReturnCount", "LongMethod") // a ladder of refusals ahead of the attempt, and its three answers
     suspend fun offer(
         peerId: String,
         force: Boolean = false,
+        why: LinkWhy = LinkWhy.MANUAL,
     ): LinkOutcome {
         refusal(peerId, force)?.let { return it }
         val attempt = Attempt(bytes(LinkSignal.ID_BYTES), bytes(LinkSignal.KEY_BYTES))
@@ -345,14 +379,23 @@ class DirectLinks(
             port.close()
             val superseded = attempt.answer.isCompleted
             val outcome = if (superseded) LinkOutcome.SUPERSEDED else LinkOutcome.NO_ANSWER
-            if (!superseded) record(peerId, true, outcome, null, null, clock() - started, own)
+            if (!superseded) record(peerId, true, outcome, null, null, clock() - started, own, why = why)
             return finish(peerId, attempt, outcome)
+        }
+        if (answer.ph == LinkSignal.PHASE_DECLINE) {
+            // Its person has links off: nothing older than now is offered for again, and no backoff — this is not the
+            // network's doing, and the next thing worth a link asks once more.
+            port.close()
+            attempt.kOffer.fill(0)
+            declined[peerId] = clock()
+            record(peerId, true, LinkOutcome.DECLINED, null, LinkNet.of(answer.nt), clock() - started, own, why = why)
+            return finish(peerId, attempt, LinkOutcome.DECLINED)
         }
         val (send, recv) = keys.derive(true, attempt.kOffer, answer.k, attempt.linkId, selfId(), peerId)
         attempt.kOffer.fill(0)
         answer.k.fill(0)
         val (session, socket) = session(peerId, port, send, recv, attempt.linkId, answer, own)
-        val outcome = run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own)
+        val outcome = run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own, why = why)
         return finish(peerId, attempt, outcome)
     }
 
@@ -376,10 +419,19 @@ class DirectLinks(
         senderId: String,
         signal: LinkSignal,
     ) {
-        if (signal.id.size != LinkSignal.ID_BYTES || signal.k.size != LinkSignal.KEY_BYTES) return
+        if (signal.id.size != LinkSignal.ID_BYTES) return
+        val keyed = signal.k.size == LinkSignal.KEY_BYTES
         when (signal.ph) {
-            LinkSignal.PHASE_OFFER -> scope.launch { answer(senderId, signal) }
-            LinkSignal.PHASE_ANSWER -> attempts[senderId]?.takeIf { it.linkId.contentEquals(signal.id) }?.answer?.complete(signal)
+            LinkSignal.PHASE_OFFER -> {
+                if (keyed) scope.launch { answer(senderId, signal) }
+            }
+
+            // An ANSWER or a DECLINE ends the attempt it names; a DECLINE carries no key (L-2-6).
+            LinkSignal.PHASE_ANSWER, LinkSignal.PHASE_DECLINE -> {
+                if (keyed == (signal.ph == LinkSignal.PHASE_ANSWER)) {
+                    attempts[senderId]?.takeIf { it.linkId.contentEquals(signal.id) }?.answer?.complete(signal)
+                }
+            }
         }
     }
 
@@ -404,12 +456,18 @@ class DirectLinks(
      * True while a link is held.
      */
     fun raise(peerId: String): Boolean {
+        val now = clock()
+        // A run of asks is one session's: asks that stopped for longer than a hold start a new run.
+        val last = lastAskAt.put(peerId, now)
+        if (last == null || now - last > HOLD_TTL_MS) asksSince[peerId] = now
         val session = links.value[peerId]?.takeIf { it.state.value == LinkSession.State.UP }
         if (session != null) {
             session.holdFor(HOLD_TTL_MS)
             return true
         }
-        if (enabled() && !attempts.containsKey(peerId)) scope.launch { offer(peerId) }
+        // A contact that declined during this run said so for this session; the next session asks once more (L-2-6).
+        val declinedThisRun = declined[peerId]?.let { it >= (asksSince[peerId] ?: now) } == true
+        if (enabled() && !declinedThisRun && !attempts.containsKey(peerId)) scope.launch { offer(peerId, why = LinkWhy.WALKIE) }
         return false
     }
 
@@ -441,7 +499,10 @@ class DirectLinks(
         offer: LinkSignal,
     ) {
         val me = selfId()
-        if (!enabled() || offererId == me) return
+        if (offererId == me) return
+        // An offer is the contact's word that its links are on: a decline of theirs is history.
+        declined.remove(offererId)
+        if (!enabled()) return passOn(offererId, offer)
         // Two offers crossed: the lower id's stands. Ours stands — theirs is dropped, and they answer ours — whether ours
         // still waits or its link came up in the last [ANSWER_WAIT_MS]: theirs may have left before they answered ours,
         // and answering it would close the link they hold. Later, an offer is a link they lost, and replaces ours.
@@ -449,15 +510,39 @@ class DirectLinks(
             synchronized(crossing) {
                 val ours = attempts[offererId]
                 if (me < offererId && (ours != null || offeredLately(offererId))) return
-                if (!mayAnswer(offererId) || !answering.add(offererId)) return
+                if (!answering.add(offererId)) return
                 ours
             }
         try {
+            if (!mayAnswer(offererId)) return held(offererId, offer, LinkOutcome.BUDGET)
             ours?.answer?.complete(null)
             answerNow(offererId, offer)
         } finally {
             answering.remove(offererId)
         }
+    }
+
+    // An offer this phone will not answer, links being off here: a DECLINE when its person switched them off and the
+    // contact's declines this hour are not spent (L-2-6), else nothing back; recorded either way.
+    private suspend fun passOn(
+        offererId: String,
+        offer: LinkSignal,
+    ) {
+        if (!declining() || !mayDecline(offererId)) return held(offererId, offer, LinkOutcome.OFF)
+        noteDecline(offererId)
+        val decline = LinkSignal(LinkSignal.PHASE_DECLINE, offer.id.copyOf(), ByteArray(0), nt = datagrams.networkKind())
+        val sent = peers.send(offererId, decline)
+        held(offererId, offer, if (sent) LinkOutcome.DECLINED else LinkOutcome.NO_SIG)
+    }
+
+    // An offer this phone did not answer, recorded as its `link_try` line: no candidates offered, no time spent.
+    private fun held(
+        offererId: String,
+        offer: LinkSignal,
+        outcome: LinkOutcome,
+    ) {
+        offer.k.fill(0)
+        record(offererId, false, outcome, null, LinkNet.of(offer.nt), 0L, emptyList())
     }
 
     // Whether the link up to [peerId] is one this end offered, up for less than [ANSWER_WAIT_MS].
@@ -553,19 +638,21 @@ class DirectLinks(
         peerNet: LinkNet,
         own: List<LinkCandidate>,
         alreadyStarted: Boolean = false,
+        why: LinkWhy? = null,
     ): LinkOutcome {
         if (!alreadyStarted) session.start()
         val outcome = session.awaitOutcome()
         if (outcome !is LinkSession.Outcome.Up) {
-            record(peerId, offerer, LinkOutcome.NO_PATH, null, peerNet, clock() - startedAt, own)
+            record(peerId, offerer, LinkOutcome.NO_PATH, null, peerNet, clock() - startedAt, own, why = why)
             if (!offerer) noteEmpty(peerId)
             return LinkOutcome.NO_PATH
         }
         val path = outcome.kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
-        record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs)
+        record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs, why)
         val upAt = clock()
         sockets[peerId] = socket
         if (offerer) offeredUpAt[peerId] = upAt else offeredUpAt.remove(peerId)
+        declined.remove(peerId)
         _links.update { it + (peerId to session) }
         onStream?.invoke(peerId, socket, offerer) ?: drain(peerId, socket)
         scope.launch {
@@ -615,6 +702,20 @@ class DirectLinks(
         }
     }
 
+    private fun mayDecline(peerId: String): Boolean {
+        val times = declines[peerId] ?: return true
+        val now = clock()
+        synchronized(times) {
+            times.removeAll { now - it >= HOUR_MS }
+            return times.size < DECLINES_PER_HOUR
+        }
+    }
+
+    private fun noteDecline(peerId: String) {
+        val times = declines.getOrPut(peerId) { mutableListOf() }
+        synchronized(times) { times += clock() }
+    }
+
     private fun noteEmpty(peerId: String) {
         val times = empties.getOrPut(peerId) { mutableListOf() }
         synchronized(times) { times += clock() }
@@ -630,9 +731,10 @@ class DirectLinks(
         ms: Long,
         own: List<LinkCandidate>,
         rttMs: Long? = null,
+        why: LinkWhy? = null,
     ) {
-        log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms")
-        lastTries[peerId] = Try(clock(), offerer, outcome, path, peerNet, ms, rttMs)
+        log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms ${why ?: ""}")
+        lastTries[peerId] = Try(clock(), offerer, outcome, path, peerNet, ms, rttMs, why)
         fieldLog.record(
             FieldEvent.LinkTry(
                 peer = peerId,
@@ -646,6 +748,7 @@ class DirectLinks(
                 v6 = own.any { it.v6 },
                 reflexive = own.any { it.kind == LinkCandidate.Kind.V4_REFLEXIVE },
                 host = own.any { it.kind == LinkCandidate.Kind.HOST },
+                why = why,
             ),
         )
     }
@@ -677,6 +780,9 @@ class DirectLinks(
          * two of its 10 s renewals and some, so one renewal late keeps it and a hang-up lets it go within this.
          */
         const val HOLD_TTL_MS = 25_000L
+
+        /** How many DECLINEs a contact gets from this phone an hour (L-2-6): its offers past that pass unanswered. */
+        const val DECLINES_PER_HOUR = 6
 
         private const val HOUR_MS = 60 * 60_000L
         private const val SECOND_MS = 1_000L

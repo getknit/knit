@@ -149,6 +149,13 @@ class MessageRepository(
         until: Long,
     ): List<PeerAttachment> = dao.ownDmAttachmentsBetween(me, since, until)
 
+    /** DMs to us that arrived in [since]..[until] with an attachment, by arrival ([MessageDao.peerDmAttachmentsArrivedBetween]). */
+    suspend fun peerDmAttachmentsArrivedBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerAttachment> = dao.peerDmAttachmentsArrivedBetween(me, since, until)
+
     /** Our own group posts sent in [since]..[until] ([MessageDao.ownGroupPostsBetween]). */
     suspend fun ownGroupPostsBetween(
         me: String,

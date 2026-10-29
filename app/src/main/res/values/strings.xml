@@ -364,7 +364,7 @@
     <string name="call_walkie_link_none">Not linked to %1$s yet. Linking…</string>
     <string name="call_walkie_link_spool">No radio link to %1$s. Going through your relay</string>
     <string name="call_walkie_link_direct_link">No radio link to %1$s. Going over a direct link</string>
-    <string name="call_walkie_link_mesh">No direct link to %1$s. Going through other phones</string>
+    <string name="call_walkie_link_mesh">No radio link to %1$s. Going through other phones</string>
     <!-- While the talk button is held: minutes, then seconds, "Talking 0:07". -->
     <string name="call_talk_recording">Talking %1$d:%2$02d</string>
     <string name="call_talk_sending">Sending…</string>

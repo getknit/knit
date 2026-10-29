@@ -863,6 +863,20 @@ interface MessageDao {
     ): List<PeerAttachment>
 
     /**
+     * DMs to us that arrived in [since]..[until] carrying an attachment: from whom, which, and when each arrived (as
+     * [PeerAttachment.sentAt]) — what a direct link's receiving end asks the blob exchange about (L-7-9).
+     */
+    @Query(
+        "SELECT senderId AS peerId, attachmentHash AS hash, arrivedAt AS sentAt FROM messages WHERE kind = 0 " +
+            "AND recipientId = :me AND senderId != :me AND attachmentHash IS NOT NULL AND arrivedAt BETWEEN :since AND :until",
+    )
+    suspend fun peerDmAttachmentsArrivedBetween(
+        me: String,
+        since: Long,
+        until: Long,
+    ): List<PeerAttachment>
+
+    /**
      * Our own group posts sent in [since]..[until] (`kind = 0`, not a status row): a link's demand reads their acks.
      * [groupPattern] is [Conversations.GROUP_ID_PREFIX] + `%`, which [app.getknit.knit.data.MessageRepository] passes.
      */

@@ -18,14 +18,53 @@ class LinkDemandPolicyTest {
     }
 
     @Test
-    fun anAttachmentNoSpoolWillTakeIsDueAtOnce() {
+    fun anAttachmentNoSpoolWillTakeIsDueAtOnceAndForItsWholeDay() {
         val fresh = now - 1
-        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", fresh, bulk = true)), now, none, emptySet()))
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", fresh, LinkWhy.FILE)), now, none, emptySet()))
         // The same row as a plain unticked message waits for the spool.
         assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", fresh)), now, none, emptySet()).isEmpty())
-        // Inside the window only, as everything else.
-        val old = now - LinkDemandPolicy.WINDOW_MS - 1
-        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", old, bulk = true)), now, none, emptySet()).isEmpty())
+        // Past a message's window, a file no spool carries is still due: nothing else will take it across.
+        val hours = now - 6 * 60 * 60_000L
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", hours, LinkWhy.FILE)), now, none, emptySet()))
+        val edge = now - LinkDemandPolicy.FILE_WINDOW_MS
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", edge, LinkWhy.FILE)), now, none, emptySet()))
+        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", edge - 1, LinkWhy.FILE)), now, none, emptySet()).isEmpty())
+    }
+
+    @Test
+    fun aFileOfTheirsWeWantIsDueAMinuteAfterItsMessageArrivedAndForItsDay() {
+        val arrived = now - LinkDemandPolicy.WANT_WAIT_MS
+        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", arrived + 1, LinkWhy.WANT)), now, none, emptySet()).isEmpty())
+        val due = LinkDemandPolicy.offers(listOf(Pending("bob", arrived, LinkWhy.WANT)), now, none, emptySet())
+        assertEquals(listOf("bob" to LinkWhy.WANT), due)
+        val hours = now - 6 * 60 * 60_000L
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(Pending("bob", hours, LinkWhy.WANT)), now, none, emptySet()))
+        val old = now - LinkDemandPolicy.FILE_WINDOW_MS - 1
+        assertTrue(LinkDemandPolicy.due(listOf(Pending("bob", old, LinkWhy.WANT)), now, none, emptySet()).isEmpty())
+    }
+
+    @Test
+    fun aContactThatDeclinedIsOfferedAgainOnlyForSomethingNewer() {
+        val declined = now - 5_000L
+        val before = Pending("bob", declined - 1, LinkWhy.FILE)
+        assertTrue(LinkDemandPolicy.due(listOf(before), now, none, emptySet(), declinedAt = { declined }).isEmpty())
+        // Sent the instant it declined is not newer than the decline.
+        val same = Pending("bob", declined, LinkWhy.FILE)
+        assertTrue(LinkDemandPolicy.due(listOf(same), now, none, emptySet(), declinedAt = { declined }).isEmpty())
+        // A file sent after the decline asks once more; the contact's other rows go on resting.
+        val after = Pending("bob", declined + 1, LinkWhy.FILE)
+        val again = LinkDemandPolicy.offers(listOf(before, after), now, none, emptySet(), declinedAt = { declined })
+        assertEquals(listOf("bob" to LinkWhy.FILE), again)
+        // Another contact's rows never wait on bob's decline.
+        val carol = Pending("carol", declined - 1, LinkWhy.FILE)
+        val bobDeclined: (String) -> Long? = { if (it == "bob") declined else null }
+        assertEquals(listOf("carol"), LinkDemandPolicy.due(listOf(before, carol), now, none, emptySet(), declinedAt = bobDeclined))
+    }
+
+    @Test
+    fun aContactsOfferSaysWhyByItsLongestWaitingRow() {
+        val rows = listOf(Pending("bob", waited - 1_000, LinkWhy.FILE), Pending("bob", waited - 9_000))
+        assertEquals(listOf("bob" to LinkWhy.TICK), LinkDemandPolicy.offers(rows, now, none, emptySet()))
     }
 
     @Test
@@ -59,7 +98,7 @@ class LinkDemandPolicyTest {
         assertTrue(LinkDemandPolicy.due(listOf(before), now, none, emptySet(), lastUpAt = { linkEnded }).isEmpty())
         // A message written after the link went, and waited on as long: offered again.
         val after = Pending("bob", linkEnded + 1)
-        val later = after.sentAt + LinkDemandPolicy.TICK_WAIT_MS
+        val later = after.at + LinkDemandPolicy.TICK_WAIT_MS
         assertEquals(listOf("bob"), LinkDemandPolicy.due(listOf(before, after), later, none, emptySet(), lastUpAt = { linkEnded }))
     }
 

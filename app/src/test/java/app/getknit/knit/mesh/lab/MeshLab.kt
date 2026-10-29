@@ -1403,6 +1403,7 @@ class LabNode internal constructor(
                 peers = ManagerLinkPeers(),
                 enabled = { linksOn },
                 scope = scope,
+                declining = { !linksOn },
                 clock = now,
                 streams = phone.streams,
                 onStream = { peer, socket, offerer -> plane.adopt(peer, socket, offerer) },
@@ -1411,11 +1412,18 @@ class LabNode internal constructor(
             )
         links = built
         // The bulk trigger asks the node's own manager, resolved at each call as [ManagerLinkPeers] is.
-        val pending = MeshLinkPending(messages, receipts, groups::find) { peer, hash -> manager.attachmentStuck(peer, hash) }
+        val pending =
+            MeshLinkPending(
+                messages,
+                receipts,
+                groups::find,
+                stuck = { peer, hash -> manager.attachmentStuck(peer, hash) },
+                wanted = { _, hash -> manager.attachmentWanted(hash) },
+            )
         demand =
             LinkDemand(
                 pending = { since, until -> pending.between(nodeId, since, until) },
-                offer = { built.offer(it) },
+                offer = { peer, why -> built.offer(peer, why = why) },
                 up = { built.links.value.keys },
                 lastUpAt = built::lastUpAt,
                 radioLinked = mesh::radioLinked,
@@ -1424,6 +1432,7 @@ class LabNode internal constructor(
                 clock = now,
                 log = { linkLog += it },
                 prove = { manager.proveStuckOverLinks(it) },
+                declinedAt = built::declinedAt,
             )
     }
 

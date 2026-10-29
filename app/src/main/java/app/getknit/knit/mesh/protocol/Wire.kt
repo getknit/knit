@@ -997,11 +997,16 @@ data class CallPayload(
  * offerer sends an OFFER ([ph] = [PHASE_OFFER]) under a fresh link id [id] as a spool sig (C-7.8-17); the contact sends
  * back one ANSWER under the same [id], and both punch toward each other's candidates [c]. Each side's [k] is 32 bytes
  * drawn fresh for that link id: the lane's keys come from both (`LinkKeys`), so only the two who opened both seals can
- * derive them. [nt] is the sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the field log. An older
- * build's `ct` (a cast-ticket hint from when the signal could ride a cast) is an unknown key now, and ignored.
+ * derive them. A contact whose person has links switched off sends a DECLINE ([PHASE_DECLINE]) under the OFFER's [id]
+ * instead, with an empty [k] and no candidates: the offerer stops offering until it has something newer to send
+ * (`docs/DIRECT_LINKS.md` L-2-6). [nt] is the sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the
+ * field log. An older build's `ct` (a cast-ticket hint from when the signal could ride a cast) is an unknown key now,
+ * and ignored; an older build opens and commits a DECLINE, then refuses its shape at decode (`PAYLOAD_DECODE_FAILED`),
+ * so its offerer waits out the answer as before.
  *
  * A class with raw byte strings, not a `data class` ([RelayEnvelope]'s reason). Every field a reader acts on is
- * validated before it is: [id] is [ID_BYTES], [k] is [KEY_BYTES], and each candidate passes `PunchPolicy.sane`.
+ * validated before it is: [id] is [ID_BYTES], [k] is [KEY_BYTES] (empty in a DECLINE), and each candidate passes
+ * `PunchPolicy.sane`.
  */
 @Serializable
 class LinkSignal(
@@ -1014,6 +1019,7 @@ class LinkSignal(
     companion object {
         const val PHASE_OFFER = 1
         const val PHASE_ANSWER = 2
+        const val PHASE_DECLINE = 3
 
         const val NET_OTHER = 0
         const val NET_WIFI = 1

@@ -689,6 +689,16 @@ class GoldenVectorTest {
                         nt = LinkSignal.NET_CELLULAR,
                     ),
                 ),
+            // Its DECLINE (docs/DIRECT_LINKS.md L-2-6): the OFFER's id back, an empty k, no candidates.
+            "linkSignalDecline" to
+                WireCodec.encodePayload(
+                    LinkSignal(
+                        ph = LinkSignal.PHASE_DECLINE,
+                        id = bytes(LinkSignal.ID_BYTES, 15),
+                        k = ByteArray(0),
+                        nt = LinkSignal.NET_WIFI,
+                    ),
+                ),
         )
 
     private fun compact(content: MessageContent): ByteArray =

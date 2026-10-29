@@ -6,6 +6,8 @@ import app.getknit.knit.mesh.inet.FakeLinkNet.Nat
 import app.getknit.knit.mesh.inet.LinkDemandPolicy
 import app.getknit.knit.mesh.inet.LinkOutcome
 import app.getknit.knit.mesh.inet.LinkSession
+import app.getknit.knit.mesh.inet.LinkWhy
+import app.getknit.knit.mesh.inet.PunchPolicy
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.SpoolCastInfo
 import app.getknit.knit.mesh.spool.SpoolSigInfo
@@ -409,6 +411,59 @@ class InternetLinkLabTest {
         }
 
     /**
+     * A contact with links off says so, and the photos still cross once it turns them on (`docs/DIRECT_LINKS.md` L-2-6,
+     * L-7-9). The relay takes no attachments from Alice, so her photo to Bob is due at once; Bob's links are off, so he
+     * declines, and her rounds past every backoff offer no more for it. A second photo is newer than the decline: one more
+     * offer, declined too. Bob turns his links on. Nothing of Alice's is newer than his last decline, so she has no reason
+     * to ask; Bob wants both photos, nobody brings them, and a minute after they arrived his own demand offers her a link,
+     * over which both cross.
+     */
+    @Test
+    fun aContactWithLinksOffDeclinesAndOnceOnAsksForThePhotosItIsMissing() =
+        runBlocking {
+            val (alice, bob) = contacts(filesGatedRelay(), Nat.PORT_RESTRICTED)
+            val (aliceDemand, bobDemand) = checkNotNull(alice.demand) to checkNotNull(bob.demand)
+            val links = checkNotNull(alice.links)
+            bob.linksOn = false
+            val declines = { alice.linkLog.count { it.startsWith("link DECLINED →") } }
+
+            suspend fun photo(
+                seed: Int,
+                caption: String,
+            ): String {
+                val had = bob.decrypted(bob.dmWith(alice)).size
+                assertTrue(alice.sendImage(Random(seed).nextBytes(32_768), caption, to = bob))
+                lab.await(had + 1) { bob.decrypted(bob.dmWith(alice)).size }
+                return checkNotNull(alice.attachmentHash(alice.dmWith(bob), alice.ownMessageId(alice.dmWith(bob), caption)))
+            }
+            val first = photo(1, "while bob's links are off")
+            aliceDemand.round()
+            lab.await(1) { declines() }
+            assertTrue(links.declinedAt(bob.nodeId) != null)
+            repeat(DECLINED_ROUNDS) {
+                lab.clock.advance(PunchPolicy.MAX_BACKOFF_MS)
+                aliceDemand.round()
+            }
+            val second = photo(2, "and another")
+            val before = declines()
+            aliceDemand.round()
+            lab.await(before + 1) { declines() }
+
+            bob.linksOn = true
+            lab.clock.advance(LinkDemandPolicy.WANT_WAIT_MS)
+            bobDemand.round()
+            awaitLinked(bob, alice)
+            assertTrue(
+                "bob never got both photos\n${bob.linkLog}\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(2) { listOf(first, second).count { bob.holdsBlob(it) } },
+            )
+            assertEquals(LinkWhy.WANT, checkNotNull(bob.links).lastTries()[alice.nodeId]?.why)
+            lab.assertConverged(listOf(alice, bob), atLeast = 4) { it.dmWith(if (it === alice) bob else alice) }
+            // Every offer Alice launched has settled by now: one per photo, none for the declined one again.
+            assertEquals("offered again for the declined photo:\n${alice.linkLog}", 2, declines())
+        }
+
+    /**
      * FETCHING is no proof, and no reason to stop asking. Bob's link lands the photo but his mesh has not taken it yet
      * (his hand-off held), so he answers Alice's proof query FETCHING and she records nothing; once his store holds it,
      * her next demand round past the floor asks again and his HAVE proves it.
@@ -507,5 +562,8 @@ class InternetLinkLabTest {
 
         // A walkie burst's chunks after the first, over the link.
         const val CHUNKS = 6
+
+        // Demand rounds after a decline, each past the longest backoff, that must offer nothing for the declined photo.
+        const val DECLINED_ROUNDS = 3
     }
 }

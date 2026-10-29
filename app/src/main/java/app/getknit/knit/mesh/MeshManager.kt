@@ -4438,6 +4438,15 @@ class MeshManager(
     }
 
     /**
+     * Whether the receiving end wants a contact's DM attachment [hash] and nothing is bringing it — a direct link's
+     * receiving trigger (`docs/DIRECT_LINKS.md` L-7-9): the blob exchange still wants it ([BlobExchange.wantedHashes]: the
+     * person's download limits and taps already said yes), none of it is held here, and no plane is streaming it in. The
+     * sender is the one phone sure to hold it; a spool that had it would have brought it by now.
+     */
+    suspend fun attachmentWanted(hash: String): Boolean =
+        hash in blobExchange.wantedHashes() && !blobs.exists(hash) && hash !in transport.arrivingFiles()
+
+    /**
      * Asks each of [linkPeers] that no radio links whether it holds our DM attachments to it that are still
      * [attachmentStuck] (ADR 2026-10.a5yj L-7-7, vy27; [LinkHolderProof]): the sender's proof of a photo the link carried
      * because no spool would take it. Run by the link demand's every round; the yes lands

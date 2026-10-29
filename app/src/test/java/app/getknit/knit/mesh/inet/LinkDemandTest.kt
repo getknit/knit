@@ -18,17 +18,20 @@ import org.junit.Test
 class LinkDemandTest {
     private val offers = mutableListOf<String>()
     private val windows = mutableListOf<Pair<Long, Long>>()
+    private val whys = mutableListOf<LinkWhy>()
     private val proofRounds = mutableListOf<Set<String>>()
 
     private fun TestScope.demand(
         rows: List<Pending>,
         active: () -> Boolean = { true },
         up: () -> Set<String> = { emptySet() },
+        declinedAt: (String) -> Long? = { null },
         answer: suspend (String) -> LinkOutcome,
     ) = LinkDemand(
         pending = { since, until -> rows.also { windows += since to until } },
-        offer = { peer ->
+        offer = { peer, why ->
             offers += peer
+            whys += why
             answer(peer)
         },
         up = up,
@@ -38,7 +41,19 @@ class LinkDemandTest {
         scope = backgroundScope,
         clock = { testScheduler.currentTime },
         prove = { peers -> proofRounds += peers },
+        declinedAt = declinedAt,
     )
+
+    @Test
+    fun aRoundOffersSayingItsRowsWhyAndSkipsWhatADeclinedContactHasAlreadyRefused() =
+        runTest {
+            demand(listOf(Pending("bob", 0L, LinkWhy.FILE))) { LinkOutcome.UP }.round()
+            runCurrent()
+            assertEquals(listOf(LinkWhy.FILE), whys)
+            demand(listOf(Pending("carol", 0L, LinkWhy.FILE)), declinedAt = { 1L }) { LinkOutcome.UP }.round()
+            runCurrent()
+            assertEquals("carol declined after that file", listOf("bob"), offers)
+        }
 
     @Test
     fun aContactIsOfferedOnceWhileItsOfferIsInFlight() =
@@ -76,7 +91,7 @@ class LinkDemandTest {
         }
 
     @Test
-    fun aRoundReadsTheWholeWindowAndNothingWhileThePlaneIsOff() =
+    fun aRoundReadsAFilesWholeDayAndNothingWhileThePlaneIsOff() =
         runTest {
             var running = false
             val d = demand(listOf(Pending("bob", 0L)), active = { running }) { LinkOutcome.UP }
@@ -86,8 +101,9 @@ class LinkDemandTest {
             running = true
             d.round()
             val now = testScheduler.currentTime
-            // Up to now: a stuck attachment is due at once, so the policy, not the read, applies each row's wait.
-            assertEquals(listOf(now - LinkDemandPolicy.WINDOW_MS to now), windows)
+            // A file's day, up to now: a stuck attachment is due at once, so the policy, not the read, applies each row's
+            // wait and window.
+            assertEquals(listOf(now - LinkDemandPolicy.FILE_WINDOW_MS to now), windows)
         }
 
     @Test
@@ -115,7 +131,7 @@ class LinkDemandTest {
             val d =
                 LinkDemand(
                     pending = { _, _ -> listOf(Pending("carol", 0L)) },
-                    offer = { peer ->
+                    offer = { peer, _ ->
                         offers += peer
                         LinkOutcome.UP
                     },

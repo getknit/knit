@@ -1912,7 +1912,9 @@ class DebugBridgeReceiver :
                     .put("path", t.path?.name ?: JSONObject.NULL)
                     .put("peerNet", t.peerNet?.name ?: JSONObject.NULL)
                     .put("ms", t.ms)
-                    .put("rtt", t.rttMs ?: JSONObject.NULL),
+                    .put("rtt", t.rttMs ?: JSONObject.NULL)
+                    .put("why", t.why?.name ?: JSONObject.NULL)
+                    .put("declinedAt", links.declinedAt(id) ?: JSONObject.NULL),
             )
         }
         val (gaps, measuring) = links.gaps()
