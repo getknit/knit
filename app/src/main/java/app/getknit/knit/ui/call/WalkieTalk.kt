@@ -608,7 +608,7 @@ internal class WalkieTalk(
         report: TalkReport,
     ) {
         send(peerId, TalkWire.encodeReport(tag, report), peerTicketed(), castToo())
-        log("walkie: reported burst ${report.b}: ${report.radio} over the radios, ${report.relay} through the relay")
+        log("walkie: reported burst ${report.b}: ${report.radio} its own way (radios or direct link), ${report.relay} through the relay")
     }
 
     // Applies [step] to the session's route, and logs a change of its verdict.

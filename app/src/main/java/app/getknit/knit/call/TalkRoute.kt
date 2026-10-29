@@ -92,10 +92,11 @@ class TalkRoute(
 }
 
 /**
- * The listener's half (C-3.11-10): which chunks of each of the peer's bursts came over the radios and which through a
- * relay, and when a burst is ready to be reported — [settleMs] after its last chunk landed, so the slower plane's copy
- * counts too, or [endMs] after its newest chunk when its last never came ([WalkiePolicy.END_MS], the player's own
- * give-up). Each burst is reported once; a chunk of one already reported is not counted again. Pure (`TalkRouteTest`).
+ * The listener's half (C-3.11-10): which chunks of each of the peer's bursts came its own way (the radios or a contact's
+ * direct link) and which through a relay, and when a burst is ready to be reported — [settleMs] after its last chunk
+ * landed, so the slower plane's copy counts too, or [endMs] after its newest chunk when its last never came
+ * ([WalkiePolicy.END_MS], the player's own give-up). Each burst is reported once; a chunk of one already reported is not
+ * counted again. Pure (`TalkRouteTest`).
  */
 class HeardLedger(
     private val settleMs: Long = WalkiePolicy.REPORT_SETTLE_MS,

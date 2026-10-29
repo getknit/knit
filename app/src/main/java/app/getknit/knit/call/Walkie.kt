@@ -159,8 +159,9 @@ class TalkChunk(
 )
 
 /**
- * What the receiver of burst [b] heard of it (C-3.11-10): the distinct chunks that came over the radios ([radio]) and
- * those a relay cast to it ([relay]). A chunk that came both ways counts in both.
+ * What the receiver of burst [b] heard of it (C-3.11-10): the distinct chunks that came the speaker's own way, over the
+ * radios or a contact's direct link ([radio], named for the radios it first counted), and those a relay cast to it
+ * ([relay]). A chunk that came both ways counts in both.
  */
 class TalkReport(
     val b: Int,
