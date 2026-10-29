@@ -142,9 +142,10 @@ The Wear OS app (`:wear`) has its own `wear/src/main/res/values/strings.xml` and
 same rules: a locale lands whole, a new English string is translated into each of them, and the phone's wording is
 the reference for every term the two share. Three things differ.
 
-- **Gradle never checks it in CI**, since `:wear` is opt-in (`-Pknit.wear=true`), so lint's `MissingTranslation`
-  does not reach it there. Both CIs run `scripts/translation-check.py --res wear/src/main/res` instead, and
-  `./gradlew -Pknit.wear=true :wear:lintDebug` checks it locally.
+- **Lint never checks it in CI**, since `:wear` is opt-in (`-Pknit.wear=true`) and only its unit tests run there
+  (GitHub `wear-tests`, GitLab `test:wear`), so lint's `MissingTranslation` does not reach it. Both CIs run
+  `scripts/translation-check.py --res wear/src/main/res` instead, and `./gradlew -Pknit.wear=true :wear:lintDebug`
+  checks it locally.
 - **Room is counted in characters.** A short complication draws a value and a label of at most seven characters
   each (`short_*`, `allow_short`, `aged_title_short` with the age the library writes, the `state_word_*` words);
   `duration_short_*` renders in at most five. `StatusTextTest` fails a translation past them, and a locale whose

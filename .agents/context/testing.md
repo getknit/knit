@@ -39,7 +39,8 @@
 Every JVM test outside `mesh/lab/` (`app/src/test`, `wear/src/test`) is reviewed by the `unit-test-reviewer` persona
 against this catalogue, and a Stop hook asks for it. CI's GitLab runner is one vCPU and 2 GB (two
 `Dispatchers.Default` threads), GitHub's four vCPU, and both run the suite in one fork: an ordering a workstation
-always wins is lost there one run in thirty. Most of the incidents below never reproduced locally (`cd16429a`: 25
+always wins is lost there one run in thirty. The watch's tests run in their own job (GitHub `wear-tests`, GitLab
+`test:wear`, `-Pknit.wear=true :wear:testDebugUnitTest`). Most of the incidents below never reproduced locally (`cd16429a`: 25
 green runs; `5626c3e5`: green for almost every draw), so a test is judged by reading it, and
 `scripts/unit-stress.sh --tests '<Class>'` (copies side by side in separate JVMs, `--quota` for one throttled core)
 is the second opinion, never the proof.

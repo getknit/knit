@@ -235,6 +235,26 @@ test:unit:
       - app/build/reports/tests/testDebugUnitTest/
     expire_in: 1 week
 
+# The watch app's JVM tests (wear/src/test/: the status words in every shipped language under Robolectric, the ring
+# code, the day stats, the read cadence). `:wear` is opt-in (`-Pknit.wear=true`), so no other job configures it and
+# nothing here reaches :app's release. Same compile/run split as test:unit, for the same memory reason. The deps
+# cache holds no wear-only artifacts (only the build jobs save it), so they are downloaded each run.
+test:wear:
+  extends: .android
+  stage: test
+  tags: [skuld]
+  needs: []
+  script:
+    - ./gradlew -Pknit.wear=true :wear:compileDebugUnitTestKotlin :wear:packageDebugUnitTestForUnitTest --stacktrace --console=plain
+    - ./gradlew -Pknit.wear=true :wear:testDebugUnitTest --stacktrace --console=plain
+  artifacts:
+    when: always
+    reports:
+      junit: wear/build/test-results/testDebugUnitTest/**/TEST-*.xml
+    paths:
+      - wear/build/reports/tests/testDebugUnitTest/
+    expire_in: 1 week
+
 # The multi-node JVM scenarios (app/src/test/.../mesh/lab/, see .agents/context/testing.md) run only here;
 # test:unit skips them (-Pknit.skipMeshLab). They get their own job because they are the one suite where
 # real time and thread scheduling decide the outcome — N complete mesh stacks converging on
