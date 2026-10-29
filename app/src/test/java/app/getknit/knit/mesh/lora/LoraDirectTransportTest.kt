@@ -252,19 +252,19 @@ class LoraDirectTransportTest {
                 ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
             assertEquals(
                 "bob's board acked on bob's behalf",
                 ledger.timeOnAirMs(LoraDirectPolicy.ACK_PAYLOAD_BYTES, LoraAirtime.UNSIGNED),
                 b.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
         }
 
     @Test
-    fun aReceiptIsATickAndAReactionADmAndNeitherIsReprobed() =
+    fun aReceiptAndAReactionAreDirectFramesAndNeitherIsReprobed() =
         runTest {
             val air = FakeMeshtasticAir()
             val (a, _) = pair(air)
@@ -275,8 +275,12 @@ class LoraDirectTransportTest {
             assertTrue("nothing of ours awaits a ✓✓", a.transport.lingerReprobes().isEmpty())
         }
 
+    /**
+     * ADR 2026-10.ug4a folded ADR 054's tick into DIRECT and dropped the tick tail: in a window's last quarter a ✓✓ airs
+     * like the DM it answers — one unsigned packet, and losing it would cost a re-probe of the whole DM later.
+     */
     @Test
-    fun inTheWindowsTickTailAReceiptWaitsAndAReactionAirs() =
+    fun inTheWindowsLastQuarterAReceiptAirsLikeADm() =
         runTest {
             val air = FakeMeshtasticAir()
             // Two recipients: to one peer the second offer would only park behind the first, never reach the gate.
@@ -286,30 +290,43 @@ class LoraDirectTransportTest {
             val now = testScheduler.currentTime
             val size = LORA_DIRECT_OVERHEAD + 2
             val dmCost = LoraDirectPolicy.AIRINGS * ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
-            val total = ledger.budgetMs(AirBucket.LIVE)
-            val tickCeiling = (total * (1 - LoraAirtime.TICK_TAIL_SHARE)).toLong()
-            // Spent to just short of the tick tail's edge: every airing either may cost still fits the window, but a
-            // tick's would cross into the last quarter, which ADR 054 keeps for content.
-            while (ledger.snapshot(now).totalUsedMs + dmCost <= tickCeiling) ledger.record(AirBucket.LIVE, size, now, LoraAirtime.UNSIGNED)
-            assertTrue(total - ledger.snapshot(now).totalUsedMs >= dmCost)
-            assertEquals(
-                LoraAirtime.Refusal.TICK_TAIL,
-                ledger.refusal(
-                    AirBucket.LIVE,
-                    FrameClass.TICK,
-                    List(LoraDirectPolicy.AIRINGS) {
-                        size
-                    },
-                    now,
-                    LoraAirtime.UNSIGNED,
-                ),
-            )
+            val total = ledger.allowanceMs()
+            // Into the last quarter, with room left for both frames' every airing and not one airing more.
+            val one = ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
+            while (ledger.snapshot(now).usedMs + 2 * dmCost + one <= total) ledger.record(size, now, LoraAirtime.UNSIGNED)
+            assertTrue("past three quarters of the window", ledger.snapshot(now).usedMs > total * 3 / 4)
             a.dm("carol", "r1", kind = DirectKind.RECEIPT)
             a.dm("bob", "x1", kind = DirectKind.REACTION)
             settle()
-            assertEquals("the receipt is a tick, the reaction a DM", listOf("x1"), a.link.sent.map { frameIdOf(it) })
-            assertTrue("the receipt waits in the pacer's queue, not dropped", a.pace.hasQueuedTo("carol"))
-            assertEquals(1, a.pace.pending)
+            assertEquals("both went, in their turn", listOf("r1", "x1"), a.link.sent.map { frameIdOf(it) })
+            assertEquals(0, a.pace.pending)
+        }
+
+    /**
+     * ADR 2026-10.ug4a's shared-band brake: with the board reporting a busy channel, a Knit room post waits in the queue
+     * while a compact DM still airs.
+     */
+    @Test
+    fun aBusyBandHoldsARoomPostWhileADmStillAirs() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.link.boardAir.value = BoardAir(channelUtilPercent = 40f, airUtilTxPercent = 2f, atMs = testScheduler.currentTime)
+            runCurrent()
+            val post =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "room-1",
+                    senderId = "alice",
+                    sentAt = wallBase + testScheduler.currentTime,
+                    payload = WireCodec.encodePayload(ChatContent(body = "north gate")),
+                )
+            a.transport.fastFanout(WireEnvelope(relay = true, sig = ByteArray(64) { 7 }, signed = WireCodec.encodeEnvelope(post)))
+            a.dm("bob", "f1")
+            settle()
+            assertEquals("only the DM aired", listOf("f1"), a.link.sent.map { frameIdOf(it) })
+            assertEquals("the room post waits", 1, a.pace.pending)
+            assertEquals(1L, a.lora.loraBandBraked)
         }
 
     /** The frame id [FakeSeal] wrote into [packet]'s header. */
@@ -420,7 +437,7 @@ class LoraDirectTransportTest {
                 LoraDirectPolicy.AIRINGS * LoraAirtime().timeOnAirMs(size, LoraAirtime.UNSIGNED),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
             assertEquals("the parked offers are left to the source", 0, a.transport.status.value.direct.parked)
             assertEquals(1, a.transport.status.value.direct.unreachable)
@@ -503,7 +520,7 @@ class LoraDirectTransportTest {
                     ),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
         }
 
@@ -747,9 +764,9 @@ class LoraDirectTransportTest {
             val now = testScheduler.currentTime
             val size = LORA_DIRECT_OVERHEAD + 2
             val one = ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
-            val total = ledger.budgetMs(AirBucket.LIVE)
+            val total = ledger.allowanceMs()
             // Leave room for two airings of it, short of the five (`LoraDirectPolicy.AIRINGS`) it is admitted against.
-            while (total - ledger.snapshot(now).totalUsedMs >= 3 * one) ledger.record(AirBucket.LIVE, size, now, LoraAirtime.UNSIGNED)
+            while (total - ledger.snapshot(now).usedMs >= 3 * one) ledger.record(size, now, LoraAirtime.UNSIGNED)
             a.dm("bob", "f1")
             settle()
             assertTrue("one airing would fit; its retries would not", a.link.sent.isEmpty())
@@ -777,7 +794,7 @@ class LoraDirectTransportTest {
                     ),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
         }
 
@@ -845,7 +862,7 @@ class LoraDirectTransportTest {
             val booked =
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs
+                    .usedMs
             // The board's to-phone queue, replayed after a BLE drop, hands the destination's ack over at last.
             a.link.emitOutcome(PacketOutcome.Acked(handle, byDestination = true))
             settle(1_000)
@@ -856,7 +873,7 @@ class LoraDirectTransportTest {
                 booked,
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
         }
 
@@ -870,10 +887,10 @@ class LoraDirectTransportTest {
             up(a, b, c)
             val ledger = a.pace.airtime
             val one = ledger.timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED)
-            val total = ledger.budgetMs(AirBucket.LIVE)
+            val total = ledger.allowanceMs()
             val now = testScheduler.currentTime
             // Room for one DM's five airings and three more, not two DMs' ten.
-            while (total - ledger.snapshot(now).totalUsedMs >= 9 * one) ledger.record(AirBucket.LIVE, hiPacket, now, LoraAirtime.UNSIGNED)
+            while (total - ledger.snapshot(now).usedMs >= 9 * one) ledger.record(hiPacket, now, LoraAirtime.UNSIGNED)
             a.dm("bob", "f1")
             a.dm("carol", "g1")
             settle(500)
@@ -896,7 +913,7 @@ class LoraDirectTransportTest {
                 LoraAirtime().timeOnAirMs(LoraDirectPolicy.ACK_PAYLOAD_BYTES, LoraAirtime.UNSIGNED),
                 b.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
         }
 
@@ -915,7 +932,7 @@ class LoraDirectTransportTest {
                 LoraDirectPolicy.AIRINGS * LoraAirtime().timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
-                    .liveUsedMs,
+                    .usedMs,
             )
             settle()
             assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })

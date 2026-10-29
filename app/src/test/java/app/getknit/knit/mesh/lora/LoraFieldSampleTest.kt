@@ -59,6 +59,23 @@ class LoraFieldSampleTest {
     }
 
     @Test
+    fun theFieldLogKeepsItsAirKeysFedFromTheOneLedger() {
+        // ADR 2026-10.ug4a: `airUsed` / `airBudget` keep their names and read `usedMs` / `allowanceMs`.
+        val air =
+            AirtimeSnapshot(
+                ModemPreset.LONG_FAST,
+                LoraRegion.US,
+                known = true,
+                usedMs = 12_345,
+                allowanceMs = 45_000,
+                publicCeilingMs = 22_500,
+            )
+        val sample = LoraStatus(state = ready, airtime = air).fieldSample().single() as FieldEvent.Lora
+        assertEquals(12_345L, sample.airUsedMs)
+        assertEquals(45_000L, sample.airBudgetMs)
+    }
+
+    @Test
     fun aPoweredBoardHasNoPercentAndAnUnreportedOneNeitherReading() {
         val powered =
             LoraStatus(

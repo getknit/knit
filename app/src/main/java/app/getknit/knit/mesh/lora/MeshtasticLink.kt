@@ -40,8 +40,11 @@ internal interface MeshtasticLink {
     val battery: StateFlow<BoardBattery?>
 
     /**
-     * The board's own duty-cycle measurement, from the same telemetry as [battery]; null until reported and
-     * again once the link is stopped. It is the ground truth `LoraAirtime` only estimates — see [BoardAir].
+     * The board's own air readings, from its live self-telemetry about once a minute — never the handshake's `NodeInfo`,
+     * whose `device_metrics` can be hours old; null until reported and again once the link is stopped or re-handshakes.
+     * Each reading is a distinct value ([BoardAir.atMs]), so a repeat of the same figures still reads as fresh. The
+     * transport's shared-band brake reads [BoardAir.channelUtilPercent] (ADR 2026-10.ug4a); [BoardAir.airUtilTxPercent]
+     * is diagnostics only — see [BoardAir].
      */
     val boardAir: StateFlow<BoardAir?>
 
@@ -315,13 +318,21 @@ internal class ReceivedPacket(
 /**
  * What the board says about the air, off its own `DeviceMetrics`. **Not comparable to `LoraAirtime`'s ledger
  * without saying so**, and the pair is worth keeping straight: [airUtilTxPercent] is every packet this radio
- * sent over the last **hour**, relays of other people's traffic included, while the governor tracks what Knit
- * handed the board over the last **fifteen minutes**. Reading one as the other is what made a quiet plane look
- * like it had leaked airtime. [channelUtilPercent] is the band around it, which Knit never controls at all.
+ * sent over the last **hour**, relays of other people's traffic and the board's own broadcasts included, while the
+ * governor tracks what Knit handed the board over the last **fifteen minutes**. Reading one as the other is what made
+ * a quiet plane look like it had leaked airtime — and why it does not seed the ledger after a restart either (ADR
+ * 2026-10.ug4a): converted to a window it over-books a client on a busy mesh by most of an allowance.
+ * [channelUtilPercent] is the band around it over the last **minute** — TX, RX and noise together, our own airings
+ * included (firmware `airtime.h`, six 10 s periods) — which is what the shared-band brake reads.
  */
 internal data class BoardAir(
     val channelUtilPercent: Float?,
     val airUtilTxPercent: Float?,
+    /**
+     * When the session read it, on the session's monotonic clock (`elapsedRealtime`, the transport's too): what makes
+     * every reading a distinct value, so a board reporting the same figures twice is still a board that reported.
+     */
+    val atMs: Long = 0L,
 )
 
 /** The board's transmit-queue headroom. */

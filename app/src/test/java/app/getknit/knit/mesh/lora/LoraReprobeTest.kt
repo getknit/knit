@@ -164,4 +164,35 @@ class LoraReprobeTest {
         assertEquals(mapOf("carol" to cap, "dave" to base, "bob" to 4 * base), gaps)
         assertEquals("f1", p.stamps().single { it.recipientId == "bob" }.lastFrameId)
     }
+
+    /**
+     * The snapshot's cap (ADR 2026-10.ug4a): direct board holders' schedules are kept first, each group soonest first, so
+     * the entries dropped are the non-holders' — which their first due round forgets anyway — and never a holder's earned
+     * backoff.
+     */
+    @Test
+    fun theCapKeepsHoldersFirstAndDropsNonHoldersFurthestFromDue() {
+        val stamps =
+            listOf(
+                LoraReprobe.Entry("stranger-soon", dueAt = 1, gapMs = base),
+                LoraReprobe.Entry("holder-late", dueAt = 50, gapMs = cap),
+                LoraReprobe.Entry("stranger-late", dueAt = 90, gapMs = base),
+                LoraReprobe.Entry("holder-soon", dueAt = 10, gapMs = 2 * base),
+            )
+        val holders = setOf("holder-late", "holder-soon")
+        assertEquals(
+            listOf("holder-soon", "holder-late", "stranger-soon"),
+            LoraReprobe.capped(stamps, 3, holders::contains).map { it.recipientId },
+        )
+        assertEquals(
+            "a cap smaller than the holders keeps the soonest holders",
+            listOf("holder-soon"),
+            LoraReprobe.capped(stamps, 1, holders::contains).map { it.recipientId },
+        )
+        assertEquals(
+            "with no board map yet nobody can be told apart: the soonest stay",
+            listOf("stranger-soon", "holder-soon", "holder-late"),
+            LoraReprobe.capped(stamps, 3, null).map { it.recipientId },
+        )
+    }
 }

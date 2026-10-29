@@ -3,16 +3,18 @@ package app.getknit.knit.mesh.lora
 import kotlinx.serialization.Serializable
 
 /**
- * Where the LoRa plane's rate limiters live between processes.
+ * Where the LoRa plane's persisted limiters live between processes.
  *
- * Every limiter on this plane used to be process-scoped, so a restart handed the plane a **fresh 45-second
- * allowance** and re-ran every "first time" behaviour against it. The regional duty cycle is law rather than
- * politeness (ADR 067) and the airtime ledger is the only thing enforcing it, so a crash loop, a force-stop or a
- * reinstall cycle spent air that nothing was accounting for — in the lab, where a reinstall lands many times a day,
- * continuously (ADR 2026-09.7svb). What persists now: the ledger, the DM auto-reply's memory and the re-probe's
- * backoff. The beacon floor, the serve caps and the profile re-fan gate went with the traffic they limited (ADR
- * 2026-10.rp3s), the probe window and the re-offer's hour with the reach gate (ADR 2026-10.x9fa); a blob an older build
- * wrote still loads, its dropped keys ignored by the store.
+ * Every limiter on this plane used to be process-scoped, so a restart re-ran every "first time" behaviour (ADR
+ * 2026-09.7svb). What persists now is the two that bound something a restart could replay: the DM auto-reply's
+ * once-a-day memory (the board replays its to-phone queue on reconnect, and a restart is a reconnect) and the
+ * re-probe's backoff — the one schedule on this plane that airs without a user action. The airtime ledger is **not**
+ * persisted any more (ADR 2026-10.ug4a): the regional duty cycle is the firmware's to enforce (`Router::send`'s
+ * `DUTY_CYCLE_LIMIT`), and once the beacon, the bridge and the gossip were gone (ADR 2026-10.rp3s) nothing autonomous
+ * was left for a fresh window to hand out but the re-probe, which its own persisted backoff bounds. The beacon floor,
+ * the serve caps and the profile re-fan gate went with the traffic they limited (ADR 2026-10.rp3s), the probe window
+ * and the re-offer's hour with the reach gate (ADR 2026-10.x9fa); a blob an older build wrote — its ledger included —
+ * still loads, its dropped keys ignored by the store.
  *
  * The seam is an interface here rather than a store because `mesh/lora/` is Android-free: the implementation
  * is a JSON blob in the settings DataStore (`SettingsStore.loraPlaneState`), and every rule about what a
@@ -20,9 +22,10 @@ import kotlinx.serialization.Serializable
  *
  * Two pieces of state are deliberately **not** here. [LoraMeshTransport.sigSeen] is the 10-minute "is this frame
  * in flight" window, and restoring it would carry a *transmitted* record across a restart — which on a plane with no
- * acks is not evidence anyone heard (ADR 2026-09.y8pu). `lastHeardAt` feeds `reachable`, which only fresh frames may
- * write (ADR 2026-09.2ajk): a peer restored from disk would be claimed as reachable on evidence this process never
- * saw. Neither matters much to the burst, because the ledger bounds what they would otherwise let through.
+ * acks is not evidence anyone heard (ADR 2026-09.y8pu). What it would have stopped, an own room post re-served back to
+ * us after a restart and re-aired, the fan-out refuses on its own: a post written before this process started is not
+ * one the user just typed (ADR 2026-10.ug4a). `lastHeardAt` feeds `reachable`, which only fresh frames may write (ADR
+ * 2026-09.2ajk): a peer restored from disk would be claimed as reachable on evidence this process never saw.
  */
 internal interface LoraPlaneState {
     /** The last snapshot written, or null on a first run — or when it could not be read or parsed. */
@@ -39,7 +42,8 @@ internal interface LoraPlaneState {
 }
 
 /**
- * The plane's limiter state as it stood at [savedAtWall], stamped in **wall-clock** milliseconds.
+ * The plane's limiter state as it stood at [savedAtWall], stamped in **wall-clock** milliseconds. The ledger (`air`) an
+ * older build wrote is ignored on load (ADR 2026-10.ug4a): the store's `ignoreUnknownKeys` reads the rest of that blob.
  *
  * Wall clock rather than the monotonic clock the policies themselves run on, because that one is
  * `elapsedRealtime`: it restarts at zero every boot, so a stamp persisted in it reads as the far future on
@@ -49,7 +53,6 @@ internal interface LoraPlaneState {
 @Serializable
 internal data class LoraPlaneSnapshot(
     val savedAtWall: Long,
-    val air: List<AirBooking> = emptyList(),
     /** The Meshtastic nodes the DM auto-reply has answered inside its window, by `!hex` id ([DmAutoReplyPolicy]). */
     val autoReplied: List<SeenStamp> = emptyList(),
     /**
@@ -58,18 +61,6 @@ internal data class LoraPlaneSnapshot(
      * gate; the store ignores those keys, so its blob still loads.
      */
     val reprobes: List<ReprobeStamp> = emptyList(),
-)
-
-/** One packet already booked against the rolling window: what it cost, when, and out of whose share. */
-@Serializable
-internal data class AirBooking(
-    val atWall: Long,
-    val ms: Long,
-    /**
-     * [AirBucket.name], not the enum: a bucket a newer build added is dropped on load rather than thrown on, and a
-     * retired one is mapped by [AirBucket.restoredFrom].
-     */
-    val bucket: String,
 )
 
 /** One stamped id that outlives the process — the auto-reply's memory. */

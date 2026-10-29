@@ -98,7 +98,7 @@ data class LoraRadioUiState(
     val firmware: String? = null,
     /** The board's own battery, once it has reported one; null while not connected. */
     val battery: BoardBattery? = null,
-    /** Airtime spent this hour as a percentage of the plane's own budget, or null before the link is up. */
+    /** Airtime spent this window as a percentage of the plane's own allowance, or null before the link is up. */
     val airtimePercent: Int? = null,
     /** The board's region and modem preset, once its config stream has reported them. */
     val radioConfig: String? = null,
@@ -300,14 +300,14 @@ internal class LoraRadioViewModel(
     }
 
     /**
-     * Airtime spent this window as a percentage of what the plane allows itself — the LIVE budget, which is
-     * the whole allowance, so this reads as "how much of my radio time Knit has used". Both buckets count: the
-     * public room's is a share of the same air. Rounded up, so any spending at all shows as at least 1 %.
+     * Airtime spent this window as a percentage of what the plane allows itself — `usedMs / allowanceMs`, one ledger
+     * against one allowance (ADR 2026-10.ug4a), so this reads as "how much of my radio time Knit has used". Rounded up,
+     * so any spending at all shows as at least 1 %.
      */
     private fun airtimePercent(air: AirtimeSnapshot): Int {
-        val budget = air.liveBudgetMs
+        val budget = air.allowanceMs
         if (budget <= 0) return 0
-        val used = air.totalUsedMs
+        val used = air.usedMs
         return ((used * PERCENT + budget - 1) / budget).toInt().coerceIn(0, PERCENT.toInt())
     }
 

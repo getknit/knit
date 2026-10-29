@@ -73,113 +73,78 @@ class LoraAirtimeTest {
         assertEquals(ceiling, overridden.allowanceMs())
     }
 
-    // --- What the last process spent (LoraPlaneState). ---
+    // --- One ledger, one total, and the foreign audience's half (ADR 2026-10.ug4a). ---
 
     @Test
-    fun aRestoredLedgerStillOwesTheAirTheLastProcessSpent() {
+    fun everyFrameOfOursSpendsOneTotalAgainstTheWholeAllowance() {
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        val spent = LoraAirtime().apply { onRadioConfig(radio()) }
+        air.record(MeshtasticProto.MAX_PAYLOAD, 0)
+        air.record(PublicPostPolicy.MAX_ON_AIR_BYTES, 0, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
+        val both =
+            air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD) +
+                air.timeOnAirMs(PublicPostPolicy.MAX_ON_AIR_BYTES, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
+        assertEquals("a Knit frame and a Meshtastic-room post land in the same ledger", both, air.usedMs(0))
+        val snap = air.snapshot(0)
+        assertEquals(both, snap.usedMs)
+        assertEquals(air.allowanceMs(), snap.allowanceMs)
+        assertEquals((air.allowanceMs() * LoraAirtime.PUBLIC_CEILING).toLong(), snap.publicCeilingMs)
         var now = 0L
-        while (spent.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
-            spent.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(Ceiling.FULL, packet, now)) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-
-        // The bug this closes: the next process built one of these and it admitted everything again.
-        val restarted = LoraAirtime().apply { onRadioConfig(radio()) }
-        assertTrue("a fresh ledger has the whole window", restarted.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now))
-
-        restarted.restore(spent.bookings(now), now)
-        assertEquals(spent.snapshot(now).totalUsedMs, restarted.snapshot(now).totalUsedMs)
-        assertFalse("the window is as spent as the one it came from", restarted.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now))
+        assertTrue(
+            "a full frame spends to the whole allowance",
+            air.usedMs(now) > air.allowanceMs() - air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD),
+        )
+        assertEquals(LoraAirtime.Refusal.TOTAL, air.refusal(Ceiling.FULL, packet, now))
     }
 
     @Test
-    fun aRestoredLedgerGivesBackWhatTheWindowHasOutlived() {
-        val spent = LoraAirtime().apply { onRadioConfig(radio()) }
-        repeat(10) { spent.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, it * 3_000L) }
-        // Shuffled on the way in: a snapshot has been through a clock conversion, so the deque's send order
-        // is the restore's job to re-establish — [LoraAirtime.prune] walks it from the front.
-        val bookings = spent.bookings(30_000).shuffled(kotlin.random.Random(7))
-
-        val restarted = LoraAirtime().apply { onRadioConfig(radio()) }
-        restarted.restore(bookings, LoraAirtime.WINDOW_MS + 30_000)
-
-        assertEquals("a window old enough to have expired owes nothing", 0L, restarted.snapshot(LoraAirtime.WINDOW_MS + 30_000).totalUsedMs)
-    }
-
-    @Test
-    fun aRestoredBookingKeepsTheCostItWasChargedAtNotTodaysPreset() {
-        val slow = LoraAirtime().apply { onRadioConfig(radio(ModemPreset.LONG_SLOW)) }
-        slow.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, 0)
-        val booked = slow.snapshot(0).totalUsedMs
-
-        // A different board between the two processes: the air was spent at the old preset, and that is what
-        // the window is owed.
-        val fast = LoraAirtime().apply { onRadioConfig(radio(ModemPreset.SHORT_TURBO)) }
-        fast.restore(slow.bookings(0), 0)
-
-        assertEquals(booked, fast.snapshot(0).totalUsedMs)
-    }
-
-    /**
-     * The retired buckets of ADR 2026-10.rp3s, read back off a ledger the last build saved: the bridge's and the
-     * gossip OFFER's air is still owed to the window it was spent in, so it comes back as LIVE — a first launch after
-     * the upgrade must not get a free window — while the bootstrap's, judged outside the total, is dropped.
-     */
-    @Test
-    fun aRetiredBucketsBookingIsRestoredAsLiveExceptTheBootstrapsWhichIsDropped() {
-        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("BRIDGE"))
-        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("GOSSIP"))
-        assertNull(AirBucket.restoredFrom("BOOTSTRAP"))
-        assertEquals(AirBucket.LIVE, AirBucket.restoredFrom("LIVE"))
-        assertEquals(AirBucket.PUBLIC, AirBucket.restoredFrom("PUBLIC"))
-        assertNull("a bucket no build wrote is dropped", AirBucket.restoredFrom("CHAT"))
-    }
-
-    @Test
-    fun theLiveBudgetIsTheWholeAllowanceAndPublicIsAShareOfIt() {
-        val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        assertEquals(air.allowanceMs(), air.budgetMs(AirBucket.LIVE))
-        assertEquals((air.allowanceMs() * LoraAirtime.PUBLIC_SHARE).toLong(), air.budgetMs(AirBucket.PUBLIC))
-    }
-
-    @Test
-    fun thePublicChannelIsCappedInBothDirections() {
-        // Its own share, so a busy public room cannot crowd the pocket's own chat off the band; charged
-        // against the total too, so it is a share of the one allowance and not a second one beside it.
+    fun theForeignAudienceStopsAtHalfTheWindowWithItsOwnCostIncluded() {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val post = listOf(PublicPostPolicy.MAX_ON_AIR_BYTES)
         var now = 0L
         var admitted = 0
-        while (air.admits(AirBucket.PUBLIC, FrameClass.ROOM, post, now)) {
-            air.record(AirBucket.PUBLIC, PublicPostPolicy.MAX_ON_AIR_BYTES, now)
+        while (air.admits(Ceiling.HALF, post, now)) {
+            air.record(PublicPostPolicy.MAX_ON_AIR_BYTES, now)
             admitted++
             now += 30_000
-            assertTrue("the share is bounded", admitted < 100)
+            assertTrue("the ceiling is bounded", admitted < 100)
         }
         assertTrue("some public traffic always fits", admitted > 0)
-        assertEquals((air.allowanceMs() * LoraAirtime.PUBLIC_SHARE).toLong(), air.budgetMs(AirBucket.PUBLIC))
-        assertTrue(
-            "the pocket's own chat still has most of the window",
-            air.admits(AirBucket.LIVE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), now),
-        )
-        val left = air.allowanceMs() - air.usedMs(AirBucket.PUBLIC, now)
-        assertTrue("and what it spent is real air, charged to the total", left < air.allowanceMs())
+        val cost = air.timeOnAirMs(PublicPostPolicy.MAX_ON_AIR_BYTES)
+        assertTrue("its own cost is counted: the next one would cross half", air.usedMs(now) + cost > air.publicCeilingMs())
+        assertTrue("and it spent up to it, not short of it", air.usedMs(now) + 2 * cost > air.publicCeilingMs())
+        assertEquals(LoraAirtime.Refusal.CEILING, air.refusal(Ceiling.HALF, post, now))
+        assertNull("a Knit frame still has the other half", air.refusal(Ceiling.FULL, listOf(MeshtasticProto.MAX_PAYLOAD), now))
     }
 
     @Test
-    fun aSpentWindowRefusesAPublicPostToo() {
-        // The other direction: nothing here is exempt from the total the way the key bootstrap is. A window
-        // spent on Knit's own traffic is spent, and a post waits for the next one.
+    fun theHalfIsOnTheTotalSoKnitsOwnSpendLeavesTheRoomLess() {
+        // No share of its own to be judged by: a window Knit has spent past half refuses a Meshtastic-room post, however
+        // little the room itself spent.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        var now = 0L
+        while (air.usedMs(now) <= air.publicCeilingMs()) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        assertEquals(LoraAirtime.Refusal.CEILING, air.refusal(Ceiling.HALF, listOf(40), now))
+        assertNull(air.refusal(Ceiling.FULL, listOf(40), now))
+    }
+
+    @Test
+    fun aSpentWindowRefusesAPublicPostOnTheTotal() {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
         var now = 0L
-        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(Ceiling.FULL, packet, now)) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-        assertFalse(air.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(PublicPostPolicy.MAX_ON_AIR_BYTES), now))
+        assertEquals(LoraAirtime.Refusal.TOTAL, air.refusal(Ceiling.HALF, listOf(PublicPostPolicy.MAX_ON_AIR_BYTES), now))
     }
 
     @Test
@@ -213,30 +178,27 @@ class LoraAirtimeTest {
     }
 
     @Test
-    fun aTickNeverSpendsTheTailOfAWindowButContentStillDoes() {
+    fun aFrameNearlyTheSizeOfWhatIsLeftIsAdmittedWithNoTailHeldBack() {
+        // ADR 054's tick tail is gone (ADR 2026-10.ug4a): the last of the window is anybody's, a ✓✓'s included.
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
+        val packet = listOf(60)
         var now = 0L
-        while (air.admits(AirBucket.LIVE, FrameClass.TICK, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(Ceiling.FULL, packet, now, LoraAirtime.UNSIGNED)) {
+            air.record(60, now, LoraAirtime.UNSIGNED)
             now += 3_000
         }
-        val tail = (air.budgetMs(AirBucket.LIVE) * LoraAirtime.TICK_TAIL_SHARE).toLong()
         assertTrue(
-            "ticks stop at the tail",
-            air.usedMs(AirBucket.LIVE, now) >= air.budgetMs(AirBucket.LIVE) - tail - air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD),
+            "spent to within one packet of the whole allowance",
+            air.allowanceMs() - air.usedMs(now) < air.timeOnAirMs(60, LoraAirtime.UNSIGNED),
         )
-        assertFalse(air.admits(AirBucket.LIVE, FrameClass.TICK, packet, now))
-        assertTrue("a DM still has the tail", air.admits(AirBucket.LIVE, FrameClass.DM, packet, now))
-        assertTrue("so does the room", air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now))
     }
 
     @Test
     fun spendingAgesOutOfTheRollingWindow() {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
-        air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, 0)
-        assertTrue(air.usedMs(AirBucket.LIVE, 0) > 0)
-        assertEquals(0L, air.usedMs(AirBucket.LIVE, LoraAirtime.WINDOW_MS))
+        air.record(MeshtasticProto.MAX_PAYLOAD, 0)
+        assertTrue(air.usedMs(0) > 0)
+        assertEquals(0L, air.usedMs(LoraAirtime.WINDOW_MS))
     }
 
     @Test
@@ -246,12 +208,12 @@ class LoraAirtimeTest {
         val three = List(3) { MeshtasticProto.MAX_PAYLOAD }
         var now = 0L
         // Spend down to where one packet fits but three do not.
-        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, three, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(Ceiling.FULL, three, now)) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-        assertFalse(air.admits(AirBucket.LIVE, FrameClass.ROOM, three, now))
-        assertTrue(air.admits(AirBucket.LIVE, FrameClass.ROOM, one, now))
+        assertFalse(air.admits(Ceiling.FULL, three, now))
+        assertTrue(air.admits(Ceiling.FULL, one, now))
     }
 
     // --- ADR 067: a dedicated RF slot lifts the politeness ceiling, never the law ---
@@ -443,8 +405,8 @@ class LoraAirtimeTest {
                     onFirmware(firmware)
                 }
             var n = 0
-            while (air.admits(AirBucket.LIVE, FrameClass.ROOM, listOf(157), 0L)) {
-                air.record(AirBucket.LIVE, 157, 0L)
+            while (air.admits(Ceiling.FULL, listOf(157), 0L)) {
+                air.record(157, 0L)
                 n++
             }
             return n
@@ -487,51 +449,42 @@ class LoraAirtimeTest {
     }
 
     @Test
-    fun aRefusalSaysWhichBudgetSaidNo() {
+    fun aRefusalSaysWhichLimitSaidNo() {
         val air = LoraAirtime()
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        assertNull(air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now = 0))
+        assertNull(air.refusal(Ceiling.FULL, packet, now = 0))
         var now = 0L
-        while (air.admits(AirBucket.PUBLIC, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.PUBLIC, MeshtasticProto.MAX_PAYLOAD, now)
+        while (air.admits(Ceiling.HALF, packet, now)) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-        assertEquals("the public room's own share", LoraAirtime.Refusal.SHARE, air.refusal(AirBucket.PUBLIC, FrameClass.ROOM, packet, now))
-        assertNull("live still has the rest of the total", air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now))
-        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+        assertEquals("the foreign audience's half", LoraAirtime.Refusal.CEILING, air.refusal(Ceiling.HALF, packet, now))
+        assertNull("a Knit frame still has the rest of the total", air.refusal(Ceiling.FULL, packet, now))
+        while (air.admits(Ceiling.FULL, packet, now)) {
+            air.record(MeshtasticProto.MAX_PAYLOAD, now)
             now += 3_000
         }
-        assertEquals(LoraAirtime.Refusal.TOTAL, air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now))
-        val tooBig =
-            List((air.budgetMs(AirBucket.LIVE) / air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD) + 1).toInt()) { MeshtasticProto.MAX_PAYLOAD }
-        assertEquals(LoraAirtime.Refusal.NEVER, air.refusal(AirBucket.LIVE, FrameClass.DM, tooBig, now = 0))
-    }
-
-    @Test
-    fun aTickInTheTailIsRefusedForTheTail() {
-        val air = LoraAirtime()
-        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
-        var now = 0L
-        while (air.admits(AirBucket.LIVE, FrameClass.TICK, packet, now)) {
-            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
-            now += 3_000
-        }
-        assertEquals(LoraAirtime.Refusal.TICK_TAIL, air.refusal(AirBucket.LIVE, FrameClass.TICK, packet, now))
-        assertNull("content still has the tail", air.refusal(AirBucket.LIVE, FrameClass.DM, packet, now))
+        assertEquals(LoraAirtime.Refusal.TOTAL, air.refusal(Ceiling.FULL, packet, now))
+        assertEquals("the total outranks the ceiling", LoraAirtime.Refusal.TOTAL, air.refusal(Ceiling.HALF, packet, now))
+        val tooBig = List((air.allowanceMs() / air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD) + 1).toInt()) { MeshtasticProto.MAX_PAYLOAD }
+        assertEquals(LoraAirtime.Refusal.NEVER, air.refusal(Ceiling.FULL, tooBig, now = 0))
+        assertEquals(LoraAirtime.Refusal.NEVER, air.refusal(Ceiling.HALF, tooBig, now = 0))
     }
 
     @Test
     fun aRefundGivesBackOnlyTheExactBookingsAndNoMoreThanAsked() {
-        // A compact DM is booked for every airing at send; its ack refunds the unflown ones (ADR 2026-10.x9fa).
+        // A compact DM is booked for every airing at send; its ack refunds the unflown ones (ADR 2026-10.x9fa), matched on
+        // when and how much with no bucket to tell them apart (ADR 2026-10.ug4a).
         val air = LoraAirtime()
         val ms = air.timeOnAirMs(60, LoraAirtime.UNSIGNED)
-        repeat(5) { air.record(AirBucket.LIVE, 60, 1_000, LoraAirtime.UNSIGNED) }
-        air.record(AirBucket.LIVE, 60, 2_000, LoraAirtime.UNSIGNED) // another send's: not this one's to give back
-        assertEquals(3, air.refund(AirBucket.LIVE, 1_000, ms, 3))
-        assertEquals(3 * ms, air.snapshot(2_000).liveUsedMs)
-        assertEquals("only two of its own were left", 2, air.refund(AirBucket.LIVE, 1_000, ms, 9))
-        assertEquals(ms, air.snapshot(2_000).liveUsedMs)
+        repeat(5) { air.record(60, 1_000, LoraAirtime.UNSIGNED) }
+        air.record(60, 2_000, LoraAirtime.UNSIGNED) // another send's: not this one's to give back
+        air.record(120, 1_000, LoraAirtime.UNSIGNED) // same instant, another cost: not this one's either
+        val other = air.timeOnAirMs(120, LoraAirtime.UNSIGNED)
+        assertEquals(3, air.refund(1_000, ms, 3))
+        assertEquals(3 * ms + other, air.snapshot(2_000).usedMs)
+        assertEquals("only two of its own were left", 2, air.refund(1_000, ms, 9))
+        assertEquals(ms + other, air.snapshot(2_000).usedMs)
     }
 
     @Test

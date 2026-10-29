@@ -164,7 +164,8 @@ doc). **Don't start a deferred item without explicit direction.**
   and everything automated stays zero-hop, or one named-repeater hop.
   - **Owed to build it:** a board-neutral seam in place of `MeshtasticLink`; a MeshCore client (164 B BLE cap, a
     response matched to its request, a lossy drain, a varying byte per send); a direct-reach set for the DM gate; a
-    MeshCore-only reassembly limit of 4–5 parts; a registered `data_type`; region UX.
+    MeshCore-only reassembly limit of 4–5 parts; a registered `data_type`; region UX; `GET_STATS` filling the same
+    `BoardAir` (channel utilisation, our own TX) the shared-band brake reads (ADR 2026-10.ug4a).
   - **Owed before release:** two trials, a one-named-hop route through a third board as a repeater, and real-range
     loss outdoors.
 
@@ -353,7 +354,8 @@ doc). **Don't start a deferred item without explicit direction.**
   burned. A heard post is lined up with a contact through the bound board's node number the profile now
   carries (`ProfileContent.loraNode` → `peers.loraNode`), resolved once at ingest and frozen on the row
   (`messages.originPeerId`) so a board changing hands never re-attributes history; still an unverified match,
-  rendered as such. Metered by `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-board floor, and every
+  rendered as such. Metered by `AirBucket.PUBLIC` (15 % of the window; since ADR 2026-10.ug4a, half the window's
+  one total) plus a 30 s per-board floor, and every
   refusal is shown at the composer with the draft kept. **Still owed:** the on-hardware trial in
   `context/lora-bridge.md` (two boards, one board-less phone: the board-less phone sees nothing, a contact's
   post wears their name off the node number alone, a second post inside 30 s is refused, the title follows a
@@ -428,7 +430,13 @@ doc). **Don't start a deferred item without explicit direction.**
   and `airtime` flat), and the strand trial (B's board off, A sends two DMs, B back on and silent → both land within
   one window with ✓✓ on A). **Deferred: "Forward over LoRa"** — a user-initiated long-press that airs one
   pocket-mate's room post on this phone's board; a second clause of `LoraFramePolicy.airs` and nowhere else, UI
-  undecided. Stages 2 (compact pair-sealed unicast DMs) and 3 (the airtime ledger's replacement) follow. **Airtime shaping
+  undecided. Stages 2 (compact pair-sealed unicast DMs, ADR 2026-10.x9fa) and 3 follow. **Stage 3 BUILT** (2026-10-29, ADR
+  2026-10.ug4a, proposed, uncommitted): one ledger and one total with the Meshtastic room and the auto-reply capped at
+  half, two priorities (`DIRECT`, `ROOM`) with the ✓✓ in `DIRECT` and no tick tail, the ledger no longer persisted and
+  nothing seeded from the board, an own room post from before the process started never re-aired, and a shared-band
+  brake on the board's live channel utilisation (≥ 40 %, ≤ 5 min old, off a dedicated slot) that holds Knit room posts.
+  **Still owed:** the restart, brake, settings-row and auto-reply board trials in the ADR; the room's "band busy"
+  notice (strings in six locales). **Airtime shaping
   SHIPPED** (2026-08-27, ADR 054): the recipient gate (a DM-form frame to a linked peer or to self never rides
   the board), a 15-min budget window at the same 5 %, a `TICK` class that sheds first and never spends a
   window's tail, coalesced DM receipts (`DmAckCoalescer`, ≤ 45 s hold, one tick per burst) piggybacked on a
@@ -476,6 +484,7 @@ doc). **Don't start a deferred item without explicit direction.**
   <!-- doc-lint: allow LoraCtl — the retired OFFER codec, named as history -->
   <!-- doc-lint: allow LoraCtl — the shipped bridge this entry records, removed by ADR 2026-10.rp3s -->
   <!-- doc-lint: allow loraBridgeEnabled — the shipped bridge this entry records, removed by ADR 2026-10.rp3s -->
+  <!-- doc-lint: allow AirBucket — the share as it shipped, superseded by ADR 2026-10.ug4a -->
 
 - ~~**The spool plane is hidden in shipped builds**~~ (2026-08-22, ADR 031) — **introduced at 2.4.0**
   (2026-08-31, ADR 064): `BuildConfig.INTERNET_PLANE` now defaults true in release and staging too, so a

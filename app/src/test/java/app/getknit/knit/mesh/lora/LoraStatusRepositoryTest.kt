@@ -99,8 +99,8 @@ class LoraStatusRepositoryTest {
                     ModemPreset.LONG_FAST,
                     LoraRegion.US,
                     known = true,
-                    liveUsedMs = 0,
-                    liveBudgetMs = 45_000,
+                    usedMs = 0,
+                    allowanceMs = 45_000,
                     dedicated = true,
                 )
             status.value = LoraStatus(state = ready, airtime = air)
@@ -142,17 +142,16 @@ class LoraStatusRepositoryTest {
                     ModemPreset.LONG_FAST,
                     LoraRegion.OTHER,
                     known = true,
-                    liveUsedMs = 40_000,
-                    liveBudgetMs = 45_000,
-                    publicUsedMs = 1_000,
-                    publicBudgetMs = 6_750,
+                    usedMs = 41_000,
+                    allowanceMs = 45_000,
+                    publicCeilingMs = 22_500,
                 )
-            val roomy = spent.copy(liveUsedMs = 20_000)
+            val roomy = spent.copy(usedMs = 21_000)
             status.value = LoraStatus(state = LinkState.Idle, airtime = spent)
             assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
             status.value = LoraStatus(state = ready, airtime = spent)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = true, canPost = true), repo.facts.first())
-            // Live and public spending count together, against the live budget — as the governor admits them.
+            // One ledger against one allowance (ADR 2026-10.ug4a) — as the governor admits them.
             status.value = LoraStatus(state = ready, airtime = roomy)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = false, canPost = true), repo.facts.first())
         }
@@ -226,8 +225,8 @@ class LoraStatusRepositoryTest {
                     ModemPreset.LONG_FAST,
                     LoraRegion.US,
                     known = true,
-                    liveUsedMs = 0,
-                    liveBudgetMs = 45_000,
+                    usedMs = 0,
+                    allowanceMs = 45_000,
                     signing = false,
                 )
             status.value = LoraStatus(state = ready, airtime = air)

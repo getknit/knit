@@ -67,20 +67,36 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   fragments; a 2.8 board signs anything ≤ 165 B, so the **last** packet of a **deflated** frame is padded to 166 —
   never a stored `0x03`/`0x05` body, never an earlier fragment. `hop_limit` is stated (3) on every send: omitted
   means zero on 2.8, not the node's default (`everyPacketLeavesWithHopsToSpend`).
-- **When touching `LoraAirtime` (`AirBucket`, `AirBucket.restoredFrom`, `admits`, `refusal`, `allowanceMs`,
-  `signsPackets`, `onFirmware`, `dedicatedUnlocksDuty`), `LoraPacePolicy` (`FrameClass`, `enqueue`, `take`, `admitBest`,
-  `onQueueStatus`, `onNak`), `OutboundFrame.supersedes` / `admissionSizes` / `signedUpTo`, `LoraAirtime.UNSIGNED`, or
-  `MeshTransport.FanoutHint`:** READ ADR 044 (its allowance and 2026-10-04 amendment; the rest is superseded), ADR 054,
-  ADR 2026-09.xdm2, ADR 067, ADR 2026-10.rp3s and ADR 2026-10.x9fa, then
-  "Pacing" in `lora-bridge.md`. One allowance = `min(region duty, 10 % politeness) × 0.5` of a 15-minute window (45 s
-  at LongFast); the duty cycle is law and only Knit's own dedicated slot lifts the politeness half. Two buckets: `LIVE`
-  may spend it all, `PUBLIC` 15 % and the total; `TICK` never spends the last 25 %. Every air spend is booked — no class
-  is exempt and unmetered. Dequeue is by class (`DM`, `ROOM`, `TICK`) then FIFO, a refused frame is skipped, except
-  that a live frame the total refused holds everything ranked behind it. A retired bucket's persisted booking is
-  restored as `LIVE` (`BRIDGE`, `GOSSIP`) or dropped (`BOOTSTRAP`). Every entry point of the pacer and the ledger is
-  `@Synchronized`, and the pacer's monitor is taken outside the ledger's. A compact DM is priced unsigned (a unicast is
-  never signed) and admitted against every airing the firmware may give it (`LoraDirectPolicy.AIRINGS`); every
-  airing is booked at send and the unflown ones refunded on its ack (ADR 2026-10.x9fa).
+- **When touching `LoraAirtime` (`Ceiling`, `admits`, `refusal`, `refund`, `allowanceMs`, `publicCeilingMs`,
+  `PUBLIC_CEILING`, `signsPackets`, `onFirmware`, `dedicatedUnlocksDuty`), `LoraPacePolicy` (`FrameClass`, `enqueue`,
+  `take`, `admitBest`, `onQueueStatus`, `onNak`), `OutboundFrame.supersedes` / `admissionSizes` / `signedUpTo` /
+  `shedRank`, `LoraAirtime.UNSIGNED`, `AirtimeSnapshot`, or `MeshTransport.FanoutHint`:** READ ADR 2026-10.ug4a, then
+  ADR 044 (its allowance and 2026-10-04 amendment; the rest is superseded), ADR 054 (the window), ADR 2026-09.xdm2,
+  ADR 067, ADR 2026-10.rp3s and ADR 2026-10.x9fa, then "Pacing" in `lora-bridge.md`. One allowance =
+  `min(region duty, 10 % politeness) × 0.5` of a 15-minute window (45 s at LongFast); the duty cycle is law (the
+  firmware's `DUTY_CYCLE_LIMIT` enforces it) and only Knit's own dedicated slot lifts the politeness half. One ledger,
+  no buckets: every frame of ours spends the one total (`Ceiling.FULL`), and the Meshtastic room's post and the DM
+  auto-reply only while the total, their own cost included, stays within half (`Ceiling.HALF`, refused as `CEILING`,
+  which holds nothing). No tick tail. Every air spend is booked — no class is exempt and unmetered. Two priorities:
+  `DIRECT` (compact DMs, ✓✓, reactions, resends, re-probes) dequeues before `ROOM`; a full queue sheds `ROOM`, then a
+  ✓✓, then a DM or a reaction (`shedRank`). A refused frame is skipped, except that a `DIRECT` frame the total refused
+  holds everything ranked behind it. Every entry point of the pacer and the ledger is `@Synchronized`, and the pacer's
+  monitor is taken outside the ledger's. A unicast — a compact DM and the auto-reply — is priced unsigned (2.8 signs
+  only broadcasts, `NodeInfo` and position); a compact DM is admitted against every airing the firmware may give it
+  (`LoraDirectPolicy.AIRINGS`), every airing booked at send and the unflown ones refunded on its ack (ADR 2026-10.x9fa).
+  The ledger is not persisted and nothing seeds it (ADR 2026-10.ug4a): a restart starts the window empty.
+  <!-- doc-lint: allow AirBucket — the buckets ADR 2026-10.ug4a removed, named as history -->
+- **When touching the shared-band brake — `LoraPacePolicy.onBandReading` / `braked` / `forgetBand` /
+  `BUSY_BAND_PERCENT` / `BRAKE_FRESH_MS`, `OutboundFrame.braked` / `heldForBand`, `BoardAir` (`atMs`),
+  `MeshtasticSession.onSelfMetrics`, `LoraStatus.braked`, or `loraBandBraked`:** READ ADR 2026-10.ug4a, then "Pacing"
+  in `lora-bridge.md`. While the board's channel utilisation is at or over 40 % (the firmware's
+  `max_channel_util_percent`, where it stops even its own automatic traffic; stock firmware never gates typed text) on a reading at most 5 minutes old, off a dedicated slot, Knit room posts wait in the queue; compact DMs, the
+  Meshtastic room and the auto-reply still go. Stricter than a stock client, which would send the typed post: on a slot
+  at or over 40 % most of the time, room posts may never cross LoRa and drop as `STALE` after `FRESH_MS`. The reading is the board's **live** self-telemetry only — never the
+  handshake `NodeInfo`, whose `device_metrics` can be hours old — timed on arrival, forgotten when the board is lost; a
+  braked-only queue sleeps to the reading's staleness and a new reading wakes it. A brake is not an airtime refusal:
+  it never sets the air deferral and is counted apart (`loraBandBraked`, once per frame). `airUtilTx` is a diagnostic
+  only, never a ledger seed.
 - **When touching `skipCovered` / `coverReason`, `suppressDataPath` / `linkIds`, `coveredByInternet` on this plane,
   `RideGate` (`authorId`, `direct`, `reachHeld`, `unackedFrameId`), `staleReason` / `StaleAtSend`,
   `OutboundFrame.sigKey`, `sendFrame`, or `selfIdKnown`:** READ ADR 054 and ADR 2026-09.5dt2 (and ADR 2026-09.y5f3 for
@@ -101,13 +117,18 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   **Before touching `AckSync.backOff` or `escalateRide`'s reach:** READ ADR 2026-09.6gk8 and ADR 2026-10.rp3s — a
   cleartext owed tick backs off like the sealed one, and the ride's air route reads `shortRangeReachable`, never the
   LoRa plane's reach.
-- **When touching `LoraPlaneState`, `LoraPlaneStateStore`, `WallShift`, `awaitRestored`, `LoraAirtime.bookings` /
-  `restore`, or what `stop()` saves:** READ ADR 2026-09.7svb and "Limiters that outlive the process" in
-  `lora-bridge.md`. The ledger, the auto-reply memory and the re-probe schedule (`reprobes`, ADR 2026-10.rp3s, its
-  keys kept by ADR 2026-10.x9fa) survive a restart, stamped on the wall clock; nothing transmits until they are back
-  (5 s bound). The probe window and the re-offer's hour (`dmProbes`, `reoffered`) went with the reach gate; an older
-  blob still loads. `sigSeen`, `lastHeardAt` and the compact DM's reach marks are **not** persisted, on purpose. The blob is user data: a renamed or retyped field drops a limiter, and a blob an older build wrote must
-  still load every limiter this build keeps (`LoraPlaneStateStoreTest`).
+- **When touching `LoraPlaneState`, `LoraPlaneStateStore`, `WallShift`, `awaitRestored`, `LoraReprobe.capped`,
+  `STATE_REPROBE_CAP`, `LoraFramePolicy.predates` / `processStartWall`, or what `stop()` saves:** READ ADR 2026-09.7svb
+  (its ledger half superseded by ADR 2026-10.ug4a) and "Limiters that outlive the process" in `lora-bridge.md`. The
+  auto-reply memory and the re-probe schedule (`reprobes`, ADR 2026-10.rp3s, its keys kept by ADR 2026-10.x9fa)
+  survive a restart, stamped on the wall clock; nothing transmits until they are back (5 s bound). The airtime ledger
+  does **not** (ADR 2026-10.ug4a): an older blob's `air` is ignored, under the same key. The snapshot's re-probe cap
+  keeps direct board holders first, then the soonest due. An own room post written before this process started never
+  re-airs (`predates`): it is a re-serve, which a restart's empty seen windows would otherwise let through. The probe
+  window and the re-offer's hour (`dmProbes`, `reoffered`) went with the reach gate; an older blob still loads.
+  `sigSeen`, `lastHeardAt` and the compact DM's reach marks are **not** persisted, on purpose. The blob is user data: a
+  renamed or retyped field drops a limiter, and a blob an older build wrote must still load every limiter this build
+  keeps (`LoraPlaneStateStoreTest`).
 - **When touching board setup — `provisionKnitChannel`, `BoardQuiet`, `ProvisionMode`, `BoardName`, `LoraSlot`,
   `KnitChannel`, `spliceVarintFields` / `spliceStringFields`, `BoardSettings`, `SettingsStore.loraBoardSetup`, or
   `BoardConfig.LORA`:** READ ADR 045, ADR 049, ADR 2026-09.emd7 and ADR 067, then "Board provisioning" and "Setting a
@@ -129,10 +150,10 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `autoConnect` with an hourly direct net and no arbiter while waiting; a refusal backs off, only a spent window
   doesn't; the pacer parks on `link.state`, never its 1 s tick.
 - **When touching the Meshtastic room — `onLoraPacket`'s slot-0 branch, `PublicChannelPolicy`, `PublicPostPolicy`
-  (`onAirText`, `onAirBudget`), `postToPublicChannel`, `AirBucket.PUBLIC`, `mesh/crypto/XeddsaVerify`,
+  (`onAirText`, `onAirBudget`), `postToPublicChannel`, `Ceiling.HALF`, `mesh/crypto/XeddsaVerify`,
   `ProfileContent.loraNode` / `loraKey`, `PeerRepository.findByLoraNode`, `messages.originPeerId` / `originSigned`, or
   `SettingsStore.loraRoomEnabled`:** READ ADR 2026-09.26q3, ADR 2026-09.9469, ADR 2026-09.ggq4, ADR 2026-09.sre4 and
-  ADR 2026-09.x52a, then "The Meshtastic room" in `lora-bridge.md`. The room is a local mirror of the bound board's
+  ADR 2026-09.x52a (and ADR 2026-10.ug4a for its half ceiling), then "The Meshtastic room" in `lora-bridge.md`. The room is a local mirror of the bound board's
   slot 0: nothing minted, custodied or fanned out, no gateway gate; a post leaves through this phone's own board as the
   words alone, no author name. A heard author is resolved once at ingest through the node number their profile claims
   and stays "unverified" unless the board key in that profile verifies the XEdDSA signature — in firmware 2.8.1's
@@ -141,9 +162,10 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   2026-09.7r4d are superseded: the `meshpost` type is burned, never bring a custodial frame back for this traffic.
   `loraNode` / `loraKey` are profile fields the iOS port reads too (paired change).
   **Before touching `DmAutoReplyPolicy`, `Destination.Reply`, `OutboundFrame.to`, or `MeshtasticLink.send`'s
-  `LinkDestination.Direct(ack = false)`:** READ ADR 2026-09.4n5p and its 2026-10-29 amendment — a Meshtastic DM to a
-  set-up board is answered once with a fixed unicast (once per sender per day, once per 30 s for anybody, the room's
-  air share, never from a stock or a dedicated-slot board), the plane's one direct send without `want_ack`.
+  `LinkDestination.Direct(ack = false)`:** READ ADR 2026-09.4n5p and its 2026-10-29 amendment, then ADR 2026-10.ug4a —
+  a Meshtastic DM to a set-up board is answered once with a fixed unicast (once per sender per day, once per 30 s for
+  anybody, under the window's half ceiling asked before the sender is stamped, priced unsigned, never from a stock or a
+  dedicated-slot board), the plane's one direct send without `want_ack`.
 - **When touching the plane's face — `DeliveryPlane.LoRa`, `InboundFrame.kind`, `LoraPlane`, `LoraStatus` /
   `LoraStatusRepository`, `BoardFilter`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `GroupUnsupported`,
   `LoraOnlySaturated`, `loraHintFor`), or `ui/lora/`:** READ ADR 040 (its §1 collapse amended by ADR 2026-10.e42d), ADR
@@ -160,7 +182,9 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
 - **Before adding a second board kind (MeshCore) or making `MeshtasticLink` board-neutral:** READ ADR 2026-10.jend.
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under
-  `AirBucket.PUBLIC`. Every DM-form frame, every room tick and all machine traffic stays zero-hop, or one hop through
+  `AirBucket.PUBLIC` (the ledger is one total since ADR 2026-10.ug4a; MeshCore's `GET_STATS` fills the same
+  `BoardAir` the brake reads).
+  <!-- doc-lint: allow AirBucket — jend's booking as it decided it, before ADR 2026-10.ug4a --> Every DM-form frame, every room tick and all machine traffic stays zero-hop, or one hop through
   a named repeater. DM-form traffic is gated on a direct-reach set (frames heard at hop count 0), never on
   `reachable`. ADR 2026-10.rp3s narrows this on both boards: only the user's own frames air. ADR 2026-10.x9fa built the
   board-neutral seam a second board needs (`LinkDestination`, `BoardAddr`, `PacketOutcome`) and a compact DM that fits

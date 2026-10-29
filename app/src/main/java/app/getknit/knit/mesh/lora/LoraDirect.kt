@@ -136,17 +136,21 @@ internal interface LoraDirectSink {
 }
 
 /**
- * What a compact DM is, as far as the plane needs to know — the one thing it cannot read off sealed bytes. Decides its
- * pacing class and whether the re-probe tracks it.
+ * What a compact DM is, as far as the plane needs to know — the one thing it cannot read off sealed bytes. Every kind is
+ * [FrameClass.DIRECT] (ADR 2026-10.ug4a); the kind decides where a full queue sheds it ([OutboundFrame.shedRank]) and
+ * whether the re-probe tracks it.
  */
 internal enum class DirectKind {
-    /** A DM a person wrote: class `DM`, and on the re-probe's schedule until its ✓✓ lands. */
+    /** A DM a person wrote: `DIRECT`, shed last, and on the re-probe's schedule until its ✓✓ lands. */
     MESSAGE,
 
-    /** A DM reaction: class `DM`; no row of ours waits on a ✓✓ for it, so nothing re-airs it. */
+    /** A DM reaction: `DIRECT`, shed last; no row of ours waits on a ✓✓ for it, so nothing re-airs it. */
     REACTION,
 
-    /** The coalesced ✓✓ (`CTL_RECEIPT`): class `TICK`, so it never spends the last quarter of a window (ADR 054). */
+    /**
+     * The coalesced ✓✓ (`CTL_RECEIPT`): `DIRECT`, dequeued in its turn and free to spend a window's last quarter, but
+     * ranked first to shed among direct frames, so it never pushes out something the user typed (ADR 2026-10.ug4a).
+     */
     RECEIPT,
 }
 

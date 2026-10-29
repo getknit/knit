@@ -6,14 +6,15 @@ package app.getknit.knit.mesh.lora
  * ~1 kbps shared medium — a 233-B packet is ~2.5 s on air and the board floods each one three hops — so
  * unpaced sends would swamp it and draw duty-cycle refusals.
  *
- * The queue sheds by **class** when full ([FrameClass]): from the lowest class present — the newcomer
- * included, so a frame that is alone at the bottom yields instead of evicting anything — and the **oldest
- * whole frame** within it (never a lone fragment, which would strand a half-delivered message). So a room
- * post never evicts a DM. A rate/duty-cycle NAK widens the gap for
- * a cool-down window, and since ADR 044 an injected [LoraAirtime] holds a rolling budget the queue is drained
- * against — so a frame can also wait because the plane has spent its share of the medium, not just because
- * the gap has not elapsed. Dequeue runs the same class order forwards (see [take]). Tested on the JVM
- * ([app.getknit.knit.mesh.lora.LoraPacePolicyTest]).
+ * The queue sheds by **class** when full ([FrameClass], [OutboundFrame.shedRank]): from the lowest rank present — the
+ * newcomer included, so a frame that is alone at the bottom yields instead of evicting anything — and the **oldest
+ * whole frame** within it (never a lone fragment, which would strand a half-delivered message). So a room post never
+ * evicts a DM, and inside [FrameClass.DIRECT] a ✓✓ goes before a DM or a reaction the user wrote (ADR 2026-10.ug4a).
+ * A rate/duty-cycle NAK widens the gap for a cool-down window, and since ADR 044 an injected [LoraAirtime] holds a
+ * rolling budget the queue is drained against — so a frame can also wait because the plane has spent the window, not
+ * just because the gap has not elapsed. Dequeue runs the class order forwards (see [take]). And since ADR 2026-10.ug4a
+ * the **shared-band brake** ([braked]) keeps Knit room posts queued while the board reports a busy channel. Tested on
+ * the JVM ([app.getknit.knit.mesh.lora.LoraPacePolicyTest]).
  *
  * **Every entry point is `@Synchronized`, because this queue has six writers on five coroutines.** `take`
  * runs on the pacer loop; `enqueue` on whichever coroutine sent (the composite's fan-out, a compact DM's offer,
@@ -28,8 +29,10 @@ internal class LoraPacePolicy(
     private val minGapMs: Long = MIN_GAP_MS,
     private val queueCap: Int = QUEUE_CAP_FRAMES,
     private val nakBackoffMs: Long = NAK_BACKOFF_MS,
-    /** The airtime ledger; a frame is only taken if its whole cost fits its bucket's rolling budget. */
+    /** The airtime ledger; a frame is only taken if its whole cost fits under its [Ceiling]. */
     val airtime: LoraAirtime = LoraAirtime(),
+    /** How old a channel-utilisation reading may be and still brake ([BRAKE_FRESH_MS]). */
+    private val brakeFreshMs: Long = BRAKE_FRESH_MS,
 ) {
     private val queue = ArrayDeque<OutboundFrame>()
     private var lastSentAt = Long.MIN_VALUE
@@ -37,19 +40,33 @@ internal class LoraPacePolicy(
     private var nakUntil = 0L
     private var airtimeBlockedUntil = 0L
 
+    /** When the brake lifts on its own, the reading it rests on gone stale, while only braked frames were left. */
+    private var brakeBlockedUntil = 0L
+
+    /**
+     * The board's last channel-utilisation reading, in percent, and when it was taken on the caller's clock: what [braked]
+     * reads. Only the board's live self-telemetry feeds it (ADR 2026-10.ug4a) — never the handshake's `NodeInfo`, whose
+     * `device_metrics` can be hours old.
+     */
+    private var bandUtilPercent: Float? = null
+    private var bandReadAt = 0L
+
     /** Frames left in the queue that the airtime budget refused on the last [take]; diagnostics only. */
     var lastAirtimeRefusals = 0
         private set
 
     /**
-     * The buckets of frames the airtime budget held for the **first** time on the last [take] — one entry per
-     * frame, and a given frame appears at most once in its whole life (see [OutboundFrame.heldForAir]).
+     * How many frames the airtime budget held for the **first** time on the last [take]: a given frame counts at most once
+     * in its whole life (see [OutboundFrame.heldForAir]).
      *
      * [lastAirtimeRefusals] answers "how many are stuck right now", which is a level and is re-read every
      * wake; this answers "what just became stuck", which is an event and is what a counter may be built on.
-     * Empty on the common path, so a drain that admits everything allocates nothing.
      */
-    var lastAirtimeHolds: List<AirBucket> = emptyList()
+    var lastAirtimeHolds = 0
+        private set
+
+    /** How many Knit room posts the shared-band brake held for the **first** time on the last [take] ([OutboundFrame.heldForBand]). */
+    var lastBandBrakes = 0
         private set
 
     /**
@@ -63,10 +80,10 @@ internal class LoraPacePolicy(
 
     @Synchronized
     fun enqueue(frame: OutboundFrame): Admission {
-        // A newcomer may fit where everything queued did not — it may spend a bucket the queue was not
-        // asking for — so the airtime deferral is a fact about the queue as it stood, not a standing
-        // cool-down.
+        // A newcomer may fit where everything queued did not — a DM where only braked room posts waited, a small frame
+        // where a large one did not fit — so both deferrals are facts about the queue as it stood, not standing cool-downs.
         airtimeBlockedUntil = 0L
+        brakeBlockedUntil = 0L
         // A snapshot replaces its own older copy before anything else is decided, so a superseded frame can
         // never cost the newcomer a queue slot or make the queue look fuller than it is. Never a part-sent copy:
         // the board already holds its first fragments, and dropping the rest strands them on the air (feb2d5a4).
@@ -85,6 +102,7 @@ internal class LoraPacePolicy(
     fun requeue(frame: OutboundFrame): Admission {
         if (inFlight === frame) inFlight = null
         airtimeBlockedUntil = 0L
+        brakeBlockedUntil = 0L
         lastSuperseded = 0
         return admit(frame)
     }
@@ -109,12 +127,12 @@ internal class LoraPacePolicy(
             queue.addLast(frame)
             return Admission.ACCEPTED
         }
-        // Full: shed from the lowest class present, newcomer included (enum order = priority, highest first).
-        val lowest = maxOf(queue.maxOf { it.klass }, frame.klass)
-        val victim = queue.indexOfFirst { it.klass == lowest }
+        // Full: shed from the lowest rank present, newcomer included — a room post, then a ✓✓, then a DM or a reaction.
+        val lowest = maxOf(queue.maxOf { it.shedRank }, frame.shedRank)
+        val victim = queue.indexOfFirst { it.shedRank == lowest }
         if (victim < 0) {
-            // The newcomer alone is the lowest class: it yields — and, never queued, it is handed back like any shed
-            // frame, so whatever it held (its dedup slot) is given back by the caller.
+            // The newcomer alone is the lowest rank: it yields — and, never queued, it is handed back like any shed
+            // frame, so whatever it held (its dedup slot, a compact DM's parked offers) is given back by the caller.
             shed += frame
             return Admission.REFUSED
         }
@@ -169,58 +187,118 @@ internal class LoraPacePolicy(
         private set
 
     /**
-     * The earliest time the next frame may go out: the min gap since the last send, any NAK cool-down, and —
-     * once [take] has found the whole queue over budget — the moment the rolling window next frees air.
+     * The earliest time the next frame may go out: the min gap since the last send, any NAK cool-down, and — once
+     * [take] has found nothing it may send — the soonest the answer can change by itself: the rolling window freeing
+     * air for a frame it refused, or the brake's reading going stale for a room post it braked.
      *
      * That last term is what keeps the caller's drain loop asleep. Without it a queue nothing may leave
      * reports a due time already in the past, so the loop computes a zero wait, never suspends, and spins a
      * core flat for as long as the budget stays spent (and, having no suspension point, cannot be cancelled).
+     * A braked-only queue is the same shape: the brake lifts on a new reading ([onBandReading], which the caller
+     * wakes the loop for) or when the last one ages out, and on nothing in between.
      */
     @Synchronized
     fun nextDueAt(): Long =
         maxOf(
             if (lastSentAt == Long.MIN_VALUE) 0L else lastSentAt + minGapMs,
             nakUntil,
-            airtimeBlockedUntil,
+            soonestOf(airtimeBlockedUntil, brakeBlockedUntil),
         )
+
+    /** The earlier of two deferrals, 0 meaning "none": a queue holding both kinds moves when the first one lifts. */
+    private fun soonestOf(
+        a: Long,
+        b: Long,
+    ): Long =
+        when {
+            a == 0L -> b
+            b == 0L -> a
+            else -> minOf(a, b)
+        }
+
+    /**
+     * The board's channel utilisation, [percent] of the last minute heard busy — its TX, its RX and the noise together,
+     * our own airings included (`airtime.h`, firmware 2.8) — read at [now]. Only its live self-telemetry, about once a
+     * minute: the handshake's `NodeInfo` carries `device_metrics` that can be hours old and never reaches here. A new
+     * reading is the one event that lifts a brake before its staleness does, so the braked deferral ends with it.
+     */
+    @Synchronized
+    fun onBandReading(
+        percent: Float?,
+        now: Long,
+    ) {
+        if (percent == null) return
+        bandUtilPercent = percent
+        bandReadAt = now
+        brakeBlockedUntil = 0L
+    }
+
+    /** The board is gone ([LoraMeshTransport]'s quiesce): its reading was about the band around it, and goes with it. */
+    @Synchronized
+    fun forgetBand() {
+        bandUtilPercent = null
+        brakeBlockedUntil = 0L
+    }
+
+    /** When the reading [braked] rests on was taken, or null when there is none — diagnostics. */
+    @Synchronized
+    fun bandReadAt(): Long? = if (bandUtilPercent == null) null else bandReadAt
+
+    /**
+     * Whether the shared band is too busy for a Knit room post at [now] (ADR 2026-10.ug4a): the board's last reading at
+     * or over [BUSY_BAND_PERCENT] — the firmware's `max_channel_util_percent`, compared `>=` as it does, where it stops
+     * even its own automatic traffic — no more than [brakeFreshMs] old, and the board
+     * not on a dedicated RF slot, where any congestion is Knit's own and ADR 067 lifts the manners this is.
+     * Asks [LoraAirtime.dedicated] under this monitor, the one lock order.
+     */
+    @Synchronized
+    fun braked(now: Long): Boolean {
+        val util = bandUtilPercent ?: return false
+        return util >= BUSY_BAND_PERCENT && now - bandReadAt <= brakeFreshMs && !airtime.dedicated()
+    }
 
     /**
      * The next frame to send, or null when the queue is empty, the gap/cool-down has not elapsed, the board
-     * has no queue headroom, or every queued frame is over its airtime budget. Stamps the send time so the
-     * next frame waits a full gap.
+     * has no queue headroom, or nothing queued may go: over the window, or a room post the brake holds. Stamps the
+     * send time so the next frame waits a full gap.
      *
-     * Dequeue is **by class, then FIFO within it** — the same order the queue sheds in, run forwards. ADR 039
-     * left dequeue purely FIFO, which was right while everything on this plane was something a human had just
-     * typed. The bridge (ADR 044) broke that assumption, and since ADR 2026-10.rp3s the bridge is gone, but the
-     * order still says what matters most — a DM before a room post before a tick — and running it on the way out
-     * too costs nothing.
+     * Dequeue is **by class, then FIFO within it** — the same order the queue sheds in, run forwards: [FrameClass.DIRECT]
+     * (a DM, its ✓✓, a reaction, a resend, a re-probe) before [FrameClass.ROOM] (a room post, the Meshtastic room, the
+     * auto-reply).
      *
-     * A frame the airtime budget refuses is **skipped, not dropped** — it stays queued for a later window
-     * while a frame from a bucket with headroom goes now. Without the skip, one refused PUBLIC post or tick would
-     * block everything behind it until its budget recovered. A frame that never gets a window eventually ages
-     * out through the ordinary class shedding instead. The one exception: nothing is skipped *past* a live frame
-     * the window's total refused, or the smaller frames behind it would take the air it is waiting for, one
-     * packet's worth at a time, for as long as they keep coming ([admitBest]).
+     * A frame the airtime budget refuses is **skipped, not dropped** — it stays queued for a later window while a
+     * frame that fits goes now. Without the skip, one refused Meshtastic-room post would block everything behind it
+     * until the window recovered. A frame that never gets a window eventually ages out through the ordinary class
+     * shedding instead. The one exception: nothing is skipped *past* a direct frame the window's total refused, or the
+     * smaller frames behind it would take the air it is waiting for, one packet's worth at a time, for as long as they
+     * keep coming ([admitBest]). A room post the brake holds is skipped the same way and holds nothing.
      */
     @Synchronized
     fun take(now: Long): OutboundFrame? {
-        // Cleared on entry, not only where it is filled: this returns early on an empty queue, an unelapsed
-        // gap or a full board, and a caller reading [lastAirtimeHolds] after every call would otherwise
-        // re-report the last call's holds on every wake — the per-wake counting the flag exists to avoid.
-        lastAirtimeHolds = emptyList()
+        // Cleared on entry, not only where they are filled: this returns early on an empty queue, an unelapsed
+        // gap or a full board, and a caller reading them after every call would otherwise re-report the last
+        // call's holds on every wake — the per-wake counting the flags exist to avoid.
+        lastAirtimeHolds = 0
+        lastBandBrakes = 0
         if (!mayDrain(now)) return null
         val best = admitBest(now)
         if (best < 0) {
-            // Every queued frame is over budget: defer to when the window returns some air. Null (an empty
-            // ledger, so the frame is simply bigger than the whole allowance) leaves the caller's own floor
-            // to pace the retry — that frame ages out through class shedding, not through a window.
-            airtimeBlockedUntil = airtime.nextReleaseAt(now) ?: 0L
+            // Nothing may go: defer to the soonest the answer changes by itself. Air returning, for frames the window
+            // refused — null there (an empty ledger, so the frame is simply bigger than the whole allowance) leaves the
+            // caller's own floor to pace the retry, and that frame ages out through class shedding. The reading going
+            // stale, for room posts the brake holds — a new reading ends it sooner, through [onBandReading].
+            airtimeBlockedUntil = if (lastAirtimeRefusals > 0) airtime.nextReleaseAt(now) ?: 0L else 0L
+            brakeBlockedUntil = if (lastBraked > 0) bandReadAt + brakeFreshMs + 1 else 0L
             return null
         }
         airtimeBlockedUntil = 0L
+        brakeBlockedUntil = 0L
         lastSentAt = now
         return queue.removeAt(best).also { inFlight = it }
     }
+
+    /** Frames the brake skipped on the last [take]'s walk: a level, read only to set the braked deferral. */
+    private var lastBraked = 0
 
     private fun ArrayDeque<OutboundFrame>.removeAllReturningCount(predicate: (OutboundFrame) -> Boolean): Int {
         val before = size
@@ -232,52 +310,87 @@ internal class LoraPacePolicy(
     private fun mayDrain(now: Long): Boolean = queue.isNotEmpty() && now >= nextDueAt() && boardFree != 0
 
     /**
-     * The index of the frame to send, or -1 when the budget refuses them all — or when everything it would admit
-     * ranks behind a live frame the window's total is holding. Records [lastAirtimeRefusals] and [lastAirtimeHolds]
-     * on the way past.
+     * The index of the frame to send, or -1 when nothing may go: the budget refuses everything not braked, the brake
+     * holds the rest, or everything it would admit ranks behind a direct frame the window's total is holding. Records
+     * [lastAirtimeRefusals], [lastAirtimeHolds] and [lastBandBrakes] on the way past.
      *
-     * A refused frame is skipped rather than blocking the queue (ADR 044), but not past a live frame the **total**
+     * A refused frame is skipped rather than blocking the queue (ADR 044), but not past a direct frame the **total**
      * refused: air comes back as the window rolls, a packet's worth at a time, and a one-packet room post fits each
-     * time while a two-packet DM never does. Field-observed 2026-10-04: a DM queued at 16:28 waited eleven minutes
-     * behind the room posts that kept taking that air. So the best-ranked such frame holds every frame ranked behind
-     * it (class, then queue order) until the air it needs has come back. Only a [AirBucket.LIVE] frame holds, and only
-     * on [LoraAirtime.Refusal.TOTAL]: a frame refused on its own share must never hold live traffic (that share
-     * exists so the public room cannot crowd it), and one no window would admit must never be waited for.
+     * time while a frame that needs more never does. Field-observed 2026-10-04: a DM queued at 16:28 waited eleven
+     * minutes behind the room posts that kept taking that air. So the best-ranked such frame holds every frame ranked
+     * behind it (class, then queue order) until the air it needs has come back. Only a [FrameClass.DIRECT] frame holds,
+     * and only on [LoraAirtime.Refusal.TOTAL] (ADR 2026-10.ug4a): a Meshtastic-room post refused on its
+     * [LoraAirtime.Refusal.CEILING] must never hold Knit traffic (the ceiling exists so the foreign room cannot crowd
+     * it), one no window would admit must never be waited for, and a room post the brake holds is waiting for the
+     * band, not for air. Narrowing the holder to direct frames is safe because every room post is one packet: no room
+     * post can be starved by smaller ones the way a larger DM was.
      */
     private fun admitBest(now: Long): Int {
+        val braking = braked(now)
+        val brakedAt = BooleanArray(queue.size) { braking && queue[it].braked }
         // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the air and
-        // already booked, so charging admission for them again would refuse a frame that fits.
-        val refusals = queue.map { airtime.refusal(it.bucket, it.klass, it.admissionSizes(), now, it.signedUpTo) }
-        val best = bestAdmitted(refusals)
+        // already booked, so charging admission for them again would refuse a frame that fits. A braked frame is not
+        // asked at all: it is not waiting for air, and its refusal must neither hold nor count as one.
+        val refusals =
+            queue.mapIndexed { i, frame ->
+                if (brakedAt[i]) null else airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.signedUpTo)
+            }
+        val best = bestAdmitted(refusals, brakedAt)
         val holder = holderOf(refusals)
         // Everything admissible ranks behind the holder when the best of it does: it all waits with the holder.
         val blocked = best >= 0 && holder >= 0 && ranksBehind(best, holder)
-        var held: MutableList<AirBucket>? = null
+        var airHolds = 0
+        var bandHolds = 0
         var waiting = 0
+        var braked = 0
         for (i in queue.indices) {
-            if (refusals[i] == null && !blocked) continue
-            waiting++
-            held = noteHeld(queue[i], held)
+            val frame = queue[i]
+            when {
+                brakedAt[i] -> {
+                    braked++
+                    if (!frame.heldForBand) {
+                        frame.onBandBraked()
+                        bandHolds++
+                    }
+                }
+
+                refusals[i] != null || blocked -> {
+                    waiting++
+                    if (!frame.heldForAir) {
+                        frame.onAirtimeHeld()
+                        airHolds++
+                    }
+                }
+            }
         }
         lastAirtimeRefusals = waiting
-        lastAirtimeHolds = held ?: emptyList()
+        lastAirtimeHolds = airHolds
+        lastBandBrakes = bandHolds
+        lastBraked = braked
         return if (blocked) -1 else best
     }
 
-    /** The best-ranked frame [refusals] admits, or -1: strictly-better class only, so the earliest of a class wins. */
-    private fun bestAdmitted(refusals: List<LoraAirtime.Refusal?>): Int {
+    /**
+     * The best-ranked frame [refusals] admits that the brake does not hold, or -1: strictly-better class only, so the
+     * earliest of a class wins.
+     */
+    private fun bestAdmitted(
+        refusals: List<LoraAirtime.Refusal?>,
+        brakedAt: BooleanArray,
+    ): Int {
         var best = -1
         for (i in queue.indices) {
-            if (refusals[i] == null && (best < 0 || queue[i].klass < queue[best].klass)) best = i
+            if (brakedAt[i] || refusals[i] != null) continue
+            if (best < 0 || queue[i].klass < queue[best].klass) best = i
         }
         return best
     }
 
-    /** The best-ranked live frame the window's total refused, or -1: the one nothing ranked behind may pass. */
+    /** The best-ranked direct frame the window's total refused, or -1: the one nothing ranked behind may pass. */
     private fun holderOf(refusals: List<LoraAirtime.Refusal?>): Int {
         var holder = -1
         for (i in queue.indices) {
-            val holds = refusals[i] == LoraAirtime.Refusal.TOTAL && queue[i].bucket == AirBucket.LIVE
+            val holds = refusals[i] == LoraAirtime.Refusal.TOTAL && queue[i].klass == FrameClass.DIRECT
             if (holds && (holder < 0 || queue[i].klass < queue[holder].klass)) holder = i
         }
         return holder
@@ -288,20 +401,6 @@ internal class LoraPacePolicy(
         i: Int,
         j: Int,
     ): Boolean = queue[i].klass > queue[j].klass || (queue[i].klass == queue[j].klass && i > j)
-
-    /**
-     * Notes [frame] as held for air the first time it is, into [held]. Once per frame, not once per wake: the pacer
-     * re-asks this question every few seconds, and a counter that ticked on each of them would report the clock
-     * rather than the congestion.
-     */
-    private fun noteHeld(
-        frame: OutboundFrame,
-        held: MutableList<AirBucket>?,
-    ): MutableList<AirBucket>? {
-        if (frame.heldForAir) return held
-        frame.onAirtimeHeld()
-        return (held ?: mutableListOf()).also { it += frame.bucket }
-    }
 
     /**
      * The ledger gave air back before the window rolled it off — a compact DM's ack refunding the airings it did not need
@@ -328,30 +427,53 @@ internal class LoraPacePolicy(
         }
     }
 
-    private companion object {
-        const val MIN_GAP_MS = 3_000L
+    companion object {
+        private const val MIN_GAP_MS = 3_000L
 
         // Raised from 12 with the bridge (ADR 044, gone since ADR 2026-10.rp3s, which kept the cap): a resend after
         // a hearing can still enqueue a small burst behind live traffic, and class shedding — not the cap — is what protects
         // the live frames. Doubled again with the 15-min
         // airtime window (ADR 054): a burst that outruns the window now waits ≤ 15 min for air, and a queue
         // that can hold that wait (≤ ~700 B a frame) sheds nothing a later window would have carried.
-        const val QUEUE_CAP_FRAMES = 32
-        const val NAK_BACKOFF_MS = 60_000L
+        private const val QUEUE_CAP_FRAMES = 32
+        private const val NAK_BACKOFF_MS = 60_000L
+
+        /**
+         * The channel utilisation at which a Knit room post waits (ADR 2026-10.ug4a): the firmware's
+         * `max_channel_util_percent` (40, `src/airtime.h:230`), compared `>=` as `isTxAllowedChannelUtil` does — the
+         * figure at which it stops even its own non-polite automatic traffic, so Knit holds a typed room post only where
+         * the firmware holds back everything optional of its own. Still stricter than stock: the firmware never gates
+         * text a client originates, so a stock client would send the post. On a busy metro slot, at or over 40 % most of
+         * the time, Knit room posts may never cross LoRa and drop as `STALE` after `FRESH_MS`; the radios, custody and
+         * the spool still carry them.
+         */
+        const val BUSY_BAND_PERCENT = 40f
+
+        /**
+         * How old a reading may be and still brake. The board reports one about once a minute; five of them missed
+         * is a board that stopped reporting, and a brake on its last word would hold room posts for nothing.
+         */
+        const val BRAKE_FRESH_MS = 5 * 60_000L
     }
 }
 
 /**
- * The pacing class of a queued frame, highest first: a sealed DM outranks ambient room traffic, the Nearby room comes
- * next, and our own delivery tick ([TICK], ADR 054 — a compact ✓✓ its originator offered as `DirectKind.RECEIPT`) is
- * what the queue sheds first: feedback, not content, and it heals on re-delivery. The profile bootstrap and the
- * gossip OFFER classes went with the bridge (ADR 2026-10.rp3s).
+ * The pacing priority of a queued frame, highest first (ADR 2026-10.ug4a): [DIRECT] dequeues before [ROOM], and a full
+ * queue sheds [ROOM] first. Two, where there were three: ADR 054's `TICK` folded into [DIRECT], because the ✓✓ is one
+ * unsigned unicast packet now, and losing it costs a re-probe of the whole DM later. Inside [DIRECT] a ✓✓ is still
+ * shed before a DM or a reaction ([OutboundFrame.shedRank]) — so a ✓✓ never pushes out something the user typed — but
+ * dequeued in its turn.
  *
- * This is the **queue-shedding** order only. What a frame costs against the rolling budget is [AirBucket], which is
- * orthogonal: a public post rides ROOM class here and spends [AirBucket.PUBLIC] there. [LoraAirtime] reads one class
- * beyond the bucket: a [TICK] never spends the last share of a window.
+ * What a frame may spend is [Ceiling], which is orthogonal: the Meshtastic room's post and the auto-reply ride [ROOM]
+ * here and [Ceiling.HALF] there.
  */
-internal enum class FrameClass { DM, ROOM, TICK }
+internal enum class FrameClass {
+    /** A compact DM, its ✓✓, a DM reaction, a resend after a hearing, a re-probe: one unicast to one board. */
+    DIRECT,
+
+    /** A Knit room post, the Meshtastic room's post and the DM auto-reply: a broadcast, or the room's one unicast. */
+    ROOM,
+}
 
 /**
  * Where a queued frame is going, which decides both the channel it is written to and the guard it must pass.
@@ -361,7 +483,7 @@ internal enum class FrameClass { DM, ROOM, TICK }
  * safer than a mistake — while [Public] is a deliberate, consented path to index 0 whose guard asks the
  * opposite question. Sharing code between them would let a fix to one quietly relax the other.
  *
- * They do share the **queue**: one duty-cycle ledger, one 3 s inter-packet gap, one NAK back-off, one
+ * They do share the **queue**: one airtime ledger, one 3 s inter-packet gap, one NAK back-off, one
  * `queueFree` backpressure. A public post that bypassed the pacer would be a second transmitter on the same
  * radio, which is how a politeness ceiling stops meaning anything.
  */
@@ -388,7 +510,7 @@ internal enum class Destination {
  * can be asked the same questions again when it finally reaches the air.
  *
  * The queue is a **time-delayed commitment**: a frame waits here behind the 3 s pacing floor, a full board
- * queue and a spent airtime share, which together can hold it for a whole window. Every gate the enqueuing
+ * queue, a spent window and a busy band, which together can hold it for a whole window. Every gate the enqueuing
  * path passed was answered about the mesh as it was at that moment, and the field failure this exists for is
  * the four seconds between them — a peer's Wi-Fi Aware link came up while its receipts sat in this queue, and
  * the plane spent its whole allowance re-delivering what that link had already carried.
@@ -473,8 +595,8 @@ internal class OutboundFrame(
     val messages: List<ByteArray>,
     val label: String,
     val klass: FrameClass = FrameClass.ROOM,
-    /** Which rolling budget this frame spends from; see [AirBucket]. */
-    val bucket: AirBucket = AirBucket.LIVE,
+    /** How far into the window's one allowance this frame may take the total; see [Ceiling]. */
+    val ceiling: Ceiling = Ceiling.FULL,
     /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
     val destination: Destination = Destination.Knit,
     /** Whom it is addressed to: the broadcast address for everything but a [Destination.Reply]. */
@@ -486,7 +608,7 @@ internal class OutboundFrame(
      * The OFFER and the profile were the snapshots this existed for (ADR 2026-09.xdm2), and both left this plane
      * with the bridge (ADR 2026-10.rp3s). What still keys on it is a compact DM (`frameKey`, ADR 2026-10.x9fa): every
      * copy of one frame the offer, the resend or the re-probe might queue is one copy, so [LoraPacePolicy.hasQueued]
-     * can see a copy still waiting. Stage 3's single budget must keep that one-copy rule.
+     * can see a copy still waiting; the single budget of ADR 2026-10.ug4a kept that one-copy rule.
      *
      * **A supersession is never a drop.** Nothing is lost that a newer frame does not already carry, so it
      * must not move `loraDroppedQueue`, whose job is to say when the plane shed something it wanted.
@@ -517,10 +639,14 @@ internal class OutboundFrame(
     /**
      * Whether the airtime budget has ever made this frame wait. Held frames are **not** dropped — they stay
      * queued for a later window — so the plane can be starved while every drop counter reads zero, which is
-     * how a 99 %-spent BRIDGE bucket looked healthy in the field. This flag is what lets that be counted once
+     * how a 99 %-spent budget looked healthy in the field. This flag is what lets that be counted once
      * per frame rather than once per pacer wake; see [LoraPacePolicy.lastAirtimeHolds].
      */
     var heldForAir: Boolean = false
+        private set
+
+    /** Whether the shared-band brake has ever held this frame; counted once per frame, like [heldForAir]. */
+    var heldForBand: Boolean = false
         private set
 
     /** The fragments still owed to the board; the whole frame until one of them is refused part-way. */
@@ -534,13 +660,45 @@ internal class OutboundFrame(
         heldForAir = true
     }
 
+    fun onBandBraked() {
+        heldForBand = true
+    }
+
+    /**
+     * Whether the shared-band brake applies to this frame (ADR 2026-10.ug4a): a Knit room post — a broadcast on the
+     * bound slot. Never a compact DM, nor the Meshtastic room's post or the auto-reply: those are the band's own kind of
+     * traffic, already floored at 30 s and capped at half the window.
+     */
+    val braked: Boolean get() = klass == FrameClass.ROOM && destination == Destination.Knit
+
+    /**
+     * Where this frame stands when a full queue sheds, lowest first: a room post (2), then a ✓✓ (1), then a DM or a
+     * reaction (0) — so the ✓✓ the queue can rebuild from the next delivery goes before a message the user typed
+     * (ADR 2026-10.ug4a). Dequeue reads [klass] alone.
+     */
+    val shedRank: Int
+        get() =
+            when {
+                klass == FrameClass.ROOM -> SHED_ROOM
+                direct?.kind == DirectKind.RECEIPT -> SHED_RECEIPT
+                else -> SHED_MESSAGE
+            }
+
     val fragmented: Boolean get() = messages.size > 1
 
     /**
-     * The firmware's cliff for these packets, for [LoraAirtime]: a broadcast on Knit's port is signed under it by a 2.8
-     * board, a direct unicast never is ([LoraAirtime.UNSIGNED]).
+     * The firmware's cliff for these packets, for [LoraAirtime] — at admission and at the booking alike. A broadcast is
+     * signed under its port's cliff by a 2.8 board (a Meshtastic-room post one byte further, on the text port); a
+     * unicast never is ([LoraAirtime.UNSIGNED]): `Router::perhapsEncode` signs only a broadcast, a `NodeInfo` or a
+     * position unless the board is in ham mode, so neither a compact DM nor the auto-reply carries a signature.
      */
-    val signedUpTo: Int get() = if (direct != null) LoraAirtime.UNSIGNED else MeshtasticProto.MAX_SIGNED_PAYLOAD
+    val signedUpTo: Int
+        get() =
+            when {
+                direct != null || destination == Destination.Reply -> LoraAirtime.UNSIGNED
+                destination == Destination.Public -> MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
+                else -> MeshtasticProto.MAX_SIGNED_PAYLOAD
+            }
 
     /**
      * What the pacer admits this frame against: what is still owed, and for a compact DM that one packet as often as
@@ -548,8 +706,22 @@ internal class OutboundFrame(
      * airing and then retrying three times would spend air no admission asked for (ADR 2026-10.x9fa).
      */
     fun admissionSizes(): List<Int> {
-        val sizes = remaining.map { it.size }
+        val sizes = remaining.map { it.size + pricedExtraBytes }
         return if (direct == null) sizes else List(LoraDirectPolicy.AIRINGS) { sizes.first() }
+    }
+
+    /**
+     * Bytes the firmware adds on the air that [messages] do not carry, priced at admission and at booking alike: the PKC
+     * overhead of the DM auto-reply, a PKI unicast on channel 0 (ADR 2026-10.ug4a). A compact DM rides the Knit secondary
+     * channel-encrypted and adds none. Should the board hold no key for the sender, the reply goes channel-encrypted and
+     * this over-charges it by 12 B — the conservative error.
+     */
+    val pricedExtraBytes: Int get() = if (destination == Destination.Reply) MeshtasticProto.PKC_OVERHEAD_BYTES else 0
+
+    private companion object {
+        const val SHED_ROOM = 2
+        const val SHED_RECEIPT = 1
+        const val SHED_MESSAGE = 0
     }
 }
 

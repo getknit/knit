@@ -159,6 +159,24 @@ internal class LoraReprobe(
 
     companion object {
         /**
+         * The schedules a snapshot keeps under [cap]: the peers [holds] says are direct board holders first, then the
+         * rest, each soonest first (ADR 2026-10.ug4a). A schedule for a peer who is not one — started while the board map
+         * had not reported, restored from an older build's blob, or kept by a holder who has since lost the board or the
+         * capability — is forgotten on its first due round anyway, so it is the one to drop, never a holder's earned
+         * backoff. A null [holds] (no map yet) cannot tell them apart and keeps the soonest.
+         */
+        fun capped(
+            stamps: List<Entry>,
+            cap: Int,
+            holds: ((String) -> Boolean)?,
+        ): List<Entry> {
+            val ordered = stamps.sortedBy { it.dueAt }
+            if (holds == null) return ordered.take(cap)
+            val (holders, others) = ordered.partition { holds(it.recipientId) }
+            return (holders + others).take(cap)
+        }
+
+        /**
          * The first gap: one airtime window. An absent phone costs at most one DM's airings per window, and a present
          * one has long since sent its ✓✓ (the coalescer holds it 45 s at most).
          */

@@ -5,47 +5,21 @@ import kotlin.math.min
 import kotlin.math.pow
 
 /**
- * Which airtime budget a queued frame spends from. Orthogonal to [FrameClass], which is about *queue shedding*: a
- * public post rides ROOM class there and spends [PUBLIC] here. Two buckets since ADR 2026-10.rp3s, which took the
- * bridge's (`BRIDGE`), the gossip OFFER's (`GOSSIP`) and the profile bootstrap's (`BOOTSTRAP`) with the traffic
- * they metered.
+ * How much of the window's one allowance a frame may bring the total to (ADR 2026-10.ug4a). Every Knit frame of ours
+ * may spend the whole of it; a frame for the **foreign** audience — the Meshtastic room's post and the DM auto-reply —
+ * only up to [LoraAirtime.PUBLIC_CEILING] of it, its own cost included. There are no buckets: one ledger, one total,
+ * and a ceiling on how far into it the foreign audience may reach.
  */
-internal enum class AirBucket {
-    /**
-     * This phone's user's own Knit traffic: the room post, the DM and its ✓✓, the first-hearing re-offer and the
-     * re-probe. May spend the whole allowance.
-     */
-    LIVE,
+internal enum class Ceiling {
+    /** The whole allowance: every Knit frame of ours — a room post, a compact DM, its ✓✓, a reaction, a resend, a re-probe. */
+    FULL,
 
     /**
-     * A Knit user's own post on the **foreign** mesh's public channel (the Meshtastic room's outbound half), and
-     * the DM auto-reply.
-     *
-     * Its own budget because it is the one thing on this plane that spends Knit's airtime on an audience
-     * that is not Knit: a busy public room must not be able to crowd the pocket's own chat off the band,
-     * and the pocket's own chat must not be able to leave a user unable to answer somebody. Judged against
-     * the total as well — it is a share of the one allowance, not a second one beside it.
+     * Half of it, judged against the window's total: the Meshtastic room's post and the DM auto-reply. A deliberate
+     * choice — up to half the window when Knit is idle — that the 30 s floors (`PUBLIC_POST_FLOOR_MS`,
+     * `DmAutoReplyPolicy.FLOOR_MS`) bind long before in practice.
      */
-    PUBLIC,
-    ;
-
-    companion object {
-        /**
-         * The bucket a persisted booking named [name] is restored onto, or null to drop it. The retired buckets of
-         * ADR 2026-10.rp3s come back as [LIVE] — air the last process spent is still owed to the window it spent it
-         * in, and dropping it would hand the first launch after the upgrade a fresh allowance (ADR 2026-09.7svb) —
-         * except `BOOTSTRAP`, which was judged outside the total and so never spent the allowance it would now
-         * be charged to. A name no build ever wrote is dropped, as it always was.
-         */
-        fun restoredFrom(name: String): AirBucket? =
-            when (name) {
-                RETIRED_BRIDGE, RETIRED_GOSSIP -> LIVE
-                else -> entries.firstOrNull { it.name == name }
-            }
-
-        private const val RETIRED_BRIDGE = "BRIDGE"
-        private const val RETIRED_GOSSIP = "GOSSIP"
-    }
+    HALF,
 }
 
 /**
@@ -65,54 +39,45 @@ internal interface PacketCost {
 }
 
 /**
- * One packet booked against the rolling window: when it went out, what it cost, and out of whose share.
- *
- * The ledger's own entry type, and also what [LoraPlaneState] persists — the cost is carried rather than
- * re-derived from a packet size, because a board swapped between two processes has a different preset and
- * the air the last one spent was spent at the old one.
+ * One packet booked against the rolling window: when it went out and what it cost. The cost is carried rather than
+ * re-derived from a size, because [LoraAirtime.refund] matches a booking on the two together. In memory only since ADR
+ * 2026-10.ug4a: the ledger is no longer persisted.
  */
-internal data class Booking(
+private data class Booking(
     val atMs: Long,
     val ms: Long,
-    val bucket: AirBucket,
 )
 
-/** A read-only view of the governor for the settings row and the `…debug.LORA` dump. */
+/** A read-only view of the governor for the settings row, the field log and the `…debug.LORA` dump. */
 internal data class AirtimeSnapshot(
     val preset: ModemPreset,
     val region: LoraRegion,
     val known: Boolean,
-    val liveUsedMs: Long,
-    val liveBudgetMs: Long,
-    val publicUsedMs: Long = 0L,
-    val publicBudgetMs: Long = 0L,
+    /** What the window has spent, every frame of ours together: one ledger, no buckets (ADR 2026-10.ug4a). */
+    val usedMs: Long,
+    /** The window's one allowance — what [usedMs] is measured against. */
+    val allowanceMs: Long,
+    /** How far into [allowanceMs] the Meshtastic room and the DM auto-reply may take the total ([Ceiling.HALF]). */
+    val publicCeilingMs: Long = 0L,
     /** Whether the board is on a dedicated RF slot, and so out from under the politeness ceiling (ADR 067). */
     val dedicated: Boolean = false,
     /** Whether the budget is charging for the signature 2.8 firmware adds to our small packets. */
     val signing: Boolean = true,
-) {
-    /**
-     * Every bucket's spend, which is what the window's one allowance is actually measured against — the
-     * public share is how that allowance is divided, not a second allowance beside it. Callers that want "how
-     * full is the window" must read this rather than adding up the buckets they happen to know about: two of them
-     * once summed three of five and under-reported the plane's real utilization.
-     */
-    val totalUsedMs: Long get() = liveUsedMs + publicUsedMs
-}
+)
 
 /**
  * The LoRa plane's airtime governor: turns a packet size into milliseconds on air, keeps a rolling
- * [WINDOW_MS] ledger of what we have spent, and answers whether one more packet fits its bucket's budget.
+ * [WINDOW_MS] ledger of what we have spent, and answers whether one more frame fits under its [Ceiling].
  *
  * Before this existed the only regulator was reactive — the board's `DUTY_CYCLE_LIMIT` NAK, which arrives
  * *after* the medium has already been abused, and [LoraPacePolicy]'s fixed 3-second gap, which by itself
  * would allow ~1200 packets an hour (over 70 % duty).
  *
- * Two budgets come out of one number. [AirBucket.LIVE] may spend the whole allowance; [AirBucket.PUBLIC] is capped
- * at [publicShare] of it and judged against the total as well. A [FrameClass.TICK] — our own delivery receipt — is
- * refused once a window is [tickTailShare] from spent, so the last of the air always goes to content (ADR 054): a
- * ✓✓ heals on re-delivery, a message somebody is waiting for does not. The bridge's, the gossip OFFER's and the
- * profile bootstrap's shares (ADR 044, 2026-09.t8t8, 2026-09.7c8n, 056) left with that traffic (ADR 2026-10.rp3s).
+ * **One ledger and one total** (ADR 2026-10.ug4a). Every frame of ours spends the same allowance; a frame for the
+ * foreign audience ([Ceiling.HALF]: the Meshtastic room's post, the DM auto-reply) may only take the total to
+ * [publicCeiling] of it. The buckets (`LIVE`, `PUBLIC` and, before ADR 2026-10.rp3s, three more) and ADR 054's tick
+ * tail are gone: a ✓✓ is one unsigned unicast packet now, and losing it costs a re-probe of the whole DM later, so it
+ * waits with the DMs rather than behind them ([LoraPacePolicy] orders the two priorities).
  *
  * The allowance itself is `min(the region's duty cycle, a politeness ceiling) x a safety factor` of the
  * window. The region and modem preset are read off the board ([LoraRadioConfig]); until the handshake
@@ -121,9 +86,16 @@ internal data class AirtimeSnapshot(
  *
  * **Every entry point is `@Synchronized`.** The ledger is read and written from more than one coroutine:
  * the pacer books and asks, [LoraFrameCodec] prices a packet on whichever coroutine is sending, and the
- * [LoraPlaneState] save takes a snapshot of it — and each of those prunes, so each of them *mutates*.
+ * status publisher takes a snapshot of it — and each of those prunes, so each of them *mutates*.
  * The monitor is taken **inside** [LoraPacePolicy]'s and never the other way round, which is the whole
  * lock order there is.
+ *
+ * **Not persisted** (ADR 2026-10.ug4a, superseding ADR 2026-09.7svb's ledger half): a restart starts the window empty.
+ * The regional duty cycle — the law — is the firmware's to enforce (`Router::send` refuses with `DUTY_CYCLE_LIMIT`
+ * over the trailing hour, which the pacer backs off on), the only frames that air without a user action are the
+ * re-probes, whose backoff is persisted, and in a 100 %-duty region a restart resets politeness by at most one
+ * allowance. The board's own `air_util_tx` is not a seed for it: an hour of everything the radio sent, relays
+ * included, it over-books a client on a busy mesh by most of an allowance and under-books a recent burst.
  *
  * One thing the packet we hand the board is not: what leaves it. Firmware **2.8 signs every broadcast it
  * originates**, ours included, adding [MeshtasticProto.XEDDSA_SIGNATURE_FIELD] bytes to any packet small
@@ -144,8 +116,7 @@ internal class LoraAirtime(
     private val windowMs: Long = WINDOW_MS,
     private val safety: Double = SAFETY,
     private val politeCeilingPercent: Double = POLITE_CEILING_PERCENT,
-    private val tickTailShare: Double = TICK_TAIL_SHARE,
-    private val publicShare: Double = PUBLIC_SHARE,
+    private val publicCeiling: Double = PUBLIC_CEILING,
     /**
      * Whether a dedicated RF slot lifts the politeness ceiling. On in the transport; false by default so the
      * class can be tested in both states.
@@ -153,8 +124,7 @@ internal class LoraAirtime(
     private val dedicatedUnlocksDuty: Boolean = false,
 ) : PacketCost {
     private val samples = ArrayDeque<Booking>()
-    private var liveUsedMs = 0L
-    private var publicUsedMs = 0L
+    private var spentMs = 0L
 
     /** The board's radio settings, or null until the handshake reports them. */
     var radio: LoraRadioConfig? = null
@@ -267,10 +237,7 @@ internal class LoraAirtime(
         return if (timeOnAirMs(target) < timeOnAirMs(payloadBytes)) target else payloadBytes
     }
 
-    /**
-     * The window's allowance, in milliseconds of air, before the per-bucket split — the lower of the two
-     * ceilings that still apply (see the class doc).
-     */
+    /** The window's one allowance, in milliseconds of air — the lower of the two ceilings that still apply (see the class doc). */
     @Synchronized
     fun allowanceMs(): Long {
         val cfg = radio ?: return (windowMs * FALLBACK_PERCENT / PERCENT * safety).toLong()
@@ -282,89 +249,64 @@ internal class LoraAirtime(
         return (windowMs * min(regional, polite) / PERCENT * safety).toLong()
     }
 
-    /** Whether the budget above is running under the dedicated-slot rules; diagnostics and the settings row. */
+    /** Whether the budget above is running under the dedicated-slot rules; diagnostics, the settings row and the brake. */
+    @Synchronized
     fun dedicated(): Boolean = dedicatedUnlocksDuty && radio?.dedicatedSlot == true
 
+    /** How far into [allowanceMs] a [Ceiling.HALF] frame may take the window's total. */
     @Synchronized
-    fun budgetMs(bucket: AirBucket): Long =
-        when (bucket) {
-            AirBucket.LIVE -> allowanceMs()
-            AirBucket.PUBLIC -> (allowanceMs() * publicShare).toLong()
-        }
+    fun publicCeilingMs(): Long = (allowanceMs() * publicCeiling).toLong()
 
+    /** What the window has spent at [now], every frame of ours together. */
     @Synchronized
-    fun usedMs(
-        bucket: AirBucket,
-        now: Long,
-    ): Long {
+    fun usedMs(now: Long): Long {
         prune(now)
-        return when (bucket) {
-            AirBucket.LIVE -> liveUsedMs
-            AirBucket.PUBLIC -> publicUsedMs
-        }
+        return spentMs
     }
 
     /**
-     * Whether a whole frame — [payloadSizes] is one entry per packet it fragments into — fits [bucket]'s
-     * budget. Admission is all-or-nothing per frame: half a fragmented message on the air is pure waste, so
-     * a frame that does not fit entirely waits rather than starting. A [FrameClass.TICK] stops at the tail. Note
-     * every bucket's spending counts against the **total** as well as its own budget: [AirBucket.PUBLIC] is a share
-     * of the one allowance, not a second allowance beside it. [refusal] says why a frame does not fit.
+     * Whether a whole frame — [payloadSizes] is one entry per packet it fragments into — fits under [ceiling].
+     * Admission is all-or-nothing per frame: half a fragmented message on the air is pure waste, so a frame that does
+     * not fit entirely waits rather than starting. [refusal] says why a frame does not fit.
      */
     @Synchronized
     fun admits(
-        bucket: AirBucket,
-        klass: FrameClass,
+        ceiling: Ceiling,
         payloadSizes: List<Int>,
         now: Long,
         /** The signature cliff for these packets' port — a Knit frame's unless the caller says otherwise. */
         signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
-    ): Boolean = refusal(bucket, klass, payloadSizes, now, signedUpTo) == null
+    ): Boolean = refusal(ceiling, payloadSizes, now, signedUpTo) == null
 
     /**
-     * Why [admits] refuses a frame, or null when it fits. The pacer needs the reason, not just the verdict: a live
-     * frame the [Refusal.TOTAL] refuses holds every frame ranked below it off the total until it has gone
-     * ([LoraPacePolicy]), and a frame refused on its own [Refusal.SHARE] must never hold anything, or a spent
-     * public share would freeze the pocket's own chat, the one thing that share exists to prevent.
+     * Why [admits] refuses a frame, or null when it fits. The pacer needs the reason, not just the verdict: a direct
+     * frame the [Refusal.TOTAL] refuses holds every frame ranked below it until it has gone ([LoraPacePolicy]), while a
+     * frame refused on its [Refusal.CEILING] must never hold anything, or a busy Meshtastic room would freeze the
+     * pocket's own chat — the one thing the ceiling exists to prevent.
      */
     @Synchronized
     fun refusal(
-        bucket: AirBucket,
-        klass: FrameClass,
+        ceiling: Ceiling,
         payloadSizes: List<Int>,
         now: Long,
         signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
     ): Refusal? {
         prune(now)
         val cost = payloadSizes.sumOf { timeOnAirMs(it, signedUpTo) }
-        val used = liveUsedMs + publicUsedMs
-        val total = budgetMs(AirBucket.LIVE)
-        val tickCeiling = (total * (1 - tickTailShare)).toLong()
+        val total = allowanceMs()
         // A `when` rather than a ladder of early returns only because there are several answers; the order
         // is the same and load-bearing.
         return when {
             // No window, however empty, would ever admit it: it must never be waited for.
-            cost > total -> {
-                Refusal.NEVER
-            }
+            cost > total -> Refusal.NEVER
 
-            used + cost > total -> {
-                Refusal.TOTAL
-            }
+            spentMs + cost > total -> Refusal.TOTAL
 
-            // The public channel is judged against its own share as well as the total, in both directions: it
-            // cannot crowd out the pocket's own traffic, and the pocket's own traffic leaves it a floor.
-            bucket == AirBucket.PUBLIC -> {
-                if (publicUsedMs + cost <= budgetMs(AirBucket.PUBLIC)) null else Refusal.SHARE
-            }
+            // The foreign audience's ceiling is on the window's total, its own cost included: it cannot take the
+            // window past half, however little of it the room itself has spent.
+            ceiling == Ceiling.HALF && spentMs + cost > publicCeilingMs() -> Refusal.CEILING
 
-            klass == FrameClass.TICK && used + cost > tickCeiling -> {
-                Refusal.TICK_TAIL
-            }
-
-            else -> {
-                null
-            }
+            else -> null
         }
     }
 
@@ -373,24 +315,22 @@ internal class LoraAirtime(
         /** The window's total is spent: the frame fits once enough of the window rolls off. */
         TOTAL,
 
-        /** The frame's own share is spent: [AirBucket.PUBLIC]. */
-        SHARE,
-
-        /** A [FrameClass.TICK] inside the last [tickTailShare] of the window (ADR 054). */
-        TICK_TAIL,
+        /** A [Ceiling.HALF] frame would take the total past [publicCeilingMs]. Never holds anything behind it. */
+        CEILING,
 
         /** Larger than the whole allowance: no window will ever admit it, so nothing may wait on it. */
         NEVER,
     }
 
     /**
-     * Gives back up to [count] bookings of exactly [ms] made at [atMs] against [bucket] — the airings a compact DM was
-     * booked for at send and did not need, its destination having acked it sooner (ADR 2026-10.x9fa). A booking the
-     * window has already rolled off is gone anyway. Returns how many came back.
+     * Gives back up to [count] bookings of exactly [ms] made at [atMs] — the airings a compact DM was booked for at send
+     * and did not need, its destination having acked it sooner (ADR 2026-10.x9fa). Matched on the two together, which
+     * is exact enough with one ledger: a room post is one packet at its own cost, and only a compact DM books five
+     * identical airings at one instant. A booking the window has already rolled off is gone anyway. Returns how many
+     * came back.
      */
     @Synchronized
     fun refund(
-        bucket: AirBucket,
         atMs: Long,
         ms: Long,
         count: Int,
@@ -399,70 +339,26 @@ internal class LoraAirtime(
         val it = samples.iterator()
         while (left > 0 && it.hasNext()) {
             val booking = it.next()
-            if (booking.atMs == atMs && booking.ms == ms && booking.bucket == bucket) {
+            if (booking.atMs == atMs && booking.ms == ms) {
                 it.remove()
-                book(bucket, -ms)
+                spentMs -= ms
                 left--
             }
         }
         return count - left
     }
 
-    /** Books [payloadBytes] of air against [bucket]. Called once the board has actually accepted the write. */
+    /** Books [payloadBytes] of air. Called once the board has actually accepted the write. */
     @Synchronized
     fun record(
-        bucket: AirBucket,
         payloadBytes: Int,
         now: Long,
         signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
     ) {
         prune(now)
         val ms = timeOnAirMs(payloadBytes, signedUpTo)
-        samples.addLast(Booking(now, ms, bucket))
-        book(bucket, ms)
-    }
-
-    /**
-     * The live window's bookings, oldest first — what [LoraPlaneState] persists so that a process restart
-     * cannot hand the plane a fresh allowance. Pruned first, so it is only ever what the window still holds.
-     */
-    @Synchronized
-    fun bookings(now: Long): List<Booking> {
-        prune(now)
-        return samples.toList()
-    }
-
-    /**
-     * Replaces the ledger with what a previous process spent ([bookings]), then ages it to [now].
-     *
-     * Sorted on the way in because [prune] walks the deque in send order and a restored list has been
-     * through a clock conversion, so nothing may assume it arrives ordered. Replaces rather than merges:
-     * this runs once, before the pacer is allowed to transmit at all — see `LoraMeshTransport.awaitRestored`.
-     */
-    @Synchronized
-    fun restore(
-        bookings: List<Booking>,
-        now: Long,
-    ) {
-        samples.clear()
-        liveUsedMs = 0L
-        publicUsedMs = 0L
-        bookings.sortedBy { it.atMs }.forEach { booking ->
-            samples.addLast(booking)
-            book(booking.bucket, booking.ms)
-        }
-        prune(now)
-    }
-
-    /** Adds [ms] to [bucket]'s running total; negative to give it back, which is what [prune] does. */
-    private fun book(
-        bucket: AirBucket,
-        ms: Long,
-    ) {
-        when (bucket) {
-            AirBucket.LIVE -> liveUsedMs += ms
-            AirBucket.PUBLIC -> publicUsedMs += ms
-        }
+        samples.addLast(Booking(now, ms))
+        spentMs += ms
     }
 
     /**
@@ -484,10 +380,9 @@ internal class LoraAirtime(
             preset = cfg?.modemPreset ?: ModemPreset.LONG_FAST,
             region = cfg?.region ?: LoraRegion.UNSET,
             known = cfg != null,
-            liveUsedMs = liveUsedMs,
-            liveBudgetMs = budgetMs(AirBucket.LIVE),
-            publicUsedMs = publicUsedMs,
-            publicBudgetMs = budgetMs(AirBucket.PUBLIC),
+            usedMs = spentMs,
+            allowanceMs = allowanceMs(),
+            publicCeilingMs = publicCeilingMs(),
             dedicated = dedicated(),
             signing = signing,
         )
@@ -499,7 +394,7 @@ internal class LoraAirtime(
             val oldest = samples.firstOrNull() ?: return
             if (now - oldest.atMs < windowMs) return
             samples.removeFirst()
-            book(oldest.bucket, -oldest.ms)
+            spentMs -= oldest.ms
         }
     }
 
@@ -546,20 +441,17 @@ internal class LoraAirtime(
          */
         const val SAFETY = 0.5
 
-        /** The last share of a window a [FrameClass.TICK] may not spend — it is kept for content. */
-        const val TICK_TAIL_SHARE = 0.25
-
         /**
-         * The share of the allowance a Knit user's posts to the **foreign** public channel may spend.
+         * How far into the allowance the window's total may be when a frame for the **foreign** audience — the
+         * Meshtastic room's post, the DM auto-reply — is admitted, its own cost included ([Ceiling.HALF], ADR 2026-10.ug4a).
          *
-         * Small on purpose, and small enough that the per-phone floor is usually the binding limit rather
-         * than this: at LongFast a 200-byte signed post is ~1.9 s, so 15 % of a 45 s window is about three
-         * posts every fifteen minutes — roughly twice what a 30 s floor allows, which is the right ordering.
-         * A budget that bound first would make the refusal depend on what the *rest* of the plane had been
-         * doing, and "your message went nowhere because somebody nearby was syncing" is not an explanation
-         * anybody can act on.
+         * Half, on purpose larger than the 15 % share it replaces: with one ledger the room has no spend of its own to
+         * be judged by, so its ceiling is on the total, and up to half the window is the room's while Knit is idle. A
+         * busy Knit window leaves it less, which is the ordering that matters: the pocket's own chat comes first. In
+         * practice the 30 s floors bind long before this does — nobody posts twice a minute for a quarter of an hour,
+         * and a burst that did would reach it after about a dozen posts at LongFast (~1.9 s each against 22.5 s).
          */
-        const val PUBLIC_SHARE = 0.15
+        const val PUBLIC_CEILING = 0.5
 
         /**
          * The cap Knit applies even where the law does not. Most regions run at 100 % duty, but a phone that

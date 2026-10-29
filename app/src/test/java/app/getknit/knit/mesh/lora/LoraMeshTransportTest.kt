@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -248,30 +249,35 @@ class LoraMeshTransportTest {
         }
     }
 
+    /**
+     * ADR 2026-10.ug4a: the ledger is no longer persisted — a restart starts the window empty, and the snapshot the last
+     * process wrote carries only the limiters this build keeps (the auto-reply memory and the re-probe schedule).
+     */
     @Test
-    fun aRestartInheritsTheSpentWindowRatherThanAFreshAllowance() =
+    fun aRestartStartsTheWindowEmptyAndAirsAtOnce() =
         runTest {
             val air = FakeMeshtasticAir()
             val state = FakePlaneState()
-            val first = rig(air, 1u, "alice", backgroundScope, state = state) { testScheduler.currentTime }
+            val firstPace = LoraPacePolicy(minGapMs = 0)
+            val first = rig(air, 1u, "alice", backgroundScope, pace = firstPace, state = state) { testScheduler.currentTime }
             first.transport.start()
             runCurrent()
             first.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten"))
             advanceTimeBy(10_000)
             runCurrent()
+            assertTrue("the first process spent air", firstPace.airtime.usedMs(testScheduler.currentTime) > 0)
             first.transport.stop()
             runCurrent()
+            assertNotNull("the snapshot was still written, for the limiters it keeps", state.snapshot)
 
             val pace = LoraPacePolicy(minGapMs = 0)
-            assertEquals("a fresh ledger starts at zero", 0L, pace.airtime.snapshot(testScheduler.currentTime).totalUsedMs)
             val second = rig(air, 1u, "alice", backgroundScope, pace = pace, state = state) { testScheduler.currentTime }
             second.transport.start()
             runCurrent()
-
-            assertTrue(
-                "the window still owes what the last process spent",
-                pace.airtime.snapshot(testScheduler.currentTime).totalUsedMs > 0,
-            )
+            assertEquals("the window starts empty", 0L, pace.airtime.snapshot(testScheduler.currentTime).usedMs)
+            second.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "here now", sentAt = testScheduler.currentTime))
+            runCurrent()
+            assertEquals("a post typed after the restart airs at once", 1, second.link.sent.size)
             second.transport.stop()
         }
 
@@ -280,24 +286,198 @@ class LoraMeshTransportTest {
         runTest {
             // A snapshot stamped in the future is a clock that moved backwards (a manual change, or an NTP
             // correction over a reboot). Every age in it would read as negative — i.e. never expiring — so the
-            // limiters start clean instead, which costs one window.
+            // limiters start clean instead.
             val air = FakeMeshtasticAir()
             val state = FakePlaneState()
             state.snapshot =
                 LoraPlaneSnapshot(
                     savedAtWall = 60 * 60_000,
-                    // A whole window's worth, and then some: trusted, it would hold every frame for good.
-                    air = listOf(AirBooking(atWall = 60 * 60_000, ms = 10 * LoraAirtime.WINDOW_MS, bucket = AirBucket.LIVE.name)),
+                    reprobes = listOf(ReprobeStamp("bob", dueAtWall = 60 * 60_000 + LoraReprobe.CAP_MS, gapMs = LoraReprobe.CAP_MS)),
                 )
             val rig = rig(air, 1u, "alice", backgroundScope, state = state) { testScheduler.currentTime }
             rig.transport.start()
             runCurrent()
-            rig.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = testScheduler.currentTime))
+            assertTrue("no schedule from a snapshot ahead of the clock", rig.transport.reprobeSchedule().isEmpty())
+            rig.transport.stop()
+        }
+
+    /**
+     * ADR 2026-10.ug4a: an own room post written before this process started is a re-serve — a neighbour's custody or a
+     * spool pull after a restart emptied the router's seen window, which `InboundPipeline.onDeliver` re-fans like any
+     * first-seen frame — and never re-airs. One written since does.
+     */
+    @Test
+    fun anOwnPostWrittenBeforeThisProcessStartedNeverReAirs() =
+        runTest {
+            advanceTimeBy(5 * 60_000L) // the last process posted, crashed, and this one started
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val started = testScheduler.currentTime
+            val suppressed = a.metrics.lora().loraSuppressed
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "posted just before the crash", sentAt = started - 60_000))
             advanceTimeBy(5_000)
             runCurrent()
+            assertTrue("fresh, ours, never fanned this process — and still not re-aired", a.link.sent.isEmpty())
+            assertEquals(suppressed + 1, a.metrics.lora().loraSuppressed)
 
-            assertEquals("a post that a bad snapshot would have held", 1, rig.link.sent.size)
-            rig.transport.stop()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "typed now", sentAt = started))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("a post typed in this process airs", 1, a.link.sent.size)
+            a.transport.stop()
+        }
+
+    // --- The shared-band brake (ADR 2026-10.ug4a) ---
+
+    /** A provisioned board, its Knit channel on slot 1 — the shape on which the Meshtastic room has a primary to post on. */
+    private fun TestScope.provisionedRig(
+        air: FakeMeshtasticAir,
+        pace: LoraPacePolicy = LoraPacePolicy(minGapMs = 0),
+        radio: LoraRadioConfig =
+            LoraRadioConfig(
+                usePreset = true,
+                modemPreset = ModemPreset.LONG_FAST,
+                region = LoraRegion.US,
+                hopLimit = 3,
+                overrideDutyCycle = false,
+            ),
+    ): Rig {
+        val r =
+            rig(
+                air,
+                1u,
+                "alice",
+                backgroundScope,
+                config = MutableStateFlow(LoraConfig("AA:1", 1)),
+                pace = pace,
+            ) { testScheduler.currentTime }
+        r.transport.start()
+        runCurrent()
+        r.link.readyProvisioned(radio = radio)
+        runCurrent()
+        return r
+    }
+
+    private fun TestScope.reading(
+        r: Rig,
+        channelUtil: Float,
+    ) {
+        r.link.boardAir.value = BoardAir(channelUtil, airUtilTxPercent = 1.5f, atMs = testScheduler.currentTime)
+        runCurrent()
+    }
+
+    @Test
+    fun aBusyBandHoldsAKnitRoomPostWhileTheMeshtasticRoomPostsAndANewQuietReadingLetsItGo() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = provisionedRig(air)
+            reading(r, 40f)
+            assertTrue("40 % brakes: the firmware's max_channel_util_percent, compared >=", r.transport.status.value.braked)
+
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate", sentAt = testScheduler.currentTime))
+            assertNull(r.transport.postToPublicChannel("meet at the trailhead"))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("only the Meshtastic room's post went", listOf(MeshtasticProto.PORT_TEXT_MESSAGE), r.link.sentPortnums)
+            assertEquals("the Knit post waits, queued", 1, r.transport.status.value.queued)
+            assertEquals(1L, r.metrics.lora().loraBandBraked)
+            assertEquals("a brake is not an airtime hold", 0L, r.metrics.lora().loraAirtimeHeld)
+
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals("a minute on, the same busy band: still waiting, counted once", 1, r.link.sent.size)
+            assertEquals(1L, r.metrics.lora().loraBandBraked)
+
+            reading(r, 30f)
+            assertFalse(r.transport.status.value.braked)
+            assertEquals("the first quiet reading lets it go", MeshtasticProto.PORT_PRIVATE_APP, r.link.sentPortnums.last())
+            assertEquals(2, r.link.sent.size)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aStaleReadingDoesNotBrake() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = provisionedRig(air)
+            reading(r, 60f)
+            // Past the reading's age, and past the linger sweep that republishes the status the row and the dump read.
+            advanceTimeBy(LoraPacePolicy.BRAKE_FRESH_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            runCurrent()
+            assertFalse("a board that stopped reporting brakes nothing", r.transport.status.value.braked)
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate", sentAt = testScheduler.currentTime))
+            runCurrent()
+            assertEquals(1, r.link.sent.size)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBrakedPostTheBandHoldsPastTheReadingsAgeGoesWhenItGoesStale() =
+        runTest {
+            // The brake lifts on its own when the last reading ages out: the pacer sleeps to that, not for ever.
+            val air = FakeMeshtasticAir()
+            val r = provisionedRig(air)
+            reading(r, 40f)
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate", sentAt = testScheduler.currentTime))
+            advanceTimeBy(LoraPacePolicy.BRAKE_FRESH_MS - 1_000)
+            runCurrent()
+            assertTrue(r.link.sent.isEmpty())
+            advanceTimeBy(2_000)
+            runCurrent()
+            assertEquals(1, r.link.sent.size)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aDedicatedSlotIsNeverBraked() =
+        runTest {
+            // ADR 067 lifts the manners this is on a slot of Knit's own: any congestion there is Knit's.
+            val air = FakeMeshtasticAir()
+            val slot = LoraSlot.forRegion(LoraRegion.US, ModemPreset.LONG_FAST)!!
+            val r =
+                provisionedRig(
+                    air,
+                    pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
+                    radio =
+                        LoraRadioConfig(
+                            usePreset = true,
+                            modemPreset = ModemPreset.LONG_FAST,
+                            region = LoraRegion.US,
+                            hopLimit = 3,
+                            overrideDutyCycle = false,
+                            channelNum = slot,
+                        ),
+                )
+            assertEquals(
+                true,
+                r.transport.status.value.airtime
+                    ?.dedicated,
+            )
+            reading(r, 90f)
+            assertFalse(r.transport.status.value.braked)
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate", sentAt = testScheduler.currentTime))
+            runCurrent()
+            assertEquals(1, r.link.sent.size)
+            r.transport.stop()
+        }
+
+    @Test
+    fun losingTheBoardForgetsItsReading() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val config = MutableStateFlow<LoraConfig?>(LoraConfig("AA:1", 0))
+            val r = rig(air, 1u, "alice", backgroundScope, config = config) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+            reading(r, 50f)
+            assertTrue(r.transport.status.value.braked)
+            config.value = null
+            runCurrent()
+            assertFalse(r.transport.status.value.braked)
+            assertNull(r.transport.status.value.bandReadingAgeMs)
+            r.transport.stop()
         }
 
     /** A high-entropy body that will not deflate below the LoRa packet cap, so the frame truly fragments. */
@@ -312,6 +492,8 @@ class LoraMeshTransportTest {
         val link: FakeMeshtasticLink,
         val metrics: MeshMetrics,
         val received: MutableList<InboundFrame>,
+        /** The rig's clock — the wall clock too: a post's `sentAt` read off it is one typed in this process. */
+        val now: () -> Long,
     )
 
     private fun rig(
@@ -348,7 +530,7 @@ class LoraMeshTransportTest {
             )
         val received = mutableListOf<InboundFrame>()
         scope.launch { transport.inbound.collect { received += it } }
-        return Rig(transport, link, metrics, received)
+        return Rig(transport, link, metrics, received, now)
     }
 
     @Test
@@ -1039,11 +1221,11 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aDmTheRoomsAirShareCannotCarryIsRefusedNotQueued() =
+    fun aDmTheWindowCannotCarryIsRefusedNotQueuedAndTheSenderIsStillOwedTheirAnswer() =
         runTest {
-            // Same rule as a post: a reply the window will not carry is counted now rather than sitting in
-            // the queue looking sent. And a refusal for air is the transport's, so the sender *was* stamped —
-            // the policy claimed the reply; the budget is what said no.
+            // Same rule as a post: a reply the window will not carry is counted now rather than sitting in the queue
+            // looking sent. And since ADR 2026-10.ug4a the air is asked before the sender is stamped: the refusal uses up
+            // nobody's one answer, so their next message, once the window has air, is answered.
             val air = FakeMeshtasticAir()
             val airtime = LoraAirtime()
             val r =
@@ -1059,18 +1241,114 @@ class LoraMeshTransportTest {
             runCurrent()
             r.link.readyProvisioned()
             runCurrent()
-            // Spend the public share before the DM arrives — a share there was, on the LongFast/US board
-            // `readyProvisioned` reports.
-            assertTrue(airtime.budgetMs(AirBucket.PUBLIC) > 0)
-            while (airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(150), testScheduler.currentTime)) {
-                airtime.record(AirBucket.PUBLIC, 150, testScheduler.currentTime)
+            // Spend the window to its half before the DM arrives — the ceiling the auto-reply answers to.
+            assertTrue(airtime.publicCeilingMs() > 0)
+            while (airtime.admits(Ceiling.HALF, listOf(150), testScheduler.currentTime)) {
+                airtime.record(150, testScheduler.currentTime)
             }
 
             r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
             runCurrent()
 
             assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
-            assertEquals(1L, r.metrics.meshtastic().autoReplyRefusedByReason[AutoReplyRefusal.NO_AIR.name])
+            assertEquals(1L, r.metrics.meshtastic().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.NO_AIR.name])
+
+            // The window rolls; the same sender writes again and is answered — once, priced unsigned (a PKI unicast).
+            advanceTimeBy(LoraAirtime.WINDOW_MS)
+            runCurrent()
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello?", id = 12u, to = 1u)
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(1L, r.metrics.meshtastic().autoReplySent)
+            assertEquals(
+                "unsigned, with the PKI unicast's 12 B the firmware adds",
+                airtime.timeOnAirMs(
+                    DmAutoReplyPolicy.TEXT.encodeToByteArray().size + MeshtasticProto.PKC_OVERHEAD_BYTES,
+                    LoraAirtime.UNSIGNED,
+                ),
+                airtime.usedMs(testScheduler.currentTime),
+            )
+            r.transport.stop()
+        }
+
+    /**
+     * ADR 2026-10.ug4a: the sender is stamped at receipt, on the packet collector, which does not wait for the restore —
+     * so until the once-a-day memory is back the reply is refused, unstamped, and the board's replay of the same DM is
+     * judged against the memory.
+     */
+    @Test
+    fun aDmBeforeTheMemoryIsBackIsNotAnsweredAndItsReplayIsJudgedAgainstTheMemory() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val load = CompletableDeferred<LoraPlaneSnapshot?>()
+            val state =
+                object : LoraPlaneState {
+                    override suspend fun load(): LoraPlaneSnapshot? = load.await()
+
+                    override suspend fun save(snapshot: LoraPlaneSnapshot) = Unit
+                }
+            val r = bridgeRig(air, mutableListOf(), state = state)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+            assertEquals(0L, r.metrics.meshtastic().autoReplySent)
+            assertEquals(1L, r.metrics.meshtastic().autoReplyRefusedByReason[AutoReplyRefusal.NOT_READY.name])
+
+            // The last process answered this sender an hour ago.
+            load.complete(
+                LoraPlaneSnapshot(
+                    savedAtWall = testScheduler.currentTime,
+                    autoReplied = listOf(SeenStamp(DmAutoReplyPolicy.senderKey(0xdeadbeefu), testScheduler.currentTime - 60 * 60_000L)),
+                ),
+            )
+            runCurrent()
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u) // the same sender again
+            r.link.deliverPublicText(from = 0x0badf00du, body = "hello", id = 12u, to = 1u) // somebody new
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals(
+                1L,
+                r.metrics.meshtastic().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY.name],
+            )
+            assertEquals(
+                "the new sender is answered at once — which also proves the pre-restore DM left the 30 s floor alone",
+                1L,
+                r.metrics.meshtastic().autoReplySent,
+            )
+            r.transport.stop()
+        }
+
+    /**
+     * The sibling: the restored memory does not name this sender, so whether the pre-restore refusal stamped them is read
+     * on their own key. It did not — their next DM after the restore is answered (ADR 2026-10.ug4a).
+     */
+    @Test
+    fun aDmRefusedBeforeTheMemoryIsBackLeavesItsSenderUnstamped() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val load = CompletableDeferred<LoraPlaneSnapshot?>()
+            val state =
+                object : LoraPlaneState {
+                    override suspend fun load(): LoraPlaneSnapshot? = load.await()
+
+                    override suspend fun save(snapshot: LoraPlaneSnapshot) = Unit
+                }
+            val r = bridgeRig(air, mutableListOf(), state = state)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+            assertEquals(1L, r.metrics.meshtastic().autoReplyRefusedByReason[AutoReplyRefusal.NOT_READY.name])
+
+            load.complete(
+                LoraPlaneSnapshot(
+                    savedAtWall = testScheduler.currentTime,
+                    autoReplied = listOf(SeenStamp(DmAutoReplyPolicy.senderKey(0x0badf00du), testScheduler.currentTime - 60 * 60_000L)),
+                ),
+            )
+            runCurrent()
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "still there?", id = 12u, to = 1u)
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertEquals("the sender's next DM is answered", 1L, r.metrics.meshtastic().autoReplySent)
+            assertNull(r.metrics.meshtastic().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY.name])
             r.transport.stop()
         }
 
@@ -1620,7 +1898,7 @@ class LoraMeshTransportTest {
             var at = 0L
             var spent = 0L
             while (spent < airtime.allowanceMs()) {
-                airtime.record(AirBucket.LIVE, 200, at)
+                airtime.record(200, at)
                 spent += airtime.timeOnAirMs(200)
                 at += 3_000
             }
@@ -1654,7 +1932,7 @@ class LoraMeshTransportTest {
         a.transport.start()
         runCurrent()
 
-        a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten"))
+        a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = a.now()))
         // Past the inter-packet gap, so nothing but the spent budget is holding the frame back — this is
         // the window in which the old code's due time fell into the past.
         advanceTimeBy(10_000)

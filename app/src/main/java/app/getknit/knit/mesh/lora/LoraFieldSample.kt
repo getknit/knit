@@ -17,8 +17,9 @@ internal fun LoraStatus.fieldSample(): List<FieldEvent> {
             queued = queued,
             heard = heard,
             boardsHeard = boardsHeard,
-            airUsedMs = airtime?.liveUsedMs,
-            airBudgetMs = airtime?.liveBudgetMs,
+            // The field log's keys predate the single ledger (ADR 2026-10.ug4a) and keep their names.
+            airUsedMs = airtime?.usedMs,
+            airBudgetMs = airtime?.allowanceMs,
             internetCovered = internetCovered,
             queueFree = queueFree,
             batteryPercent = battery?.percent,

@@ -453,9 +453,10 @@ internal class MeshtasticSession(
                 if (!self) emit(packet, data)
             }
 
-            // The board's own device telemetry (its battery) is addressed from itself too: read, never surfaced.
+            // The board's own device telemetry (its battery, its air) is addressed from itself too: read, never surfaced.
+            // The one live source of [boardAir]: it is about the last minute, sent now.
             data.portnum == MeshtasticProto.PORT_TELEMETRY && self -> {
-                MeshtasticProto.decodeTelemetry(data.payload)?.let(::onSelfMetrics)
+                MeshtasticProto.decodeTelemetry(data.payload)?.let { onSelfMetrics(it, live = true) }
             }
 
             self -> {}
@@ -507,7 +508,9 @@ internal class MeshtasticSession(
     private fun onNodeInfo(info: FromRadio.NodeInfo) {
         info.owner?.let { noteNodeName(info.num, it) }
         if (info.num != board?.myNodeNum) return
-        info.metrics?.let(::onSelfMetrics)
+        // The battery only: the NodeDB entry's `device_metrics` is the board's last broadcast reading, which can be
+        // hours old (firmware `PhoneAPI.cpp`, `DeviceTelemetry.cpp`), and an old channel figure must never brake.
+        info.metrics?.let { onSelfMetrics(it, live = false) }
         // The board's own name, so the setup screen can tell a board that still needs renaming (ADR 049).
         info.owner?.let { owner -> board = board?.copy(owner = owner) }
     }
@@ -534,12 +537,19 @@ internal class MeshtasticSession(
         }
     }
 
-    private fun onSelfMetrics(metrics: DeviceMetrics) {
+    /**
+     * The board's own [metrics]. The battery is read off either source; the air readings only off [live] telemetry,
+     * stamped now (ADR 2026-10.ug4a). A handshake's `NodeInfo` can carry the duty-cycle pair too, but as the board last
+     * broadcast it — possibly hours ago — so it is not read: [boardAir] stays empty until the first telemetry, about a
+     * minute after Ready. A telemetry without the pair leaves the last reading standing to age.
+     */
+    private fun onSelfMetrics(
+        metrics: DeviceMetrics,
+        live: Boolean,
+    ) {
         _battery.value = BoardBattery.of(metrics.batteryLevel, metrics.voltage)
-        // Only overwrite when the board actually reported one: a NodeInfo carries battery without the
-        // duty-cycle pair, and blanking the reading on every handshake would lose it for a minute each time.
-        if (metrics.channelUtilPercent != null || metrics.airUtilTxPercent != null) {
-            _boardAir.value = BoardAir(metrics.channelUtilPercent, metrics.airUtilTxPercent)
+        if (live && (metrics.channelUtilPercent != null || metrics.airUtilTxPercent != null)) {
+            _boardAir.value = BoardAir(metrics.channelUtilPercent, metrics.airUtilTxPercent, atMs = now())
         }
     }
 

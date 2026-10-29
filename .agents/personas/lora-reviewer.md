@@ -76,7 +76,7 @@ against the shapes below, the board facts and the ADRs — never from memory of 
 finding is a line where a real field can do the second while the code relies on the first. Check each shape
 explicitly; the incidents are the evidence that each one bit this plane:
 
-1. **Air spent that no ledger books.** Every transmission is booked against a bucket at its real cost (preset, the
+1. **Air spent that no ledger books.** Every transmission is booked against the one ledger at its real cost (preset, the
    2.8 signature under the cliff, less the pad), including retries, and a retry must not replay fragments the board
    already took. An exemption needs a floor of its own; a round must count what is already **queued**, not only what
    is recorded. Evidence: b01bbbee (the profile bootstrap was exempt and still booked: 79 % of all LoRa frames were
@@ -100,7 +100,7 @@ explicitly; the incidents are the evidence that each one bit this plane:
    across a field and went silent), 8517c0a0 (a phone off for days showed as a neighbour, ADR 2026-09.2ajk), a81dfd90
    (two radios read as three peers), 31a313e3 (a co-pocket airing put a board-less peer in reach; 218 ticks aired per
    `heal()`, ADR 2026-09.6gk8).
-5. **One class starving another in a scarce window.** Walk queue order (`FrameClass`), backfill rank, bucket shares
+5. **One class starving another in a scarce window.** Walk queue order (`FrameClass`), the ceilings, the brake
    and the offer's window together. An exempt class booked against the share it is exempt from, a snapshot that is
    never chosen behind a higher class, a rank the offer and the serve disagree on, and a two-packet frame that never
    fits while one-packet frames take each freed slice are all shipped bugs. Evidence: 0f7d516f (serving starved the
@@ -152,8 +152,8 @@ Then two checks that are not shapes:
   (`FastFrameCodecTest.aDeflatedFrameIgnoresTrailingBytesBecauseThePaddedLoraSenderDependsOnIt`), `HOP_LIMIT`
   (`everyPacketLeavesWithHopsToSpend`), `LORA_DIRECT_TAG` `0x11` and the `want_ack` / `rx_time` golden vectors
   (`MeshtasticProtoTest`, ADR 2026-10.x9fa), `DmAutoReplyPolicy.TEXT`, `ProfileContent.loraNode` / `loraKey` (the iOS port
-  reads them), `FieldEvent.Lora` (`FieldEventSchemaTest`), the `LoraPlaneState` JSON keys (a renamed key drops a
-  persisted ledger) and the `…debug.LORA` dump's keys. Any of these changing is a finding unless the brief made it a
+  reads them), `FieldEvent.Lora` (`FieldEventSchemaTest`), the `LoraPlaneState` JSON keys (a renamed key drops the
+  persisted auto-reply or re-probe memory) and the `…debug.LORA` dump's keys. Any of these changing is a finding unless the brief made it a
   paired or deliberate change. For every changed `Log` text beginning `lora `, grep `.agents/context/lora-bridge.md`,
   `.agents/context/debug-bridge.md` and the LoRa ADRs for it: those recipes are how a trial is read.
 - **Build flags and switches.** `BuildConfig.LORA_PLANE` is on everywhere and gates only the ways in; `loraEnabled`
@@ -260,9 +260,12 @@ One line per invariant, by subsystem, with the ADR to read. Not exhaustive and n
   mesh frame, a room reaction, `profile`, group-form, `typing`, `blobreq`, `keyreq` (038, rp3s, x9fa). Inert until a board is configured; losing it quiesces like `stop()` (5bqu).
 - **Size.** ≤ 3 fragments of ≤ 231 B; only the last packet of a deflated frame is padded past the cliff; `hop_limit`
   stated on every send (mhs5, 038).
-- **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min; LIVE all, PUBLIC 15 %, TICK never the last 25 %; every
-  spend booked (044, 054, rp3s). Class then FIFO; skip a refused frame, but a live frame the total refused holds what
-  ranks behind it (044's 2026-10-04 amendment). Fresh ≤ 15 min on fan-out (039).
+- **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min, one ledger; Knit frames may fill it, the Meshtastic room
+  and the auto-reply only while the total stays within half; every spend booked at its real price, a unicast unsigned
+  (ug4a). Two classes, `DIRECT` before `ROOM`; a full queue sheds a room post, then a ✓✓, before a DM. Skip a refused
+  frame, but a `DIRECT` frame the total refused holds what ranks behind it (044's 2026-10-04 amendment, ug4a). The
+  band brake (live self-telemetry `channelUtil` ≥ 40 %, the firmware's `max_channel_util_percent`, ≤ 5 min old, off a dedicated slot) holds only Knit room posts
+  and never spins the pacer (ug4a). The law is the firmware's `DUTY_CYCLE_LIMIT`, the ledger only manners. Fresh ≤ 15 min on fan-out (039).
 - **Gates.** A compact DM to us, to a linked peer or to a spool-covered peer never airs (054, y5f3). Each frame carries
   its own path's gates and `sendFrame` re-asks them: the author (`NOT_OWN`, rp3s), and for a compact DM
   `RideGate.direct` / `reachHeld` / `unackedFrameId` (5dt2, x9fa). The pacer waits for the self id (#141).
@@ -271,9 +274,9 @@ One line per invariant, by subsystem, with the ADR to read. Not exhaustive and n
   a give-up or no outcome, refused on its refusal; one send in flight per unconfirmed board; no probe window. The
   re-probe re-airs the newest DM without its ✓✓ on a backoff to 4 h; it and the resend ask `hasQueued`, never `sigSeen`
   (rp3s, x9fa).
-- **Persistence.** Ledger, auto-reply memory and re-probe schedule persisted on the wall clock; `sigSeen`,
-  `lastHeardAt` and the per-board reach marks never; a retired bucket restores as LIVE; nothing transmits before the restore, 5 s
-  bound (7svb, rp3s).
+- **Persistence.** Auto-reply memory and re-probe schedule (holders first under the cap) persisted on the wall clock;
+  the ledger, `sigSeen`, `lastHeardAt` and the per-board reach marks never, and an own post sent before this process
+  started never re-airs; nothing transmits before the restore, 5 s bound (7svb, rp3s, ug4a).
 - **Board.** Setup never moves the radio or touches the primary; one admin transaction; Restore puts back what it
   recorded; `Knit abcd`, unmessagable, `LOCAL_ONLY`; dedicated slot debug-only (045, 049, emd7, 067). Battery off the
   handshake and telemetry, never polled (041). Three direct dials, then `autoConnect` plus an hourly net, pacer parked

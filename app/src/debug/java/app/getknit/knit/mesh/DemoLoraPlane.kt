@@ -100,8 +100,9 @@ internal class DemoLoraPlane : LoraPlaneStatus {
                 preset = ModemPreset.LONG_FAST,
                 region = LoraRegion.OTHER,
                 known = true,
-                liveUsedMs = 62_000L,
-                liveBudgetMs = 180_000L,
+                usedMs = 62_000L,
+                allowanceMs = 180_000L,
+                publicCeilingMs = 90_000L,
             )
 
         private val DEMO_STATUS =

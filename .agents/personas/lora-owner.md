@@ -112,7 +112,7 @@ monitor outside the ledger's), and make the change additive on the wire (`docs/W
 
 - Match the surrounding code: its naming, its comment density, and KDoc that says *why* (the field trial, the ADR id)
   rather than what the line does.
-- A new frame path names its `FrameClass`, its `AirBucket` and its `RideGate`; a new counter goes in its
+- A new frame path names its `FrameClass`, its `Ceiling` and its `RideGate`; a new counter goes in its
   `MeshMetrics` group and the `…debug.LORA` dump (`.agents/context/debug-bridge.md`).
 - Treat a `Log` line beginning `lora ` as an oracle: `lora-bridge.md`'s on-device recipes and the ADRs grep for them
   (`lora pad`, `lora tx `, `lora direct `, `lora resend`, `lora reprobe`, `lora room too long`, `lora dial mode=`, `lora ready`). Prefer

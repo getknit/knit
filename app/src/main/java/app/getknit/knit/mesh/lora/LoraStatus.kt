@@ -26,8 +26,18 @@ internal data class LoraStatus(
     val battery: BoardBattery? = null,
     /** The board's own duty-cycle measurement, beside [airtime]'s estimate of Knit's share of it. */
     val boardAir: BoardAir? = null,
-    /** The airtime ledger: what the plane has spent this window against what it allows itself (ADR 044/054). */
+    /** The airtime ledger: what the plane has spent this window against its one allowance (ADR 2026-10.ug4a). */
     val airtime: AirtimeSnapshot? = null,
+    /**
+     * Whether the shared-band brake holds Knit room posts now: the board's last channel-utilisation reading at 40 % or
+     * more, at most five minutes old, off a dedicated slot (ADR 2026-10.ug4a). DMs still go.
+     */
+    val braked: Boolean = false,
+    /**
+     * How old the reading [braked] rests on is, or null when there is none. Both are as of the last publish: the linger
+     * sweep republishes once a minute, so the row may read a lifted brake for up to that long.
+     */
+    val bandReadingAgeMs: Long? = null,
     /**
      * Peers a connected spool was recently a path to — the Internet cover (ADR 2026-09.y5f3): compact DMs to them stay
      * off the air.
@@ -35,7 +45,7 @@ internal data class LoraStatus(
     val internetCovered: Int = 0,
     /**
      * Frames waiting in the pacer. Beside [airtime] it is the difference between a quiet plane and a starved
-     * one: a spent bucket holds frames rather than dropping them, so without a depth the dump reads healthy
+     * one: a spent window holds frames rather than dropping them, so without a depth the dump reads healthy
      * until the queue overflows and the drops arrive all at once (2026-09-04).
      */
     val queued: Int = 0,

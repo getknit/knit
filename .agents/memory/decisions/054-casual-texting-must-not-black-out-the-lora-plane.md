@@ -11,6 +11,10 @@ topics: [lora, custody, airtime]
 Status: Accepted (2026-08-27; `mesh/lora/LoraMeshTransport.coveredByLink`, `LoraAirtime`/`LoraPacePolicy`,
 `MeshTransport.FanoutHint`, `mesh/DmAckCoalescer`, `Protocol.CAP_INLINE_ACK`, `LoraReach.LoraOnlySaturated`)
 
+**Superseded in part by ADR 2026-10.ug4a (2026-10-29):** decision 3's tick class and tail (`FrameClass.TICK`,
+`TICK_TAIL_SHARE`) — the compact ✓✓ is a `DIRECT` frame, shed before a DM but never held out of a window's last quarter
+— and the bucketed budget; the 15-minute window stays.
+
 **Superseded in part by ADR 2026-10.x9fa (2026-10-29):** the DM parts — the `FanoutHint.TICK` class of a DM-form tick (the compact ✓✓ is `DirectKind.RECEIPT`) and the recipient gate on DM-form frames; the link and spool covers now guard the compact DM.
 
 Field report: casually texting one person over the mesh drove the LoRa airtime budget to 100 %, after which a

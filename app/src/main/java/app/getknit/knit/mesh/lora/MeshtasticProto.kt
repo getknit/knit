@@ -76,6 +76,13 @@ internal object MeshtasticProto {
      */
     const val XEDDSA_SIGNATURE_FIELD = 66
 
+    /**
+     * What a PKI-encrypted unicast adds on the air past its `Data`: the firmware's `MESHTASTIC_PKC_OVERHEAD` (an 8-byte tag
+     * and a 4-byte extra nonce, `RadioInterface.h:23`, added in `Router::perhapsEncode`, `Router.cpp:1305-1323`). The DM
+     * auto-reply is one (ADR 2026-10.ug4a), priced with it at admission and at booking.
+     */
+    const val PKC_OVERHEAD_BYTES = 12
+
     /** A `Data.xeddsa_signature` is exactly this long (`XEDDSA_SIGNATURE_SIZE`); the firmware emits 0 or 64 bytes, never else. */
     const val XEDDSA_SIGNATURE_BYTES = 64
 
@@ -1036,7 +1043,11 @@ internal class MeshPacket(
 internal data class DeviceMetrics(
     val batteryLevel: Int?,
     val voltage: Float?,
-    /** How much of the last hour the board heard the channel busy, as a percentage. */
+    /**
+     * How much of the last **minute** the board heard the channel busy, as a percentage: its own transmissions, what it
+     * received and the noise together (firmware `airtime.h`: six 10 s periods). The shared-band brake reads it (ADR
+     * 2026-10.ug4a).
+     */
     val channelUtilPercent: Float? = null,
     /**
      * How much of the last hour the board spent **transmitting**, as a percentage — its own measurement of

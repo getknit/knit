@@ -25,8 +25,9 @@ import app.getknit.knit.mesh.meshNodeLabel
  * ([Refusal.TOO_SOON]), so a burst of curious neighbours is one reply at a time, not a chorus. The memory
  * behind the first cap outlives the process through `LoraPlaneSnapshot.autoReplied` ([stamps] / [restore]),
  * because the board replays its queue on reconnect and a restart would otherwise answer the same message
- * twice. The airtime share the reply spends from is the transport's call ([LoraAirtime]'s `PUBLIC` bucket),
- * not this file's — hearing a DM costs nothing, and a refusal here is decided before any budget is asked.
+ * twice. Whether the window carries the reply is the transport's call ([LoraAirtime]'s [Ceiling.HALF], ADR
+ * 2026-10.ug4a), asked through [judge]'s `carried` after every cap here and before the sender is stamped: a reply the
+ * air refuses is [Refusal.NO_AIR], and the sender's one answer is still owed to their next message.
  *
  * **The words are fixed, in English, and never the user's.** The reply speaks for the board, not the person
  * — it carries no display name (ADR 049's rule for everything on the public frequency) and no hint of who
@@ -57,6 +58,12 @@ internal class DmAutoReplyPolicy(
 
         /** The board answered somebody within [FLOOR_MS]; a burst of DMs is one reply at a time. */
         TOO_SOON,
+
+        /**
+         * The window will not carry the reply — the total past [Ceiling.HALF] with its cost (ADR 2026-10.ug4a). Asked
+         * last, so neither cap is claimed: the sender's next message still earns their answer.
+         */
+        NO_AIR,
     }
 
     /** Either the reply to put on the air, or why there is none. */
@@ -81,13 +88,17 @@ internal class DmAutoReplyPolicy(
     /**
      * Judges one [packet] the board handed us. A [Verdict.Reply] **claims** both caps at once — the sender
      * is stamped and the floor moved — so the caller must put it on the air or accept that this sender
-     * has had their one answer; a reply refused for lack of airtime is counted there, not retried here.
+     * has had their one answer.
      *
-     * [ownNode] is our own board's node number: the reply goes only to a text addressed to it.
+     * [ownNode] is our own board's node number: the reply goes only to a text addressed to it. [carried] is the caller's
+     * last word, whether the air will take the reply ([Refusal.NO_AIR] when not): asked once every cap here has passed
+     * and before either is claimed, so a reply the window refuses uses up nobody's answer (ADR 2026-10.ug4a). Called on
+     * the board's packet collector, one packet at a time, so the peek and the stamp below cannot interleave.
      */
     fun judge(
         packet: ReceivedPacket,
         ownNode: UInt,
+        carried: () -> Boolean = { true },
     ): Verdict {
         if (packet.to == MeshtasticProto.BROADCAST || packet.to != ownNode) return Verdict.Refused(Refusal.NOT_FOR_US)
         if (packet.from == ownNode) return Verdict.Refused(Refusal.OWN_BOARD)
@@ -97,7 +108,10 @@ internal class DmAutoReplyPolicy(
         // The floor is asked before the sender is stamped: a sender refused for the floor has not had their
         // answer, and their next message — or this one, replayed by the board — still earns it.
         if (lastReplyAt != NEVER && now - lastReplyAt < FLOOR_MS) return Verdict.Refused(Refusal.TOO_SOON)
-        if (!replied.add(senderKey(packet.from))) return Verdict.Refused(Refusal.REPLIED_RECENTLY)
+        val key = senderKey(packet.from)
+        if (replied.contains(key)) return Verdict.Refused(Refusal.REPLIED_RECENTLY)
+        if (!carried()) return Verdict.Refused(Refusal.NO_AIR)
+        replied.add(key)
         lastReplyAt = now
         return Verdict.Reply(to = packet.from, text = TEXT)
     }
@@ -149,7 +163,11 @@ internal class DmAutoReplyPolicy(
  * Kept beside the policy so the whole vocabulary a `…debug.LORA` dump can print is in one file.
  */
 internal enum class AutoReplyRefusal {
-    /** The link dropped between the packet and the reply. */
+    /**
+     * The link dropped between the packet and the reply, or the once-a-day memory has not been restored yet (ADR
+     * 2026-10.ug4a). Refused unstamped: this copy is not answered (the board does not deliver a packet the phone has read
+     * again), and the sender's next DM is.
+     */
     NOT_READY,
 
     /** The board is pinned to a dedicated RF slot (ADR 067): no Meshtastic neighbour can hear it, or DM it. */
@@ -166,9 +184,6 @@ internal enum class AutoReplyRefusal {
 
     /** Longer than one packet carries — unreachable for a fixed [DmAutoReplyPolicy.TEXT], kept so it is visible. */
     TOO_LARGE,
-
-    /** The public bucket's share of the rolling window is spent. */
-    NO_AIR,
 
     /** The board or the mesh refused the packet — a sender with no public key on file, most likely. */
     NAK,

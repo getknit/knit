@@ -142,9 +142,10 @@ class MeshMetricsTest {
         metrics.onLoraTranscoded()
         metrics.onLoraPadded()
         metrics.onLoraDroppedQueue()
-        metrics.onLoraAirtimeHeld("BRIDGE")
-        metrics.onLoraAirtimeHeld("BRIDGE")
-        metrics.onLoraAirtimeHeld("LIVE")
+        metrics.onLoraAirtimeHeld()
+        metrics.onLoraAirtimeHeld()
+        metrics.onLoraAirtimeHeld()
+        metrics.onLoraBandBraked()
         metrics.onLoraSuppressed()
         metrics.onLoraNak()
         metrics.onFileSent(TransportKind.LoRa) // no-op: LoRa carries no files
@@ -161,7 +162,8 @@ class MeshMetricsTest {
         assertEquals(1L, snap.lora.loraDroppedQueue)
         // Held is not dropped: the two must never be read as one number, which is the point of the split.
         assertEquals(3L, snap.lora.loraAirtimeHeld)
-        assertEquals(mapOf("BRIDGE" to 2L, "LIVE" to 1L), snap.lora.loraAirtimeHeldByBucket)
+        // And a braked room post is neither: it waits for the band, not for air (ADR 2026-10.ug4a).
+        assertEquals(1L, snap.lora.loraBandBraked)
         assertEquals(1L, snap.lora.loraSuppressed)
         assertEquals(1L, snap.lora.loraNak)
     }

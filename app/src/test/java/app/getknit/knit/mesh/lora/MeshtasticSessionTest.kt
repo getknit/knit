@@ -1459,6 +1459,47 @@ class MeshtasticSessionTest {
             session.stop()
         }
 
+    /**
+     * ADR 2026-10.ug4a: the board's air readings come only off its live self-telemetry, stamped when read — a handshake
+     * `NodeInfo`'s `device_metrics` can be hours old and must never reach the shared-band brake — and a repeat of the
+     * same figures is still a new reading.
+     */
+    @Test
+    fun theBoardsAirIsReadOnlyOffItsLiveTelemetryAndEachReadingIsStamped() =
+        runTest {
+            val ch = FakeGattChannel()
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(BoardBytes.nodeInfo(0xABCDu, batteryLevel = 78, voltage = 3.92f, channelUtil = 61f))
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            assertEquals("the handshake's battery is read", 78, session.battery.value?.percent)
+            assertNull("its stale channel figure is not", session.boardAir.value)
+
+            advanceTimeBy(1_000)
+            ch.enqueueRead(BoardBytes.telemetry(from = 0xABCDu, batteryLevel = 77, voltage = 3.9f, channelUtil = 30f, airUtilTx = 2.5f))
+            ch.notify()
+            runCurrent()
+            val first = checkNotNull(session.boardAir.value)
+            assertEquals(30f, first.channelUtilPercent)
+            assertEquals(2.5f, first.airUtilTxPercent)
+            assertEquals(testScheduler.currentTime, first.atMs)
+
+            advanceTimeBy(1_000)
+            ch.enqueueRead(BoardBytes.telemetry(from = 0xABCDu, batteryLevel = 77, voltage = 3.9f, channelUtil = 30f, airUtilTx = 2.5f))
+            ch.notify()
+            runCurrent()
+            assertEquals("the same figures later are a new reading", first.atMs + 1_000, session.boardAir.value?.atMs)
+            session.stop()
+            assertNull(session.boardAir.value)
+        }
+
     // --- ADR 067: the debug-only dedicated-frequency setup ---
 
     @Test

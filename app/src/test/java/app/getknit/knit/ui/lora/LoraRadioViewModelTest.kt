@@ -263,14 +263,13 @@ class LoraRadioViewModelTest {
                     preset = ModemPreset.LONG_FAST,
                     region = LoraRegion.EU_868,
                     known = true,
-                    liveUsedMs = 40_000,
-                    liveBudgetMs = 100_000,
-                    publicUsedMs = 10_000,
-                    publicBudgetMs = 15_000,
+                    usedMs = 50_000,
+                    allowanceMs = 100_000,
+                    publicCeilingMs = 50_000,
                 )
             status.value = LoraStatus(state = ready(emptyList()), airtime = air)
             advanceUntilIdle()
-            assertEquals("both buckets spend the one allowance", 50, vm.state.value.airtimePercent)
+            assertEquals("one ledger against one allowance (ADR 2026-10.ug4a)", 50, vm.state.value.airtimePercent)
 
             // No board, no reading — the number would be about an hour that is not being spent.
             status.value = LoraStatus(state = LinkState.Idle, airtime = air)
@@ -290,8 +289,8 @@ class LoraRadioViewModelTest {
                             preset = ModemPreset.LONG_FAST,
                             region = LoraRegion.OTHER,
                             known = true,
-                            liveUsedMs = 1,
-                            liveBudgetMs = 100_000,
+                            usedMs = 1,
+                            allowanceMs = 100_000,
                         ),
                 )
             advanceUntilIdle()

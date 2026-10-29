@@ -115,6 +115,7 @@ object FieldCounters {
                 put("loraTooBig", loraTooBig)
                 put("loraDroppedQueue", loraDroppedQueue)
                 put("loraAirtimeHeld", loraAirtimeHeld)
+                put("loraBandBraked", loraBandBraked)
                 put("loraSuppressed", loraSuppressed)
                 put("loraNak", loraNak)
                 put("loraSessionUps", loraSessionUps)

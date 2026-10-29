@@ -389,7 +389,7 @@ class MeshMetrics {
     private val loraTooBig = AtomicLong()
     private val loraDroppedQueue = AtomicLong()
     private val loraAirtimeHeld = AtomicLong()
-    private val loraAirtimeHeldByBucket = ConcurrentHashMap<String, AtomicLong>()
+    private val loraBandBraked = AtomicLong()
     private val loraSuppressed = AtomicLong()
     private val loraNak = AtomicLong()
     private val loraNakByReason = ConcurrentHashMap<String, AtomicLong>()
@@ -434,7 +434,7 @@ class MeshMetrics {
     private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
     // The Meshtastic room's outbound half. Unlike the four above these DO spend airtime, so `publicPostSent`
-    // read against the PUBLIC bucket in `…debug.LORA` is what says whether the quota is set right; a
+    // read against `airtime.usedMs` / `publicCeilingMs` in `…debug.LORA` says whether the ceiling is set right; a
     // refusal is one the composer showed the user.
     private val publicPostSent = AtomicLong()
     private val publicPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
@@ -1167,17 +1167,25 @@ class MeshMetrics {
     }
 
     /**
-     * A queued LoRa frame the airtime budget made wait, by the [AirBucket] name it spends from. **Held, not
-     * dropped** — it stays queued for a later window — which is exactly why it needed a counter of its own:
-     * `loraDroppedQueue` only ever sees such a frame if the queue later fills and sheds it, so a plane whose
-     * bucket is spent reads perfectly healthy right up until it overflows (field-observed 2026-09-04, a 99 %
-     * spent bucket with every drop counter at zero throughout).
+     * A queued LoRa frame the airtime budget made wait. **Held, not dropped** — it stays queued for a later window —
+     * which is exactly why it needed a counter of its own: `loraDroppedQueue` only ever sees such a frame if the queue
+     * later fills and sheds it, so a plane whose window is spent reads perfectly healthy right up until it overflows
+     * (field-observed 2026-09-04, a 99 % spent budget with every drop counter at zero throughout). One ledger since ADR
+     * 2026-10.ug4a, so no longer split by bucket.
      *
      * Counted once per frame, not once per pacer wake, so this measures congestion rather than the clock.
      */
-    fun onLoraAirtimeHeld(bucket: String) {
+    fun onLoraAirtimeHeld() {
         loraAirtimeHeld.incrementAndGet()
-        loraAirtimeHeldByBucket.getOrPut(bucket) { AtomicLong() }.incrementAndGet()
+    }
+
+    /**
+     * A Knit room post the shared-band brake kept queued: the board reported its channel 40 % busy or more (ADR
+     * 2026-10.ug4a). Held, not dropped, like [onLoraAirtimeHeld], and counted once per frame the same way. A post the
+     * band stays busy for past `FRESH_MS` is then dropped at send as `STALE`.
+     */
+    fun onLoraBandBraked() {
+        loraBandBraked.incrementAndGet()
     }
 
     /** The LoRa board session reached Ready — context for the received/sent counts (how often it links). */
@@ -1396,7 +1404,7 @@ class MeshMetrics {
         autoReplyHeard.incrementAndGet()
     }
 
-    /** One auto-reply the board put on the air. Costs airtime, out of the same PUBLIC share as a post. */
+    /** One auto-reply the board put on the air. Costs airtime, under the same half ceiling as a post (ADR 2026-10.ug4a). */
     fun onAutoReplySent() {
         autoReplySent.incrementAndGet()
     }
@@ -1620,7 +1628,7 @@ class MeshMetrics {
             loraTooBig = loraTooBig.get(),
             loraDroppedQueue = loraDroppedQueue.get(),
             loraAirtimeHeld = loraAirtimeHeld.get(),
-            loraAirtimeHeldByBucket = loraAirtimeHeldByBucket.mapValues { it.value.get() },
+            loraBandBraked = loraBandBraked.get(),
             loraSuppressed = loraSuppressed.get(),
             loraNak = loraNak.get(),
             loraNakByReason = loraNakByReason.mapValues { it.value.get() },
@@ -1902,7 +1910,7 @@ class MeshMetrics {
             val loraTooBig: Long = 0,
             val loraDroppedQueue: Long = 0,
             val loraAirtimeHeld: Long = 0,
-            val loraAirtimeHeldByBucket: Map<String, Long> = emptyMap(),
+            val loraBandBraked: Long = 0,
             val loraSuppressed: Long = 0,
             val loraNak: Long = 0,
             val loraNakByReason: Map<String, Long> = emptyMap(),

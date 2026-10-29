@@ -19,7 +19,7 @@ interface PublicChannelSink {
      *
      * Returns null once the post is queued on the board, else the [PublicPostRefusal] — counted, and handed
      * back so the composer can show it: the board is not ready, slot 0 is the Knit channel, the 30 s floor
-     * has not elapsed, the line does not fit one packet, or the airtime bucket is spent.
+     * has not elapsed, the line does not fit one packet, or the window is past its half ceiling (ADR 2026-10.ug4a).
      *
      * The line a stock client reads is composed behind this seam (`mesh/lora/PublicPostPolicy.onAirText`),
      * so the caller does not have to know what a Meshtastic client's 200-byte convention is. It is the
@@ -62,7 +62,7 @@ enum class PublicPostRefusal {
     /** Longer than one packet carries even after trimming — should be unreachable, kept so it is visible. */
     TOO_LARGE,
 
-    /** The public bucket's share of the rolling window is spent. */
+    /** The rolling window, this post's cost included, would pass half its allowance (`Ceiling.HALF`, ADR 2026-10.ug4a). */
     NO_AIR,
 
     /** The board or the mesh refused the packet. */

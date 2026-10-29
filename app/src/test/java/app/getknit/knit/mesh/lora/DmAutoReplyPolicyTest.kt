@@ -175,4 +175,37 @@ class DmAutoReplyPolicyTest {
         now += DmAutoReplyPolicy.FLOOR_MS
         assertTrue(small.judge(packet(from = 0x1u, id = 4u), ownNode) is DmAutoReplyPolicy.Verdict.Reply)
     }
+
+    /**
+     * ADR 2026-10.ug4a: the air is asked last, before either cap is claimed — a reply the window will not carry uses up
+     * neither the sender's one answer nor the floor, and the same sender's next message is answered once there is air.
+     */
+    @Test
+    fun `a reply the air refuses claims neither cap`() {
+        val refused = policy.judge(packet(id = 1u), ownNode, carried = { false })
+        assertEquals(DmAutoReplyPolicy.Refusal.NO_AIR, (refused as DmAutoReplyPolicy.Verdict.Refused).reason)
+        assertTrue("no stamp was kept", policy.stamps().isEmpty())
+        // Not even the floor moved: the next message, at once, is answered.
+        assertEquals(0x1234abcdu, reply(packet(id = 2u)).to)
+    }
+
+    @Test
+    fun `the air is not asked of a sender already answered or inside the floor`() {
+        reply(packet(from = 0x1u))
+        var asked = 0
+        val carried = {
+            asked++
+            true
+        }
+        assertEquals(
+            DmAutoReplyPolicy.Refusal.TOO_SOON,
+            (policy.judge(packet(from = 0x2u), ownNode, carried) as DmAutoReplyPolicy.Verdict.Refused).reason,
+        )
+        now += DmAutoReplyPolicy.FLOOR_MS
+        assertEquals(
+            DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY,
+            (policy.judge(packet(from = 0x1u), ownNode, carried) as DmAutoReplyPolicy.Verdict.Refused).reason,
+        )
+        assertEquals(0, asked)
+    }
 }

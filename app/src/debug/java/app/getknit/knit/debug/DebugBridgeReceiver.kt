@@ -1730,7 +1730,8 @@ class DebugBridgeReceiver :
             .put("loraTooBig", snap.lora.loraTooBig)
             .put("loraDroppedQueue", snap.lora.loraDroppedQueue)
             .put("loraAirtimeHeld", snap.lora.loraAirtimeHeld)
-            .put("loraAirtimeHeldByBucket", JSONObject(snap.lora.loraAirtimeHeldByBucket))
+            // Knit room posts the shared-band brake held, once each (ADR 2026-10.ug4a): the board's channel ≥ 40 % busy.
+            .put("loraBandBraked", snap.lora.loraBandBraked)
             .put("loraSuppressed", snap.lora.loraSuppressed)
             .put("loraNak", snap.lora.loraNak)
             .put("loraNakByReason", JSONObject(snap.lora.loraNakByReason))
@@ -1787,14 +1788,14 @@ class DebugBridgeReceiver :
             .put("meshPostBoardVerified", snap.meshtastic.meshPostBoardVerified)
             .put("meshPostSignatureMismatch", snap.meshtastic.meshPostSignatureMismatch)
             .put("meshPostRefusedByReason", JSONObject(snap.meshtastic.meshPostRefusedByReason))
-            // The outbound half. Unlike the four above these cost airtime, so read `publicPostSent` against
-            // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. Every refusal here
-            // was shown to the user at the composer.
+            // The outbound half. Unlike the four above these cost airtime, out of the one window: read `publicPostSent`
+            // against `airtime.usedMs`/`publicCeilingMs` — the total a post may take the window to (ADR 2026-10.ug4a).
+            // Every refusal here was shown to the user at the composer.
             .put("publicPostSent", snap.meshtastic.publicPostSent)
             .put("publicPostRefusedByReason", JSONObject(snap.meshtastic.publicPostRefusedByReason))
             // The DM auto-reply. `heard` is every text addressed to the board itself, `sent` the ones it
-            // answered (airtime, out of the same PUBLIC share), and the rest is itemised by the policy's caps
-            // (REPLIED_RECENTLY, TOO_SOON) and the transport's gates (NOT_SET_UP, DEDICATED, NO_AIR, NAK…).
+            // answered (airtime, under the same half ceiling), and the rest is itemised by the policy's caps
+            // (REPLIED_RECENTLY, TOO_SOON, NO_AIR) and the transport's gates (NOT_SET_UP, DEDICATED, NAK…).
             .put("autoReplyHeard", snap.meshtastic.autoReplyHeard)
             .put("autoReplySent", snap.meshtastic.autoReplySent)
             .put("autoReplyRefusedByReason", JSONObject(snap.meshtastic.autoReplyRefusedByReason))
@@ -2359,8 +2360,8 @@ class DebugBridgeReceiver :
                     .put("inFlight", status.direct.inFlight)
                     .put("parked", status.direct.parked),
             ).put("radio", status.airtime?.let { "${it.region}/${it.preset}${if (it.known) "" else " (assumed)"}" } ?: JSONObject.NULL)
-            // ADR 067: true means the board is on its own RF slot, so the budgets below are off the
-            // politeness ceiling and bounded only by the region's duty cycle.
+            // ADR 067: true means the board is on its own RF slot, so the allowance below is off the
+            // politeness ceiling and bounded only by the region's duty cycle, and the band brake is off.
             .put("dedicated", status.airtime?.dedicated ?: JSONObject.NULL)
             // ADR 2026-09.mhs5: whether this board's firmware signs what we hand it, and so whether the budget charges
             // for that signature and the codec pads past its cliff. Without it neither is observable here.
@@ -2374,11 +2375,15 @@ class DebugBridgeReceiver :
                         // Knit handed it — so the gap is readable instead of being mistaken for a leak.
                         .put("boardAirUtilTxPercent", status.boardAir?.airUtilTxPercent?.toDouble() ?: JSONObject.NULL)
                         .put("boardChannelUtilPercent", status.boardAir?.channelUtilPercent?.toDouble() ?: JSONObject.NULL)
-                        .put("liveMs", air.liveUsedMs)
-                        .put("liveBudgetMs", air.liveBudgetMs)
-                        .put("publicMs", air.publicUsedMs)
-                        .put("publicBudgetMs", air.publicBudgetMs)
-                        .put("totalMs", air.totalUsedMs)
+                        // One ledger against one allowance (ADR 2026-10.ug4a); the Meshtastic room and the auto-reply may take
+                        // the total to `publicCeilingMs`. Not persisted: a restart starts `usedMs` at zero.
+                        .put("usedMs", air.usedMs)
+                        .put("allowanceMs", air.allowanceMs)
+                        .put("publicCeilingMs", air.publicCeilingMs)
+                        // The shared-band brake: Knit room posts wait while the board's channel is ≥ 40 % busy on a
+                        // reading at most five minutes old (`boardAirAgeMs`), off a dedicated slot. DMs still go.
+                        .put("braked", status.braked)
+                        .put("boardAirAgeMs", status.bandReadingAgeMs ?: JSONObject.NULL)
                 } ?: JSONObject.NULL,
             ).put("counters", metricsJson(metrics.snapshot()))
     }

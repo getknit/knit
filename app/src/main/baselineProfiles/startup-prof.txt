@@ -29512,14 +29512,6 @@ PLapp/getknit/knit/mesh/link/SegmentingOutputStream;-><clinit>()V
 PLapp/getknit/knit/mesh/link/SegmentingOutputStream;-><init>(Ljava/io/OutputStream;I)V
 PLapp/getknit/knit/mesh/link/SegmentingOutputStream;->flush()V
 PLapp/getknit/knit/mesh/link/SegmentingOutputStream;->write([BII)V
-Lapp/getknit/knit/mesh/lora/AirBucket;
-SPLapp/getknit/knit/mesh/lora/AirBucket;->$values()[Lapp/getknit/knit/mesh/lora/AirBucket;
-SPLapp/getknit/knit/mesh/lora/AirBucket;-><clinit>()V
-SPLapp/getknit/knit/mesh/lora/AirBucket;-><init>(Ljava/lang/String;I)V
-SPLapp/getknit/knit/mesh/lora/AirBucket;->values()[Lapp/getknit/knit/mesh/lora/AirBucket;
-Lapp/getknit/knit/mesh/lora/AirBucket$Companion;
-SPLapp/getknit/knit/mesh/lora/AirBucket$Companion;-><init>()V
-SPLapp/getknit/knit/mesh/lora/AirBucket$Companion;-><init>(Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 Lapp/getknit/knit/mesh/lora/AirtimeSnapshot;
 SPLapp/getknit/knit/mesh/lora/AirtimeSnapshot;-><clinit>()V
 SPLapp/getknit/knit/mesh/lora/AirtimeSnapshot;-><init>(Lapp/getknit/knit/mesh/lora/ModemPreset;Lapp/getknit/knit/mesh/lora/LoraRegion;ZJJJJJJJJJJZZ)V
@@ -29570,7 +29562,6 @@ SPLapp/getknit/knit/mesh/lora/LoraAirtime;-><clinit>()V
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;-><init>(JDDDDDDZ)V
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;-><init>(JDDDDDDZILkotlin/jvm/internal/DefaultConstructorMarker;)V
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;->allowanceMs()J
-SPLapp/getknit/knit/mesh/lora/LoraAirtime;->budgetMs(Lapp/getknit/knit/mesh/lora/AirBucket;)J
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;->dedicated()Z
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;->prune(J)V
 SPLapp/getknit/knit/mesh/lora/LoraAirtime;->snapshot(J)Lapp/getknit/knit/mesh/lora/AirtimeSnapshot;

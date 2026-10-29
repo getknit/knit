@@ -236,11 +236,18 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `Routing.error_reason` names) says *why* a NAK happened — `TOO_LARGE` means the payload cap is wrong,
   `DUTY_CYCLE_LIMIT`/`RATE_LIMIT_EXCEEDED` mean airtime pressure — and every NAK is also logged as
   `lora nak id=… reason=…` under `LoraMeshTransport`. Since ADR 2026-10.rp3s the dump carries no `bridge` switch and no
-  `role`/`pocketLinks`/`pocketSightings`/`gatewaysHeard`, the `airtime` object only `liveMs`/`publicMs` (and their
-  budgets) beside `totalMs`, and the bridge counters (`loraOfferSent`/`loraOfferReceived`/`loraBridged`/
-  `loraBridgeRefused`/`loraPassive`/`loraProfileRefanSkipped`) are gone; new are `loraReprobed`, `loraRoomTooLong`,
-  `loraRetiredCtl` (an older build's OFFER heard and dropped), `loraPreIdRefused` and `loraBoardHoldersFailed` (the
-  board-holder source failed).
+  `role`/`pocketLinks`/`pocketSightings`/`gatewaysHeard`, and the bridge counters (`loraOfferSent`/`loraOfferReceived`/
+  `loraBridged`/`loraBridgeRefused`/`loraPassive`/`loraProfileRefanSkipped`) are gone; new are `loraReprobed`,
+  `loraRoomTooLong`, `loraRetiredCtl` (an older build's OFFER heard and dropped), `loraPreIdRefused` and
+  `loraBoardHoldersFailed` (the board-holder source failed). Since ADR 2026-10.ug4a the `airtime` object is one ledger:
+  `usedMs` against `allowanceMs` (empty after a restart: the ledger is not persisted), `publicCeilingMs` (how far the
+  Meshtastic room and the auto-reply may take the total), `braked` and `boardAirAgeMs` (the shared-band brake and its
+  reading's age), beside the board's `boardAirUtilTxPercent` / `boardChannelUtilPercent`; the bucket keys (`liveMs`,
+  `liveBudgetMs`, `publicMs`, `publicBudgetMs`, `totalMs`) and `loraAirtimeHeldByBucket` are gone, and `loraBandBraked`
+  counts the Knit room posts the brake held.
+  <!-- doc-lint: allow liveBudgetMs — a dump key ADR 2026-10.ug4a removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow publicBudgetMs — a dump key ADR 2026-10.ug4a removed, named so an old trial log can be read -->
+  <!-- doc-lint: allow loraAirtimeHeldByBucket — a dump key ADR 2026-10.ug4a removed, named so an old trial log can be read -->
   <!-- doc-lint: allow pocketLinks — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
   <!-- doc-lint: allow pocketSightings — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->
   <!-- doc-lint: allow gatewaysHeard — a dump key ADR 2026-10.rp3s removed, named so an old trial log can be read -->

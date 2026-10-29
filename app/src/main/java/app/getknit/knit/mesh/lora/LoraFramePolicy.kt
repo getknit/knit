@@ -75,6 +75,17 @@ internal object LoraFramePolicy {
      */
     const val FRESH_MS = 15 * 60_000L
 
+    /**
+     * Whether [env] was written before [processStartWall], the wall-clock instant this process started (ADR 2026-10.ug4a):
+     * then it is not a post the user just typed but one re-served back to us — a neighbour's custody or a spool pull,
+     * after a restart emptied the router's seen window and the plane's dedup — and the fan-out does not re-air it, or a
+     * crash loop would re-air the last quarter-hour's posts on every launch.
+     */
+    fun predates(
+        env: RelayEnvelope,
+        processStartWall: Long,
+    ): Boolean = env.sentAt < processStartWall
+
     /** A Nearby-room post: a chat with no DM recipient and no group. Its reactions are not this. */
     fun isBroadcastRoomChat(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId == null && env.group == null
 }

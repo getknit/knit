@@ -1,7 +1,6 @@
 package app.getknit.knit.data.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import app.getknit.knit.mesh.lora.AirBooking
 import app.getknit.knit.mesh.lora.LoraPlaneSnapshot
 import app.getknit.knit.mesh.lora.ReprobeStamp
 import app.getknit.knit.mesh.lora.SeenStamp
@@ -17,9 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The LoRa plane's limiters over the settings DataStore: nothing stored and an unreadable blob both read as no
- * snapshot (the plane then starts on a clean window, costing one window at most), a snapshot round-trips whole, and
- * one a newer build wrote with a field this one does not know still loads what this build does know — those
- * limiters are still owed their air.
+ * snapshot, a snapshot round-trips whole, and one another build wrote with a field this one does not know — a newer
+ * build's, or an older one's airtime ledger (ADR 2026-10.ug4a) — still loads what this build does know.
  */
 class LoraPlaneStateStoreTest {
     @get:Rule
@@ -35,7 +33,7 @@ class LoraPlaneStateStoreTest {
     private val snapshot =
         LoraPlaneSnapshot(
             savedAtWall = 1_700_000_000_000L,
-            air = listOf(AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "CHAT")),
+            autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
             reprobes = listOf(ReprobeStamp("d4e5f6", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
         )
 
@@ -60,7 +58,7 @@ class LoraPlaneStateStoreTest {
         runTest {
             val settings = newSettings()
             // A write cut short: the start of a valid snapshot's JSON, no more.
-            settings.setLoraPlaneState("""{"savedAtWall":1700000000000,"air":[{"atWall":""")
+            settings.setLoraPlaneState("""{"savedAtWall":1700000000000,"reprobes":[{"id":""")
 
             assertNull(LoraPlaneStateStore(settings).load())
         }
@@ -70,25 +68,24 @@ class LoraPlaneStateStoreTest {
         runTest {
             val settings = newSettings()
             settings.setLoraPlaneState(
-                """{"savedAtWall":1700000000000,"air":[{"atWall":1699999990000,"ms":412,"bucket":"CHAT"}],""" +
+                """{"savedAtWall":1700000000000,"autoReplied":[{"id":"!0a0b0c0d","atWall":1699999100000}],""" +
                     """"meshCoreWindows":[{"id":7,"spent":3}]}""",
             )
 
             assertEquals(
                 LoraPlaneSnapshot(
                     savedAtWall = 1_700_000_000_000L,
-                    air = listOf(AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "CHAT")),
+                    autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
                 ),
                 LoraPlaneStateStore(settings).load(),
             )
         }
 
     /**
-     * The bridge's limiters left the snapshot with the bridge (ADR 2026-10.rp3s): a blob the last build wrote, with
-     * its beacon floor, serve windows and profile re-fan stamps, must still hand back every limiter this build keeps —
-     * the ledger (with its retired buckets' names intact, for the transport to map) and the auto-reply memory. The probe
-     * windows and re-offer hours went with the reach gate (ADR 2026-10.x9fa) and are ignored the same way. Dropping a
-     * kept limiter would hand the first launch after the upgrade free air.
+     * The bridge's limiters left the snapshot with the bridge (ADR 2026-10.rp3s), and the ledger left it with ADR
+     * 2026-10.ug4a: a blob the bridge build wrote, with its ledger, beacon floor, serve windows and profile re-fan stamps,
+     * must still hand back every limiter this build keeps — the auto-reply memory. The probe windows and re-offer hours
+     * went with the reach gate (ADR 2026-10.x9fa) and are ignored the same way.
      */
     @Test
     fun aSnapshotTheBridgeBuildWroteKeepsEveryLimiterThisBuildStillHas() =
@@ -108,11 +105,6 @@ class LoraPlaneStateStoreTest {
             assertEquals(
                 LoraPlaneSnapshot(
                     savedAtWall = 1_700_000_000_000L,
-                    air =
-                        listOf(
-                            AirBooking(atWall = 1_699_999_990_000L, ms = 412L, bucket = "BRIDGE"),
-                            AirBooking(atWall = 1_699_999_991_000L, ms = 90L, bucket = "LIVE"),
-                        ),
                     autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
                 ),
                 LoraPlaneStateStore(settings).load(),
@@ -137,6 +129,31 @@ class LoraPlaneStateStoreTest {
             assertEquals(
                 LoraPlaneSnapshot(
                     savedAtWall = 1_700_000_000_000L,
+                    reprobes = listOf(ReprobeStamp("bob", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
+                ),
+                LoraPlaneStateStore(settings).load(),
+            )
+        }
+
+    /**
+     * The blob the compact-DM build wrote (ADR 2026-10.x9fa), its ledger under `air` beside the two limiters this build
+     * keeps: it loads, the ledger is ignored — the window starts empty (ADR 2026-10.ug4a) — and the auto-reply memory and
+     * the re-probe schedule come back whole, under the same DataStore key.
+     */
+    @Test
+    fun aSnapshotWithALedgerStillLoadsAndTheLedgerIsLeftBehind() =
+        runTest {
+            val settings = newSettings()
+            settings.setLoraPlaneState(
+                """{"savedAtWall":1700000000000,""" +
+                    """"air":[{"atWall":1699999990000,"ms":412,"bucket":"LIVE"},{"atWall":1699999991000,"ms":90,"bucket":"PUBLIC"}],""" +
+                    """"autoReplied":[{"id":"!0a0b0c0d","atWall":1699999100000}],""" +
+                    """"reprobes":[{"id":"bob","dueAtWall":1700000900000,"gapMs":1800000,"lastFrameId":"f1"}]}""",
+            )
+            assertEquals(
+                LoraPlaneSnapshot(
+                    savedAtWall = 1_700_000_000_000L,
+                    autoReplied = listOf(SeenStamp("!0a0b0c0d", 1_699_999_100_000L)),
                     reprobes = listOf(ReprobeStamp("bob", dueAtWall = 1_700_000_900_000L, gapMs = 1_800_000L, lastFrameId = "f1")),
                 ),
                 LoraPlaneStateStore(settings).load(),

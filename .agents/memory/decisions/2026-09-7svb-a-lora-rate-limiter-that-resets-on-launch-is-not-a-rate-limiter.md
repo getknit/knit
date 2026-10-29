@@ -11,6 +11,12 @@ topics: [lora, airtime, reliability]
 Status: Accepted (2026-09-10; `LoraPlaneState`, `LoraPlaneStateStore`, `LoraAirtime.bookings`/`restore`,
 `LoraGossipPolicy.snapshot`/`restore`, `SeenSet.stamps`/`restore`)
 
+**Superseded in part by ADR 2026-10.ug4a (2026-10-29):** the ledger half. The airtime ledger is no longer persisted,
+and nothing seeds it: the regional duty cycle is the firmware's to enforce (`Router::send`'s `DUTY_CYCLE_LIMIT`), so "the
+ledger is the only thing enforcing it" below was false, and the only autonomous traffic left (the re-probe) has its
+own persisted backoff. The auto-reply memory and the re-probe schedule stay persisted through this seam.
+<!-- doc-lint: allow LoraAirtime.bookings — the status line names what this ADR shipped -->
+
 Every limiter on this plane was process-scoped, so each launch handed it a fresh 45-second allowance and
 re-ran every "first time" behaviour against it. Reported from the lab, where a reinstall lands many times a
 day and each startup pegged the board.

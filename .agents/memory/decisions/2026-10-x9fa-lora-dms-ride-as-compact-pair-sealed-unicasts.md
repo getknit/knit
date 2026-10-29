@@ -11,6 +11,8 @@ topics: [lora, crypto]
 Status: Proposed (2026-10-29). The LoRa half (Stage 2a) and the crypto half (Stage 2b, below: the seal, the
 `lora_direct_seen` table, delivery, the offers in `MeshManager` and the deletion of `MeshTransport.longRangeFanout`).
 
+**Superseded in part by ADR 2026-10.ug4a (2026-10-29):** the ✓✓'s pacing. It is a `FrameClass.DIRECT` frame now, shed before a DM or a reaction but dequeued in its turn, and it may spend a window's last quarter: ADR 054's tick class and tail are gone. Every airing is booked and refunded against the one ledger, with no bucket.
+
 Supersedes: ADR 039's DM form (a DM rode the plane as its signed, ratchet-sealed mesh frame), ADR 2026-10.a4pm (the
 reach gate and the probe), ADR 2026-09.5dt2's `RideGate.reachGated`, the DM parts of ADR 054 (the `FanoutHint.TICK`
 class of a DM-form tick; the link and spool covers stay), and ADR 2026-10.rp3s's probe, first-hearing re-offer and

@@ -2,6 +2,7 @@ package app.getknit.knit.di
 
 import android.os.Build
 import android.os.PowerManager
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import androidx.room3.withWriteTransaction
@@ -422,11 +423,16 @@ val meshModule =
                 onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.signingKey) },
                 scope = get(),
                 metrics = get(),
-                // The plane's rate limiters, kept across process death: without it every launch begins with a
-                // fresh airtime allowance, which in a lab that reinstalls all day is no allowance at all.
+                // The re-probe's backoff and the auto-reply's memory, kept across process death: without them every launch
+                // re-probes each silent board at the base gap and answers a replayed Meshtastic DM again. The airtime
+                // ledger is not kept (ADR 2026-10.ug4a).
                 state = LoraPlaneStateStore(settings),
                 clock = SystemClock::elapsedRealtime,
                 wallClock = System::currentTimeMillis,
+                // This process's start on the wall clock, not this single's: an own room post written before it is a
+                // re-serve and never re-airs (ADR 2026-10.ug4a), while one typed before the plane was first resolved
+                // still goes.
+                processStartWall = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()),
                 log = { Log.d("LoraMeshTransport", it) },
             )
         }

@@ -188,12 +188,16 @@ internal object BoardBytes {
                 varint(3, role)
             }.toByteArray()
 
-    /** A FromRadio.node_info for [num], with `device_metrics { battery_level, voltage }` when either is given. */
+    /**
+     * A FromRadio.node_info for [num], with `device_metrics { battery_level, voltage, channel_utilization }` when any is
+     * given.
+     */
     fun nodeInfo(
         num: UInt,
         batteryLevel: Int? = null,
         voltage: Float? = null,
         owner: BoardOwner? = null,
+        channelUtil: Float? = null,
     ): ByteArray =
         ProtoWriter()
             .message(4) {
@@ -212,19 +216,25 @@ internal object BoardBytes {
                         }
                     }
                 }
-                if (batteryLevel != null || voltage != null) {
+                if (batteryLevel != null || voltage != null || channelUtil != null) {
                     message(6) {
                         if (batteryLevel != null) varint(1, batteryLevel)
                         if (voltage != null) fixed32(2, voltage.toRawBits().toUInt())
+                        if (channelUtil != null) fixed32(3, channelUtil.toRawBits().toUInt())
                     }
                 }
             }.toByteArray()
 
-    /** A TELEMETRY_APP packet from [from] carrying `Telemetry { device_metrics { battery_level, voltage } }`. */
+    /**
+     * A TELEMETRY_APP packet from [from] carrying `Telemetry { device_metrics { battery_level, voltage } }`, plus
+     * `channel_utilization` (3) and `air_util_tx` (4) when given.
+     */
     fun telemetry(
         from: UInt,
         batteryLevel: Int,
         voltage: Float,
+        channelUtil: Float? = null,
+        airUtilTx: Float? = null,
     ): ByteArray =
         packet(
             from = from,
@@ -235,6 +245,8 @@ internal object BoardBytes {
                     .message(2) {
                         varint(1, batteryLevel)
                         fixed32(2, voltage.toRawBits().toUInt())
+                        if (channelUtil != null) fixed32(3, channelUtil.toRawBits().toUInt())
+                        if (airUtilTx != null) fixed32(4, airUtilTx.toRawBits().toUInt())
                     }.toByteArray(),
         )
 

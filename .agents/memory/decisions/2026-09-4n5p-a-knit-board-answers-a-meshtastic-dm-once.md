@@ -10,6 +10,8 @@ topics: [lora, meshtastic, provisioning]
 
 Status: Accepted (2026-09-19)
 
+**Superseded in part by ADR 2026-10.ug4a (2026-10-29):** the reply's air. It is admitted under the window's half ceiling on the one total, not a 15 % `PUBLIC` share, and that is asked before the sender is stamped, so a `NO_AIR` uses up nobody's answer. It is priced as the unsigned PKI unicast it is (149 B plus the firmware's 12 B PKC overhead), not as a signed post.
+
 **What was observed.** ADR 2026-09.emd7 marks a set-up board `is_unmessagable`, and stopped there. The
 mark is a `NodeInfo` hint: it reaches a neighbour only on the board's own node-info broadcast, which the
 same setup quiets to 6 h, and only clients that honour the flag (Android/iOS 2.6.9+) grey the node out.

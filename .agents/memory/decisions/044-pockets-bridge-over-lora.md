@@ -178,3 +178,9 @@ A negative control with the hold disabled fails three of them.
 ## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
 
 Its gateway election, OFFER gossip, backfill and serve caps are gone with the pocket bridge: the board airs only its own user's frames. The airtime allowance, the 15-minute window (ADR 054) and the 2026-10-04 live-hold amendment stay; the `BRIDGE` share does not.
+
+## Superseded in part by ADR 2026-10.ug4a (2026-10-29)
+
+Its buckets are gone: one ledger and one total, with the Meshtastic room and the auto-reply capped at half the window
+on the total (`Ceiling.HALF`) rather than a `PUBLIC` share. The allowance stays, and the 2026-10-04 holder amendment
+narrows to a `DIRECT` frame refused on `TOTAL`.
