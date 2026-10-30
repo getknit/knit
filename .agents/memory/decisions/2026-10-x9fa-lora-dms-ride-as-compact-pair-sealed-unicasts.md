@@ -362,10 +362,11 @@ trial step (0).
   refused as too long and its DM re-probed every 4 h. `LoraSizeHint.DM_BODY_BYTES` stays 160: re-measured with `-i`, a
   160-B body is 164 B of plaintext, so the 12 B came out of the old margin (11 B → 4 B). The overhead is reserved
   always, never learned: every compact DM that flies on 2.8 is PKI. A board in ham mode is the exception — no PKI, the
-  unicast signed when it fits (`Router.cpp:1271`) — and is priced so (`DirectSend.licensed`), never refused at setup.
-- **Priced for PKI.** `OutboundFrame.pricedExtraBytes` adds the 12 B to a compact DM at all three places that price
-  one: `admissionSizes`, `onTaken`'s booking of every airing, and `launchFlight`'s `airMs`, which sets the refund, the
-  retransmit gap and the deadline. One constant (`MeshtasticProto.PKC_OVERHEAD_BYTES`), shared with the auto-reply.
+  unicast channel-encrypted and signed by the firmware's rule (2.8.1 when it fits, `Router.cpp:1270`; 2.8.2 only under
+  `BALANCED`/`STRICT`) — and is priced so off the board's own snapshot (`LoraAirtime.price`), never refused at setup.
+- **Priced for PKI.** `OutboundFrame.price` (`LoraAirtime.price`, ADR 2026-09.mhs5's 2026-10-30 amendment) adds the 12 B
+  to a compact DM at all three places that price one: the pacer's admission, `onTaken`'s booking of every airing, and
+  `launchFlight`'s `airMs`, which sets the refund, the retransmit gap and the deadline — one price read once per send. One constant (`MeshtasticProto.PKC_OVERHEAD_BYTES`), shared with the auto-reply.
 - **The ACK carries a proof, on index 0.** A 2.8.1 board that holds the sender's key — and one that decrypted a PKI DM
   does — appends `Routing.ack_proof` (`AckProof.cpp:133-146`, `ACK_PROOF_SIZE` 8, `CryptoEngine.h:31`): the receiver
   books `ACK_PAYLOAD_BYTES` = 8 + 10. The PKI DM is reported on the receiver's index 0, so its ACK goes channel-keyed on

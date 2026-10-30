@@ -25,22 +25,30 @@ internal object PublicPostPolicy {
     const val MAX_ON_AIR_BYTES = 200
 
     /**
-     * The most a `TEXT_MESSAGE_APP` post can carry and still be **signed** by a 2.8 board, in bytes of UTF-8
-     * — [MeshtasticProto.maxSignedPayload] for the text port: 166, one more than a Knit frame's 165 because
+     * The most a `TEXT_MESSAGE_APP` post can carry and still be **signed** by a 2.8 board on a plain channel, in bytes of
+     * UTF-8 — [MeshtasticProto.maxSignedPayload] for the text port: 166, one more than a Knit frame's 165 because
      * the text portnum is a one-byte varint. Above it the firmware sends the post unsigned rather than
-     * refusing it (`Router::perhapsEncode`), silently, which is why the composer is capped here on a board
-     * that signs: a reader with the author's key in their contact's profile verifies every post, or the cap
-     * is not doing its job.
+     * refusing it (`Router::perhapsEncode`), silently, which is why the composer is capped at the board's cliff on a
+     * board that signs: a reader with the author's key in their contact's profile verifies every post, or the cap
+     * is not doing its job. The default the composer assumes until the board's own cliff is known.
      */
     val MAX_SIGNED_TEXT_BYTES: Int = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
 
     /**
-     * The byte budget for a post through a board that does or does not sign ([signing] —
-     * `LoraFacts.signs` at the composer, `LoraAirtime.signing` at the transport, the same fact): the
-     * signable cap on a 2.8 board, the client convention on an older one. One rule for both ends, so the
-     * composer never admits a byte the transport would trim.
+     * The byte budget for a post through a board whose slot-0 signature cliff is [signedUpTo] (#243 —
+     * `LoraFacts.roomSignedUpTo` at the composer, `LoraAirtime.price` at the transport, one snapshot): the cliff itself
+     * on a board that signs there — 166, or 154 on a 2.8.1 board whose slot 0 is AEAD, which signs a longer post and then
+     * refuses it as too large — and the client convention where it signs nothing ([LoraAirtime.UNSIGNED]). One rule for
+     * both ends, so the composer never admits a byte the transport would trim.
      */
-    fun onAirBudget(signing: Boolean): Int = if (signing) MAX_SIGNED_TEXT_BYTES else MAX_ON_AIR_BYTES
+    fun onAirBudget(signedUpTo: Int): Int =
+        if (signedUpTo <=
+            LoraAirtime.UNSIGNED
+        ) {
+            MAX_ON_AIR_BYTES
+        } else {
+            minOf(signedUpTo, MAX_ON_AIR_BYTES)
+        }
 
     /**
      * The line as a stock client will read it: the words that were typed, and nothing else.

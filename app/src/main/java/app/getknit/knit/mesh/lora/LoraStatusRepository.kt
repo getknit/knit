@@ -60,7 +60,7 @@ internal class LoraStatusRepository(
                     primaryKeyIsPublic = ready == null || PublicChannelPolicy.primaryKeyIsPublic(ready.channels),
                     // Deliberately not gated on `ready`: the composer stays mounted through a BLE flap, and
                     // the budget should follow the board it will post through, not flip on every reconnect.
-                    signs = status.airtime?.signing ?: true,
+                    roomSignedUpTo = status.airtime?.roomSignedUpTo ?: PublicPostPolicy.MAX_SIGNED_TEXT_BYTES,
                 )
             }.distinctUntilChanged()
         }

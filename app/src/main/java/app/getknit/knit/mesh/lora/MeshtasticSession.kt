@@ -97,6 +97,11 @@ internal class MeshtasticSession(
     // The board's radio settings (region + modem preset) from the handshake's Config stream — what the
     // airtime governor needs. Null until a board reports them; kept across a re-handshake of the same board.
     private var radio: LoraRadioConfig? = null
+
+    // `SecurityConfig.packet_signature_policy` from this handshake's Config stream (#243), or null when none came: unlike
+    // [radio], cleared at every handshake. A policy change reboots the board, so a new handshake always follows one; a
+    // security config pushed on a live session is not read (`dispatch`).
+    private var signaturePolicy: SignaturePolicy? = null
     private var lastWriteAt = 0L
 
     // When the current session went Ready; a long enough one resets the reconnect streak (BoardDialPolicy).
@@ -261,7 +266,7 @@ internal class MeshtasticSession(
     ): SessionEnd {
         val handshake = handshake(address, channel)
         if (handshake != null) return handshake
-        _state.value = LinkState.Ready(requireNotNull(board), channels, mtu, radio)
+        _state.value = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy)
         readyAt = now()
         lastWriteAt = now()
         val heartbeat = scope.launch { heartbeatTicker() }
@@ -313,6 +318,8 @@ internal class MeshtasticSession(
         _state.value = LinkState.Handshaking(null)
         board = null
         channels = emptyList()
+        // Per handshake: a session that never streams a security config must read as unknown, never as the last one's.
+        signaturePolicy = null
         _battery.value = null
         _boardAir.value = null
         classify(address, channel.subscribeFromNum(SUBSCRIBE_TIMEOUT_MS))?.let { return it }
@@ -360,11 +367,17 @@ internal class MeshtasticSession(
             is FromRadio.MyInfo -> board = BoardInfo(fr.myNodeNum, fr.pioEnv, board?.firmwareVersion)
             is FromRadio.Metadata -> board = (board ?: BLANK_BOARD).copy(firmwareVersion = fr.firmwareVersion, hasXeddsa = fr.hasXeddsa)
             is FromRadio.Channel -> channels = channels + fr.channel
-            is FromRadio.Config -> fr.lora?.let { radio = it }
+            is FromRadio.Config -> absorbConfig(fr)
             is FromRadio.NodeInfo -> onNodeInfo(fr)
             else -> Unit
         }
         return false
+    }
+
+    /** The radio settings and, of the security config, its `packet_signature_policy` (#243); a variant carries one or none. */
+    private fun absorbConfig(fr: FromRadio.Config) {
+        fr.lora?.let { radio = it }
+        fr.signaturePolicy?.let { signaturePolicy = it }
     }
 
     // --- draining reads ---
@@ -889,6 +902,13 @@ internal class MeshtasticSession(
      * the caller already holds is carried forward with the old name **filled in**, because on the ADR 049
      * board there is none and this is the one moment it is still knowable; re-recording the *intervals* here
      * would write back the quieted ones and destroy the only copy of the board's own.
+     *
+     * One channel write is the exception: a Knit slot another client switched to AEAD (`use_aead`) is rewritten in
+     * place (#243) with only `use_aead` taken out: the board's own `ChannelSettings` bytes ([ChannelInfo.settingsRaw])
+     * minus field 8, at the slot's own index and role. `set_channel` replaces the whole `ChannelSettings`, so a write
+     * built from scratch would reset what Knit does not model — above all `module_settings`, whose absence the firmware
+     * reads as **full** position precision, on a slot whose PSK is public (lora-reviewer's finding). Verbatim, nothing
+     * else moves: precision and mute, uplink, downlink, `id`, the name, the key, primary or secondary.
      */
     private suspend fun identityOnly(
         channel: GattChannel,
@@ -910,7 +930,20 @@ internal class MeshtasticSession(
                 owner = cmd.spec.previous.owner ?: was.owner,
                 channelNum = slot.recordedChannelNum ?: cmd.spec.previous.channelNum,
             )
-        val steps = identity + slot.steps
+        val clearAead =
+            if (existing.useAead) {
+                // The board's own settings minus field 8, at the slot's own index and role: nothing else moves.
+                val settings =
+                    spliceVarintFields(existing.settingsRaw, mapOf(MeshtasticProto.CHANNEL_SETTINGS_USE_AEAD to 0L))
+                        ?: return failProvision(cmd, MALFORMED_CONFIG)
+                val step: AdminStep = { passkey ->
+                    MeshtasticProto.encodeAdminSetChannelSettings(existing.index, existing.role, settings, passkey)
+                }
+                listOf(step)
+            } else {
+                emptyList()
+            }
+        val steps = clearAead + identity + slot.steps
         if (steps.isEmpty()) {
             log("lora provision already set up ch${existing.index} '${cmd.spec.name}'")
             cmd.reply.complete(ProvisionResult.Provisioned(existing.index, alreadyPresent = true))
@@ -922,6 +955,7 @@ internal class MeshtasticSession(
             steps = steps,
             label =
                 listOfNotNull(
+                    "cleared AEAD on ch${existing.index}".takeIf { clearAead.isNotEmpty() },
                     "wrote the board's Knit identity '${BoardName.forNode(myNode, board?.firmwareVersion).longName}'"
                         .takeIf { identity.isNotEmpty() },
                     slot.label.takeIf { it.isNotEmpty() },

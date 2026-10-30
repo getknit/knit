@@ -105,7 +105,7 @@ internal class LoraMeshTransport(
     /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
     private val onPublicPost: suspend (MeshPost) -> Unit = {},
     /**
-     * The bound board's node number and signing key, reported each time its session comes up. What the
+     * The bound board's node number and key ([BoardBinding]), reported each time its session comes up. What the
      * profile advertises so a contact's phone can line a heard post up with this one and verify it
      * (`SettingsStore.loraBoard`); persisted by the caller, so a link drop does not unsay it and only a
      * different board changes it.
@@ -823,7 +823,7 @@ internal class LoraMeshTransport(
         val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext) ?: return
         enqueueDirect(
             packet,
-            DirectSend(recipientId, holder.addr, frameId, kind, licensed = boardLicensed()),
+            DirectSend(recipientId, holder.addr, frameId, kind),
             RideGate(recipientId = recipientId, direct = true, reachHeld = true),
         )
     }
@@ -913,13 +913,6 @@ internal class LoraMeshTransport(
      */
     private fun directPayloadCap(): Int = LoraDirectPolicy.payloadCap(maxPayload)
 
-    /**
-     * Whether our board is in ham mode (`User.is_licensed`, off its own `NodeInfo`): then it does no PKI and signs a
-     * compact DM instead, and it is priced so (ADR 2026-10.aajj). False with no board up — the PKI price, which every
-     * other board pays.
-     */
-    private fun boardLicensed(): Boolean = (link.state.value as? LinkState.Ready)?.board?.licensed == true
-
     private fun enqueueDirect(
         packet: ByteArray,
         send: DirectSend,
@@ -974,7 +967,6 @@ internal class LoraMeshTransport(
                 DirectKind.MESSAGE,
                 resend = true,
                 flushAfter = flushAfter,
-                licensed = boardLicensed(),
             ),
             RideGate(recipientId = peerId, direct = true, unackedFrameId = dm.frameId),
         )
@@ -1081,7 +1073,7 @@ internal class LoraMeshTransport(
 
     /**
      * A direct send the board took ([sendMessage]): it now waits on its answer, until its deadline at the latest. One
-     * airing is priced as it was booked — the packet, the PKC overhead and the frame's own cliff — so the refund finds
+     * airing is priced at the [price] it was booked at — the packet, the PKC overhead and the frame's own cliff — so the refund finds
      * those bookings and the gap and the deadline are the firmware's for the packet that flies.
      */
     private fun launchFlight(
@@ -1089,10 +1081,11 @@ internal class LoraMeshTransport(
         send: DirectSend,
         handle: UInt,
         packet: ByteArray,
+        price: PacketPrice,
         bookedAt: Long,
         userSeq: Long,
     ) {
-        val air = pace.airtime.timeOnAirMs(packet.size + frame.pricedExtraBytes, frame.signedUpTo)
+        val air = pace.airtime.timeOnAirMs(packet.size, price)
         val slot = pace.airtime.slotTimeMs()
         val flight =
             LoraDirectPolicy.Flight(
@@ -1323,7 +1316,6 @@ internal class LoraMeshTransport(
                 send.kind,
                 resend = send.resend,
                 flushAfter = send.flushAfter,
-                licensed = send.licensed,
                 afterPeerKey = true,
             )
         direct.scheduleRetry(peer, now + flight.retransmitMs, frameOf(flight, retry, packet))
@@ -1333,8 +1325,10 @@ internal class LoraMeshTransport(
 
     /**
      * Books the `NodeInfo` our board sends a destination that answered `PKI_UNKNOWN_PUBKEY`: our board's own `User` as
-     * its NodeInfo stream reported it, or a nominal one. A unicast, so unsigned: 2.8 signs a unicast only in ham mode
-     * (`Router.cpp:1271`), and a NodeInfo is never PKI'd.
+     * its NodeInfo stream reported it, or a nominal one. Never PKI'd, and sent on the channel the NAK arrived on — their
+     * primary, which is ours when we heard it at all (`ReliableRouter.cpp:162-168`). Signed by the firmware's rule
+     * (#243, [LoraAirtime.price]): on 2.8.2+ under `BALANCED` or `STRICT` even unicast (`Router.cpp:1222-1227` at
+     * `34cb8d5`), on 2.8.1 only in ham mode (`Router.cpp:1270`).
      */
     private fun bookNodeInfoReply(now: Long) {
         val size =
@@ -1345,7 +1339,7 @@ internal class LoraMeshTransport(
                     ?.raw
                     ?.size
             } ?: LoraDirectPolicy.NODEINFO_USER_BYTES
-        pace.airtime.record(size, now, signedUpTo = LoraAirtime.UNSIGNED)
+        pace.airtime.record(size, now, pace.airtime.price(AirSlot.PRIMARY, PacketKind.NODEINFO_UNICAST, MeshtasticProto.PORT_NODEINFO))
     }
 
     /** A queued frame again for [flight]'s sealed [packet], as [send], under the gates its own path asked. */
@@ -1538,11 +1532,14 @@ internal class LoraMeshTransport(
         // where firmware 2.8 reports every PKI DM, which every compact DM now is — counts once it has authenticated
         // below: index 0 is the public slot too, and only a pinned peer's seal says the radio is a Knit one.
         if (packet.channelIndex == bound) noteBoard(packet)
-        // Our board acked it, unsigned, on our behalf, before the phone could open it — a stranger's and a forged one
-        // too: air the window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for
-        // none, and named nobody's next hop as ours, drew none.
+        // Our board acked it on our behalf, before the phone could open it — a stranger's and a forged one too: air the
+        // window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for none, and
+        // named nobody's next hop as ours, drew none. A routing unicast on the channel the DM came in on: unsigned but in
+        // 2.8.1's ham mode, +12 B on an AEAD slot 0 (#243, LoraAirtime.price).
         if (LoraDirectPolicy.boardAcks(packet, ready.board.myNodeNum)) {
-            pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), signedUpTo = LoraAirtime.UNSIGNED)
+            val slot = if (packet.channelIndex == bound) AirSlot.KNIT else AirSlot.PRIMARY
+            val price = pace.airtime.price(slot, PacketKind.ROUTING_UNICAST, MeshtasticProto.PORT_ROUTING)
+            pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), price)
         }
         val opened = openDirect(packet) ?: return
         if (packet.channelIndex != bound) noteBoard(packet)
@@ -1634,11 +1631,29 @@ internal class LoraMeshTransport(
      * Takes [channels] rather than reading the link itself, because "the board is between sessions" is not an
      * answer to this question and must never be confused with one: a disconnected link used to fail here and
      * cost the frame, when the only correct handling of it is to put the frame back — see [sendFrame].
+     *
+     * The name alone: a Knit slot another client switched to AEAD is still the board's Knit setup. Whether a frame may
+     * ride it is [aeadBlocks]'s question, asked of the frames the slot's hash reaches.
      */
     private fun boundSlotIsKnit(
         channels: List<ChannelInfo>,
         index: Int,
     ): Boolean = channels.isEmpty() || channels.any { it.index == index && it.name == KnitChannel.NAME }
+
+    /**
+     * Whether [frame] must not be written to bound slot [index] because that slot is AEAD (`use_aead`, set by another
+     * client; Knit's setup clears it, `MeshtasticSession.identityOnly`). The firmware folds AEAD into the channel hash
+     * (`Channels.cpp:53`, `h ^= 0xAE`), so no other Knit board decodes a packet encrypted under it — but only a packet
+     * that rides the slot: a broadcast, or a compact DM from a board in ham mode (no PKI). A compact DM off any other
+     * board is PKI-encrypted and its channel set to 0 (`Router.cpp:1189-1210`, `:1366` at v2.8.1), so the slot's AEAD
+     * and hash never touch it (#243, lora-reviewer's finding). `LoraAirtime.padTo` relies on the broadcast half: the bound slot a
+     * Knit broadcast leaves on is never AEAD.
+     */
+    private fun aeadBlocks(
+        frame: OutboundFrame,
+        ready: LinkState.Ready,
+        index: Int,
+    ): Boolean = (frame.direct == null || ready.board.licensed) && ready.channels.any { it.index == index && it.useAead }
 
     /**
      * The two covers for a compact DM (ADR 054, ADR 2026-09.y5f3), each counted under its own name; true means the
@@ -1761,21 +1776,17 @@ internal class LoraMeshTransport(
         val now = clock()
         val last = lastPublicPostAt.get()
         if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
+        // Slot 0's own price (#243): its cliff on the text port, by the board's policy and the channel's AEAD.
+        val price = pace.airtime.price(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE)
         // The same budget the composer applied — a draft typed while the facts still said 200 (a board that
         // came up signing after the draft began) is trimmed here rather than sent past the cliff unsigned.
-        val message = PublicPostPolicy.onAirText(body, PublicPostPolicy.onAirBudget(pace.airtime.signing)).encodeToByteArray()
-        if (message.size > maxPayload) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
+        val message = PublicPostPolicy.onAirText(body, PublicPostPolicy.onAirBudget(price.signedUpTo)).encodeToByteArray()
+        if (message.size > minOf(maxPayload, price.cap)) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
         // Asked before queueing rather than left to the pacer: a post the window will not carry under the foreign
         // audience's ceiling (half, ADR 2026-10.ug4a) should be counted as refused now, not sit in the queue looking
-        // sent until the window rolls over. Priced at the text port's own cliff: a post at the 166-byte cap is signed
-        // air, not an unsigned packet.
-        if (!pace.airtime.admits(
-                Ceiling.HALF,
-                listOf(message.size),
-                now,
-                signedUpTo = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE),
-            )
-        ) {
+        // sent until the window rolls over. Priced at slot 0's cliff: a post at the cap is signed air, not an unsigned
+        // packet.
+        if (!pace.airtime.admits(Ceiling.HALF, listOf(message.size), now, price)) {
             return refusePublicPost(PublicPostRefusal.NO_AIR)
         }
         // Claimed at enqueue, not at write: the floor is about how often this phone *decides* to speak, and
@@ -1889,9 +1900,15 @@ internal class LoraMeshTransport(
             abandon(frame)
             return
         }
-        if (!boundSlotIsKnit(ready.channels, ch)) {
+        val skipped =
+            when {
+                !boundSlotIsKnit(ready.channels, ch) -> "slot $ch is not the Knit channel — set this board up"
+                aeadBlocks(frame, ready, ch) -> "slot $ch is AEAD (use_aead), which no other Knit board shares — set it up again"
+                else -> null
+            }
+        if (skipped != null) {
             metrics.onLoraSuppressed()
-            log("lora send skipped: slot $ch is not the Knit channel — set this board up")
+            log("lora send skipped: $skipped")
             abandon(frame)
             return
         }
@@ -2020,17 +2037,17 @@ internal class LoraMeshTransport(
     ) {
         val now = clock()
         val send = frame.direct
-        // At the frame's own price, the one its admission asked: a broadcast at its port's cliff; a unicast — a compact DM
-        // and the auto-reply alike — unsigned and with the PKC overhead the firmware adds to every PKI unicast (ADR
-        // 2026-10.x9fa's PKI amendment).
-        val priced = message.size + frame.pricedExtraBytes
+        // At the frame's own price, the one its admission asked (OutboundFrame.price, #243): a broadcast at its slot's
+        // cliff; a unicast — a compact DM and the auto-reply alike — unsigned and with the PKC overhead the firmware adds
+        // to every PKI unicast (ADR 2026-10.x9fa's PKI amendment). Read once, so the flight's airing is the booked one.
+        val price = frame.price(pace.airtime)
         if (send == null) {
-            pace.airtime.record(priced, now, signedUpTo = frame.signedUpTo)
+            pace.airtime.record(message.size, now, price)
         } else {
-            repeat(LoraDirectPolicy.AIRINGS) { pace.airtime.record(priced, now, signedUpTo = frame.signedUpTo) }
+            repeat(LoraDirectPolicy.AIRINGS) { pace.airtime.record(message.size, now, price) }
         }
         frame.onPartSent()
-        send?.let { launchFlight(frame, it, handle, message, now, userSeq) }
+        send?.let { launchFlight(frame, it, handle, message, price, now, userSeq) }
         // The ledger just moved, and a send is the only thing that spends it — so republish here
         // rather than leave the chat's saturation notice and the radio screen's percentage waiting
         // on the 60 s linger sweep. Cheap: the pacer's 3 s floor bounds how often this can run, and
@@ -2196,9 +2213,9 @@ internal class LoraMeshTransport(
      * inside the policy before it stamps the sender — so a reply the window will not carry is counted now rather than
      * left to look sent, and uses up nobody's one answer.
      *
-     * The reply rides the shared pacer as a [Destination.Reply] frame and is priced **unsigned**
-     * ([LoraAirtime.UNSIGNED]): `Router::perhapsEncode` signs a broadcast, a `NodeInfo` or a position, and a unicast
-     * only on a ham-mode board, whatever PKI then does with it.
+     * The reply rides the shared pacer as a [Destination.Reply] frame, priced as the PKI unicast it is
+     * ([OutboundFrame.price]): unsigned, +12 B — or, on a ham-mode board, channel-encrypted and signed by the firmware's
+     * rule (#243).
      */
     private fun onDirectMessage(packet: ReceivedPacket) {
         metrics.onAutoReplyHeard()
@@ -2224,9 +2241,10 @@ internal class LoraMeshTransport(
         // practice) is refused without a stamp.
         val message = DmAutoReplyPolicy.TEXT.encodeToByteArray()
         if (message.size > maxPayload) return AutoReplyRefusal.TOO_LARGE.name
-        // Priced as what flies: unsigned, plus the PKC overhead of a PKI unicast (OutboundFrame.pricedExtraBytes).
-        val priced = message.size + MeshtasticProto.PKC_OVERHEAD_BYTES
-        val carried = { pace.airtime.admits(Ceiling.HALF, listOf(priced), clock(), signedUpTo = LoraAirtime.UNSIGNED) }
+        // Priced as what flies, the price its queued frame will book (OutboundFrame.price): a PKI unicast, unsigned and
+        // +12 B, on any board not in ham mode.
+        val price = pace.airtime.price(AirSlot.PRIMARY, PacketKind.DATA_UNICAST, MeshtasticProto.PORT_TEXT_MESSAGE)
+        val carried = { pace.airtime.admits(Ceiling.HALF, listOf(message.size), clock(), price) }
         val reply =
             when (val verdict = autoReply.judge(packet, ownNode = ready.board.myNodeNum, carried = carried)) {
                 is DmAutoReplyPolicy.Verdict.Refused -> return verdict.reason.name
@@ -2366,22 +2384,45 @@ internal class LoraMeshTransport(
             // moves again if the session-up wakes it.
             wake.trySend(Unit)
             pace.airtime.onRadioConfig(state.radio)
-            // 2.8 signs the broadcasts it sends for us, which is airtime the budget has to know about.
-            pace.airtime.onFirmware(state.board.firmwareVersion, state.board.hasXeddsa)
+            // What the firmware signs, and so what the budget charges and the codec pads past (#243): the version, the
+            // build's `has_xeddsa`, the policy it streamed (none: unknown, priced as signing), ham mode, and AEAD on the
+            // two slots we write to.
+            val bound = currentConfig?.channelIndex
+            pace.airtime.onBoard(
+                SigningFacts(
+                    firmware = state.board.firmwareVersion,
+                    hasXeddsa = state.board.hasXeddsa,
+                    policy = state.signaturePolicy,
+                    licensed = state.board.licensed,
+                ),
+                primaryAead = state.channels.any { it.index == PublicChannelPolicy.PRIMARY_INDEX && it.useAead },
+                knitAead = bound != null && state.channels.any { it.index == bound && it.useAead },
+            )
+            val air = pace.airtime.snapshot(clock())
             log(
                 "lora ready board=${state.board.myNodeNum} mtu=${state.mtu} maxPayload=$maxPayload " +
                     "radio=${state.radio?.region}/${state.radio?.modemPreset} " +
-                    "fw=${state.board.firmwareVersion} signing=${pace.airtime.signing}",
+                    "fw=${state.board.firmwareVersion} signing=${air.signing} policy=${state.signaturePolicy} " +
+                    "knitSignedUpTo=${air.knitSignedUpTo} roomSignedUpTo=${air.roomSignedUpTo} licensed=${state.board.licensed}",
             )
-            // The key is advertised only while the board signs: a key that never signs verifies nothing,
-            // and a pre-2.8 user's profile should not grow by it.
-            val signingKey =
-                state.board.owner
-                    ?.publicKey
-                    ?.takeIf { pace.airtime.signing }
-            scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, signingKey)) }
+            scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, boundKey(state.board))) }
         }
         publishStatus()
+    }
+
+    /**
+     * The key the profile advertises for [board] (`ProfileContent.loraKey`): its own `User.public_key` when it is 32 bytes
+     * and its CRC32 is the board's node number — the binding firmware 2.8 makes at keygen (`NodeDB::createNewIdentity`)
+     * and the one a contact's phone checks before it writes the key to its own board (`LoraContactPolicy`, ADR
+     * 2026-10.aajj). Whether the board signs does not enter into it (#243): the key is what lets a contact's board
+     * PKI-encrypt a compact DM to ours, and a contact's phone reads an unsigned post as unsigned whatever key it holds.
+     * Null on a pre-2.8 board (a MAC-derived number), on a board with no key yet (keygen waits for a region) and on a
+     * malformed key.
+     */
+    private fun boundKey(board: BoardInfo): String? {
+        val b64 = board.owner?.publicKey ?: return null
+        val key = LoraContactPolicy.profileKey(b64) ?: return null
+        return b64.takeIf { LoraContactPolicy.crc32(key) == board.myNodeNum }
     }
 
     /**
@@ -2591,10 +2632,11 @@ internal const val MESH_POST_ROOM_OFF = "ROOM_OFF"
 internal const val MESH_POST_DEDICATED = "DEDICATED"
 
 /**
- * What a board reports about itself when its session comes up, for the profile to advertise: its node number
- * and — only on firmware that signs — the Curve25519 key it signs under (base64, off its own `NodeInfo`).
+ * What a board reports about itself when its session comes up, for the profile to advertise: its node number and its
+ * Curve25519 key (base64, off its own `NodeInfo`) when the number is the key's CRC32 — whether or not the board signs
+ * (#243). The key verifies a signed post and lets a contact's phone teach its board ours (ADR 2026-10.aajj).
  */
 internal data class BoardBinding(
     val nodeNum: UInt,
-    val signingKey: String?,
+    val key: String?,
 )

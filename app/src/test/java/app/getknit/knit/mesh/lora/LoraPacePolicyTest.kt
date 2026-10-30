@@ -336,36 +336,57 @@ class LoraPacePolicyTest {
 
     @Test
     fun aUnicastIsPricedUnsignedAndABroadcastAtItsPortsCliff() {
-        // 2.8 signs a broadcast it originates, never a unicast (`Router::perhapsEncode`): the auto-reply is priced like
-        // a compact DM, the Meshtastic room's post at the text port's cliff (ADR 2026-10.ug4a).
-        fun at(destination: Destination) = OutboundFrame(listOf(ByteArray(1)), "x", FrameClass.ROOM, Ceiling.HALF, destination).signedUpTo
+        // On a 2.8.1 board (it signs every broadcast it originates, `Router::perhapsEncode`): the auto-reply is priced like
+        // a compact DM, the Meshtastic room's post at the text port's cliff (ADR 2026-10.ug4a). The frame asks the board's
+        // snapshot (#243), keyed by its destination.
+        val airtime = LoraAirtime().apply { onBoard(SigningFacts("2.8.1.8e6a88d", true)) }
+
+        fun at(destination: Destination) =
+            OutboundFrame(listOf(ByteArray(1)), "x", FrameClass.ROOM, Ceiling.HALF, destination).price(airtime).signedUpTo
         assertEquals(LoraAirtime.UNSIGNED, at(Destination.Reply))
         assertEquals(MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE), at(Destination.Public))
         assertEquals(MeshtasticProto.MAX_SIGNED_PAYLOAD, at(Destination.Knit))
-        assertEquals(LoraAirtime.UNSIGNED, direct("dm").signedUpTo)
+        assertEquals(LoraAirtime.UNSIGNED, direct("dm").price(airtime).signedUpTo)
         // The auto-reply is a PKI unicast: the firmware adds its 12 B PKC overhead, priced at admission (and booking).
         val reply = OutboundFrame(listOf(ByteArray(149)), "reply", FrameClass.ROOM, Ceiling.HALF, Destination.Reply, to = 9u)
-        assertEquals(listOf(149 + MeshtasticProto.PKC_OVERHEAD_BYTES), reply.admissionSizes())
+        assertEquals(listOf(149), reply.admissionSizes())
+        assertEquals(MeshtasticProto.PKC_OVERHEAD_BYTES, reply.price(airtime).extraBytes)
         assertEquals(12, MeshtasticProto.PKC_OVERHEAD_BYTES)
         val public = OutboundFrame(listOf(ByteArray(149)), "public", FrameClass.ROOM, Ceiling.HALF, Destination.Public)
-        assertEquals("a broadcast carries none", listOf(149), public.admissionSizes())
+        assertEquals("a broadcast carries none", 0, public.price(airtime).extraBytes)
         // Firmware 2.8 PKI-encrypts a compact DM on the Knit slot too (`wouldEncryptWithPKC` never reads the channel), so
         // every airing it is admitted against carries the 12 B (ADR 2026-10.x9fa's PKI amendment).
+        assertEquals("one size per airing", List(LoraDirectPolicy.AIRINGS) { 1 }, direct("dm").admissionSizes())
         assertEquals(
             "a compact DM is a PKI unicast on any slot",
-            List(LoraDirectPolicy.AIRINGS) { 1 + MeshtasticProto.PKC_OVERHEAD_BYTES },
-            direct("dm").admissionSizes(),
+            MeshtasticProto.PKC_OVERHEAD_BYTES,
+            direct("dm").price(airtime).extraBytes,
         )
-        // A board in ham mode does no PKI and signs the unicast instead (`Router.cpp:1271`, ADR 2026-10.aajj).
-        val ham =
-            OutboundFrame(
-                listOf(byteArrayOf(1)),
-                "ham",
-                FrameClass.DIRECT,
-                direct = DirectSend("bob", BoardAddr(2u), "ham", DirectKind.MESSAGE, licensed = true),
-            )
-        assertEquals(List(LoraDirectPolicy.AIRINGS) { 1 }, ham.admissionSizes())
-        assertEquals(MeshtasticProto.MAX_SIGNED_PAYLOAD, ham.signedUpTo)
+        // A board in ham mode does no PKI and signs the unicast instead (`Router.cpp:1270` at v2.8.1, ADR 2026-10.aajj):
+        // read off the board's snapshot, never a copy on the frame.
+        val ham = LoraAirtime().apply { onBoard(SigningFacts("2.8.1.8e6a88d", true, licensed = true)) }
+        assertEquals(PacketPrice(MeshtasticProto.MAX_SIGNED_PAYLOAD, 0, MeshtasticProto.MAX_PAYLOAD), direct("dm").price(ham))
+    }
+
+    @Test
+    fun aRoomPostOnACompatible282BoardIsAdmittedAtTheUnsignedPrice() {
+        // #243: a 157 B Knit room post under 2.8.2 `COMPATIBLE` leaves unsigned, so admission asks for its unsigned air.
+        // A window sized between the two prices (the fallback allowance is a fortieth of it) admits it there, and refuses
+        // the same post from a 2.8.1 board, which signs it.
+        val probe = LoraAirtime()
+        val unsigned = probe.timeOnAirMs(157, LoraAirtime.UNSIGNED)
+        val signed = probe.timeOnAirMs(157, MeshtasticProto.MAX_SIGNED_PAYLOAD)
+        assertTrue(signed > unsigned)
+        val window = (unsigned + signed) / 2 * 40
+
+        fun refusal(facts: SigningFacts): LoraAirtime.Refusal? {
+            val airtime = LoraAirtime(windowMs = window).apply { onBoard(facts) }
+            val post = OutboundFrame(listOf(ByteArray(157)), "post", FrameClass.ROOM)
+            return airtime.refusal(post.ceiling, post.admissionSizes(), 0, post.price(airtime))
+        }
+        assertNull(refusal(SigningFacts("2.8.2.34cb8d5", true, SignaturePolicy.COMPATIBLE)))
+        assertEquals(LoraAirtime.Refusal.NEVER, refusal(SigningFacts("2.8.1.8e6a88d", true, SignaturePolicy.COMPATIBLE)))
+        assertEquals(LoraAirtime.Refusal.NEVER, refusal(SigningFacts("2.8.2.34cb8d5", true, SignaturePolicy.BALANCED)))
     }
 
     /** Takes everything queued, advancing the clock past the min gap between takes. */
@@ -547,7 +568,7 @@ class LoraPacePolicyTest {
         val pace = LoraPacePolicy(minGapMs = 0, airtime = airtime)
         val size = 200
         val ms = airtime.timeOnAirMs(size, LoraAirtime.UNSIGNED)
-        while (airtime.admits(Ceiling.FULL, listOf(size), 0)) airtime.record(size, 0, LoraAirtime.UNSIGNED)
+        while (airtime.admits(Ceiling.FULL, listOf(size), 0)) airtime.record(size, 0, PacketPrice.UNSIGNED)
         pace.enqueue(OutboundFrame(listOf(ByteArray(size)), "held", FrameClass.DIRECT))
         assertNull(pace.take(1))
         assertTrue("deferred to the window's roll", pace.nextDueAt() > 1)

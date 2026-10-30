@@ -80,7 +80,11 @@ class LoraAirtimeTest {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
         air.record(MeshtasticProto.MAX_PAYLOAD, 0)
-        air.record(PublicPostPolicy.MAX_ON_AIR_BYTES, 0, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
+        air.record(
+            PublicPostPolicy.MAX_ON_AIR_BYTES,
+            0,
+            air.price(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE),
+        )
         val both =
             air.timeOnAirMs(MeshtasticProto.MAX_PAYLOAD) +
                 air.timeOnAirMs(PublicPostPolicy.MAX_ON_AIR_BYTES, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
@@ -156,7 +160,7 @@ class LoraAirtimeTest {
         val notSigning =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.7.26")
+                onBoard(SigningFacts("2.7.26"))
             }
         val short = 120
         assertTrue(
@@ -183,8 +187,8 @@ class LoraAirtimeTest {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val packet = listOf(60)
         var now = 0L
-        while (air.admits(Ceiling.FULL, packet, now, LoraAirtime.UNSIGNED)) {
-            air.record(60, now, LoraAirtime.UNSIGNED)
+        while (air.admits(Ceiling.FULL, packet, now, PacketPrice.UNSIGNED)) {
+            air.record(60, now, PacketPrice.UNSIGNED)
             now += 3_000
         }
         assertTrue(
@@ -270,20 +274,175 @@ class LoraAirtimeTest {
         assertFalse(LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.US)) }.snapshot(0L).dedicated)
     }
 
+    // --- #243: what the firmware signs, by version, policy, channel, packet class and ham mode ---
+
+    private val knit = MeshtasticProto.PORT_PRIVATE_APP
+    private val text = MeshtasticProto.PORT_TEXT_MESSAGE
+    private val knitCliff = MeshtasticProto.MAX_SIGNED_PAYLOAD
+    private val textCliff = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
+    private val u = LoraAirtime.UNSIGNED
+
+    private fun cliff(
+        firmware: String?,
+        policy: SignaturePolicy?,
+        kind: PacketKind = PacketKind.BROADCAST,
+        aead: Boolean = false,
+        licensed: Boolean = false,
+        hasXeddsa: Boolean? = true,
+        portnum: Int = knit,
+    ): Int = LoraAirtime.price(SigningFacts(firmware, hasXeddsa, policy, licensed), aead, kind, portnum).signedUpTo
+
     @Test
-    fun signingIsFirmware28AndAnythingItCannotReadIsChargedForAnyway() {
-        assertTrue(LoraAirtime.signsPackets("2.8.0.7239fe8"))
-        assertTrue(LoraAirtime.signsPackets("2.9.1.abc"))
-        assertTrue(LoraAirtime.signsPackets("3.0.0"))
-        assertFalse(LoraAirtime.signsPackets("2.7.26.b246bcd"))
-        assertFalse(LoraAirtime.signsPackets("2.5.0"))
-        assertFalse(LoraAirtime.signsPackets("1.9.9"))
-        // Unknown has to be the expensive reading: under-charging against firmware that signs spends air the
-        // budget never allowed for, and in a duty-limited region that is law rather than manners.
-        assertTrue(LoraAirtime.signsPackets(null))
-        assertTrue(LoraAirtime.signsPackets(""))
-        assertTrue(LoraAirtime.signsPackets("unknown"))
-        assertTrue(LoraAirtime.signsPackets("2"))
+    fun aBroadcastIsSignedByVersionAndPolicy() {
+        // Rows: firmware. Columns: COMPATIBLE, BALANCED, STRICT, a future value, and no security config streamed at all.
+        val policies =
+            listOf(SignaturePolicy.COMPATIBLE, SignaturePolicy.BALANCED, SignaturePolicy.STRICT, SignaturePolicy.UNRECOGNISED, null)
+        val table =
+            mapOf(
+                // Pre-2.8 never signs; `has_xeddsa` is absent on it.
+                "2.7.26.b246bcd" to listOf(u, u, u, u, u),
+                // Tag 2.8.1 ignores the policy on the send path and signs every broadcast.
+                "2.8.1.8e6a88d" to listOf(knitCliff, knitCliff, knitCliff, knitCliff, knitCliff),
+                "2.8.0.47db0e3" to listOf(knitCliff, knitCliff, knitCliff, knitCliff, knitCliff),
+                // 2.8.2 (upstream 34cb8d582): COMPATIBLE never signs; an unknown or unrecognised policy reads as signing.
+                "2.8.2.34cb8d5" to listOf(u, knitCliff, knitCliff, knitCliff, knitCliff),
+                "2.9.0.abcdef0" to listOf(u, knitCliff, knitCliff, knitCliff, knitCliff),
+            )
+        for ((firmware, row) in table) {
+            for ((policy, want) in policies.zip(row)) {
+                val xeddsa = if (firmware.startsWith("2.7")) null else true
+                assertEquals("$firmware under $policy", want, cliff(firmware, policy, hasXeddsa = xeddsa))
+            }
+        }
+    }
+
+    @Test
+    fun aBuildThatCannotSignOrAVersionThatCannotBeReadIsPricedTheExpensiveWay() {
+        assertEquals("has_xeddsa false never signs", u, cliff("2.8.1.8e6a88d", SignaturePolicy.STRICT, hasXeddsa = false))
+        assertEquals(u, cliff("2.8.2.34cb8d5", SignaturePolicy.BALANCED, hasXeddsa = false))
+        // Unknown has to be the expensive reading: under-charging against firmware that signs spends air the budget never
+        // allowed for, and in a duty-limited region that is law rather than manners.
+        for (firmware in listOf(null, "", "unknown", "2", "2.8")) {
+            assertEquals("'$firmware' even under COMPATIBLE", knitCliff, cliff(firmware, SignaturePolicy.COMPATIBLE, hasXeddsa = null))
+        }
+        assertEquals("a pre-2.8 version that says it can sign", knitCliff, cliff("2.7.9", SignaturePolicy.COMPATIBLE, hasXeddsa = true))
+        assertEquals("and the version decides when the flag is absent", u, cliff("2.7.26.b246bcd", null, hasXeddsa = null))
+    }
+
+    @Test
+    fun anAeadChannelIsUnsignedOn282ButSigned12BytesShortOn281AndAlwaysPays12Bytes() {
+        // 2.8.1's signedDataFits ignores the AEAD tag and its AEAD path then refuses what overflows (Router.cpp:1177-1185,
+        // 1377-1379): only a payload 12 B under the usual edge leaves signed. 34cb8d582 never signs on an AEAD channel.
+        assertEquals(154, cliff("2.8.1.8e6a88d", SignaturePolicy.COMPATIBLE, aead = true, portnum = text))
+        assertEquals(153, cliff("2.8.1.8e6a88d", SignaturePolicy.STRICT, aead = true))
+        assertEquals(u, cliff("2.8.2.34cb8d5", SignaturePolicy.STRICT, aead = true, portnum = text))
+        assertEquals(u, cliff("2.8.2.34cb8d5", null, aead = true))
+        for (firmware in listOf("2.8.1.8e6a88d", "2.8.2.34cb8d5")) {
+            val price = LoraAirtime.price(SigningFacts(firmware, true, SignaturePolicy.BALANCED), aead = true, PacketKind.BROADCAST, knit)
+            assertEquals(MeshtasticProto.AEAD_OVERHEAD_BYTES, price.extraBytes)
+            assertEquals(219, price.cap)
+        }
+        val plain = LoraAirtime.price(SigningFacts("2.8.1.8e6a88d", true), aead = false, PacketKind.BROADCAST, text)
+        assertEquals(PacketPrice(textCliff, 0, MeshtasticProto.MAX_PAYLOAD + 1), plain)
+    }
+
+    @Test
+    fun aDataUnicastIsAPkiUnicastUnlessTheBoardIsInHamMode() {
+        // Not ham: PKI, whatever the version, the policy or the channel — unsigned, +12 B, 219 B of room.
+        for (firmware in listOf("2.7.26.b246bcd", "2.8.1.8e6a88d", "2.8.2.34cb8d5", null)) {
+            for (aead in listOf(false, true)) {
+                val price = LoraAirtime.price(SigningFacts(firmware, policy = SignaturePolicy.STRICT), aead, PacketKind.DATA_UNICAST, knit)
+                assertEquals("$firmware aead=$aead", PacketPrice(u, MeshtasticProto.PKC_OVERHEAD_BYTES, 219), price)
+            }
+        }
+        // Ham: no PKI, so the channel prices it and the firmware's rule signs it — 2.8.1 always, 2.8.2 by policy.
+        assertEquals(knitCliff, cliff("2.8.1.8e6a88d", SignaturePolicy.COMPATIBLE, PacketKind.DATA_UNICAST, licensed = true))
+        assertEquals(u, cliff("2.8.2.34cb8d5", SignaturePolicy.COMPATIBLE, PacketKind.DATA_UNICAST, licensed = true))
+        assertEquals(knitCliff, cliff("2.8.2.34cb8d5", SignaturePolicy.BALANCED, PacketKind.DATA_UNICAST, licensed = true))
+        assertEquals(u, cliff("2.7.26.b246bcd", null, PacketKind.DATA_UNICAST, licensed = true, hasXeddsa = null))
+        assertEquals(
+            0,
+            LoraAirtime.price(SigningFacts("2.8.1.8e6a88d", true, licensed = true), false, PacketKind.DATA_UNICAST, knit).extraBytes,
+        )
+    }
+
+    @Test
+    fun aNodeInfoUnicastIsSignedUnder282sSigningPoliciesWhateverTheHamFlag() {
+        val nodeInfo = MeshtasticProto.PORT_NODEINFO
+        for (licensed in listOf(false, true)) {
+            assertEquals(
+                textCliff,
+                cliff("2.8.2.34cb8d5", SignaturePolicy.BALANCED, PacketKind.NODEINFO_UNICAST, licensed = licensed, portnum = nodeInfo),
+            )
+            assertEquals(
+                textCliff,
+                cliff("2.8.2.34cb8d5", SignaturePolicy.STRICT, PacketKind.NODEINFO_UNICAST, licensed = licensed, portnum = nodeInfo),
+            )
+            assertEquals(
+                u,
+                cliff("2.8.2.34cb8d5", SignaturePolicy.COMPATIBLE, PacketKind.NODEINFO_UNICAST, licensed = licensed, portnum = nodeInfo),
+            )
+        }
+        // 2.8.1 signs a unicast only in ham mode.
+        assertEquals(u, cliff("2.8.1.8e6a88d", SignaturePolicy.STRICT, PacketKind.NODEINFO_UNICAST, portnum = nodeInfo))
+        assertEquals(
+            textCliff,
+            cliff("2.8.1.8e6a88d", SignaturePolicy.COMPATIBLE, PacketKind.NODEINFO_UNICAST, licensed = true, portnum = nodeInfo),
+        )
+        assertEquals(
+            "never PKI",
+            0,
+            LoraAirtime.price(SigningFacts("2.8.2.34cb8d5"), false, PacketKind.NODEINFO_UNICAST, nodeInfo).extraBytes,
+        )
+    }
+
+    @Test
+    fun aRoutingUnicastIsSignedOnlyBy281InHamMode() {
+        val routing = MeshtasticProto.PORT_ROUTING
+        assertEquals(
+            textCliff,
+            cliff("2.8.1.8e6a88d", SignaturePolicy.COMPATIBLE, PacketKind.ROUTING_UNICAST, licensed = true, portnum = routing),
+        )
+        assertEquals(u, cliff("2.8.1.8e6a88d", SignaturePolicy.STRICT, PacketKind.ROUTING_UNICAST, portnum = routing))
+        for (policy in listOf(SignaturePolicy.COMPATIBLE, SignaturePolicy.BALANCED, SignaturePolicy.STRICT, null)) {
+            for (licensed in listOf(false, true)) {
+                assertEquals(
+                    "2.8.2 $policy ham=$licensed",
+                    u,
+                    cliff("2.8.2.34cb8d5", policy, PacketKind.ROUTING_UNICAST, licensed = licensed, portnum = routing),
+                )
+            }
+        }
+        // An ACK on an AEAD slot 0 still pays the tag.
+        assertEquals(
+            MeshtasticProto.AEAD_OVERHEAD_BYTES,
+            LoraAirtime.price(SigningFacts("2.8.2.34cb8d5"), true, PacketKind.ROUTING_UNICAST, routing).extraBytes,
+        )
+    }
+
+    @Test
+    fun theLedgerReadsTheSlotItsPacketIsWrittenTo() {
+        // Slot 0 AEAD, the Knit slot plain, on 2.8.1: a room post's cliff moves, a Knit frame's does not.
+        val air = LoraAirtime().apply { onBoard(SigningFacts("2.8.1.8e6a88d", true, SignaturePolicy.COMPATIBLE), primaryAead = true) }
+        assertEquals(154, air.price(AirSlot.PRIMARY, PacketKind.BROADCAST, text).signedUpTo)
+        assertEquals(knitCliff, air.price(AirSlot.KNIT, PacketKind.BROADCAST, knit).signedUpTo)
+        assertEquals(154, air.snapshot(0L).roomSignedUpTo)
+        assertEquals(knitCliff, air.snapshot(0L).knitSignedUpTo)
+        // A 154 B post is signed air and 12 B of tag; a 160 B one prices unsigned (the composer never sends it: it would
+        // draw TOO_LARGE).
+        val room = air.price(AirSlot.PRIMARY, PacketKind.BROADCAST, text)
+        assertEquals(air.timeOnAirMs(154 + 12 + MeshtasticProto.XEDDSA_SIGNATURE_FIELD, u), air.timeOnAirMs(154, room))
+        assertEquals(air.timeOnAirMs(155 + 12, u), air.timeOnAirMs(155, room))
+        // 2.8.2 under COMPATIBLE: neither slot signs, so the codec has nothing to pad past and the snapshot says so.
+        val compatible = LoraAirtime().apply { onBoard(SigningFacts("2.8.2.34cb8d5", true, SignaturePolicy.COMPATIBLE)) }
+        assertFalse(compatible.snapshot(0L).signing)
+        assertEquals(u, compatible.snapshot(0L).roomSignedUpTo)
+        assertEquals(knitCliff, compatible.padTo(knitCliff, MeshtasticProto.MAX_PAYLOAD))
+        assertEquals(compatible.timeOnAirMs(157, u), compatible.timeOnAirMs(157))
+        // A new handshake replaces the snapshot whole.
+        compatible.onBoard(SigningFacts("2.8.2.34cb8d5", true, SignaturePolicy.BALANCED))
+        assertTrue(compatible.snapshot(0L).signing)
+        assertEquals(knitCliff + 1, compatible.padTo(knitCliff, MeshtasticProto.MAX_PAYLOAD))
     }
 
     @Test
@@ -291,12 +450,12 @@ class LoraAirtimeTest {
         val old =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.7.26.b246bcd")
+                onBoard(SigningFacts("2.7.26.b246bcd"))
             }
         val new =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.8.0.7239fe8")
+                onBoard(SigningFacts("2.8.0.7239fe8"))
             }
         // ADR 060's transcoded room tick: one packet either way, but 66 bytes more of it on 2.8.
         val tick = 157
@@ -312,12 +471,12 @@ class LoraAirtimeTest {
         val old =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.7.26.b246bcd")
+                onBoard(SigningFacts("2.7.26.b246bcd"))
             }
         val new =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.8.0.7239fe8")
+                onBoard(SigningFacts("2.8.0.7239fe8"))
             }
         // Above the cliff the firmware sends it unsigned exactly as 2.7 did, so nothing is owed.
         for (size in listOf(MeshtasticProto.MAX_SIGNED_PAYLOAD + 1, 221, MeshtasticProto.MAX_PAYLOAD)) {
@@ -332,7 +491,7 @@ class LoraAirtimeTest {
     private fun air28(preset: ModemPreset = ModemPreset.LONG_FAST) =
         LoraAirtime().apply {
             onRadioConfig(radio(preset))
-            onFirmware("2.8.0.7239fe8")
+            onBoard(SigningFacts("2.8.0.7239fe8"))
         }
 
     @Test
@@ -362,7 +521,7 @@ class LoraAirtimeTest {
         val old =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.7.26.b246bcd")
+                onBoard(SigningFacts("2.7.26.b246bcd"))
             }
         val cliff = MeshtasticProto.MAX_SIGNED_PAYLOAD
         assertEquals("a pre-2.8 board signs nothing, so a pad is pure loss", cliff, old.padTo(cliff, MeshtasticProto.MAX_PAYLOAD))
@@ -402,7 +561,7 @@ class LoraAirtimeTest {
             val air =
                 LoraAirtime().apply {
                     onRadioConfig(radio())
-                    onFirmware(firmware)
+                    onBoard(SigningFacts(firmware))
                 }
             var n = 0
             while (air.admits(Ceiling.FULL, listOf(157), 0L)) {
@@ -422,7 +581,7 @@ class LoraAirtimeTest {
         val air =
             LoraAirtime().apply {
                 onRadioConfig(radio())
-                onFirmware("2.8.0.47db0e3")
+                onBoard(SigningFacts("2.8.0.47db0e3"))
             }
         val textCliff = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
         assertEquals(166, textCliff)
@@ -436,16 +595,16 @@ class LoraAirtimeTest {
     fun theBoardsOwnCapabilityFlagOutranksTheVersionParse() {
         // `DeviceMetadata.has_xeddsa` is the build's own word; the version is the fallback for firmware too
         // old to carry the field.
-        assertFalse(LoraAirtime().apply { onFirmware("2.8.0.47db0e3", hasXeddsa = false) }.signing)
-        assertTrue(LoraAirtime().apply { onFirmware("2.7.9", hasXeddsa = true) }.signing)
-        assertTrue(LoraAirtime().apply { onFirmware("2.8.0.47db0e3", hasXeddsa = null) }.signing)
-        assertFalse(LoraAirtime().apply { onFirmware("2.7.26.b246bcd", hasXeddsa = null) }.signing)
+        assertFalse(LoraAirtime().apply { onBoard(SigningFacts("2.8.0.47db0e3", hasXeddsa = false)) }.snapshot(0L).signing)
+        assertTrue(LoraAirtime().apply { onBoard(SigningFacts("2.7.9", hasXeddsa = true)) }.snapshot(0L).signing)
+        assertTrue(LoraAirtime().apply { onBoard(SigningFacts("2.8.0.47db0e3", hasXeddsa = null)) }.snapshot(0L).signing)
+        assertFalse(LoraAirtime().apply { onBoard(SigningFacts("2.7.26.b246bcd", hasXeddsa = null)) }.snapshot(0L).signing)
     }
 
     @Test
     fun theSnapshotReportsWhetherTheSignatureIsBeingChargedFor() {
         assertTrue(LoraAirtime().snapshot(0L).signing)
-        assertFalse(LoraAirtime().apply { onFirmware("2.7.26.b246bcd") }.snapshot(0L).signing)
+        assertFalse(LoraAirtime().apply { onBoard(SigningFacts("2.7.26.b246bcd")) }.snapshot(0L).signing)
     }
 
     @Test
@@ -477,9 +636,9 @@ class LoraAirtimeTest {
         // when and how much with no bucket to tell them apart (ADR 2026-10.ug4a).
         val air = LoraAirtime()
         val ms = air.timeOnAirMs(60, LoraAirtime.UNSIGNED)
-        repeat(5) { air.record(60, 1_000, LoraAirtime.UNSIGNED) }
-        air.record(60, 2_000, LoraAirtime.UNSIGNED) // another send's: not this one's to give back
-        air.record(120, 1_000, LoraAirtime.UNSIGNED) // same instant, another cost: not this one's either
+        repeat(5) { air.record(60, 1_000, PacketPrice.UNSIGNED) }
+        air.record(60, 2_000, PacketPrice.UNSIGNED) // another send's: not this one's to give back
+        air.record(120, 1_000, PacketPrice.UNSIGNED) // same instant, another cost: not this one's either
         val other = air.timeOnAirMs(120, LoraAirtime.UNSIGNED)
         assertEquals(3, air.refund(1_000, ms, 3))
         assertEquals(3 * ms + other, air.snapshot(2_000).usedMs)

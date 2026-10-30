@@ -525,9 +525,10 @@ class SettingsStore(
         }
 
     /**
-     * The bound board as its last session reported it — its Meshtastic node number and, on firmware that
-     * signs, its key — or null while unbound. What the profile advertises (`ProfileContent.loraNode` /
-     * `loraKey`) so a contact can line a post their board heard up with this phone and verify it is ours.
+     * The bound board as its last session reported it — its Meshtastic node number and, when that number is the
+     * CRC32 of its 32-byte key (firmware 2.8's binding, signing or not: #243), its key — or null while unbound.
+     * What the profile advertises (`ProfileContent.loraNode` / `loraKey`) so a contact can line a post their board
+     * heard up with this phone and verify it is ours.
      *
      * Persisted rather than read off the live link on purpose: the link drops on every BLE hiccup, and a
      * value that flipped to null with it would bump the profile version and re-flood the profile on each
@@ -749,7 +750,7 @@ class SettingsStore(
     }
 
     /**
-     * The bound board reported its node number and, on firmware that signs, its key ([loraBoard]). One edit
+     * The bound board reported its node number and, when the number is the key's CRC32, its key ([loraBoard]). One edit
      * on purpose: the profile republishes on every change to either, so writing them separately would flood
      * it twice for one board.
      */

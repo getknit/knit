@@ -286,6 +286,12 @@ internal class FakeMeshtasticLink(
      * binding [ready] reports — what the mesh-in-a-box lab's boards use, since a compact DM is never sent from slot 0.
      */
     private val provisionedSlot: Int? = null,
+    /** `SecurityConfig.packet_signature_policy` as the handshake streams it; null for a board that streamed none (#243). */
+    private val signaturePolicy: SignaturePolicy? = null,
+    /** `use_aead` on the Knit channel [ready] reports — a slot another client switched to AEAD (#243). */
+    private val knitAead: Boolean = false,
+    /** `User.is_licensed` on the board's own entry: ham mode, no PKI ([BoardInfo.licensed]). */
+    private val licensed: Boolean = false,
 ) : MeshtasticLink {
     /** The board's own identity as the handshake reports it — named like a stock board, keyed when [publicKey] says so. */
     private val boardInfo: BoardInfo
@@ -295,6 +301,7 @@ internal class FakeMeshtasticLink(
                 "heltec-v4",
                 firmware,
                 owner = publicKey?.let { BoardOwner("Meshtastic $nodeNum", "$nodeNum", publicKey = it) },
+                licensed = licensed,
             )
     private val _state = MutableStateFlow<LinkState>(LinkState.Idle)
     override val state = _state
@@ -569,7 +576,8 @@ internal class FakeMeshtasticLink(
     /** The handshake completing (at ATT MTU 512, the ESP32 line's ceiling): what a real board reports last. */
     fun ready() {
         knitIndex = null
-        _state.value = LinkState.Ready(boardInfo, listOf(ChannelInfo(0, channelName, 1)), 512)
+        _state.value =
+            LinkState.Ready(boardInfo, listOf(ChannelInfo(0, channelName, 1, useAead = knitAead)), 512, signaturePolicy = signaturePolicy)
     }
 
     /**
@@ -590,17 +598,20 @@ internal class FakeMeshtasticLink(
                 hopLimit = 3,
                 overrideDutyCycle = false,
             ),
+        /** `use_aead` on slot 0 (#243). */
+        primaryAead: Boolean = false,
     ) {
         this.knitIndex = knitIndex
         _state.value =
             LinkState.Ready(
                 boardInfo,
                 listOf(
-                    ChannelInfo(0, primaryName, role = 1, psk = primaryPsk),
-                    ChannelInfo(knitIndex, KnitChannel.NAME, role = 2, psk = KnitChannel.PSK),
+                    ChannelInfo(0, primaryName, role = 1, psk = primaryPsk, useAead = primaryAead),
+                    ChannelInfo(knitIndex, KnitChannel.NAME, role = 2, psk = KnitChannel.PSK, useAead = knitAead),
                 ),
                 512,
                 radio,
+                signaturePolicy,
             )
     }
 

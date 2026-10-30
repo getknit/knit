@@ -420,9 +420,9 @@ val meshModule =
                 // Collected at start(), and only while a board is configured, when the manager exists.
                 boardMap = flow { emitAll(get<MeshManager>().loraBoardMap()) },
                 onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
-                // The bound board's node number and signing key, persisted so the profile can advertise them
+                // The bound board's node number and its CRC-bound key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
-                onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.signingKey) },
+                onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.key) },
                 scope = get(),
                 metrics = get(),
                 // The re-probe's backoff and the auto-reply's memory, kept across process death: without them every launch

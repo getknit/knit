@@ -62,14 +62,26 @@ class PublicPostPolicyTest {
     }
 
     @Test
-    fun `the budget follows whether the board signs`() {
-        assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, PublicPostPolicy.onAirBudget(signing = true))
-        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.onAirBudget(signing = false))
+    fun `the budget follows the board's slot-zero cliff`() {
+        assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, PublicPostPolicy.onAirBudget(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES))
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.onAirBudget(LoraAirtime.UNSIGNED))
+        // #243: 2.8.1 on an AEAD slot 0 signs only up to 154 B and refuses 155-166 as too large.
+        assertEquals(154, PublicPostPolicy.onAirBudget(154))
+    }
+
+    @Test
+    fun `a post is cut at the cliff, so the byte past it never leaves`() {
+        // 154 / 155 on a 2.8.1 AEAD slot 0, 166 / 167 on a plain one.
+        for (cliff in listOf(154, 166)) {
+            val budget = PublicPostPolicy.onAirBudget(cliff)
+            assertEquals(cliff, PublicPostPolicy.onAirText("x".repeat(cliff), budget).toByteArray().size)
+            assertEquals(cliff, PublicPostPolicy.onAirText("x".repeat(cliff + 1), budget).toByteArray().size)
+        }
     }
 
     @Test
     fun `onAirText trims to the signable cap when asked`() {
-        val text = PublicPostPolicy.onAirText("x".repeat(500), PublicPostPolicy.onAirBudget(signing = true))
+        val text = PublicPostPolicy.onAirText("x".repeat(500), PublicPostPolicy.onAirBudget(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES))
         assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, text.toByteArray().size)
         // And still on a character boundary: 83 two-byte characters, not 83 and a half.
         val accented = PublicPostPolicy.onAirText("é".repeat(200), PublicPostPolicy.MAX_SIGNED_TEXT_BYTES)

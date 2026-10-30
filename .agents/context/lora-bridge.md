@@ -60,8 +60,9 @@ Everything else (group-form chat, `groupupdate`/`groupleave`, `typing`, `blobreq
 Outbound decodes `wire.signed` only to apply the policy, then reuses `FastFrameCodec` (ADR 030) to
 compact/fragment: `sig`/`signed` pass through byte-exact, so this is **not a wire change** and the
 originator's signature verifies unchanged. One packet may leave *larger* than the frame needs
-(ADR 2026-09.mhs5): a 2.8 board signs anything at or under 165 B, so `LoraFrameCodec` grows the frame's **last**
-packet to 166 and the board sends it unsigned — a few bytes of pad instead of 66 of signature, ~20 % off the
+(ADR 2026-09.mhs5): a 2.8 board that signs on the bound slot signs anything at or under 165 B, so `LoraFrameCodec`
+grows the frame's **last** packet to 166 and the board sends it unsigned (on a board that does not sign there — pre-2.8,
+or 2.8.2 under `COMPATIBLE`, #243 — `padTo` finds no saving and pads nothing) — a few bytes of pad instead of 66 of signature, ~20 % off the
 tick and the room post. Two rules keep that safe. The pad is only legal where a receiver ignores trailing
 bytes, which is a **deflated** body (`FastFrameCodec.deflated`; a stored `0x03` would swallow the pad into
 `signed` and corrupt silently, a stored `0x05` rejects it) — and the frames with most to gain *store*, because
@@ -183,25 +184,38 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   firmware's own budget is 239 (`MAX_LORA_PAYLOAD_LEN` 255 − the 16-byte header, `MeshtasticProto.DATA_ENCODED_MAX`);
   the two-byte gap the lab measured is `Data.bitfield`, which `Router::perhapsEncode` fills in after us. The ATT
   MTU is the *other* limit (`mtu − 27` at MTU 255 = 228); the effective cap is the smaller of the two.
-- **Firmware 2.8 signs the broadcasts it sends for us.** `Router::perhapsEncode` attaches a 64-byte XEdDSA
-  signature (`Data.xeddsa_signature`, +66 B with framing) to any non-PKI broadcast it originates that still
-  fits signed — so a Knit payload **≤ 165 B** (`MeshtasticProto.MAX_SIGNED_PAYLOAD`) grows by 66 B on the air
-  and a larger one goes unsigned exactly as before. It is a cliff, not a ramp, and it falls between ADR 060's
+- **Firmware 2.8 signs the broadcasts it sends for us — by version and policy (#243).** `Router::perhapsEncode`
+  attaches a 64-byte XEdDSA signature (`Data.xeddsa_signature`, +66 B with framing) to a non-PKI broadcast it
+  originates that still fits signed — so a Knit payload **≤ 165 B** (`MeshtasticProto.MAX_SIGNED_PAYLOAD`) grows by
+  66 B on the air and a larger one goes unsigned exactly as before. Which boards: tag **2.8.1** (and the withdrawn 2.8.0)
+  signs every broadcast whatever `Config.SecurityConfig.packet_signature_policy` says, and in ham mode every unicast,
+  routing included (`Router.cpp:1270`); a build with upstream **`34cb8d582`** (reported `2.8.2`, `Router.cpp:1205-1235`)
+  signs only under `BALANCED` or `STRICT` — broadcasts, a `NodeInfo` or position even unicast, a ham data unicast —
+  never under `COMPATIBLE` (the default), never on a `use_aead` channel and never a routing packet.
+  `DeviceMetadata.has_xeddsa` is set on every XEdDSA build (`main.cpp:1390`), so it says what the build *can* do, not
+  whether it signs. `LoraAirtime.price` is the rule, off the handshake's security config (`want_config` streams it on
+  both versions; only field 9 is read, never the keys beside it) — none streamed reads as signing, a 2.8.2 dev build
+  from before `34cb8d582` (10-01 to 10-21) signs under `COMPATIBLE` yet reads unsigned (accepted, ADR 2026-09.mhs5's
+  2026-10-30 amendment). An AEAD channel adds 12 B (`MESHTASTIC_AEAD_OVERHEAD`) to every packet on it, and 2.8.1 signs
+  there anyway and then refuses `TOO_LARGE` what the tag pushes over, so only ≤ 154 B of text / 153 of a Knit frame
+  leaves signed. It is a cliff, not a ramp, and it falls between ADR 060's
   one-packet room tick (157 B, +36 % air) and its one-packet DM ✓✓ (221 B, unchanged). Knit cannot ask for it
   or decline it; `LoraAirtime` charges for it, and since ADR 2026-09.mhs5 **dodges** it — see the codec note
   below. Receiving is unaffected while
   `Config.SecurityConfig.packet_signature_policy` is at its `COMPATIBLE` default — under `STRICT` a board
-  drops every unsigned packet, which after the padding is every Knit frame rather than most of them;
-  `BALANCED` is safe (it drops only unsigned packets that *could* have been signed, and a padded frame could
-  not). **The phone gets the whole story** (ADR 2026-09.ggq4, verified on both lab tags): the 64-byte
-  `Data.xeddsa_signature` rides up intact, and the board's own verdict `MeshPacket.xeddsa_signed` (field 22,
-  computed on receive against the key *its* NodeDB holds, never trusted off the air) beside it, plus
-  `NodeInfo.has_xeddsa_signed` (14) and `DeviceMetadata.has_xeddsa` (14, which `LoraAirtime.onFirmware` now
-  takes ahead of the version parse). The signing input Knit verifies is 2.8.1's versioned buffer over the whole
+  drops every unsigned non-PKI, non-routing packet (`Router.cpp:780-784` at `34cb8d5`), which after the padding is every
+  Knit frame and room post rather than most of them, and with `COMPATIBLE` the default on 2.8.2 most senders stop
+  signing, so a contact on a `STRICT` board hears none of ours; `BALANCED` is safe (it drops only unsigned packets that
+  *could* have been signed, and a padded frame could not). **The phone gets the whole story** (ADR 2026-09.ggq4, verified
+  on both lab tags): the 64-byte `Data.xeddsa_signature` rides up intact, and the board's own verdict
+  `MeshPacket.xeddsa_signed` (field 22, computed on receive against the key *its* NodeDB holds, never trusted off the
+  air) beside it, plus `NodeInfo.has_xeddsa_signed` (14) and `DeviceMetadata.has_xeddsa` (14). The signing input Knit
+  verifies is 2.8.1's versioned buffer over the whole
   `Data` envelope (`0x01 ‖ from ‖ id ‖ to ‖ portnum ‖ request_id ‖ reply_id ‖ emoji ‖ bitfield ‖ flags ‖ payload`;
   ggq4's 2026-10-29 amendment, #242); 2.8.0's `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload` was dropped when
   Meshtastic withdrew that release, under the board's Curve25519 key converted to Ed25519 (`y = (u − 1)/(u + 1)`, sign bit 0); on 2.8 a node
-  number **is** the CRC32 of that key. The text cliff is **166 B** (one-byte portnum), the Knit-frame one 165.
+  number **is** the CRC32 of that key (`NodeDB::createNewIdentity`, from 2.8.0, once a region is set). The text cliff is
+  **166 B** (one-byte portnum), the Knit-frame one 165.
   Two rules to remember: a signed packet that fails against the key the *receiving* board holds is dropped
   before the phone sees it, whatever the policy — a stale or planted key silently blackholes that sender —
   and an unverifiable one (no key in the NodeDB) is passed up with the signature and the flag false.
@@ -228,8 +242,12 @@ the Meshtastic room's post, the auto-reply — FIFO within each. When full the q
 `REFUSED` rather than evicting a DM. Both eviction and refusal count as `loraDroppedQueue`. A compact DM keys every copy
 the plane might queue on its frame id (`frameKey`), so the offer, the resend and the re-probe see a copy still waiting
 (`hasQueued`, the frame being written included, and the in-flight table for one awaiting its answer) and do not queue a
-second. A unicast is priced unsigned — a compact DM and the auto-reply alike: 2.8 signs a broadcast, a `NodeInfo` or a
-position, and a unicast only in ham mode (`Router::perhapsEncode`) — and a compact DM is admitted against every airing
+second. Every booking is priced by `LoraAirtime.price` off one snapshot per handshake (`onBoard`, #243): the firmware's
+version, `has_xeddsa`, `packet_signature_policy`, ham mode and `use_aead` on slot 0 and the Knit slot, asked per slot and
+packet class. A data unicast — a compact DM and the auto-reply alike — is a PKI unicast, unsigned and +12 B, unless the
+board is in ham mode; our board's `NodeInfo` after a `35` is signed under 2.8.2's `BALANCED`/`STRICT` (2.8.1: only in
+ham mode); its routing ACK only by 2.8.1 in ham mode; an AEAD slot adds 12 B to every channel-encrypted packet. A compact
+DM is admitted against every airing
 the firmware may give it (`OutboundFrame.admissionSizes`, ADR 2026-10.x9fa): one airing would fit a nearly spent window
 where its retries would not.
 
@@ -411,8 +429,9 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   `NUM_RELIABLE_UNICAST_ATTEMPTS`, `NextHopRouter.h:115`; 2.7.26 made three, over-booked) and booked for all five at
   send; a destination's ack refunds the unflown ones (`LoraAirtime.refund`, counted at the quietest gap). The gap is
   `RadioInterface::getRetransmissionMsec`'s: `2·air + (2^CW + 2·CWmax + 2^((CWmax+CWmin)/2))·slot + 4.5 s`, slot ≈ 44.5 ms
-  at LongFast. Every airing is priced with the 12-B PKC overhead (`OutboundFrame.pricedExtraBytes`, at admission, at
-  booking and in the flight's `airMs`, so the refund matches; a board in ham mode signs instead, `DirectSend.licensed`).
+  at LongFast. Every airing is priced with the 12-B PKC overhead (`OutboundFrame.price`, at admission, at booking and in
+  the flight's `airMs`, so the refund matches; a board in ham mode skips PKI and is signed by the firmware's rule
+  instead — 2.8.1 always, 2.8.2 under `BALANCED`/`STRICT` — read off the board's snapshot, `LoraAirtime.price`).
   A relay's repeat is an implicit ack that stops the retries, so silence then follows. Our board's ACK of
   a compact DM to us, opened or not, is booked as a nominal 18 B (8 B and the 2.8.1 ack proof's 10, attached only when
   our board holds the sender's key authoritatively, so the booking errs high) when the firmware sent one
@@ -548,7 +567,7 @@ coordination. `provisionKnitChannel(ProvisionMode.Setup)` — the "Set up this b
    `LOCAL_ONLY`'s own-channel relaying. Gated on firmware **2.6.9** (`BoardName.honoursUnmessagable`), where
    the plumbing landed; older boards drop field 9 and never echo it back, so writing it would leave the
    setup looking permanently unfinished. A version that will not parse counts as **too old** — the opposite
-   of `LoraAirtime.signsPackets`' reading of the same string, because here a wrong guess writes to somebody's
+   of `LoraAirtime.price`'s reading of the same string, because here a wrong guess writes to somebody's
    hardware rather than merely over-charging for airtime.
 
 The settings **and the identity** the board had first come back as `ProvisionResult.Provisioned.previous`
@@ -610,7 +629,14 @@ Drive it headlessly with `…debug.LORAPROV --es mode dedicated`; `--es mode res
 A board whose bound slot is **not** the Knit channel never transmits (`LoraMeshTransport.boundSlotIsKnit`,
 counted as `loraSuppressed`): after a restore, or before a setup, sending would put Knit's cleartext frames
 onto whatever channel the board is on — most likely the public one. A board that reports no channel table at
-all is given the benefit of the doubt, since going mute on unreadable firmware is the worse failure.
+all is given the benefit of the doubt, since going mute on unreadable firmware is the worse failure. A Knit slot
+another client switched to AEAD (`use_aead`, #243) refuses a Knit broadcast and a ham-mode compact DM
+(`LoraMeshTransport.aeadBlocks`, `lora send skipped: slot N is AEAD`, also `loraSuppressed`), since AEAD changes the
+channel hash; a PKI compact DM leaves on channel 0 and still goes. The radio screen then reads the board as not set up,
+and the setup writes the slot's own settings back with field 8 alone removed, which clears AEAD and keeps everything
+else, position precision included (`MeshtasticSession.identityOnly`, `ChannelInfo.settingsRaw`). Trial owed: two
+phones, A's Knit slot on AEAD — a DM airs PKI on index 0 and B shows ✓, a room post logs the line above, the setup
+clears AEAD (ADR 2026-09.mhs5's 2026-10-30 amendment, trials 4 and 5, with the stock-client `--sendtext` legs).
 
 **The cost, which the confirmation states out loud:** the board is renamed for Knit, is marked unmonitored
 so other people's apps stop offering it as a message target, stops broadcasting its
@@ -738,7 +764,8 @@ each hear the channel for themselves.
   but the words — a heard `"Sam: hi"` is a stranger's content, not a prefix to strip. The match rests on a
   self-asserted node number — **unless the signature checks out** (ADR 2026-09.ggq4). The profile also
   carries the board's Curve25519 key (`ProfileContent.loraKey` ← `SettingsStore.loraBoard.key`, written with
-  the number in one edit, read with it from one snapshot, and only while the board signs), `peers.loraKey` stores it, and `deliverMeshPost`
+  the number in one edit, read with it from one snapshot, and only when the number is the key's CRC32 — signing or not,
+  ggq4's 2026-10-30 amendment; `LoraMeshTransport.boundKey`), `peers.loraKey` stores it, and `deliverMeshPost`
   verifies a signed post on the phone (`mesh/crypto/XeddsaVerify`, in 2.8.1's layout over `MeshPost.signedFields`
   — the packet's `to` and its `Data` envelope as decoded — then, only when the board may have merged the bitfield's
   bit into `want_response`, with it read as signed `false`; always over the payload as heard — `MeshPost.payload`,
@@ -750,10 +777,13 @@ each hear the channel for themselves.
   `meshPostVerified` / `BoardVerified` / `SignatureMismatch`. A contact still on a (withdrawn) 2.8.0 board reads as a
   mismatch. A 2.8.0 board and a 2.8.1 board that hold each other's keys drop each other's signed posts before either
   phone sees them.
-- **Signable cap.** On a board that signs (`LoraFacts.signs`) the composer caps a post at
-  `PublicPostPolicy.MAX_SIGNED_TEXT_BYTES` (166, `MeshtasticProto.maxSignedPayload(PORT_TEXT_MESSAGE)`) so
-  every post leaves signed, else the 200-byte client convention; `postToPublicChannel` trims to the same
-  `onAirBudget(signing)`. Knit-frame padding (ADR 2026-09.mhs5) is untouched.
+- **Signable cap.** On a board that signs on slot 0 the composer caps a post at that slot's cliff
+  (`LoraFacts.roomSignedUpTo` ← `AirtimeSnapshot.roomSignedUpTo` ← `LoraAirtime.price`): 166
+  (`PublicPostPolicy.MAX_SIGNED_TEXT_BYTES`, `MeshtasticProto.maxSignedPayload(PORT_TEXT_MESSAGE)`), or 154 on a 2.8.1
+  board whose slot 0 is AEAD, so every post leaves signed; where the board signs no room post (pre-2.8, 2.8.2 under
+  `COMPATIBLE`, 2.8.2 on AEAD) the 200-byte client convention. `postToPublicChannel` trims to the same
+  `onAirBudget(price.signedUpTo)`. The `lora ready` line reads `signing=<Knit slot> policy=<policy|null>
+  knitSignedUpTo=… roomSignedUpTo=… licensed=…`, and `…debug.LORA` carries `signing` and `roomSignedUpTo`.
 - **Verified on hardware (2026-09-05, ADR 2026-09.ggq4):** Pixel 7 on `!64761b18` and Pixel 9 on
   `!e681a7c3` (both 2.8.0.47db0e3), a post each way — the far phone's `LoraMeshTransport` log reads
   `lora public post from !… signed=true boardVerified=true`, `…debug.LORA` counts `meshPostMatched` /

@@ -88,6 +88,9 @@ document:
   Call again.
 - If two contacts first messaged each other at the same moment and one of them later restored a backup, their
   DMs could stop opening on one side for hours. Both phones now get back in step at the next reply.
+- On a Meshtastic board set not to sign its packets, Meshtastic room posts can be up to 200 bytes, and Knit
+  stops budgeting airtime for signatures the board never sends. If another app turns on encryption for Knit's
+  channel, setting the board up again in Knit turns it back off.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

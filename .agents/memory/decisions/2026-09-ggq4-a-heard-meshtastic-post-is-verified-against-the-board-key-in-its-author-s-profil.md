@@ -182,3 +182,50 @@ real on-air 2.8.0 signature and the lab board's 2.8.0 text post no longer verify
 session's decode into a pass), and `InboundPipelineTest` (2.8.1 posts and a tapback signed by contact, a 2.8.0 post a
 mismatch, a wrong key one mismatch). The vectors are sign-side only. The end-to-end oracle is an on-air 2.8.1 packet
 read through `MeshtasticProto` on two 2.8.1 boards, which becomes a test vector once it is captured.
+
+## Amendment 2026-10-30: the key is published on its CRC binding, not on signing (#243)
+
+Draft by the LoRa owner, on the user's decision of 2026-10-30.
+
+**What changed.** The profile's `loraKey` used to ride only while the bound board signed ("a key that never signs
+verifies nothing", above). Since ADR 2026-10.aajj it has a second job: a contact's phone writes it to its own board with
+`add_contact`, so that board can PKI-encrypt a compact DM to ours. Without it, a LoRa DM to a contact on a board that
+does not sign stays held after a `39` until our board hears their NodeInfo. And #243 made "signs" real: firmware with
+upstream `34cb8d582` (reported `2.8.2`) signs nothing under its default `COMPATIBLE` policy, though `has_xeddsa` is set on
+every XEdDSA build (`main.cpp:1390`) — which is why such a board published its key until now, by accident, through
+`LoraAirtime.signing`. Fixing #243 alone would have removed it.
+
+So `LoraMeshTransport.boundKey` publishes the board's own `User.public_key` when it is 32 bytes and its CRC32 is the
+board's node number — the binding `NodeDB::createNewIdentity` makes on every keygen path from 2.8.0 (`NodeDB.cpp` ~4846;
+keygen waits while the region is UNSET, `:4772`), and the one `LoraContactPolicy` checks on the receiving side (guard 6,
+one shared `LoraContactPolicy.crc32`). Whether the board signs does not enter into it. `BoardBinding.signingKey` is now
+`BoardBinding.key`; `SettingsStore.loraBoard` / `LoraBoard` stay one value written in one edit. Effect on today's users:
+a 2.8.1 signer and a `34cb8d5` `COMPATIBLE` board publish as before; a pre-2.8 board (a MAC-derived number) and a board
+with no key yet publish none; a ham board still publishes (it can sign under `BALANCED`/`STRICT`). The lab board
+`!1ba11230` has a MAC-derived number (MAC `f8:5b:1b:a1:12:30`), so it likely has no key yet and publishes none until it
+generates one.
+
+**The receiver is unchanged**, on every shipped build: `InboundPipeline.judgeMeshPostSignature` verifies only a post that
+carries a signature, so an unsigned post from a contact who advertises a key reads `ORIGIN_UNSIGNED`, never a mismatch
+(pinned by `InboundPipelineTest.anUnsignedPostFromAContactsBoardStaysAnUnverifiedAttribution`). This withdraws the
+premise of "What it costs, and the trap" above that an unsigned post from a contact whose profile advertises a key is a
+downgrade shape a 2.8 board never produces under 166 B: a published `loraKey` now means "this board's key, CRC-bound to
+its number", never "this board signs", so a missing signature from a key-holding contact is never evidence, and on a
+`COMPATIBLE` board it is ordinary traffic. (Read its cost line above, "while a signing board is bound", as "while a keyed 2.8 board is
+bound", signing or not.) The field, its three
+layouts and its golden vectors are unchanged (`docs/WIRE_COMPAT.md`'s meaning note). The iOS port only round-trips
+`loraKey` (`KnitWire/Payload/ProfileContent.swift`) and has no LoRa plane: it needs no code.
+
+**The composer's cap** now follows slot 0's own cliff (`LoraFacts.roomSignedUpTo`, replacing `LoraFacts.signs`;
+`PublicPostPolicy.onAirBudget(signedUpTo)`): 166, the 200-byte convention where the board signs no room post, and 154 on
+a 2.8.1 board whose slot 0 is AEAD (ADR 2026-09.mhs5's 2026-10-30 amendment).
+
+**A trap this does not fix.** A `34cb8d5` board under `STRICT` drops every unsigned non-PKI, non-routing packet
+(`Router.cpp:780-784`). Once `COMPATIBLE` is the default most senders stop signing, so a contact on a `STRICT` board hears
+none of our room posts or Knit frames; publishing the key does not change that (to be filed separately).
+
+Tests: `LoraMeshTransportTest` (`aBoardWhoseNumberIsItsKeysCrcReportsItsKeyWhetherOrNotItSigns`,
+`aBoardWhoseNumberIsNotItsKeysCrcReportsNoKey`: a MAC-numbered board, a 31-byte key, no key), `LoraStatusRepositoryTest`,
+`PublicPostPolicyTest`, `ChatViewModelTest`. Board trial owed: `!1ba11230` (`34cb8d5`) — `meshtastic --info` first
+(region set, a key, number = CRC32 of it), then under `COMPATIBLE` the key in the profile and the full 200-byte composer
+cap, under `BALANCED` the 166-byte cap; `!942b7a83` (2.8.1) unchanged.

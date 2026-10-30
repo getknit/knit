@@ -224,6 +224,11 @@ internal sealed interface LinkState {
         val mtu: Int,
         /** The board's region + modem preset, once its config stream reported them; null on older firmware. */
         val radio: LoraRadioConfig? = null,
+        /**
+         * `SecurityConfig.packet_signature_policy` off this session's handshake (#243), or null when it streamed no
+         * security config — unknown, which `LoraAirtime.price` reads as signing. Never the keys beside it.
+         */
+        val signaturePolicy: SignaturePolicy? = null,
     ) : LinkState
 
     data class Disconnected(
@@ -258,13 +263,14 @@ internal data class BoardInfo(
      */
     val owner: BoardOwner? = null,
     /**
-     * `DeviceMetadata.has_xeddsa` — the firmware verifies XEdDSA signatures, and so signs the broadcasts it
-     * sends for us. Null on firmware too old to say, which the airtime governor answers from the version.
+     * `DeviceMetadata.has_xeddsa` — the build can sign and verify XEdDSA. Not whether it signs: a 2.8.2 build under
+     * `COMPATIBLE` reports true and signs nothing (#243); the airtime governor reads it beside the version and
+     * [LinkState.Ready.signaturePolicy]. Null on firmware too old to say.
      */
     val hasXeddsa: Boolean? = null,
     /**
-     * `User.is_licensed` on the board's own entry — ham mode: it does no PKI and signs its unicasts instead, so a compact
-     * DM from it is priced signed and can never draw a `39` (ADR 2026-10.aajj).
+     * `User.is_licensed` on the board's own entry — ham mode: it does no PKI, so a compact DM from it can never draw a
+     * `39` (ADR 2026-10.aajj), and its unicasts are signed by the firmware's rule instead (#243, `LoraAirtime.price`).
      */
     val licensed: Boolean = false,
 )

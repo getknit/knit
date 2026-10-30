@@ -562,9 +562,21 @@ class LoraMeshTransportTest {
         onBoardBound: suspend (BoardBinding) -> Unit = {},
         state: LoraPlaneState = LoraPlaneState.None,
         selfId: suspend () -> String = { selfNode },
+        signaturePolicy: SignaturePolicy? = null,
+        knitAead: Boolean = false,
         now: () -> Long,
     ): Rig {
-        val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware, publicKey, scope = scope)
+        val link =
+            FakeMeshtasticLink(
+                nodeNum,
+                air,
+                channelName,
+                firmware,
+                publicKey,
+                scope = scope,
+                signaturePolicy = signaturePolicy,
+                knitAead = knitAead,
+            )
         val metrics = MeshMetrics()
         val transport =
             LoraMeshTransport(
@@ -645,6 +657,9 @@ class LoraMeshTransportTest {
         // A slot pinned by hand instead, which may be a community's; overrides [dedicated].
         pinnedSlot: Int? = null,
         state: LoraPlaneState = LoraPlaneState.None,
+        signaturePolicy: SignaturePolicy? = null,
+        primaryAead: Boolean = false,
+        knitAead: Boolean = false,
     ): Rig {
         val r =
             rig(
@@ -654,6 +669,8 @@ class LoraMeshTransportTest {
                 backgroundScope,
                 config = MutableStateFlow(LoraConfig("AA:1", 1, room = room)),
                 firmware = firmware,
+                signaturePolicy = signaturePolicy,
+                knitAead = knitAead,
                 pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
                 onPublicPost = { posts += it },
                 state = state,
@@ -671,7 +688,7 @@ class LoraMeshTransportTest {
                 overrideDutyCycle = false,
                 channelNum = pinnedSlot ?: if (dedicated) LoraSlot.forRegion(LoraRegion.US, ModemPreset.LONG_FAST)!! else 0,
             )
-        r.link.readyProvisioned(knitIndex = 1, primaryName = primaryName, primaryPsk = primaryPsk, radio = radio)
+        r.link.readyProvisioned(knitIndex = 1, primaryName = primaryName, primaryPsk = primaryPsk, radio = radio, primaryAead = primaryAead)
         runCurrent()
         return r
     }
@@ -788,56 +805,132 @@ class LoraMeshTransportTest {
     @Test
     fun aReadyBoardReportsItsNodeNumberUpward() =
         runTest {
-            // What the profile advertises so a contact can line a heard post up with this phone. A pre-2.8
-            // board (the fake's default) signs nothing, so no key rides beside the number.
+            // What the profile advertises so a contact can line a heard post up with this phone. A pre-2.8 board (the
+            // fake's default) publishes no key, so none rides beside the number.
             val air = FakeMeshtasticAir()
             val bound = mutableListOf<BoardBinding>()
             val r = rig(air, 7u, "alice", backgroundScope, onBoardBound = { bound += it }) { testScheduler.currentTime }
             r.transport.start()
             runCurrent()
 
-            assertEquals(listOf(BoardBinding(7u, signingKey = null)), bound)
+            assertEquals(listOf(BoardBinding(7u, key = null)), bound)
             r.transport.stop()
         }
 
+    /** The lab board `!64761b18`'s key: its CRC32 is that node number, the binding 2.8 makes at keygen. */
+    private val labBoardKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
+    private val labBoardNode = 0x64761b18u
+
+    private fun TestScope.boundKeyOf(
+        node: UInt,
+        firmware: String,
+        publicKey: String?,
+        signaturePolicy: SignaturePolicy? = null,
+    ): BoardBinding {
+        val bound = mutableListOf<BoardBinding>()
+        val r =
+            rig(
+                FakeMeshtasticAir(),
+                node,
+                "alice",
+                backgroundScope,
+                firmware = firmware,
+                publicKey = publicKey,
+                onBoardBound = { bound += it },
+                signaturePolicy = signaturePolicy,
+            ) { testScheduler.currentTime }
+        r.transport.start()
+        runCurrent()
+        r.transport.stop()
+        return bound.single()
+    }
+
     @Test
-    fun aSigningBoardReportsItsKeyUpwardAndAPreSigningOneDoesNot() =
+    fun aBoardWhoseNumberIsItsKeysCrcReportsItsKeyWhetherOrNotItSigns() =
         runTest {
-            // The key rides beside the number only when the firmware signs: on 2.8 it is what lets a contact
-            // verify our posts, on 2.5 it would verify nothing and only grow the profile.
+            // #243: the key is what lets a contact's board PKI-encrypt a compact DM to ours (ADR 2026-10.aajj), so it rides
+            // on the CRC binding, not on signing. A 2.8.2 board under COMPATIBLE signs nothing and still publishes it.
+            assertEquals(
+                BoardBinding(labBoardNode, labBoardKey),
+                boundKeyOf(labBoardNode, "2.8.2.34cb8d5", labBoardKey, SignaturePolicy.COMPATIBLE),
+            )
+            assertEquals(BoardBinding(labBoardNode, labBoardKey), boundKeyOf(labBoardNode, "2.8.1.8e6a88d", labBoardKey))
+        }
+
+    @Test
+    fun aBoardWhoseNumberIsNotItsKeysCrcReportsNoKey() =
+        runTest {
+            // A MAC-derived number (pre-2.8, or a 2.8 board before its keygen) is not bound to the key, whatever it signs.
+            assertEquals(BoardBinding(7u, null), boundKeyOf(7u, "2.8.1.8e6a88d", labBoardKey))
+            assertEquals(BoardBinding(7u, null), boundKeyOf(7u, "2.8.2.34cb8d5", labBoardKey, SignaturePolicy.BALANCED))
+            assertEquals(BoardBinding(8u, null), boundKeyOf(8u, "2.5.0", labBoardKey))
+            // A key that is not 32 bytes is no key, even when its CRC is the number.
+            val short = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA=="
+            assertEquals(BoardBinding(316_254_257u, null), boundKeyOf(316_254_257u, "2.8.2.34cb8d5", short, SignaturePolicy.COMPATIBLE))
+            assertEquals("no key at all", BoardBinding(labBoardNode, null), boundKeyOf(labBoardNode, "2.8.2.34cb8d5", null))
+        }
+
+    @Test
+    fun aCompatible282BoardSignsNothingSoAKnitPostIsNeitherPaddedNorBookedSigned() =
+        runTest {
+            // #243: `has_xeddsa` is set on every XEdDSA build, so it used to read as signing; the policy says it does not.
             val air = FakeMeshtasticAir()
-            val key = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
-            val bound = mutableListOf<BoardBinding>()
-            val signing =
+            val airtime = LoraAirtime()
+            val a =
                 rig(
                     air,
-                    7u,
+                    1u,
                     "alice",
                     backgroundScope,
-                    firmware = "2.8.0.47db0e3",
-                    publicKey = key,
-                    onBoardBound = { bound += it },
+                    firmware = "2.8.2.34cb8d5",
+                    signaturePolicy = SignaturePolicy.COMPATIBLE,
+                    pace = LoraPacePolicy(minGapMs = 0, airtime = airtime),
                 ) { testScheduler.currentTime }
-            signing.transport.start()
+            a.transport.start()
             runCurrent()
-            assertEquals(listOf(BoardBinding(7u, signingKey = key)), bound)
-            signing.transport.stop()
+            val snapshot = checkNotNull(a.transport.status.value.airtime)
+            assertFalse("no signature charged on the Knit slot", snapshot.signing)
+            assertEquals("and the room composer keeps the client cap", LoraAirtime.UNSIGNED, snapshot.roomSignedUpTo)
+            val usedBefore = airtime.usedMs(testScheduler.currentTime)
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate, ten minutes. bring the long cable."))
+            runCurrent()
+            val sent = a.link.sent.last()
+            assertTrue("under the cliff and left there", sent.size <= MeshtasticProto.MAX_SIGNED_PAYLOAD)
+            assertEquals(0L, a.metrics.lora().loraPadded)
+            assertEquals(
+                "booked at the unsigned price",
+                airtime.timeOnAirMs(sent.size, LoraAirtime.UNSIGNED),
+                airtime.usedMs(testScheduler.currentTime) - usedBefore,
+            )
+            a.transport.stop()
+        }
 
-            bound.clear()
-            val old =
-                rig(
-                    air,
-                    8u,
-                    "bob",
-                    backgroundScope,
-                    firmware = "2.5.0",
-                    publicKey = key,
-                    onBoardBound = { bound += it },
-                ) { testScheduler.currentTime }
-            old.transport.start()
+    @Test
+    fun aKnitBroadcastIsNeverWrittenToAKnitSlotSwitchedToAead() =
+        runTest {
+            // #243: AEAD changes the channel hash (`Channels.cpp:53`), so no other Knit board decodes what it airs.
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val link = FakeMeshtasticLink(1u, air, KnitChannel.NAME, "2.8.2.34cb8d5", knitAead = true)
+            val transport =
+                LoraMeshTransport(
+                    selfId = { "alice" },
+                    link = link,
+                    config = MutableStateFlow(LoraConfig("AA:1", 0)),
+                    scope = backgroundScope,
+                    metrics = MeshMetrics(),
+                    clock = { testScheduler.currentTime },
+                    wallClock = { testScheduler.currentTime },
+                    pace = LoraPacePolicy(minGapMs = 0),
+                    log = { logs += it },
+                )
+            transport.start()
             runCurrent()
-            assertEquals(listOf(BoardBinding(8u, signingKey = null)), bound)
-            old.transport.stop()
+            transport.fastFanout(frame(FrameType.CHAT, "alice", body = "hello"))
+            runCurrent()
+            assertTrue("nothing aired", link.sent.isEmpty())
+            assertTrue(logs.any { it.startsWith("lora send skipped: slot 0 is AEAD") })
+            transport.stop()
         }
 
     @Test
@@ -1056,6 +1149,49 @@ class LoraMeshTransportTest {
         }
 
     @Test
+    fun aCompatible282BoardKeepsTheClientCap() =
+        runTest {
+            // #243: a 2.8.2 board under COMPATIBLE reports `has_xeddsa` and signs nothing, so no post is held to 166.
+            val r =
+                bridgeRig(FakeMeshtasticAir(), mutableListOf(), firmware = "2.8.2.34cb8d5", signaturePolicy = SignaturePolicy.COMPATIBLE)
+
+            assertNull(r.transport.postToPublicChannel("x".repeat(PublicPostPolicy.MAX_ON_AIR_BYTES + 5)))
+            runCurrent()
+
+            assertEquals(
+                PublicPostPolicy.MAX_ON_AIR_BYTES,
+                r.link.sent
+                    .single()
+                    .size,
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun a281BoardWhoseSlotZeroIsAeadTrimsAPostToTheCliffItCanStillSendSigned() =
+        runTest {
+            // 2.8.1 signs on an AEAD channel and then refuses what the 12-byte tag pushes over (`Router.cpp:1377-1379`):
+            // only a post of 154 B or less leaves signed, and one between 155 and 166 would never leave at all.
+            val r = bridgeRig(FakeMeshtasticAir(), mutableListOf(), firmware = "2.8.1.8e6a88d", primaryAead = true)
+            assertEquals(
+                154,
+                r.transport.status.value.airtime
+                    ?.roomSignedUpTo,
+            )
+
+            assertNull(r.transport.postToPublicChannel("x".repeat(PublicPostPolicy.MAX_ON_AIR_BYTES)))
+            runCurrent()
+
+            assertEquals(
+                154,
+                r.link.sent
+                    .single()
+                    .size,
+            )
+            r.transport.stop()
+        }
+
+    @Test
     fun aKnitFrameStillGoesToTheBoundSlotWhileThePublicPathIsInUse() =
         runTest {
             // The two paths share one queue and one duty-cycle ledger but must never share a destination.
@@ -1143,6 +1279,21 @@ class LoraMeshTransportTest {
         }
 
     // --- The DM auto-reply (DmAutoReplyPolicy). ---
+
+    @Test
+    fun theAutoReplyStillAnswersOnABoardWhoseKnitSlotIsAead() =
+        runTest {
+            // The reply goes on slot 0 as a PKI unicast; the Knit slot's AEAD never touches it, and the board is still set
+            // up for Knit (#243: the AEAD gate is the bound slot's broadcasts', never the setup check).
+            val r = bridgeRig(FakeMeshtasticAir(), mutableListOf(), knitAead = true)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello? anyone there?", id = 11u, to = 1u)
+            runCurrent()
+
+            assertEquals(1L, r.metrics.meshtastic().autoReplySent)
+            assertTrue(r.link.sent.any { it.decodeToString() == DmAutoReplyPolicy.TEXT })
+            r.transport.stop()
+        }
 
     @Test
     fun aMeshtasticDmToTheBoardIsAnsweredOnceAndNeverEntersTheRoom() =

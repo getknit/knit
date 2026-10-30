@@ -173,8 +173,34 @@ internal object BoardBytes {
                 }
             }.toByteArray()
 
+    /**
+     * `FromRadio { config = Config { security = SecurityConfig { packet_signature_policy = [policy] } } }` (#243), with
+     * a stand-in `private_key` beside it as a real board streams one; a null [policy] is the field left out.
+     */
+    fun securityConfig(policy: Int?): ByteArray =
+        ProtoWriter()
+            .message(5) {
+                message(8, emitEmpty = true) {
+                    bytes(2, ByteArray(32) { 0x5A })
+                    if (policy != null) varint(9, policy)
+                }
+            }.toByteArray()
+
     /** A real RegionCode (JP) that Knit collapses into [LoraRegion.OTHER], which has no code of its own. */
     private const val UNMODELLED_REGION_CODE = 5
+
+    /** `FromRadio { channel = Channel { index, settings = [settings] verbatim, role } }`: a board's own settings bytes. */
+    fun channelWithSettings(
+        index: Int,
+        role: Int,
+        settings: ByteArray,
+    ): ByteArray =
+        ProtoWriter()
+            .message(10) {
+                varint(1, index)
+                bytes(2, settings, emitEmpty = true)
+                varint(3, role)
+            }.toByteArray()
 
     fun channel(
         index: Int,
@@ -391,6 +417,10 @@ internal object BoardBytes {
         val psk: ByteArray,
         /** null when no `module_settings` was written at all; 0 when it was written empty (= share nothing). */
         val positionPrecision: Int?,
+        /** Whether the write carried `use_aead` (8) at all: Knit's never does, which is what clears it (#243). */
+        val writesUseAead: Boolean = false,
+        /** The written `ChannelSettings`, verbatim. */
+        val settingsRaw: ByteArray = ByteArray(0),
     )
 
     fun adminSetChannel(toRadio: ByteArray): SetChannel? {
@@ -401,38 +431,54 @@ internal object BoardBytes {
         var index = 0
         var role = 0
         var settings = ChannelSettings()
+        var settingsRaw = ByteArray(0)
         while (ch.hasMore) {
             val tag = ch.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
-                1 -> index = ch.readVarint32()
-                2 -> settings = channelSettings(ch.sub())
-                3 -> role = ch.readVarint32()
-                else -> ch.skip(tag and WireType.MASK)
+                1 -> {
+                    index = ch.readVarint32()
+                }
+
+                2 -> {
+                    settingsRaw = ch.readBytes()
+                    settings = channelSettings(ProtoReader(settingsRaw))
+                }
+
+                3 -> {
+                    role = ch.readVarint32()
+                }
+
+                else -> {
+                    ch.skip(tag and WireType.MASK)
+                }
             }
         }
-        return SetChannel(index, settings.name, role, settings.psk, settings.positionPrecision)
+        return SetChannel(index, settings.name, role, settings.psk, settings.positionPrecision, settings.writesUseAead, settingsRaw)
     }
 
     private class ChannelSettings(
         val name: String = "",
         val psk: ByteArray = ByteArray(0),
         val positionPrecision: Int? = null,
+        val writesUseAead: Boolean = false,
     )
 
     private fun channelSettings(reader: ProtoReader): ChannelSettings {
         var name = ""
         var psk = ByteArray(0)
         var precision: Int? = null
+        var aead = false
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 2 -> psk = reader.readBytes()
                 3 -> name = reader.readString()
                 7 -> precision = positionPrecision(reader.sub())
+                8 -> aead = true.also { reader.skip(tag and WireType.MASK) }
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return ChannelSettings(name, psk, precision)
+        return ChannelSettings(name, psk, precision, aead)
     }
 
     /** An empty `module_settings` means precision 0 — the encoding that turns position sharing off. */

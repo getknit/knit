@@ -298,6 +298,26 @@ class LoraRadioViewModelTest {
         }
 
     @Test
+    fun `a Knit slot another client switched to AEAD is not set up, so the setup is offered again`() =
+        runTest {
+            // #243: AEAD changes the channel hash, so no other Knit board shares that slot; running the setup clears it.
+            val vm = start()
+            status.value =
+                LoraStatus(
+                    state =
+                        ready(
+                            channels =
+                                listOf(
+                                    ChannelInfo(index = 0, name = "", role = 1),
+                                    ChannelInfo(index = 1, name = "Knit", role = 2, useAead = true),
+                                ),
+                        ),
+                )
+            advanceUntilIdle()
+            assertFalse(vm.state.value.boardSetUp)
+        }
+
+    @Test
     fun `no connected board means no channel verdict`() =
         runTest {
             val vm = start()

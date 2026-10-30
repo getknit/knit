@@ -67,7 +67,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   booked only when the firmware sent one (`boardAcks`: `want_ack`, or a `next_hop` naming us with hops left).
   **Before touching `LoraContactPolicy`, `MeshtasticProto.encodeAdminAddContact`, `RoutingError.PKI_SEND_FAIL_PUBLIC_KEY`
   / `PKI_UNKNOWN_PUBKEY` on this plane, `LoraDirectPolicy.Reach.NO_KEY` / `firstNoKey` / `holdForContact` /
-  `scheduleRetry`, `LoraBoardHolder.loraKey` / `contact` / `contested`, `MeshtasticLink.nodeUser`, `DirectSend.licensed`
+  `scheduleRetry`, `LoraBoardHolder.loraKey` / `contact` / `contested`, `MeshtasticLink.nodeUser`, `BoardInfo.licensed`
   / `afterPeerKey`, or `loraDirectNoKey` / `ContactAdded` / `PeerLacksOurKey` / `BoardKeyConflict`:** READ ADR
   2026-10.aajj. Our board's `39` (no key for theirs; queueStatus res first, then a self-NAK) is acted on once per packet
   and the frame is held, never given up; one `add_contact` is written only for a contact's board no rival binds by its
@@ -86,13 +86,15 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `MAX_SIGNED_PAYLOAD` / `LORA_DATA_MAX`, `PRE_READY_PAYLOAD`, `LoraMeshTransport.HOP_LIMIT`, or the `0x05` form on
   this plane:** READ ADR 2026-09.mhs5 (and ADR 030 / 060 for the codec it reuses), then "Board facts" in
   `lora-bridge.md`. A Knit payload is ≤ 231 B on the air (≤ 228 at MTU 255, the MTU-255 floor before Ready), ≤ 3
-  fragments; a 2.8 board signs anything ≤ 165 B, so the **last** packet of a **deflated** frame is padded to 166 —
-  never a stored `0x03`/`0x05` body, never an earlier fragment. `hop_limit` is stated (3) on every send: omitted
+  fragments; a 2.8 board that signs on the bound slot signs anything ≤ 165 B, so the **last** packet of a **deflated**
+  frame is padded to 166 — never a stored `0x03`/`0x05` body, never an earlier fragment — and on a board that does not
+  sign there (pre-2.8, 2.8.2 under `COMPATIBLE`: mhs5's 2026-10-30 amendment) nothing is padded. `hop_limit` is stated (3) on every send: omitted
   means zero on 2.8, not the node's default (`everyPacketLeavesWithHopsToSpend`).
 - **When touching `LoraAirtime` (`Ceiling`, `admits`, `refusal`, `refund`, `allowanceMs`, `publicCeilingMs`,
-  `PUBLIC_CEILING`, `signsPackets`, `onFirmware`, `dedicatedUnlocksDuty`), `LoraPacePolicy` (`FrameClass`, `enqueue`,
-  `take`, `admitBest`, `onQueueStatus`, `onNak`), `OutboundFrame.supersedes` / `admissionSizes` / `signedUpTo` /
-  `shedRank`, `LoraAirtime.UNSIGNED`, `AirtimeSnapshot`, or `MeshTransport.FanoutHint`:** READ ADR 2026-10.ug4a, then
+  `PUBLIC_CEILING`, `price`, `onBoard`, `dedicatedUnlocksDuty`), `LoraPacePolicy` (`FrameClass`, `enqueue`,
+  `take`, `admitBest`, `onQueueStatus`, `onNak`), `OutboundFrame.supersedes` / `admissionSizes` / `price` /
+  `shedRank`, `LoraAirtime.UNSIGNED`, `PacketPrice`, `SigningFacts`, `AirSlot`, `PacketKind`, `SignaturePolicy`,
+  `AirtimeSnapshot`, or `MeshTransport.FanoutHint`:** READ ADR 2026-10.ug4a, then
   ADR 044 (its allowance and 2026-10-04 amendment; the rest is superseded), ADR 054 (the window), ADR 2026-09.xdm2,
   ADR 067, ADR 2026-10.rp3s and ADR 2026-10.x9fa, then "Pacing" in `lora-bridge.md`. One allowance =
   `min(region duty, 10 % politeness) × 0.5` of a 15-minute window (45 s at LongFast); the duty cycle is law (the
@@ -103,9 +105,13 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `DIRECT` (compact DMs, ✓✓, reactions, resends, re-probes) dequeues before `ROOM`; a full queue sheds `ROOM`, then a
   ✓✓, then a DM or a reaction (`shedRank`). A refused frame is skipped, except that a `DIRECT` frame the total refused
   holds everything ranked behind it. Every entry point of the pacer and the ledger is `@Synchronized`, and the pacer's
-  monitor is taken outside the ledger's. A unicast — a compact DM and the auto-reply — is priced unsigned (2.8 signs
-  only broadcasts, `NodeInfo` and position); a compact DM is admitted against every airing the firmware may give it
-  (`LoraDirectPolicy.AIRINGS`), every airing booked at send and the unflown ones refunded on its ack (ADR 2026-10.x9fa).
+  monitor is taken outside the ledger's. Every booking is priced by `LoraAirtime.price` — one snapshot per handshake
+  (`onBoard`: version, `has_xeddsa`, `packet_signature_policy`, ham mode, AEAD on slot 0 and the Knit slot), per slot
+  and packet class (ADR 2026-09.mhs5's 2026-10-30 amendment, #243): 2.8.1 signs every broadcast whatever the policy,
+  2.8.2 only under `BALANCED`/`STRICT` and never on AEAD, an unknown policy or version reads as signing; a data unicast
+  — a compact DM, the auto-reply — is a PKI unicast, unsigned and +12 B, unless the board is in ham mode. A compact DM
+  is admitted against every airing the firmware may give it (`LoraDirectPolicy.AIRINGS`), every airing booked at send
+  and the unflown ones refunded on its ack (ADR 2026-10.x9fa).
   The ledger is not persisted and nothing seeds it (ADR 2026-10.ug4a): a restart starts the window empty.
   <!-- doc-lint: allow AirBucket — the buckets ADR 2026-10.ug4a removed, named as history -->
 - **When touching the shared-band brake — `LoraPacePolicy.onBandReading` / `braked` / `forgetBand` /
@@ -166,9 +172,15 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   dedicated slot is opt-in and never the default. `KnitChannel`'s PSK is derived and pinned by `KnitChannelTest`.
 - **When touching `MeshtasticSession` (handshake, heartbeat, drain, admin passkey, `routeNak`), `MeshtasticLink`
   (`LinkDestination`, `BoardAddr`, `PacketOutcome`), `ReceivedPacket` (`wantAck`, `hopLimit`, `nextHop`, `rxTime`),
-  `PacketIdSource`, `BoardBattery`, or `MeshtasticGatt`
-  (`negotiateMtu`, `SETTLE_MS`):** READ ADR 038 §2, ADR 041, ADR 2026-10.x9fa (the board-neutral seam, `want_ack`,
-  `rx_time`) and "The layers" / "Board facts" in `lora-bridge.md`. The protobuf is hand-rolled and total (malformed →
+  `PacketIdSource`, `BoardBattery`, `ChannelInfo.useAead`, `LinkState.Ready.signaturePolicy`, `aeadBlocks`, or
+  `MeshtasticGatt` (`negotiateMtu`, `SETTLE_MS`):** READ ADR 038 §2, ADR 041, ADR 2026-10.x9fa (the board-neutral seam,
+  `want_ack`, `rx_time`), ADR 2026-09.mhs5's 2026-10-30 amendment (the security config) and "The layers" / "Board
+  facts" in `lora-bridge.md`. The handshake's `SecurityConfig` is read for `packet_signature_policy` alone, inside the
+  decoder, never captured whole (it carries the board's private and admin keys); a session that streams none reads as
+  unknown, priced as signing, and the policy is re-read only at a new handshake. A Knit slot with `use_aead` refuses
+  only what rides it — a Knit broadcast, a ham-mode compact DM (`aeadBlocks`): AEAD changes the channel hash — while a
+  PKI compact DM (channel 0) and the auto-reply still go; the setup rewrites the slot and so clears AEAD
+  (`identityOnly`). The protobuf is hand-rolled and total (malformed →
   null, never a throw), its field numbers pinned by golden vectors in `MeshtasticProtoTest`. A `Routing` answer about
   a direct send is the destination's ACK only from the destination; anything else is implicit; `NONE` about a
   broadcast is no outcome. The battery is read off the handshake and the per-minute
@@ -180,14 +192,18 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   doesn't; the pacer parks on `link.state`, never its 1 s tick.
 - **When touching the Meshtastic room — `onLoraPacket`'s slot-0 branch, `PublicChannelPolicy`, `PublicPostPolicy`
   (`onAirText`, `onAirBudget`), `postToPublicChannel`, `Ceiling.HALF`, `mesh/crypto/XeddsaVerify`,
-  `ProfileContent.loraNode` / `loraKey`, `PeerRepository.findByLoraNode`, `messages.originPeerId` / `originSigned`, or
-  `SettingsStore.loraRoomEnabled`:** READ ADR 2026-09.26q3, ADR 2026-09.9469, ADR 2026-09.ggq4, ADR 2026-09.sre4 and
+  `ProfileContent.loraNode` / `loraKey`, `BoardBinding` / `onBoardBound`, `LoraFacts.roomSignedUpTo`,
+  `PeerRepository.findByLoraNode`, `messages.originPeerId` / `originSigned`, or `SettingsStore.loraRoomEnabled`:** READ ADR 2026-09.26q3, ADR 2026-09.9469, ADR 2026-09.ggq4, ADR 2026-09.sre4 and
   ADR 2026-09.x52a (and ADR 2026-10.ug4a for its half ceiling), then "The Meshtastic room" in `lora-bridge.md`. The room is a local mirror of the bound board's
   slot 0: nothing minted, custodied or fanned out, no gateway gate; a post leaves through this phone's own board as the
   words alone, no author name. A heard author is resolved once at ingest through the node number their profile claims
   and stays "unverified" unless the board key in that profile verifies the XEdDSA signature — in firmware 2.8.1's
   layout only; Meshtastic withdrew 2.8.0, so a 2.8.0 contact reads as a mismatch (ADR 2026-09.ggq4's 2026-10-29
-  amendment). ADR 2026-09.cf7a and
+  amendment). The profile's `loraKey` is the bound board's key whenever its node number is the key's CRC32, whether or
+  not the board signs (ggq4's 2026-10-30 amendment, #243): it verifies a signed post and feeds a contact's `add_contact`
+  (ADR 2026-10.aajj); an unsigned post stays `UNSIGNED`. The composer caps a post at slot 0's own signature cliff
+  (`LoraFacts.roomSignedUpTo`: 166, 154 on a 2.8.1 board whose slot 0 is AEAD, the 200-byte convention where the board
+  signs no room post). ADR 2026-09.cf7a and
   2026-09.7r4d are superseded: the `meshpost` type is burned, never bring a custodial frame back for this traffic.
   `loraNode` / `loraKey` are profile fields the iOS port reads too (paired change).
   **Before touching `DmAutoReplyPolicy`, `Destination.Reply`, `OutboundFrame.to`, or `MeshtasticLink.send`'s

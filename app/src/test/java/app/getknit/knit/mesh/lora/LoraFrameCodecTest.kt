@@ -97,7 +97,7 @@ class LoraFrameCodecTest {
                     channelNum = 0,
                 ),
             )
-            onFirmware("2.8.0.7239fe8")
+            onBoard(SigningFacts("2.8.0.7239fe8"))
         }
 
     /** A cost model that always wants [target], for pinning the mechanics without a preset in the way. */

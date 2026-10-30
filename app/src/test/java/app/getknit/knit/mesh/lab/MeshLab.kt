@@ -1527,7 +1527,7 @@ class LabNode internal constructor(
                     override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
                 },
             boardMap = flow { emitAll(manager.loraBoardMap()) },
-            onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.signingKey) },
+            onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.key) },
             onPublicPost = { manager.onPublicPostHeard(it) },
             scope = scope,
             metrics = metrics,

@@ -75,13 +75,14 @@ data class LoraFacts(
      */
     val primaryKeyIsPublic: Boolean = true,
     /**
-     * Whether the bound board's firmware signs the posts it sends for us (`LoraAirtime.signing`: 2.8 and
-     * later, or its own `has_xeddsa`). The Meshtastic room's composer reads it to cap a post at the size the
-     * board can still sign, so every post leaves signed ([PublicPostPolicy.onAirBudget]). True until a board
-     * says otherwise, the same default the airtime governor keeps: unknown is the strict case, and a
-     * pre-2.8 board reports its version within the handshake and gets the client cap back.
+     * The size at or under which the bound board signs a Meshtastic-room post on slot 0 (`AirtimeSnapshot.roomSignedUpTo`,
+     * #243: the firmware's version, its `packet_signature_policy` and slot 0's AEAD), or [LoraAirtime.UNSIGNED] where it
+     * signs none. The room's composer caps a post at it, so every post leaves signed ([PublicPostPolicy.onAirBudget]):
+     * 166 B, 154 on a 2.8.1 board whose slot 0 is AEAD, the 200-byte client convention on a board that does not sign
+     * there. The signing cap until a board says otherwise, the same default the airtime governor keeps: unknown is the
+     * strict case, and the handshake brings the real answer.
      */
-    val signs: Boolean = true,
+    val roomSignedUpTo: Int = PublicPostPolicy.MAX_SIGNED_TEXT_BYTES,
 )
 
 /**

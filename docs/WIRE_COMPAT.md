@@ -570,7 +570,7 @@ byte-identical to before and every existing golden vector stayed put (three new 
 `profileContentLoraKey`, `profilePayloadLoraKey`, `messageContentV2ProfileLoraKey`). A presentation field on
 all three layouts under the same LWW watermark. The transcoder needed nothing (text key plus a 44-character
 text string, `FrameTranscoderTest.aBoardKeyProfileRidesAsTextKeyPlusValueAndRebuildsExact`); the cost is
-**54 B** on the cleartext profile while a signing board is bound, and `CoordinationPlaneSizeBudgetTest`
+**54 B** on the cleartext profile while a keyed 2.8 board is bound, and `CoordinationPlaneSizeBudgetTest`
 carries it on both max-size fixtures: the max-size profile transcodes to **432 B, still two LoRa packets at the
 ESP32 cap** (16 B of headroom under the 448-B ceiling), and the max-size intro to 600 B, still three. The
 intro's legacy `0x03` form is now 684 B, three bytes past the three-packet ceiling — a form the LoRa plane has
@@ -584,6 +584,17 @@ XEdDSA signature (`mesh/crypto/XeddsaVerify`, over the firmware's own `from ‖ 
 shows the post as that contact's, with a shield. What it proves is bounded: the *radio* named in the profile
 transmitted the words — the frame's Ed25519 signature is what binds that claim to the identity — never that
 the person typed them.
+
+*Meaning note, 2026-10-30 (#243, ADR 2026-09.ggq4's amendment).* The field and every layout are unchanged; what
+moved is **when a sender fills it**. It now carries the bound board's key whenever the board's node number is the
+key's CRC32 (32 bytes, firmware 2.8's keygen binding), whether or not the board signs — 2.8.2 under its default
+`COMPATIBLE` policy signs nothing, and the key is also what a contact's phone writes to its own board with
+`add_contact` (ADR 2026-10.aajj) so a compact DM to us can be PKI-encrypted. A pre-2.8 board (a MAC-derived number)
+still elides it, so its user's profile is byte-identical to before. Old receivers are safe: every shipped build reads
+an unsigned heard post as `ORIGIN_UNSIGNED` whatever key the contact advertises
+(`InboundPipeline.judgeMeshPostSignature` verifies only a post that carries a signature), so a key from a board that
+does not sign never reads as a mismatch. The iOS port only round-trips the field and has no LoRa plane: nothing to
+change there.
 
 **Precedent — the first sealed-only presentation field, and the one exception to "all three layouts" (the supporter
 badge, ADR 2026-10.r99s, 2026-10-14; spec `docs/SUPPORTER_BADGE.md`).** `ProfilePayload.badges: List<BadgeEntry>? =

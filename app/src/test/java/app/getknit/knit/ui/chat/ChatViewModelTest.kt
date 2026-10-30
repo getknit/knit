@@ -60,6 +60,7 @@ import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64
+import app.getknit.knit.mesh.lora.LoraAirtime
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.PublicPostPolicy
@@ -1061,11 +1062,11 @@ class ChatViewModelTest {
             // convention is the cap, as it always was.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
-            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, signs = false)
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, roomSignedUpTo = LoraAirtime.UNSIGNED)
             advanceUntilIdle()
             assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, vm.state.value.publicPostBudget)
 
-            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, signs = true)
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, roomSignedUpTo = PublicPostPolicy.MAX_SIGNED_TEXT_BYTES)
             advanceUntilIdle()
             assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, vm.state.value.publicPostBudget)
         }

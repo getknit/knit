@@ -218,8 +218,11 @@ Sourced; cite these by their ADR or sha, and treat anything not here or in an AD
 
 - The router transmits at most a 237-byte `Data`; Knit's two-byte `PRIVATE_APP` portnum leaves a 231-byte payload,
   228 at MTU 255 (a3077bf3). ESP32 boards take **one** BLE client, and board Wi-Fi disables its Bluetooth.
-- 2.8 attaches a 64-byte XEdDSA signature (+66 B) to any non-PKI broadcast it originates that still fits: ≤ 165 B for
-  a Knit frame, 166 B for text. A trailing pad is safe only in a deflated body (mhs5). The phone gets the signature and
+- 2.8 attaches a 64-byte XEdDSA signature (+66 B) to a non-PKI broadcast it originates that still fits: ≤ 165 B for
+  a Knit frame, 166 B for text. Tag 2.8.1 signs under every `packet_signature_policy`; 2.8.2 (upstream `34cb8d582`)
+  only under `BALANCED`/`STRICT`, never on a `use_aead` channel; `has_xeddsa` says only that the build can sign. An
+  AEAD channel adds 12 B, and 2.8.1 signs on it then refuses what overflows (≤ 154 B of text leaves signed). A trailing
+  pad is safe only in a deflated body (mhs5 and its 2026-10-30 amendment). The phone gets the signature and
   the board's verdict (`xeddsa_signed`); a signed packet that fails the receiving board's key is dropped before the
   phone sees it; a 2.8 node number is the CRC32 of its key (ggq4).
 - An omitted `hop_limit` arrives as 0 and nobody repeats it; `LOCAL_ONLY` does relay a secondary-channel packet; one
@@ -264,8 +267,9 @@ One line per invariant, by subsystem, with the ADR to read. Not exhaustive and n
 - **Size.** ≤ 3 fragments of ≤ 231 B; only the last packet of a deflated frame is padded past the cliff; `hop_limit`
   stated on every send (mhs5, 038).
 - **Air.** One allowance, `min(duty, 10 %) × 0.5` per 15 min, one ledger; Knit frames may fill it, the Meshtastic room
-  and the auto-reply only while the total stays within half; every spend booked at its real price, a unicast unsigned
-  (ug4a). Two classes, `DIRECT` before `ROOM`; a full queue sheds a room post, then a ✓✓, before a DM. Skip a refused
+  and the auto-reply only while the total stays within half; every spend booked at its real price, off one per-handshake
+  snapshot of how the board signs (`LoraAirtime.price`: version, policy, AEAD, packet class, ham mode), a PKI unicast
+  unsigned (ug4a, mhs5's 2026-10-30 amendment). Two classes, `DIRECT` before `ROOM`; a full queue sheds a room post, then a ✓✓, before a DM. Skip a refused
   frame, but a `DIRECT` frame the total refused holds what ranks behind it (044's 2026-10-04 amendment, ug4a). The
   band brake (live self-telemetry `channelUtil` ≥ 40 %, the firmware's `max_channel_util_percent`, ≤ 5 min old, off a dedicated slot) holds only Knit room posts
   and never spins the pacer (ug4a). The law is the firmware's `DUTY_CYCLE_LIMIT`, the ledger only manners. Fresh ≤ 15 min on fan-out (039).

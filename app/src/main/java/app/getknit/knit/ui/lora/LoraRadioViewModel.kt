@@ -220,7 +220,9 @@ internal class LoraRadioViewModel(
                     ?.firstOrNull { it.index == channel }
                     ?.name
                     ?.takeIf { it.isNotEmpty() }
-            val setUp = ready?.channels?.any { it.name == KnitChannel.NAME } == true
+            // Not while another client has switched the Knit slot to AEAD (#243): no other Knit board shares that channel,
+            // and running the setup again clears it, so the screen offers the action.
+            val setUp = ready?.channels?.any { it.name == KnitChannel.NAME && !it.useAead } == true
             // The identity the board should carry, which the firmware it runs is half of: a board too old
             // to store the unmonitored mark is wanted exactly as it is (ADR 2026-09.emd7).
             val wanted = status.boardNodeNum?.let { BoardName.forNode(it, ready?.board?.firmwareVersion) }

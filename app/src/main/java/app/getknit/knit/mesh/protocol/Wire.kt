@@ -354,12 +354,14 @@ class CommonsPost(
  * [loraKey] lets it check one.
  *
  * [loraKey] is that board's Curve25519 public key (base64 of the 32 raw bytes, the `pubKey`/`avatarHash`
- * string convention), advertised **only while the board's firmware signs**: Meshtastic 2.8 signs every
- * broadcast a board originates that fits, and a contact's phone verifies a heard post's signature against
- * this key (`mesh/crypto/XeddsaVerify`) before showing the post as ours. Same shape as [loraNode] — nullable,
- * elided while unbound or on a board that does not sign, absent clears, a presentation field on all three
- * layouts. What it proves is bounded: the radio named here transmitted the words, not that this person
- * typed them. Bound to this identity by the frame's own signature, which covers every field of this content.
+ * string convention), advertised **when [loraNode] is its CRC32** — the binding firmware 2.8 makes at keygen —
+ * whether or not the board signs (ADR 2026-09.ggq4's 2026-10-30 amendment, #243). A contact's phone verifies a heard
+ * post's signature against it (`mesh/crypto/XeddsaVerify`) before showing the post as ours, and an unsigned post
+ * stays unsigned whatever key it holds; it also teaches the contact's board our key (`add_contact`, ADR 2026-10.aajj).
+ * Same shape as [loraNode] — nullable, elided while unbound or on a board whose number is not its key's CRC32,
+ * absent clears, a presentation field on all three layouts. What it proves is bounded: the radio named here
+ * transmitted the words, not that this person typed them. Bound to this identity by the frame's own signature, which
+ * covers every field of this content.
  */
 @Serializable
 data class ProfileContent(
@@ -818,8 +820,8 @@ data class ScopeConfigPayload(
  * elided while off): the sealed path overwrites the whole presentation set under a newer version, and a
  * field carried by the cleartext frame alone would be reverted by the next sealed update. [loraNode]
  * mirrors [ProfileContent.loraNode] for the same reason (nullable, elided while unbound, absent clears),
- * and [loraKey] mirrors [ProfileContent.loraKey] (the board's signing key, base64; elided unless the board
- * signs).
+ * and [loraKey] mirrors [ProfileContent.loraKey] (the board's key, base64; elided unless the board's number is its
+ * CRC32).
  *
  * [badges] is the one field here that is **not** on [ProfileContent], on purpose (docs/SUPPORTER_BADGE.md,
  * ADR 2026-10.r99s): the supporter credentials the sender chose to show, at most [BadgeEntry.MAX_PER_PROFILE],

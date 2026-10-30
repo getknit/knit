@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.pow
@@ -61,8 +62,74 @@ internal data class AirtimeSnapshot(
     val publicCeilingMs: Long = 0L,
     /** Whether the board is on a dedicated RF slot, and so out from under the politeness ceiling (ADR 067). */
     val dedicated: Boolean = false,
-    /** Whether the budget is charging for the signature 2.8 firmware adds to our small packets. */
-    val signing: Boolean = true,
+    /**
+     * The signature cliff of a Knit broadcast on the bound slot ([LoraAirtime.UNSIGNED] when the board does not sign
+     * there): what the ledger charges a room post for, and what [LoraAirtime.padTo] dodges (ADR 2026-09.mhs5, #243).
+     */
+    val knitSignedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
+    /**
+     * The same for a Meshtastic-room post on slot 0, on the text port: the composer's cap
+     * ([PublicPostPolicy.onAirBudget], `LoraFacts.roomSignedUpTo`). 154 on a 2.8.1 board whose slot 0 is AEAD.
+     */
+    val roomSignedUpTo: Int = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE),
+) {
+    /** Whether the budget charges a Knit broadcast for the board's signature — the `…debug.LORA` dump's `signing`. */
+    val signing: Boolean get() = knitSignedUpTo != LoraAirtime.UNSIGNED
+}
+
+/** Which of the board's channels a packet is written to, for [LoraAirtime.price]: each has its own `use_aead`. */
+internal enum class AirSlot {
+    /** Index 0: the Meshtastic room's post, the auto-reply, our board's `NodeInfo` after a `35`. */
+    PRIMARY,
+
+    /** The bound Knit slot: a Knit broadcast, and the compact DM written to it (which PKI then moves to index 0). */
+    KNIT,
+}
+
+/**
+ * The packet classes `Router::perhapsEncode` treats differently (#243). Firmware 2.8 PKI-encrypts a [DATA_UNICAST] its
+ * phone originates unless the board is in ham mode, and never the other three.
+ */
+internal enum class PacketKind {
+    /** A broadcast: a Knit room post, a Meshtastic-room post. */
+    BROADCAST,
+
+    /** A data unicast: a compact DM, the auto-reply. */
+    DATA_UNICAST,
+
+    /** A `NODEINFO_APP` (or position) unicast: our board's NodeInfo after a destination's `35`. */
+    NODEINFO_UNICAST,
+
+    /** A `ROUTING_APP` unicast: our board's ACK of a compact DM to us. */
+    ROUTING_UNICAST,
+}
+
+/**
+ * What the firmware does to one packet past the payload we hand it, for the ledger: the payload size at or under which
+ * it attaches a 66-byte signature ([signedUpTo], [LoraAirtime.UNSIGNED] for never), the bytes its encryption adds
+ * ([extraBytes]: a PKI unicast's or an AEAD channel's 12), and the largest payload that still fits ([cap]).
+ */
+internal data class PacketPrice(
+    val signedUpTo: Int,
+    val extraBytes: Int,
+    val cap: Int,
+) {
+    companion object {
+        /** No signature, no extra bytes: the price of a packet on a board that signs nothing, on a plain channel. */
+        val UNSIGNED = PacketPrice(LoraAirtime.UNSIGNED, 0, MeshtasticProto.MAX_PAYLOAD)
+    }
+}
+
+/**
+ * What the handshake told us about how the bound board signs (#243): its firmware version, `DeviceMetadata.has_xeddsa`,
+ * `SecurityConfig.packet_signature_policy` (null: no security config was streamed, read as signing) and whether its
+ * owner is in ham mode (`User.is_licensed`). The default is the expensive unknown: a board that has said nothing signs.
+ */
+internal data class SigningFacts(
+    val firmware: String? = null,
+    val hasXeddsa: Boolean? = null,
+    val policy: SignaturePolicy? = null,
+    val licensed: Boolean = false,
 )
 
 /**
@@ -97,13 +164,15 @@ internal data class AirtimeSnapshot(
  * allowance. The board's own `air_util_tx` is not a seed for it: an hour of everything the radio sent, relays
  * included, it over-books a client on a busy mesh by most of an allowance and under-books a recent burst.
  *
- * One thing the packet we hand the board is not: what leaves it. Firmware **2.8 signs every broadcast it
- * originates**, ours included, adding [MeshtasticProto.XEDDSA_SIGNATURE_FIELD] bytes to any packet small
+ * One thing the packet we hand the board is not: what leaves it. Firmware **2.8 signs the broadcasts it
+ * originates** — tag 2.8.1 always, a build with upstream `34cb8d582` (2.8.2) only under a `BALANCED` or `STRICT`
+ * `packet_signature_policy` (#243) — adding [MeshtasticProto.XEDDSA_SIGNATURE_FIELD] bytes to any packet small
  * enough to still fit one ([MeshtasticProto.MAX_SIGNED_PAYLOAD]). Knit neither asks for that nor can decline
  * it, but it is real air, and unbudgeted it lands hardest on exactly the frames ADR 060 shrank into one
- * packet — a 157-byte transcoded tick is 36 % more air than this class used to charge for. So
- * [timeOnAirMs] adds the signature itself, gated on the board's firmware ([signsPackets]) — and [padTo]
- * turns the same cliff back into a saving, since a packet grown one byte past it sheds all 66 (ADR 2026-09.mhs5).
+ * packet — a 157-byte transcoded tick is 36 % more air than this class used to charge for. So every booking is
+ * priced ([price], [PacketPrice]) for the slot and the packet class it is, off the board's own word at `Ready`
+ * ([onBoard]) — and [padTo] turns the same cliff back into a saving, since a packet grown one byte past it sheds all
+ * 66 (ADR 2026-09.mhs5).
  *
  * Those two ceilings are **independent**, which is what [dedicatedUnlocksDuty] turns on (ADR 067). The
  * regional duty cycle is law and only the firmware's own `override_duty_cycle` escape hatch lifts it; the
@@ -131,13 +200,15 @@ internal class LoraAirtime(
         private set
 
     /**
-     * Whether the bound board's firmware signs the broadcasts it sends for us, and so whether [timeOnAirMs]
-     * charges for the signature. True until a board says otherwise: the unknown case has to be the expensive
-     * one, since guessing "unsigned" against firmware that signs is the one error that spends air we never
-     * budgeted — and in a duty-limited region that is somebody else's law, not our politeness.
+     * How the bound board signs, as its last handshake said ([onBoard]). Unknown until a board says otherwise, and
+     * unknown prices as signing: guessing "unsigned" against firmware that signs is the one error that spends air we
+     * never budgeted — and in a duty-limited region that is somebody else's law, not our politeness.
      */
-    var signing: Boolean = true
-        private set
+    private var facts = SigningFacts()
+
+    /** `use_aead` on slot 0 and on the bound Knit slot, as the last handshake's channel table said. */
+    private var primaryAead = false
+    private var knitAead = false
 
     /** Records the board's radio settings from the config handshake; a null report leaves the last one standing. */
     @Synchronized
@@ -146,35 +217,62 @@ internal class LoraAirtime(
     }
 
     /**
-     * Records what the handshake's `DeviceMetadata` says about signing: [hasXeddsa] is the board's own word
-     * (`has_xeddsa`, a build that verifies and so signs) and wins when present; a firmware too old to carry
-     * the field is judged by its [version] instead, and null reads as unknown.
+     * Records how the bound board signs, off its handshake at `Ready` (#243): [facts] — firmware, `has_xeddsa`, the
+     * `packet_signature_policy`, ham mode — and whether slot 0 ([primaryAead]) and the bound Knit slot ([knitAead]) are
+     * AEAD channels. Every later [price] reads this one snapshot, so admission and booking cannot disagree. Asked again
+     * only on a new handshake: a policy change reboots the board, and a channel edited by another client on a live
+     * session is not pushed to the phone (`MeshtasticSession.dispatch`).
      */
     @Synchronized
-    fun onFirmware(
-        version: String?,
-        hasXeddsa: Boolean? = null,
+    fun onBoard(
+        facts: SigningFacts,
+        primaryAead: Boolean = false,
+        knitAead: Boolean = false,
     ) {
-        signing = hasXeddsa ?: signsPackets(version)
+        this.facts = facts
+        this.primaryAead = primaryAead
+        this.knitAead = knitAead
     }
+
+    /** What a [kind] packet on [portnum] written to [slot] costs past its payload, by the snapshot [onBoard] took. */
+    @Synchronized
+    fun price(
+        slot: AirSlot,
+        kind: PacketKind,
+        portnum: Int,
+    ): PacketPrice = price(facts, aead = if (slot == AirSlot.PRIMARY) primaryAead else knitAead, kind, portnum)
 
     /**
      * Milliseconds this packet will occupy the medium, from the LoRa time-on-air formula (Semtech AN1200.13)
      * at the board's preset. [payloadBytes] is the `Data.payload` we hand the board; [PACKET_OVERHEAD_BYTES]
      * covers the Meshtastic header and protobuf/crypto framing around it. This is a governor's estimate, not
      * a measurement — it does not know the board's preamble length or whether a rebroadcaster repeated us.
+     *
+     * Priced as a Knit broadcast on the bound slot ([knitBroadcast]): what [LoraFrameCodec] asks, through [PacketCost].
      */
     @Synchronized
-    override fun timeOnAirMs(payloadBytes: Int): Long = timeOnAirMs(payloadBytes, MeshtasticProto.MAX_SIGNED_PAYLOAD)
+    override fun timeOnAirMs(payloadBytes: Int): Long = timeOnAirMs(payloadBytes, knitBroadcast())
 
     /**
-     * [timeOnAirMs] for a packet whose signature cliff is [signedUpTo] rather than a Knit frame's: the
-     * Meshtastic room's `TEXT_MESSAGE_APP` posts sign one byte further (`MeshtasticProto.maxSignedPayload`),
-     * and a post at that cap is signed air the ledger has to book, not an unsigned packet one byte past it.
+     * [timeOnAirMs] for a packet with no extra bytes whose signature cliff is [signedUpTo]: a payload at or under it is
+     * charged the signature, whatever the board — the caller asked [price] for the cliff.
      */
     @Synchronized
     fun timeOnAirMs(
         payloadBytes: Int,
+        signedUpTo: Int,
+    ): Long = airMs(payloadBytes, 0, signedUpTo)
+
+    /** [timeOnAirMs] at [price]: the signature when [payloadBytes] is at or under its cliff, and its extra bytes. */
+    @Synchronized
+    fun timeOnAirMs(
+        payloadBytes: Int,
+        price: PacketPrice,
+    ): Long = airMs(payloadBytes, price.extraBytes, price.signedUpTo)
+
+    private fun airMs(
+        payloadBytes: Int,
+        extraBytes: Int,
         signedUpTo: Int,
     ): Long {
         val preset = radio?.modemPreset ?: ModemPreset.LONG_FAST
@@ -182,7 +280,7 @@ internal class LoraAirtime(
         val symbolMs = 2.0.pow(sf) * MS_PER_SECOND / preset.bandwidthHz
         // Low-data-rate optimize: the firmware enables it once a symbol exceeds 16 ms, which costs 2 bits/symbol.
         val de = if (symbolMs > LDO_THRESHOLD_MS) 1 else 0
-        val phyBytes = payloadBytes + PACKET_OVERHEAD_BYTES + signatureBytes(payloadBytes, signedUpTo)
+        val phyBytes = payloadBytes + extraBytes + PACKET_OVERHEAD_BYTES + signatureBytes(payloadBytes, signedUpTo)
         val numerator = (BITS_PER_BYTE * phyBytes - 4 * sf + PAYLOAD_CONST + CRC_BITS).toDouble()
         val denominator = (4 * (sf - 2 * de)).toDouble()
         val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * preset.codingRate)
@@ -205,12 +303,16 @@ internal class LoraAirtime(
     /**
      * The signature the board will bolt onto this packet, or 0. Mirrors the firmware's own `signedDataFits`
      * gate: it signs what still fits signed and sends the rest as it always did, so this is a *cliff* rather
-     * than a ramp — a 165-byte payload costs 66 bytes more than a 166-byte one.
+     * than a ramp — a 165-byte payload costs 66 bytes more than a 166-byte one. Whether the board signs at all is
+     * in the cliff: [UNSIGNED] for a packet it never signs ([price]).
      */
     private fun signatureBytes(
         payloadBytes: Int,
         signedUpTo: Int,
-    ): Int = if (signing && payloadBytes <= signedUpTo) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
+    ): Int = if (payloadBytes <= signedUpTo) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
+
+    /** The price of a Knit broadcast on the bound slot, by the current snapshot. */
+    private fun knitBroadcast(): PacketPrice = price(AirSlot.KNIT, PacketKind.BROADCAST, MeshtasticProto.PORT_PRIVATE_APP)
 
     /**
      * The size to grow a [payloadBytes] packet to so the firmware will **not** sign it, or [payloadBytes]
@@ -220,8 +322,13 @@ internal class LoraAirtime(
      * packet one byte larger does not — a 165-byte payload and a 231-byte one cost the same air. Padding past
      * the cliff buys that back for the width of the pad, and the comparison is made with [timeOnAirMs] rather
      * than in bytes so it is exact at the board's own preset and symbol quantization. Everything else falls
-     * out of that one comparison: a board that does not sign ([signing] false) never sees a saving, and
-     * neither does a packet already over the cliff.
+     * out of that one comparison: a board that does not sign on the bound slot — pre-2.8, or 2.8.2 under `COMPATIBLE`
+     * (#243) — never sees a saving, and neither does a packet already over the cliff.
+     *
+     * The target is the firmware's own `signedDataFits` edge, one past [MeshtasticProto.MAX_SIGNED_PAYLOAD], not the
+     * priced cliff: the two differ only on a 2.8.1 AEAD channel, where the board signs up to that edge and then refuses
+     * the packets the AEAD tag pushes over (`Router.cpp:1377-1379`), and no Knit broadcast is written to an AEAD bound
+     * slot (`LoraMeshTransport.aeadBlocks`).
      *
      * The **caller** owes the other half of the bargain — pad only a frame whose body is a deflate stream
      * ([app.getknit.knit.mesh.link.FastFrameCodec.deflated]), the only form where a receiver ignores the
@@ -274,9 +381,9 @@ internal class LoraAirtime(
         ceiling: Ceiling,
         payloadSizes: List<Int>,
         now: Long,
-        /** The signature cliff for these packets' port — a Knit frame's unless the caller says otherwise. */
-        signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
-    ): Boolean = refusal(ceiling, payloadSizes, now, signedUpTo) == null
+        /** What the firmware does to these packets ([price]) — a Knit broadcast on the bound slot unless the caller says. */
+        price: PacketPrice? = null,
+    ): Boolean = refusal(ceiling, payloadSizes, now, price) == null
 
     /**
      * Why [admits] refuses a frame, or null when it fits. The pacer needs the reason, not just the verdict: a direct
@@ -289,10 +396,11 @@ internal class LoraAirtime(
         ceiling: Ceiling,
         payloadSizes: List<Int>,
         now: Long,
-        signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
+        price: PacketPrice? = null,
     ): Refusal? {
         prune(now)
-        val cost = payloadSizes.sumOf { timeOnAirMs(it, signedUpTo) }
+        val priced = price ?: knitBroadcast()
+        val cost = payloadSizes.sumOf { timeOnAirMs(it, priced) }
         val total = allowanceMs()
         // A `when` rather than a ladder of early returns only because there are several answers; the order
         // is the same and load-bearing.
@@ -348,15 +456,18 @@ internal class LoraAirtime(
         return count - left
     }
 
-    /** Books [payloadBytes] of air. Called once the board has actually accepted the write. */
+    /**
+     * Books [payloadBytes] of air at [price] — a Knit broadcast on the bound slot unless the caller says. Called once the
+     * board has actually accepted the write.
+     */
     @Synchronized
     fun record(
         payloadBytes: Int,
         now: Long,
-        signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
+        price: PacketPrice? = null,
     ) {
         prune(now)
-        val ms = timeOnAirMs(payloadBytes, signedUpTo)
+        val ms = timeOnAirMs(payloadBytes, price ?: knitBroadcast())
         samples.addLast(Booking(now, ms))
         spentMs += ms
     }
@@ -384,7 +495,8 @@ internal class LoraAirtime(
             allowanceMs = allowanceMs(),
             publicCeilingMs = publicCeilingMs(),
             dedicated = dedicated(),
-            signing = signing,
+            knitSignedUpTo = knitBroadcast().signedUpTo,
+            roomSignedUpTo = price(AirSlot.PRIMARY, PacketKind.BROADCAST, MeshtasticProto.PORT_TEXT_MESSAGE).signedUpTo,
         )
     }
 
@@ -400,32 +512,126 @@ internal class LoraAirtime(
 
     companion object {
         /**
-         * The signature cliff of a packet the firmware never signs: a unicast (ADR 2026-10.x9fa). 2.8 signs only the
-         * non-PKI **broadcasts** it originates, and a unicast only in ham mode (`Router.cpp:1271` at v2.8.1), so a
-         * compact DM — a PKI unicast, priced with its PKC overhead — the destination's ACK and a unicast `NodeInfo` are
-         * priced without a signature.
+         * The signature cliff of a packet the firmware never signs ([PacketPrice.signedUpTo]): a PKI unicast — a compact
+         * DM, the auto-reply — whatever the board, and on a board that signs nothing every packet (#243, [price]).
          */
         const val UNSIGNED = 0
 
         /**
-         * Whether [version] — the board's `DeviceMetadata.firmware_version`, e.g. `"2.8.0.7239fe8"` — is
-         * firmware that signs the broadcasts it originates. Signing arrived in **2.8**; anything older adds
-         * nothing to our packets and must not be charged for it, or the plane quietly loses a third of its
-         * capacity on the boards everyone is actually running today.
+         * What `Router::perhapsEncode` does to a [kind] packet on [portnum], on a channel that is or is not [aead], for
+         * the board [facts] describe (#243). Pure: the whole rule, pinned row by row in `LoraAirtimeTest`.
          *
-         * A version it cannot read is treated as signing, for the reason [signing] gives: over-charging
-         * costs throughput, under-charging can cost compliance.
+         * - A [PacketKind.DATA_UNICAST] off a board not in ham mode is PKI-encrypted (`wouldEncryptWithPKC`, any channel,
+         *   ADR 2026-10.x9fa's PKI amendment): never signed, +[MeshtasticProto.PKC_OVERHEAD_BYTES], never AEAD.
+         * - Anything else is channel-encrypted: +[MeshtasticProto.AEAD_OVERHEAD_BYTES] on an [aead] channel, on every
+         *   version that reports `use_aead`.
+         * - Whether it is signed turns on the firmware ([Era]):
+         *   - `has_xeddsa` false, or a version below 2.8 (`signsPackets`'s old rule): never.
+         *   - 2.8.0 and 2.8.1 ([Era.ALWAYS], `Router.cpp:1270` at v2.8.1): a broadcast, and in ham mode every unicast,
+         *     routing included, under every policy — and on an AEAD channel too: `signedDataFits` ignores the AEAD tag
+         *     (`Router.cpp:1177-1185`) and the AEAD path then refuses what overflows (`:1377-1379`), so only a payload
+         *     12 B under the usual cliff leaves signed: 154 B of text, 153 of a Knit frame.
+         *   - 2.8.2 and later ([Era.POLICY], upstream `34cb8d582`, `Router.cpp:1222-1227`): only under `BALANCED` or
+         *     `STRICT` (an unknown or unrecognised policy reads as signing), never on an AEAD channel, never a routing
+         *     packet: a broadcast, a NodeInfo or position unicast, and in ham mode a data unicast.
+         *   - A version it cannot read ([Era.UNKNOWN]): signed whenever either rule above would sign it — the expensive
+         *     reading, since over-charging costs throughput and under-charging can cost compliance.
+         *
+         * Not modelled: a 2.8.2 development build from before `34cb8d582` (2026-10-01 to 10-21), which signs under
+         * `COMPATIBLE` like 2.8.1 yet reads as [Era.POLICY]. Nothing in the handshake tells it apart; it is under-charged
+         * by the signature on its small broadcasts (#243's accepted gap).
          */
-        fun signsPackets(version: String?): Boolean {
-            val parts = version?.trim()?.split('.') ?: return true
-            val major = parts.getOrNull(0)?.toIntOrNull() ?: return true
-            val minor = parts.getOrNull(1)?.toIntOrNull() ?: return true
-            return major > SIGNING_MAJOR || (major == SIGNING_MAJOR && minor >= SIGNING_MINOR)
+        fun price(
+            facts: SigningFacts,
+            aead: Boolean,
+            kind: PacketKind,
+            portnum: Int,
+        ): PacketPrice {
+            // The port's whole payload room, and the firmware's `signedDataFits` edge 66 B under it (165 / 166).
+            val fullCap = MeshtasticProto.LORA_DATA_MAX - framingByPort.computeIfAbsent(portnum, MeshtasticProto::dataFraming)
+            val signedEdge = fullCap - MeshtasticProto.XEDDSA_SIGNATURE_FIELD
+            if (kind == PacketKind.DATA_UNICAST && !facts.licensed) {
+                return PacketPrice(UNSIGNED, MeshtasticProto.PKC_OVERHEAD_BYTES, fullCap - MeshtasticProto.PKC_OVERHEAD_BYTES)
+            }
+            val extra = if (aead) MeshtasticProto.AEAD_OVERHEAD_BYTES else 0
+            val era = era(facts)
+            val always = (era == Era.ALWAYS || era == Era.UNKNOWN) && signsAlways(facts, kind)
+            val byPolicy = (era == Era.POLICY || era == Era.UNKNOWN) && signsByPolicy(facts, aead, kind)
+            val cliff =
+                when {
+                    always -> signedEdge - extra
+                    byPolicy -> signedEdge
+                    else -> UNSIGNED
+                }
+            return PacketPrice(cliff, extra, fullCap - extra)
         }
+
+        /** 2.8.0 / 2.8.1: a broadcast, or any unicast from a board in ham mode — whatever the policy and the channel. */
+        private fun signsAlways(
+            facts: SigningFacts,
+            kind: PacketKind,
+        ): Boolean = kind == PacketKind.BROADCAST || facts.licensed
+
+        /** 2.8.2+: a signing policy, a plain channel, and a broadcast, a NodeInfo or position, or a ham data unicast. */
+        private fun signsByPolicy(
+            facts: SigningFacts,
+            aead: Boolean,
+            kind: PacketKind,
+        ): Boolean {
+            if (facts.policy == SignaturePolicy.COMPATIBLE || aead) return false
+            return when (kind) {
+                PacketKind.BROADCAST, PacketKind.NODEINFO_UNICAST -> true
+                PacketKind.DATA_UNICAST -> facts.licensed
+                PacketKind.ROUTING_UNICAST -> false
+            }
+        }
+
+        /** Which signing rule a board's firmware runs. */
+        private enum class Era { NEVER, ALWAYS, POLICY, UNKNOWN }
+
+        private fun era(facts: SigningFacts): Era {
+            if (facts.hasXeddsa == false) return Era.NEVER
+            val parts = facts.firmware?.trim()?.split('.')
+            val major = parts?.getOrNull(0)?.toIntOrNull()
+            val minor = parts?.getOrNull(1)?.toIntOrNull()
+            val patch = parts?.getOrNull(2)?.toIntOrNull()
+            return when {
+                major == null || minor == null -> {
+                    Era.UNKNOWN
+                }
+
+                // Below 2.8: nothing signs — unless the build says it can, which no release did; read as unknown then.
+                major < SIGNING_MAJOR || (major == SIGNING_MAJOR && minor < SIGNING_MINOR) -> {
+                    if (facts.hasXeddsa == true) Era.UNKNOWN else Era.NEVER
+                }
+
+                major > SIGNING_MAJOR || minor > SIGNING_MINOR -> {
+                    Era.POLICY
+                }
+
+                patch == null -> {
+                    Era.UNKNOWN
+                }
+
+                patch >= POLICY_PATCH -> {
+                    Era.POLICY
+                }
+
+                else -> {
+                    Era.ALWAYS
+                }
+            }
+        }
+
+        /** [MeshtasticProto.dataFraming] by port, measured once: [price] runs on every pacer wake. */
+        private val framingByPort = ConcurrentHashMap<Int, Int>()
 
         /** The firmware release that started signing broadcasts (`Router::perhapsEncode`, 2.8.0). */
         private const val SIGNING_MAJOR = 2
         private const val SIGNING_MINOR = 8
+
+        /** 2.8.2: the first version whose release carries upstream `34cb8d582`, the policy-aware send path (#243). */
+        private const val POLICY_PATCH = 2
 
         /**
          * The rolling window every budget is expressed over. It was an hour (ADR 044) — the unit the EU duty

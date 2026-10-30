@@ -88,7 +88,8 @@ NodeDB, a factory reset). Stock clients send `add_contact` before **every** DM f
 - **The 35 is not a refusal.** A destination whose board holds no key for ours cannot decrypt the DM and NAKs
   `PKI_UNKNOWN_PUBKEY` (35, `ReliableRouter.cpp:146-150`); our board answers with our NodeInfo (`:162-168`), which heals
   the pair within seconds. So a 35 refunds the unflown airings, books that NodeInfo (our board's own `User` off its
-  stream, else `NODEINFO_USER_BYTES`; a unicast, so unsigned, `Router.cpp:1271`), counts `loraDirectPeerLacksOurKey` and
+  stream, else `NODEINFO_USER_BYTES`; priced by `LoraAirtime.price` as a NodeInfo unicast on slot 0: signed under 2.8.2's
+  `BALANCED`/`STRICT` even unicast, `Router.cpp:1222-1227` at `34cb8d5`, and by 2.8.1 only in ham mode, else unsigned), counts `loraDirectPeerLacksOurKey` and
   re-offers the frame once, one retransmit gap on (`LoraDirectPolicy.scheduleRetry`, run by the deadline loop),
   holding the peer's other offers meanwhile. A second 35 to that re-offer is a give-up: `Unreachable`, cleared by a
   hearing. `add_contact` cannot help a 35: it is their board's NodeDB, not ours. Never `REFUSED`. Their NAK goes on
@@ -107,7 +108,7 @@ stale key, and it is exactly the third-board attack above. *`remove_by_nodenum` 
 process only, and a mistaken one removes a node the user may rely on; the ghost favourite below is the cost.
 
 **What it costs.** Nothing on the air: a 39 and an `add_contact` are BLE writes to our own board. One NodeDB save per
-written key. The 35's NodeInfo is one unsigned airing of about 70 B (≈ 1 s at LongFast), booked.
+written key. The 35's NodeInfo is one airing of about 70 B (≈ 1 s at LongFast; +66 B where the board signs it), booked.
 
 **What it does not cover, and the traps.**
 
@@ -118,12 +119,16 @@ written key. The 35's NodeInfo is one unsigned airing of about 70 B (≈ 1 s at 
 - *A stale profile.* A contact who reflashed has a new node number and key; until their new profile reaches us, our
   board's 39s are about a node that no longer exists, and the write (CRC-bound to the old key) is useless but harmless.
   Recovery is their new profile (a new board-map entry lifts `NO_KEY`).
-- *A board that does not sign.* Our profile advertises `loraKey` only while the board signs (`onBoardBound`), so a
-  contact whose board runs a non-signing build (the "Compatible" 34cb8d582 board in the 2026-10-30 trial) publishes
-  none, and our board can never be taught their key: their peer goes `NO_KEY` on the first 39. Publishing the key for
-  a non-signing board is a profile change (paired with knit-ios), not made here.
-- *A board in ham mode* does no PKI, so never draws a 39; it signs a compact DM instead (`Router.cpp:1271`), priced so
-  (`DirectSend.licensed`).
+- *A board that does not sign* now publishes its key too (2026-10-30, #243, ADR 2026-09.ggq4's amendment): the profile
+  carries `loraKey` whenever the board's node number is the key's CRC32, whether or not the firmware signs, so a contact
+  on a 2.8.2 board under `COMPATIBLE` can be taught to ours, and our board to theirs, on the first 39. Before that, the
+  key rode only while `LoraAirtime.signing` read true — which a `34cb8d582` board did by accident (`has_xeddsa` is set
+  on every XEdDSA build), and which fixing #243 alone would have ended. A board whose number is not its key's CRC32
+  (pre-2.8, or no key yet) still publishes none, and guard 6 would refuse its key anyway. No iOS code: the port only
+  round-trips the field.
+- *A board in ham mode* does no PKI, so never draws a 39; its compact DM is channel-encrypted and signed by the
+  firmware's rule instead (2.8.1 always, `Router.cpp:1270`; 2.8.2 under `BALANCED`/`STRICT`), priced so off the board's
+  snapshot (`LoraAirtime.price`, ADR 2026-09.mhs5's 2026-10-30 amendment).
 
 Tests: `LoraContactPolicyTest` (every guard, the CRC vector, the stream read only after the send, the memory, the
 timed-out write, the daily bound, the allowlisted `User`), `MeshManagerTest.aRivalClaimContestsABoardOnlyWhenItsOwnKeyBindsIt`,

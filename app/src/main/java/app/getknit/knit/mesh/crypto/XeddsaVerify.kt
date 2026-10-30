@@ -10,9 +10,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Verifies the XEdDSA signature Meshtastic firmware 2.8 puts on a broadcast (`Data.xeddsa_signature`),
- * on the phone, against a node's Curve25519 key — the key its `User.public_key` carries and a contact's
- * profile advertises as `loraKey`.
+ * Verifies the XEdDSA signature a Meshtastic 2.8 board that signs puts on a broadcast (`Data.xeddsa_signature`:
+ * tag 2.8.1 always, a 2.8.2 build under the `BALANCED` or `STRICT` policy only), on the phone, against a node's
+ * Curve25519 key — the key its `User.public_key` carries and a contact's profile advertises as `loraKey`, which a
+ * board that does not sign advertises too.
  *
  * XEdDSA (Signal) is plain Ed25519 under a key derived from the X25519 pair: the signer converts its
  * Montgomery private scalar to an Edwards one and negates it if the public point's sign bit would be set,

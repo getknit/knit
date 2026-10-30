@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -743,6 +744,36 @@ class MeshtasticSessionTest {
         }
 
     @Test
+    fun theSignaturePolicyIsReadPerHandshakeAndUnknownWhenNoneIsStreamed() =
+        runTest {
+            // #243: the first handshake streams BALANCED; the board reboots and the next streams no security config —
+            // unknown (null), never the last session's answer.
+            val ch = FakeGattChannel()
+            var handshakes = 0
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(BoardBytes.channel(1, "knit", 2))
+                    if (handshakes++ == 0) ch.enqueueRead(BoardBytes.securityConfig(1))
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertEquals(SignaturePolicy.BALANCED, (session.state.value as LinkState.Ready).signaturePolicy)
+
+            ch.enqueueRead(BoardBytes.rebooted())
+            ch.notify()
+            runCurrent()
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertEquals(2, handshakes)
+            assertNull((session.state.value as LinkState.Ready).signaturePolicy)
+            session.stop()
+        }
+
+    @Test
     fun stopClosesTheChannelAndGoesIdle() =
         runTest {
             val ch = FakeGattChannel().also(::scriptHandshake)
@@ -893,10 +924,12 @@ class MeshtasticSessionTest {
         channels: List<Triple<Int, String, Int>>,
         radio: ByteArray?,
         firmware: String?,
+        rawChannels: List<ByteArray> = emptyList(),
     ) {
         ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
         firmware?.let { ch.enqueueRead(BoardBytes.metadata(it)) }
         channels.forEach { (i, n, r) -> ch.enqueueRead(BoardBytes.channel(i, n, r)) }
+        rawChannels.forEach { ch.enqueueRead(it) }
         radio?.let { ch.enqueueRead(it) }
         ch.enqueueRead(BoardBytes.configComplete(nonce))
     }
@@ -915,12 +948,14 @@ class MeshtasticSessionTest {
         user: ByteArray? = boardUser,
         radio: ByteArray? = null,
         firmware: String? = MARKING_FIRMWARE,
+        /** Whole `FromRadio { channel }` messages to report after [channels], verbatim. */
+        rawChannels: List<ByteArray> = emptyList(),
     ) {
         var sets = 0
         ch.onWrite = { bytes ->
             when {
                 BoardBytes.isWantConfig(bytes) -> {
-                    replyToWantConfig(ch, channels, radio, firmware)
+                    replyToWantConfig(ch, channels, radio, firmware, rawChannels)
                 }
 
                 BoardBytes.isAdminGetConfig(bytes) -> {
@@ -1126,6 +1161,76 @@ class MeshtasticSessionTest {
                 ch.writes.none { BoardBytes.isAdminSet(it) || BoardBytes.isAdminSetConfig(it) || BoardBytes.isAdminSetOwner(it) },
             )
             session.stop()
+        }
+
+    /**
+     * A Knit slot's `ChannelSettings` as another client left it (#243): the key, the name, an `id`, uplink on,
+     * `module_settings { position_precision = 13, is_muted = true }`, and `use_aead` — in the middle, so the test also
+     * sees the order kept. [aead] false is the same bytes without field 8: what the repair must write.
+     */
+    private fun aeadSettings(aead: Boolean): ByteArray =
+        ProtoWriter()
+            .apply {
+                bytes(2, byteArrayOf(1, 2, 3, 4)) // psk
+                string(3, "Knit") // name
+                fixed32(4, 0x1234_5678u) // id
+                if (aead) bool(MeshtasticProto.CHANNEL_SETTINGS_USE_AEAD, true)
+                bool(5, true) // uplink_enabled
+                message(7) {
+                    varint(1, 13) // module_settings.position_precision
+                    bool(2, true) // module_settings.is_muted
+                }
+            }.toByteArray()
+
+    /** Sets up a board whose Knit slot sits at [index] with [role] and [aeadSettings], and returns the one channel write. */
+    private suspend fun TestScope.repairAeadSlot(
+        index: Int,
+        role: Int,
+    ): BoardBytes.SetChannel {
+        val ch = FakeGattChannel()
+        val others = if (index == 0) emptyList() else listOf(Triple(0, "", 1))
+        scriptBoard(
+            ch,
+            channels = others,
+            configs = boardConfigs,
+            user = knitUser,
+            rawChannels = listOf(BoardBytes.channelWithSettings(index, role, aeadSettings(aead = true))),
+        )
+        val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+        session.start("AA")
+        runCurrent()
+        assertTrue((session.state.value as LinkState.Ready).channels.single { it.index == index }.useAead)
+
+        val result = async { session.provisionChannel(provisionSpec) }.await()
+        assertEquals(ProvisionResult.Provisioned(index, alreadyPresent = true), result)
+        assertTrue("nothing else rewritten", ch.writes.none { BoardBytes.isAdminSetConfig(it) || BoardBytes.isAdminSetOwner(it) })
+        session.stop()
+        return ch.writes.mapNotNull { BoardBytes.adminSetChannel(it) }.single()
+    }
+
+    @Test
+    fun provisionOnABoardWhoseKnitSlotIsAeadRewritesTheSlotAndClearsIt() =
+        runTest {
+            // #243: another client switched the Knit slot to AEAD, so it is no longer the channel other Knit boards share.
+            // Running the setup again writes the board's own settings back with only `use_aead` taken out: `set_channel`
+            // replaces the whole ChannelSettings, so anything rebuilt would reset what Knit does not model.
+            val written = repairAeadSlot(index = 2, role = MeshtasticProto.ROLE_SECONDARY)
+            assertEquals(2, written.index)
+            assertEquals(MeshtasticProto.ROLE_SECONDARY, written.role)
+            assertFalse("no use_aead written: the write clears it", written.writesUseAead)
+            assertArrayEquals("everything else byte for byte", aeadSettings(aead = false), written.settingsRaw)
+        }
+
+    @Test
+    fun provisionOnABoardWhoseKnitPrimaryIsAeadKeepsItPrimaryAndItsPrecision() =
+        runTest {
+            // The Knit-on-primary shape: `knitChannel` matches slot 0 too. Clearing AEAD there must not demote the primary
+            // nor touch its position precision — an absent `module_settings` reads as full precision on a public key.
+            val written = repairAeadSlot(index = 0, role = 1)
+            assertEquals(0, written.index)
+            assertEquals("still the primary (`Channel.Role.PRIMARY` = 1)", 1, written.role)
+            assertEquals("its precision kept", 13, written.positionPrecision)
+            assertArrayEquals("everything else byte for byte", aeadSettings(aead = false), written.settingsRaw)
         }
 
     @Test

@@ -333,7 +333,7 @@ internal class LoraPacePolicy(
         // asked at all: it is not waiting for air, and its refusal must neither hold nor count as one.
         val refusals =
             queue.mapIndexed { i, frame ->
-                if (brakedAt[i]) null else airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.signedUpTo)
+                if (brakedAt[i]) null else airtime.refusal(frame.ceiling, frame.admissionSizes(), now, frame.price(airtime))
             }
         val best = bestAdmitted(refusals, brakedAt)
         val holder = holderOf(refusals)
@@ -690,46 +690,29 @@ internal class OutboundFrame(
     val fragmented: Boolean get() = messages.size > 1
 
     /**
-     * The firmware's cliff for these packets, for [LoraAirtime] — at admission and at the booking alike. A broadcast is
-     * signed under its port's cliff by a 2.8 board (a Meshtastic-room post one byte further, on the text port); a
-     * unicast is not ([LoraAirtime.UNSIGNED]): `Router::perhapsEncode` signs only a broadcast, a `NodeInfo` or a
-     * position unless the board is in ham mode, so neither a compact DM nor the auto-reply carries a signature. A compact
-     * DM from a board in ham mode ([DirectSend.licensed]) is the exception: no PKI there, and the unicast is signed when
-     * it fits (`Router.cpp:1271` at v2.8.1, ADR 2026-10.aajj).
+     * What the firmware does to these packets past their bytes — the signature cliff and the bytes its encryption adds —
+     * by the bound board's snapshot ([LoraAirtime.price], #243), keyed by [destination]: one answer for admission, the
+     * booking and a compact DM's flight alike, so the three cannot disagree. A broadcast on the bound slot or slot 0,
+     * on its own port; a compact DM or the auto-reply a data unicast: PKI-encrypted, unsigned and +12 B on a board
+     * that is not in ham mode (ADR 2026-10.x9fa's PKI amendment), channel-encrypted and signed by the firmware's rule on
+     * one that is (ADR 2026-10.aajj).
      */
-    val signedUpTo: Int
-        get() =
-            when {
-                direct?.licensed == true -> MeshtasticProto.MAX_SIGNED_PAYLOAD
-                direct != null || destination == Destination.Reply -> LoraAirtime.UNSIGNED
-                destination == Destination.Public -> MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
-                else -> MeshtasticProto.MAX_SIGNED_PAYLOAD
-            }
+    fun price(airtime: LoraAirtime): PacketPrice =
+        airtime.price(
+            slot = if (destination == Destination.Knit) AirSlot.KNIT else AirSlot.PRIMARY,
+            kind = if (direct != null || destination == Destination.Reply) PacketKind.DATA_UNICAST else PacketKind.BROADCAST,
+            portnum = if (destination == Destination.Knit) MeshtasticProto.PORT_PRIVATE_APP else MeshtasticProto.PORT_TEXT_MESSAGE,
+        )
 
     /**
-     * What the pacer admits this frame against: what is still owed, and for a compact DM that one packet as often as
-     * the firmware may put it on the air — the send and every retry ([LoraDirectPolicy.AIRINGS]). Admitting one
-     * airing and then retrying three times would spend air no admission asked for (ADR 2026-10.x9fa).
+     * What the pacer admits this frame against, at [price]: what is still owed, and for a compact DM that one packet
+     * as often as the firmware may put it on the air — the send and every retry ([LoraDirectPolicy.AIRINGS]). Admitting
+     * one airing and then retrying three times would spend air no admission asked for (ADR 2026-10.x9fa).
      */
     fun admissionSizes(): List<Int> {
-        val sizes = remaining.map { it.size + pricedExtraBytes }
+        val sizes = remaining.map { it.size }
         return if (direct == null) sizes else List(LoraDirectPolicy.AIRINGS) { sizes.first() }
     }
-
-    /**
-     * Bytes the firmware adds on the air that [messages] do not carry, priced at admission, at booking and in a compact
-     * DM's flight alike: the PKC overhead of a PKI unicast — the DM auto-reply (ADR 2026-10.ug4a) and every compact DM.
-     * Firmware 2.8 PKI-encrypts a unicast its phone originates on any channel, the Knit secondary included, and refuses
-     * it (`39`) rather than fall back to the channel key, so a compact DM that airs at all airs PKI (ADR 2026-10.x9fa's
-     * PKI amendment). Only a board in ham mode skips PKI ([DirectSend.licensed]); it signs instead ([signedUpTo]).
-     */
-    val pricedExtraBytes: Int
-        get() =
-            when {
-                direct != null -> if (direct.licensed) 0 else MeshtasticProto.PKC_OVERHEAD_BYTES
-                destination == Destination.Reply -> MeshtasticProto.PKC_OVERHEAD_BYTES
-                else -> 0
-            }
 
     private companion object {
         const val SHED_ROOM = 2
@@ -755,12 +738,6 @@ internal class DirectSend(
      * (ADR 2026-10.x9fa), each asked again then whether it is still unacked.
      */
     val flushAfter: List<String> = emptyList(),
-    /**
-     * Our board was in ham mode (`User.is_licensed`) when this was queued: the firmware neither PKI-encrypts it nor can
-     * refuse it for a missing key, and signs it when it fits — priced so ([OutboundFrame.signedUpTo]). Every other
-     * board PKI-encrypts it (ADR 2026-10.aajj).
-     */
-    val licensed: Boolean = false,
     /**
      * The one re-offer after the destination's board answered `PKI_UNKNOWN_PUBKEY` (35) and our board sent it our
      * `NodeInfo` (ADR 2026-10.aajj): a second 35 to it is a give-up, never another re-offer.

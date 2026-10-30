@@ -88,6 +88,14 @@ internal object MeshtasticProto {
      */
     const val PKC_OVERHEAD_BYTES = 12
 
+    /**
+     * What a channel with `ChannelSettings.use_aead` adds on the air to every packet encrypted under its key: the
+     * firmware's `MESHTASTIC_AEAD_OVERHEAD` (`RadioInterface.h:23`, AES-CCM's tag and nonce), added in
+     * `Router::perhapsEncode`, which refuses `numbytes + 16 + 12 > 255` as `TOO_LARGE` (`Router.cpp:1377-1379` at
+     * v2.8.1). A PKI unicast takes the other branch and pays [PKC_OVERHEAD_BYTES] instead, never both.
+     */
+    const val AEAD_OVERHEAD_BYTES = 12
+
     /** A `Data.xeddsa_signature` is exactly this long (`XEDDSA_SIGNATURE_SIZE`); the firmware emits 0 or 64 bytes, never else. */
     const val XEDDSA_SIGNATURE_BYTES = 64
 
@@ -312,6 +320,26 @@ internal object MeshtasticProto {
      * save-and-reboot until [encodeAdminCommitEdit], collapsing a multi-write channel edit into one reboot.
      */
     fun encodeAdminBeginEdit(passkey: ByteArray?): ByteArray = admin(passkey) { bool(ADMIN_BEGIN_EDIT, true) }
+
+    /**
+     * `AdminMessage { set_channel = Channel { index, settings, role } }` with [settings] — a `ChannelSettings` the board
+     * itself reported ([ChannelInfo.settingsRaw]), spliced — written verbatim (#243). `set_channel` replaces the whole
+     * `ChannelSettings`, so this is how a slot is rewritten without losing a field Knit does not model:
+     * `module_settings` (position precision, mute), uplink, downlink, `id`.
+     */
+    fun encodeAdminSetChannelSettings(
+        index: Int,
+        role: Int,
+        settings: ByteArray,
+        passkey: ByteArray?,
+    ): ByteArray =
+        admin(passkey) {
+            message(ADMIN_SET_CHANNEL) {
+                varint(CHANNEL_INDEX, index)
+                bytes(CHANNEL_SETTINGS, settings, emitEmpty = true)
+                varint(CHANNEL_ROLE, role)
+            }
+        }
 
     /** `AdminMessage { set_channel = Channel { index, settings { psk, name }, role } }`. */
     fun encodeAdminSetChannel(
@@ -716,20 +744,44 @@ internal object MeshtasticProto {
     }
 
     /**
-     * A `Config` streamed during the want_config handshake. Only the `lora` variant is read (the radio
-     * settings the airtime governor needs); every other variant decodes to a null-payload [FromRadio.Config]
-     * and is ignored, so an unknown or reordered variant can never break the handshake.
+     * A `Config` streamed during the want_config handshake. Two variants are read: `lora` (the radio settings the
+     * airtime governor needs) and, of `security`, its `packet_signature_policy` alone (#243: what the firmware signs).
+     * Every other variant decodes to a null-payload [FromRadio.Config] and is ignored, so an unknown or reordered
+     * variant can never break the handshake.
+     *
+     * **The security config carries the board's `private_key` and `admin_key`** (`PhoneAPI.cpp:797` at v2.8.1), so it
+     * is read field by field inside [decodeSignaturePolicy] and never captured whole: no raw copy of it exists past this
+     * decoder, and `BoardConfig` must never gain a `security` member that would splice it.
      */
     private fun decodeConfig(reader: ProtoReader): FromRadio.Config {
         var lora: LoraRadioConfig? = null
+        var policy: SignaturePolicy? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 CONFIG_LORA -> lora = decodeLoraConfig(reader.sub())
+                CONFIG_SECURITY -> policy = decodeSignaturePolicy(reader.sub())
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return FromRadio.Config(lora)
+        return FromRadio.Config(lora, policy)
+    }
+
+    /**
+     * `SecurityConfig.packet_signature_policy` (9) and nothing else: every other field — the keys above all — is skipped
+     * unread. proto3, so a security config without field 9 is [SignaturePolicy.COMPATIBLE], the enum's zero; a value
+     * this build does not know is [SignaturePolicy.UNRECOGNISED], which reads as signing (`LoraAirtime.price`).
+     */
+    private fun decodeSignaturePolicy(reader: ProtoReader): SignaturePolicy {
+        var policy = SignaturePolicy.COMPATIBLE
+        while (reader.hasMore) {
+            val tag = reader.readTag()
+            when (tag ushr WireType.FIELD_SHIFT) {
+                SECURITY_PACKET_SIGNATURE_POLICY -> policy = SignaturePolicy.fromCode(reader.readVarint32())
+                else -> reader.skip(tag and WireType.MASK)
+            }
+        }
+        return policy
     }
 
     /** The `Config.LoRaConfig` fields that decide time-on-air, the legal duty cycle, and which RF slot we sit on. */
@@ -761,17 +813,30 @@ internal object MeshtasticProto {
     private fun decodeChannelInfo(reader: ProtoReader): ChannelInfo {
         var index = 0
         var settings = ChannelSettings()
+        var settingsRaw = ByteArray(0)
         var role = 0
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
-                CHANNEL_INDEX -> index = reader.readVarint32()
-                CHANNEL_SETTINGS -> settings = decodeChannelSettings(reader.sub())
-                CHANNEL_ROLE -> role = reader.readVarint32()
-                else -> reader.skip(tag and WireType.MASK)
+                CHANNEL_INDEX -> {
+                    index = reader.readVarint32()
+                }
+
+                CHANNEL_SETTINGS -> {
+                    settingsRaw = reader.readBytes()
+                    settings = decodeChannelSettings(ProtoReader(settingsRaw))
+                }
+
+                CHANNEL_ROLE -> {
+                    role = reader.readVarint32()
+                }
+
+                else -> {
+                    reader.skip(tag and WireType.MASK)
+                }
             }
         }
-        return ChannelInfo(index, settings.name, role, settings.psk)
+        return ChannelInfo(index, settings.name, role, settings.psk, settings.useAead, settingsRaw)
     }
 
     /**
@@ -799,21 +864,24 @@ internal object MeshtasticProto {
     private fun decodeChannelSettings(reader: ProtoReader): ChannelSettings {
         var name = ""
         var psk = ByteArray(0)
+        var useAead = false
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 CHANNEL_SETTINGS_PSK -> psk = reader.readBytes()
                 CHANNEL_SETTINGS_NAME -> name = reader.readString()
+                CHANNEL_SETTINGS_USE_AEAD -> useAead = reader.readVarint32() != 0
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return ChannelSettings(name, psk)
+        return ChannelSettings(name, psk, useAead)
     }
 
-    /** The two `ChannelSettings` fields the decoder keeps, carried together so [decodeChannelInfo] reads once. */
+    /** The `ChannelSettings` fields the decoder keeps, carried together so [decodeChannelInfo] reads once. */
     private class ChannelSettings(
         val name: String = "",
         val psk: ByteArray = ByteArray(0),
+        val useAead: Boolean = false,
     )
 
     private fun decodeMetadata(reader: ProtoReader): FromRadio.Metadata {
@@ -932,6 +1000,9 @@ internal object MeshtasticProto {
     // ChannelSettings field numbers (psk + name; the rest are left at their proto3 defaults).
     private const val CHANNEL_SETTINGS_PSK = 2
     private const val CHANNEL_SETTINGS_MODULE_SETTINGS = 7
+
+    /** `ChannelSettings.use_aead` — read off the handshake, never written: `encodeAdminSetChannel` leaves it at false. */
+    const val CHANNEL_SETTINGS_USE_AEAD = 8
     private const val MODULE_SETTINGS_POSITION_PRECISION = 1
 
     // QueueStatus / MyNodeInfo / Channel / DeviceMetadata / Routing field numbers.
@@ -953,6 +1024,10 @@ internal object MeshtasticProto {
 
     // Config / Config.LoRaConfig field numbers (the radio settings the airtime governor reads).
     private const val CONFIG_LORA = 6
+
+    /** `Config.security` — only its [SECURITY_PACKET_SIGNATURE_POLICY] is read; see [decodeConfig]. */
+    private const val CONFIG_SECURITY = 8
+    private const val SECURITY_PACKET_SIGNATURE_POLICY = 9
     private const val LORA_USE_PRESET = 1
     private const val LORA_MODEM_PRESET = 2
     private const val LORA_REGION = 7
@@ -990,7 +1065,12 @@ internal data class ChannelWrite(
     val name: String,
     val psk: ByteArray,
     val role: Int = MeshtasticProto.ROLE_SECONDARY,
-    /** `module_settings.position_precision`; null leaves the board's own value alone (the rendezvous write). */
+    /**
+     * `module_settings.position_precision`; null writes no `module_settings` at all. `set_channel` replaces the whole
+     * `ChannelSettings`, so on a slot that already exists null does **not** keep the board's value — the firmware falls
+     * back to full precision — and is safe only for a slot Knit wrote itself or one being disabled. A rewrite of an
+     * existing slot that must keep everything else goes through [MeshtasticProto.encodeAdminSetChannelSettings].
+     */
     val positionPrecision: Int? = null,
 )
 
@@ -1177,6 +1257,19 @@ internal data class ChannelInfo(
      * more — the Meshtastic room mirrors slot 0 as the user keyed it.
      */
     val psk: ByteArray = ByteArray(0),
+    /**
+     * `ChannelSettings.use_aead` (8): the channel encrypts with AES-CCM, which adds
+     * [MeshtasticProto.AEAD_OVERHEAD_BYTES] to every packet, stops firmware with upstream `34cb8d582` signing on it, and
+     * changes the channel's hash (`Channels.cpp:53`, `h ^= 0xAE`) — so a Knit slot switched to it is no longer the
+     * channel every other Knit board is on (`LoraMeshTransport.boundSlotIsKnit`). Read only: Knit never writes it.
+     */
+    val useAead: Boolean = false,
+    /**
+     * The whole `ChannelSettings` as the board sent it, so a rewrite can keep every field Knit does not model
+     * (`MeshtasticProto.encodeAdminSetChannelSettings`: the setup clearing AEAD, #243). Left out of [equals]: the table is
+     * compared by what Knit reads off it, and a value built in a test or by hand has none.
+     */
+    val settingsRaw: ByteArray = ByteArray(0),
 ) {
     /** A `ByteArray` member makes the generated `equals`/`hashCode` identity-based; compare the bytes instead. */
     override fun equals(other: Any?): Boolean =
@@ -1186,13 +1279,45 @@ internal data class ChannelInfo(
                     index == other.index &&
                     name == other.name &&
                     role == other.role &&
-                    psk.contentEquals(other.psk)
+                    psk.contentEquals(other.psk) &&
+                    useAead == other.useAead
             )
 
-    override fun hashCode(): Int = (((index * PRIME) + name.hashCode()) * PRIME + role) * PRIME + psk.contentHashCode()
+    override fun hashCode(): Int =
+        ((((index * PRIME) + name.hashCode()) * PRIME + role) * PRIME + psk.contentHashCode()) * PRIME + useAead.hashCode()
 
     private companion object {
         const val PRIME = 31
+    }
+}
+
+/**
+ * `Config.SecurityConfig.packet_signature_policy` (#243): what a board with upstream `34cb8d582` (reported `2.8.2`) signs.
+ * Tag 2.8.1 ignores it and signs every broadcast. The session reads a board that streamed no security config as null —
+ * unknown, priced as signing, never as [COMPATIBLE].
+ */
+internal enum class SignaturePolicy {
+    /** 0, the default: never signs. */
+    COMPATIBLE,
+
+    /** 1: signs broadcasts, and a NodeInfo or position even unicast; ham mode signs its non-routing unicasts. */
+    BALANCED,
+
+    /** 2: signs as [BALANCED], and drops every unsigned non-PKI, non-routing packet it receives (`Router.cpp:780-784`). */
+    STRICT,
+
+    /** A value this build does not know: a future policy, priced as signing. */
+    UNRECOGNISED,
+    ;
+
+    companion object {
+        fun fromCode(code: Int): SignaturePolicy =
+            when (code) {
+                0 -> COMPATIBLE
+                1 -> BALANCED
+                2 -> STRICT
+                else -> UNRECOGNISED
+            }
     }
 }
 
@@ -1209,8 +1334,9 @@ internal sealed interface FromRadio {
     data class Metadata(
         val firmwareVersion: String?,
         /**
-         * `DeviceMetadata.has_xeddsa` — the build verifies (and so signs) XEdDSA. Null on firmware that
-         * predates the field, which [LoraAirtime.onFirmware] answers by reading the version instead.
+         * `DeviceMetadata.has_xeddsa` — the build can sign and verify XEdDSA. Set on every such build whatever its
+         * `packet_signature_policy` (`main.cpp:1390`), so it says what the firmware *can* do, never whether it signs
+         * (#243); [LoraAirtime.price] reads it beside the version and the policy. Null on firmware that predates it.
          */
         val hasXeddsa: Boolean? = null,
     ) : FromRadio
@@ -1232,9 +1358,13 @@ internal sealed interface FromRadio {
         val channel: ChannelInfo,
     ) : FromRadio
 
-    /** A `Config` variant from the handshake; [lora] is non-null only for the radio-settings variant. */
+    /**
+     * A `Config` variant from the handshake; [lora] is non-null only for the radio-settings variant, [signaturePolicy]
+     * only for the security one (its `packet_signature_policy`, never the keys beside it).
+     */
     data class Config(
         val lora: LoraRadioConfig?,
+        val signaturePolicy: SignaturePolicy? = null,
     ) : FromRadio
 
     data class ConfigComplete(

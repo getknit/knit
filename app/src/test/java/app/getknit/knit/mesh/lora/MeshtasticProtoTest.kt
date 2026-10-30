@@ -506,6 +506,58 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun aSecurityConfigYieldsItsSignaturePolicy() {
+        // FromRadio{config=5}{security=8}{packet_signature_policy=9}: COMPATIBLE, BALANCED, STRICT (#243).
+        assertEquals(FromRadio.Config(null, SignaturePolicy.COMPATIBLE), MeshtasticProto.decodeFromRadio(hex("2A 04 42 02 48 00")))
+        assertEquals(FromRadio.Config(null, SignaturePolicy.BALANCED), MeshtasticProto.decodeFromRadio(hex("2A 04 42 02 48 01")))
+        assertEquals(FromRadio.Config(null, SignaturePolicy.STRICT), MeshtasticProto.decodeFromRadio(hex("2A 04 42 02 48 02")))
+    }
+
+    @Test
+    fun aSecurityConfigWithoutThePolicyIsCompatibleAndAFutureValueIsUnrecognised() {
+        // proto3: an absent enum is its zero. An empty security config is also what a lockdown build sends an
+        // unauthorised client (`PhoneAPI.cpp:785` at 34cb8d5).
+        assertEquals(FromRadio.Config(null, SignaturePolicy.COMPATIBLE), MeshtasticProto.decodeFromRadio(hex("2A 02 42 00")))
+        assertEquals(FromRadio.Config(null, SignaturePolicy.UNRECOGNISED), MeshtasticProto.decodeFromRadio(hex("2A 04 42 02 48 07")))
+    }
+
+    @Test
+    fun noSecurityConfigLeavesThePolicyUnknown() {
+        // The lora variant, and another variant, say nothing about signing: null, which the governor prices as signing.
+        assertNull((MeshtasticProto.decodeFromRadio(hex("2A 06 32 04 38 03 60 01")) as FromRadio.Config).signaturePolicy)
+        assertNull((MeshtasticProto.decodeFromRadio(hex("2A 04 0A 02 08 01")) as FromRadio.Config).signaturePolicy)
+    }
+
+    @Test
+    fun aSecurityConfigCarryingTheBoardsKeysDecodesToThePolicyAlone() {
+        // SecurityConfig { public_key=1, private_key=2, admin_key=3, is_managed=4, packet_signature_policy=9 }: the keys
+        // are skipped unread and nothing of them survives the decode (#243's guardrail: never capture it raw).
+        val security =
+            byteArrayOf(0x0A, 32) + ByteArray(32) { 0x11 } +
+                byteArrayOf(0x12, 32) + ByteArray(32) { 0x22 } +
+                byteArrayOf(0x1A, 32) + ByteArray(32) { 0x33 } +
+                byteArrayOf(0x20, 0x01, 0x48, 0x01)
+        val config = byteArrayOf(0x42, security.size.toByte()) + security
+        val fromRadio = byteArrayOf(0x2A, config.size.toByte()) + config
+        assertEquals(FromRadio.Config(null, SignaturePolicy.BALANCED), MeshtasticProto.decodeFromRadio(fromRadio))
+    }
+
+    @Test
+    fun aChannelSaysWhetherItIsAead() {
+        // Channel { index=1, settings { name="knit", use_aead=8 true }, role=2 }.
+        val fr = MeshtasticProto.decodeFromRadio(hex("52 0E 08 01 12 08 1A 04 6B 6E 69 74 40 01 18 02"))
+        assertEquals(FromRadio.Channel(ChannelInfo(index = 1, name = "knit", role = 2, useAead = true)), fr)
+        assertFalse(
+            "absent is false",
+            ((MeshtasticProto.decodeFromRadio(hex("52 0C 08 01 12 06 1A 04 6B 6E 69 74 18 02")) as FromRadio.Channel).channel.useAead),
+        )
+        assertFalse(
+            "and an AEAD channel is not the same channel",
+            ChannelInfo(index = 1, name = "knit", role = 2, useAead = true) == ChannelInfo(index = 1, name = "knit", role = 2),
+        )
+    }
+
+    @Test
     fun anUnknownPresetOrRegionFallsBackRatherThanThrowing() {
         // An over-estimating preset and a 100 %-duty region are the safe fallbacks for codes we don't know.
         assertEquals(ModemPreset.LONG_FAST, ModemPreset.fromCode(99))

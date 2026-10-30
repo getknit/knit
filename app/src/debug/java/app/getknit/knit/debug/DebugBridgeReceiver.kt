@@ -2375,9 +2375,12 @@ class DebugBridgeReceiver :
             // ADR 067: true means the board is on its own RF slot, so the allowance below is off the
             // politeness ceiling and bounded only by the region's duty cycle, and the band brake is off.
             .put("dedicated", status.airtime?.dedicated ?: JSONObject.NULL)
-            // ADR 2026-09.mhs5: whether this board's firmware signs what we hand it, and so whether the budget charges
-            // for that signature and the codec pads past its cliff. Without it neither is observable here.
+            // ADR 2026-09.mhs5: whether this board's firmware signs a Knit broadcast on the bound slot, and so whether the
+            // budget charges for that signature and the codec pads past its cliff. Without it neither is observable here.
+            // #243: by version, `packet_signature_policy` and AEAD; `roomSignedUpTo` is slot 0's cliff, the composer's cap
+            // (0 where the board signs no room post).
             .put("signing", status.airtime?.signing ?: JSONObject.NULL)
+            .put("roomSignedUpTo", status.airtime?.roomSignedUpTo ?: JSONObject.NULL)
             .put(
                 "airtime",
                 status.airtime?.let { air ->

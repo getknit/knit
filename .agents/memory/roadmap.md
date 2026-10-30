@@ -376,7 +376,10 @@ doc). **Don't start a deferred item without explicit direction.**
   Verified on the two lab phones the same day (`context/lora-bridge.md`): a post each way arrived
   `signed=true boardVerified=true` and verified, a 166-byte post included. **Still owed:** the
   `packet_signature_policy` decision — `BALANCED` is safe for the padded plane, `STRICT` loses it, and the
-  recommendation is now `BALANCED`; seeding our own board with a contact's key (`AdminMessage.add_contact`,
+  recommendation is now `BALANCED` (since 2026-10-30, #243, Knit *reads* the policy and prices, pads and caps by it,
+  and publishes the board key on its CRC binding whether or not the board signs — ADR 2026-09.mhs5's and ggq4's
+  amendments; with 2.8.2's `COMPATIBLE` default an unsigned post from a key-advertising contact becomes the common
+  case, which weighs against the downgrade warning below); seeding our own board with a contact's key (`AdminMessage.add_contact`,
   66) so `BALANCED`/`STRICT` receivers keep the contact's posts and a stale NodeDB key cannot blackhole
   them; the `heartbeat{nonce=1}` NodeInfo ping after a bind, so peers learn a fresh board's key at once; a
   warning for the downgrade shape — an unsigned post under 166 B from a contact whose profile advertises a

@@ -18,7 +18,8 @@ internal data class BoardOwner(
      * `User.public_key` — the node's Curve25519 key, base64 of the 32 raw bytes, or null when it published
      * none (or a malformed one). Base64 rather than bytes because this is a data class the `nodes` directory
      * holds and tests compare whole. For the bound board's own entry this is what the profile advertises
-     * beside the node number, so a contact's phone can verify the posts 2.8 firmware signs for us.
+     * beside the node number when the number is its CRC32 (#243) — so a contact's phone can verify the posts 2.8
+     * firmware signs for us, and teach its own board the key a compact DM to ours is encrypted under (ADR 2026-10.aajj).
      */
     val publicKey: String? = null,
 ) {
@@ -78,7 +79,7 @@ internal object BoardName {
      * landed (`AdminModule::handleSetOwner`, firmware `2e72850d`, released 2025-05-25); 2.6.8 and older
      * drop the field as an unknown one and never echo it back.
      *
-     * A version this cannot read counts as **too old**, the opposite of [LoraAirtime.signsPackets]'s
+     * A version this cannot read counts as **too old**, the opposite of [LoraAirtime.price]'s
      * reading of the same string, because the costs are the opposite way round. There, guessing wrong
      * spends airtime the board did not need; here, guessing wrong means writing to somebody's hardware on
      * a hunch, and — since a board that drops the field never reports it back — leaving Knit's setup

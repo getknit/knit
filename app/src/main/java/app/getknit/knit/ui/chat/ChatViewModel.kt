@@ -1682,8 +1682,9 @@ class ChatViewModel(
                 isCommons = isCommons,
                 commonsTextOnly = isCommons && conversationId in relay.textOnlyRooms,
                 commonsStale = isCommons && conversationId in relay.staleRooms,
-                // 166 bytes on a board that signs (so every post leaves signed), the 200-byte client convention on one that does not.
-                publicPostBudget = if (isBridged) PublicPostPolicy.onAirBudget(mesh.lora.facts.signs) else null,
+                // The board's slot-0 signature cliff where it signs (so every post leaves signed), else the 200-byte
+                // client convention.
+                publicPostBudget = if (isBridged) PublicPostPolicy.onAirBudget(mesh.lora.facts.roomSignedUpTo) else null,
                 publicChannelKeyIsPublic = mesh.lora.facts.primaryKeyIsPublic,
                 needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = isPeerThread && conversationId in blocked,

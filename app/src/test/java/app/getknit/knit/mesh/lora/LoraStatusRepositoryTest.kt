@@ -231,11 +231,11 @@ class LoraStatusRepositoryTest {
         }
 
     @Test
-    fun `the facts say whether the board signs its posts`() =
+    fun `the facts carry the cliff the board signs room posts under`() =
         runTest {
             // Read off the airtime governor's own answer, and not gated on the link being live: the room's
             // composer stays mounted through a BLE flap, and its cap should follow the board it posts through.
-            assertTrue("unknown is the strict case", repo.facts.first().signs)
+            assertEquals("unknown is the strict case", PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, repo.facts.first().roomSignedUpTo)
             val air =
                 AirtimeSnapshot(
                     ModemPreset.LONG_FAST,
@@ -243,13 +243,13 @@ class LoraStatusRepositoryTest {
                     known = true,
                     usedMs = 0,
                     allowanceMs = 45_000,
-                    signing = false,
+                    roomSignedUpTo = LoraAirtime.UNSIGNED,
                 )
             status.value = LoraStatus(state = ready, airtime = air)
-            assertFalse("a pre-2.8 board does not sign", repo.facts.first().signs)
+            assertEquals("a board that signs no room post", LoraAirtime.UNSIGNED, repo.facts.first().roomSignedUpTo)
             status.value = LoraStatus(state = LinkState.Disconnected("flap", retryAtMs = 0, streak = 1), airtime = air)
-            assertFalse("and the answer survives the link dropping", repo.facts.first().signs)
-            status.value = LoraStatus(state = ready, airtime = air.copy(signing = true))
-            assertTrue(repo.facts.first().signs)
+            assertEquals("and the answer survives the link dropping", LoraAirtime.UNSIGNED, repo.facts.first().roomSignedUpTo)
+            status.value = LoraStatus(state = ready, airtime = air.copy(roomSignedUpTo = 154))
+            assertEquals("2.8.1 on an AEAD slot 0", 154, repo.facts.first().roomSignedUpTo)
         }
 }

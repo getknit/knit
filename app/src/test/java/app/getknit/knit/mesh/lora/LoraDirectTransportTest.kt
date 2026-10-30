@@ -116,8 +116,23 @@ class LoraDirectTransportTest {
         scope: CoroutineScope = backgroundScope,
         state: LoraPlaneState = LoraPlaneState.None,
         publicKey: String? = null,
+        firmware: String = "2.5.0",
+        signaturePolicy: SignaturePolicy? = null,
+        knitAead: Boolean = false,
+        licensed: Boolean = false,
+        log: (String) -> Unit = {},
     ): Node {
-        val link = FakeMeshtasticLink(nodeNum, air, publicKey = publicKey, scope = scope).apply { readyOnStart = false }
+        val link =
+            FakeMeshtasticLink(
+                nodeNum,
+                air,
+                firmware = firmware,
+                publicKey = publicKey,
+                scope = scope,
+                signaturePolicy = signaturePolicy,
+                knitAead = knitAead,
+                licensed = licensed,
+            ).apply { readyOnStart = false }
         val metrics = MeshMetrics()
         val boardFlow = MutableStateFlow(boards)
         val seal = FakeSeal(id) { boardFlow.value.orEmpty().keys }
@@ -147,6 +162,7 @@ class LoraDirectTransportTest {
                 clock = { testScheduler.currentTime },
                 wallClock = { wallBase + testScheduler.currentTime },
                 pace = pace,
+                log = log,
             )
         return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace)
     }
@@ -164,9 +180,13 @@ class LoraDirectTransportTest {
         version: Long = 1,
     ) = LoraBoardHolder(BoardAddr(node), direct, version)
 
-    private fun TestScope.pair(air: FakeMeshtasticAir): Pair<Node, Node> {
-        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
-        val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+    private fun TestScope.pair(
+        air: FakeMeshtasticAir,
+        firmware: String = "2.5.0",
+        signaturePolicy: SignaturePolicy? = null,
+    ): Pair<Node, Node> {
+        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), firmware = firmware, signaturePolicy = signaturePolicy)
+        val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)), firmware = firmware, signaturePolicy = signaturePolicy)
         up(a, b)
         return a to b
     }
@@ -239,6 +259,42 @@ class LoraDirectTransportTest {
         }
 
     @Test
+    fun aDmStillAirsWhenTheKnitSlotIsAeadBecausePkiNeverTouchesTheSlot() =
+        runTest {
+            // #243: a compact DM is PKI-encrypted and its channel set to 0 (`Router.cpp:1189-1210`, `:1366` at v2.8.1), so
+            // the Knit slot's `use_aead` and hash never reach it. It airs, lands on bob's index 0, and his board's ACK
+            // comes back; only a broadcast on that slot is refused.
+            val air = FakeMeshtasticAir()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), knitAead = true)
+            val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)), knitAead = true)
+            up(a, b)
+            a.dm("bob", "f1")
+            settle()
+            assertEquals("one packet, written to the bound slot", listOf(1), a.link.sentChannels)
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            assertEquals("bob's board acked it", 1, a.transport.status.value.direct.reachable)
+            assertEquals(0L, a.metrics.lora().loraSuppressed)
+        }
+
+    @Test
+    fun aHamBoardsDmIsNeverWrittenToAnAeadKnitSlot() =
+        runTest {
+            // #243: a board in ham mode does no PKI, so its compact DM really is encrypted under the Knit slot's key and
+            // hash — on an AEAD slot, a channel no other Knit board shares. It is refused at send like a broadcast.
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), knitAead = true, licensed = true, log = { logs += it })
+            val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
+            up(a, b)
+            a.dm("bob", "f1")
+            settle()
+            assertTrue("nothing written to the board", a.link.sent.isEmpty())
+            assertEquals(1L, a.metrics.lora().loraSuppressed)
+            assertTrue(logs.any { it.startsWith("lora send skipped: slot 1 is AEAD") })
+            assertTrue(b.delivered.isEmpty())
+        }
+
+    @Test
     fun aDmIsPricedUnsignedAndTheReceiverBooksItsBoardsAck() =
         runTest {
             val air = FakeMeshtasticAir()
@@ -296,7 +352,7 @@ class LoraDirectTransportTest {
             val total = ledger.allowanceMs()
             // Into the last quarter, with room left for both frames' every airing and not one airing more.
             val one = priced(size)
-            while (ledger.snapshot(now).usedMs + 2 * dmCost + one <= total) ledger.record(size, now, LoraAirtime.UNSIGNED)
+            while (ledger.snapshot(now).usedMs + 2 * dmCost + one <= total) ledger.record(size, now, PacketPrice.UNSIGNED)
             assertTrue("past three quarters of the window", ledger.snapshot(now).usedMs > total * 3 / 4)
             a.dm("carol", "r1", kind = DirectKind.RECEIPT)
             a.dm("bob", "x1", kind = DirectKind.REACTION)
@@ -768,7 +824,7 @@ class LoraDirectTransportTest {
             val one = priced(size)
             val total = ledger.allowanceMs()
             // Leave room for two airings of it, short of the five (`LoraDirectPolicy.AIRINGS`) it is admitted against.
-            while (total - ledger.snapshot(now).usedMs >= 3 * one) ledger.record(size, now, LoraAirtime.UNSIGNED)
+            while (total - ledger.snapshot(now).usedMs >= 3 * one) ledger.record(size, now, PacketPrice.UNSIGNED)
             a.dm("bob", "f1")
             settle()
             assertTrue("one airing would fit; its retries would not", a.link.sent.isEmpty())
@@ -891,7 +947,7 @@ class LoraDirectTransportTest {
             val total = ledger.allowanceMs()
             val now = testScheduler.currentTime
             // Room for one DM's five airings and three more, not two DMs' ten.
-            while (total - ledger.snapshot(now).usedMs >= 9 * one) ledger.record(hiPacket, now, LoraAirtime.UNSIGNED)
+            while (total - ledger.snapshot(now).usedMs >= 9 * one) ledger.record(hiPacket, now, PacketPrice.UNSIGNED)
             a.dm("bob", "f1")
             a.dm("carol", "g1")
             settle(500)
@@ -1319,6 +1375,35 @@ class LoraDirectTransportTest {
             assertEquals(
                 "one airing for each DM that flew, and our NodeInfo",
                 3 * priced(hiPacket) + nodeInfo,
+                a.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+        }
+
+    /**
+     * #243: under 2.8.2's `BALANCED` our board signs the NodeInfo it sends bob's even though it is a unicast
+     * (`Router.cpp:1222-1227` at `34cb8d5`), so it is booked signed; the compact DMs stay PKI, unsigned.
+     */
+    @Test
+    fun theNodeInfoAfterA35IsBookedSignedUnderABalanced282Board() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air, firmware = "2.8.2.34cb8d5", signaturePolicy = SignaturePolicy.BALANCED)
+            b.link.forget(1u)
+            a.dm("bob", "f1")
+            settle(3_000)
+            settle(20_000)
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            val nodeInfo =
+                LoraAirtime().timeOnAirMs(
+                    LoraDirectPolicy.NODEINFO_USER_BYTES,
+                    MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_NODEINFO),
+                )
+            assertTrue(nodeInfo > LoraAirtime().timeOnAirMs(LoraDirectPolicy.NODEINFO_USER_BYTES, LoraAirtime.UNSIGNED))
+            assertEquals(
+                "one airing for each send of the DM, and our signed NodeInfo",
+                2 * priced(hiPacket) + nodeInfo,
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,

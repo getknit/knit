@@ -60,10 +60,11 @@ data class PeerEntity(
      */
     val loraNode: Long? = null,
     /**
-     * The Curve25519 public key that board signs under (`ProfileContent.loraKey` / `ProfilePayload.loraKey`),
-     * base64 like [pubKey], or null when the profile named none — a board that does not sign, or a peer on a
-     * build before this one. A presentation field under the same [updatedAt] watermark; what a heard post's
-     * signature is checked against at ingest, which is what makes a match verified rather than claimed.
+     * That board's Curve25519 public key (`ProfileContent.loraKey` / `ProfilePayload.loraKey`), base64 like [pubKey],
+     * or null when the profile named none — a board whose number is not its key's CRC32 (pre-2.8, or no key yet), or a
+     * peer on a build before this one. Advertised whether or not the board signs (#243). A presentation field under
+     * the same [updatedAt] watermark; what a heard post's signature is checked against at ingest, which is what makes a
+     * match verified rather than claimed — an unsigned post stays unsigned, never a mismatch.
      */
     val loraKey: String? = null,
     /**
