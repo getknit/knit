@@ -190,6 +190,57 @@ class LinkArqTest {
         }
 
     @Test
+    fun aFrameWrittenBehindABulkOnADeepSlowPathWaitsAboutTheQueueBoundNotTheWindow() =
+        runTest {
+            // ~110 KB/s (a datagram every 10 ms) behind a queue that never fills, 40 ms each way: nothing is lost, so the
+            // window grows to the receiver's limit, ~560 KB, five seconds of this path. A file fed in chunks as a link
+            // feeds one, and ten seconds in a frame between two chunks: unbounded, the frame waited behind the whole
+            // window (2026-10-30: a video from a phone whose signal sank held texts back for minutes).
+            val ends = ends(delayMs = 40)
+            ends.ab.serviceMs = 10
+            ends.ab.buffer = 100_000
+            ends.ab.clock = { testScheduler.currentTime }
+            val chunk = ByteArray(4 * 1024)
+            val frame = ByteArray(64) { 7 }
+            var written = 0L
+            var done = false
+            var frameEnd = -1L
+            var frameWrittenAt = -1L
+            var frameReadAt = -1L
+            val reader =
+                async {
+                    val buf = ByteArray(8 * 1024)
+                    var read = 0L
+                    while (!done || read < written) {
+                        val n = ends.b.read(buf, 0, buf.size)
+                        if (n < 0) break
+                        read += n
+                        if (frameEnd in 0..read && frameReadAt < 0) frameReadAt = testScheduler.currentTime
+                    }
+                    read
+                }
+            val started = testScheduler.currentTime
+            while (testScheduler.currentTime - started < 20_000) {
+                if (frameEnd < 0 && testScheduler.currentTime - started >= 10_000) {
+                    frameWrittenAt = testScheduler.currentTime
+                    ends.a.writeAll(frame)
+                    written += frame.size
+                    frameEnd = written
+                }
+                ends.a.writeAll(chunk)
+                written += chunk.size
+            }
+            done = true
+            assertEquals(written, reader.await())
+            val waited = frameReadAt - frameWrittenAt
+            assertTrue("the frame waited $waited ms", waited in 0..1_500)
+            // The bound holds the queue, not the bulk: it still runs at the bottleneck.
+            val bottleneck = LinkArq.MAX_PAYLOAD / 10.0
+            val rate = written.toDouble() / (testScheduler.currentTime - started)
+            assertTrue("${"%.1f".format(rate)} B/ms on a ${"%.1f".format(bottleneck)} B/ms path", rate > 0.9 * bottleneck)
+        }
+
+    @Test
     fun aPathThatLosesReordersAndDuplicatesStillDeliversEveryByteInOrder() =
         runTest {
             val ends = ends(delayMs = 30, jitterMs = 40, loss = 0.1, dup = 0.05)

@@ -38,6 +38,17 @@ import java.util.TreeMap
  * per smoothed round trip, doubled while the window is still growing from its start and a quarter over it after, so a
  * shallow queue on the path — an access point holding frames for a phone in power save — sees a stream, not a burst.
  *
+ * **The queue bound.** A deep queue on the path (a cellular uplink's buffer) loses nothing, so the window above grows to
+ * the receiver's whole limit, about half a megabyte, and a frame written behind a file waits for all of it: minutes, on
+ * a phone whose signal sank mid-file (2026-10-30, the P7's video). So what is in flight, and what a writer may queue
+ * ahead of the next byte written, is also held to [QUEUE_TARGET_MS] of the measured delivery rate, or to two of the
+ * smallest round trips where that is more (BBR's estimates: the rate the largest sample of the last [RATE_WINDOW_MS], one
+ * taken while the sender had little to send counting only when it raises it; the round trip the smallest of the stream's
+ * life). A writer is let past it only while fewer than [PACE_BURST] segments wait, so the pace always has some. Before
+ * the first sample the window alone bounds it. The bound stays above what the path holds while the round trip is under
+ * it, so it costs a bulk nothing there; a path whose own round trip passes it runs at the bound over that round trip.
+ * Sender-local: nothing on the wire changes.
+ *
  * **Receiving.** Segments are taken below the advertised limit ([window] past the last one read), held out of order
  * until the gap fills, and read in order. An ack goes at once for a segment out of order, a duplicate or an ASK, else
  * for every second segment or [ACK_DELAY_MS] after the first unacknowledged one. Reading a quarter of the window opens
@@ -104,6 +115,16 @@ class LinkArq(
     private var rttvar = 0.0
     private var latestRtt: Double? = null
 
+    // The queue bound's estimates: the smallest round trip measured, the delivery-rate samples of the last
+    // [RATE_WINDOW_MS] (bytes per ms, when each was taken), and the sample being measured — from when, from how many bytes
+    // acknowledged, and whether the sender had little to send meanwhile.
+    private var minRtt: Double? = null
+    private val rateAt = ArrayDeque<Long>()
+    private val rates = ArrayDeque<Double>()
+    private var rateFrom = -1L
+    private var rateFromAcked = 0L
+    private var rateAppLimited = false
+
     // The probe timer: expiries since the last ack that acknowledged anything, when it fires, and when the last segment
     // went (what it counts from). The time-threshold loss timer: when the oldest segment sent before an acked one is due.
     private var ptoCount = 0
@@ -148,7 +169,10 @@ class LinkArq(
 
     /** Seeds the round trip from the punch's, until the stream measures its own. */
     fun seedRtt(rttMs: Long) {
-        synchronized(lock) { if (srtt == null && rttMs > 0) setRtt(rttMs) }
+        synchronized(lock) {
+            if (srtt == null && rttMs > 0) setRtt(rttMs)
+            if (rttMs > 0) minRtt = minOf(minRtt ?: Double.MAX_VALUE, rttMs.toDouble())
+        }
     }
 
     fun stats(): Stats =
@@ -224,7 +248,10 @@ class LinkArq(
         return n
     }
 
-    /** Writes [len] bytes of [b], suspending while the send buffer is full; throws once the stream has ended. */
+    /**
+     * Writes [len] bytes of [b], suspending while the send buffer is full or the queue bound is reached; throws once the
+     * stream has ended.
+     */
     suspend fun write(
         b: ByteArray,
         off: Int,
@@ -233,10 +260,10 @@ class LinkArq(
         var at = off
         val end = off + len
         while (at < end) {
-            tick.first { synchronized(lock) { ended || ready.size < SEND_BUFFER } }
+            tick.first { synchronized(lock) { ended || roomToWrite(clock()) } }
             synchronized(lock) {
                 if (ended) throw IOException("link stream ended")
-                while (at < end && ready.size < SEND_BUFFER) {
+                while (at < end && roomToWrite(clock())) {
                     val n = minOf(end - at, MAX_PAYLOAD - partial.size())
                     partial.write(b, at, n)
                     at += n
@@ -328,6 +355,7 @@ class LinkArq(
         val newest = acked.maxBy { it.txn }
         if (newest.txn > highestAckedTxn) highestAckedTxn = newest.txn
         if (!newest.resent) sample(now - newest.sentAt)
+        sampleRate(now)
         // Growth only for what was sent since the last reduction, so one loss event is answered once.
         repeat(acked.count { it.sentAt > recoveryStart }) { cwnd += if (cwnd < ssthresh) 1.0 else 1.0 / cwnd }
         cwnd = cwnd.coerceAtMost(window.toDouble())
@@ -489,6 +517,8 @@ class LinkArq(
     // carrying the ack; else a bare ack when one is owed. Sent by the caller once the lock is released.
     private fun pump(now: Long): List<ByteArray> {
         val out = sendPaced(now)
+        // Little to send and the pipe half empty: a rate sample taken now measures the writer, not the path.
+        if (!hasToSend() && partial.size() == 0 && inFlight.size * 2 < sendLimit(now)) rateAppLimited = true
         askAt = if (stalledAtLimit()) askAt ?: (now + pto()) else null
         if (out.isEmpty() && ackNow) out += segment(null, EMPTY)
         armTimer()
@@ -500,7 +530,7 @@ class LinkArq(
     private fun sendPaced(now: Long): MutableList<ByteArray> {
         val out = ArrayList<ByteArray>()
         refill(now)
-        while (inFlight.size < cwnd.toInt() && hasToSend()) {
+        while (inFlight.size < sendLimit(now) && hasToSend()) {
             if (paceTokens < 1) {
                 paceAt = now + paceWaitMs()
                 return out
@@ -524,7 +554,58 @@ class LinkArq(
     private fun paceRate(): Double? {
         val rtt = srtt ?: return null
         val gain = if (cwnd < ssthresh) PACE_GAIN_GROWING else PACE_GAIN
-        return gain * cwnd / rtt.coerceAtLeast(1.0)
+        return gain * minOf(cwnd, queueBound(clock()).toDouble()) / rtt.coerceAtLeast(1.0)
+    }
+
+    // Under the lock: the most segments in flight — the window, held to the queue bound.
+    private fun sendLimit(now: Long): Int = minOf(cwnd.toInt(), queueBound(now))
+
+    // Under the lock: whether a writer may add a segment: the send buffer has room, and fewer than [PACE_BURST] wait or
+    // what waits and what is in flight is under the queue bound.
+    private fun roomToWrite(now: Long): Boolean =
+        ready.size < SEND_BUFFER && (ready.size < PACE_BURST || ready.size + inFlight.size + lost.size < queueBound(now))
+
+    // Under the lock: [QUEUE_TARGET_MS] of the delivery rate, or two of the smallest round trips of it where that is more,
+    // in segments and at least [PACE_BURST]; unbounded until the rate is measured.
+    private fun queueBound(now: Long): Int {
+        val rate = deliveryRate(now) ?: return Int.MAX_VALUE
+        val ms = maxOf(QUEUE_TARGET_MS.toDouble(), 2 * (minRtt ?: 0.0))
+        return maxOf(PACE_BURST, Math.ceil(rate * ms / MAX_PAYLOAD).toInt()) // toInt saturates
+    }
+
+    // Under the lock: the largest sample of the last [RATE_WINDOW_MS], in bytes per ms; the newest when all are older
+    // (a sender that had little to send since keeps what it last measured); null before the first.
+    private fun deliveryRate(now: Long): Double? {
+        while (rateAt.size > 1 && now - rateAt.first() > RATE_WINDOW_MS) {
+            rateAt.removeFirst()
+            rates.removeFirst()
+        }
+        return rates.maxOrNull()
+    }
+
+    // Under the lock: an ack acknowledged something. Once a round trip (at least [MIN_RATE_SAMPLE_MS]) has passed since the
+    // sample began, what was acknowledged over it is a delivery-rate sample: kept unless the sender had little to send
+    // meanwhile and it is under the rate, which it would only drag down to the writer's.
+    private fun sampleRate(now: Long) {
+        if (rateFrom < 0) return startRateSample(now)
+        val span = now - rateFrom
+        if (span < maxOf(MIN_RATE_SAMPLE_MS.toDouble(), minRtt ?: 0.0)) return
+        val sample = (bytesAcked - rateFromAcked).toDouble() / span
+        if (!rateAppLimited || sample >= (deliveryRate(now) ?: 0.0)) {
+            rateAt.addLast(now)
+            rates.addLast(sample)
+            if (rates.size > MAX_RATE_SAMPLES) {
+                rateAt.removeFirst()
+                rates.removeFirst()
+            }
+        }
+        startRateSample(now)
+    }
+
+    private fun startRateSample(now: Long) {
+        rateFrom = now
+        rateFromAcked = bytesAcked
+        rateAppLimited = false
     }
 
     // Under the lock: the bucket topped up for the time since it was last; it holds [PACE_BURST], or a timer tick's worth
@@ -597,6 +678,7 @@ class LinkArq(
     private fun sample(rttMs: Long) {
         val r = rttMs.coerceAtLeast(1).toDouble()
         latestRtt = r
+        minRtt = minOf(minRtt ?: Double.MAX_VALUE, r)
         val s = srtt ?: return setRtt(r.toLong())
         rttvar = (1 - RTT_BETA) * rttvar + RTT_BETA * Math.abs(s - r)
         srtt = (1 - RTT_ALPHA) * s + RTT_ALPHA * r
@@ -746,8 +828,23 @@ class LinkArq(
         /** Probe timeouts in a row after which the losses then found are persistent congestion. */
         const val PERSISTENT_PTOS = 3
 
-        /** The most segments that go back to back; the pace refills it. */
+        /** The most segments that go back to back; the pace refills it. Also the queue bound's floor. */
         const val PACE_BURST = 4
+
+        /**
+         * The queue bound (see the class): what is in flight and queued to send is held to this much of the delivery rate,
+         * or two smallest round trips of it where that is more — about the most a frame written behind a file waits.
+         */
+        const val QUEUE_TARGET_MS = 1_000L
+
+        /** How long a delivery-rate sample counts toward the rate: a path that slowed is read as slower after this. */
+        const val RATE_WINDOW_MS = 5_000L
+
+        /** The shortest span a delivery-rate sample is measured over, when the round trip is shorter. */
+        private const val MIN_RATE_SAMPLE_MS = 50L
+
+        /** The most delivery-rate samples kept, a bound in case a short round trip samples faster than the window drops. */
+        private const val MAX_RATE_SAMPLES = 128
 
         /** The pace over the window per round trip: doubled while the window grows from its start, a quarter over after. */
         private const val PACE_GAIN_GROWING = 2.0

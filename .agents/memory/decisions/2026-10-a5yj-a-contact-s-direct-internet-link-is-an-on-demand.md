@@ -656,3 +656,47 @@ fills from outside the view loops the same way, not only the author.
 
 `DirectLinkTransport.crossed` not counting a frame handed back to its author stays, as defence in depth: it still covers
 the first round after each link-up and each lapse, and a far end on an older build that re-pushes every round.
+
+## Amendment 2026-10-30 — the stream holds its queue to a second of what it delivers
+
+Status: draft (2026-10-30), for the maintainer's call. Built and JVM-checked
+(`LinkArqTest.aFrameWrittenBehindABulkOnADeepSlowPathWaitsAboutTheQueueBoundNotTheWindow`, which fails without it); the
+device trial is owed. Adds to the stream amendment; `docs/DIRECT_LINKS.md` L-6-5.
+
+The miss: on the 2026-10-30 trial (P9 on Wi-Fi, P7 on LTE at poor signal) the P7 sent the P9 a 3.3 MB attachment in
+about 12 s, then a 3 MB video while its signal sank to a few kilobytes a second. For six minutes nothing else from the
+P7 came out of the link, then sixteen chat frames in one second; two typing cues typed at 15:08:29 and 15:08:54 came
+out at 15:11:35. The relay carried the messages, the receipts and the cues meanwhile, and the router dropped the link's
+late copies, so nothing showed wrong, but the link carried nothing useful while a file crossed it. Nothing was lost: a
+cellular uplink's buffer is deep, so the window grew to the receiver's whole limit (512 segments, about 560 KB) and
+`SEND_BUFFER`'s 64 more waited behind it. `FramedLink` puts a frame between two file chunks, but the stream under it is
+one ordered queue, and every frame waited behind all of it. The link's liveness counts datagrams, and the P7 was
+sending, so the link read UP throughout.
+
+- **What is in flight, and what a writer may queue ahead of the next byte, is held to `LinkArq.QUEUE_TARGET_MS` (1 s)
+  of the measured delivery rate**, or two of the smallest round trips of it where that is more, and never under
+  `PACE_BURST` segments. The rate is the largest sample of the last 5 s, each taken over a round trip of acks; a
+  sample taken while the sender had little to send and its pipe was half empty counts only when it raises the rate. The
+  round trip is the smallest of the stream's life, so the bound cannot creep up on its own queue. A writer is let past
+  the bound while fewer than `PACE_BURST` segments wait, so the pace always has some. Before the first sample the window
+  alone bounds it, as before.
+- **A link feeds files in 4 KB chunks** (`DirectLinkTransport.LINK_CHUNK_BYTES`, through `FramedLink`'s pace with no
+  rate), so a frame queued mid-file waits for one small chunk to get past the bound, not 16 KB.
+- **Sender-local.** Nothing on the wire changes, and a peer that keeps its whole window in flight still interoperates.
+
+`FramedLink`'s feed window (ADR 2026-10.5buf) was the first thing reached for, and set aside: it was built for a
+Bluetooth stack's hidden queue, so it believes no drain over 64 KB/s and keeps no more than 64 KB written, which would
+hold a link to about a seventh of what it moved on Wi-Fi, and it needs the receiver's reports to see a queue this
+stream sees in its own acks. A delay-based controller in place of NewReno's window, and BBR's round-trip probe, were
+left for a later need.
+
+**The costs and the traps:**
+
+- A path whose own round trip passes the bound (over a second, with no queue of ours) runs at the bound over that round
+  trip, and the rate falls each window until the round trip comes back under it. The bound costs a bulk nothing below
+  that, which the stream's throughput tests check.
+- What is already in flight when a path slows sharply still drains at the new rate: the bound shrinks only what goes
+  after. A path that falls from about 270 KB/s to 4.5 KB/s still holds about a minute of the old second.
+- The link's liveness still counts datagrams, not progress, so a stream that has fallen behind is never closed or
+  routed around. The relay's copies carry the pair meanwhile, and a cue that arrives late on a link alone would show a
+  stale "typing…" for its 12 s.

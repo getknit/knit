@@ -30,7 +30,12 @@ and the entry is fixed.
   the session; the a5yj stream amendment chose ours on the iOS port's cost and names what would reopen it. A
   retransmission is a fresh lane seal, never a datagram sent twice. A segment is the link's data for the idle close, so
   a stream that moves nothing lets its link idle out. While no transport takes a link's stream (`onStream` unset),
-  `DirectLinks` drains it.
+  `DirectLinks` drains it. **Before touching `LinkArq.QUEUE_TARGET_MS` / `queueBound` / `sendLimit` / `roomToWrite` /
+  the delivery-rate sampling, or `DirectLinkTransport.LINK_CHUNK_BYTES`:** READ a5yj's 2026-10-30 amendment. What is in
+  flight and queued to send is held to about a second of the measured delivery rate, so a frame written behind a file
+  never waits for the whole window (a slow cellular uplink's deep buffer held texts back for minutes); the smallest round
+  trip is the stream's life's, so the bound cannot creep on its own queue. Don't swap in `FramedLink`'s feed window: it
+  is Bluetooth-sized (64 KB/s, 64 KB) and would cap a link at a seventh of its Wi-Fi rate.
 - **When touching `DirectLinkTransport`, `LinkPairFilter` / `LinkScope`, `TransportKind.DirectLink`,
   `MeshTransport.viaInternet`, `CompositeMeshTransport.shortRangeNeighbors` / `shortRangeLinked`,
   `DeliveryPlane.DirectLink`, `LinkSession.noteUse` / `dataIsUse`, `DirectLinks.noteUse` or `di/directLinkPlane`:**

@@ -21,6 +21,7 @@ import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkSocket
+import app.getknit.knit.mesh.link.PaceConfig
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -257,6 +258,10 @@ class DirectLinkTransport(
                 metrics = metrics,
                 callbacks = callbacks,
                 now = now,
+                // Unpaced, as the stream paces itself, but in small chunks: a frame queued mid-file waits for the chunk
+                // being written to get past the stream's queue bound (`LinkArq.QUEUE_TARGET_MS`), on a path that may move
+                // only a few kilobytes a second.
+                pace = { LINK_PACE },
                 log = log,
                 landing = landing,
             )
@@ -482,6 +487,11 @@ class DirectLinkTransport(
 
         /** How old a peer's shared groups may be when a frame they refuse is refused without reading them again. */
         const val GROUPS_REREAD_MS = 1_000L
+
+        /** The most file bytes one chunk carries over a link: about a second of a slow cellular uplink's. */
+        const val LINK_CHUNK_BYTES = 4 * 1024
+
+        private val LINK_PACE = PaceConfig(chunkBytes = LINK_CHUNK_BYTES)
 
         private const val INBOUND_BUFFER = 256
         private const val FILE_BUFFER = 32
