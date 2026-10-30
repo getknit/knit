@@ -17,6 +17,7 @@ import app.getknit.knit.ui.chatlist.ConversationListItemGroupPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemPendingPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemRoomPreview
 import app.getknit.knit.ui.chatlist.ConversationListItemSentPreview
+import app.getknit.knit.ui.chatlist.ConversationListItemTranslatedPreview
 import app.getknit.knit.ui.chatlist.GettingStartedCardPreview
 import app.getknit.knit.ui.chatlist.MeshOffBannerPausedPreview
 import app.getknit.knit.ui.chatlist.MeshOffBannerStoppedPreview
@@ -43,6 +44,11 @@ fun ConversationListItemDmLargeText() = ConversationListItemDmPreview()
 @ComponentShots
 @Composable
 fun ConversationListItemDelivered() = ConversationListItemDeliveredPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ConversationListItemTranslated() = ConversationListItemTranslatedPreview()
 
 @PreviewTest
 @ComponentShots

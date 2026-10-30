@@ -40,7 +40,8 @@ lines.
   (`TranslateLang`); the directions are generated (`scripts/translate-model.py --write`, never hand-edited), every one
   to or from English with no pivot. A translation is the reader's, on tap, into the reader's language
   (`TranslateTarget`, `ReaderLanguages`: Settings, then what they write, then the system list, never the app's
-  language), kept on the row (DB v27, `setTranslation` only), never on the wire and never logged; it is screened by
+  language), kept on the row (DB v27, `setTranslation` only; the chat list previews it behind `PreviewMark.Translated`),
+  never on the wire and never logged; it is screened by
   `ScopedTextModerator` in the message's scope. The author's own declaration (`lang` / `reads`, `LanguageRegistry`
   indices, append-only wire law) is the one thing carried: a label for the resolver and the composer's hint, never a
   trust input. Settings › Chats › Translation (`translationEnabled`, on by default) gates all of it: off, nothing is

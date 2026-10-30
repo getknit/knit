@@ -7,10 +7,12 @@ import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.reactionSnippet
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.reaction.ReactionHead
+import app.getknit.knit.location.GeoUri
 import app.getknit.knit.ui.ConversationTitle
 import app.getknit.knit.ui.MeshRoomInputs
 import app.getknit.knit.ui.chat.DeliveryStatus
@@ -113,6 +115,7 @@ internal class ChatListAssembler(
         val transferLine = if (reaction == null) transferLineFor(last) else null
         val callLine = last?.takeIf { it.kind == MessageEntity.KIND_CALL }?.let { callPreview(context, it) }
         val ownLine = reaction?.let { reactionLineFor(it, isDm) } ?: transferLine ?: callLine
+        val translated = translationLineFor(last, ownLine)
         val isGroup = thread.kind == ConversationKind.GROUP
         val row =
             ConversationRow(
@@ -122,8 +125,8 @@ internal class ChatListAssembler(
                 isRoom = thread.isRoom,
                 isGroup = isGroup,
                 faces = thread.faces,
-                lastPreview = previewLineFor(last, ownLine, isDm),
-                previewIsTransfer = transferLine != null,
+                lastPreview = previewLineFor(last, ownLine, isDm, translated?.text),
+                previewMark = previewMarkFor(transferLine, translated),
                 lastMessageAt = newestAt,
                 draft = draft,
                 unreadCount = 0, // filled in by the ViewModel from a per-thread count, once our own id is known
@@ -159,13 +162,52 @@ internal class ChatListAssembler(
 
     /**
      * The row's preview line: a reaction's, a transfer's or a call's own sentence when [ownLine] resolved one,
-     * else the "Sender: body" form.
+     * else the "Sender: body" form, its body [translated] when the reader translated it.
      */
     private fun previewLineFor(
         last: MessageEntity?,
         ownLine: String?,
         isDm: Boolean,
-    ): String? = ownLine ?: last?.let { previewFor(it, isDm) }
+        translated: String?,
+    ): String? = ownLine ?: last?.let { previewFor(it, isDm, translated) }
+
+    /** The mark ahead of the line: a transfer's, or a translation's when the line shows one. */
+    private fun previewMarkFor(
+        transferLine: String?,
+        translated: TranslationLine?,
+    ): PreviewMark? =
+        when {
+            transferLine != null -> PreviewMark.Transfer
+            translated?.from != null -> PreviewMark.Translated(translated.from)
+            else -> null
+        }
+
+    /**
+     * The line a translation kept on [message]'s row (ADR 2026-10.t2h6) puts in the body's place, as the bubble does:
+     * while Translation is on and the reader made one, unless the row speaks in a line of its own ([ownLine]). A body
+     * Content filtering hides keeps [messagePreview]'s line, and a translation it flagged reads as hidden too, with no
+     * mark, as a flagged body's line does.
+     */
+    private fun translationLineFor(
+        message: MessageEntity?,
+        ownLine: String?,
+    ): TranslationLine? {
+        if (message == null || ownLine != null) return null
+        val text = message.translation?.takeIf { s.inputs.showTranslations && it.isNotBlank() }
+        val from = message.translationFrom
+        val hide = s.inputs.hideFlagged
+        return when {
+            text == null || from == null || message.hiddenByFilter(hide) -> null
+            message.translationFlagged && hide -> TranslationLine(context.getString(R.string.moderation_preview_hidden), from = null)
+            else -> TranslationLine(GeoUri.describe(text, context.getString(R.string.chat_list_preview_location)), from)
+        }
+    }
+
+    /** A translation's preview body, and the language it came from; [from] is null when the line says it is hidden. */
+    private class TranslationLine(
+        val text: String,
+        val from: String?,
+    )
 
     /**
      * The transfer line for [last], or null when it is not a transfer row this build can read. Resolved
@@ -199,8 +241,9 @@ internal class ChatListAssembler(
     private fun previewFor(
         message: MessageEntity,
         isDm: Boolean,
+        translated: String?,
     ): String {
-        val body = messagePreview(context, message, s.inputs.hideFlagged)
+        val body = translated ?: messagePreview(context, message, s.inputs.hideFlagged)
         val speaker = speakerLabel(context, message, directory, me, isDm) ?: return body
         return context.getString(R.string.chat_list_preview_with_sender, speaker, body)
     }

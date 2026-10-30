@@ -294,7 +294,9 @@ what the other side says about its own language rather than only guess it from w
 - **Kept on the row**, as the bullet above proposed: DB v27 adds `translation`, `translationFrom`, `translationTo`,
   `translationFlagged` and `translationGuessed` to `messages`, written only by `MessageDao.setTranslation`, never by a
   whole-row save. The verdict is applied live against Content filtering, as `videoPosterFlagged` is. It rides a
-  backup with the row and stays out of `messages_fts`.
+  backup with the row and stays out of `messages_fts`. The chat list previews a translated head message as the bubble
+  shows it, the translation in the body's place behind the bubble's own Translate mark (`PreviewMark.Translated`), and
+  the row's spoken summary says "Translated from …" first. A flagged one reads as hidden while filtering, with no mark.
 - **Declared on the frame.** A sender says what the receiver cannot read off the message itself: the language they
   typed it in and the language they read. The receiver reads the words with its own CLD2, so the sender never spends
   bytes on that read. The receiver's translation is still never carried; this is the author's own statement.

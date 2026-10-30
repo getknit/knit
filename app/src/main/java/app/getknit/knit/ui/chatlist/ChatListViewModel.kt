@@ -24,6 +24,7 @@ import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshPause
@@ -75,9 +76,9 @@ data class ConversationRow(
     // a DM, a room, or a group with fewer than two others, which wears a tinted glyph instead.
     val faces: List<GroupFace> = emptyList(),
     val lastPreview: String?,
-    // Whether [lastPreview] is a direct transfer's line, so the row draws the feature's mark beside it
-    // rather than an emoji. The glyph itself stays in the UI layer; this only says which line it belongs to.
-    val previewIsTransfer: Boolean = false,
+    // The mark the row draws ahead of [lastPreview] when the words alone don't say what the line is: a direct
+    // transfer's, or a translation's. The glyph itself stays in the UI layer; this only says which line it is.
+    val previewMark: PreviewMark? = null,
     val lastMessageAt: Long?,
     val unreadCount: Int,
     val lastStatus: DeliveryStatus? = null,
@@ -95,6 +96,20 @@ data class ConversationRow(
     // the row itself stays only while a radio is bound (or history remains).
     val isBridged: Boolean = false,
 )
+
+/** The mark a row draws ahead of its preview line ([ConversationRow.previewMark]). */
+sealed interface PreviewMark {
+    /** A direct transfer's line: the feature's own mark, which no emoji looks like. */
+    data object Transfer : PreviewMark
+
+    /**
+     * The reader's translation of the message, kept on its row, in the body's place as the bubble shows it (ADR
+     * 2026-10.t2h6). [from] is the registry code of the language it was translated from, for the row's spoken summary.
+     */
+    data class Translated(
+        val from: String,
+    ) : PreviewMark
+}
 
 data class ChatListUiState(
     val conversations: List<ConversationRow> = emptyList(),
@@ -163,6 +178,9 @@ class ChatListViewModel(
     // Reactions to our own messages, for the row a reaction heads (ADR 2026-10.59fu). Nullable and last for the
     // same reason as [commons].
     private val reactions: ReactionRepository? = null,
+    // Settings › Chats › Translation, which shows a translation the reader made in its message's place; never on in a
+    // build without translation (TRANSLATE_WIRED). A parameter so a test can turn it on in either build.
+    translationOn: Flow<Boolean> = if (TRANSLATE_WIRED) settings.translationEnabled else flowOf(false),
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -184,6 +202,8 @@ class ChatListViewModel(
         val hideFlagged: Boolean = false,
         /** Per thread, the newest reaction someone made to a message we wrote (ADR 2026-10.59fu). */
         val reactions: Map<String, ReactionHead> = emptyMap(),
+        /** Translation is on, so a newest message the reader translated previews as its translation (ADR 2026-10.t2h6). */
+        val showTranslations: Boolean = false,
     )
 
     // Neighbor count + radio health + the (already-dismissal-aware) banner + Internet-plane state, folded
@@ -220,12 +240,14 @@ class ChatListViewModel(
     private val draftsAndTransfers =
         combine(drafts.all, transfers.states, reactionHeads) { draftRows, live, heads -> Triple(draftRows, live, heads) }
 
-    // Paired for the same reason: the joined commons and whether content filtering hides a flagged preview.
-    private val roomsAndFilter =
+    // Grouped for the same reason: the joined commons, whether content filtering hides a flagged preview, and
+    // whether Translation is on.
+    private val roomsAndFilters =
         combine(
             commons?.observeAll() ?: flowOf(emptyList()),
             settings.contentFilteringEnabled.distinctUntilChanged(),
-        ) { rooms, hideFlagged -> rooms to hideFlagged }
+            translationOn.distinctUntilChanged(),
+        ) { rooms, hideFlagged, translated -> Triple(rooms, hideFlagged, translated) }
 
     // Per-thread summaries for every conversation, blocked senders left out of each (so a blocked peer's
     // message never becomes a row's preview, and their DM thread is dropped below).
@@ -239,9 +261,9 @@ class ChatListViewModel(
             groups.observeGroups(),
             draftsAndTransfers,
             messages.observeNewestOriginChannel(Conversations.MESHTASTIC).distinctUntilChanged(),
-            roomsAndFilter,
-        ) { accepted, groupList, (draftRows, live, heads), channel, (rooms, hideFlagged) ->
-            ListInputs(accepted, groupList, draftRows, live, channel, rooms, hideFlagged, heads)
+            roomsAndFilters,
+        ) { accepted, groupList, (draftRows, live, heads), channel, (rooms, hideFlagged, translated) ->
+            ListInputs(accepted, groupList, draftRows, live, channel, rooms, hideFlagged, heads, showTranslations = translated)
         }
 
     // Radio-off banner: which warning the per-radio statuses imply, and whether the user has dismissed it.

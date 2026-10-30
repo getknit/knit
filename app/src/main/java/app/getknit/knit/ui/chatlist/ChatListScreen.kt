@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -91,6 +92,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.deliveryIcon
 import app.getknit.knit.ui.chat.deliveryLabel
@@ -113,6 +115,7 @@ import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.signout.SignOut
 import app.getknit.knit.ui.signout.SignOutDialog
 import app.getknit.knit.ui.theme.KnitMotion
+import app.getknit.knit.ui.translate.languageName
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.relativeTimeLabels
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
@@ -614,8 +617,17 @@ internal fun ConversationListItem(
         // No counts here on purpose: the list would have to load every thread's roster and receipt tallies
         // to describe one glyph. Omitting them yields exactly today's wording (see deliveryLabel).
         row.lastStatus?.let { deliveryLabel(it, row.lastDeliveredVia, mine = true).resolve() }
+    val mark = row.previewMark?.takeIf { row.draft == null }
+    // A transfer's line says what it is; a translation's reads like the message itself, so the summary says so first.
+    val spokenMark =
+        (mark as? PreviewMark.Translated)?.let {
+            stringResource(
+                R.string.translate_label,
+                languageName(TranslateLang(it.from)),
+            )
+        }
     val rowDescription =
-        listOfNotNull(row.title, preview, spokenTime, spokenStatus, spokenUnread).joinToString(", ")
+        listOfNotNull(row.title, spokenMark, preview, spokenTime, spokenStatus, spokenUnread).joinToString(", ")
     val deleteLabel = stringResource(R.string.chat_list_delete_action)
 
     Box(modifier = modifier) {
@@ -657,16 +669,22 @@ internal fun ConversationListItem(
                 )
                 Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // The feature's own mark, the same one the "Send a file directly" menu item carries, so a
-                    // transfer reads as a transfer wherever it appears. A leading Icon rather than an emoji in
-                    // the string (the way 📷/📎 previews do it): no emoji looks like this glyph, and one in the
-                    // line would also be read aloud — "satellite antenna" — inside the row's spoken summary.
-                    // Outside the Text so it survives the ellipsis; the sentence is what should truncate.
-                    // Never over a draft, which speaks for the row in place of the preview entirely.
-                    if (row.previewIsTransfer && row.draft == null) {
+                    // The feature's own mark, the same one the "Send a file directly" menu item or a translated
+                    // bubble carries, so a transfer or a translation reads as one wherever it appears. A leading
+                    // Icon rather than an emoji in the string (the way 📷/📎 previews do it): no emoji looks like
+                    // these glyphs, and one in the line would also be read aloud — "satellite antenna" — inside
+                    // the row's spoken summary. Outside the Text so it survives the ellipsis; the sentence is
+                    // what should truncate. Never over a draft, which speaks for the row in place of the preview
+                    // entirely.
+                    if (mark != null) {
                         Icon(
-                            imageVector = KnitIcons.DirectTransfer,
-                            // Decorative: the line beside it already says a file is on the move.
+                            imageVector =
+                                when (mark) {
+                                    PreviewMark.Transfer -> KnitIcons.DirectTransfer
+                                    is PreviewMark.Translated -> Icons.Filled.Translate
+                                },
+                            // Decorative: the line beside it already says a file is on the move, and the row's
+                            // summary says a translation is one (spokenMark).
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),
@@ -849,6 +867,29 @@ fun ConversationListItemDmPreview() =
                     lastPreview = "See you at the meetup tonight!",
                     lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
                     unreadCount = 2,
+                ),
+            now = PREVIEW_NOW,
+            onClick = {},
+        )
+    }
+
+/** A DM whose newest message the reader translated: the translation in the body's place, behind its mark. */
+@Preview(showBackground = true)
+@Composable
+fun ConversationListItemTranslatedPreview() =
+    KnitPreview {
+        ConversationListItem(
+            row =
+                ConversationRow(
+                    id = "dm-1",
+                    title = "Ada Lovelace",
+                    avatarHash = null,
+                    isRoom = false,
+                    isGroup = false,
+                    lastPreview = "See you at the meetup tonight!",
+                    previewMark = PreviewMark.Translated("es"),
+                    lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
+                    unreadCount = 1,
                 ),
             now = PREVIEW_NOW,
             onClick = {},

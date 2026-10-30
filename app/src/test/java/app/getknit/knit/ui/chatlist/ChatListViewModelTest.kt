@@ -120,6 +120,7 @@ class ChatListViewModelTest {
         every { settings.meshPausedUntil } returns pausedUntilFlow
         every { settings.meshEnabled } returns meshEnabledFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
+        every { settings.translationEnabled } returns MutableStateFlow(true)
     }
 
     @After

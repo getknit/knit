@@ -40,9 +40,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -86,6 +84,7 @@ class ChatListTransferPreviewTest {
         every { settings.lastReadAll } returns MutableStateFlow(emptyMap())
         every { settings.acceptedConversations } returns MutableStateFlow(emptySet())
         every { settings.contentFilteringEnabled } returns MutableStateFlow(true)
+        every { settings.translationEnabled } returns MutableStateFlow(true)
         // The clone notice's stamps (ADR 2026-09.ypcc): a relaxed mock's Flow never emits and stalls the combine.
         every { settings.cloneSeenAt } returns MutableStateFlow(0L)
         every { settings.cloneDismissedAt } returns MutableStateFlow(0L)
@@ -180,7 +179,7 @@ class ChatListTransferPreviewTest {
                 vm.state.value.conversations
                     .first { it.id == "bob" }
             assertEquals("Received clip.mp4", row.lastPreview)
-            assertTrue("so the row draws the feature's mark beside it", row.previewIsTransfer)
+            assertEquals("so the row draws the feature's mark beside it", PreviewMark.Transfer, row.previewMark)
             assertEquals("the row's time moves with it", 100L, row.lastMessageAt)
             assertNull(row.lastStatus)
             assertEquals("only the real message counts", 1, row.unreadCount)
@@ -188,10 +187,10 @@ class ChatListTransferPreviewTest {
             // A row whose newest thing is an ordinary message wears no mark.
             store.add(msg(senderId = "bob", sentAt = 200, conversationId = "bob", body = "thanks"))
             advanceUntilIdle()
-            assertFalse(
+            assertNull(
                 vm.state.value.conversations
                     .first { it.id == "bob" }
-                    .previewIsTransfer,
+                    .previewMark,
             )
         }
 
@@ -211,7 +210,7 @@ class ChatListTransferPreviewTest {
                 vm.state.value.conversations
                     .first { it.id == "bob" }
             assertEquals("Missed call", row.lastPreview)
-            assertFalse(row.previewIsTransfer)
+            assertNull(row.previewMark)
             assertEquals(100L, row.lastMessageAt)
             assertNull(row.lastStatus)
             assertEquals("only the real message counts", 1, row.unreadCount)
