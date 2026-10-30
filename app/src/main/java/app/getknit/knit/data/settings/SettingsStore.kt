@@ -24,7 +24,7 @@ import kotlinx.coroutines.flow.map
  * SharedPreferences). Holds the profile/mesh toggles and per-conversation read state. (The node id is
  * no longer persisted here — it is derived from the E2E keypair; see [app.getknit.knit.identity.Identity].)
  */
-@Suppress("TooManyFunctions") // one small setter per key, over the one DataStore file; splitting would relocate, not clarify
+@Suppress("TooManyFunctions", "LargeClass") // one small setter per key, over the one DataStore file; splitting would relocate, not clarify
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
 ) : InboundSettings,
