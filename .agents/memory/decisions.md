@@ -215,6 +215,7 @@ carries; never renumber an old one.
 | [2026-10.3y2s](decisions/2026-10-3y2s-the-knit-watch-face-is-a-wff-v4-face-fed-by-a-ring-complication.md) | The Knit watch face is a WFF v4 face fed by a ring complication | wear, ui |
 | [2026-10.47rw](decisions/2026-10-47rw-a-keystore-refusal-is-not-proof-a-secret-is-gone.md) | A Keystore refusal is not proof a secret is gone | crypto, storage, reliability |
 | [2026-10.486r](decisions/2026-10-486r-instant-communication-mode-stands-down-for-bluetooth-audio-and-a-lonely-phone.md) | Instant Communication Mode stands down for Bluetooth audio and a lonely phone, and matches the Wi-Fi channel | wifi-aware, battery, reliability |
+| [2026-10.4cyt](decisions/2026-10-4cyt-search-in-this-chat-is-the-search-screen-scoped-to-one-thread.md) | Search in this chat is the search screen scoped to one thread, and its hit is handed back to the open thread | ui, search, navigation |
 | [2026-10.59fu](decisions/2026-10-59fu-a-reaction-to-your-message-notifies-and-can-head-the-chat-list.md) | A reaction to your message notifies and can head the chat list | ui, notifications, receipts |
 | [2026-10.5buf](decisions/2026-10-5buf-a-bluetooth-file-feed-is-clocked-by-its-receiver-s-reports.md) | A Bluetooth file feed is clocked by its receiver's reports | ble, mesh, blobs |
 | [2026-10.5hzt](decisions/2026-10-5hzt-a-transfer-s-ready-is-sent-until-the-receiver-connects.md) | A transfer's READY is sent until the receiver connects, and a send that ended short is retried from its card | transfer, ui |

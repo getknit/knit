@@ -741,6 +741,8 @@
     <string name="search_idle">Finde einen Chat, eine Person oder etwas, das jemand gesagt hat.</string>
     <string name="search_keep_typing">Gib weitere Zeichen ein, um Nachrichten zu durchsuchen</string>
     <string name="search_empty">Keine Ergebnisse für „%1$s“</string>
+    <string name="search_in_chat_hint">In diesem Chat suchen</string>
+    <string name="search_in_chat_idle">Finde etwas, das jemand in diesem Chat gesagt hat.</string>
     <string name="settings_title">Einstellungen</string>
     <string name="profile_title">Profil</string>
     <string name="profile_display_name_label">Anzeigename</string>

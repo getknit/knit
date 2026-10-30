@@ -133,7 +133,15 @@ private object Routes {
     const val LORA_RADIO = "lora"
     const val CALLS = "calls"
     const val SHARE = "share"
-    const val SEARCH = "search"
+
+    // The optional `in` scopes the search to one thread — "Search" in a chat's overflow. Its hit is handed back
+    // to that chat's entry under SEARCH_HIT rather than opening a second one (ADR 2026-10.4cyt).
+    const val SEARCH = "search?in={in}"
+
+    fun search(inConversation: String? = null) = if (inConversation == null) "search" else "search?in=${Uri.encode(inConversation)}"
+
+    /** The saved-state key a scoped search hands its hit's message id back to the open chat under. */
+    const val SEARCH_HIT = "searchHit"
     const val ABOUT = "about"
     const val LICENSES = "licenses"
     const val WHATS_NEW = "whatsNew"
@@ -429,7 +437,7 @@ fun KnitApp(startRoute: String? = null) {
                 LaunchedEffect(Unit) { reviewPrompter.maybePrompt() }
                 ChatListScreen(
                     onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
-                    onSearch = { navController.navigate(Routes.SEARCH) },
+                    onSearch = { navController.navigate(Routes.search()) },
                     onNewMessage = { navController.navigate(Routes.CONTACTS) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                     onOpenYourMesh = { navController.navigate(Routes.YOUR_MESH) },
@@ -472,14 +480,37 @@ fun KnitApp(startRoute: String? = null) {
                     },
                 )
             }
-            composable(Routes.SEARCH) { entry ->
+            composable(
+                route = Routes.SEARCH,
+                arguments =
+                    listOf(
+                        navArgument("in") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+            ) { entry ->
+                val inConversation = entry.arguments?.getString("in")
                 SearchScreen(
+                    inConversation = inConversation,
                     onBack = { navController.popFrom(entry) },
                     // A plain navigate on purpose: the search entry — and its ViewModel, which holds the query —
                     // stays under the thread, so Back returns to the results as they were. No launchSingleTop,
                     // for the reason spelled out on the notification deep link above.
                     onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
-                    onOpenMessage = { id, messageId -> navController.navigate(Routes.chat(id, messageId)) },
+                    onOpenMessage = { id, messageId ->
+                        if (inConversation == null) {
+                            navController.navigate(Routes.chat(id, messageId))
+                        } else {
+                            // Scoped: the thread is the entry underneath. Hand the hit back to it and pop, never
+                            // navigate — a second entry for the same thread races the first over its draft.
+                            navController.ifOnTop(entry) {
+                                previousBackStackEntry?.savedStateHandle?.set(Routes.SEARCH_HIT, messageId)
+                                popBackStack()
+                            }
+                        }
+                    },
                 )
             }
             composable(
@@ -497,10 +528,16 @@ fun KnitApp(startRoute: String? = null) {
                 // conversationId is the Nearby room, a peer's node id (a 1:1 DM), or a group id.
                 val conversationId =
                     backStackEntry.arguments?.getString("conversationId") ?: Conversations.NEARBY
+                val handedJump by backStackEntry.savedStateHandle
+                    .getStateFlow<String?>(Routes.SEARCH_HIT, null)
+                    .collectAsStateWithLifecycle()
                 ChatScreen(
                     conversationId = conversationId,
                     // Navigation hands the value back decoded.
                     jumpToMessageId = backStackEntry.arguments?.getString("messageId"),
+                    handedJumpId = handedJump,
+                    onHandedJumpConsumed = { backStackEntry.savedStateHandle.remove<String>(Routes.SEARCH_HIT) },
+                    onSearch = { navController.navigate(Routes.search(conversationId)) },
                     onBack = { navController.popFrom(backStackEntry) },
                     onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     onOpenGroupDetails = { id -> navController.navigate(Routes.groupDetails(id)) },

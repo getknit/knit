@@ -2,6 +2,7 @@ package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
 import app.getknit.knit.ui.search.SearchScreenIdlePreview
+import app.getknit.knit.ui.search.SearchScreenInChatPreview
 import app.getknit.knit.ui.search.SearchScreenNoResultsPreview
 import app.getknit.knit.ui.search.SearchScreenResultsPreview
 import com.android.tools.screenshot.PreviewTest
@@ -17,6 +18,11 @@ fun SearchScreenIdle() = SearchScreenIdlePreview()
 @ScreenShots
 @Composable
 fun SearchScreenResults() = SearchScreenResultsPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun SearchScreenInChat() = SearchScreenInChatPreview()
 
 @PreviewTest
 @ScreenShots

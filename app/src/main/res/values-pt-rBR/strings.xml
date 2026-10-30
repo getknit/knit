@@ -753,6 +753,8 @@
     <string name="search_idle">Encontre uma conversa, uma pessoa ou algo que alguém disse.</string>
     <string name="search_keep_typing">Continue digitando para pesquisar mensagens</string>
     <string name="search_empty">Nenhum resultado para “%1$s”</string>
+    <string name="search_in_chat_hint">Pesquisar nesta conversa</string>
+    <string name="search_in_chat_idle">Encontre algo que alguém disse nesta conversa.</string>
     <string name="settings_title">Configurações</string>
     <string name="profile_title">Perfil</string>
     <string name="profile_display_name_label">Nome de exibição</string>

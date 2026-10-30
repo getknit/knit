@@ -33,6 +33,8 @@ document:
   versions of Knit, and Knit for iPhone for now, show the message as plain text.
 - Long-press a message and pick Pin message to keep it in a bar under the chat's name, where a tap jumps back
   to it. Each chat holds three pins, and for now they stay on your phone: nobody else in the chat sees them.
+- The menu at the top of every chat now has Search, which looks only through that chat's messages. Tapping a
+  result takes you back to that message.
 - You can now see when a contact or group member is typing over an internet relay, and they can see when you
   are. A new Typing indicators switch in Settings › Chats turns this off both ways.
 - Stable releases on GitHub now include a slim APK, about 49 MB smaller, that leaves out internet relays,

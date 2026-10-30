@@ -88,7 +88,12 @@ lines.
   no-VACUUM invariants) and ADR 2026-09.wnh6 (one screen over the chat list's own universe — its
   membership, titles, speaker and contacts rules live in those two shared files so search cannot drift
   from the list; a hit opens the thread through `chat/{id}?messageId=` and the quote-jump machinery,
-  never a second thread view). "Search in this chat" is deferred — CHECK `.agents/memory/roadmap.md`.
+  never a second thread view).
+  **When touching the `search?in=` route, `Routes.SEARCH_HIT`, `SearchViewModel.inConversation`, ChatScreen's
+  `handedJumpId` or the overflow's Search item:** READ ADR 2026-10.4cyt — "Search in this chat" is the same screen
+  scoped to one thread (Messages only, still inside the list's universe); a hit is handed back through the previous
+  entry's `savedStateHandle` and popped, never `navigate(chat(id, messageId))`, and the hand-back is cleared as it is
+  taken rather than guarded by `consumedJump`, so the same message found twice jumps twice.
 - **When touching `data/ImageStrip` or `AttachmentStore.passThrough`:** READ ADR 2026-10.unqn — a picture already
   bounded, upright and no sharper than the q85 re-encode goes out as its own bytes with the metadata stripped, so the
   "no GPS leaves the phone" invariant rests on the strip's allow-list: anything it does not fully understand answers

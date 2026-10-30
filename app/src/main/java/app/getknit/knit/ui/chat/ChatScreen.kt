@@ -97,6 +97,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -331,6 +332,11 @@ fun ChatScreen(
     onOpenCommonsDetails: (conversationId: String) -> Unit = {},
     // The message a search hit opened the thread on, or null to open at the newest — see ChatScreenContent.
     jumpToMessageId: String? = null,
+    // A hit handed back by this thread's own scoped search (ADR 2026-10.4cyt), and the call that clears it once used.
+    handedJumpId: String? = null,
+    onHandedJumpConsumed: () -> Unit = {},
+    // "Search" in the overflow: the search screen scoped to this thread.
+    onSearch: () -> Unit = {},
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -732,6 +738,9 @@ fun ChatScreen(
         onLoadOlder = viewModel::loadOlder,
         onRevealMessage = viewModel::revealMessage,
         jumpToMessageId = jumpToMessageId,
+        handedJumpId = handedJumpId,
+        onHandedJumpConsumed = onHandedJumpConsumed,
+        onSearch = onSearch,
         onDismissRelayNotice = viewModel::dismissRelayNotice,
         voiceRecording = voiceRecording,
         voicePlayback = voicePlayback,
@@ -1011,6 +1020,13 @@ internal fun ChatScreenContent(
     // the window is widened to reach it (`onRevealMessage`) and the quote-jump machinery below scrolls and
     // flashes it once the rows hold it. Defaulted so previews and the content-level tests need not name it.
     jumpToMessageId: String? = null,
+    // A hit this thread's scoped search handed back (ADR 2026-10.4cyt): jumped to like [jumpToMessageId], then cleared
+    // through `onHandedJumpConsumed`, so the same message found again jumps again. Defaulted like the jump above.
+    handedJumpId: String? = null,
+    onHandedJumpConsumed: () -> Unit = {},
+    // The overflow's "Search": this thread's scoped search. Defaulted so previews and the content-level tests need not
+    // name it.
+    onSearch: () -> Unit = {},
     // This thread's pinned messages, newest pin first, and the long-press Pin / Unpin and the bar's unpin (#42), each
     // passing the state it wants so a repeated tap is a no-op. Null offers no Pin; both defaulted so previews and the
     // content-level tests need not name them.
@@ -1138,6 +1154,17 @@ internal fun ChatScreenContent(
         val target = jumpToMessageId ?: return@LaunchedEffect
         if (target == consumedJump) return@LaunchedEffect
         consumedJump = target
+        onRevealMessage(target)
+        pendingQuoteTarget = target
+    }
+
+    // A hit from this thread's own scoped search, handed back through the entry's saved state rather than the route
+    // (ADR 2026-10.4cyt). Not behind consumedJump: the hand-over is cleared as it is taken, which makes it one-shot by
+    // itself — and the guard would refuse the same message found twice. Uncleared, it outlives a process death and
+    // jumps on restore, as the route's argument does.
+    LaunchedEffect(handedJumpId) {
+        val target = handedJumpId ?: return@LaunchedEffect
+        onHandedJumpConsumed()
         onRevealMessage(target)
         pendingQuoteTarget = target
     }
@@ -1351,13 +1378,14 @@ internal fun ChatScreenContent(
                     }
                 },
                 actions = {
-                    // The overflow lives on DM and group threads and the Nearby room. Every one of them offers
+                    // The overflow lives on every thread, and every one offers "Search" first: the search screen
+                    // scoped to this thread (ADR 2026-10.4cyt). Every thread but the bridged room then offers
                     // "Send location" (ADR 2026-09.tss4) — from here rather than a pin in the message field, so
                     // the field keeps to the mic and the paperclip and a position is a deliberate reach, not a
                     // thumb-slip away from the keyboard. Then a DM offers Block/Unblock; a group offers Settings,
                     // which opens the same group-details screen as tapping the group avatar (the avatar tap
-                    // stays too); a commons offers its room details the same way. The bridged room has no menu at
-                    // all: it carries no position (a text-only channel), and it has no peer to block — its authors
+                    // stays too); a commons offers its room details the same way. The bridged room offers Search
+                    // alone: it carries no position (a text-only channel), and it has no peer to block — its authors
                     // are not peers, and blocking the gateway would silence a contact over somebody else's post.
                     // The call this chat puts first sits in the bar and the other in the overflow (§3.11): the live one
                     // while a live path looks possible, the mesh one while none does — or always, while the person
@@ -1371,110 +1399,117 @@ internal fun ChatScreenContent(
                             CallButton(callGate, Icons.Filled.Call, R.string.chat_call, "chat_call", onStartCall)
                         }
                     }
-                    if (!state.isBridged) {
-                        Box {
-                            IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
-                                Icon(
-                                    Icons.Filled.MoreVert,
-                                    contentDescription = stringResource(R.string.chat_more_options),
+                    Box {
+                        IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = stringResource(R.string.chat_more_options),
+                            )
+                        }
+                        // Not focusable: a focusable popup takes focus from the message field, so the keyboard
+                        // drops while the menu is open and springs back when it closes. A non-focusable popup
+                        // gets no Back, so the screen closes the menu itself before Back leaves the chat.
+                        BackHandler(enabled = headerMenuOpen) { headerMenuOpen = false }
+                        DropdownMenu(
+                            expanded = headerMenuOpen,
+                            onDismissRequest = { headerMenuOpen = false },
+                            properties = PopupProperties(focusable = false),
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.search_title)) },
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                modifier = Modifier.testTag("chat_search"),
+                                onClick = {
+                                    headerMenuOpen = false
+                                    onSearch()
+                                },
+                            )
+                            // Gone while a position is staged: the tile above the field already carries
+                            // Refresh, and a second entry that restarted the same fix would only look like
+                            // it did something else.
+                            if (stagedLocation == null && !state.commonsStale && !state.isBridged) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.chat_attach_location)) },
+                                    leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
+                                    modifier = Modifier.testTag("chat_send_location"),
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        onLocationClick()
+                                    },
                                 )
                             }
-                            // Not focusable: a focusable popup takes focus from the message field, so the keyboard
-                            // drops while the menu is open and springs back when it closes. A non-focusable popup
-                            // gets no Back, so the screen closes the menu itself before Back leaves the chat.
-                            BackHandler(enabled = headerMenuOpen) { headerMenuOpen = false }
-                            DropdownMenu(
-                                expanded = headerMenuOpen,
-                                onDismissRequest = { headerMenuOpen = false },
-                                properties = PopupProperties(focusable = false),
-                            ) {
-                                // Gone while a position is staged: the tile above the field already carries
-                                // Refresh, and a second entry that restarted the same fix would only look like
-                                // it did something else.
-                                if (stagedLocation == null && !state.commonsStale) {
+                            // The room's menu ends there: nobody to block, nothing to configure.
+                            if (state.isCommons) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.commons_details_title)) },
+                                    leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                                    modifier = Modifier.testTag("chat_commons_details"),
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        onOpenCommonsDetails(conversationId)
+                                    },
+                                )
+                            } else if (state.isGroup) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.chat_group_settings)) },
+                                    leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                    modifier = Modifier.testTag("chat_group_settings"),
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        onOpenGroupDetails(conversationId)
+                                    },
+                                )
+                            } else if (!state.isRoom && !state.isBridged) {
+                                // The call the top bar does not show (§3.11), where the build offers both.
+                                if (callGate?.hasMicrophone == true && state.canCall && state.canMeshCall) {
                                     DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_attach_location)) },
-                                        leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
-                                        modifier = Modifier.testTag("chat_send_location"),
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            onLocationClick()
-                                        },
-                                    )
-                                }
-                                // The room's menu ends there: nobody to block, nothing to configure.
-                                if (state.isCommons) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.commons_details_title)) },
-                                        leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
-                                        modifier = Modifier.testTag("chat_commons_details"),
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            onOpenCommonsDetails(conversationId)
-                                        },
-                                    )
-                                } else if (state.isGroup) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_group_settings)) },
-                                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                                        modifier = Modifier.testTag("chat_group_settings"),
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            onOpenGroupDetails(conversationId)
-                                        },
-                                    )
-                                } else if (!state.isRoom) {
-                                    // The call the top bar does not show (§3.11), where the build offers both.
-                                    if (callGate?.hasMicrophone == true && state.canCall && state.canMeshCall) {
-                                        DropdownMenuItem(
-                                            text = { Text(stringResource(if (meshFirst) R.string.chat_call else R.string.chat_mesh_call)) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    if (meshFirst) Icons.Filled.Call else Icons.Filled.WifiCalling3,
-                                                    contentDescription = null,
-                                                )
-                                            },
-                                            modifier = Modifier.testTag(if (meshFirst) "chat_call_menu" else "chat_mesh_call_menu"),
-                                            onClick = {
-                                                headerMenuOpen = false
-                                                callGate.runOrRequest(if (meshFirst) onStartCall else onStartMeshCall)
-                                            },
-                                        )
-                                    }
-                                    // A direct transfer rides a one-shot Wi-Fi Direct link, not the mesh, so it is
-                                    // a DM affair: one peer, in range, running a build that answers.
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_send_large_file)) },
-                                        leadingIcon = { Icon(KnitIcons.DirectTransfer, contentDescription = null) },
-                                        modifier = Modifier.testTag("chat_send_large_file"),
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            onSendFileDirectly()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                stringResource(
-                                                    if (state.isBlocked) {
-                                                        R.string.chat_action_unblock
-                                                    } else {
-                                                        R.string.chat_action_block
-                                                    },
-                                                ),
+                                        text = { Text(stringResource(if (meshFirst) R.string.chat_call else R.string.chat_mesh_call)) },
+                                        leadingIcon = {
+                                            Icon(
+                                                if (meshFirst) Icons.Filled.Call else Icons.Filled.WifiCalling3,
+                                                contentDescription = null,
                                             )
                                         },
-                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                        modifier = Modifier.testTag(if (meshFirst) "chat_call_menu" else "chat_mesh_call_menu"),
                                         onClick = {
                                             headerMenuOpen = false
-                                            if (state.isBlocked) {
-                                                onUnblock(conversationId)
-                                            } else {
-                                                onBlock(conversationId)
-                                            }
+                                            callGate.runOrRequest(if (meshFirst) onStartCall else onStartMeshCall)
                                         },
                                     )
                                 }
+                                // A direct transfer rides a one-shot Wi-Fi Direct link, not the mesh, so it is
+                                // a DM affair: one peer, in range, running a build that answers.
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.chat_send_large_file)) },
+                                    leadingIcon = { Icon(KnitIcons.DirectTransfer, contentDescription = null) },
+                                    modifier = Modifier.testTag("chat_send_large_file"),
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        onSendFileDirectly()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (state.isBlocked) {
+                                                    R.string.chat_action_unblock
+                                                } else {
+                                                    R.string.chat_action_block
+                                                },
+                                            ),
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        if (state.isBlocked) {
+                                            onUnblock(conversationId)
+                                        } else {
+                                            onBlock(conversationId)
+                                        }
+                                    },
+                                )
                             }
                         }
                     }

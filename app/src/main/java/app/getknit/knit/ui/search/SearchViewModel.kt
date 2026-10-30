@@ -104,6 +104,9 @@ data class SearchUiState(
  * copy of it, so a keystroke never waits on a search, and a newer query cancels a search still running.
  * [SearchUiState.isSearching] is derived from the two rather than toggled around the work, so a cancelled
  * search can never leave it stuck.
+ *
+ * Given [inConversation], it is "Search in this chat" (ADR 2026-10.4cyt): Messages alone, from that one thread —
+ * and only while the list would show it, so a request thread or a blocked peer's answers nothing here either.
  */
 class SearchViewModel(
     private val messages: MessageRepository,
@@ -118,6 +121,8 @@ class SearchViewModel(
     @field:SuppressLint("StaticFieldLeak") private val context: Context,
     // The joined commons (§7.4), so a room's posts search like a group's. Nullable and last for the test rigs.
     commons: CommonsRepository? = null,
+    /** The one thread this search is scoped to, or null for app-wide. */
+    val inConversation: String? = null,
 ) : ViewModel() {
     /** The field's text, exactly as typed. */
     val query = MutableStateFlow("")
@@ -198,6 +203,9 @@ class SearchViewModel(
         if (tokens.isEmpty()) return SearchUiState(forQuery = s.query)
         val visible =
             visibleConversations(context, s.table, s.inputs.groups, s.directory, s.inputs.accepted, s.inputs.meshRoom, s.inputs.commons)
+        if (inConversation != null) {
+            return SearchUiState(forQuery = s.query, messages = messagesFor(s, visible.filter { it.id == inConversation }, tokens))
+        }
         return SearchUiState(
             forQuery = s.query,
             chats = chatsFor(visible, tokens),

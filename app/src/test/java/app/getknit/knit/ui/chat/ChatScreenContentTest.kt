@@ -49,6 +49,7 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -74,6 +75,7 @@ class ChatScreenContentTest {
     private var files = 0
     private var clearedLocations = 0
     private var locationClicks = 0
+    private var searches = 0
     private var accepts = 0
     private var consentsAccepted = 0
     private val downloads = mutableListOf<String>()
@@ -93,6 +95,10 @@ class ChatScreenContentTest {
         // A search hit to open the thread on, and the reveal it asks for when the window has not reached it.
         jumpToMessageId: String? = null,
         onRevealMessage: (String) -> Unit = {},
+        // A hit handed back by the thread's own scoped search, read inside the composition so a test can hand one
+        // over a running screen, and the clear it is answered with.
+        handedJumpId: (() -> String?)? = null,
+        onHandedJumpConsumed: () -> Unit = {},
         // Read inside the composition, so a test can swap the state under a running screen (the rows landing).
         liveState: (() -> ChatUiState)? = null,
     ): @androidx.compose.runtime.Composable () -> Unit =
@@ -136,6 +142,9 @@ class ChatScreenContentTest {
                     onLoadOlder = onLoadOlder,
                     jumpToMessageId = jumpToMessageId,
                     onRevealMessage = onRevealMessage,
+                    handedJumpId = handedJumpId?.invoke(),
+                    onHandedJumpConsumed = onHandedJumpConsumed,
+                    onSearch = { searches++ },
                 )
             }
         }
@@ -342,6 +351,42 @@ class ChatScreenContentTest {
         compose.waitForIdle()
 
         assertEquals(listOf("m5"), revealed)
+        compose.onNodeWithText("message 5").assertIsDisplayed()
+    }
+
+    /**
+     * A hit handed back by this thread's own search (ADR 2026-10.4cyt) is cleared as it is taken, so the same message
+     * found a second time jumps again — the route argument's once-per-value guard would refuse it.
+     */
+    @Test
+    fun aHandedBackHitJumpsEachTimeItIsHanded() {
+        val revealed = mutableListOf<String>()
+        var handed by mutableStateOf<String?>(null)
+        compose.setContent(
+            content(
+                input = "",
+                state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(60), hasOlder = true),
+                onRevealMessage = { revealed += it },
+                handedJumpId = { handed },
+                onHandedJumpConsumed = { handed = null },
+            ),
+        )
+        compose.waitForIdle()
+        assertTrue(revealed.isEmpty())
+
+        handed = "m5"
+        compose.waitForIdle()
+        assertNull("consumed as it was taken", handed)
+        compose.onNodeWithText("message 5").assertIsDisplayed()
+
+        // Back down at the newest, so the second hand-over has to scroll again rather than find it on screen.
+        compose.onNodeWithTag("chat_thread").performScrollToIndex(0)
+        compose.onNodeWithText("message 5").assertDoesNotExist()
+
+        handed = "m5"
+        compose.waitForIdle()
+        assertEquals(listOf("m5", "m5"), revealed)
+        assertNull(handed)
         compose.onNodeWithText("message 5").assertIsDisplayed()
     }
 
@@ -874,7 +919,7 @@ class ChatScreenContentTest {
         compose.onNodeWithTag("chat_attach_location").assertDoesNotExist()
         compose.onNodeWithContentDescription("More options").performClick()
         compose.onNodeWithTag("chat_send_location").assertIsDisplayed()
-        // The room's menu is that one item: nobody to block, nothing to configure.
+        // The room's menu ends there: nobody to block, nothing to configure.
         compose.onNodeWithTag("chat_send_large_file").assertDoesNotExist()
         compose.onNodeWithText("Block").assertDoesNotExist()
         compose.onNodeWithTag("chat_send_location").performClick()
@@ -890,9 +935,23 @@ class ChatScreenContentTest {
     }
 
     @Test
-    fun theBridgedRoomOffersNoMenuAndSoNoLocation() {
+    fun searchLeadsADmsOverflowAndOpensItsSearch() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = false, myNodeId = "me")))
+        compose.onNodeWithContentDescription("More options").performClick()
+        val search = compose.onNodeWithTag("chat_search").getUnclippedBoundsInRoot()
+        val location = compose.onNodeWithTag("chat_send_location").getUnclippedBoundsInRoot()
+        assertTrue("Search comes first", search.top < location.top)
+        compose.onNodeWithTag("chat_search").performClick()
+        assertEquals(1, searches)
+    }
+
+    @Test
+    fun theBridgedRoomsOverflowIsSearchAlone() {
         compose.setContent(content(input = "", state = ChatUiState(isRoom = false, isBridged = true, myNodeId = "me")))
-        compose.onNodeWithContentDescription("More options").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithTag("chat_search").assertIsDisplayed()
         compose.onNodeWithTag("chat_send_location").assertDoesNotExist()
+        compose.onNodeWithTag("chat_send_large_file").assertDoesNotExist()
+        compose.onNodeWithText("Block").assertDoesNotExist()
     }
 }

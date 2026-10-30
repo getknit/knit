@@ -1,8 +1,13 @@
 package app.getknit.knit.ui.search
 
+import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionContains
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
@@ -12,7 +17,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.ui.theme.KnitTheme
@@ -30,6 +37,7 @@ class SearchScreenContentTest {
     @get:Rule
     val compose = createComposeRule()
 
+    private val context = ApplicationProvider.getApplicationContext<Context>()
     private val now = 1_700_000_000_000L
     private val opened = mutableListOf<String>()
     private val openedMessages = mutableListOf<Pair<String, String>>()
@@ -62,6 +70,7 @@ class SearchScreenContentTest {
         query: String,
         autoFocus: Boolean = false,
         onQueryChange: (String) -> Unit = {},
+        scoped: Boolean = false,
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -75,6 +84,7 @@ class SearchScreenContentTest {
                     onOpenConversation = { opened += it },
                     onOpenMessage = { id, messageId -> openedMessages += id to messageId },
                     onBack = { backs++ },
+                    scoped = scoped,
                 )
             }
         }
@@ -125,6 +135,31 @@ class SearchScreenContentTest {
         compose.onNodeWithTag("search_result_message_m1").assertContentDescriptionContains("Sam Rivera", substring = true)
         compose.onNodeWithTag("search_result_message_m1").assertContentDescriptionContains("water bottle", substring = true)
         compose.onNodeWithTag("search_result_person_samr1v00").assertContentDescriptionContains("quiet lantern", substring = true)
+    }
+
+    @Test
+    fun oneThreadsSearchShowsItsMessagesWithoutTheThread() {
+        compose.setContent(content(results.copy(chats = emptyList(), people = emptyList()), "sam", scoped = true))
+
+        compose.onNodeWithTag("search_section_messages").assertDoesNotExist()
+        compose.onNodeWithTag("search_result_message_m1").assertContentDescriptionContains("water bottle", substring = true)
+        compose
+            .onNodeWithTag("search_result_message_m1")
+            .assert(
+                SemanticsMatcher("does not name the thread") { node ->
+                    node.config.getOrNull(SemanticsProperties.ContentDescription)?.none { "Sam Rivera" in it } == true
+                },
+            )
+        compose.onNodeWithTag("search_result_message_m1").performClick()
+        assertEquals(listOf("dm-1" to "m1"), openedMessages)
+    }
+
+    @Test
+    fun oneThreadsSearchSaysSoWhileIdle() {
+        compose.setContent(content(SearchUiState(), "", scoped = true))
+
+        compose.onNodeWithText(context.getString(R.string.search_in_chat_hint)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.search_in_chat_idle)).assertIsDisplayed()
     }
 
     @Test

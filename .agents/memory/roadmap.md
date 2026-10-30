@@ -268,16 +268,10 @@ doc). **Don't start a deferred item without explicit direction.**
   within a minute, a force-stop and relaunch keeping them — the same walk is pinned in the lab by
   `ContributionLabTest`, restart included) and the ATF pass over the screen.
 
-- **"Search in this chat"** (app-wide search shipped 2026-09-10, ADR 2026-09.wnh6 + 2026-09.wdfz) — a
-  scoped search from a thread's overflow menu, pre-filtered to that conversation. The data side is already
-  there (`MessageRepository.search` takes an allow-list; pass one id). What is not: the hand-back. A hit
-  must scroll the thread that is *already open*, so the search entry has to return the message id to its
-  parent (`previousBackStackEntry.savedStateHandle` + `popBackStack`) and `ChatScreen` has to take it from
-  the saved state as well as from the route's `messageId` argument — never `navigate(chat(id, messageId))`
-  from there, which stacks a second entry for the same thread and two `ChatViewModel`s race the one-shot
-  draft restore. The overflow menu is also hidden on rooms, so the entry point needs a room variant.
-  **Still owed on the shipped feature:** the device trial (a hit beyond the first 60 rows, the migration's
-  `'rebuild'` timed on real history, Back returning to the results) and the ATF pass over the field.
+- **App-wide search and "Search in this chat"** (shipped 2026-09-10 and 2026-10-29, ADR 2026-09.wnh6 +
+  2026-09.wdfz + 2026-10.4cyt). **Still owed:** the device trial (a hit beyond the first 60 rows, from app-wide and
+  from a thread's overflow; the migration's `'rebuild'` timed on real history; Back returning to the results, and
+  from a scoped search to the thread with its draft intact) and the ATF pass over the field.
 
 - **Direct file transfer's follow-ons** (ADR 2026-09.wtmz, `context/direct-transfer.md`). Shipped as a
   DM-only overflow item; four things were named and left. **The APK entry point** is one call away —

@@ -119,7 +119,8 @@ val uiModule =
             )
         }
         viewModel { ContactsViewModel(get(), get(), get(), get(), get(), get()) }
-        viewModel {
+        // The scoped thread is an optional runtime param — "Search" in a chat's overflow; none is app-wide search.
+        viewModel { params ->
             SearchViewModel(
                 get(),
                 get(),
@@ -129,6 +130,7 @@ val uiModule =
                 get<LoraStatusRepository>().facts,
                 androidContext(),
                 get<CommonsRepository>(),
+                inConversation = params.getOrNull(),
             )
         }
         viewModel {

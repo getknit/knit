@@ -84,6 +84,8 @@ import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.koin.androidx.compose.koinViewModel
+import org.koin.core.parameter.emptyParametersHolder
+import org.koin.core.parameter.parametersOf
 
 // The keyboard follows a focus request only once the window has focus, which lands a frame or two after
 // a navigation; a bounded wait so a host where it never flips (Robolectric) still focuses the field.
@@ -93,14 +95,17 @@ private const val FOCUS_WAIT_MS = 500L
  * App-wide search, reached from the magnifier on the chat list: one field at the top, and below it the
  * chats, people and messages that match, each a tap from its thread. A message hit opens the thread on
  * that message. The field is bound straight to [SearchViewModel.query], so a keystroke never waits on the
- * results combine; the answer arrives a debounce later.
+ * results combine; the answer arrives a debounce later. Given [inConversation] it is "Search in this chat",
+ * reached from a thread's overflow: that thread's messages alone (ADR 2026-10.4cyt).
  */
 @Composable
 fun SearchScreen(
     onBack: () -> Unit,
     onOpenConversation: (conversationId: String) -> Unit,
     onOpenMessage: (conversationId: String, messageId: String) -> Unit,
-    viewModel: SearchViewModel = koinViewModel(),
+    inConversation: String? = null,
+    viewModel: SearchViewModel =
+        koinViewModel { if (inConversation == null) emptyParametersHolder() else parametersOf(inConversation) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -113,6 +118,7 @@ fun SearchScreen(
         query = query,
         now = now,
         autoFocus = autoFocus,
+        scoped = viewModel.inConversation != null,
         onQueryChange = viewModel::setQuery,
         onClear = viewModel::clear,
         onOpenConversation = onOpenConversation,
@@ -133,6 +139,8 @@ internal fun SearchScreenContent(
     onOpenConversation: (conversationId: String) -> Unit,
     onOpenMessage: (conversationId: String, messageId: String) -> Unit,
     onBack: () -> Unit,
+    // One thread's search: its own hint and idle line, and message rows without the thread every one would repeat.
+    scoped: Boolean = false,
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_search"),
@@ -143,14 +151,23 @@ internal fun SearchScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { SearchField(query, autoFocus, onQueryChange, onClear) },
+                title = {
+                    SearchField(
+                        query = query,
+                        hint = stringResource(if (scoped) R.string.search_in_chat_hint else R.string.search_hint),
+                        autoFocus = autoFocus,
+                        onQueryChange = onQueryChange,
+                        onClear = onClear,
+                    )
+                },
             )
         },
     ) { padding ->
         val typed = query.trim()
+        val idle = stringResource(if (scoped) R.string.search_in_chat_idle else R.string.search_idle)
         Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
             when {
-                typed.isEmpty() -> EmptyState(stringResource(R.string.search_idle), "search_idle")
+                typed.isEmpty() -> EmptyState(idle, "search_idle")
 
                 // An answer is on its way and there is nothing older to show: stay quiet rather than flash
                 // "no results" between the keystroke and the debounce.
@@ -164,7 +181,7 @@ internal fun SearchScreenContent(
 
                 state.isEmpty -> EmptyState(stringResource(R.string.search_empty, state.forQuery), "search_empty")
 
-                else -> Results(state, now, onOpenConversation, onOpenMessage)
+                else -> Results(state, now, scoped, onOpenConversation, onOpenMessage)
             }
         }
     }
@@ -173,6 +190,7 @@ internal fun SearchScreenContent(
 @Composable
 private fun SearchField(
     query: String,
+    hint: String,
     autoFocus: Boolean,
     onQueryChange: (String) -> Unit,
     onClear: () -> Unit,
@@ -190,7 +208,7 @@ private fun SearchField(
         value = query,
         onValueChange = onQueryChange,
         singleLine = true,
-        placeholder = { Text(stringResource(R.string.search_hint), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        placeholder = { Text(hint, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         trailingIcon =
             if (query.isNotEmpty()) {
@@ -227,6 +245,7 @@ private fun SearchField(
 private fun Results(
     state: SearchUiState,
     now: Long,
+    scoped: Boolean,
     onOpenConversation: (conversationId: String) -> Unit,
     onOpenMessage: (conversationId: String, messageId: String) -> Unit,
 ) {
@@ -242,32 +261,40 @@ private fun Results(
         section(R.string.search_section_people, "people", state.people, key = { "person:${it.nodeId}" }) { hit ->
             PersonHitRow(hit) { onOpenConversation(hit.nodeId) }
         }
-        section(R.string.search_section_messages, "messages", state.messages, key = { "message:${it.id}" }) { hit ->
-            MessageHitRow(hit, now) { onOpenMessage(hit.conversationId, hit.id) }
+        // Scoped, the messages are all there is, and the header would only restate the field.
+        section(
+            R.string.search_section_messages.takeUnless { scoped },
+            "messages",
+            state.messages,
+            key = { "message:${it.id}" },
+        ) { hit ->
+            MessageHitRow(hit, now, showThread = !scoped) { onOpenMessage(hit.conversationId, hit.id) }
         }
     }
 }
 
-/** A titled section, absent entirely when it has nothing to show. */
+/** A titled section — untitled when [title] is null — absent entirely when it has nothing to show. */
 private fun <T> LazyListScope.section(
-    @StringRes title: Int,
+    @StringRes title: Int?,
     tag: String,
     rows: List<T>,
     key: (T) -> String,
     row: @Composable (T) -> Unit,
 ) {
     if (rows.isEmpty()) return
-    item(key = "header:$tag", contentType = "header") {
-        Text(
-            text = stringResource(title),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier =
-                Modifier
-                    .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 4.dp)
-                    .semantics { heading() }
-                    .testTag("search_section_$tag"),
-        )
+    if (title != null) {
+        item(key = "header:$tag", contentType = "header") {
+            Text(
+                text = stringResource(title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier =
+                    Modifier
+                        .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 4.dp)
+                        .semantics { heading() }
+                        .testTag("search_section_$tag"),
+            )
+        }
     }
     items(rows, key = key, contentType = { tag }) { row(it) }
 }
@@ -311,6 +338,8 @@ private fun PersonHitRow(
 private fun MessageHitRow(
     hit: MessageHit,
     now: Long,
+    // False in one thread's search, where every row would repeat the same avatar and title.
+    showThread: Boolean,
     onClick: () -> Unit,
 ) {
     val line =
@@ -325,18 +354,22 @@ private fun MessageHitRow(
     val spokenTime = DateUtils.getRelativeTimeSpanString(hit.sentAt, now, DateUtils.MINUTE_IN_MILLIS).toString()
     HitRow(
         tag = "search_result_message_${hit.id}",
-        description = listOf(hit.conversationTitle, line.text, spokenTime).joinToString(", "),
+        description = listOfNotNull(hit.conversationTitle.takeIf { showThread }, line.text, spokenTime).joinToString(", "),
         onClick = onClick,
     ) {
-        ThreadAvatar(hit.kind, hit.conversationId, hit.avatarHash, hit.conversationTitle, hit.faces)
-        Spacer(Modifier.width(12.dp))
+        if (showThread) {
+            ThreadAvatar(hit.kind, hit.conversationId, hit.avatarHash, hit.conversationTitle, hit.faces)
+            Spacer(Modifier.width(12.dp))
+        }
         Column(Modifier.weight(1f)) {
-            Text(
-                text = hit.conversationTitle,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (showThread) {
+                Text(
+                    text = hit.conversationTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(
                 text = line,
                 style = MaterialTheme.typography.bodyMedium,
@@ -488,6 +521,52 @@ fun SearchScreenResultsPreview() =
             onOpenConversation = {},
             onOpenMessage = { _, _ -> },
             onBack = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun SearchScreenInChatPreview() =
+    KnitPreview {
+        SearchScreenContent(
+            state =
+                SearchUiState(
+                    forQuery = "water",
+                    messages =
+                        listOf(
+                            MessageHit(
+                                id = "m1",
+                                conversationId = "ridgerun",
+                                conversationTitle = "Ridge Run 2026",
+                                kind = ConversationKind.GROUP,
+                                avatarHash = null,
+                                sender = "Dani Cho",
+                                snippet = "Water refill at the trailhead kiosk",
+                                hit = 0..4,
+                                sentAt = PREVIEW_NOW - 3_600_000L,
+                            ),
+                            MessageHit(
+                                id = "m2",
+                                conversationId = "ridgerun",
+                                conversationTitle = "Ridge Run 2026",
+                                kind = ConversationKind.GROUP,
+                                avatarHash = null,
+                                sender = "You",
+                                snippet = "Bring two litres of water each",
+                                hit = 20..24,
+                                sentAt = PREVIEW_NOW - 86_400_000L,
+                            ),
+                        ),
+                ),
+            query = "water",
+            now = PREVIEW_NOW,
+            autoFocus = false,
+            onQueryChange = {},
+            onClear = {},
+            onOpenConversation = {},
+            onOpenMessage = { _, _ -> },
+            onBack = {},
+            scoped = true,
         )
     }
 

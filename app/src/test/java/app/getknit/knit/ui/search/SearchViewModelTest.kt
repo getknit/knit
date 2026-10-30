@@ -93,7 +93,8 @@ class SearchViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm() = SearchViewModel(store.repo, peers, groups, settings, identity, loraFlow, context)
+    private fun vm(inConversation: String? = null) =
+        SearchViewModel(store.repo, peers, groups, settings, identity, loraFlow, context, inConversation = inConversation)
 
     private fun TestScope.start(vm: SearchViewModel) {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
@@ -352,6 +353,45 @@ class SearchViewModelTest {
                     .single()
                     .sender,
             )
+        }
+
+    @Test
+    fun aScopedSearchAnswersThatThreadsMessagesAlone() =
+        runTest {
+            seedHistory()
+            val vm = vm(inConversation = "sam")
+            start(vm)
+
+            search(vm, "water")
+            assertEquals(
+                "the room's match is another thread's",
+                listOf("s2"),
+                vm.state.value.messages
+                    .map { it.id },
+            )
+
+            // Sam's own name matches their chat and their contact, but a scoped search shows neither.
+            search(vm, "sam")
+            assertTrue(
+                vm.state.value.chats
+                    .isEmpty(),
+            )
+            assertTrue(
+                vm.state.value.people
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun aScopedSearchOfARequestThreadAnswersNothing() =
+        runTest {
+            seedHistory()
+            store.add(msg("river", 50, "river", body = "Salas here, saw you on the mesh", id = "r1"))
+            val vm = vm(inConversation = "river")
+            start(vm)
+
+            search(vm, "salas")
+            assertTrue("the list's own rule holds in one thread too", vm.state.value.isEmpty)
         }
 
     @Test

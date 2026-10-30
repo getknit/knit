@@ -914,6 +914,9 @@
     <string name="search_idle">Find a chat, a person, or something someone said.</string>
     <string name="search_keep_typing">Keep typing to search messages</string>
     <string name="search_empty">No results for \u201c%1$s\u201d</string>
+    <!-- "Search" in a chat's overflow: the same screen, scoped to that one chat's messages -->
+    <string name="search_in_chat_hint">Search this chat</string>
+    <string name="search_in_chat_idle">Find something someone said in this chat.</string>
 
     <!-- Settings, and your own profile behind the header row at the top of it. Two screens, so two titles;
          the read-only view of somebody else is a third thing again, and its top bar carries the contact's
