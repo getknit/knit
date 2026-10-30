@@ -8,6 +8,7 @@ stages:
   - build
   - test
   - verify
+  - release
 
 variables:
   # Keep Gradle's home in the project tree so the resolved-dependency jars are cached across jobs.
@@ -215,8 +216,8 @@ build:release:
       # R8's keep-radius report: which rule is blocking what, ranked. The first thing to open when the
       # dex gate trips or Play Console reports a drop in the optimization/obfuscation/shrinking rates.
       - app/build/reports/r8/
-    # mapping.txt is the deobfuscation map now that obfuscation is ON — keep it long enough to symbolicate a
-    # shipped build's crashes (for a tagged release, also upload mapping.txt to Play Console / a durable store).
+    # mapping.txt is the deobfuscation map now that obfuscation is ON — kept a year here for any pipeline's
+    # build; a tag's copy is kept for good by release:mapping below.
     expire_in: 1 year
 
 # ----------------- test ------------------
@@ -558,3 +559,25 @@ verify:qodana:
       - .qodana/results/report/
       - .qodana/results/qodana.sarif.json
     expire_in: 1 week
+
+# ----------------- release ------------------
+# A tag's R8 map, kept for good. build:release already archives mapping/ on every pipeline, but for a year and
+# inside the job's whole archive, and a crash or Play ANR from a shipped build can need it later than that (#248
+# needed 2.10.0's). Same name as the GitHub Release asset release.yml publishes (`mapping-<version>.txt.gz`), and
+# the same R8 map: signing never reaches R8, and for 2.10.0 this pipeline's map, the GitHub asset and a rebuild of
+# the Play bundle's agreed byte for byte outside the Compose section's order. Waits on build:release alone, so a
+# failing test or verify job doesn't cost the tag its map.
+# No .android: this only gzips build:release's file.
+release:mapping:
+  image: python:3.13-alpine
+  stage: release
+  needs: [{job: "build:release", artifacts: true}]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "mapping-${CI_COMMIT_TAG#v}.txt.gz"
+  artifacts:
+    name: "mapping-$CI_COMMIT_TAG"
+    paths:
+      - mapping-*.txt.gz
+    expire_in: never
