@@ -13,7 +13,7 @@ import app.getknit.knit.mesh.crypto.b64
  * Field numbers are pinned against `meshtastic/protobufs` and covered by golden byte vectors in that test;
  * every decode is total — malformed input yields `null`, never a throw (via [ProtoException]).
  */
-@Suppress("TooManyFunctions") // a flat codec: one small encode/decode helper per Meshtastic message we speak
+@Suppress("TooManyFunctions", "LargeClass") // a flat codec: one helper per Meshtastic message we speak, every field number beside it
 internal object MeshtasticProto {
     /**
      * The protobuf's own `Constants.DATA_PAYLOAD_LEN`. Kept for reference only: it assumes a one-byte portnum,
