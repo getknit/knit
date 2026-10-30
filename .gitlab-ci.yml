@@ -175,7 +175,7 @@ build:debug:
 # `allow_failure` is now FALSE: since ADR 050 tightened the keep rules there is real optimization to lose,
 # and the two things most likely to take it away — a dependency shipping a broad consumer keep rule, or
 # someone re-broadening knit-r8.keep to silence a warning — are both silent until the next Play upload.
-# So the job runs four steps: build, measure, gate, gate.
+# So the job runs five steps: build, measure, gate, gate, gate.
 #   * assembleRelease           — proves the keep rules still produce a working shrink.
 #   * analyzeReleaseR8Config    — R8's own keep-radius report (AGP 9.3+). Archived as HTML; this is where
 #                                 you look when the gate below trips, since it names the offending rule.
@@ -184,6 +184,8 @@ build:debug:
 #   * scripts/dex-bitmap-gate.sh — fails on an unbounded BitmapFactory.decode* anywhere in the dex, ours or
 #                                 a library's (ADR 051). Same reason it lives here and not in detekt: the
 #                                 risk arrives through a dependency, and only the dex shows that.
+#   * scripts/r8-platform-gate.sh — fails when the mapping renames a class android.jar defines: a bundled
+#                                 platform copy R8 renamed breaks the first vector drawable (GitHub #59).
 # Builds UNSIGNED (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. Archives mapping/ so
 # mapping.txt (deobfuscation), usage.txt (removed code) and configuration.txt (merged rules) are
 # auditable/retained per pipeline.
@@ -203,6 +205,7 @@ build:release:
     - ./gradlew :app:analyzeReleaseR8Config --stacktrace --console=plain
     - scripts/r8-dex-gate.sh app/build/outputs/apk/release/app-release-unsigned.apk
     - scripts/dex-bitmap-gate.sh app/build/outputs/apk/release/app-release-unsigned.apk
+    - scripts/r8-platform-gate.sh app/build/outputs/mapping/release/mapping.txt
   artifacts:
     name: "knit-release-r8-$CI_COMMIT_SHORT_SHA"
     when: always

@@ -111,3 +111,25 @@ Live calls, mesh calls and Knit Anywhere went on in release builds with 2.10.0-b
 JNI Zero's Java classes, which `src/liveCalls/keepRules` pins because libwebrtc's native half calls them by name:
 `org` grew from 27 KB to 255 KB, and the named-package share went from 4.4% to 6.6%, still well under the 15%
 alarm. So the ceiling is now 10,200,000, about 12% above the measured size, as the last two raises were.
+
+## Amendment 2026-10-29 — every platform copy is pinned, and the mapping is gated (GitHub #59)
+
+The duplication bit a third time. ARSCLib's jar ships `android.content.res.XmlResourceParser` and
+`android.util.AttributeSet` beside `org.xmlpull.v1.*`, and only the xmlpull package was ever pinned, so every
+release since the share path landed renamed the other two (`v0b` and `c10` in 2.11.0-alpha.1). It stayed
+harmless until AGP 9.5.0's R8, the only toolchain change between 2.11.0-alpha.0 and alpha.1, cast the parser in
+Compose's `loadVectorResourceInner` to the renamed `XmlResourceParser`. The framework's `XmlBlock$Parser` does not
+implement `v0b`, so 2.11.0-alpha.1 threw `ClassCastException` on the chat list's room avatar, the first vector
+drawable after onboarding: every phone with an identity, at every launch. A fresh install renders onboarding and
+passes a launch check. Reproduced on an API 36 emulator by updating 2.10.0 to 2.11.0-alpha.1 in place.
+
+`knit-r8.keep` now pins both names `{ *; }` next to `org.xmlpull.v1.**`. Nothing calls through either interface,
+so the closed-world inference above has nothing to act on today; it is still the residual risk if a dependency
+starts calling an `AttributeSet` method. `scripts/r8-platform-gate.sh` checks the release mapping against
+android.jar and fails on any renamed class the platform defines, whichever library brought it in. It runs in
+`build:release` after the two dex gates and in the release skill's CI mirror, which the Play bundle's tag goes
+through. A launch check alone would not have caught this. The gate fails 2.11.0-alpha.1's mapping.
+
+Root-cause alternative, not taken: strip the platform copies from ARSCLib's jar with a Gradle artifact transform,
+so R8 resolves them against android.jar and none of the three bites can happen. It would also retire both xmlpull
+rules, but it sits in AGP's own transform chain, and the share path would need re-verifying on a device.

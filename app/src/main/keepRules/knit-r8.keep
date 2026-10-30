@@ -88,15 +88,22 @@
 -dontwarn com.reandroid.**
 -dontwarn com.android.apksig.**
 
-# ---- Bundled platform XML types (kxml2 ships org.xmlpull.v1.*, pulled transitively via ARSCLib) -----------
-# org.xmlpull.v1 is a PLATFORM package (bootclasspath), but kxml2 bundles a copy INTO the apk, so R8 full mode
-# treats it as a program class and renames the interface (org.xmlpull.v1.XmlPullParser -> ao3). The framework
-# class android.content.res.XmlBlock$Parser (loaded from the platform, unrenamed) then no longer "implements"
-# the renamed interface, so ANY resource-XML inflation (Compose vector drawables / fonts) throws
-# `IncompatibleClassChangeError: ... does not implement interface 'ao3' in call to 'int ao3.next()'` at the
-# first frame. Pinning the platform names keeps the framework's XmlResourceParser/AttributeSet hierarchy
-# consistent (their cascade renames stop too). Crash reproduced on-device 2026-07-09; see decisions ADR 012.
+# ---- Bundled platform XML types (ARSCLib's jar ships copies of org.xmlpull.v1.*, android.util.AttributeSet and
+# android.content.res.XmlResourceParser) ------------------------------------------------------------------------
+# These are PLATFORM classes (bootclasspath), but ARSCLib bundles copies INTO the apk, so R8 full mode treats
+# them as program classes and renames them (org.xmlpull.v1.XmlPullParser -> ao3). At runtime the platform's
+# own, unrenamed classes win, so the framework's android.content.res.XmlBlock$Parser no longer "implements"
+# a renamed interface and ANY resource-XML inflation (Compose vector drawables / fonts) dies at the first
+# frame: `IncompatibleClassChangeError: ... does not implement interface 'ao3' in call to 'int ao3.next()'`
+# (reproduced on-device 2026-07-09, ADR 012). Every platform copy is pinned, not just the package that bit
+# first: pinning org.xmlpull.v1 alone left XmlResourceParser and AttributeSet renamed in every release since,
+# harmless until AGP 9.5.0's R8 cast the parser in Compose's loadVectorResourceInner to the renamed type, and
+# 2.11.0-alpha.1 threw `ClassCastException: XmlBlock$Parser cannot be cast to v0b` on the chat list's room
+# avatar: every phone past onboarding, at every launch (GitHub #59). scripts/r8-platform-gate.sh fails a
+# release build whose mapping renames any class android.jar defines.
 -keep class org.xmlpull.v1.** { *; }
+-keep class android.content.res.XmlResourceParser { *; }
+-keep class android.util.AttributeSet { *; }
 -dontwarn org.xmlpull.v1.**
 # ...and a second, subtler consequence of that same duplication, found when ADR 050 dropped the blanket
 # ARSCLib keep. Because `org.xmlpull.v1.XmlPullParser` is a *program* interface here, R8 full mode reasons
