@@ -5,8 +5,15 @@ import android.os.Build
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import app.getknit.knit.TextLimits
 import app.getknit.knit.identity.NameKey
 import app.getknit.knit.normalizeSingleLine
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -62,11 +69,59 @@ class ArtTextSemanticsTest {
     @Test
     fun nameKeyFoldsTheSeparatorsNfkcLeaves() {
         // NFKC leaves U+0085, U+1680, U+2028 and U+2029 alone; ART's `\s` collapses them.
-        assertEquals("ana bell", NameKey.of("Ana\u0085Bell"))
-        assertEquals("ana bell", NameKey.of("Ana\u1680Bell"))
-        assertEquals("ana bell", NameKey.of("Ana\u2028Bell"))
-        assertEquals("ana bell", NameKey.of("Ana\u2029Bell"))
+        assertEquals("ana beii", NameKey.of("Ana\u0085Bell"))
+        assertEquals("ana beii", NameKey.of("Ana\u1680Bell"))
+        assertEquals("ana beii", NameKey.of("Ana\u2028Bell"))
+        assertEquals("ana beii", NameKey.of("Ana\u2029Bell"))
     }
+
+    /**
+     * `vectors/name-key-v1.json` (ADR 2026-10.2kfr), written on the JVM, holds on ART: the key's categories come from
+     * the device's ICU here, and the whitespace from ART's own regex — the answer knit-ios mirrors.
+     */
+    @Test
+    fun nameKeyVectorCasesHoldOnArt() {
+        val file =
+            InstrumentationRegistry.getInstrumentation().context.assets.open("name-key-v1.json").use {
+                Json.parseToJsonElement(it.readBytes().decodeToString()).jsonObject
+            }
+        val limits = file.getValue("limits").jsonObject
+        val nameLimit = limits.getValue("displayName").jsonPrimitive.int
+        val statusLimit = limits.getValue("status").jsonPrimitive.int
+        val cases = file.getValue("cases").jsonArray
+        val disagreements =
+            cases.mapNotNull { element ->
+                val case = element.jsonObject
+
+                fun text(field: String) = case.getValue(field).jsonPrimitive.content
+                val input = text("input")
+                val got =
+                    listOf(
+                        NameKey.of(input),
+                        NameKey.isBlankName(input).toString(),
+                        TextLimits.cleanReceived(input, nameLimit),
+                        TextLimits.cleanReceived(input, statusLimit),
+                    )
+                val want =
+                    listOf(
+                        text("key"),
+                        case
+                            .getValue("displayBlank")
+                            .jsonPrimitive.boolean
+                            .toString(),
+                        text("cleanedName"),
+                        text("cleanedStatus"),
+                    )
+                if (got == want) null else "${text("label")}: want ${want.escaped()}, ART ${got.escaped()}"
+            }
+        Log.i(TAG, "name-key-v1.json: ${cases.size} cases on API ${Build.VERSION.SDK_INT}, ${disagreements.size} differ")
+        assertEquals(emptyList<String>(), disagreements)
+    }
+
+    /** Each string with every unit outside printable ASCII spelled `U+XXXX`, so an invisible difference reads in the log. */
+    private fun List<String>.escaped(): String = joinToString(prefix = "[", postfix = "]") { it.escaped() }
+
+    private fun String.escaped(): String = map { c -> if (c.code in PRINTABLE_ASCII) "$c" else "U+%04X".format(c.code) }.joinToString("")
 
     /** The ART mainline module's version, which decides U+180E (see [MVS]); -1 where neither name resolves. */
     private fun artModuleVersion(): Long {
@@ -136,5 +191,7 @@ class ArtTextSemanticsTest {
         const val MVS = 0x180E
 
         const val TAG = "ArtTextSemantics"
+
+        val PRINTABLE_ASCII = 0x20..0x7E
     }
 }

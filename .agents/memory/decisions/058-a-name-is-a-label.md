@@ -51,7 +51,9 @@ keypair can be ground in seconds, so this is *disambiguation*: it separates the 
 the deliberate one visible, and nothing more. Trust stays where it was — `verified` and the safety number.
 `NameKey` deliberately does no confusable folding (a Cyrillic "а" stays distinct from a Latin "a"); a
 homoglyph impersonator is caught by the discriminator only when the two keys fold together, and that limit is
-recorded rather than half-solved.
+recorded rather than half-solved. *Amended by ADR 2026-10.2kfr (2026-10-29): the key now folds UTS #39's
+single-letter Latin, Greek and Cyrillic lookalikes and drops invisible characters, so that limit narrows to
+multi-letter lookalikes (`rn` for `m`) and other scripts.*
 
 **The one wire-visible consequence.** The mention token a collided candidate inserts is the label —
 `@Alice (JoyfulFerret)` — and `Mention.name` carries that exact text, which is what lets the unchanged

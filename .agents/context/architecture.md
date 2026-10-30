@@ -84,8 +84,9 @@ data/          Room (messages, peers, reactions, blobs, groups, blob_verdicts, f
                docs/BACKUP_FORMAT.md: BackupArchive + BackupKeys, the sealed file, pure; DatabaseExport
                the scratch-DB copy; RestoreStager → RestoreApplier, the staged-then-pre-Koin apply)
 identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · DeviceTag · Alias
-               · PeerLabels (NameKey + the collision-aware `Name (Alias)` label, ADR 058; a stranger quiet a week
-               gives way, ADR 2026-10.k8ge — data/LabelAnchors + LabelFade + peers.lastSeenAt)
+               · PeerLabels (NameKey + the collision-aware `Name (Alias)` label, ADR 058; lookalikes and invisibles
+               collide, ADR 2026-10.2kfr; a stranger quiet a week gives way, ADR 2026-10.k8ge — data/LabelAnchors
+               + LabelFade + peers.lastSeenAt)
 crash/         CrashHandler (uncaught-exception capture, installed pre-Koin) · CrashStore (noBackupFilesDir,
                5 reports) · CrashRedactor (two-phase) · CrashReports (reader) · CrashIssueUrl (GitHub prefill)
                · ProcessExitReasons (the native crashes CrashHandler can't see, from the platform's own

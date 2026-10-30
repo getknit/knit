@@ -1587,7 +1587,8 @@ class InboundPipeline(
         version: Long,
     ) {
         if (previous == null) return
-        if (previous.name.isNotEmpty() && previous.name != newName) {
+        // A row stored before names were cleaned on receipt is compared cleaned, so the upgrade is not a rename.
+        if (previous.name.isNotEmpty() && TextLimits.cleanReceived(previous.name, TextLimits.DISPLAY_NAME) != newName) {
             savePeerNotice(peerId, StatusNotices.peerRenamed(peerId, previous.name, newName, version))
         }
         // A cleared avatar is a change too, but there is no "removed their photo" line to draw and the
@@ -1659,12 +1660,12 @@ class InboundPipeline(
         val advertised = payload.avatarHash
         // Held decides the pull (a held blob is never asked for again); adoptable decides the row.
         val haveAvatar = advertised != null && blobStore.has(advertised)
-        val name = payload.name.clampToUtf16(TextLimits.DISPLAY_NAME)
+        val name = TextLimits.cleanReceived(payload.name, TextLimits.DISPLAY_NAME)
         peers.upsert(
             existing.copy(
-                // Clamp inbound, as the cleartext path does: our own cap bounds only what we originate.
+                // Clean inbound, as the cleartext path does: our own cap and line rules bound only what we originate.
                 name = name,
-                status = payload.status.clampToUtf16(TextLimits.STATUS),
+                status = TextLimits.cleanReceived(payload.status, TextLimits.STATUS),
                 avatarHash = resolveAvatarHash(advertised, avatarAdoptable(advertised), existing.avatarHash),
                 updatedAt = version,
                 // The whole presentation set moves together (see ProfilePayload): a field this path did not
@@ -3856,7 +3857,7 @@ class InboundPipeline(
                     stored
                 }
             }
-        val name = content.name.clampToUtf16(TextLimits.DISPLAY_NAME)
+        val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
         applyPresentationFollowUps(
             env.senderId,
             applied.previous,
@@ -3951,12 +3952,13 @@ class InboundPipeline(
         // The pinned key is guaranteed unchanged here (a differing key was refused above), so carrying
         // the prior [verified] state through the upsert is safe.
         val base = existing ?: PeerEntity(senderId)
-        val name = content.name.clampToUtf16(TextLimits.DISPLAY_NAME)
+        val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
         peers.upsert(
             base.copy(
-                // Clamp inbound too: our own cap only bounds what we originate, not what a peer sends.
+                // Clean inbound too: our own cap and line rules only bound what we originate, not what a peer sends
+                // (controls, bidi overrides and line breaks out, ADR 2026-10.2kfr). The signed frame stays verbatim.
                 name = if (stalePresentation) base.name else name,
-                status = if (stalePresentation) base.status else content.status.clampToUtf16(TextLimits.STATUS),
+                status = if (stalePresentation) base.status else TextLimits.cleanReceived(content.status, TextLimits.STATUS),
                 pubKey = pubKey,
                 verified = existing?.verified ?: false,
                 deviceTag = content.deviceTag ?: existing?.deviceTag,

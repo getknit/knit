@@ -36,6 +36,76 @@ class TextLimitsTest {
         assertEquals("knit", normalizeSingleLine("knit"))
     }
 
+    @Test
+    fun `collapses the separators ART calls whitespace, on the JVM too`() {
+        // The literal ART `\s` class (ADR 2026-10.swst): the JDK's own `\s` would leave these four alone.
+        assertEquals("a b c d", normalizeSingleLine("a\u0085b\u1680c\u2029d"))
+        assertEquals("Ana Bell Cruz", normalizeSingleLine("\u00A0 Ana\u00A0\u00A0Bell\u2028Cruz\u3000"))
+    }
+
+    // --- cleanReceived: received display text made single-line and control-free ---
+
+    @Test
+    fun `cleanReceived turns a line break into one space`() {
+        assertEquals("Alice Smith", TextLimits.cleanReceived("Alice\nSmith", TextLimits.DISPLAY_NAME))
+        assertEquals("a b", TextLimits.cleanReceived("a\u2028\u2029b", TextLimits.DISPLAY_NAME))
+    }
+
+    @Test
+    fun `cleanReceived removes controls and bidi overrides`() {
+        assertEquals("Bobevil", TextLimits.cleanReceived("Bob\u202Eevil", TextLimits.DISPLAY_NAME))
+        assertEquals("Bobevil", TextLimits.cleanReceived("Bob\u0000\u0007\u001Bevil\u007F\u009B", TextLimits.DISPLAY_NAME))
+        assertEquals("ab", TextLimits.cleanReceived("a\u061C\u200E\u200F\u2066\u2069b", TextLimits.DISPLAY_NAME))
+        assertEquals("", TextLimits.cleanReceived("\u0001\u0007", TextLimits.DISPLAY_NAME))
+    }
+
+    @Test
+    fun `cleanReceived trims a leading U+0085, which is regex whitespace but not isWhitespace`() {
+        assertEquals("Bob", TextLimits.cleanReceived("\u0085Bob", TextLimits.DISPLAY_NAME))
+    }
+
+    @Test
+    fun `cleanReceived keeps the joiners emoji sequences and Persian names need`() {
+        val dev = "\uD83D\uDC69\u200D\uD83D\uDCBB Dev" // 👩‍💻 Dev
+        assertEquals(dev, TextLimits.cleanReceived(dev, TextLimits.DISPLAY_NAME))
+        assertEquals(
+            "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+            TextLimits.cleanReceived("\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645", 32),
+        )
+    }
+
+    @Test
+    fun `cleanReceived cuts to the limit and leaves no trailing space or half a pair`() {
+        val spaced = "a".repeat(31) + " " + "b".repeat(8) // 40 units, the cut lands after the space
+        assertEquals("a".repeat(31), TextLimits.cleanReceived(spaced, TextLimits.DISPLAY_NAME))
+        val paired = "a".repeat(31) + "\uD83D\uDE00" + "b".repeat(7) // the cut would split the emoji
+        assertEquals("a".repeat(31), TextLimits.cleanReceived(paired, TextLimits.DISPLAY_NAME))
+    }
+
+    @Test
+    fun `cleanReceived is idempotent`() {
+        val inputs =
+            listOf(
+                "\u0085Bob",
+                "Bob\u0085",
+                " \u0085 Bob \u0085 ",
+                "Alice\nSmith",
+                "Bob\u202Eevil",
+                "\u0001\u0007",
+                "\u0001 \u0002 x",
+                "a".repeat(31) + " " + "b".repeat(8),
+                "a".repeat(31) + "\uD83D\uDE00" + "b".repeat(7),
+                "\u3164\u2800",
+                "Ana\u2028\u2028Bell\u1680",
+            )
+        for (input in inputs) {
+            for (limit in listOf(TextLimits.DISPLAY_NAME, TextLimits.STATUS, 5)) {
+                val once = TextLimits.cleanReceived(input, limit)
+                assertEquals("<$input> at $limit", once, TextLimits.cleanReceived(once, limit))
+            }
+        }
+    }
+
     // --- isValidReactionEmoji: the length-only cap shared by the sender and both inbound paths ---
 
     @Test

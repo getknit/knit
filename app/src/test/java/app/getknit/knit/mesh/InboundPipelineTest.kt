@@ -668,6 +668,7 @@ class InboundPipelineTest {
             avatarHash: String? = null,
             sentAt: Long = 6L,
             name: String = "Peer",
+            status: String = "",
             openToChat: Boolean = false,
             loraNode: Long? = null,
             loraKey: String? = null,
@@ -681,7 +682,7 @@ class InboundPipelineTest {
                     WireCodec.encodePayload(
                         ProfileContent(
                             name = name,
-                            status = "",
+                            status = status,
                             pubKey = author.bundle.encoded,
                             avatarHash = avatarHash,
                             openToChat = openToChat,
@@ -1179,6 +1180,67 @@ class InboundPipelineTest {
             assertArrayEquals("the signed bytes, verbatim", wire.signed, rig.proofs[alice.nodeId]?.first)
             assertEquals(profile.sentAt, rig.proofs[alice.nodeId]?.second)
             assertEquals(rig.nowMs + Protocol.MAX_FUTURE_SKEW_MS, rig.proofs[bob.nodeId]?.second)
+        }
+
+    /**
+     * A received name and status are stored cleaned — no line break, control or bidi override reaches a header — while
+     * the signed frame kept as proof of key stays byte-exact (ADR 2026-10.2kfr).
+     */
+    @Test
+    fun aReceivedProfileIsStoredCleanedAndItsProofStaysVerbatim() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            val profile = rig.profile(bob, name = "Bob\nevil", status = "Away\u202E\u0007 now\n")
+            val wire = bob.sign(profile)
+
+            rig.pipeline.onDeliver(wire, profile, bob.nodeId)
+
+            assertEquals("Bob evil", rig.peerMap[bob.nodeId]?.name)
+            assertEquals("Away now", rig.peerMap[bob.nodeId]?.status)
+            assertArrayEquals("the signed bytes, verbatim", wire.signed, rig.proofs[bob.nodeId]?.first)
+            val kept = WireCodec.decodeEnvelope(rig.proofs.getValue(bob.nodeId).first)
+            assertEquals("Bob\nevil", kept?.let { WireCodec.decodePayload<ProfileContent>(it.payload) }?.name)
+        }
+
+    /** A row stored raw before names were cleaned is not "renamed" by the same name arriving cleaned. */
+    @Test
+    fun aRawRowFromBeforeTheUpgradeIsNotRenamedByItsOwnNameCleaned() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            rig.peerMap[bob.nodeId] = PeerEntity(nodeId = bob.nodeId, name = "Bob\nevil", pubKey = bob.bundle.encoded, updatedAt = 1L)
+            // The DM thread holds a real message, so the notice gate is open: only the comparison decides.
+            rig.msgMap["m1"] = MessageEntity(id = "m1", senderId = bob.nodeId, conversationId = bob.nodeId, body = "hi", sentAt = 1L)
+
+            rig.deliver(bob, rig.profile(bob, name = "Bob\nevil", sentAt = 7L))
+
+            assertEquals("Bob evil", rig.peerMap[bob.nodeId]?.name)
+            assertTrue(rig.msgMap.values.none { it.kind == MessageEntity.KIND_PEER_RENAMED })
+            // The gate is open: a real rename from the same raw row posts its line.
+            rig.deliver(bob, rig.profile(bob, name = "Robert", sentAt = 8L))
+            val notice = rig.msgMap.values.single { it.kind == MessageEntity.KIND_PEER_RENAMED }
+            assertEquals(PeerRename(from = "Bob evil", to = "Robert"), PeerRename.decode(notice.body))
+        }
+
+    /** The sealed `CTL_PROFILE` writer cleans what it stores the same way (ADR 2026-10.2kfr). */
+    @Test
+    fun aSealedProfileIsStoredCleaned() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            rig.deliver(
+                alice,
+                V2Author(alice, rig).dm(
+                    "ctl-clean",
+                    "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "Ann\nevil", status = "Away\u202E\u0007 now\n", version = 20L),
+                ),
+            )
+            assertEquals("Ann evil", rig.peerMap[alice.nodeId]?.name)
+            assertEquals("Away now", rig.peerMap[alice.nodeId]?.status)
         }
 
     /** Only a profile that pins keeps a proof: never our own, never one refusing a pinned key, never one stale on both clocks. */

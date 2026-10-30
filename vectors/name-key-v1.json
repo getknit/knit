@@ -1,0 +1,850 @@
+{
+  "description": "NameKey.of, NameKey.isBlankName and TextLimits.cleanReceived (ADR 2026-10.2kfr)",
+  "fold": [
+    {
+      "from": "U+0391",
+      "to": "A"
+    },
+    {
+      "from": "U+0410",
+      "to": "A"
+    },
+    {
+      "from": "U+03B1",
+      "to": "a"
+    },
+    {
+      "from": "U+0430",
+      "to": "a"
+    },
+    {
+      "from": "U+0392",
+      "to": "B"
+    },
+    {
+      "from": "U+0412",
+      "to": "B"
+    },
+    {
+      "from": "U+042C",
+      "to": "b"
+    },
+    {
+      "from": "U+03F9",
+      "to": "C"
+    },
+    {
+      "from": "U+0421",
+      "to": "C"
+    },
+    {
+      "from": "U+03F2",
+      "to": "c"
+    },
+    {
+      "from": "U+0441",
+      "to": "c"
+    },
+    {
+      "from": "U+0501",
+      "to": "d"
+    },
+    {
+      "from": "U+0395",
+      "to": "E"
+    },
+    {
+      "from": "U+0415",
+      "to": "E"
+    },
+    {
+      "from": "U+0435",
+      "to": "e"
+    },
+    {
+      "from": "U+04BD",
+      "to": "e"
+    },
+    {
+      "from": "U+03DC",
+      "to": "F"
+    },
+    {
+      "from": "U+050C",
+      "to": "G"
+    },
+    {
+      "from": "U+0397",
+      "to": "H"
+    },
+    {
+      "from": "U+041D",
+      "to": "H"
+    },
+    {
+      "from": "U+04BB",
+      "to": "h"
+    },
+    {
+      "from": "U+037A",
+      "to": "i"
+    },
+    {
+      "from": "U+03B9",
+      "to": "i"
+    },
+    {
+      "from": "U+0456",
+      "to": "i"
+    },
+    {
+      "from": "U+04CF",
+      "to": "i"
+    },
+    {
+      "from": "U+037F",
+      "to": "J"
+    },
+    {
+      "from": "U+0408",
+      "to": "J"
+    },
+    {
+      "from": "U+03F3",
+      "to": "j"
+    },
+    {
+      "from": "U+0458",
+      "to": "j"
+    },
+    {
+      "from": "U+039A",
+      "to": "K"
+    },
+    {
+      "from": "U+041A",
+      "to": "K"
+    },
+    {
+      "from": "U+0049",
+      "to": "l"
+    },
+    {
+      "from": "U+0399",
+      "to": "l"
+    },
+    {
+      "from": "U+0406",
+      "to": "l"
+    },
+    {
+      "from": "U+04C0",
+      "to": "l"
+    },
+    {
+      "from": "U+039C",
+      "to": "M"
+    },
+    {
+      "from": "U+03FA",
+      "to": "M"
+    },
+    {
+      "from": "U+041C",
+      "to": "M"
+    },
+    {
+      "from": "U+039D",
+      "to": "N"
+    },
+    {
+      "from": "U+039F",
+      "to": "O"
+    },
+    {
+      "from": "U+041E",
+      "to": "O"
+    },
+    {
+      "from": "U+03BF",
+      "to": "o"
+    },
+    {
+      "from": "U+03C3",
+      "to": "o"
+    },
+    {
+      "from": "U+043E",
+      "to": "o"
+    },
+    {
+      "from": "U+03A1",
+      "to": "P"
+    },
+    {
+      "from": "U+0420",
+      "to": "P"
+    },
+    {
+      "from": "U+03C1",
+      "to": "p"
+    },
+    {
+      "from": "U+03F1",
+      "to": "p"
+    },
+    {
+      "from": "U+0440",
+      "to": "p"
+    },
+    {
+      "from": "U+051B",
+      "to": "q"
+    },
+    {
+      "from": "U+0433",
+      "to": "r"
+    },
+    {
+      "from": "U+0405",
+      "to": "S"
+    },
+    {
+      "from": "U+0455",
+      "to": "s"
+    },
+    {
+      "from": "U+03A4",
+      "to": "T"
+    },
+    {
+      "from": "U+0422",
+      "to": "T"
+    },
+    {
+      "from": "U+03C5",
+      "to": "u"
+    },
+    {
+      "from": "U+0474",
+      "to": "V"
+    },
+    {
+      "from": "U+03BD",
+      "to": "v"
+    },
+    {
+      "from": "U+0475",
+      "to": "v"
+    },
+    {
+      "from": "U+051C",
+      "to": "W"
+    },
+    {
+      "from": "U+0461",
+      "to": "w"
+    },
+    {
+      "from": "U+051D",
+      "to": "w"
+    },
+    {
+      "from": "U+03A7",
+      "to": "X"
+    },
+    {
+      "from": "U+0425",
+      "to": "X"
+    },
+    {
+      "from": "U+0445",
+      "to": "x"
+    },
+    {
+      "from": "U+03A5",
+      "to": "Y"
+    },
+    {
+      "from": "U+03D2",
+      "to": "Y"
+    },
+    {
+      "from": "U+0423",
+      "to": "Y"
+    },
+    {
+      "from": "U+04AE",
+      "to": "Y"
+    },
+    {
+      "from": "U+03B3",
+      "to": "y"
+    },
+    {
+      "from": "U+0443",
+      "to": "y"
+    },
+    {
+      "from": "U+04AF",
+      "to": "y"
+    },
+    {
+      "from": "U+0396",
+      "to": "Z"
+    }
+  ],
+  "drop": [
+    {
+      "first": "U+00AD",
+      "last": "U+00AD"
+    },
+    {
+      "first": "U+034F",
+      "last": "U+034F"
+    },
+    {
+      "first": "U+061C",
+      "last": "U+061C"
+    },
+    {
+      "first": "U+115F",
+      "last": "U+1160"
+    },
+    {
+      "first": "U+17B4",
+      "last": "U+17B5"
+    },
+    {
+      "first": "U+180B",
+      "last": "U+180F"
+    },
+    {
+      "first": "U+200B",
+      "last": "U+200F"
+    },
+    {
+      "first": "U+202A",
+      "last": "U+202E"
+    },
+    {
+      "first": "U+2060",
+      "last": "U+206F"
+    },
+    {
+      "first": "U+3164",
+      "last": "U+3164"
+    },
+    {
+      "first": "U+FE00",
+      "last": "U+FE0F"
+    },
+    {
+      "first": "U+FEFF",
+      "last": "U+FEFF"
+    },
+    {
+      "first": "U+FFA0",
+      "last": "U+FFA0"
+    },
+    {
+      "first": "U+FFF0",
+      "last": "U+FFF8"
+    },
+    {
+      "first": "U+1BCA0",
+      "last": "U+1BCA3"
+    },
+    {
+      "first": "U+1D173",
+      "last": "U+1D17A"
+    },
+    {
+      "first": "U+E0000",
+      "last": "U+E0FFF"
+    },
+    {
+      "first": "U+2800",
+      "last": "U+2800"
+    }
+  ],
+  "limits": {
+    "displayName": 32,
+    "status": 100,
+    "groupName": 32
+  },
+  "cases": [
+    {
+      "label": "plain",
+      "input": "Alice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alice",
+      "cleanedStatus": "Alice"
+    },
+    {
+      "label": "variation selector 16",
+      "input": "Alice\uFE0F",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alice\uFE0F",
+      "cleanedStatus": "Alice\uFE0F"
+    },
+    {
+      "label": "combining grapheme joiner",
+      "input": "Al\u034Fice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Al\u034Fice",
+      "cleanedStatus": "Al\u034Fice"
+    },
+    {
+      "label": "Cyrillic small ie",
+      "input": "Alic\u0435",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alic\u0435",
+      "cleanedStatus": "Alic\u0435"
+    },
+    {
+      "label": "Braille blank",
+      "input": "Alice\u2800",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alice\u2800",
+      "cleanedStatus": "Alice\u2800"
+    },
+    {
+      "label": "Hangul filler inside",
+      "input": "Ali\u3164ce",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Ali\u3164ce",
+      "cleanedStatus": "Ali\u3164ce"
+    },
+    {
+      "label": "Latin capital I for l",
+      "input": "AIice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "AIice",
+      "cleanedStatus": "AIice"
+    },
+    {
+      "label": "Cyrillic small byelorussian-ukrainian i",
+      "input": "Al\u0456ce",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Al\u0456ce",
+      "cleanedStatus": "Al\u0456ce"
+    },
+    {
+      "label": "Cyrillic capital a",
+      "input": "\u0410lice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "\u0410lice",
+      "cleanedStatus": "\u0410lice"
+    },
+    {
+      "label": "Greek small iota",
+      "input": "Al\u03B9ce",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Al\u03B9ce",
+      "cleanedStatus": "Al\u03B9ce"
+    },
+    {
+      "label": "all capitals",
+      "input": "ALICE",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "ALICE",
+      "cleanedStatus": "ALICE"
+    },
+    {
+      "label": "Kim",
+      "input": "Kim",
+      "key": "kim",
+      "displayBlank": false,
+      "cleanedName": "Kim",
+      "cleanedStatus": "Kim"
+    },
+    {
+      "label": "KIM",
+      "input": "KIM",
+      "key": "kim",
+      "displayBlank": false,
+      "cleanedName": "KIM",
+      "cleanedStatus": "KIM"
+    },
+    {
+      "label": "Liam",
+      "input": "Liam",
+      "key": "iiam",
+      "displayBlank": false,
+      "cleanedName": "Liam",
+      "cleanedStatus": "Liam"
+    },
+    {
+      "label": "LIAM",
+      "input": "LIAM",
+      "key": "iiam",
+      "displayBlank": false,
+      "cleanedName": "LIAM",
+      "cleanedStatus": "LIAM"
+    },
+    {
+      "label": "Ian",
+      "input": "Ian",
+      "key": "ian",
+      "displayBlank": false,
+      "cleanedName": "Ian",
+      "cleanedStatus": "Ian"
+    },
+    {
+      "label": "IAN",
+      "input": "IAN",
+      "key": "ian",
+      "displayBlank": false,
+      "cleanedName": "IAN",
+      "cleanedStatus": "IAN"
+    },
+    {
+      "label": "lan",
+      "input": "lan",
+      "key": "ian",
+      "displayBlank": false,
+      "cleanedName": "lan",
+      "cleanedStatus": "lan"
+    },
+    {
+      "label": "Eli",
+      "input": "Eli",
+      "key": "eii",
+      "displayBlank": false,
+      "cleanedName": "Eli",
+      "cleanedStatus": "Eli"
+    },
+    {
+      "label": "Ell",
+      "input": "Ell",
+      "key": "eii",
+      "displayBlank": false,
+      "cleanedName": "Ell",
+      "cleanedStatus": "Ell"
+    },
+    {
+      "label": "Cyrillic capital ve and small o",
+      "input": "\u0412\u043Eb",
+      "key": "bob",
+      "displayBlank": false,
+      "cleanedName": "\u0412\u043Eb",
+      "cleanedStatus": "\u0412\u043Eb"
+    },
+    {
+      "label": "Cyrillic small ve is not b",
+      "input": "\u0432ob",
+      "key": "\u0432ob",
+      "displayBlank": false,
+      "cleanedName": "\u0432ob",
+      "cleanedStatus": "\u0432ob"
+    },
+    {
+      "label": "precomposed Vietnamese",
+      "input": "Nguy\u1EC5n",
+      "key": "nguy\u1EC5n",
+      "displayBlank": false,
+      "cleanedName": "Nguy\u1EC5n",
+      "cleanedStatus": "Nguy\u1EC5n"
+    },
+    {
+      "label": "decomposed Vietnamese",
+      "input": "Nguye\u0302\u0303n",
+      "key": "nguy\u1EC5n",
+      "displayBlank": false,
+      "cleanedName": "Nguye\u0302\u0303n",
+      "cleanedStatus": "Nguye\u0302\u0303n"
+    },
+    {
+      "label": "decomposed e acute",
+      "input": "e\u0301",
+      "key": "\u00E9",
+      "displayBlank": false,
+      "cleanedName": "e\u0301",
+      "cleanedStatus": "e\u0301"
+    },
+    {
+      "label": "French accent",
+      "input": "Ren\u00E9e",
+      "key": "ren\u00E9e",
+      "displayBlank": false,
+      "cleanedName": "Ren\u00E9e",
+      "cleanedStatus": "Ren\u00E9e"
+    },
+    {
+      "label": "capital I with dot above",
+      "input": "\u0130",
+      "key": "i",
+      "displayBlank": false,
+      "cleanedName": "\u0130",
+      "cleanedStatus": "\u0130"
+    },
+    {
+      "label": "Greek capitals with final sigma",
+      "input": "\u03A3\u0391\u03A3",
+      "key": "\u03C3a\u03C3",
+      "displayBlank": false,
+      "cleanedName": "\u03A3\u0391\u03A3",
+      "cleanedStatus": "\u03A3\u0391\u03A3"
+    },
+    {
+      "label": "Greek small final sigma",
+      "input": "\u03C3\u03B1\u03C2",
+      "key": "oa\u03C3",
+      "displayBlank": false,
+      "cleanedName": "\u03C3\u03B1\u03C2",
+      "cleanedStatus": "\u03C3\u03B1\u03C2"
+    },
+    {
+      "label": "empty",
+      "input": "",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "",
+      "cleanedStatus": ""
+    },
+    {
+      "label": "spaces",
+      "input": "   ",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "",
+      "cleanedStatus": ""
+    },
+    {
+      "label": "Hangul filler only",
+      "input": "\u3164",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "\u3164",
+      "cleanedStatus": "\u3164"
+    },
+    {
+      "label": "Braille blanks only",
+      "input": "\u2800\u2800",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "\u2800\u2800",
+      "cleanedStatus": "\u2800\u2800"
+    },
+    {
+      "label": "Hangul choseong filler only",
+      "input": "\u115F",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "\u115F",
+      "cleanedStatus": "\u115F"
+    },
+    {
+      "label": "variation selector only",
+      "input": "\uFE0F",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "\uFE0F",
+      "cleanedStatus": "\uFE0F"
+    },
+    {
+      "label": "zero-width space and joiner only",
+      "input": "\u200B\u200D",
+      "key": "",
+      "displayBlank": true,
+      "cleanedName": "\u200B\u200D",
+      "cleanedStatus": "\u200B\u200D"
+    },
+    {
+      "label": "controls only",
+      "input": "\u0001\u0007",
+      "key": "\u0001\u0007",
+      "displayBlank": false,
+      "cleanedName": "",
+      "cleanedStatus": ""
+    },
+    {
+      "label": "newline",
+      "input": "Alice\nSmith",
+      "key": "aiice smith",
+      "displayBlank": false,
+      "cleanedName": "Alice Smith",
+      "cleanedStatus": "Alice Smith"
+    },
+    {
+      "label": "right-to-left override",
+      "input": "Bob\u202Eevil",
+      "key": "bobevii",
+      "displayBlank": false,
+      "cleanedName": "Bobevil",
+      "cleanedStatus": "Bobevil"
+    },
+    {
+      "label": "C0, C1 and DEL",
+      "input": "Bob\u0000\u001bevil\u007F\u009B",
+      "key": "bob\u0000\u001bevii\u007F\u009B",
+      "displayBlank": false,
+      "cleanedName": "Bobevil",
+      "cleanedStatus": "Bobevil"
+    },
+    {
+      "label": "bidi marks and isolates",
+      "input": "Bo\u061C\u200E\u200F\u2066\u2069b",
+      "key": "bob",
+      "displayBlank": false,
+      "cleanedName": "Bob",
+      "cleanedStatus": "Bob"
+    },
+    {
+      "label": "leading next line",
+      "input": "\u0085Bob",
+      "key": "bob",
+      "displayBlank": false,
+      "cleanedName": "Bob",
+      "cleanedStatus": "Bob"
+    },
+    {
+      "label": "40 units, cut after a space",
+      "input": "AbcdefghijAbcdefghijAbcdefghijk Lmnopqrs",
+      "key": "abcdefghijabcdefghijabcdefghijk imnopqrs",
+      "displayBlank": false,
+      "cleanedName": "AbcdefghijAbcdefghijAbcdefghijk",
+      "cleanedStatus": "AbcdefghijAbcdefghijAbcdefghijk Lmnopqrs"
+    },
+    {
+      "label": "cut inside a surrogate pair",
+      "input": "AbcdefghijAbcdefghijAbcdefghijk\uD83D\uDE00Lmnopqr",
+      "key": "abcdefghijabcdefghijabcdefghijk\uD83D\uDE00imnopqr",
+      "displayBlank": false,
+      "cleanedName": "AbcdefghijAbcdefghijAbcdefghijk",
+      "cleanedStatus": "AbcdefghijAbcdefghijAbcdefghijk\uD83D\uDE00Lmnopqr"
+    },
+    {
+      "label": "emoji ZWJ sequence",
+      "input": "\uD83D\uDC69\u200D\uD83D\uDCBB Dev",
+      "key": "\uD83D\uDC69\uD83D\uDCBB dev",
+      "displayBlank": false,
+      "cleanedName": "\uD83D\uDC69\u200D\uD83D\uDCBB Dev",
+      "cleanedStatus": "\uD83D\uDC69\u200D\uD83D\uDCBB Dev"
+    },
+    {
+      "label": "Persian ZWNJ",
+      "input": "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+      "key": "\u0645\u06CC\u062E\u0648\u0627\u0647\u0645",
+      "displayBlank": false,
+      "cleanedName": "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+      "cleanedStatus": "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645"
+    },
+    {
+      "label": "fullwidth",
+      "input": "\uFF21\uFF4C\uFF49\uFF43\uFF45",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "\uFF21\uFF4C\uFF49\uFF43\uFF45",
+      "cleanedStatus": "\uFF21\uFF4C\uFF49\uFF43\uFF45"
+    },
+    {
+      "label": "fi ligature",
+      "input": "\uFB01sh",
+      "key": "fish",
+      "displayBlank": false,
+      "cleanedName": "\uFB01sh",
+      "cleanedStatus": "\uFB01sh"
+    },
+    {
+      "label": "zero-width space",
+      "input": "Al\u200Bice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Al\u200Bice",
+      "cleanedStatus": "Al\u200Bice"
+    },
+    {
+      "label": "zero-width joiner",
+      "input": "Al\u200Dice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Al\u200Dice",
+      "cleanedStatus": "Al\u200Dice"
+    },
+    {
+      "label": "right-to-left override leading",
+      "input": "\u202EAlice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alice",
+      "cleanedStatus": "Alice"
+    },
+    {
+      "label": "byte-order mark",
+      "input": "\uFEFFAlice",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "\uFEFFAlice",
+      "cleanedStatus": "\uFEFFAlice"
+    },
+    {
+      "label": "left-to-right mark",
+      "input": "Alice\u200E",
+      "key": "aiice",
+      "displayBlank": false,
+      "cleanedName": "Alice",
+      "cleanedStatus": "Alice"
+    },
+    {
+      "label": "whitespace run",
+      "input": "Alice \t  Smith",
+      "key": "aiice smith",
+      "displayBlank": false,
+      "cleanedName": "Alice Smith",
+      "cleanedStatus": "Alice Smith"
+    },
+    {
+      "label": "no-break space",
+      "input": "Alice\u00A0Smith",
+      "key": "aiice smith",
+      "displayBlank": false,
+      "cleanedName": "Alice Smith",
+      "cleanedStatus": "Alice Smith"
+    },
+    {
+      "label": "next line",
+      "input": "Ana\u0085Bell",
+      "key": "ana beii",
+      "displayBlank": false,
+      "cleanedName": "Ana Bell",
+      "cleanedStatus": "Ana Bell"
+    },
+    {
+      "label": "ogham space mark",
+      "input": "Ana\u1680Bell",
+      "key": "ana beii",
+      "displayBlank": false,
+      "cleanedName": "Ana Bell",
+      "cleanedStatus": "Ana Bell"
+    },
+    {
+      "label": "line separator",
+      "input": "Ana\u2028Bell",
+      "key": "ana beii",
+      "displayBlank": false,
+      "cleanedName": "Ana Bell",
+      "cleanedStatus": "Ana Bell"
+    },
+    {
+      "label": "paragraph separator",
+      "input": "Ana\u2029Bell",
+      "key": "ana beii",
+      "displayBlank": false,
+      "cleanedName": "Ana Bell",
+      "cleanedStatus": "Ana Bell"
+    }
+  ]
+}

@@ -26,6 +26,23 @@ object TextLimits {
      * [isValidReactionEmoji]; a length cap only, never an emoji-class test (see that function).
      */
     const val REACTION = 32
+
+    /**
+     * Received display text — a peer's name or status, a group's name where it is drawn — made safe to show on one line
+     * (ADR 2026-10.2kfr): C0/C1 controls outside regex `\s` and the bidi controls removed, [normalizeSingleLine], cut to
+     * [limit] UTF-16 units on a code-point boundary, and trimmed again (a cut can land after a space, and a leading
+     * U+0085 is `\s` but not `isWhitespace`, so it survives the first trim as a space). Idempotent. ZWJ and ZWNJ stay:
+     * emoji sequences and Persian names need them, and [app.getknit.knit.identity.NameKey] drops them anyway. knit-ios
+     * mirrors it as `TextLimits.cleanReceived`; `vectors/name-key-v1.json` pins both.
+     */
+    fun cleanReceived(
+        value: String,
+        limit: Int,
+    ): String {
+        val kept = StringBuilder(value.length)
+        for (c in value) if (!isRemovedFromReceived(c)) kept.append(c)
+        return normalizeSingleLine(kept.toString()).clampToUtf16(limit).trim()
+    }
 }
 
 /**
@@ -64,6 +81,21 @@ fun String.ellipsizeToUtf16(limit: Int): String = if (length <= limit) this else
  * per-keystroke — trimming the trailing space on every keystroke would stop the user from typing a
  * space between words (the field would reset before the next character).
  */
-fun normalizeSingleLine(value: String): String = value.trim().replace(WHITESPACE_RUN, " ")
+fun normalizeSingleLine(value: String): String = value.trim().replace(ART_WHITESPACE_RUN, " ")
 
-private val WHITESPACE_RUN = Regex("\\s+")
+/**
+ * A run of regex `\s` as ART answers it — Unicode White_Space, the set `ArtTextSemanticsTest` pins on a device and
+ * the iOS port mirrors (ADR 2026-10.swst) — spelled as a literal class, because the desktop JDK's own `\s` is the
+ * six ASCII characters: written as `\s`, a JVM test (and a vector it writes) would see a different law from a phone.
+ */
+internal val ART_WHITESPACE_RUN =
+    Regex("[\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000]+")
+
+/** A C0/C1 control that is not regex `\s`, or a bidi control (ALM, LRM, RLM, the embeddings and overrides, the isolates). */
+@Suppress("MagicNumber") // the code points are the definition
+private fun isRemovedFromReceived(c: Char): Boolean =
+    when (c.code) {
+        in 0x0000..0x0008, in 0x000E..0x001F, in 0x007F..0x0084, in 0x0086..0x009F -> true
+        0x061C, 0x200E, 0x200F, in 0x202A..0x202E, in 0x2066..0x2069 -> true
+        else -> false
+    }

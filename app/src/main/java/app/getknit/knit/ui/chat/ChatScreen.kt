@@ -222,6 +222,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.QuoteLabels
+import app.getknit.knit.data.message.groupNameForDisplay
 import app.getknit.knit.data.message.quoteHasAttachment
 import app.getknit.knit.data.message.quoteSnippet
 import app.getknit.knit.data.relay.AttachmentRelay
@@ -1734,7 +1735,7 @@ internal fun ChatScreenContent(
                                         fadeInSpec = KnitMotion.fastEffects(),
                                         fadeOutSpec = KnitMotion.fastEffects(),
                                     )
-                                val notice = statusNoticeText(row)
+                                val notice = statusNoticeText(row, state.memberTitle)
                                 val transfer = row.transfer
                                 val call = row.call
                                 if (call != null) {
@@ -4291,6 +4292,7 @@ private fun TypingIndicatorRow(
  * ([PeerRename]) so a second rename reads as a progression ("Old is now Mid", then "Mid is now New") instead
  * of two lines that both end in the newest name, and a photo line stores the name the peer had then, so it
  * agrees with the rename lines around it; only a row from before the snapshot was stored uses the live label.
+ * [memberTitle] is the group's member-derived title, for a group rename to a name that cleans to nothing.
  *
  * A kind this build doesn't know falls through to null and draws as a bubble. That is the deliberate
  * degradation: a row written by a newer build shows up looking odd rather than disappearing, which is
@@ -4298,7 +4300,10 @@ private fun TypingIndicatorRow(
  * previews — is written as "not KIND_NORMAL" rather than as a list of the kinds below.
  */
 @Composable
-private fun statusNoticeText(row: ChatRow): String? =
+private fun statusNoticeText(
+    row: ChatRow,
+    memberTitle: String,
+): String? =
     when (row.kind) {
         MessageEntity.KIND_MEMBER_LEFT -> {
             stringResource(R.string.chat_notice_member_left, row.senderName)
@@ -4321,9 +4326,11 @@ private fun statusNoticeText(row: ChatRow): String? =
             stringResource(R.string.chat_notice_peer_avatar, row.body.ifBlank { row.senderName })
         }
 
-        // body is the NEW group name — the old one is gone from live state by the time this renders.
+        // body is the NEW group name — the old one is gone from live state by the time this renders. Stored raw,
+        // as received, and cleaned here as the title is; a name that cleans to display-blank reads as the title the
+        // members make (ADR 2026-10.2kfr).
         MessageEntity.KIND_GROUP_RENAMED -> {
-            stringResource(R.string.chat_notice_group_renamed, row.senderName, row.body)
+            stringResource(R.string.chat_notice_group_renamed, row.senderName, groupNameForDisplay(row.body) ?: memberTitle)
         }
 
         MessageEntity.KIND_GROUP_PHOTO -> {

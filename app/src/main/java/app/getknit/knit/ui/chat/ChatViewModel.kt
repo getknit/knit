@@ -487,6 +487,8 @@ data class ChatUiState(
     // Conversation header: the room ([isRoom] true) or a 1:1 DM with [title]/[avatarHash] of the peer.
     val isRoom: Boolean = true,
     val title: String = "",
+    // A group's title from its members alone, what a rename notice shows for a name that cleans to display-blank.
+    val memberTitle: String = "",
     // The ` (Alias)` suffix already inside a DM's [title] when another known peer shares the name (ADR 058).
     val titleDiscriminator: String? = null,
     val avatarHash: String? = null,
@@ -1521,6 +1523,16 @@ class ChatViewModel(
                 mentionCandidates = candidates,
                 everyoneMentions = if (isGroup) everyoneMentions(members, me, blocked) else null,
                 isRoom = isRoom,
+                memberTitle =
+                    group
+                        ?.let {
+                            groupTitle(
+                                storedName = "",
+                                memberIds = members,
+                                selfId = me,
+                                fallback = context.getString(R.string.group_unnamed),
+                            ) { id -> label(id).text }
+                        }.orEmpty(),
                 title =
                     when {
                         group != null -> {

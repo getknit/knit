@@ -68,12 +68,12 @@ object Alias {
 
 /**
  * The name to show for a person: their stored profile [storedName] if they set one, otherwise the
- * friendly alias derived from [nodeId]. Replaces the old `.ifBlank { nodeId }` fallbacks scattered
- * across the UI and notifications. A surface that lists several people should resolve through
- * [PeerLabelIndex.labelFor] instead, which appends the alias whenever two known identities render to the
- * same name (ADR 058) — this function alone cannot tell two "Alice"s apart.
+ * friendly alias derived from [nodeId] — also for a name made only of invisible characters ([NameKey.isBlankName]).
+ * Replaces the old `.ifBlank { nodeId }` fallbacks scattered across the UI and notifications. A surface that lists
+ * several people should resolve through [PeerLabelIndex.labelFor] instead, which appends the alias whenever two
+ * known identities render to the same name (ADR 058) — this function alone cannot tell two "Alice"s apart.
  */
 fun displayNameFor(
     storedName: String?,
     nodeId: String,
-): String = storedName?.takeIf { it.isNotBlank() } ?: Alias.aliasFor(nodeId)
+): String = storedName?.takeUnless { NameKey.isBlankName(it) } ?: Alias.aliasFor(nodeId)

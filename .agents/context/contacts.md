@@ -33,6 +33,13 @@ lines.
   group co-members, verified, self) never go stale, and a new contact signal goes into `labelAnchors` too
   (`LabelAnchorsTest`). The stamp is buffered from `noteVerified` and banked on the metrics tick, never written on
   the inbound path, and `lastSeenAt` is presentation only — never a presence tier, a route, custody or eviction.
+- **When touching `NameKey`, `NameKey.isBlankName`, `TextLimits.cleanReceived`, `normalizeSingleLine`'s
+  `ART_WHITESPACE_RUN`, or `groupNameForDisplay`:** READ ADR 2026-10.2kfr (and ADR 2026-10.swst for the whitespace
+  sets). The key folds the 73 UTS #39 single-letter lookalikes before lowering and drops Cf/Mn/Me, the
+  Default_Ignorable ranges and U+2800; display-blank uses the key, wire-blank still uses `isBlank`. A received
+  profile name/status is cleaned at store, a group name only where it is drawn (the stored name is what we sign).
+  knit-ios mirrors all of it: `vectors/name-key-v1.json` (`NameKeyVectorTest`, and `ArtTextSemanticsTest` on ART)
+  is the pin, and every case stays inside Unicode 11.
 - **When touching `MeshManager.watchReachable`, its `flooded` memo / `refloodKey`, or `PROFILE_REFLOOD_MIN_MS`:**
   READ ADR 2026-09.uc8p. The first-sighting profile flood is the NAN-only key bootstrap; it goes to a peer once
   per (frame id, peer) per `SeenSet.DEFAULT_TTL_MS` — the receivers' own window, so every copy it withholds is

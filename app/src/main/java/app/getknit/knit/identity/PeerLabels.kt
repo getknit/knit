@@ -1,5 +1,6 @@
 package app.getknit.knit.identity
 
+import app.getknit.knit.ART_WHITESPACE_RUN
 import java.text.Normalizer
 import java.util.Locale
 
@@ -27,7 +28,10 @@ import java.util.Locale
  * matches a target's is minutes of grinding — but the match can only make *both* labels grow to two tokens
  * (48 bits, weeks on a GPU) and then three (72 bits, out of reach), never coincide; the growth is the tell.
  * A plain adoption of a contact's name, with no grinding, still shows two Alices with different aliases and
- * nothing says which is real. Trust stays with `verified` and the safety number.
+ * nothing says which is real — and so does a lookalike of it: [NameKey] folds single-letter Latin, Greek and
+ * Cyrillic confusables and drops invisible characters (ADR 2026-10.2kfr), so "Alice" spelled with a Cyrillic е or
+ * a variation selector collides with "Alice" and both get the suffix. A multi-letter lookalike (`rn` for `m`) still
+ * reads as its own name. Trust stays with `verified` and the safety number.
  *
  * **A clash fades** (ADR 2026-10.k8ge). The caller names the ids that have gone quiet — a stranger not heard
  * from in a week, never a contact or this device — and those give way: they stay labelled apart from
@@ -67,7 +71,7 @@ object PeerLabels {
         val idsByKey = HashMap<String, MutableSet<String>>()
         for ((id, storedName) in stored) {
             phrases[id] = Alias.tokens(id)
-            val name = storedName.takeIf { it.isNotBlank() } ?: phrases.getValue(id).first()
+            val name = storedName.takeUnless { NameKey.isBlankName(it) } ?: phrases.getValue(id).first()
             names[id] = name
             idsByKey.getOrPut(NameKey.of(name)) { LinkedHashSet() }.add(id)
         }
@@ -234,8 +238,8 @@ data class PeerLabelIndex(
     }
 }
 
-/** Tokens the rendered name already spends: one when it *is* the alias (a blank profile), else none. */
-private fun tokensInName(storedName: String?): Int = if (storedName.isNullOrBlank()) 1 else 0
+/** Tokens the rendered name already spends: one when it *is* the alias (a blank or invisible name), else none. */
+private fun tokensInName(storedName: String?): Int = if (NameKey.isBlankName(storedName)) 1 else 0
 
 /** The tokens after those in the name, up to [consumed]; null when the label spends none beyond the name. */
 private fun discriminatorOf(
@@ -248,27 +252,151 @@ private fun discriminatorOf(
 }
 
 /**
- * The collision key of a display name: NFKC-normalized, Unicode format characters (zero-width joiners
- * and spaces, bidi overrides) removed, lower-cased in the root locale, whitespace runs collapsed and
- * trimmed — so "Alice", "alice", "Ａlice" and "Al​ice" are one name. Deliberately no
- * confusable/homoglyph folding (a Cyrillic "а" stays distinct from a Latin "a"): a recorded limit.
+ * The collision key of a display name (ADR 058, amended by ADR 2026-10.2kfr), in this order:
+ * 1. NFKC, so "Ａlice" and the "ﬁ" ligature fold to their plain forms;
+ * 2. every single-letter Latin, Greek and Cyrillic lookalike in UTS #39 15.1.0 `confusables.txt` ([FOLD]) folded to
+ *    its ASCII letter, on the case-preserved string — UTS #39 is case-sensitive (Cyrillic `В` U+0412 looks like
+ *    `B`, `в` U+0432 does not look like `b`), and the table includes its own Latin capital I → l, so "AIice" is
+ *    "Alice";
+ * 3. lower-cased in the root locale, then ς folded to σ (Java applies Final_Sigma, Swift may not), then l folded to i:
+ *    step 2's I → l alone would stop "ALICE" keying with "Alice", so every I, i, l and their lookalikes share one
+ *    letter, at the cost of a suffix between names that differ only by i and l ("Eli" and "Ell");
+ * 4. format (Cf), nonspacing (Mn) and enclosing (Me) marks, the literal Default_Ignorable ranges ([DROP]) and the
+ *    Braille blank U+2800 dropped — after lowercasing, so the U+0307 that `İ` lowercases to goes too. NFKC already
+ *    composed every mark with a precomposed form, so "Nguyễn" keeps its `ễ`;
+ * 5. regex `\s` runs (ART's set) collapsed to one space and the ends trimmed.
+ *
+ * So "Alice", "ALICE", "Alice" with a zero-width space, "Alice" with a Cyrillic е and "AIice" are one name
+ * (`aiice`), and a name of only invisible characters is empty ([isBlankName]). The fold is generous on purpose: a
+ * collision costs only a suffix, so two real names that fold together (a Hindi name with and without a vowel sign)
+ * both show their alias words — nothing is merged, hidden or refused. Multi-character confusables (`rn` → `m`) and
+ * cross-script skeletons beyond [FOLD] are out of scope. The key never leaves the device; knit-ios runs the same
+ * five steps (`NameKey.of`), and `vectors/name-key-v1.json` pins both. Categories come from the platform's Unicode
+ * tables (ART's ICU on a phone), so a code point assigned after the older side's Unicode version may differ: an
+ * accepted residue.
  */
 object NameKey {
-    private val WHITESPACE_RUN = Regex("\\s+")
-
+    /** The key of [name]; empty when [name] is only whitespace and invisible characters. */
     fun of(name: String): String {
-        val folded = Normalizer.normalize(name, Normalizer.Form.NFKC)
-        val kept = StringBuilder(folded.length)
+        val composed = Normalizer.normalize(name, Normalizer.Form.NFKC)
+        val folded = StringBuilder(composed.length)
+        composed.forEachCodePoint { cp ->
+            val letter = FOLD[cp]
+            if (letter != null) folded.append(letter) else folded.appendCodePoint(cp)
+        }
+        val lower =
+            folded
+                .toString()
+                .lowercase(Locale.ROOT)
+                .replace(FINAL_SIGMA, SIGMA)
+                .replace(SMALL_L, SMALL_I)
+        val kept = StringBuilder(lower.length)
+        lower.forEachCodePoint { cp -> if (!dropped(cp)) kept.appendCodePoint(cp) }
+        return kept.toString().replace(ART_WHITESPACE_RUN, " ").trim()
+    }
+
+    /**
+     * Whether a person or group with stored name [name] shows its alias (or member-derived title) instead: null, or
+     * a [of] key that is empty. Display only — what a frame carries and every composer gate still use `isBlank`, so
+     * a group named only U+3164 is still a name on the wire.
+     */
+    fun isBlankName(name: String?): Boolean = name == null || of(name).isEmpty()
+
+    private const val FINAL_SIGMA = '\u03C2'
+    private const val SIGMA = '\u03C3'
+    private const val SMALL_L = 'l'
+    private const val SMALL_I = 'i'
+    private const val BRAILLE_BLANK = 0x2800
+
+    private fun dropped(cp: Int): Boolean {
+        when (Character.getType(cp).toByte()) {
+            Character.FORMAT, Character.NON_SPACING_MARK, Character.ENCLOSING_MARK -> return true
+        }
+        return cp == BRAILLE_BLANK || DROP.any { cp in it }
+    }
+
+    private inline fun String.forEachCodePoint(action: (Int) -> Unit) {
         var i = 0
-        while (i < folded.length) {
-            val cp = folded.codePointAt(i)
-            if (Character.getType(cp) != Character.FORMAT.toInt()) kept.appendCodePoint(cp)
+        while (i < length) {
+            val cp = codePointAt(i)
+            action(cp)
             i += Character.charCount(cp)
         }
-        return kept
-            .toString()
-            .lowercase(Locale.ROOT)
-            .replace(WHITESPACE_RUN, " ")
-            .trim()
     }
+
+    /**
+     * Every UTS #39 15.1.0 `confusables.txt` entry (sha256 8289f833…69fd5ed) whose source is one code point in Latin
+     * U+0041–U+007A, Greek U+0370–U+03FF or Cyrillic U+0400–U+052F and whose prototype is one ASCII letter: 73
+     * sources, each keyed to its letter. A literal, never derived at run time.
+     */
+    @Suppress("MagicNumber") // the code points are the table
+    internal val FOLD: Map<Int, Char> =
+        listOf(
+            'A' to listOf(0x0391, 0x0410),
+            'a' to listOf(0x03B1, 0x0430),
+            'B' to listOf(0x0392, 0x0412),
+            'b' to listOf(0x042C),
+            'C' to listOf(0x03F9, 0x0421),
+            'c' to listOf(0x03F2, 0x0441),
+            'd' to listOf(0x0501),
+            'E' to listOf(0x0395, 0x0415),
+            'e' to listOf(0x0435, 0x04BD),
+            'F' to listOf(0x03DC),
+            'G' to listOf(0x050C),
+            'H' to listOf(0x0397, 0x041D),
+            'h' to listOf(0x04BB),
+            'i' to listOf(0x037A, 0x03B9, 0x0456, 0x04CF),
+            'J' to listOf(0x037F, 0x0408),
+            'j' to listOf(0x03F3, 0x0458),
+            'K' to listOf(0x039A, 0x041A),
+            'l' to listOf(0x0049, 0x0399, 0x0406, 0x04C0),
+            'M' to listOf(0x039C, 0x03FA, 0x041C),
+            'N' to listOf(0x039D),
+            'O' to listOf(0x039F, 0x041E),
+            'o' to listOf(0x03BF, 0x03C3, 0x043E),
+            'P' to listOf(0x03A1, 0x0420),
+            'p' to listOf(0x03C1, 0x03F1, 0x0440),
+            'q' to listOf(0x051B),
+            'r' to listOf(0x0433),
+            'S' to listOf(0x0405),
+            's' to listOf(0x0455),
+            'T' to listOf(0x03A4, 0x0422),
+            'u' to listOf(0x03C5),
+            'V' to listOf(0x0474),
+            'v' to listOf(0x03BD, 0x0475),
+            'W' to listOf(0x051C),
+            'w' to listOf(0x0461, 0x051D),
+            'X' to listOf(0x03A7, 0x0425),
+            'x' to listOf(0x0445),
+            'Y' to listOf(0x03A5, 0x03D2, 0x0423, 0x04AE),
+            'y' to listOf(0x03B3, 0x0443, 0x04AF),
+            'Z' to listOf(0x0396),
+        ).flatMap { (letter, sources) -> sources.map { it to letter } }
+            .toMap()
+
+    /**
+     * The literal Default_Ignorable_Code_Point ranges of Unicode 15.1 (`DerivedCoreProperties.txt`), dropped whatever
+     * the platform's general category says — U+034F, the Hangul fillers and the variation selectors are not Cf.
+     */
+    @Suppress("MagicNumber") // the code points are the table
+    internal val DROP: List<IntRange> =
+        listOf(
+            0x00AD..0x00AD,
+            0x034F..0x034F,
+            0x061C..0x061C,
+            0x115F..0x1160,
+            0x17B4..0x17B5,
+            0x180B..0x180F,
+            0x200B..0x200F,
+            0x202A..0x202E,
+            0x2060..0x206F,
+            0x3164..0x3164,
+            0xFE00..0xFE0F,
+            0xFEFF..0xFEFF,
+            0xFFA0..0xFFA0,
+            0xFFF0..0xFFF8,
+            0x1BCA0..0x1BCA3,
+            0x1D173..0x1D17A,
+            0xE0000..0xE0FFF,
+        )
 }

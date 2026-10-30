@@ -44,6 +44,30 @@ class PeerLabelsTest {
     }
 
     @Test
+    fun aLookalikeOfAContactsNameDiscriminatesBoth() {
+        // ADR 2026-10.2kfr: a stranger "Alicе" with a Cyrillic е no longer reads as a plain "Alice" beside the contact.
+        val idx = index("contact" to "Alice", "stranger" to "Alic\u0435")
+        assertEquals("Alice (${Alias.aliasFor("contact")})", idx.labelFor("contact").text)
+        assertEquals("Alic\u0435 (${Alias.aliasFor("stranger")})", idx.labelFor("stranger").text)
+        // So do an invisible mark and a capital I for an l, and an outside sender under either.
+        assertEquals(Alias.aliasFor("zz"), idx.labelFor("zz", "Alice\uFE0F").discriminator)
+        assertEquals(Alias.aliasFor("zz"), idx.labelFor("zz", "AIice").discriminator)
+    }
+
+    @Test
+    fun aNameOfOnlyInvisiblesRendersAsTheAliasWithNoRepeat() {
+        val idx = index("a" to "\u3164", "b" to "Bob")
+        val a = idx.labelFor("a")
+        assertEquals(Alias.aliasFor("a"), a.name)
+        assertEquals(Alias.aliasFor("a"), a.text) // never "Alias (Alias)"
+        assertNull(a.discriminator)
+        assertEquals(Alias.aliasFor("a"), displayNameFor("\u3164", "a"))
+        // It collides with a truly blank peer's alias as a blank name does, growing a continuation, not a repeat.
+        val impostor = index("a" to "\u2800\u2800", "b" to Alias.aliasFor("a")).labelFor("a")
+        assertEquals("${Alias.aliasFor("a")} (${Alias.tokens("a", 2)[1]})", impostor.text)
+    }
+
+    @Test
     fun aThreeWayCollisionDiscriminatesEveryMember() {
         val idx = index("a" to "Sam", "b" to "Sam", "c" to "SAM")
         val texts = listOf("a", "b", "c").map { idx.labelFor(it).text }

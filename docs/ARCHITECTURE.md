@@ -658,14 +658,18 @@ that budget is a purely local knob that can differ per node without breaking cue
   peer is never shown as a raw id.
 - **`PeerLabels`** (ADR 058, growth rule ADR 2026-09.wuqj) — names are not unique, so a list surface
   resolves through `PeerLabelIndex.labelFor` instead: over the universe of every cached peer ∪ our own name,
-  grouped by `NameKey` (NFKC, format chars stripped, lower-cased, whitespace collapsed), a peer whose name
+  grouped by `NameKey` (NFKC, UTS #39's single-letter Latin/Greek/Cyrillic lookalikes folded, lower-cased, format
+  chars, marks and invisible fillers dropped, whitespace collapsed — ADR 2026-10.2kfr), a peer whose name
   another identity shares is labelled `Name (Alias)`; a label that still reads like another's (a blank-named
   peer whose alias someone chose as a name, a name chosen to look like a label, an alias ground to match)
   grows by the next token of the phrase, round by round, so labels are distinct by construction.
   `PeerRepository.observeDirectory()` emits the table with its index; `labelIndex()` is the suspend snapshot
   (notifications, card preview). Collision-evident, not anti-impersonation — a 24-bit token is minutes of
-  grinding, but a match can only make both labels longer, never equal; `verified` and the safety number
-  remain the trust mechanism. A stranger not heard from for a week (`peers.lastSeenAt`, stamped from accepted signed frames on the
+  grinding, but a match can only make both labels longer, never equal; a lookalike spelling ("Alicе" with a
+  Cyrillic е, "AIice", an invisible mark) collides too, so both get the alias, though a multi-letter lookalike
+  (`rn` for `m`) does not; `verified` and the safety number remain the trust mechanism. A name of only invisible
+  characters shows as the alias (`NameKey.isBlankName`), and a received name or status is stored cleaned of
+  controls, bidi overrides and line breaks (`TextLimits.cleanReceived`; a group name only where it is drawn). A stranger not heard from for a week (`peers.lastSeenAt`, stamped from accepted signed frames on the
   metrics tick) **gives way** (ADR 2026-10.k8ge): still labelled apart, but no longer adding a token to anyone
   else, so a contact reads plain again; contacts, verified peers and self (`data/LabelAnchors`) never go stale.
 - **Profile broadcasting** (`MeshManager`):

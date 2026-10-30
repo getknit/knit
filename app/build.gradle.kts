@@ -701,6 +701,11 @@ android {
         getByName("debug") {
             assets.directories.add("schemas")
         }
+        // The repo-root vectors as instrumented-test assets, so ArtTextSemanticsTest replays name-key-v1.json on ART
+        // (ADR 2026-10.2kfr). Test APK only; nothing here reaches a shipped build.
+        getByName("androidTest") {
+            assets.directories.add("../vectors")
+        }
         // The `staging` build type is release-with-R8 signed by the debug key (device testing only). It has
         // no src/staging, so reuse the release variant's no-op DemoWiring stub for the two src/main demo
         // seams (seedDemoIfEnabled / demoTransportOrNull) — staging must not demo-seed, exactly like release.

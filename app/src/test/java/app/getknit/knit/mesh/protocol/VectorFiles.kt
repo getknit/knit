@@ -24,20 +24,37 @@ internal object VectorFiles {
     fun write(
         name: String,
         content: JsonElement,
+        asciiOnly: Boolean = false,
     ) {
-        locate(name).writeText(render(content))
+        locate(name).writeText(render(content, asciiOnly))
     }
 
-    /** The file's text for [content], byte for byte what [write] puts there; a test comparing a regeneration reads this. */
+    /**
+     * The file's text for [content], byte for byte what [write] puts there; a test comparing a regeneration reads this.
+     * [asciiOnly] writes DEL and every non-ASCII UTF-16 unit as a `\uXXXX` escape, for a file whose strings carry invisible
+     * code points a reviewer could not otherwise see (`name-key-v1.json`); it parses to the same strings.
+     */
     @OptIn(ExperimentalSerializationApi::class)
-    fun render(content: JsonElement): String {
+    fun render(
+        content: JsonElement,
+        asciiOnly: Boolean = false,
+    ): String {
         val json =
             Json {
                 prettyPrint = true
                 prettyPrintIndent = "  "
             }
-        return json.encodeToString(JsonElement.serializer(), content) + "\n"
+        val text = json.encodeToString(JsonElement.serializer(), content) + "\n"
+        return if (asciiOnly) text.escapeNonAscii() else text
     }
+
+    /** DEL and the non-ASCII units become `\uXXXX`: safe anywhere in the rendered file, since JSON's syntax is all ASCII. */
+    private fun String.escapeNonAscii(): String =
+        buildString(length) {
+            for (c in this@escapeNonAscii) if (c.code < DEL) append(c) else append("\\u%04X".format(c.code))
+        }
+
+    private const val DEL = 0x7F
 
     /** The file's text as it stands. */
     fun text(name: String): String = locate(name).readText()
