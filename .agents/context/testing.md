@@ -484,9 +484,12 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   one shared `boardsAir` (a `quickAir`, and a DM ✓✓ hold capped at 1 s), so a scenario written for links alone also runs with compact DMs and ticks
   racing its signed copies — the restore and session shapes that first showed the answer gate's need. A node that must
   stay board-less in that sweep (one whose subject is a signed-only path, or a carrier) says `lab.node(name,
-  board = false)`. No CI job sets the variable: run it by hand (`KNIT_LAB_BOARDS=1 scripts/lab-chaos.sh --tests
-  SessionLabTest --tests RestoreLabTest --tests LoraDirectLabTest --runs 10`) after a change to the crypto or LoRa
-  planes; env vars are not Gradle inputs, so a re-run needs `--rerun`. A LoRa scenario's own air is
+  board = false)`. CI runs it three times (GitHub `mesh-lab-boards`, GitLab `test:mesh-lab-boards`) through
+  `-Pknit.labBoards=true`, which sets the variable on the Test task as a declared input and leaves out the classes
+  `app/build.gradle.kts` lists as not board-ready yet; take a class off that list once it passes. By hand, after a
+  change to the crypto or LoRa planes: `KNIT_LAB_BOARDS=1 scripts/lab-chaos.sh --tests SessionLabTest --tests
+  RestoreLabTest --tests LoraDirectLabTest --runs 10` (the bare env var is not a Gradle input, so a plain re-run
+  needs `--rerun`). A LoRa scenario's own air is
   `MeshLab.quickAir()` — the destination board acks in 50 ms and an unanswered unicast retries every 300 ms, the
   firmware's minute compressed — and its boards come up provisioned on `MeshLab.KNIT_SLOT`, since a compact DM is never
   sent from slot 0. `FakeMeshtasticAir` runs a want_ack unicast on its link's scope and only once `send` returned, so a

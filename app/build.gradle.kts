@@ -595,6 +595,12 @@ android {
                 .orElse(false)
                 .get()
         val labChaos = providers.gradleProperty("knit.labChaos").orNull
+        val labBoards =
+            providers
+                .gradleProperty("knit.labBoards")
+                .map(String::toBoolean)
+                .orElse(false)
+                .get()
         val labChaosRuns = providers.gradleProperty("knit.labChaosRuns").orNull
         val previewStrings = providers.gradleProperty("knit.previewStrings").orNull
         val wireVectors = rootProject.layout.projectDirectory.dir("vectors")
@@ -631,6 +637,25 @@ android {
                     test.filter.excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
                 } else {
                     test.systemProperty("knit.previewStrings", previewStrings)
+                }
+                // `-Pknit.labBoards=true` gives every mesh-lab node a LoRa board (MeshLab.BOARDS_ENV, ADR
+                // 2026-10.x9fa), so each scenario also runs with compact DMs and ticks racing its signed copies.
+                // Passed as the env var MeshLab reads, and declared an input so a boards run is never answered
+                // from a plain run's up-to-date or cached result. The classes listed are not board-ready yet: they
+                // fail every boards run and pass every plain one (2026-10-29), each a scenario that assumes no
+                // LoRa or a real interaction still to be told apart. Take a class off the list once it passes.
+                if (labBoards) {
+                    test.environment("KNIT_LAB_BOARDS", "1")
+                    test.inputs.property("knitLabBoards", true)
+                    listOf(
+                        "CustodyQuotaLabTest",
+                        "LargeAttachmentLabTest",
+                        "LoraPocketLabTest",
+                        "PullBudgetLabTest",
+                        "RoomFloodLabTest",
+                        "StrandedAttachmentLabTest",
+                        "StrangerBacklogLabTest",
+                    ).forEach { test.filter.excludeTestsMatching("app.getknit.knit.mesh.lab.$it") }
                 }
                 // `-Pknit.labChaos=<seed|random>` (+ `-Pknit.labChaosRuns=<n>`) turns on the mesh lab's seeded
                 // scheduling noise (mesh/lab/LabChaos.kt; scripts/lab-chaos.sh). A system property is a Test

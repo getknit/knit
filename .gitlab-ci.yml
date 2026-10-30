@@ -364,6 +364,30 @@ test:mesh-lab:
       - app/build/reports/tests/testDebugUnitTest/
     expire_in: 1 week
 
+# The same scenarios with every node given a LoRa board (-Pknit.labBoards=true, MeshLab.BOARDS_ENV, ADR
+# 2026-10.x9fa): compact DMs and their ticks race the signed copies the plain run carries alone, which is where the
+# answer gate's restore split and three post-rebase failures showed up. None of them fails test:mesh-lab. A few
+# classes are not board-ready yet; app/build.gradle.kts lists them. Three green runs, enforced, like test:mesh-lab.
+test:mesh-lab-boards:
+  extends: .android
+  stage: test
+  tags: [skuld]
+  needs: [{job: "build:debug", artifacts: false}]
+  script:
+    - *compile-unit-tests
+    - |
+      for run in 1 2 3; do
+        echo "--- mesh/lab boards run $run ---"
+        ./gradlew :app:testDebugUnitTest --tests 'app.getknit.knit.mesh.lab.*' -Pknit.labBoards=true --rerun --stacktrace --console=plain
+      done
+  artifacts:
+    when: always
+    reports:
+      junit: app/build/test-results/testDebugUnitTest/**/TEST-*.xml
+    paths:
+      - app/build/reports/tests/testDebugUnitTest/
+    expire_in: 1 week
+
 # Test coverage (advisory) — Kover instruments the *debug* unit tests and reports line coverage over the
 # hand-written code (generated Room _Impl / Compose / BuildConfig are excluded in app/build.gradle.kts).
 # koverXmlReportDebug depends on testDebugUnitTest, so the report tasks run the tests themselves. Kept a
