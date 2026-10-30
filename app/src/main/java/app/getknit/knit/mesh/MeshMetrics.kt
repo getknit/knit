@@ -1181,8 +1181,8 @@ class MeshMetrics {
 
     /**
      * A Knit room post the shared-band brake kept queued: the board reported its channel 40 % busy or more (ADR
-     * 2026-10.ug4a). Held, not dropped, like [onLoraAirtimeHeld], and counted once per frame the same way. A post the
-     * band stays busy for past `FRESH_MS` is then dropped at send as `STALE`.
+     * 2026-10.ug4a). Held, not dropped, like [onLoraAirtimeHeld], and counted once per frame the same way. A post still
+     * braked past `FRESH_MS` from its send is then dropped at send as `STALE`.
      */
     fun onLoraBandBraked() {
         loraBandBraked.incrementAndGet()

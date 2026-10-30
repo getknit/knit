@@ -305,3 +305,20 @@ under the unconfirmed winning session) still carries the winner's init, and re-s
 `LoraDirectLabTest.aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore` shows it and is held under #189; it needs
 only a both-initiate race and a restore inside custody's window, without LoRa.
 
+### Amendment (2026-10-29): our board's ACK is booked only when the firmware sends one
+
+- **2026-10-29 (`want_ack` decode):** Our board's ACK is booked only when the firmware sent one, replacing "Our board's ACK of every compact DM addressed to us — opened or not — is booked as a nominal 8 B" in **Air**.
+  - **Decode:** `MeshtasticProto` now decodes `MeshPacket.want_ack` (field 10) and `next_hop` (field 18) onto `ReceivedPacket` (`wantAck`, `hopLimit`, `nextHop`).
+  - **Booking:** `LoraDirectPolicy.boardAcks` books the nominal 8 B for a compact DM addressed to us, opened or not, in two cases:
+    - it asked for `want_ack`;
+    - its sender's next-hop routing named our board (`next_hop` = our node number's last byte) with hops left.
+  - **Firmware** 332b5b0a2, `ReliableRouter::sniffReceived` (`ReliableRouter.cpp:123-158`):
+    - a decoded `want_ack` unicast to us with no `request_id` or `reply_id` is ACKed (137-139);
+    - without `want_ack`, only the `next_hop` case draws a hop-zero ACK (156);
+    - a unicast with neither draws none;
+    - a duplicate the board re-ACKs without handing it to the phone (`NextHopRouter.cpp:163-170`) stays unbooked.
+  - **Effect:** every compact DM a Knit build sends asks for `want_ack`, so between Knit builds the booking is unchanged. What stops is booking a foreign or forged `0x11` unicast that asked for no ACK.
+  - **Guards:**
+    - `MeshtasticProtoTest`: field 10 set, absent and false; field 18.
+    - `LoraDirectPolicyTest.ourBoardAcksAUnicastThatAskedOrThatNamedUsItsNextHopWithHopsLeft`.
+    - `LoraDirectTransportTest.ourBoardsAckIsBookedForEveryCompactDmAddressedToUsThatAskedForOneOpenedOrNot` and `aCompactDmThatAskedForNoAckBooksNothing`.

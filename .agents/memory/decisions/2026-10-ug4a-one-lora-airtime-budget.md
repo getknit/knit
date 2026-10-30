@@ -102,7 +102,8 @@ already backs off 60 s on that NAK. `isTxAllowedAirUtil` is the firmware's own-t
 - The status's `braked` is as of the last publish, so the row can show a lifted brake for up to a minute.
 - Our own airings count toward the channel reading, so a phone that airs a burst can brake its own next room post for
   a minute or so.
-- The room's "band busy" notice is a follow-up: it needs strings in six locales.
+- The room's "band busy" notice is a follow-up: it needs strings in six locales. Done 2026-10-29 (#240):
+  `LoraReach.RoomBandBusy`, recorded in ADR 2026-09.ursc's amendment.
 - Guards: `LoraAirtimeTest` (the single total, the half ceiling with its own cost, no tail, `refund` without a bucket);
   `LoraPacePolicyTest` (two classes, the receipt shed before a message, the holder narrowed, the brake: skipped,
   counted once, a braked-only queue not due, stale and dedicated readings); `LoraMeshTransportTest` (restart starts

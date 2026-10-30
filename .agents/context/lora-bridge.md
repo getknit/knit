@@ -248,10 +248,11 @@ a new value), timed on arrival by the transport (`onBoardAir`); the handshake `N
 old and never feeds it. Losing the board forgets the reading (`forgetBand`); a re-handshake does not, and the last
 reading ages out. A brake is not an airtime refusal: it never sets the air deferral; a braked-only queue reports itself
 due when the reading goes stale, and a new reading wakes the pacer. A braked post keeps its `FRESH_MS` age-out at send
-(`STALE`), so a band busy longer than that drops it from LoRa; the radios, custody and the spool still carry it.
+(`STALE`), so a post still braked past `FRESH_MS` from its send drops from LoRa; the radios, custody and the spool still carry it.
 Counted once per frame (`loraBandBraked`, apart from `loraAirtimeHeld`), logged on its edges (`lora band busy` /
 `lora band clear`), and shown as `braked` / `boardAirAgeMs` in `…debug.LORA` (as of the last status publish, which the
-linger sweep refreshes every minute). The room's "band busy" notice is a follow-up.
+linger sweep refreshes every minute). The Nearby room says so with `LoraReach.RoomBandBusy` while someone is
+LoRa-only (#240, ADR 2026-09.ursc's 2026-10-29 amendment).
 
 **Freshness gate** (fan-out paths only, room included): a `chat`/`reaction` whose `sentAt` is more than
 15 min old (`LoraFramePolicy.FRESH_MS`) is a custody re-serve and is not fanned — without it a newcomer's
@@ -626,8 +627,8 @@ false are two encodings — both read as messagable); `Channel{ index=1, setting
   photo; pinned in `CoordinationPlaneSizeBudgetTest`).
   The **room** has its own rule, `loraRoomReachFor` → `LoraReach.RoomSaturated` (ADR 2026-09.ursc): the same spent
   window, but the audience test is existential — `peerTransports.values.any(::isLoraOnly)`, *is there anyone
-  out there a full queue would delay* — because the room is addressed to nobody. It is the room's **only**
-  LoRa state; there is deliberately no `LoraOnly` counterpart (the room's audience is always a mix, so a
+  out there a full queue would delay* — because the room is addressed to nobody. It is one of the room's two LoRa
+  states: `RoomBandBusy` outranks it while the busy-band brake holds room posts (#240, ursc's 2026-10-29 amendment); there is deliberately no `LoraOnly` counterpart (the room's audience is always a mix, so a
   standing "some people are far" strip is permanent chrome saying nothing actionable), no `RelayReach` gate
   (the room is never scope-eligible, `SPOOL_PROTOCOL` §4.4, so no better carrier can exist), no `facts.dms`
   gate (the room rides whatever the DM switch says) and no dismissal (it clears itself as the rolling window

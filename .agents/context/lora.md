@@ -92,15 +92,21 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   <!-- doc-lint: allow AirBucket — the buckets ADR 2026-10.ug4a removed, named as history -->
 - **When touching the shared-band brake — `LoraPacePolicy.onBandReading` / `braked` / `forgetBand` /
   `BUSY_BAND_PERCENT` / `BRAKE_FRESH_MS`, `OutboundFrame.braked` / `heldForBand`, `BoardAir` (`atMs`),
-  `MeshtasticSession.onSelfMetrics`, `LoraStatus.braked`, or `loraBandBraked`:** READ ADR 2026-10.ug4a, then "Pacing"
+  `MeshtasticSession.onSelfMetrics`, `LoraStatus.braked`, `LoraFacts.bandBusy`, `LoraReach.RoomBandBusy`, or
+  `loraBandBraked`:** READ ADR 2026-10.ug4a, then "Pacing"
   in `lora-bridge.md`. While the board's channel utilisation is at or over 40 % (the firmware's
   `max_channel_util_percent`, where it stops even its own automatic traffic; stock firmware never gates typed text) on a reading at most 5 minutes old, off a dedicated slot, Knit room posts wait in the queue; compact DMs, the
   Meshtastic room and the auto-reply still go. Stricter than a stock client, which would send the typed post: on a slot
-  at or over 40 % most of the time, room posts may never cross LoRa and drop as `STALE` after `FRESH_MS`. The reading is the board's **live** self-telemetry only — never the
+  at or over 40 % most of the time, room posts may never cross LoRa and drop as `STALE` past `FRESH_MS` from their send. The reading is the board's **live** self-telemetry only — never the
   handshake `NodeInfo`, whose `device_metrics` can be hours old — timed on arrival, forgotten when the board is lost; a
   braked-only queue sleeps to the reading's staleness and a new reading wakes it. A brake is not an airtime refusal:
   it never sets the air deferral and is counted apart (`loraBandBraked`, once per frame). `airUtilTx` is a diagnostic
   only, never a ledger seed.
+- **When touching the brake's face — `LoraFacts.bandBusy` or `LoraReach.RoomBandBusy`:** READ ADR 2026-10.ug4a and
+  ADR 2026-09.ursc (its 2026-10-29 amendment). `bandBusy` is `LoraStatus.braked` while the plane is Live, else false;
+  `loraRoomReachFor` returns `RoomBandBusy` only when a peer is LoRa-only, ahead of `RoomSaturated` (a braked post may
+  never cross LoRa, a spent window only delays it); the DM and group rules never read it, since the brake holds no
+  DM. It can outlast a lifted brake by the linger sweep's minute (#240).
 - **When touching `skipCovered` / `coverReason`, `suppressDataPath` / `linkIds`, `coveredByInternet` on this plane,
   `RideGate` (`authorId`, `direct`, `reachHeld`, `unackedFrameId`), `staleReason` / `StaleAtSend`,
   `OutboundFrame.sigKey`, `sendFrame`, or `selfIdKnown`:** READ ADR 054 and ADR 2026-09.5dt2 (and ADR 2026-09.y5f3 for
@@ -173,7 +179,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   dedicated-slot board), the plane's one direct send without `want_ack`. Its memory persists for the per-sender cap
   across a restart: the board hands a packet to the phone once, so a read DM never comes back (#241).
 - **When touching the plane's face — `DeliveryPlane.LoRa`, `InboundFrame.kind`, `LoraPlane`, `LoraStatus` /
-  `LoraStatusRepository`, `BoardFilter`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `GroupUnsupported`,
+  `LoraStatusRepository`, `BoardFilter`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `RoomBandBusy`, `GroupUnsupported`,
   `LoraOnlySaturated`, `loraHintFor`), or `ui/lora/`:** READ ADR 040 (its §1 collapse amended by ADR 2026-10.e42d), ADR
   2026-09.ursc and ADR 2026-09.6ww7. The kind is for presentation only — carry, relay and convergence never read it,
   and it is never folded into `fromNodeId`. A notice
