@@ -63,6 +63,8 @@ document:
 
 ### Fixed
 
+- Knit no longer closes during a live call on mobile data, or when your phone moves onto mobile data in the
+  middle of one.
 - Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
   which from a chat or Settings left Knit on a blank screen.
 - Voice notes and files no longer show up in the Nearby room. Knit never offered them there, but a modified
