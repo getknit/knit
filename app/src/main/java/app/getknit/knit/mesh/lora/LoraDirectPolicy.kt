@@ -17,10 +17,20 @@ package app.getknit.knit.mesh.lora
  * - [Reach.UNREACHABLE]: the firmware gave up, or nothing answered by the deadline. Offers are held — their DMs stay
  *   with `LoraDirectSource` — until the board is heard ([onHeard], the only edge out besides an ack) or the re-probe
  *   gets an ack back.
- * - [Reach.REFUSED]: the destination's board refused what reached it (a `NO_CHANNEL` after a Restore). Held until
+ * - [Reach.REFUSED]: the destination's board refused what reached it (a `NO_CHANNEL` after a Restore, which a board
+ *   that still holds our key never sends: it decodes the PKI DM on index 0 whatever its Knit channel). Held until
  *   their profile changes ([onProfileChanged]); hearing them does not clear it, since they are plainly on the air. It
  *   lapses to [Reach.UNKNOWN] after [refusedLapseMs] (the re-probe's cap), so a board set up again without a profile
  *   edit is asked once more rather than never.
+ * - [Reach.NO_KEY]: our own board refused to send to them (`PKI_SEND_FAIL_PUBLIC_KEY`, 39: it holds no key for their
+ *   board, ADR 2026-10.aajj) and nothing Knit may do about it is left — the `add_contact` it wrote did not take, or it
+ *   may write none ([LoraContactPolicy]). Nothing aired. Held like a refusal, and lifted by a changed profile, a key the
+ *   board learns for them ([onKeyLearned]) or the same lapse.
+ *
+ * Two holds that are not marks keep "one send per unconfirmed peer" while nothing is queued or in flight: a frame our
+ * board refused for want of a key, waiting on the `add_contact` written for it ([holdForContact]), and the one re-offer
+ * after the destination's `PKI_UNKNOWN_PUBKEY` (35), waiting out a retransmit gap while our board's `NodeInfo` reaches
+ * it ([scheduleRetry]). Both are frames, not offers: they carry the gates their own path asked.
  *
  * The in-flight table maps a packet handle to what it carried, so an outcome can be resolved; each entry has a deadline
  * ([deadlineMs]), so every direct send ends, and the table is bounded ([MAX_FLIGHTS], oldest ended first). Offers that
@@ -34,7 +44,7 @@ internal class LoraDirectPolicy(
     /** How long a refusal holds a peer whose profile never changes: the re-probe's longest gap, then one more try. */
     private val refusedLapseMs: Long = LoraReprobe.CAP_MS,
 ) {
-    enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE, REFUSED }
+    enum class Reach { UNKNOWN, REACHABLE, UNREACHABLE, REFUSED, NO_KEY }
 
     private class PeerState(
         val reach: Reach,
@@ -60,6 +70,14 @@ internal class LoraDirectPolicy(
          * ack says flew: shortest, so an ack over-counts retries rather than under-counts them.
          */
         val retransmitMs: Long,
+        /**
+         * The sealed packet and the gates its path asked: what the one re-offer after a `PKI_UNKNOWN_PUBKEY` re-queues,
+         * and what a `39` that arrives only as a late NAK (its `queueStatus` timed out) holds for an `add_contact`.
+         */
+        val packet: ByteArray? = null,
+        val gate: RideGate = RideGate(),
+        /** The NodeInfo stream's stamp when the send was issued ([MeshtasticLink.userSeq]): what a late `39` is read against. */
+        val userSeqAtSend: Long = 0,
     )
 
     private val flights = LinkedHashMap<UInt, Flight>()
@@ -80,6 +98,23 @@ internal class LoraDirectPolicy(
 
     private val parked = HashMap<String, ArrayDeque<Parked>>()
 
+    /** A frame our board refused for want of a key, per peer, held while the `add_contact` written for it lands. */
+    private val contactHeld = HashMap<String, OutboundFrame>()
+
+    /** The one re-offer after a destination's `PKI_UNKNOWN_PUBKEY`, per peer, due once its gap has passed. */
+    private class Retry(
+        val at: Long,
+        val frame: OutboundFrame,
+    )
+
+    private val retries = HashMap<String, Retry>()
+
+    /**
+     * Packet handles whose `39` was already acted on: the `queueStatus` and the self-NAK both report it, in either order,
+     * and the second must not write a second contact or count a second refusal. Bounded at [MAX_FLIGHTS].
+     */
+    private val noKeyHandles = LinkedHashSet<UInt>()
+
     /** [peerId]'s reach at [now]: [Reach.REACHABLE] lingers out to [Reach.UNKNOWN]. */
     @Synchronized
     fun reachOf(
@@ -90,7 +125,7 @@ internal class LoraDirectPolicy(
         val lapse =
             when (state.reach) {
                 Reach.REACHABLE -> lingerMs
-                Reach.REFUSED -> refusedLapseMs
+                Reach.REFUSED, Reach.NO_KEY -> refusedLapseMs
                 else -> return state.reach
             }
         if (now - state.at > lapse) {
@@ -100,12 +135,12 @@ internal class LoraDirectPolicy(
         return state.reach
     }
 
-    /** Whether an offer to [peerId] is held: they are marked unreachable or refused. */
+    /** Whether an offer to [peerId] is held: they are marked unreachable, refused, or our board holds no key for them. */
     @Synchronized
     fun holds(
         peerId: String,
         now: Long,
-    ): Boolean = reachOf(peerId, now).let { it == Reach.UNREACHABLE || it == Reach.REFUSED }
+    ): Boolean = reachOf(peerId, now).let { it == Reach.UNREACHABLE || it == Reach.REFUSED || it == Reach.NO_KEY }
 
     /**
      * Whether an offer to [peerId] must wait for the outcome of a send already on its way to them: one direct send in
@@ -117,7 +152,10 @@ internal class LoraDirectPolicy(
         peerId: String,
         now: Long,
         queuedTo: Boolean,
-    ): Boolean = reachOf(peerId, now) != Reach.REACHABLE && (queuedTo || flights.values.any { it.send.peerId == peerId })
+    ): Boolean =
+        peerId in contactHeld ||
+            peerId in retries ||
+            (reachOf(peerId, now) != Reach.REACHABLE && (queuedTo || flights.values.any { it.send.peerId == peerId }))
 
     /** The destination's own board acked: a unicast to it gets there, for now. */
     @Synchronized
@@ -129,13 +167,17 @@ internal class LoraDirectPolicy(
         peers[peerId] = PeerState(Reach.REACHABLE, now)
     }
 
-    /** The firmware gave up, or nothing answered in time. Never a refusal's mark, which only a new profile lifts. */
+    /**
+     * The firmware gave up, or nothing answered in time. Never a refusal's or a missing key's mark, which only a new
+     * profile, a learned key or the lapse lifts.
+     */
     @Synchronized
     fun onUnreachable(
         peerId: String,
         now: Long,
     ) {
-        if (peers[peerId]?.reach == Reach.REFUSED) return
+        val reach = peers[peerId]?.reach
+        if (reach == Reach.REFUSED || reach == Reach.NO_KEY) return
         peers[peerId] = PeerState(Reach.UNREACHABLE, now)
     }
 
@@ -159,10 +201,86 @@ internal class LoraDirectPolicy(
         return true
     }
 
-    /** [peerId]'s pinned profile changed (a new version or another board): a refusal under the old one no longer stands. */
+    /**
+     * [peerId]'s pinned profile changed (a new version, another board, another key or another rank): a refusal or a
+     * missing key under the old one no longer stands.
+     */
     @Synchronized
     fun onProfileChanged(peerId: String) {
-        if (peers[peerId]?.reach == Reach.REFUSED) peers.remove(peerId)
+        val reach = peers[peerId]?.reach
+        if (reach == Reach.REFUSED || reach == Reach.NO_KEY) peers.remove(peerId)
+    }
+
+    /**
+     * Our board refused a send to [peerId] for want of their key and nothing Knit may do about it is left (ADR
+     * 2026-10.aajj): held, counted by the caller, never silent.
+     */
+    @Synchronized
+    fun onNoKey(
+        peerId: String,
+        now: Long,
+    ) {
+        peers[peerId] = PeerState(Reach.NO_KEY, now)
+    }
+
+    /** Our board's NodeDB showed a key for [peerId]'s board: a missing-key mark is lifted. True on that edge alone. */
+    @Synchronized
+    fun onKeyLearned(peerId: String): Boolean {
+        if (peers[peerId]?.reach != Reach.NO_KEY) return false
+        peers.remove(peerId)
+        return true
+    }
+
+    /**
+     * Whether the `39` on packet [handle] is the first word about it — its `queueStatus` and its self-NAK both carry it,
+     * in either order — and records it. False for the second.
+     */
+    @Synchronized
+    fun firstNoKey(handle: UInt): Boolean {
+        if (!noKeyHandles.add(handle)) return false
+        while (noKeyHandles.size > MAX_FLIGHTS) noKeyHandles.remove(noKeyHandles.first())
+        return true
+    }
+
+    /**
+     * Whether [handle]'s `39` was already acted on — a compact DM's — so its late self-NAK is that refusal. False for any
+     * other handle: the auto-reply and a room post draw a self-NAK too (`Router::abortSendAndNak` runs for every refused
+     * send), and theirs is never a compact DM's missing key.
+     */
+    @Synchronized
+    fun handledNoKey(handle: UInt): Boolean = handle in noKeyHandles
+
+    // --- frames held for a key: the add_contact's, and the re-offer after the destination lacked ours ---
+
+    /** Holds [frame], refused by our board for want of [peerId]'s key, while the `add_contact` written for it lands. */
+    @Synchronized
+    fun holdForContact(
+        peerId: String,
+        frame: OutboundFrame,
+    ) {
+        contactHeld[peerId] = frame
+    }
+
+    /** Takes the frame held for [peerId]'s `add_contact`, or null when there is none (the board went meanwhile). */
+    @Synchronized
+    fun releaseContact(peerId: String): OutboundFrame? = contactHeld.remove(peerId)
+
+    /** Holds [frame] for one re-offer to [peerId] at [at]: the destination lacked our key, and our board sent it. */
+    @Synchronized
+    fun scheduleRetry(
+        peerId: String,
+        at: Long,
+        frame: OutboundFrame,
+    ) {
+        retries[peerId] = Retry(at, frame)
+    }
+
+    /** The re-offers due at [now], taken: each goes back through the pacer and its own gates. */
+    @Synchronized
+    fun dueRetries(now: Long): List<OutboundFrame> {
+        val due = retries.filterValues { now >= it.at }
+        due.keys.forEach(retries::remove)
+        return due.values.map { it.frame }
     }
 
     // --- the in-flight table ---
@@ -184,9 +302,15 @@ internal class LoraDirectPolicy(
     @Synchronized
     fun isWaiting(handle: UInt): Boolean = handle in flights
 
-    /** Whether a send of [frameId] is still waiting on its answer: the "one copy per frame id" half the pacer cannot see. */
+    /**
+     * Whether a send of [frameId] is still waiting on its answer, on an `add_contact` or on its re-offer's gap: the "one
+     * copy per frame id" half the pacer cannot see.
+     */
     @Synchronized
-    fun hasFrame(frameId: String): Boolean = flights.values.any { it.send.frameId == frameId }
+    fun hasFrame(frameId: String): Boolean =
+        flights.values.any { it.send.frameId == frameId } ||
+            contactHeld.values.any { it.direct?.frameId == frameId } ||
+            retries.values.any { it.frame.direct?.frameId == frameId }
 
     /** The flights whose deadline has passed at [now], ended: each becomes a [PacketOutcome.NoOutcome]. */
     @Synchronized
@@ -211,9 +335,9 @@ internal class LoraDirectPolicy(
         while (ended.size > MAX_FLIGHTS) ended.remove(ended.keys.first())
     }
 
-    /** The soonest deadline, or null with nothing in flight: what the deadline loop sleeps until. */
+    /** The soonest deadline or re-offer, or null with nothing waiting: what the deadline loop sleeps until. */
     @Synchronized
-    fun nextDeadline(): Long? = flights.values.minOfOrNull { it.deadline }
+    fun nextDeadline(): Long? = (flights.values.map { it.deadline } + retries.values.map { it.at }).minOrNull()
 
     /** How many sends are waiting on an answer. */
     @Synchronized
@@ -246,11 +370,16 @@ internal class LoraDirectPolicy(
     @Synchronized
     fun unpark(peerId: String): List<Parked> = parked.remove(peerId)?.toList() ?: emptyList()
 
-    /** Forgets every mark and parked offer — the board is gone, and with it the route each mark was about. */
+    /**
+     * Forgets every mark, parked offer and held frame — the board is gone, and with it the route each was about. A held
+     * frame's DM stays with the source for the re-probe; a held ✓✓ or reaction rode its signed copy.
+     */
     @Synchronized
     fun clearPeers() {
         peers.clear()
         parked.clear()
+        contactHeld.clear()
+        retries.clear()
     }
 
     /** The reach map's counts at [now], for `…debug.LORA`. */
@@ -261,6 +390,7 @@ internal class LoraDirectPolicy(
             reachable = reaches.count { it == Reach.REACHABLE },
             unreachable = reaches.count { it == Reach.UNREACHABLE },
             refused = reaches.count { it == Reach.REFUSED },
+            noKey = reaches.count { it == Reach.NO_KEY },
             inFlight = flights.size,
             parked = parked.values.sumOf { it.size },
         )
@@ -323,11 +453,42 @@ internal class LoraDirectPolicy(
         ): Int = (elapsedMs / retransmitMs.coerceAtLeast(1)).toInt().coerceIn(0, RETRANSMITS)
 
         /**
-         * A nominal routing ACK as the destination's board airs it: a `Routing` with no error, its request id and the
-         * `Data` framing. Booked by the receiver, unsigned, for each compact DM addressed to it that its board acked on
-         * its behalf ([boardAcks]), opened or not.
+         * What a 2.8.1 board appends to an ACK when it holds the key of the node it acks (`AckProof.cpp:133-146`): the
+         * `Routing.ack_proof` field, its tag and length and `ACK_PROOF_SIZE` (8, `CryptoEngine.h:31`, `mesh.options`).
+         * A board that took a compact DM decrypted it with the sender's key, so every one of its ACKs carries it.
          */
-        const val ACK_PAYLOAD_BYTES = 8
+        const val ACK_PROOF_FIELD_BYTES = 2 + 8
+
+        /**
+         * A routing ACK as the destination's board airs it: a `Routing` with no error, its request id, the `Data` framing
+         * (8 B) and the ack proof ([ACK_PROOF_FIELD_BYTES]). Channel-keyed on the board's primary (index 0: a PKI DM is
+         * reported there, and `ROUTING_APP` is never PKI'd), unsigned. Booked by the receiver for each compact DM
+         * addressed to it that its board acked on its behalf ([boardAcks]), opened or not (ADR 2026-10.x9fa's PKI
+         * amendment).
+         */
+        const val ACK_PAYLOAD_BYTES = 8 + ACK_PROOF_FIELD_BYTES
+
+        /**
+         * A nominal `NodeInfo` our board sends a destination that answered `PKI_UNKNOWN_PUBKEY` (35): its `User` with a
+         * 32-byte key and a `Knit abcd` name, about 70 B, a unicast and so unsigned. Booked when the board's own `User`
+         * is not to hand (ADR 2026-10.aajj).
+         */
+        const val NODEINFO_USER_BYTES = 72
+
+        /**
+         * The largest compact DM one packet carries on a board whose `Data` payload cap is [maxPayload] (ADR 2026-10.x9fa,
+         * its PKI amendment). Two limits, and they do not stack: the BLE write (`want_ack` makes the `ToRadio` two bytes
+         * longer than a broadcast's, [MeshtasticProto.WANT_ACK_FIELD_BYTES]) and the firmware's PKI size check (an encoded
+         * `Data` plus the 16-byte header and the 12-byte PKC overhead within 255 B, `Router.cpp:1349` at v2.8.1, so
+         * [MeshtasticProto.MAX_PAYLOAD] less [MeshtasticProto.PKC_OVERHEAD_BYTES]). 219 B at every MTU a board
+         * negotiates. Reserved always: every compact DM that airs on 2.8 is PKI. The one cap the transport and
+         * `MeshManager`'s plaintext budget both read.
+         */
+        fun payloadCap(maxPayload: Int): Int =
+            minOf(
+                MeshtasticProto.MAX_PAYLOAD - MeshtasticProto.PKC_OVERHEAD_BYTES,
+                maxPayload - MeshtasticProto.WANT_ACK_FIELD_BYTES,
+            )
 
         /**
          * Whether our own board — node [ownNode] — ACKed [packet], a decoded unicast addressed to it, as it handed it to
@@ -362,6 +523,8 @@ internal data class DirectReachCounts(
     val reachable: Int = 0,
     val unreachable: Int = 0,
     val refused: Int = 0,
+    /** Peers our board refused to send to for want of their key, with nothing left to try (ADR 2026-10.aajj). */
+    val noKey: Int = 0,
     val inFlight: Int = 0,
     val parked: Int = 0,
 )

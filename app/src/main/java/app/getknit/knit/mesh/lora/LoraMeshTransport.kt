@@ -194,6 +194,19 @@ internal class LoraMeshTransport(
      */
     private val direct = LoraDirectPolicy()
 
+    /**
+     * Which pinned contacts' keys our board was taught with `add_contact`, and whether it may be taught another (ADR
+     * 2026-10.aajj). In memory only: a restart may write a key once more, which costs one NodeDB save.
+     */
+    private val contacts = LoraContactPolicy()
+
+    /**
+     * Set while a setup or restore runs (ADR 045's one admin transaction): no `add_contact` is written inside it. The
+     * session's actor would serialise the two anyway; this keeps the write from landing just before the commit's reboot.
+     */
+    @Volatile
+    private var provisioning = false
+
     /** The re-probe's schedules, soonest first: for the JVM tests, which read what a round decided. */
     internal fun reprobeSchedule(): List<LoraReprobe.Entry> = reprobe.stamps()
 
@@ -580,7 +593,14 @@ internal class LoraMeshTransport(
     override suspend fun provisionKnitChannel(
         mode: ProvisionMode,
         previous: BoardSettings?,
-    ): ProvisionResult = link.provisionChannel(ProvisionSpec(KnitChannel.NAME, KnitChannel.PSK, mode, previous))
+    ): ProvisionResult {
+        provisioning = true
+        try {
+            return link.provisionChannel(ProvisionSpec(KnitChannel.NAME, KnitChannel.PSK, mode, previous))
+        } finally {
+            provisioning = false
+        }
+    }
 
     // --- outbound (fast plane only) ---
 
@@ -780,9 +800,10 @@ internal class LoraMeshTransport(
      *
      * The gates, each re-asked before the first byte ([staleReason]): DMs switched on; [recipientId] a pinned board
      * holder whose profile carries the capability; neither a live link nor a spool carrying them; the bound slot not
-     * 0, where the firmware would PKI-encrypt it; one copy per [frameId] queued or in flight; the peer not marked
-     * unreachable or refused (held — the DM stays with [source] for the re-probe and the next hearing); one send in
-     * flight per peer not known reachable (the rest parked behind it); and the seal fitting one packet.
+     * 0 (the Knit channel is where Knit's frames go; the firmware PKI-encrypts a unicast on any slot); one copy per
+     * [frameId] queued or in flight; the peer not marked unreachable, refused or keyless (held — the DM stays with
+     * [source] for the re-probe and the next hearing); one send in flight per peer not known reachable (the rest parked
+     * behind it); and the seal fitting one PKI packet ([LoraDirectPolicy.payloadCap]).
      */
     override fun offer(
         recipientId: String,
@@ -802,7 +823,7 @@ internal class LoraMeshTransport(
         val packet = sealOrNull(recipientId, frameId, sentAtMs, plaintext) ?: return
         enqueueDirect(
             packet,
-            DirectSend(recipientId, holder.addr, frameId, kind),
+            DirectSend(recipientId, holder.addr, frameId, kind, licensed = boardLicensed()),
             RideGate(recipientId = recipientId, direct = true, reachHeld = true),
         )
     }
@@ -886,10 +907,18 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * The largest compact DM one packet carries here: the broadcast cap less what `want_ack` adds to the `ToRadio`, so a
-     * unicast's BLE write is never longer than a full broadcast's.
+     * The largest compact DM one packet carries here ([LoraDirectPolicy.payloadCap], the one `MeshManager` sizes its
+     * plaintext by): the firmware's PKI size check, under the broadcast cap less what `want_ack` adds to the `ToRadio`.
+     * A seal past it would draw `TOO_LARGE` from our own board and never fly (ADR 2026-10.x9fa's PKI amendment).
      */
-    private fun directPayloadCap(): Int = maxPayload - MeshtasticProto.WANT_ACK_FIELD_BYTES
+    private fun directPayloadCap(): Int = LoraDirectPolicy.payloadCap(maxPayload)
+
+    /**
+     * Whether our board is in ham mode (`User.is_licensed`, off its own `NodeInfo`): then it does no PKI and signs a
+     * compact DM instead, and it is priced so (ADR 2026-10.aajj). False with no board up — the PKI price, which every
+     * other board pays.
+     */
+    private fun boardLicensed(): Boolean = (link.state.value as? LinkState.Ready)?.board?.licensed == true
 
     private fun enqueueDirect(
         packet: ByteArray,
@@ -933,12 +962,20 @@ internal class LoraMeshTransport(
         if (peerId in linkedPeers || peerId in internetPeers) return false
         if (currentConfig?.channelIndex == PublicChannelPolicy.PRIMARY_INDEX) return false
         if (copyWaiting(dm.frameId)) return false
-        if (direct.reachOf(peerId, clock()) == LoraDirectPolicy.Reach.REFUSED) return false
+        if (direct.reachOf(peerId, clock()).keepsResendsOff()) return false
         if (direct.mustWait(peerId, clock(), pace.hasQueuedTo(peerId))) return false
         val packet = sealOrNull(peerId, dm.frameId, dm.sentAtMs, dm.plaintext) ?: return false
         return enqueueDirect(
             packet,
-            DirectSend(peerId, holder.addr, dm.frameId, DirectKind.MESSAGE, resend = true, flushAfter = flushAfter),
+            DirectSend(
+                peerId,
+                holder.addr,
+                dm.frameId,
+                DirectKind.MESSAGE,
+                resend = true,
+                flushAfter = flushAfter,
+                licensed = boardLicensed(),
+            ),
             RideGate(recipientId = peerId, direct = true, unackedFrameId = dm.frameId),
         )
     }
@@ -1005,7 +1042,9 @@ internal class LoraMeshTransport(
                 reprobe.defer(peerId, now)
             }
 
-            direct.reachOf(peerId, now) == LoraDirectPolicy.Reach.REFUSED -> {
+            // Refused by their board, or our board holds no key for it (ADR 2026-10.aajj): asking again changes nothing
+            // until the profile changes, the key is heard or the mark lapses.
+            direct.reachOf(peerId, now).keepsResendsOff() -> {
                 reprobe.defer(peerId, now)
             }
 
@@ -1040,14 +1079,20 @@ internal class LoraMeshTransport(
         log("lora reprobe ${newest.frameId} -> $peerId")
     }
 
-    /** A direct send the board took ([sendMessage]): it now waits on its answer, until its deadline at the latest. */
+    /**
+     * A direct send the board took ([sendMessage]): it now waits on its answer, until its deadline at the latest. One
+     * airing is priced as it was booked — the packet, the PKC overhead and the frame's own cliff — so the refund finds
+     * those bookings and the gap and the deadline are the firmware's for the packet that flies.
+     */
     private fun launchFlight(
+        frame: OutboundFrame,
         send: DirectSend,
         handle: UInt,
-        bytes: Int,
+        packet: ByteArray,
         bookedAt: Long,
+        userSeq: Long,
     ) {
-        val air = pace.airtime.timeOnAirMs(bytes, LoraAirtime.UNSIGNED)
+        val air = pace.airtime.timeOnAirMs(packet.size + frame.pricedExtraBytes, frame.signedUpTo)
         val slot = pace.airtime.slotTimeMs()
         val flight =
             LoraDirectPolicy.Flight(
@@ -1057,6 +1102,9 @@ internal class LoraMeshTransport(
                 sentAt = bookedAt,
                 deadline = bookedAt + LoraDirectPolicy.deadlineMs(air, slot),
                 retransmitMs = LoraDirectPolicy.retransmitMs(air, slot, LoraDirectPolicy.CW_MIN),
+                packet = packet,
+                gate = frame.gate,
+                userSeqAtSend = userSeq,
             )
         direct.launch(flight)?.let { evicted -> settle(evicted, PacketOutcome.NoOutcome(evicted.handle)) }
         flightWake.trySend(Unit)
@@ -1109,6 +1157,7 @@ internal class LoraMeshTransport(
                 if (!outcome.byDestination) return
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
+                ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
                 if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(send.peerId, now, fresh = !send.resend)
                 stateWake.trySend(Unit)
                 publishStatus()
@@ -1116,17 +1165,45 @@ internal class LoraMeshTransport(
             }
 
             is PacketOutcome.Refused -> {
-                val send = direct.ended(outcome.id)
-                if (send == null) {
-                    onLateNak(outcome)
-                } else if (outcome.byDestination) {
-                    direct.onRefused(send.peerId, now)
-                    publishStatus()
-                }
+                onUnawaitedRefusal(outcome, now)
             }
 
             // A give-up or silence for a send that already ended changes nothing: it is booked and marked.
             is PacketOutcome.Unreachable, is PacketOutcome.NoOutcome -> {}
+        }
+    }
+
+    /**
+     * A refusal nothing waits on. Our board's `39` arriving after its `queueStatus` already said so is that same refusal,
+     * acted on once (ADR 2026-10.aajj): attributed, never a pacing NAK. Only a compact DM's: the self-NAK firmware sends
+     * for every refused send (`Router.cpp:591`, `:400`) also follows an auto-reply or a room post refused with `39`, and
+     * that one is an ordinary late NAK, never `loraDirectNoKey`. Their board's `PKI_UNKNOWN_PUBKEY` after the
+     * send ended is still our board's `NodeInfo` on the air, and never a refusal; any other refusal by their board holds
+     * the peer as ever.
+     */
+    private fun onUnawaitedRefusal(
+        outcome: PacketOutcome.Refused,
+        now: Long,
+    ) {
+        if (outcome.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY && !outcome.byDestination && direct.handledNoKey(outcome.id)) {
+            log("lora nak id=${outcome.id} reason=${outcome.reason} (late, no key)")
+            return
+        }
+        val send = direct.ended(outcome.id)
+        when {
+            send == null -> {
+                onLateNak(outcome)
+            }
+
+            outcome.byDestination && outcome.reason == RoutingError.PKI_UNKNOWN_PUBKEY -> {
+                metrics.onLoraDirectPeerLacksOurKey()
+                bookNodeInfoReply(now)
+            }
+
+            outcome.byDestination -> {
+                direct.onRefused(send.peerId, now)
+                publishStatus()
+            }
         }
     }
 
@@ -1154,6 +1231,8 @@ internal class LoraMeshTransport(
                 refundUnflown(flight, now)
                 metrics.onLoraDirectAcked()
                 direct.onAcked(peer, now)
+                // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
+                ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
                 if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(peer, now, fresh = !send.resend)
                 log("lora direct acked ${send.frameId} -> $peer")
                 direct.unpark(peer).forEach { offer(peer, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
@@ -1161,11 +1240,7 @@ internal class LoraMeshTransport(
             }
 
             is PacketOutcome.Refused -> {
-                refundUnflown(flight, now)
-                metrics.onLoraNak(outcome.reason.name)
-                log("lora direct refused ${send.frameId} -> $peer reason=${outcome.reason} byDestination=${outcome.byDestination}")
-                if (outcome.byDestination) direct.onRefused(peer, now) else pace.onNak(outcome.reason, now)
-                direct.unpark(peer)
+                settleRefused(flight, outcome, now)
             }
 
             is PacketOutcome.Unreachable, is PacketOutcome.NoOutcome -> {
@@ -1182,6 +1257,230 @@ internal class LoraMeshTransport(
         publishStatus()
     }
 
+    /**
+     * A refusal of a send in flight. Our board's want of their key, reported only as a late self-NAK because the send's
+     * `queueStatus` timed out: nothing aired, every airing comes back, and the `add_contact` path takes the frame (ADR
+     * 2026-10.aajj). Their board's want of ours (`PKI_UNKNOWN_PUBKEY`): never a refusal — our board answers with our
+     * `NodeInfo`, which heals the pair within seconds — so it is re-offered once, a retransmit gap on. Any other refusal
+     * by their board holds the peer until their profile changes; one by our own board (a duty-cycle NAK) only paces.
+     */
+    private fun settleRefused(
+        flight: LoraDirectPolicy.Flight,
+        outcome: PacketOutcome.Refused,
+        now: Long,
+    ) {
+        val send = flight.send
+        val peer = send.peerId
+        when {
+            outcome.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY && !outcome.byDestination -> {
+                refundAll(flight)
+                flight.packet?.let { onNoKey(frameOf(flight, send, it), flight.handle, flight.userSeqAtSend) }
+            }
+
+            outcome.reason == RoutingError.PKI_UNKNOWN_PUBKEY && outcome.byDestination -> {
+                refundUnflown(flight, now)
+                onPeerLacksOurKey(flight, now)
+            }
+
+            else -> {
+                refundUnflown(flight, now)
+                metrics.onLoraNak(outcome.reason.name)
+                log("lora direct refused ${send.frameId} -> $peer reason=${outcome.reason} byDestination=${outcome.byDestination}")
+                if (outcome.byDestination) direct.onRefused(peer, now) else pace.onNak(outcome.reason, now)
+                direct.unpark(peer)
+            }
+        }
+    }
+
+    /**
+     * Their board answered `PKI_UNKNOWN_PUBKEY` (35): it holds no key for ours, and our board has just sent it our
+     * `NodeInfo` in reply (`ReliableRouter.cpp:162-168` at v2.8.1) — air the window owes, booked here. The frame goes
+     * once more after one retransmit gap, through the pacer and its own gates, with what was parked still waiting behind
+     * it; a second 35 to that re-offer is a give-up, as the firmware's own would be (ADR 2026-10.aajj).
+     */
+    private fun onPeerLacksOurKey(
+        flight: LoraDirectPolicy.Flight,
+        now: Long,
+    ) {
+        val send = flight.send
+        val peer = send.peerId
+        metrics.onLoraDirectPeerLacksOurKey()
+        bookNodeInfoReply(now)
+        val packet = flight.packet
+        if (send.afterPeerKey || packet == null) {
+            metrics.onLoraDirectUnreachable()
+            direct.onUnreachable(peer, now)
+            reprobe.onFailed(peer, now)
+            log("lora direct peer lacks our key ${send.frameId} -> $peer again: unreachable")
+            direct.unpark(peer)
+            return
+        }
+        val retry =
+            DirectSend(
+                peer,
+                send.addr,
+                send.frameId,
+                send.kind,
+                resend = send.resend,
+                flushAfter = send.flushAfter,
+                licensed = send.licensed,
+                afterPeerKey = true,
+            )
+        direct.scheduleRetry(peer, now + flight.retransmitMs, frameOf(flight, retry, packet))
+        flightWake.trySend(Unit)
+        log("lora direct peer lacks our key ${send.frameId} -> $peer: re-offer in ${flight.retransmitMs}ms")
+    }
+
+    /**
+     * Books the `NodeInfo` our board sends a destination that answered `PKI_UNKNOWN_PUBKEY`: our board's own `User` as
+     * its NodeInfo stream reported it, or a nominal one. A unicast, so unsigned: 2.8 signs a unicast only in ham mode
+     * (`Router.cpp:1271`), and a NodeInfo is never PKI'd.
+     */
+    private fun bookNodeInfoReply(now: Long) {
+        val size =
+            ownBoard()?.let {
+                link
+                    .nodeUser(it)
+                    ?.user
+                    ?.raw
+                    ?.size
+            } ?: LoraDirectPolicy.NODEINFO_USER_BYTES
+        pace.airtime.record(size, now, signedUpTo = LoraAirtime.UNSIGNED)
+    }
+
+    /** A queued frame again for [flight]'s sealed [packet], as [send], under the gates its own path asked. */
+    private fun frameOf(
+        flight: LoraDirectPolicy.Flight,
+        send: DirectSend,
+        packet: ByteArray,
+    ): OutboundFrame =
+        OutboundFrame(
+            listOf(packet),
+            "direct:${send.kind.name.lowercase()}:${send.frameId}",
+            FrameClass.DIRECT,
+            Ceiling.FULL,
+            Destination.Knit,
+            supersedes = frameKey(send.frameId),
+            gate = flight.gate,
+            direct = send,
+        )
+
+    /** Gives back every airing [flight] was booked for: our own board refused it, so none flew. */
+    private fun refundAll(flight: LoraDirectPolicy.Flight) {
+        if (pace.airtime.refund(flight.sentAt, flight.airMs, LoraDirectPolicy.AIRINGS) > 0) {
+            pace.onAirReturned()
+            wake.trySend(Unit)
+        }
+    }
+
+    /** Our bound board's node number, or null with no session up. */
+    private fun ownBoard(): UInt? = (link.state.value as? LinkState.Ready)?.board?.myNodeNum
+
+    // --- a missing key on our board: the add_contact (ADR 2026-10.aajj) ---
+
+    /**
+     * Our own board refused [frame] before it aired, for want of the destination board's key (`39`, packet [handle]):
+     * acted on once per handle, whichever of its `queueStatus` and its self-NAK came first. Nothing flew and nothing was
+     * booked. The frame is **held**, never given up, while the one thing that can help is tried: an `add_contact` for a
+     * pinned contact's board ([LoraContactPolicy]), after which it is re-offered through the pacer and its own gates.
+     * When none may be written — no rank, no binding key, the board's own key for them, one written already — the peer
+     * is marked [LoraDirectPolicy.Reach.NO_KEY]: held, counted (`loraDirectNoKey`), never silent, and the DM stays with
+     * the source for the re-probe.
+     */
+    private fun onNoKey(
+        frame: OutboundFrame,
+        handle: UInt,
+        sentAfter: Long,
+    ) {
+        val send = frame.direct ?: return
+        if (!direct.firstNoKey(handle)) return
+        pace.done(frame) // held here now, not by the pacer
+        metrics.onLoraDirectNoKey()
+        val peer = send.peerId
+        log("lora direct no key ${send.frameId} -> $peer id=$handle")
+        val own = ownBoard()
+        val holder = boardHolders?.get(peer)
+        if (own == null || provisioning) {
+            // Between sessions, or inside a setup's admin transaction: ask again once it is over.
+            requeue(frame)
+            return
+        }
+        if (holder == null || holder.addr != send.addr) {
+            abandon(frame) // their board changed while it waited: the offer's gates decide anew
+            return
+        }
+        // The 39 is the board's word that it holds no key for them now; the stream's copy of their NodeInfo is read for a
+        // key only if it raced this send (`sentAfter`), never a stale or forged one from before.
+        when (val verdict = contacts.judge(peer, holder, own, link.nodeUser(holder.addr.node), sentAfter, clock())) {
+            is LoraContactPolicy.Verdict.Write -> {
+                direct.holdForContact(peer, frame)
+                scope.launch { writeContact(peer, own, verdict) }
+            }
+
+            is LoraContactPolicy.Verdict.Refused -> {
+                if (verdict.reason == LoraContactPolicy.Refusal.BOARD_KEY_CONFLICT) metrics.onLoraDirectBoardKeyConflict()
+                log("lora direct no contact $peer reason=${verdict.reason}")
+                direct.onNoKey(peer, clock())
+                abandon(frame)
+            }
+        }
+        publishStatus()
+    }
+
+    /**
+     * Writes [write]'s `add_contact` to our own board [own] — a local admin message, no passkey, nothing on the air —
+     * and re-offers the frame held for [peerId] once the board's `queueStatus` for it says res 0: the firmware handles a
+     * local admin message, and saves the NodeDB, before it answers (`Router.cpp:427-432`). A board that refused it, or
+     * silently dropped it (`is_managed`, locked storage, `AdminModule.cpp:127`, `:178-181`), shows as the re-offer's
+     * second `39`, which is then terminal. One that was never written to (no headroom, the link gone) is asked again.
+     */
+    private suspend fun writeContact(
+        peerId: String,
+        own: UInt,
+        write: LoraContactPolicy.Verdict.Write,
+    ) {
+        val result =
+            link.send(
+                write.admin,
+                PublicChannelPolicy.PRIMARY_INDEX,
+                portnum = MeshtasticProto.PORT_ADMIN,
+                hopLimit = null,
+                destination = LinkDestination.Direct(BoardAddr(own), ack = false),
+            )
+        val now = clock()
+        when (result) {
+            // Only res 0 records the write. A refused admission hands the frame to the shed, which `enqueue` abandons, so
+            // what was parked behind it is offered again.
+            is SendResult.Queued -> {
+                contacts.onWritten(peerId, own, write.node, write.key, now)
+                metrics.onLoraDirectContactAdded()
+                log("lora direct contact added ${meshNodeLabel(write.node.toLong())} for $peerId")
+                direct.releaseContact(peerId)?.let { enqueue(it) }
+            }
+
+            // The write went out and no queueStatus came back: re-offered once, the write not recorded; the next 39 for
+            // the same key is terminal (`LoraContactPolicy.onTimedOut`), so this cannot loop.
+            is SendResult.Timeout -> {
+                contacts.onTimedOut(own, write.node, write.key)
+                log("lora direct contact unconfirmed ${meshNodeLabel(write.node.toLong())} for $peerId")
+                direct.releaseContact(peerId)?.let { enqueue(it) }
+            }
+
+            is SendResult.Busy, is SendResult.NotReady -> {
+                log("lora direct contact not written for $peerId: $result")
+                direct.releaseContact(peerId)?.let(::requeue)
+            }
+
+            else -> {
+                contacts.onWritten(peerId, own, write.node, write.key, now)
+                log("lora direct contact refused by our board for $peerId: $result")
+                direct.onNoKey(peerId, now)
+                direct.releaseContact(peerId)?.let(::abandon)
+            }
+        }
+        publishStatus()
+    }
+
     /** The older unacked DMs a resend after a hearing promised to follow once its destination acked it. */
     private suspend fun flush(
         peerId: String,
@@ -1193,8 +1492,9 @@ internal class LoraMeshTransport(
 
     /**
      * Ends every direct send that outlived its deadline as [PacketOutcome.NoOutcome]: every send ends, even one whose
-     * answer the board never sent or the link lost (ADR 2026-10.x9fa). Sleeps until the soonest deadline, woken when a
-     * new send starts waiting; parked while no board is configured, which [quiesce] has emptied anyway.
+     * answer the board never sent or the link lost (ADR 2026-10.x9fa). Also queues the one re-offer after a destination
+     * lacked our key once its gap has passed (ADR 2026-10.aajj). Sleeps until the soonest of either, woken when a new
+     * one starts waiting; parked while no board is configured, which [quiesce] has emptied anyway.
      */
     private suspend fun deadlineLoop() {
         while (scope.isActive) {
@@ -1207,17 +1507,24 @@ internal class LoraMeshTransport(
             }
             runRound({ log("lora deadline round failed: ${it.javaClass.simpleName}") }) {
                 direct.expired(clock()).forEach { settle(it, PacketOutcome.NoOutcome(it.handle)) }
+                // The one re-offer after a destination lacked our key, its gap passed: back through the pacer. A refused
+                // admission is abandoned by `enqueue` (its shed), so what was parked behind it is offered again.
+                direct.dueRetries(clock()).forEach { frame ->
+                    log("lora resend ${frame.direct?.frameId} -> ${frame.direct?.peerId} (our key sent)")
+                    enqueue(frame)
+                }
             }
         }
     }
 
     /**
      * A compact DM off the air (ADR 2026-10.x9fa). Read on the bound Knit slot or on index 0 — 2.5+ firmware reports a
-     * PKI-decrypted DM there whatever slot it used, and we must not depend on the sender never doing that — and only
-     * when addressed to our own board: a unicast to another board is not ours to open. Not gated on our own DM switch:
-     * our board has already acknowledged it, and dropping it here would turn the sender's delivered radio into a lost
-     * message. Opened, it is delivered, the peer's reach is noted if it is fresh, and only then is their board heard,
-     * so a ✓✓ it carried is applied before a resend asks what is still unacked.
+     * PKI-decrypted DM there whatever slot it used, and since 2.8 PKI-encrypts every unicast its phone sends, that is
+     * where every compact DM from a 2.8 board lands (the PKI amendment) — and only when addressed to our own board: a
+     * unicast to another board is not ours to open. Not gated on our own DM switch: our board has already acknowledged
+     * it, and dropping it here would turn the sender's delivered radio into a lost message. Opened, it is delivered, the
+     * peer's reach is noted if it is fresh, and only then is their board heard, so a ✓✓ it carried is applied before a
+     * resend asks what is still unacked.
      */
     private fun onDirectPacket(
         packet: ReceivedPacket,
@@ -1227,6 +1534,9 @@ internal class LoraMeshTransport(
         // Addressed to our board, and not from it: our own unicast echoed back is nobody's DM to us.
         if (packet.to != ready.board.myNodeNum || packet.from == ready.board.myNodeNum) return
         if (packet.channelIndex != bound && packet.channelIndex != PublicChannelPolicy.PRIMARY_INDEX) return
+        // A radio sending Knit frames on the bound slot counts at once, as every Knit packet there does. One on index 0 —
+        // where firmware 2.8 reports every PKI DM, which every compact DM now is — counts once it has authenticated
+        // below: index 0 is the public slot too, and only a pinned peer's seal says the radio is a Knit one.
         if (packet.channelIndex == bound) noteBoard(packet)
         // Our board acked it, unsigned, on our behalf, before the phone could open it — a stranger's and a forged one
         // too: air the window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for
@@ -1234,32 +1544,8 @@ internal class LoraMeshTransport(
         if (LoraDirectPolicy.boardAcks(packet, ready.board.myNodeNum)) {
             pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), signedUpTo = LoraAirtime.UNSIGNED)
         }
-        val opened =
-            when (val result = crypto.open(packet.payload)) {
-                is LoraDirectOpen.Opened -> {
-                    result.direct
-                }
-
-                LoraDirectOpen.Stranger -> {
-                    metrics.onLoraDirectStranger()
-                    return
-                }
-
-                LoraDirectOpen.AuthFailed -> {
-                    metrics.onLoraDirectAuthFailed()
-                    return
-                }
-
-                LoraDirectOpen.ClockRefused -> {
-                    metrics.onLoraDirectClockRefused()
-                    return
-                }
-
-                LoraDirectOpen.Malformed -> {
-                    metrics.onFastDropped(FastPathDrop.DECODE_FAILED)
-                    return
-                }
-            }
+        val opened = openDirect(packet) ?: return
+        if (packet.channelIndex != bound) noteBoard(packet)
         metrics.onLoraDirectDelivered()
         log("lora rx direct ${opened.frameId} from ${opened.peerId}")
         scope.launch {
@@ -1272,6 +1558,34 @@ internal class LoraMeshTransport(
             onBoardHeard(opened.peerId)
         }
     }
+
+    /** [packet] opened, or null — a stranger's, a forged one, one out of its window or not one at all, each counted. */
+    private fun openDirect(packet: ReceivedPacket): OpenedDirect? =
+        when (val result = crypto.open(packet.payload)) {
+            is LoraDirectOpen.Opened -> {
+                result.direct
+            }
+
+            LoraDirectOpen.Stranger -> {
+                metrics.onLoraDirectStranger()
+                null
+            }
+
+            LoraDirectOpen.AuthFailed -> {
+                metrics.onLoraDirectAuthFailed()
+                null
+            }
+
+            LoraDirectOpen.ClockRefused -> {
+                metrics.onLoraDirectClockRefused()
+                null
+            }
+
+            LoraDirectOpen.Malformed -> {
+                metrics.onFastDropped(FastPathDrop.DECODE_FAILED)
+                null
+            }
+        }
 
     /**
      * The hearing hook (ADR 2026-10.x9fa): a packet off a pinned contact's board, on any portnum, is evidence the board is
@@ -1289,6 +1603,23 @@ internal class LoraMeshTransport(
         // Only the edge out of an unreachable mark does anything; a busy contact's every packet must not cost a coroutine.
         if (direct.reachOf(peer, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return
         scope.launch { onBoardHeard(peer) }
+    }
+
+    /**
+     * A pinned contact's board broadcast its `NodeInfo` with a key (ADR 2026-10.aajj): our board stores a key it lacks
+     * off one, so a missing-key mark on that peer lifts, and the newest DM still without its ✓✓ goes again — once; if the
+     * board still has no key, its `39` marks the peer again with nothing written. Never behind a timer.
+     */
+    private fun onNodeInfoHeard(packet: ReceivedPacket) {
+        val peer = peerByBoard[BoardAddr(packet.from)] ?: return
+        if (BoardOwnerRaw(packet.payload).owner.publicKey == null) return
+        if (!direct.onKeyLearned(peer)) return
+        log("lora direct key heard for $peer")
+        publishStatus()
+        scope.launch {
+            val newest = source.unackedTo(peer, 1).firstOrNull() ?: return@launch
+            if (enqueueResend(peer, newest, flushAfter = emptyList())) log("lora resend ${newest.frameId} -> $peer (key heard)")
+        }
     }
 
     /**
@@ -1613,11 +1944,21 @@ internal class LoraMeshTransport(
         frame: OutboundFrame,
         portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
         to: LinkDestination = frame.direct?.let { LinkDestination.Direct(it.addr) } ?: LinkDestination.Broadcast,
-    ): Boolean =
-        when (val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT, destination = to)) {
+    ): Boolean {
+        // The NodeInfo stream's stamp as the send is issued: a key streamed after it raced a `39`; one before is stale.
+        val userSeq = link.userSeq()
+        val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT, destination = to)
+        // Our own board holds no key for the destination's board and refused it before it aired (ADR 2026-10.aajj):
+        // reported first as the queueStatus's res, its self-NAK later — or, rarely, the other way round. Held, never
+        // given up: the add_contact path decides what becomes of it.
+        noKeyHandle(result)?.takeIf { frame.direct != null }?.let { handle ->
+            onNoKey(frame, handle, userSeq)
+            return false
+        }
+        return when (result) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
-                onTaken(frame, message, result.id)
+                onTaken(frame, message, result.id, userSeq)
                 true
             }
 
@@ -1631,7 +1972,7 @@ internal class LoraMeshTransport(
                     false
                 } else {
                     log("lora tx ${frame.label} unconfirmed, awaited as id=${result.id}")
-                    onTaken(frame, message, result.id)
+                    onTaken(frame, message, result.id, userSeq)
                     true
                 }
             }
@@ -1655,6 +1996,15 @@ internal class LoraMeshTransport(
                 false
             }
         }
+    }
+
+    /** The handle of a send our board refused for want of the destination's key (`39`), or null for any other result. */
+    private fun noKeyHandle(result: SendResult): UInt? =
+        when (result) {
+            is SendResult.Rejected -> result.id.takeIf { result.res == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.code }
+            is SendResult.Nak -> result.id.takeIf { result.reason == RoutingError.PKI_SEND_FAIL_PUBLIC_KEY }
+            else -> null
+        }
 
     /**
      * The board took [message] (or may have, on a timeout): book it, move the frame's cursor and, for a compact DM,
@@ -1666,18 +2016,21 @@ internal class LoraMeshTransport(
         frame: OutboundFrame,
         message: ByteArray,
         handle: UInt,
+        userSeq: Long,
     ) {
         val now = clock()
         val send = frame.direct
-        // At the frame's own cliff, the one its admission was priced at: a broadcast's port, or unsigned for a unicast —
-        // a compact DM and the auto-reply alike, which 2.8 does not sign.
+        // At the frame's own price, the one its admission asked: a broadcast at its port's cliff; a unicast — a compact DM
+        // and the auto-reply alike — unsigned and with the PKC overhead the firmware adds to every PKI unicast (ADR
+        // 2026-10.x9fa's PKI amendment).
+        val priced = message.size + frame.pricedExtraBytes
         if (send == null) {
-            pace.airtime.record(message.size + frame.pricedExtraBytes, now, signedUpTo = frame.signedUpTo)
+            pace.airtime.record(priced, now, signedUpTo = frame.signedUpTo)
         } else {
-            repeat(LoraDirectPolicy.AIRINGS) { pace.airtime.record(message.size, now, signedUpTo = LoraAirtime.UNSIGNED) }
+            repeat(LoraDirectPolicy.AIRINGS) { pace.airtime.record(priced, now, signedUpTo = frame.signedUpTo) }
         }
         frame.onPartSent()
-        send?.let { launchFlight(it, handle, message.size, now) }
+        send?.let { launchFlight(frame, it, handle, message, now, userSeq) }
         // The ledger just moved, and a send is the only thing that spends it — so republish here
         // rather than leave the chat's saturation notice and the radio screen's percentage waiting
         // on the 60 s linger sweep. Cheap: the pacer's 3 s floor bounds how often this can run, and
@@ -1729,6 +2082,7 @@ internal class LoraMeshTransport(
             return
         }
         noteHeard(packet)
+        if (packet.portnum == MeshtasticProto.PORT_NODEINFO) onNodeInfoHeard(packet)
         if (packet.payload.isEmpty()) return
         // Slot 0 is the Meshtastic room's channel, mirrored as the user configured it. The room reads only
         // chat, so only `TEXT_MESSAGE_APP` turns off here; everything else on the slot falls through to the
@@ -2214,6 +2568,14 @@ internal class LoraMeshTransport(
         val PRE_READY_PAYLOAD: Int = minOf(MeshtasticProto.MAX_PAYLOAD, MTU_FLOOR - TORADIO_OVERHEAD)
     }
 }
+
+/**
+ * Whether a peer's mark keeps the resend after a hearing and the re-probe off the air: their board refused us, or ours
+ * holds no key for theirs (ADR 2026-10.aajj). Asking again changes neither until the profile changes, a key is heard or
+ * the mark lapses.
+ */
+private fun LoraDirectPolicy.Reach.keepsResendsOff(): Boolean =
+    this == LoraDirectPolicy.Reach.REFUSED || this == LoraDirectPolicy.Reach.NO_KEY
 
 /**
  * Why a slot-0 chat packet was dropped before [PublicChannelPolicy] ever saw it: the user switched the

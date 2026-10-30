@@ -3,8 +3,9 @@ package app.getknit.knit.mesh.lora
 /**
  * How long a draft may be before it risks not riding the LoRa hop — the composer's "long message" hint (ADR 040). Both
  * budgets are now **one packet** at the MTU-255 floor: a room post rides only in one (ADR 2026-10.rp3s), and a DM rides
- * only as one compact pair-sealed unicast (ADR 2026-10.x9fa) — 228 B less what `want_ack` adds to its BLE write, less
- * the 51 bytes of header and GCM tag around its plaintext, which leaves 175 B for the v3 compact content. Everything
+ * only as one compact pair-sealed unicast (ADR 2026-10.x9fa) — a PKI packet, which firmware 2.8 caps at 219 B (its
+ * PKC overhead under the 228-B floor's `want_ack` write), less the 51 bytes of header and GCM tag around its
+ * plaintext, which leaves 168 B for the v3 compact content (the PKI amendment; 175 B before). Everything
  * above the body is fixed cost, so a body budget is the honest way to say it before the send. The budgets are pinned by
  * `CoordinationPlaneSizeBudgetTest`, which builds real content at exactly these sizes with incompressible text, so the
  * hint never over-promises; a longer draft is not carried over LoRa at all (the signed copy still travels the radios,
@@ -24,10 +25,12 @@ object LoraSizeHint {
 
     /**
      * A DM's body **and** the inline acks it may carry (`MeshManager.inlineAcksFor` spends what the body leaves, at
-     * `INLINE_ACK_BYTES` each), as compact content in one packet at the MTU-255 floor (ADR 2026-10.x9fa): 175 B of
-     * plaintext, less the v3 layout's field headers, with a few bytes' margin. Measured with random printable ASCII and
-     * random four-byte emoji, with and without the full four inline acks. No X3DH init rides the compact form, so the
-     * first DM of a session costs what the hundredth does.
+     * `INLINE_ACK_BYTES` each), as compact content in one PKI packet at the MTU-255 floor (ADR 2026-10.x9fa and its
+     * PKI amendment): 168 B of plaintext, less the v3 layout's field headers, with a few bytes' margin. Measured with
+     * random printable ASCII and random four-byte emoji, with and without the full four inline acks: a 160-B body is
+     * 164 B of plaintext (2026-10-30, `CoordinationPlaneSizeBudgetTest -i`), so the 12 B the PKI reserve took came out
+     * of the old margin and the budget stands. No X3DH init rides the compact form, so the first DM of a session costs
+     * what the hundredth does.
      */
     const val DM_BODY_BYTES = 160
 

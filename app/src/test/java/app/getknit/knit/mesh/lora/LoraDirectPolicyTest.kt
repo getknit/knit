@@ -221,4 +221,95 @@ class LoraDirectPolicyTest {
         assertEquals(0xCD, LoraDirectPolicy.lastByteOf(0x1234abcdu))
         assertFalse("an absent next_hop never names anybody", LoraDirectPolicy.boardAcks(toUs(hopLimit = 3), 0x1234ab00u))
     }
+
+    // --- PKI on 2.8 (ADR 2026-10.x9fa's PKI amendment, ADR 2026-10.aajj) ---
+
+    @Test
+    fun theCompactCapIsTheFirmwaresPkiCheckUnderTheWantAckWrite() {
+        val pki = MeshtasticProto.MAX_PAYLOAD - MeshtasticProto.PKC_OVERHEAD_BYTES
+        assertEquals(219, pki)
+        assertEquals(
+            "at the MTU-255 floor the PKI check binds, not the BLE write",
+            pki,
+            LoraDirectPolicy.payloadCap(LoraMeshTransport.PRE_READY_PAYLOAD),
+        )
+        assertEquals("and at the largest MTU", pki, LoraDirectPolicy.payloadCap(MeshtasticProto.MAX_PAYLOAD))
+        assertTrue(
+            "12 B under the old cap",
+            LoraDirectPolicy.payloadCap(LoraMeshTransport.PRE_READY_PAYLOAD) <
+                LoraMeshTransport.PRE_READY_PAYLOAD - MeshtasticProto.WANT_ACK_FIELD_BYTES,
+        )
+        assertEquals("a small board's BLE write still binds below it", 98, LoraDirectPolicy.payloadCap(100))
+    }
+
+    @Test
+    fun anAckIsBookedWithItsProof() {
+        assertEquals("tag, length and the 8-byte ACK_PROOF_SIZE", 10, LoraDirectPolicy.ACK_PROOF_FIELD_BYTES)
+        assertEquals(18, LoraDirectPolicy.ACK_PAYLOAD_BYTES)
+    }
+
+    @Test
+    fun aMissingKeyHoldsUntilTheProfileChangesAKeyIsHeardOrItLapses() {
+        val p = policy()
+        p.onNoKey("bob", now = 0)
+        assertEquals(LoraDirectPolicy.Reach.NO_KEY, p.reachOf("bob", 0))
+        assertTrue(p.holds("bob", 0))
+        p.onUnreachable("bob", now = 1)
+        assertEquals("a give-up never overwrites it", LoraDirectPolicy.Reach.NO_KEY, p.reachOf("bob", 1))
+        assertTrue("a key heard lifts it", p.onKeyLearned("bob"))
+        assertFalse("once", p.onKeyLearned("bob"))
+        p.onNoKey("bob", now = 0)
+        p.onProfileChanged("bob")
+        assertEquals(LoraDirectPolicy.Reach.UNKNOWN, p.reachOf("bob", 0))
+        p.onNoKey("bob", now = 0)
+        assertEquals(LoraDirectPolicy.Reach.UNKNOWN, p.reachOf("bob", LoraReprobe.CAP_MS + 1))
+        p.onNoKey("carol", now = 0)
+        assertEquals(1, p.counts(0).noKey)
+    }
+
+    @Test
+    fun a39IsActedOnOncePerPacketWhicheverReportCameFirst() {
+        val p = policy()
+        assertTrue(p.firstNoKey(7u))
+        assertFalse("its self-NAK after its queueStatus, or the other way round", p.firstNoKey(7u))
+        assertTrue(p.firstNoKey(8u))
+    }
+
+    private fun held(frameId: String) =
+        OutboundFrame(
+            listOf(byteArrayOf(0x11)),
+            "direct:message:$frameId",
+            FrameClass.DIRECT,
+            direct = DirectSend("bob", BoardAddr(2u), frameId, DirectKind.MESSAGE),
+        )
+
+    @Test
+    fun aFrameHeldForItsContactWriteIsTheOneSendItsPeerIsAllowed() {
+        val p = policy()
+        p.holdForContact("bob", held("f1"))
+        assertTrue("the next offer parks behind it", p.mustWait("bob", 0, queuedTo = false))
+        assertTrue("and no second copy of it queues", p.hasFrame("f1"))
+        assertFalse(p.mustWait("carol", 0, queuedTo = false))
+        assertEquals("f1", p.releaseContact("bob")?.direct?.frameId)
+        assertFalse(p.mustWait("bob", 0, queuedTo = false))
+        assertNull(p.releaseContact("bob"))
+    }
+
+    @Test
+    fun theReofferAfterAPeerLackedOurKeyIsDueAfterItsGapAndHoldsThePeerMeanwhile() {
+        val p = policy()
+        p.launch(flight(1u, deadline = 120_000))
+        p.scheduleRetry("bob", at = 9_000, frame = held("f1"))
+        assertEquals("the re-offer is the soonest wake", 9_000L, p.nextDeadline())
+        assertTrue(p.mustWait("bob", 0, queuedTo = false))
+        assertTrue(p.hasFrame("f1"))
+        assertTrue(p.dueRetries(8_999).isEmpty())
+        assertEquals(listOf("f1"), p.dueRetries(9_000).map { it.direct?.frameId })
+        assertTrue("taken once", p.dueRetries(9_000).isEmpty())
+        p.scheduleRetry("bob", at = 9_000, frame = held("f2"))
+        p.holdForContact("carol", held("g1"))
+        p.clearPeers()
+        assertTrue("the board went: both holds with it", p.dueRetries(Long.MAX_VALUE).isEmpty())
+        assertNull(p.releaseContact("carol"))
+    }
 }

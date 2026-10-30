@@ -564,7 +564,7 @@ class LoraMeshTransportTest {
         selfId: suspend () -> String = { selfNode },
         now: () -> Long,
     ): Rig {
-        val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware, publicKey)
+        val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware, publicKey, scope = scope)
         val metrics = MeshMetrics()
         val transport =
             LoraMeshTransport(
@@ -1180,6 +1180,52 @@ class LoraMeshTransportTest {
                 2L,
                 r.metrics.meshtastic().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY.name],
             )
+            r.transport.stop()
+        }
+
+    /**
+     * The auto-reply is a PKI unicast too, and our board refuses it with `39` when it holds no key for the sender. That
+     * refusal never teaches the board anybody's key: no profile stands behind a Meshtastic sender (ADR 2026-10.aajj).
+     */
+    @Test
+    fun anAutoReplyRefusedForAMissingKeyNeverWritesAContact() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+            r.link.nakNext = RoutingError.PKI_SEND_FAIL_PUBLIC_KEY
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello?", id = 11u, to = 1u)
+            runCurrent()
+            assertTrue("no add_contact", r.link.contactsWritten.isEmpty())
+            assertEquals(0L, r.metrics.lora().loraDirectNoKey)
+            assertEquals(1L, r.metrics.meshtastic().autoReplyRefusedByReason[AutoReplyRefusal.NAK.name])
+            // The queueStatus order too: a `Rejected(res = 39)` on the reply never reaches the compact DM's path.
+            advanceTimeBy(DmAutoReplyPolicy.FLOOR_MS)
+            r.link.rejectNext = RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.code
+            r.link.deliverPublicText(from = 0xfeedbeefu, body = "hello?", id = 12u, to = 1u)
+            runCurrent()
+            assertTrue(r.link.contactsWritten.isEmpty())
+            assertEquals("its late self-NAK is the reply's, never a compact DM's missing key", 0L, r.metrics.lora().loraDirectNoKey)
+            assertEquals(
+                "both refused replies are ordinary NAKs",
+                2L,
+                r.metrics.lora().loraNakByReason[RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.name],
+            )
+            r.transport.stop()
+        }
+
+    /** A Meshtastic-room post our board refuses with 39 is the room's refusal alone: no contact, no keyless mark. */
+    @Test
+    fun aRoomPostRefusedWithA39NeverWritesAContact() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = provisionedRig(air)
+            r.link.rejectNext = RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.code
+            assertNull(r.transport.postToPublicChannel("hello room"))
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue("it was written and refused", r.link.rejectNext == null)
+            assertTrue(r.link.contactsWritten.isEmpty())
+            assertEquals(0L, r.metrics.lora().loraDirectNoKey)
             r.transport.stop()
         }
 

@@ -401,7 +401,9 @@ internal class LoraAirtime(
     companion object {
         /**
          * The signature cliff of a packet the firmware never signs: a unicast (ADR 2026-10.x9fa). 2.8 signs only the
-         * non-PKI **broadcasts** it originates, so a compact DM and the destination's ACK are priced bare.
+         * non-PKI **broadcasts** it originates, and a unicast only in ham mode (`Router.cpp:1271` at v2.8.1), so a
+         * compact DM — a PKI unicast, priced with its PKC overhead — the destination's ACK and a unicast `NodeInfo` are
+         * priced without a signature.
          */
         const val UNSIGNED = 0
 

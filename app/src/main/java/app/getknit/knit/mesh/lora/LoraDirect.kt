@@ -161,11 +161,19 @@ internal enum class DirectKind {
  * own board is never anyone's. [direct] is
  * `Protocol.CAP_LORA_DIRECT` on their pinned profile — without it their board would ACK a packet their app throws
  * away. [profileVersion] is what tells a refusing peer's new profile from the one it refused under.
+ *
+ * The last three are what an `add_contact` for their board is judged on (ADR 2026-10.aajj, [LoraContactPolicy]):
+ * [loraKey] is the profile's `loraKey` (base64, the key their board signs and decrypts under), [contact] the rank the
+ * map ranks claims by, and [contested] that another pinned profile names the same board — whose key it is then cannot
+ * be told. Any of them changing is a new holder, so a missing-key hold under the old one lifts.
  */
 internal data class LoraBoardHolder(
     val addr: BoardAddr,
     val direct: Boolean,
     val profileVersion: Long = 0L,
+    val loraKey: String? = null,
+    val contact: Boolean = false,
+    val contested: Boolean = false,
 )
 
 /** The board map's source: pinned contacts with a board, as they change. Null in a transport built with no such source. */

@@ -422,6 +422,12 @@ class MeshMetrics {
     private val loraDirectDelivered = AtomicLong()
     private val loraDirectResent = AtomicLong()
 
+    // Firmware 2.8 PKI-encrypts every compact DM (ADR 2026-10.aajj): what a missing key on either board cost.
+    private val loraDirectNoKey = AtomicLong()
+    private val loraDirectContactAdded = AtomicLong()
+    private val loraDirectPeerLacksOurKey = AtomicLong()
+    private val loraDirectBoardKeyConflict = AtomicLong()
+
     // The Meshtastic room's inbound half: how much chat the board's primary channel actually carries, how
     // much of it arrives off an MQTT uplink, and what the filters turn away. Nothing here transmits, so none
     // of it touches the airtime ledger.
@@ -1259,7 +1265,7 @@ class MeshMetrics {
         loraDirectTooLong.incrementAndGet()
     }
 
-    /** A compact DM refused because the plane is bound to slot 0, where the firmware would PKI-encrypt it. */
+    /** A compact DM refused because the plane is bound to slot 0: Knit's frames belong on the Knit channel. */
     fun onLoraDirectSlotZero() {
         loraDirectSlotZero.incrementAndGet()
     }
@@ -1282,6 +1288,26 @@ class MeshMetrics {
     /** A compact DM opened and handed to the pipeline. */
     fun onLoraDirectDelivered() {
         loraDirectDelivered.incrementAndGet()
+    }
+
+    /** Our own board refused a compact DM before it aired: it holds no key for the destination's board (`39`). */
+    fun onLoraDirectNoKey() {
+        loraDirectNoKey.incrementAndGet()
+    }
+
+    /** Our board took an `add_contact` teaching it a pinned contact's key after a `39` (ADR 2026-10.aajj). */
+    fun onLoraDirectContactAdded() {
+        loraDirectContactAdded.incrementAndGet()
+    }
+
+    /** The destination's board could not decrypt a compact DM: it holds no key for ours (`PKI_UNKNOWN_PUBKEY`, 35). */
+    fun onLoraDirectPeerLacksOurKey() {
+        loraDirectPeerLacksOurKey.incrementAndGet()
+    }
+
+    /** Our board's NodeInfo stream showed a key for a contact's board other than their profile's: nothing written. */
+    fun onLoraDirectBoardKeyConflict() {
+        loraDirectBoardKeyConflict.incrementAndGet()
     }
 
     /** A compact DM re-aired: after its board was heard again, or by the re-probe. */
@@ -1667,6 +1693,10 @@ class MeshMetrics {
             loraDirectClockRefused = loraDirectClockRefused.get(),
             loraDirectDelivered = loraDirectDelivered.get(),
             loraDirectResent = loraDirectResent.get(),
+            loraDirectNoKey = loraDirectNoKey.get(),
+            loraDirectContactAdded = loraDirectContactAdded.get(),
+            loraDirectPeerLacksOurKey = loraDirectPeerLacksOurKey.get(),
+            loraDirectBoardKeyConflict = loraDirectBoardKeyConflict.get(),
         )
 
     /** The [Snapshot.Meshtastic] counters alone, read now. */
@@ -1951,6 +1981,10 @@ class MeshMetrics {
             val loraDirectClockRefused: Long = 0,
             val loraDirectDelivered: Long = 0,
             val loraDirectResent: Long = 0,
+            val loraDirectNoKey: Long = 0,
+            val loraDirectContactAdded: Long = 0,
+            val loraDirectPeerLacksOurKey: Long = 0,
+            val loraDirectBoardKeyConflict: Long = 0,
         )
 
         /**

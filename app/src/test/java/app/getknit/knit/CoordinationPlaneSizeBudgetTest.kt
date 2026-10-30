@@ -911,16 +911,31 @@ class CoordinationPlaneSizeBudgetTest {
     }
 
     /**
+     * A compact DM's plaintext cap at the MTU-255 floor (ADR 2026-10.x9fa, its PKI amendment): the firmware PKI-encrypts
+     * every compact DM and refuses an encoded `Data` past 227 B (`Router.cpp:1349` at v2.8.1), so the packet is at most
+     * [MeshtasticProto.MAX_PAYLOAD] less the 12-byte PKC overhead — under the floor's `want_ack` write — less the
+     * [LORA_DIRECT_OVERHEAD] bytes of header and tag around the content. Derived here apart from the plane's own function,
+     * and pinned at 168.
+     */
+    private val compactPlaintextCap: Int
+        get() =
+            minOf(
+                MeshtasticProto.MAX_PAYLOAD - MeshtasticProto.PKC_OVERHEAD_BYTES,
+                esp32PayloadCap - MeshtasticProto.WANT_ACK_FIELD_BYTES,
+            ) - LORA_DIRECT_OVERHEAD
+
+    /**
      * A DM's LoRa budget is **one compact packet** at the MTU-255 floor (ADR 2026-10.x9fa): the pair-sealed unicast carries
-     * the v3 compact content inside [LORA_DIRECT_OVERHEAD] bytes of header and tag, and its `ToRadio` grows by
-     * `want_ack`, so the plaintext cap is the floor's payload less both. [LoraSizeHint.DM_BODY_BYTES] covers the body
+     * the v3 compact content inside [LORA_DIRECT_OVERHEAD] bytes of header and tag, and the firmware's PKI check bounds
+     * the packet ([compactPlaintextCap]). [LoraSizeHint.DM_BODY_BYTES] covers the body
      * and the inline acks `MeshManager.inlineAcksFor` may spend out of it, at [INLINE_ACK_BYTES] each — pinned here with
      * incompressible bodies (random printable ASCII, random four-byte emoji: the compact content is not deflated, but
      * the hint must not depend on that) at every ack count, and shown not to be slack.
      */
     @Test
     fun aDmAtTheHintBudgetIsOneCompactPacketAtTheMtuFloor() {
-        val cap = esp32PayloadCap - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+        val cap = compactPlaintextCap
+        assertEquals("the PKI check binds: 219 less the 51 around the content", 168, cap)
         val budget = LoraSizeHint.DM_BODY_BYTES
         val random = Random(seed = 13)
 
@@ -957,12 +972,13 @@ class CoordinationPlaneSizeBudgetTest {
     /**
      * Crypto 5 (ADR 2026-10.x9fa): the coalesced ✓✓'s compact copy is one packet at the MTU floor. `MeshManager`
      * splits a flush into ticks of at most [LORA_DIRECT_TICK_ACKS] ids, riders included, each a v3 `CTL_RECEIPT` inside
-     * [LORA_DIRECT_PLAINTEXT_BYTES] — the floor's payload less `want_ack` and the 51 bytes around the content. The cap is
-     * exact: one id more is past the packet. A single id rides `ack`, which is never larger.
+     * [LORA_DIRECT_PLAINTEXT_BYTES] — [compactPlaintextCap], the PKI packet less the 51 bytes around the content. The cap
+     * is exact: one id more is past the packet, which the plane would refuse and the re-probe would re-air every 4 h. A
+     * single id rides `ack`, which is never larger.
      */
     @Test
     fun aCompactTickAtItsCapIsOnePacketAtTheMtuFloor() {
-        val cap = esp32PayloadCap - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+        val cap = compactPlaintextCap
         assertEquals("the manager's budget is this floor's", cap, LORA_DIRECT_PLAINTEXT_BYTES)
 
         fun tick(ids: Int): Int {

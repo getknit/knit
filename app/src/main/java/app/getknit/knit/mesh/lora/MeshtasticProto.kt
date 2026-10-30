@@ -78,8 +78,13 @@ internal object MeshtasticProto {
 
     /**
      * What a PKI-encrypted unicast adds on the air past its `Data`: the firmware's `MESHTASTIC_PKC_OVERHEAD` (an 8-byte tag
-     * and a 4-byte extra nonce, `RadioInterface.h:23`, added in `Router::perhapsEncode`, `Router.cpp:1305-1323`). The DM
-     * auto-reply is one (ADR 2026-10.ug4a), priced with it at admission and at booking.
+     * and a 4-byte extra nonce, `RadioInterface.h:23`, added in `Router::perhapsEncode`, `Router.cpp:1347-1350` at
+     * v2.8.1). Firmware 2.8 PKI-encrypts **every** unicast its phone originates on a port it does not exclude, whatever
+     * the channel (`wouldEncryptWithPKC`, `Router.cpp:1189-1212`, never reads the index): the DM auto-reply (ADR
+     * 2026-10.ug4a) and every compact DM, the Knit secondary included. It is also what the firmware's size check adds:
+     * an encoded `Data` past 227 B draws `TOO_LARGE` from our own board, so a PKI unicast carries at most
+     * [MAX_PAYLOAD] less this ([LoraDirectPolicy.payloadCap]). Priced at admission and at booking (ADR 2026-10.x9fa's
+     * PKI amendment).
      */
     const val PKC_OVERHEAD_BYTES = 12
 
@@ -189,6 +194,9 @@ internal object MeshtasticProto {
     // intervals above: [BoardName] owns the *identity*, the field numbers stay here with the rest of the
     // pinned wire.
 
+    /** `User.id` — `!` and the node number as eight lowercase hex digits; the firmware re-derives it from the number. */
+    const val USER_ID = 1
+
     /** `User.long_name` — up to 39 characters; what a node list and the Meshtastic app show. */
     const val USER_LONG_NAME = 2
 
@@ -206,6 +214,13 @@ internal object MeshtasticProto {
      * "this board never said", which every client and [BoardOwnerRaw] read as messagable.
      */
     const val USER_IS_UNMESSAGABLE = 9
+
+    /**
+     * `User.is_licensed` — ham mode: a licensed board never PKI-encrypts (`wouldEncryptWithPKC` asks `!owner.is_licensed`)
+     * and signs its unicasts instead, so a compact DM from one is priced signed and never draws a `39`. Read, never
+     * written: no `User` Knit builds for `add_contact` carries it.
+     */
+    const val USER_IS_LICENSED = 6
 
     /**
      * `User.public_key` — the node's Curve25519 public key, 32 raw bytes, the key firmware 2.8 signs its
@@ -353,6 +368,26 @@ internal object MeshtasticProto {
     /** `AdminMessage { commit_edit_settings = true }` — applies the open transaction (and may reboot the board). */
     fun encodeAdminCommitEdit(passkey: ByteArray?): ByteArray = admin(passkey) { bool(ADMIN_COMMIT_EDIT, true) }
 
+    /**
+     * `AdminMessage { add_contact = SharedContact { node_num, user } }` (field 66; `SharedContact` is `node_num 1, user 2,
+     * should_ignore 3, manually_verified 4`, `admin.proto`) — teaches the local board a node and its key
+     * (`NodeDB::addFromContact`, `NodeDB.cpp:3717-3790` at v2.8.1). [user] is the whole `User` the board will store for
+     * [nodeNum] (`CopyUserToNodeInfoLite` copies every field, names and key alike), built by [LoraContactPolicy].
+     * `should_ignore` and `manually_verified` are never set: the first blocks the node, the second is a user-facing
+     * trust mark in every Meshtastic app and would lock the key against the contact's own reflash. A local admin message
+     * (`from == 0`) carries no session passkey (`AdminModule.cpp:161-182`), so none is appended (ADR 2026-10.aajj).
+     */
+    fun encodeAdminAddContact(
+        nodeNum: UInt,
+        user: ByteArray,
+    ): ByteArray =
+        admin(passkey = null) {
+            message(ADMIN_ADD_CONTACT) {
+                uint32(SHARED_CONTACT_NODE_NUM, nodeNum)
+                bytes(SHARED_CONTACT_USER, user, emitEmpty = true)
+            }
+        }
+
     /** Wraps one AdminMessage `oneof` member ([block]) and appends the `session_passkey` the board issued, if any. */
     private inline fun admin(
         passkey: ByteArray?,
@@ -475,6 +510,7 @@ internal object MeshtasticProto {
         var rxTime = 0u
         var wantAck = false
         var nextHop = 0
+        var pkiEncrypted = false
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -539,6 +575,10 @@ internal object MeshtasticProto {
                     xeddsaSigned = reader.readVarint32() != 0
                 }
 
+                MP_PKI_ENCRYPTED -> {
+                    pkiEncrypted = reader.readVarint32() != 0
+                }
+
                 else -> {
                     reader.skip(tag and WireType.MASK)
                 }
@@ -560,6 +600,7 @@ internal object MeshtasticProto {
             rxTime = rxTime.takeIf { it != 0u },
             wantAck = wantAck,
             nextHop = nextHop,
+            pkiEncrypted = pkiEncrypted,
         )
     }
 
@@ -624,17 +665,17 @@ internal object MeshtasticProto {
     private fun decodeNodeInfo(reader: ProtoReader): FromRadio.NodeInfo {
         var num = 0u
         var metrics: DeviceMetrics? = null
-        var owner: BoardOwner? = null
+        var user: BoardOwnerRaw? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 NODEINFO_NUM -> num = reader.readVarint32().toUInt()
-                NODEINFO_USER -> owner = BoardOwnerRaw(reader.readBytes()).owner
+                NODEINFO_USER -> user = BoardOwnerRaw(reader.readBytes())
                 NODEINFO_DEVICE_METRICS -> metrics = decodeDeviceMetrics(reader.sub())
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return FromRadio.NodeInfo(num, metrics, owner)
+        return FromRadio.NodeInfo(num, metrics, user?.owner, user)
     }
 
     /** `DeviceMetrics { … }` — every field proto3-`optional`, so an absent one stays null. */
@@ -847,6 +888,9 @@ internal object MeshtasticProto {
      */
     private const val MP_XEDDSA_SIGNED = 22
 
+    /** `MeshPacket.pki_encrypted` — the board PKI-decrypted it (field 17). */
+    private const val MP_PKI_ENCRYPTED = 17
+
     // Data field numbers.
     private const val DATA_PORTNUM = 1
     private const val DATA_PAYLOAD = 2
@@ -878,7 +922,12 @@ internal object MeshtasticProto {
     private const val ADMIN_SET_MODULE_CONFIG = 35
     private const val ADMIN_BEGIN_EDIT = 64
     private const val ADMIN_COMMIT_EDIT = 65
+    private const val ADMIN_ADD_CONTACT = 66
     private const val ADMIN_SESSION_PASSKEY = 101
+
+    // SharedContact field numbers (`admin.proto`): what `add_contact` carries.
+    private const val SHARED_CONTACT_NODE_NUM = 1
+    private const val SHARED_CONTACT_USER = 2
 
     // ChannelSettings field numbers (psk + name; the rest are left at their proto3 defaults).
     private const val CHANNEL_SETTINGS_PSK = 2
@@ -1020,6 +1069,13 @@ internal class BoardOwnerRaw(
                     ?.takeIf { it.size == MeshtasticProto.NODE_PUBLIC_KEY_BYTES }
                     ?.let(::b64),
         )
+
+    /**
+     * `User.is_licensed` — ham mode. Read only: on the bound board's own entry it says the firmware signs a compact DM
+     * rather than PKI-encrypt it, and a node reporting it is never taught a key (ADR 2026-10.aajj). Kept off [owner],
+     * which a setup records and compares.
+     */
+    val licensed: Boolean get() = (readVarintField(raw, MeshtasticProto.USER_IS_LICENSED) ?: 0L) != 0L
 }
 
 /** A decoded inbound `MeshPacket`. [decoded] is null when the packet arrived [encrypted] (a foreign channel). */
@@ -1057,6 +1113,12 @@ internal class MeshPacket(
     val wantAck: Boolean = false,
     /** `MeshPacket.next_hop` — the last byte of the node chosen to carry it on, 0 for no preference. */
     val nextHop: Int = 0,
+    /**
+     * `MeshPacket.pki_encrypted` — the board decrypted it with its own private key and the sender's public key, and
+     * reports it on index 0 whatever channel the sender's board used. Every compact DM from a 2.8 board arrives so
+     * (ADR 2026-10.x9fa's PKI amendment).
+     */
+    val pkiEncrypted: Boolean = false,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null
@@ -1159,6 +1221,11 @@ internal sealed interface FromRadio {
         val metrics: DeviceMetrics?,
         /** `NodeInfo.user` — for the board's own entry, what it calls itself on the mesh. */
         val owner: BoardOwner? = null,
+        /**
+         * The same `User` exactly as the board sent it: the key the board's NodeDB holds for [num], and the base an
+         * `add_contact` splices our contact's key into (ADR 2026-10.aajj). Not compared: a class, not a value.
+         */
+        val user: BoardOwnerRaw? = null,
     ) : FromRadio
 
     data class Channel(
@@ -1393,6 +1460,13 @@ internal enum class RoutingError(
     ADMIN_BAD_SESSION_KEY(36),
     ADMIN_PUBLIC_KEY_UNAUTHORIZED(37),
     RATE_LIMIT_EXCEEDED(38),
+
+    /**
+     * Our own board refused a unicast before it aired: it PKI-encrypts every unicast its phone originates and holds no
+     * key for the destination (`Router.cpp:1351-1355` at v2.8.1). Reported first as the send's `queueStatus.res`, then
+     * as a self-NAK on index 0 (ADR 2026-10.aajj).
+     */
+    PKI_SEND_FAIL_PUBLIC_KEY(39),
     UNKNOWN(-1),
     ;
 

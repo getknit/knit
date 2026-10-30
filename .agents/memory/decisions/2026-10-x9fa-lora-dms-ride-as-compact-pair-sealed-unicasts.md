@@ -11,6 +11,9 @@ topics: [lora, crypto]
 Status: Proposed (2026-10-29). The LoRa half (Stage 2a) and the crypto half (Stage 2b, below: the seal, the
 `lora_direct_seen` table, delivery, the offers in `MeshManager` and the deletion of `MeshTransport.longRangeFanout`).
 
+**Amended 2026-10-30 (below, "firmware 2.8 PKI-encrypts every compact DM"):** the DM is never kept off PKI by the Knit
+secondary; it is sized and priced as a PKI packet, and ADR 2026-10.aajj builds Plan B.
+
 **Superseded in part by ADR 2026-10.ug4a (2026-10-29):** the ✓✓'s pacing. It is a `FrameClass.DIRECT` frame now, shed before a DM or a reaction but dequeued in its turn, and it may spend a window's last quarter: ADR 054's tick class and tail are gone. Every airing is booked and refunded against the one ledger, with no bucket.
 
 Supersedes: ADR 039's DM form (a DM rode the plane as its signed, ratchet-sealed mesh frame), ADR 2026-10.a4pm (the
@@ -28,8 +31,9 @@ happened to air, whether a DM had a chance. On the 2026-10-04 field walk the DM 
 **What changed.** A DM, its ✓✓ and a DM reaction leave as **one** compact packet, tag `0x11` (`LORA_DIRECT_TAG`,
 registered in `FastFrameCodec`'s tag registry and `docs/WIRE_COMPAT.md`): `tag 1 | pairTag 4 | salt 8 | frameId 16 |
 sentAt u48 6 | AES-256-GCM` around the v3 compact content, 51 B of overhead. It is a Meshtastic **unicast with
-`want_ack`** (`MeshPacket` field 10) to the recipient's board, on the bound Knit **secondary** (never slot 0, where the
-firmware would PKI-encrypt it — a direct send is refused there, counted `loraDirectSlotZero`), `PRIVATE_APP`,
+`want_ack`** (`MeshPacket` field 10) to the recipient's board, on the bound Knit **secondary** (never slot 0 — a direct
+send is refused there, counted `loraDirectSlotZero`; the reason given here, that the firmware PKI-encrypts it on slot 0
+only, was wrong: it does on every slot, see the 2026-10-30 amendment), `PRIVATE_APP`,
 `hop_limit = HOP_LIMIT`. The firmware's retries and the destination's ACK replace the reach gate. The signed copy still
 goes to custody, the spool and the links exactly as before; LoRa no longer carries it, and `LoraFramePolicy.eligible`
 admits only an own one-packet room post. Old builds drop `0x11` as `UNKNOWN_TAG`.
@@ -120,7 +124,8 @@ still loads).
   write at MTU 255 is already two bytes past one ATT write (Android splits it as a long write). The direct cap takes
   `want_ack`'s two bytes off its own payload so it is no longer than a broadcast's; a full one is still that long.
 - *Plan B, not built:* a PKI unicast on slot 0 (+12 B), the destination's key injected with `add_contact`, if a board
-  trial shows a secondary-channel unicast is refused or not acked on some firmware.
+  trial shows a secondary-channel unicast is refused or not acked on some firmware. (Built 2026-10-30 as ADR
+  2026-10.aajj: every compact DM is already a PKI unicast, and the key is taught on our own board's refusal.)
 
 Tests: `LoraDirectPolicyTest`, `LoraDirectTransportTest` (over `FakeMeshtasticAir`, which now models a unicast reaching
 only its destination, the board's ACK whatever the phone does, every retry as an airing, `MAX_RETRANSMIT` in real
@@ -334,3 +339,58 @@ custody oracle to ✓✓s and reactions, the gate's claim (`LabNode.initBearingA
     - `MeshtasticProtoTest`: field 10 set, absent and false; field 18.
     - `LoraDirectPolicyTest.ourBoardAcksAUnicastThatAskedOrThatNamedUsItsNextHopWithHopsLeft`.
     - `LoraDirectTransportTest.ourBoardsAckIsBookedForEveryCompactDmAddressedToUsThatAskedForOneOpenedOrNot` and `aCompactDmThatAskedForNoAckBooksNothing`.
+
+### Amendment (2026-10-30): firmware 2.8 PKI-encrypts every compact DM
+
+Found 2026-10-29 by the lora-reviewer reading firmware 2.8.0 and 2.8.1, confirmed at `v2.8.1.8e6a88d`. Builds on, and
+partly supersedes, "What changed" (the secondary keeping the DM off PKI), "Air" (the unsigned price, the 8-B ACK) and the
+trial step (0).
+
+- **Every compact DM is a PKI unicast.** `Router::wouldEncryptWithPKC` (`Router.cpp:1189-1212`; `:1163` at
+  `v2.8.0.47db0e3`) never reads the channel index: it excludes only channels named `serial`/`gpio`, broadcasts, a
+  licensed owner and the TRACEROUTE, NODEINFO, ROUTING and POSITION ports. So our `0x11` `PRIVATE_APP` unicast on the
+  Knit secondary is PKI-encrypted, and the firmware never falls back to the channel key: with no key for the
+  destination our own board refuses it (`PKI_SEND_FAIL_PUBLIC_KEY`, 39, `Router.cpp:1347-1355`) and nothing airs. That
+  path, the `add_contact` that answers it and the destination's `PKI_UNKNOWN_PUBKEY` (35) are ADR 2026-10.aajj.
+- **Sized for PKI, always.** The firmware refuses an encoded `Data` past 227 B under PKI (`Router.cpp:1349`), so one
+  packet carries at most `MeshtasticProto.MAX_PAYLOAD` less `PKC_OVERHEAD_BYTES` (12): 219 B, against the 226–229 B the
+  `want_ack` write allowed, which made a seal of 220–229 B a `TOO_LARGE` from our own board that never flew. The two
+  limits do not stack (`want_ack` bounds the BLE write, PKI the firmware): one pure cap, `LoraDirectPolicy.payloadCap`
+  = `min(MAX_PAYLOAD − 12, maxPayload − WANT_ACK_FIELD_BYTES)`, read by the transport's offer and by
+  `MeshManager.LORA_DIRECT_PLAINTEXT_BYTES` (168 B, was 175). `LORA_DIRECT_TICK_ACKS` is 9 (ten ids are 175 B), pinned
+  by `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor`; a ten-id tick would have been
+  refused as too long and its DM re-probed every 4 h. `LoraSizeHint.DM_BODY_BYTES` stays 160: re-measured with `-i`, a
+  160-B body is 164 B of plaintext, so the 12 B came out of the old margin (11 B → 4 B). The overhead is reserved
+  always, never learned: every compact DM that flies on 2.8 is PKI. A board in ham mode is the exception — no PKI, the
+  unicast signed when it fits (`Router.cpp:1271`) — and is priced so (`DirectSend.licensed`), never refused at setup.
+- **Priced for PKI.** `OutboundFrame.pricedExtraBytes` adds the 12 B to a compact DM at all three places that price
+  one: `admissionSizes`, `onTaken`'s booking of every airing, and `launchFlight`'s `airMs`, which sets the refund, the
+  retransmit gap and the deadline. One constant (`MeshtasticProto.PKC_OVERHEAD_BYTES`), shared with the auto-reply.
+- **The ACK carries a proof, on index 0.** A 2.8.1 board that holds the sender's key — and one that decrypted a PKI DM
+  does — appends `Routing.ack_proof` (`AckProof.cpp:133-146`, `ACK_PROOF_SIZE` 8, `CryptoEngine.h:31`): the receiver
+  books `ACK_PAYLOAD_BYTES` = 8 + 10. The PKI DM is reported on the receiver's index 0, so its ACK goes channel-keyed on
+  the receiver's primary (`ROUTING_APP` is never PKI'd). Two boards whose primaries share a name but not a PSK decode
+  the DM and never the ACK: `MAX_RETRANSMIT`, the board marked unreachable, the DM delivered all the same — the
+  re-probe's ✓✓ is what settles it.
+- **Received on index 0.** A 2.8 board reports every compact DM PKI-decrypted on index 0 with `pki_encrypted`
+  (`MeshPacket` field 17, now decoded onto `ReceivedPacket.pkiEncrypted`, read by nothing that decides); `onDirectPacket`
+  already took index 0. Its radio now counts in `boardsHeard` too, but only once the seal opened (index 0 is the public
+  slot; a stranger's packet there counts nobody).
+- **The "refused" path narrows.** A Restored board still holds keys, decodes the PKI DM on index 0 and acks it, so
+  `NO_CHANNEL` → `REFUSED` fires only from a board with no keys at all. `PKI_UNKNOWN_PUBKEY` from the destination is
+  never `REFUSED` (ADR 2026-10.aajj).
+- **The trial step (0) was wrong.** "A `PRIVATE_APP` unicast on the Knit secondary arrives un-PKI'd" is replaced by:
+  (a) two 2.8.1 boards that know each other's keys — a maximum-length compact DM (219 B) and a 9-id ✓✓ arrive
+  `pki_encrypted` on index 0 (`meshtastic --listen`), no `TOO_LARGE`, acked `byDestination`; (b) the receiver removed
+  from the sender's board — a 39, counted, never silent (with ADR 2026-10.aajj: answered by an `add_contact`); (c) the
+  sender removed from the receiver's board — a 35, our NodeInfo on the air, the DM delivered within a minute.
+
+Regressions: `LoraDirectPolicyTest.theCompactCapIsTheFirmwaresPkiCheckUnderTheWantAckWrite` and
+`anAckIsBookedWithItsProof`, `LoraPacePolicyTest.aUnicastIsPricedUnsignedAndABroadcastAtItsPortsCliff`,
+`LoraDirectTransportTest.aSealPastThePkiCapIsRefusedAtTheOfferAndOneAtItFlies`,
+`aDmIsPricedUnsignedAndTheReceiverBooksItsBoardsAck` and `aPkiDmOnIndexZeroIsDeliveredAndItsRadioCountsOnceItOpens`,
+`MeshtasticProtoTest.aPacketsPkiEncryptedFlagDecodesAndAbsentIsFalse`, and `CoordinationPlaneSizeBudgetTest`'s two
+compact-DM budgets. Not covered: decoding `MeshPacket.ack_proof_status` (field 23, so an `INVALID` proof never marks a
+board reachable), a user turning on `use_aead` for the Knit secondary (invisible to Knit; peers without AEAD cannot
+decode), and more implicit ACKs with three or more boards now that `LOCAL_ONLY` boards relay opaque PKI unicasts
+(`20f7ab1be`).

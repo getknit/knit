@@ -142,6 +142,18 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun aPacketsPkiEncryptedFlagDecodesAndAbsentIsFalse() {
+        // FromRadio.packet { from = 0x1234, channel 0, decoded { portnum 256, payload 0x11 }, pki_encrypted (17, varint) = true }:
+        // how every compact DM from a 2.8 board reaches the phone (ADR 2026-10.x9fa's PKI amendment).
+        val pki = MeshtasticProto.decodeFromRadio(hex("12 10 0D 34 12 00 00 22 06 08 80 02 12 01 11 88 01 01")) as FromRadio.Packet
+        assertTrue(pki.packet.pkiEncrypted)
+        assertEquals(0, pki.packet.channel)
+        assertEquals(MeshtasticProto.PORT_PRIVATE_APP, pki.packet.decoded?.portnum)
+        val plain = MeshtasticProto.decodeFromRadio(hex("12 0D 0D 34 12 00 00 22 06 08 80 02 12 01 11")) as FromRadio.Packet
+        assertFalse(plain.packet.pkiEncrypted)
+    }
+
+    @Test
     fun aPacketsNextHopDecodesBesideItsHopLimitAndAbsentIsZero() {
         // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, hop_limit (9) = 3, next_hop (18, varint) = 0xCD }
         val named =
@@ -196,6 +208,34 @@ class MeshtasticProtoTest {
     fun encodeAdminBeginAndCommitEdit() {
         assertEquals("80 04 01", MeshtasticProto.encodeAdminBeginEdit(null).hex())
         assertEquals("88 04 01", MeshtasticProto.encodeAdminCommitEdit(null).hex())
+    }
+
+    @Test
+    fun encodeAdminAddContact() {
+        // add_contact (AdminMessage field 66, tag 92 04) = SharedContact { node_num (1) = 0x01020304,
+        // user (2) = User { short_name (3) = "Knit" } }; should_ignore (3) and manually_verified (4) never set, and no
+        // session_passkey (field 101) on a local admin message (ADR 2026-10.aajj).
+        val user = hex("1A 04 4B 6E 69 74")
+        assertEquals(
+            "92 04 0D 08 84 86 88 08 12 06 1A 04 4B 6E 69 74",
+            MeshtasticProto.encodeAdminAddContact(0x01020304u, user).hex(),
+        )
+    }
+
+    @Test
+    fun routingErrorsCarryBothPkiKeyFailuresByNumber() {
+        assertEquals(RoutingError.PKI_UNKNOWN_PUBKEY, RoutingError.fromCode(35))
+        assertEquals(RoutingError.PKI_SEND_FAIL_PUBLIC_KEY, RoutingError.fromCode(39))
+        assertEquals("a 39 is ours, never UNKNOWN", 39, RoutingError.PKI_SEND_FAIL_PUBLIC_KEY.code)
+    }
+
+    @Test
+    fun aNodeInfoKeepsItsRawUserAndReadsHamMode() {
+        // node_info (4) { num = 42, user (2) = User { long_name (2) = "K", is_licensed (6) = true } }
+        val fr = MeshtasticProto.decodeFromRadio(hex("22 09 08 2A 12 05 12 01 4B 30 01")) as FromRadio.NodeInfo
+        assertEquals("K", fr.owner?.longName)
+        assertEquals(hex("12 01 4B 30 01").toList(), fr.user?.raw?.toList())
+        assertTrue(checkNotNull(fr.user).licensed)
     }
 
     @Test

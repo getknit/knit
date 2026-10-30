@@ -68,6 +68,8 @@ document:
 - DMs over LoRa now go straight to your contact's board in one short packet, and the delivery checkmark comes
   back the same way. Only short DMs to contacts with a board travel like this, and older versions of Knit no
   longer get your DMs over LoRa.
+- To get a LoRa DM through, Knit may give your board the contact's key from their profile. That contact then
+  shows as a favourite in Meshtastic apps connected to your board.
 - While your LoRa board reports a busy channel, your Nearby posts wait instead of going out over LoRa, and the
   Nearby room tells you so. Your DMs still go, and posts to the Meshtastic room and DM auto-replies can now
   use up to half of Knit's LoRa airtime.

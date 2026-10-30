@@ -336,6 +336,64 @@ class MeshtasticSessionTest {
             session.stop()
         }
 
+    /**
+     * Every `User` the board streams — a handshake NodeDB entry or a node's over-the-air NodeInfo — is kept raw and
+     * stamped, nameless ones too, so an `add_contact` can tell a key that raced a refused send from one recorded before it
+     * (ADR 2026-10.aajj). The board's own entry says whether it is in ham mode.
+     */
+    @Test
+    fun everyStreamedUserIsKeptRawAndStampedAndTheBoardsOwnSaysHamMode() =
+        runTest {
+            fun nodeInfo(
+                num: UInt,
+                user: ByteArray,
+            ) = ProtoWriter()
+                .message(4) {
+                    uint32(1, num)
+                    bytes(2, user)
+                }.toByteArray()
+            val own =
+                ProtoWriter()
+                    .string(
+                        MeshtasticProto.USER_LONG_NAME,
+                        "KD0XYZ",
+                    ).varint(MeshtasticProto.USER_IS_LICENSED, 1)
+                    .toByteArray()
+            val nameless = ProtoWriter().bytes(MeshtasticProto.USER_PUBLIC_KEY, ByteArray(32) { 4 }).toByteArray()
+            val ch = FakeGattChannel()
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(nodeInfo(0xABCDu, own))
+                    ch.enqueueRead(nodeInfo(0x5678u, nameless))
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            assertTrue("the board's own entry: ham mode", (session.state.value as LinkState.Ready).board.licensed)
+            assertEquals(
+                "a nameless entry is kept",
+                nameless.toList(),
+                session
+                    .nodeUser(0x5678u)
+                    ?.user
+                    ?.raw
+                    ?.toList(),
+            )
+            val before = session.userSeq()
+            val user = ProtoWriter().string(MeshtasticProto.USER_LONG_NAME, "Knit 1234").toByteArray()
+            board(ch, BoardBytes.packet(from = 0x1234u, channel = 0, portnum = MeshtasticProto.PORT_NODEINFO, payload = user, rxRssi = -70))
+            val heard = checkNotNull(session.nodeUser(0x1234u))
+            assertEquals(user.toList(), heard.user.raw.toList())
+            assertTrue("stamped past what was read before it", heard.seq > before)
+            assertTrue(checkNotNull(session.nodeUser(0x5678u)).seq <= before)
+            session.stop()
+            assertEquals("cleared with the link", null, session.nodeUser(0x1234u))
+        }
+
     @Test
     fun aPacketsRxTimeSurfacesAndAnAbsentOneIsNull() =
         runTest {

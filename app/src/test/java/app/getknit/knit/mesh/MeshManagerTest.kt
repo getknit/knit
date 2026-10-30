@@ -51,6 +51,7 @@ import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LoraBoardHolder
+import app.getknit.knit.mesh.lora.LoraContactPolicy
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BlobReqContent
@@ -1909,11 +1910,19 @@ class MeshManagerTest {
                 node: Long?,
                 caps: Long?,
                 at: Long,
-            ) = PeerEntity(nodeId = p.nodeId, pubKey = p.bundle.encoded, loraNode = node, capabilities = caps, updatedAt = at)
+                key: String? = null,
+            ) = PeerEntity(
+                nodeId = p.nodeId,
+                pubKey = p.bundle.encoded,
+                loraNode = node,
+                capabilities = caps,
+                updatedAt = at,
+                loraKey = key,
+            )
             val table =
                 MutableStateFlow(
                     listOf(
-                        row(rig.bob, 0x1234L, Protocol.CAP_LORA_DIRECT, 5L),
+                        row(rig.bob, 0x1234L, Protocol.CAP_LORA_DIRECT, 5L, key = "Ym9i"),
                         // An older claim to bob's board: carol held it before him.
                         row(carol, 0x1234L, Protocol.CAP_LORA_DIRECT, 2L),
                         row(dave, 0x5678L, Protocol.LOCAL_CAPABILITIES, 3L),
@@ -1930,7 +1939,9 @@ class MeshManagerTest {
 
             assertEquals(
                 mapOf(
-                    rig.bob.nodeId to LoraBoardHolder(BoardAddr(0x1234u), direct = true, profileVersion = 5L),
+                    // Carol's losing claim carries no key that binds the board, so it contests nothing (ADR 2026-10.aajj). The
+                    // holder carries the profile's key and its rank.
+                    rig.bob.nodeId to LoraBoardHolder(BoardAddr(0x1234u), direct = true, profileVersion = 5L, loraKey = "Ym9i"),
                     dave.nodeId to LoraBoardHolder(BoardAddr(0x5678u), direct = false, profileVersion = 3L),
                 ),
                 map.value,
@@ -1942,10 +1953,49 @@ class MeshManagerTest {
             // A contact outranks a stranger's newer claim: bob's thread is accepted, carol is a stranger.
             accepted.value = setOf(rig.bob.nodeId)
             withTimeout(AWAIT_MS) { map.first { it.keys == setOf(rig.bob.nodeId) } }
+            assertTrue("an accepted conversation is a contact's rank", map.value.getValue(rig.bob.nodeId).contact)
 
             // Our own board is nobody's, whatever stale claim still names it.
             rig.loraBoard.value = LoraBoard(0x1234L, null)
             withTimeout(AWAIT_MS) { map.first { it.isEmpty() } }
+        }
+
+    /**
+     * A board two profiles claim is contested only by a rival whose own key binds it — the CRC32 of the key is the node
+     * number, as on 2.8 — so a bare claim anybody can type never stops our board being taught the holder's key
+     * (ADR 2026-10.aajj).
+     */
+    @Test
+    fun aRivalClaimContestsABoardOnlyWhenItsOwnKeyBindsIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val carol = party()
+            val key = ByteArray(32) { it.toByte() }
+            val node = LoraContactPolicy.crc32(key).toLong()
+
+            fun row(
+                p: Party,
+                at: Long,
+                k: ByteArray,
+            ) = PeerEntity(
+                nodeId = p.nodeId,
+                pubKey = p.bundle.encoded,
+                loraNode = node,
+                capabilities = Protocol.CAP_LORA_DIRECT,
+                updatedAt = at,
+                loraKey = b64(k),
+            )
+            val table = MutableStateFlow(listOf(row(rig.bob, 5L, key), row(carol, 2L, ByteArray(32) { 9 })))
+            coEvery { rig.peers.observePeers() } returns table
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId))
+            coEvery { rig.messages.observeConversationsIAuthoredIn(any()) } returns MutableStateFlow(emptyList())
+            val map = rig.manager.loraBoardMap().stateIn(backgroundScope)
+            withTimeout(AWAIT_MS) { map.first { it.keys == setOf(rig.bob.nodeId) } }
+            assertFalse("a key that does not bind the board contests nothing", map.value.getValue(rig.bob.nodeId).contested)
+            assertTrue(map.value.getValue(rig.bob.nodeId).contact)
+
+            table.value = listOf(row(rig.bob, 5L, key), row(carol, 2L, key))
+            withTimeout(AWAIT_MS) { map.first { it[rig.bob.nodeId]?.contested == true } }
         }
 
     /**

@@ -72,6 +72,18 @@ internal class MeshtasticSession(
     private val _nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
     override val nodes = _nodes.asStateFlow()
 
+    /** [nodeUser]'s working set: every `User` the board streamed, raw, nameless ones too, bounded like [_nodes]. */
+    private val users = MutableStateFlow<Map<UInt, StreamedUser>>(emptyMap())
+
+    /** The last stamp [noteUser] gave; only the actor writes it. */
+    private val userStamp =
+        java.util.concurrent.atomic
+            .AtomicLong()
+
+    override fun nodeUser(node: UInt): StreamedUser? = users.value[node]
+
+    override fun userSeq(): Long = userStamp.get()
+
     private val inbox = Channel<Cmd>(Channel.BUFFERED)
     private var loopJob: Job? = null
 
@@ -121,6 +133,7 @@ internal class MeshtasticSession(
         _battery.value = null
         _boardAir.value = null
         _nodes.value = emptyMap()
+        users.value = emptyMap()
         _state.value = LinkState.Idle
     }
 
@@ -467,7 +480,10 @@ internal class MeshtasticSession(
             // the transport's hearing hook alone (ADR 2026-10.x9fa): a packet off a contact's board is evidence the
             // board is on the air, whatever its portnum.
             data.portnum == MeshtasticProto.PORT_NODEINFO -> {
-                noteNodeName(packet.from, BoardOwnerRaw(data.payload).owner)
+                BoardOwnerRaw(data.payload).let { user ->
+                    noteNodeName(packet.from, user.owner)
+                    noteUser(packet.from, user)
+                }
                 emit(packet, data)
             }
 
@@ -500,6 +516,7 @@ internal class MeshtasticSession(
                 wantAck = packet.wantAck,
                 hopLimit = packet.hopLimit,
                 nextHop = packet.nextHop,
+                pkiEncrypted = packet.pkiEncrypted,
             ),
         )
     }
@@ -510,12 +527,13 @@ internal class MeshtasticSession(
      */
     private fun onNodeInfo(info: FromRadio.NodeInfo) {
         info.owner?.let { noteNodeName(info.num, it) }
+        info.user?.let { noteUser(info.num, it) }
         if (info.num != board?.myNodeNum) return
         // The battery only: the NodeDB entry's `device_metrics` is the board's last broadcast reading, which can be
         // hours old (firmware `PhoneAPI.cpp`, `DeviceTelemetry.cpp`), and an old channel figure must never brake.
         info.metrics?.let { onSelfMetrics(it, live = false) }
         // The board's own name, so the setup screen can tell a board that still needs renaming (ADR 049).
-        info.owner?.let { owner -> board = board?.copy(owner = owner) }
+        info.owner?.let { owner -> board = board?.copy(owner = owner, licensed = info.user?.licensed == true) }
     }
 
     /**
@@ -535,6 +553,27 @@ internal class MeshtasticSession(
             next.putAll(current)
             next.remove(num)
             next[num] = owner
+            while (next.size > MAX_NODE_NAMES) next.remove(next.keys.first())
+            next
+        }
+    }
+
+    /**
+     * Records the `User` the board streamed for node [num], raw and stamped — what an `add_contact` reads names from, and
+     * a key from only when it came after the refused send (ADR 2026-10.aajj). Unlike [noteNodeName] a nameless entry is
+     * kept. Bounded at [MAX_NODE_NAMES], oldest out, and not cleared by a re-handshake, for the same reasons.
+     */
+    private fun noteUser(
+        num: UInt,
+        user: BoardOwnerRaw,
+    ) {
+        if (num == 0u) return
+        val stamped = StreamedUser(user, userStamp.incrementAndGet())
+        users.update { current ->
+            val next = LinkedHashMap<UInt, StreamedUser>(current.size + 1)
+            next.putAll(current)
+            next.remove(num)
+            next[num] = stamped
             while (next.size > MAX_NODE_NAMES) next.remove(next.keys.first())
             next
         }

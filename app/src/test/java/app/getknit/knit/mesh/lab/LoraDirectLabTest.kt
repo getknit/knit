@@ -316,9 +316,16 @@ class LoraDirectLabTest {
             clearMocks(bob.notifier, answers = false, recordedCalls = true, childMocks = false, exclusionRules = false)
             lab.link(alice, bob)
             assertTrue("the signed copy's ratchet step never ran", lab.tryAwait(1) { if (bob.loraSeen(dm)?.ratchetDone == true) 1 else 0 })
-            checkNotNull(
-                bob.boardLink,
-            ).deliver(alice.boardNum, MeshLab.KNIT_SLOT, MeshtasticProto.PORT_PRIVATE_APP, packet, to = bob.boardNum)
+            // As a 2.8 board replays it: PKI-decrypted, on index 0 (ADR 2026-10.x9fa's PKI amendment).
+            checkNotNull(bob.boardLink).deliver(
+                alice.boardNum,
+                0,
+                MeshtasticProto.PORT_PRIVATE_APP,
+                packet,
+                to = bob.boardNum,
+                wantAck = true,
+                pkiEncrypted = true,
+            )
             // The replay's delivery has returned, not merely opened: only then can "nothing notifies" mean anything.
             lab.await(2) { bob.loraLog.count { it == "lora direct delivered $dm from ${alice.nodeId}" } }
             assertNull("the row stays gone", bob.row(dm))
@@ -332,8 +339,8 @@ class LoraDirectLabTest {
     /**
      * (e) A burst of fifteen to a board nobody has answered yet: one goes, the rest park behind it (at most
      * `LoraDirectPolicy.MAX_PARKED_PER_PEER`, the oldest dropped back to the source) and follow its ack. Every ✓✓ for what
-     * crossed comes back in compact ticks of one packet each — twelve held ids leave as two ticks, never one too long for
-     * the packet. The link then brings the rest, and with nothing unacked left the re-probe lets bob go without airing.
+     * crossed comes back in compact ticks of one packet each, at most `LORA_DIRECT_TICK_ACKS` (9) ids apiece, never one too
+     * long for the packet. The link then brings the rest, and with nothing unacked left the re-probe lets bob go without airing.
      */
     @Test
     fun aBurstOfFifteenIsTickedInOnePacketTicksAndTheResendsStop() =
@@ -352,7 +359,10 @@ class LoraDirectLabTest {
                 lab.tryAwait(1) { if (crossed.all { alice.receiptPlanes(it)[bob.nodeId] == DeliveryPlane.LoRa }) 1 else 0 },
             )
             val ticks = bob.loraLog.filter { it.startsWith("lora tx direct:receipt:") }
-            assertTrue("$CROSSES_AT_ONCE ids in ticks of at most ten: $ticks", ticks.size >= 1 && ticks.all { it.endsWith("parts=1") })
+            assertTrue(
+                "$CROSSES_AT_ONCE ids in ticks of at most LORA_DIRECT_TICK_ACKS (9): $ticks",
+                ticks.size >= 1 && ticks.all { it.endsWith("parts=1") },
+            )
             assertEquals("no tick past one packet", 0L, bob.metrics.lora().loraDirectTooLong)
 
             lab.link(alice, bob)

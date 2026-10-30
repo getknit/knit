@@ -72,11 +72,12 @@ import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LORA_DIRECT_OVERHEAD
 import app.getknit.knit.mesh.lora.LoraBoardHolder
 import app.getknit.knit.mesh.lora.LoraBoardMap
+import app.getknit.knit.mesh.lora.LoraContactPolicy
+import app.getknit.knit.mesh.lora.LoraDirectPolicy
 import app.getknit.knit.mesh.lora.LoraDirectSink
 import app.getknit.knit.mesh.lora.LoraDirectSource
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraSizeHint
-import app.getknit.knit.mesh.lora.MeshtasticProto
 import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
@@ -185,20 +186,23 @@ internal const val INLINE_ACK_BYTES = 23
 internal const val MAX_INLINE_ACKS = 4
 
 /**
- * The plaintext one compact LoRa DM carries at the MTU-255 floor (ADR 2026-10.x9fa): the floor's payload, less what
- * `want_ack` adds to the unicast's `ToRadio` and the 51 bytes of header and GCM tag around the content — 175 B. What a
- * compact copy sheds its inline acks to fit, and what the coalesced ✓✓'s compact ticks are sized against.
+ * The plaintext one compact LoRa DM carries at the MTU-255 floor (ADR 2026-10.x9fa and its PKI amendment): the plane's
+ * own compact-DM cap ([LoraDirectPolicy.payloadCap] — the firmware's PKI size check, 219 B, under the `want_ack` write's
+ * 226 B) less the 51 bytes of header and GCM tag around the content — 168 B. What a compact copy sheds its inline acks
+ * to fit, and what the coalesced ✓✓'s compact ticks are sized against. One function with the transport's, so the two
+ * cannot drift: a copy sized here and refused there is a ✓✓ re-probed every 4 h.
  */
 internal val LORA_DIRECT_PLAINTEXT_BYTES: Int =
-    LoraMeshTransport.PRE_READY_PAYLOAD - MeshtasticProto.WANT_ACK_FIELD_BYTES - LORA_DIRECT_OVERHEAD
+    LoraDirectPolicy.payloadCap(LoraMeshTransport.PRE_READY_PAYLOAD) - LORA_DIRECT_OVERHEAD
 
 /**
  * Most ids one compact ✓✓ carries, riders included (Crypto 5): a v3 `CTL_RECEIPT` holds each as its 16 raw bytes and a
- * one-byte header, and [LORA_DIRECT_PLAINTEXT_BYTES] less the receipt's fixed fields leaves room for ten. Pinned by
- * `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor` (ten fit, eleven do not). A coalesced
+ * one-byte header, and [LORA_DIRECT_PLAINTEXT_BYTES] less the receipt's fixed fields leaves room for nine — ten until the
+ * PKC overhead was reserved (ADR 2026-10.x9fa's PKI amendment). Pinned by
+ * `CoordinationPlaneSizeBudgetTest.aCompactTickAtItsCapIsOnePacketAtTheMtuFloor` (nine fit, ten do not). A coalesced
  * flush past it leaves as several compact ticks; the signed tick keeps `DmAckCoalescer.MAX_LORA_TICK_ACKS`.
  */
-internal const val LORA_DIRECT_TICK_ACKS = 10
+internal const val LORA_DIRECT_TICK_ACKS = 9
 
 /**
  * How old a DM of ours may be and still ride LoRa compact (Crypto 6): an hour inside the receiver's window
@@ -4615,6 +4619,8 @@ class MeshManager(
      * [loraBoardMap]'s rule over one snapshot. A board two profiles claim goes to a **contact** first — verified, an
      * accepted conversation, or a DM we wrote in — and only within a rank to the newer claim (`PeerDao.findByLoraNode`'s
      * rule): a stranger's newer profile naming a contact's board must not take that contact's LoRa leg (ADR 2026-10.x9fa).
+     * The winner carries whether it was contested by a rival whose own key binds the board, its rank and its `loraKey`:
+     * our board is taught a key only for an uncontested contact's board (ADR 2026-10.aajj).
      * Our own board is nobody's, whoever's stale claim still names it after it changed hands, and so is ourselves, a
      * peer with no pinned key, and a number no board can have. Ties go to the larger node id, so every emission agrees.
      */
@@ -4631,15 +4637,29 @@ class MeshManager(
             }.groupBy { it.loraNode }
             .values
             .map { claims ->
-                claims.maxWith(compareBy<PeerEntity>({ it.verified || it.nodeId in known }, { it.updatedAt }, { it.nodeId }))
-            }.associate { peer ->
+                val winner = claims.maxWith(compareBy<PeerEntity>({ it.verified || it.nodeId in known }, { it.updatedAt }, { it.nodeId }))
+                // A rival contests the board only if its own key binds to it (CRC32 of the key is the node, ADR
+                // 2026-10.aajj): a bare claim to a number anybody can type cannot block our board being taught a key.
+                winner to claims.any { it !== winner && bindsBoard(it) }
+            }.associate { (peer, contested) ->
                 peer.nodeId to
                     LoraBoardHolder(
                         addr = BoardAddr(checkNotNull(peer.loraNode).toUInt()),
                         direct = (peer.capabilities ?: 0L) and Protocol.CAP_LORA_DIRECT != 0L,
                         profileVersion = peer.updatedAt,
+                        // What an `add_contact` for their board is judged on (ADR 2026-10.aajj): the key their profile
+                        // binds to it, their rank, and whether another pinned profile names the same board.
+                        loraKey = peer.loraKey,
+                        contact = peer.verified || peer.nodeId in known,
+                        contested = contested,
                     )
             }
+
+    /** Whether [peer]'s profile key binds its `loraNode`: the CRC32 of the 32-byte key is the number, as on 2.8. */
+    private fun bindsBoard(peer: PeerEntity): Boolean {
+        val key = peer.loraKey?.let(LoraContactPolicy::profileKey) ?: return false
+        return LoraContactPolicy.crc32(key).toLong() == peer.loraNode
+    }
 
     /** A node number a board can hold: not 0 (unset) and not the broadcast address, inside a `u32`. */
     private fun isBoardNumber(node: Long): Boolean = node in 1L until BROADCAST_NODE

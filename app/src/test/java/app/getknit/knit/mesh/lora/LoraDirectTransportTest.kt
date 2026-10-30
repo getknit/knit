@@ -1,6 +1,8 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.crypto.b64
+import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -113,8 +115,9 @@ class LoraDirectTransportTest {
         knitIndex: Int = 1,
         scope: CoroutineScope = backgroundScope,
         state: LoraPlaneState = LoraPlaneState.None,
+        publicKey: String? = null,
     ): Node {
-        val link = FakeMeshtasticLink(nodeNum, air, scope = scope).apply { readyOnStart = false }
+        val link = FakeMeshtasticLink(nodeNum, air, publicKey = publicKey, scope = scope).apply { readyOnStart = false }
         val metrics = MeshMetrics()
         val boardFlow = MutableStateFlow(boards)
         val seal = FakeSeal(id) { boardFlow.value.orEmpty().keys }
@@ -248,8 +251,8 @@ class LoraDirectTransportTest {
                     .size
             val ledger = LoraAirtime()
             assertEquals(
-                "one unsigned airing: a unicast is never signed",
-                ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED),
+                "one unsigned airing with the PKC overhead: a unicast is never signed, and 2.8 PKI-encrypts it on any slot",
+                priced(size),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,
@@ -289,10 +292,10 @@ class LoraDirectTransportTest {
             val ledger = a.pace.airtime
             val now = testScheduler.currentTime
             val size = LORA_DIRECT_OVERHEAD + 2
-            val dmCost = LoraDirectPolicy.AIRINGS * ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
+            val dmCost = LoraDirectPolicy.AIRINGS * priced(size)
             val total = ledger.allowanceMs()
             // Into the last quarter, with room left for both frames' every airing and not one airing more.
-            val one = ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
+            val one = priced(size)
             while (ledger.snapshot(now).usedMs + 2 * dmCost + one <= total) ledger.record(size, now, LoraAirtime.UNSIGNED)
             assertTrue("past three quarters of the window", ledger.snapshot(now).usedMs > total * 3 / 4)
             a.dm("carol", "r1", kind = DirectKind.RECEIPT)
@@ -434,7 +437,7 @@ class LoraDirectTransportTest {
                     .size
             assertEquals(
                 "and every retry is booked",
-                LoraDirectPolicy.AIRINGS * LoraAirtime().timeOnAirMs(size, LoraAirtime.UNSIGNED),
+                LoraDirectPolicy.AIRINGS * priced(size),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,
@@ -506,17 +509,16 @@ class LoraDirectTransportTest {
             a.dm("bob", "f1")
             settle(LoraDirectPolicy.ANSWER_SLACK_MS)
             assertEquals(1, a.transport.status.value.direct.inFlight)
-            settle(LoraDirectPolicy.deadlineMs(LoraAirtime().timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED), LoraAirtime().slotTimeMs()))
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
             assertEquals(1L, a.lora.loraDirectNoOutcome)
             assertEquals(0, a.transport.status.value.direct.inFlight)
             assertEquals("never reachable on silence", 1, a.transport.status.value.direct.unreachable)
             assertEquals(
                 LoraDirectPolicy.AIRINGS *
-                    LoraAirtime().timeOnAirMs(
+                    priced(
                         a.link.sent
                             .single()
                             .size,
-                        LoraAirtime.UNSIGNED,
                     ),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
@@ -763,7 +765,7 @@ class LoraDirectTransportTest {
             val ledger = a.pace.airtime
             val now = testScheduler.currentTime
             val size = LORA_DIRECT_OVERHEAD + 2
-            val one = ledger.timeOnAirMs(size, LoraAirtime.UNSIGNED)
+            val one = priced(size)
             val total = ledger.allowanceMs()
             // Leave room for two airings of it, short of the five (`LoraDirectPolicy.AIRINGS`) it is admitted against.
             while (total - ledger.snapshot(now).usedMs >= 3 * one) ledger.record(size, now, LoraAirtime.UNSIGNED)
@@ -786,11 +788,10 @@ class LoraDirectTransportTest {
             assertEquals(0, a.transport.status.value.direct.inFlight)
             assertEquals(
                 LoraDirectPolicy.AIRINGS *
-                    LoraAirtime().timeOnAirMs(
+                    priced(
                         a.link.sent
                             .single()
                             .size,
-                        LoraAirtime.UNSIGNED,
                     ),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
@@ -857,7 +858,7 @@ class LoraDirectTransportTest {
             a.dm("bob", "f1")
             settle(1_000)
             val handle = a.link.sentIds.single()
-            settle(LoraDirectPolicy.deadlineMs(LoraAirtime().timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED), LoraAirtime().slotTimeMs()))
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
             assertEquals(1, a.transport.status.value.direct.unreachable)
             val booked =
                 a.pace.airtime
@@ -886,7 +887,7 @@ class LoraDirectTransportTest {
             val c = node(air, 3u, "carol", mapOf("alice" to holder(1u)))
             up(a, b, c)
             val ledger = a.pace.airtime
-            val one = ledger.timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED)
+            val one = priced(hiPacket)
             val total = ledger.allowanceMs()
             val now = testScheduler.currentTime
             // Room for one DM's five airings and three more, not two DMs' ten.
@@ -955,7 +956,7 @@ class LoraDirectTransportTest {
             assertEquals("f2 still waits on f1's answer", 1, a.link.sent.size)
             assertEquals(1, a.transport.status.value.direct.inFlight)
             assertEquals(
-                LoraDirectPolicy.AIRINGS * LoraAirtime().timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED),
+                LoraDirectPolicy.AIRINGS * priced(hiPacket),
                 a.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,
@@ -975,15 +976,382 @@ class LoraDirectTransportTest {
             assertEquals("the relay's repeat stopped the retries", 1, air.knitAirings(1u))
             assertEquals("and no give-up comes", 0L, a.lora.loraDirectUnreachable)
             assertEquals(1, a.transport.status.value.direct.inFlight)
-            settle(LoraDirectPolicy.deadlineMs(LoraAirtime().timeOnAirMs(hiPacket, LoraAirtime.UNSIGNED), LoraAirtime().slotTimeMs()))
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
             assertEquals(1L, a.lora.loraDirectNoOutcome)
             assertEquals(1, a.transport.status.value.direct.unreachable)
         }
 
+    // --- PKI: firmware 2.8 encrypts every compact DM to the destination board's key (ADR 2026-10.aajj) ---
+
+    /**
+     * The cap is the firmware's PKI size check, not the BLE write's: a seal one byte past 219 B is refused at the offer
+     * and never written, where the old cap (229 at this board's MTU) handed the board a packet it refuses `TOO_LARGE`.
+     */
+    @Test
+    fun aSealPastThePkiCapIsRefusedAtTheOfferAndOneAtItFlies() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            val cap = MeshtasticProto.MAX_PAYLOAD - MeshtasticProto.PKC_OVERHEAD_BYTES
+            assertEquals(cap, LoraDirectPolicy.payloadCap(MeshtasticProto.MAX_PAYLOAD))
+            a.dm("bob", "long", body = "x".repeat(cap + 1 - LORA_DIRECT_OVERHEAD))
+            settle()
+            assertTrue("refused at the offer, never written", a.link.sent.isEmpty())
+            assertEquals(1L, a.lora.loraDirectTooLong)
+            a.dm("bob", "full", body = "x".repeat(cap - LORA_DIRECT_OVERHEAD))
+            settle()
+            assertEquals(listOf(cap), a.link.sent.map { it.size })
+            assertEquals("no TOO_LARGE: delivered and acked", listOf("full"), b.delivered.map { it.frameId })
+            assertEquals(1L, a.lora.loraDirectAcked)
+        }
+
+    /** A PKI DM lands on the receiver's index 0, whatever slot it was sent on; once it opens, its radio is counted. */
+    @Test
+    fun aPkiDmOnIndexZeroIsDeliveredAndItsRadioCountsOnceItOpens() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            a.dm("bob", "f1")
+            settle()
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            assertEquals("alice's board, heard through a DM that authenticated", 1, b.transport.status.value.boardsHeard)
+            // A forged one on index 0 opens as nobody's: no radio is counted for it.
+            b.link.deliver(
+                9u,
+                0,
+                MeshtasticProto.PORT_PRIVATE_APP,
+                FakeSeal("mallory") {
+                    emptySet()
+                }.seal("bob", "m1", wallBase, byteArrayOf(1)),
+                to = 2u,
+                pkiEncrypted = true,
+            )
+            settle(1_000)
+            assertEquals(1L, b.lora.loraDirectStranger)
+            assertEquals(1, b.transport.status.value.boardsHeard)
+        }
+
+    private class Keyed(
+        val node: UInt,
+        val key: String,
+    )
+
+    /** A board whose node number is the CRC32 of its key, as on 2.8. */
+    private fun keyed(seed: Int): Keyed {
+        val key = ByteArray(MeshtasticProto.NODE_PUBLIC_KEY_BYTES) { (seed * 31 + it).toByte() }
+        val node = LoraContactPolicy.crc32(key)
+        check(node != 0u && node != MeshtasticProto.BROADCAST)
+        return Keyed(node, b64(key))
+    }
+
+    private fun keyedHolder(
+        board: Keyed,
+        key: String? = board.key,
+        contact: Boolean = true,
+    ) = LoraBoardHolder(BoardAddr(board.node), direct = true, profileVersion = 1, loraKey = key, contact = contact)
+
+    private fun TestScope.keyedPair(air: FakeMeshtasticAir): Triple<Node, Node, Pair<Keyed, Keyed>> {
+        val ka = keyed(1)
+        val kb = keyed(2)
+        val a = node(air, ka.node, "alice", mapOf("bob" to keyedHolder(kb)), publicKey = ka.key)
+        val b = node(air, kb.node, "bob", mapOf("alice" to keyedHolder(ka)), publicKey = kb.key)
+        up(a, b)
+        return Triple(a, b, ka to kb)
+    }
+
+    /**
+     * Our board holds no key for bob's (`--remove-node`): it refuses the DM with `39` and nothing airs. The frame is
+     * held, one `add_contact` teaches our board bob's key, and the DM flies on that write's own res 0 — a DM offered
+     * meanwhile waits behind it. The self-NAK that follows the `queueStatus` is the same refusal, acted on once, never a
+     * pacing NAK. A second DM writes nothing more.
+     */
+    @Test
+    fun aMissingKeyIsTaughtOnceAndTheHeldDmFliesOnTheWrite() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            val kb = boards.second
+            a.link.forget(kb.node)
+            a.dm("bob", "f1")
+            a.dm("bob", "f2")
+            settle(10_000)
+            settle(10_000)
+
+            assertEquals(
+                "one add_contact, for bob's board, with bob's key",
+                listOf(kb.node to kb.key),
+                a.link.contactsWritten.map {
+                    it.node to
+                        it.key
+                },
+            )
+            assertEquals(1L, a.lora.loraDirectNoKey)
+            assertEquals(1L, a.lora.loraDirectContactAdded)
+            assertEquals("the late self-NAK is that refusal, not a pacing NAK", 0L, a.lora.loraNak)
+            assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })
+            assertEquals("only what flew after the write aired", 2, air.knitAirings(boards.first.node))
+            assertEquals(0, a.transport.status.value.direct.noKey)
+
+            a.dm("bob", "f3")
+            settle()
+            assertEquals("the board holds the key now: no second write", 1, a.link.contactsWritten.size)
+            assertEquals(listOf("f1", "f2", "f3"), b.delivered.map { it.frameId })
+        }
+
+    /** The rarer order: the self-NAK reaches the phone before the `queueStatus`. The same, once. */
+    @Test
+    fun aMissingKeyReportedNakFirstIsActedOnOnce() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            a.link.forget(boards.second.node)
+            a.link.noKeyNakFirst = true
+            a.dm("bob", "f1")
+            settle(10_000)
+            assertEquals(1, a.link.contactsWritten.size)
+            assertEquals(1L, a.lora.loraDirectNoKey)
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+        }
+
+    /**
+     * A board that takes the `add_contact` and keeps no key (`is_managed`, locked storage) answers the re-offer with a
+     * second `39`: only then is the peer held as keyless — counted, never silent, nothing more written. A NodeInfo from
+     * bob's board with a key lifts the hold and the newest DM goes once more; still keyless, it is held again with
+     * nothing written, since no DM reached bob since the write.
+     */
+    @Test
+    fun aBoardThatDropsTheContactIsHeldKeylessAfterOneWrite() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            val kb = boards.second
+            a.link.forget(kb.node)
+            a.link.isManaged = true
+            a.dm("bob", "f1")
+            settle(10_000)
+            assertEquals(1, a.link.contactsWritten.size)
+            assertEquals("the re-offer's 39 too", 2L, a.lora.loraDirectNoKey)
+            assertEquals(1, a.transport.status.value.direct.noKey)
+            assertEquals("nothing aired", 0, air.knitAirings(boards.first.node))
+            assertTrue(b.delivered.isEmpty())
+
+            a.dm("bob", "f2")
+            settle()
+            assertEquals(1L, a.lora.loraDirectHeld)
+
+            val user =
+                ProtoWriter()
+                    .string(
+                        MeshtasticProto.USER_LONG_NAME,
+                        "Knit beef",
+                    ).bytes(
+                        MeshtasticProto.USER_PUBLIC_KEY,
+                        ByteArray(32) {
+                            2
+                        },
+                    ).toByteArray()
+            a.link.deliver(kb.node, 0, MeshtasticProto.PORT_NODEINFO, user)
+            settle(10_000)
+            assertEquals("asked once more, and keyless again", 3L, a.lora.loraDirectNoKey)
+            assertEquals("with no second write", 1, a.link.contactsWritten.size)
+            assertEquals(1, a.transport.status.value.direct.noKey)
+        }
+
+    /**
+     * Once a DM reached bob's board under the key we wrote, our board may be taught it again should it lose it: a board
+     * reflashed, factory reset or evicted must be repairable.
+     */
+    @Test
+    fun aKeyThatReachedItsBoardMayBeTaughtOnceMoreAfterOurBoardLosesIt() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            val kb = boards.second
+            a.link.forget(kb.node)
+            a.dm("bob", "f1")
+            settle(10_000)
+            a.link.forget(kb.node)
+            a.dm("bob", "f2")
+            settle(10_000)
+            assertEquals(2, a.link.contactsWritten.size)
+            assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })
+        }
+
+    /**
+     * Nothing is written for a stranger, a profile whose board number is not its key's CRC32, or a board our board's
+     * NodeInfo stream showed another key for after the send was issued — each peer held keyless and counted, the
+     * conflict by name.
+     */
+    @Test
+    fun noContactIsWrittenForAStrangerAnUnboundKeyOrAKeyTheBoardShowsOtherwise() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val ka = keyed(1)
+            val stranger = keyed(3)
+            val unbound = keyed(4)
+            val conflicted = keyed(5)
+            val a =
+                node(
+                    air,
+                    ka.node,
+                    "alice",
+                    mapOf(
+                        "sam" to keyedHolder(stranger, contact = false),
+                        "uma" to keyedHolder(unbound, key = keyed(6).key),
+                        "cy" to keyedHolder(conflicted),
+                    ),
+                    publicKey = ka.key,
+                )
+            up(a)
+            listOf(stranger, unbound, conflicted).forEach { a.link.forget(it.node) }
+            // Our board streams cy's NodeInfo with another key as it refuses cy's DM: the race the 39 cannot cover.
+            a.link.onPkiRefusal =
+                { to -> if (to == conflicted.node) a.link.streamUser(conflicted.node, user("Meshtastic 1234", ByteArray(32) { 9 })) }
+            a.dm("sam", "s1")
+            a.dm("uma", "u1")
+            a.dm("cy", "c1")
+            settle()
+            assertTrue("no add_contact at all", a.link.contactsWritten.isEmpty())
+            assertEquals(3L, a.lora.loraDirectNoKey)
+            assertEquals(3, a.transport.status.value.direct.noKey)
+            assertEquals(1L, a.lora.loraDirectBoardKeyConflict)
+            assertEquals(0, air.knitAirings(ka.node))
+        }
+
+    private fun user(
+        name: String,
+        key: ByteArray?,
+    ): ByteArray =
+        ProtoWriter()
+            .string(MeshtasticProto.USER_LONG_NAME, name)
+            .string(MeshtasticProto.USER_SHORT_NAME, "BOB")
+            .varint(userRole, 1)
+            .apply { key?.let { bytes(MeshtasticProto.USER_PUBLIC_KEY, it) } }
+            .toByteArray()
+
+    /**
+     * `--remove-node` drops bob from our board, and the firmware never tells the phone: the session's copy of bob's
+     * NodeInfo still carries his key. The 39 is the board's word, so the key is set aside and exactly one `add_contact`
+     * goes, with bob's stored names and nothing else of that `User`.
+     */
+    @Test
+    fun aKeyRememberedFromBeforeTheBoardForgotItIsSetAsideAndTheContactWritten() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            val kb = boards.second
+            a.link.streamUser(kb.node, user("Bob's board", b64d(kb.key)))
+            a.link.forget(kb.node)
+            a.dm("bob", "f1")
+            settle(10_000)
+            assertEquals(1, a.link.contactsWritten.size)
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            assertEquals(0L, a.lora.loraDirectBoardKeyConflict)
+            val written =
+                BoardOwnerRaw(
+                    a.link.contactsWritten
+                        .single()
+                        .user,
+                )
+            assertEquals("Bob's board", written.owner.longName)
+            assertEquals("BOB", written.owner.shortName)
+            assertEquals("never role, hw_model or what else came off the air", null, readVarintField(written.raw, userRole))
+        }
+
+    /** A stranger's NodeInfo claiming bob's number with another key, streamed before the send, blocks nothing. */
+    @Test
+    fun aForgedNodeInfoBeforeTheSendCannotStopTheContact() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            val kb = boards.second
+            a.link.streamUser(kb.node, user("Bob", ByteArray(32) { 7 }))
+            a.link.forget(kb.node)
+            a.dm("bob", "f1")
+            settle(10_000)
+            assertEquals(listOf(kb.node to kb.key), a.link.contactsWritten.map { it.node to it.key })
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            assertEquals(0L, a.lora.loraDirectBoardKeyConflict)
+        }
+
+    /**
+     * An `add_contact` whose `queueStatus` never comes back is re-offered once without recording the write; a board that
+     * dropped it answers that re-offer with a second 39, which is then terminal — no second write, no loop.
+     */
+    @Test
+    fun aContactWriteThatTimesOutIsReofferedOnceAndNeverLoops() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b, boards) = keyedPair(air)
+            a.link.forget(boards.second.node)
+            a.link.isManaged = true
+            a.link.adminTimeoutNext = true
+            a.dm("bob", "f1")
+            settle(10_000)
+            settle(10_000)
+            assertEquals(1, a.link.contactsWritten.size)
+            assertEquals("a timeout is not a recorded write", 0L, a.lora.loraDirectContactAdded)
+            assertEquals(2L, a.lora.loraDirectNoKey)
+            assertEquals(1, a.transport.status.value.direct.noKey)
+            assertTrue(b.delivered.isEmpty())
+        }
+
+    /**
+     * Bob's board holds no key for ours: it answers `PKI_UNKNOWN_PUBKEY` (35), ours sends it our NodeInfo — booked — and
+     * the DM goes once more a retransmit gap on and lands. Never a refusal: a 35 heals within seconds.
+     */
+    @Test
+    fun aPeerLackingOurKeyIsSentOursAndTheDmGoesOnceMoreNeverRefused() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            b.link.forget(1u)
+            a.dm("bob", "f1")
+            a.dm("bob", "f2")
+            settle(3_000)
+            assertEquals(1L, a.lora.loraDirectPeerLacksOurKey)
+            assertEquals("never refused", 0, a.transport.status.value.direct.refused)
+            assertEquals("our board sent bob's ours", 1, air.nodeInfoAirings(1u))
+            assertTrue(b.delivered.isEmpty())
+            settle(20_000)
+            assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })
+            val nodeInfo = LoraAirtime().timeOnAirMs(LoraDirectPolicy.NODEINFO_USER_BYTES, LoraAirtime.UNSIGNED)
+            assertEquals(
+                "one airing for each DM that flew, and our NodeInfo",
+                3 * priced(hiPacket) + nodeInfo,
+                a.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+        }
+
+    /** The one re-offer after a 35 drawing a second 35 is a give-up, held until bob's board is heard. */
+    @Test
+    fun aSecondPeerKeyRefusalOfTheReofferIsAGiveUp() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            b.link.forget(1u)
+            a.dm("bob", "f1")
+            settle(3_000)
+            b.link.forget(1u)
+            settle(20_000)
+            assertEquals(2L, a.lora.loraDirectPeerLacksOurKey)
+            assertEquals(1, a.transport.status.value.direct.unreachable)
+            assertEquals(0, a.transport.status.value.direct.refused)
+            assertTrue(b.delivered.isEmpty())
+        }
+
     // --- helpers ---
+
+    /** `User.role` (`mesh.proto`): a field an `add_contact` never echoes. */
+    private val userRole = 7
 
     /** A compact DM of the default body "hi": the overhead and two bytes. */
     private val hiPacket = LORA_DIRECT_OVERHEAD + 2
+
+    /** One airing of a compact DM of [size] bytes as the ledger prices it: unsigned, with the PKC overhead (PKI on 2.8). */
+    private fun priced(size: Int): Long = LoraAirtime().timeOnAirMs(size + MeshtasticProto.PKC_OVERHEAD_BYTES, LoraAirtime.UNSIGNED)
 
     /** Past the fake firmware's `MAX_RETRANSMIT` for a "hi" DM nobody answers, with a little slack. */
     private fun FakeMeshtasticAir.untilGiveUp(): Long = giveUpMs(hiPacket) + 5_000

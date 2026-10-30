@@ -337,10 +337,14 @@ plaintext it never reads (`LoraDirectCrypto.seal`, a fresh salt per seal) into *
 (`LORA_DIRECT_TAG`): `tag 1 | pairTag 4 | salt 8 | frameId 16 | sentAt u48 6 | AES-256-GCM` around the v3 compact
 content, 51 B of overhead (`LORA_DIRECT_OVERHEAD`). It goes as a **Meshtastic unicast with `want_ack`** to the
 recipient's board (`LinkDestination.Direct(BoardAddr)`), on the bound Knit **secondary**, `PRIVATE_APP`, `hop_limit =
-HOP_LIMIT`. Never on slot 0: there the firmware PKI-encrypts a unicast, so a direct send to a plane bound at 0 is
-refused (`loraDirectSlotZero`, `StaleAtSend.SLOT_ZERO`). Firmware `Router::perhapsDecode` refuses a channel-keyed
-packet to us only on the text port (ADR 2026-09.4n5p's 2026-10-29 amendment), so a `PRIVATE_APP` unicast on the
-secondary decodes and is acked — the 2.8 board trial confirms it.
+HOP_LIMIT`. Never on slot 0: Knit's frames belong on the Knit channel, so a direct send to a plane bound at 0 is
+refused (`loraDirectSlotZero`, `StaleAtSend.SLOT_ZERO`). **Firmware 2.8 PKI-encrypts it all the same** (ADR 2026-10.x9fa's
+2026-10-30 amendment): `Router::wouldEncryptWithPKC` (`Router.cpp:1189-1212` at v2.8.1) never reads the channel index,
+so every compact DM that airs is a PKI unicast — 12 B more on the air, reported on the receiver's index 0 with
+`pki_encrypted`, acked there — and with no key for the destination our own board refuses it (`39`) rather than fall
+back to the channel key (ADR 2026-10.aajj, below). `Router::perhapsDecode`'s legacy-DM refusal is the text port's alone
+(ADR 2026-09.4n5p's 2026-10-29 amendment), which is the decode side; the earlier reading here, that the secondary keeps
+the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed through PKI on index 0.
 
 - **Who.** Only a pinned contact whose profile names a board and carries the capability: the board map
   (`Flow<Map<String, LoraBoardHolder>>`, built by `MeshManager.loraBoardMap`: a contact's claim before a stranger's, then
@@ -350,17 +354,41 @@ secondary decodes and is acked — the 2.8 board trial confirms it.
 - **Gates**, asked at offer and again before the first byte (`RideGate.direct` / `reachHeld` / `unackedFrameId`):
   DMs switched on (`LoraConfig.dms`); still a direct board holder at the same board (`NOT_DIRECT`); no live link and no
   spool cover (`LINKED` / `INTERNET`); the slot; one copy per frame id queued or awaiting its answer (`hasQueued` and
-  `LoraDirectPolicy.hasFrame`); the peer not marked unreachable or refused (`HELD`, an offer only); and the seal
-  fitting one packet at `maxPayload` less `want_ack`'s 2 B in the `ToRadio` (`loraDirectTooLong`). One send in flight
+  `LoraDirectPolicy.hasFrame`); the peer not marked unreachable, refused or keyless (`HELD`, an offer only); and the
+  seal fitting one PKI packet (`LoraDirectPolicy.payloadCap`: `min(MAX_PAYLOAD − 12, maxPayload − want_ack's 2 B)`,
+  219 B at every MTU a board negotiates; `loraDirectTooLong`). `MeshManager.LORA_DIRECT_PLAINTEXT_BYTES` (168 B) reads
+  the same function. One send in flight
   per peer not known reachable (`mustWait`): the rest are parked (≤ 8 per peer), offered again on the destination's
   ack, dropped to the source on a failure, released if that send never flew.
 - **Outcomes** (`MeshtasticSession.routeNak` → `PacketOutcome`). `Acked(byDestination)` only when the `Routing`
   packet comes from the destination's board: the board is `Reachable` (45-min linger), the re-probe resets, parked
   offers go. An implicit ack — a relay, or our own board hearing it repeated — is counted (`loraDirectImplicitAck`)
   and ends nothing. `MAX_RETRANSMIT` / `NO_RESPONSE` → `Unreachable`; no answer by the deadline (`deadlineMs`, five gaps at the busiest contention window plus 10 s, about 2 min for a full packet at LongFast) → `NoOutcome`; both mark the board `Unreachable` (never `Reachable` on silence) and hold
-  offers. A refusal by the destination's board (`NO_CHANNEL` after a Restore) holds the peer until their profile
-  changes; one by our own board only paces (`pace.onNak`). The table of sends awaiting an answer is bounded (32),
+  offers. A refusal by the destination's board (`NO_CHANNEL`, which a board that still holds our key never sends:
+  it decodes the PKI DM on index 0) holds the peer until their profile changes; one by our own board only paces
+  (`pace.onNak`). The destination's `PKI_UNKNOWN_PUBKEY` (35: its board lacks ours) is never a refusal: our board
+  answers it with our NodeInfo (booked, unsigned), and the frame goes once more one retransmit gap on
+  (`loraDirectPeerLacksOurKey`, `lora direct peer lacks our key`, `lora resend <id> -> <peer> (our key sent)`); a
+  second 35 to that re-offer is a give-up (`Unreachable`). The table of sends awaiting an answer is bounded (32),
   in memory, and cleared — booked — when the board goes.
+- **Our board without their key** (ADR 2026-10.aajj). Our own board refuses a compact DM it holds no key for:
+  `queueStatus.res = 39`, then a self-NAK on index 0 (or the reverse) — acted on once per packet (`loraDirectNoKey`,
+  `lora direct no key <id> -> <peer>`), the other report only attributed (`lora nak … (late, no key)`). Nothing aired,
+  nothing was booked, and the frame is **held** while `LoraContactPolicy` decides whether one admin `add_contact`
+  (field 66, a local admin message, no passkey, never during a setup) may teach our board the peer's profile key: a
+  contact's rank, a board no rival profile binds by its own key, not ours, and a 32-byte key whose CRC32 is the node
+  number. The 39 is the board's word: a key in the phone's copy of its NodeInfo stream (`MeshtasticLink.nodeUser`) is
+  read only if it was streamed after the send was issued — the firmware never reports a dropped node, and an
+  over-the-air NodeInfo can be anybody's — and then stops the write (a different one is `loraDirectBoardKeyConflict`).
+  The `User` is an allowlist: id, the names the stream showed (else `Knit abcd` / `Knit` / unmessagable) and the key —
+  never the contact's display name, `role`, `hw_model` or an unknown field. On the write's `queueStatus` res 0 (`loraDirectContactAdded`,
+  `lora direct contact added !<node> for <peer>`) the held frame goes back through the pacer and its gates; a write that
+  timed out re-offers it once unrecorded (`lora direct contact unconfirmed`), the next 39 then terminal; the peer's
+  other offers park behind it. A second 39 after a write (an `is_managed` board drops it silently), or a 39 with nothing
+  Knit may write, marks the peer `NO_KEY`: held and counted, lifted by a changed profile entry, a NodeInfo from their
+  board with a key (`lora direct key heard`), or the 4-h lapse. One write per (board, key) until a DM to it is acked
+  `byDestination`, then one more; at most two keys per peer a day; in memory only. The board marks the contact a
+  favourite (`NodeDB::addFromContact`).
 - **What reach means here.** A radio, never a person: the destination's ack says its board took the packet, whatever
   its phone is doing. It never feeds `reachable`; a fresh authenticated compact DM *from* the peer does. After a
   restart every board is `Unknown`, so the first DM goes and its outcome decides.
@@ -383,25 +411,29 @@ secondary decodes and is acked — the 2.8 board trial confirms it.
   `NUM_RELIABLE_UNICAST_ATTEMPTS`, `NextHopRouter.h:115`; 2.7.26 made three, over-booked) and booked for all five at
   send; a destination's ack refunds the unflown ones (`LoraAirtime.refund`, counted at the quietest gap). The gap is
   `RadioInterface::getRetransmissionMsec`'s: `2·air + (2^CW + 2·CWmax + 2^((CWmax+CWmin)/2))·slot + 4.5 s`, slot ≈ 44.5 ms
-  at LongFast. A relay's repeat is an implicit ack that stops the retries, so silence then follows. Our board's ACK of
-  a compact DM to us, opened or not, is booked as a nominal 8 B when the firmware sent one
+  at LongFast. Every airing is priced with the 12-B PKC overhead (`OutboundFrame.pricedExtraBytes`, at admission, at
+  booking and in the flight's `airMs`, so the refund matches; a board in ham mode signs instead, `DirectSend.licensed`).
+  A relay's repeat is an implicit ack that stops the retries, so silence then follows. Our board's ACK of
+  a compact DM to us, opened or not, is booked as a nominal 18 B (8 B and the 2.8.1 ack proof's 10, attached only when
+  our board holds the sender's key authoritatively, so the booking errs high) when the firmware sent one
   (`LoraDirectPolicy.boardAcks`, off the decoded `want_ack`, `hop_limit` and `next_hop`): `ReliableRouter::sniffReceived`
   (`ReliableRouter.cpp:123-158`) ACKs a `want_ack` unicast, and one without it only when the sender's next-hop routing
   named us with hops left; a unicast with neither draws nothing. The re-ACK of a duplicate the board never hands over
   (`NextHopRouter.cpp:163-170`) is not seen, so not booked. At LongFast a 40-character DM is one 95-B packet
   (1.13 s) and its ✓✓ one ~76-B packet (≈ 1.0 s); the worst case is five airings each (5.7 s, 5.0 s; 10.6 s for a full
-  226-B packet), with the give-up about 46 s after the send on a quiet band. A send whose `queueStatus` timed out is
+  219-B packet), with the give-up about 46 s after the send on a quiet band. A send whose `queueStatus` timed out is
   awaited under its handle; a destination's ack after the deadline still marks the board reachable (`lora direct late
   ack`); a destination's refusal lapses after 4 h.
 - **Receive** (`onDirectPacket`). A `PRIVATE_APP` packet starting `0x11` is taken before the bound-channel filter, on
-  the bound slot or index 0 (2.5+ firmware reports a PKI DM there whatever slot it used), only when addressed to our
-  board, and whatever our own DM switch says — our board has already acked it. `LoraDirectCrypto.open` names the
+  the bound slot or index 0 (a 2.8 board PKI-encrypts every compact DM, and the receiving board reports it there with
+  `pki_encrypted`), only when addressed to our board, and whatever our own DM switch says — our board has already acked
+  it. The sending radio counts in `boardsHeard` at once on the bound slot, and on index 0 only once the seal opened. `LoraDirectCrypto.open` names the
   sender from the pairTag index; a stranger, a failed seal and an out-of-window stamp are counted
   (`loraDirectStranger` / `AuthFailed` / `ClockRefused`) and dropped. An opened one is handed to `LoraDirectInbox`
   (`loraDirectDelivered`, `lora rx direct <id> from <peer>`); `lora direct delivered <id> from <peer>` follows once
   the pipeline has returned. That line means "handled", not "stored": a duplicate or a blocked copy logs it too.
 - **Composer.** `LoraSizeHint.DM_BODY_BYTES` (160 B) is the body plus the inline acks `inlineAcksFor` may spend out
-  of it, in one packet at 228 (175 B of plaintext), pinned by
+  of it, in one PKI packet (168 B of plaintext; a 160-B body is 164 B, re-measured 2026-10-30), pinned by
   `CoordinationPlaneSizeBudgetTest.aDmAtTheHintBudgetIsOneCompactPacketAtTheMtuFloor`. A reply or an attachment never
   fits; the hint names all three.
 

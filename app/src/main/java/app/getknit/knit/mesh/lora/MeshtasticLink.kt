@@ -61,13 +61,28 @@ internal interface MeshtasticLink {
     val nodes: StateFlow<Map<UInt, BoardOwner>>
 
     /**
+     * The `User` the board last streamed for [node] — its NodeDB entry pushed in the handshake or on change, or the
+     * node's own `NODEINFO_APP` broadcast — exactly as sent, stamped with when ([StreamedUser.seq]), or null when it has
+     * streamed none in this working set (bounded like [nodes], nameless entries kept). **Not the board's NodeDB:** the
+     * firmware never says when it drops a node (`--remove-node`, eviction, a reset), and an over-the-air NodeInfo can be
+     * anybody's. So an `add_contact` reads a key here only when it was streamed after the refused send was issued (the
+     * race the board's own `39` cannot see), and otherwise only the names (ADR 2026-10.aajj).
+     */
+    fun nodeUser(node: UInt): StreamedUser?
+
+    /** The stamp the next [nodeUser] entry will be past: read just before a send, it orders the stream against it. */
+    fun userSeq(): Long
+
+    /**
      * Enqueues one packet on the board. Returns synchronously once the board takes (or refuses) it; a taken packet's
      * [SendResult.Queued.id] is the handle its later [outcomes] carry.
      *
      * [destination] is [LinkDestination.Broadcast] for the room and every Knit broadcast. A [LinkDestination.Direct]
-     * send is addressed to one board: the DM auto-reply ([DmAutoReplyPolicy]) unacknowledged on channel 0, where the
-     * firmware encrypts it to that node's key when it holds one (`Router::perhapsEncode`), and a compact DM
-     * (ADR 2026-10.x9fa) acknowledged on the Knit secondary, where it does not.
+     * send is addressed to one board: the DM auto-reply ([DmAutoReplyPolicy]) unacknowledged on channel 0, a compact DM
+     * (ADR 2026-10.x9fa) acknowledged on the Knit secondary — both PKI-encrypted by firmware 2.8 to the destination's
+     * key, and refused with `queueStatus.res = 39` when the board holds none (`Router::perhapsEncode`) — and an
+     * `add_contact` (`PORT_ADMIN`, unacknowledged) to our own board, which handles it before that `queueStatus`
+     * (ADR 2026-10.aajj).
      */
     suspend fun send(
         payload: ByteArray,
@@ -247,6 +262,11 @@ internal data class BoardInfo(
      * sends for us. Null on firmware too old to say, which the airtime governor answers from the version.
      */
     val hasXeddsa: Boolean? = null,
+    /**
+     * `User.is_licensed` on the board's own entry — ham mode: it does no PKI and signs its unicasts instead, so a compact
+     * DM from it is priced signed and can never draw a `39` (ADR 2026-10.aajj).
+     */
+    val licensed: Boolean = false,
 )
 
 /**
@@ -276,6 +296,12 @@ internal sealed interface LinkDestination {
         val ack: Boolean = true,
     ) : LinkDestination
 }
+
+/** A `User` the board streamed for a node, and its place in the stream ([MeshtasticLink.userSeq]). */
+internal class StreamedUser(
+    val user: BoardOwnerRaw,
+    val seq: Long,
+)
 
 /** One inbound packet the board handed the phone. */
 internal class ReceivedPacket(
@@ -321,6 +347,11 @@ internal class ReceivedPacket(
     val wantAck: Boolean = false,
     val hopLimit: Int = 0,
     val nextHop: Int = 0,
+    /**
+     * `MeshPacket.pki_encrypted`: the board PKI-decrypted it and reports it on index 0, as every compact DM from a 2.8
+     * board arrives (ADR 2026-10.x9fa's PKI amendment). Read by nothing that decides; the opener names the sender.
+     */
+    val pkiEncrypted: Boolean = false,
 )
 
 /**

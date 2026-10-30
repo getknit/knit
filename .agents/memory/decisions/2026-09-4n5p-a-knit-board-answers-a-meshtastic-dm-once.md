@@ -96,6 +96,14 @@ the text port and the address, still answers on index 0, and is still the one di
 (`LinkDestination.Direct(ack = false)`). It is no longer the plane's only unicast. The 2.8 board trial of the compact
 DM is what confirms the reading on hardware.
 
+*Corrected 2026-10-30 (ADR 2026-10.x9fa's PKI amendment, ADR 2026-10.aajj): the above is the **decode** side and
+stands — PKI decryption is attempted only for a packet on `channel == 0`. The **encode** side is not channel-bound:
+`Router::wouldEncryptWithPKC` (`Router.cpp:1189-1212` at v2.8.1) PKI-encrypts every unicast the phone originates on a
+port it does not exclude, the Knit secondary included, and refuses it with `PKI_SEND_FAIL_PUBLIC_KEY` (39) when the
+board holds no key for the destination. So the compact DM is a PKI unicast like the auto-reply, priced with the same
+12 B, and it reaches the destination on its index 0, where it decodes and is acked. The auto-reply's own 39 never
+teaches the board a key: no profile stands behind a Meshtastic sender.*
+
 ## Amendment 2026-10-29 (2): the board hands a DM to the phone once (#241)
 
 "Because the board replays its queue on reconnect and a restart is a reconnect" (above) was wrong. Traced in firmware

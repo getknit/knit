@@ -349,7 +349,23 @@ class LoraPacePolicyTest {
         assertEquals(12, MeshtasticProto.PKC_OVERHEAD_BYTES)
         val public = OutboundFrame(listOf(ByteArray(149)), "public", FrameClass.ROOM, Ceiling.HALF, Destination.Public)
         assertEquals("a broadcast carries none", listOf(149), public.admissionSizes())
-        assertEquals("nor does a compact DM, channel-encrypted on the Knit slot", listOf(1, 1, 1, 1, 1), direct("dm").admissionSizes())
+        // Firmware 2.8 PKI-encrypts a compact DM on the Knit slot too (`wouldEncryptWithPKC` never reads the channel), so
+        // every airing it is admitted against carries the 12 B (ADR 2026-10.x9fa's PKI amendment).
+        assertEquals(
+            "a compact DM is a PKI unicast on any slot",
+            List(LoraDirectPolicy.AIRINGS) { 1 + MeshtasticProto.PKC_OVERHEAD_BYTES },
+            direct("dm").admissionSizes(),
+        )
+        // A board in ham mode does no PKI and signs the unicast instead (`Router.cpp:1271`, ADR 2026-10.aajj).
+        val ham =
+            OutboundFrame(
+                listOf(byteArrayOf(1)),
+                "ham",
+                FrameClass.DIRECT,
+                direct = DirectSend("bob", BoardAddr(2u), "ham", DirectKind.MESSAGE, licensed = true),
+            )
+        assertEquals(List(LoraDirectPolicy.AIRINGS) { 1 }, ham.admissionSizes())
+        assertEquals(MeshtasticProto.MAX_SIGNED_PAYLOAD, ham.signedUpTo)
     }
 
     /** Takes everything queued, advancing the clock past the min gap between takes. */

@@ -247,7 +247,9 @@ LoRa plane (2026-09.ggq4).
   `LoraDirectSource`, `InboundPipeline.deliverLoraDirect` / `loraDirectCopyTaken` / `ratchetOnly`, the `lora_direct_seen`
   table (`LoraDirectSeenRepository`), `Protocol.CAP_LORA_DIRECT`, `MeshManager.offerLoraDirect` / `loraDirectSource` /
   `loraBoardMap` / `watchLoraPairs` / `bindLoraDirect`, `LORA_DIRECT_TICK_ACKS`, or `vectors/lora-direct-v1.json`:** READ
-  ADR 2026-10.x9fa (its crypto half) and `docs/SPOOL_PROTOCOL.md` C-3.5-5. The compact LoRa door is no `WireEnvelope`:
+  ADR 2026-10.x9fa (its crypto half and its 2026-10-30 PKI amendment: the plaintext cap is 168 B, nine ids a tick) and
+  `docs/SPOOL_PROTOCOL.md` C-3.5-5; for the board map's `loraKey` / `contact` / `contested`, ADR 2026-10.aajj (our board
+  is taught a contact's key only when the profile binds it: CRC32 of the key is the node, nobody else claims it). The compact LoRa door is no `WireEnvelope`:
   a pair-sealed packet keyed by the static identity agreement under directional `knit/lora/v1/…` labels, the sender
   named by the pairTag index over pinned peers (never ourselves) and the AEAD, a `sentAt` outside 24 h back / 5 min
   forward refused at open, and no failure on it ever reset evidence. It takes a message, a `CTL_RECEIPT` or a

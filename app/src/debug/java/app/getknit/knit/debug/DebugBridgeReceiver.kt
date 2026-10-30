@@ -1755,8 +1755,11 @@ class DebugBridgeReceiver :
             // Compact DMs (ADR 2026-10.x9fa): one pair-sealed unicast per DM. `Sent` is what the board took, `Acked`
             // what a destination's board answered (its radio, never its phone), `ImplicitAck` a relay's echo (counted,
             // never trusted), `Unreachable`/`NoOutcome` a give-up or silence (the board is marked unreachable and offers
-            // are `Held` until it is heard), `Resent` the hearing's resend and the re-probe. Receive side: `Delivered`,
-            // and what was dropped as a `Stranger`, `AuthFailed` or `ClockRefused`.
+            // are `Held` until it is heard), `Resent` the hearing's resend and the re-probe. Every one is PKI on 2.8 (ADR
+            // 2026-10.aajj): `NoKey` our board refused it for want of their key (39, nothing aired), `ContactAdded` it took
+            // an add_contact for them, `PeerLacksOurKey` theirs could not decrypt it (35), `BoardKeyConflict` our board
+            // shows another key for them than their profile does. Receive side: `Delivered`, and what was dropped as a
+            // `Stranger`, `AuthFailed` or `ClockRefused`.
             .put("loraDirectSent", snap.lora.loraDirectSent)
             .put("loraDirectAcked", snap.lora.loraDirectAcked)
             .put("loraDirectImplicitAck", snap.lora.loraDirectImplicitAck)
@@ -1766,6 +1769,10 @@ class DebugBridgeReceiver :
             .put("loraDirectTooLong", snap.lora.loraDirectTooLong)
             .put("loraDirectSlotZero", snap.lora.loraDirectSlotZero)
             .put("loraDirectResent", snap.lora.loraDirectResent)
+            .put("loraDirectNoKey", snap.lora.loraDirectNoKey)
+            .put("loraDirectContactAdded", snap.lora.loraDirectContactAdded)
+            .put("loraDirectPeerLacksOurKey", snap.lora.loraDirectPeerLacksOurKey)
+            .put("loraDirectBoardKeyConflict", snap.lora.loraDirectBoardKeyConflict)
             .put("loraDirectDelivered", snap.lora.loraDirectDelivered)
             .put("loraDirectStranger", snap.lora.loraDirectStranger)
             .put("loraDirectAuthFailed", snap.lora.loraDirectAuthFailed)
@@ -2361,6 +2368,7 @@ class DebugBridgeReceiver :
                     .put("reachable", status.direct.reachable)
                     .put("unreachable", status.direct.unreachable)
                     .put("refused", status.direct.refused)
+                    .put("noKey", status.direct.noKey)
                     .put("inFlight", status.direct.inFlight)
                     .put("parked", status.direct.parked),
             ).put("radio", status.airtime?.let { "${it.region}/${it.preset}${if (it.known) "" else " (assumed)"}" } ?: JSONObject.NULL)

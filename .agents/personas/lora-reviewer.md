@@ -237,8 +237,11 @@ Sourced; cite these by their ADR or sha, and treat anything not here or in an AD
 - A unicast `TEXT_MESSAGE_APP` to the board is ACKed by the firmware whatever Knit does; a phone-originated unicast on
   channel 0 is PKI-encrypted when the board holds the destination's key, else NAKs `PKI_UNKNOWN_PUBKEY`;
   `is_unmessagable` reaches only clients that honour it (4n5p, emd7). The legacy-DM refusal in
-  `Router::perhapsDecode` is `TEXT_MESSAGE_APP` only, and PKI is tried only on channel 0, so a `PRIVATE_APP` unicast on
-  a secondary decodes and is acked (4n5p's 2026-10-29 amendment, x9fa).
+  `Router::perhapsDecode` is `TEXT_MESSAGE_APP` only (decode tries PKI only on channel 0). On **encode**, 2.8
+  PKI-encrypts every unicast its phone originates on any channel (`wouldEncryptWithPKC` never reads the index): a
+  compact DM is +12 B, capped at 219 B, reported on the receiver's index 0 and acked there with a 10-B ack proof; with no
+  key for the destination our board refuses it `39` (queueStatus res first, then a self-NAK) and nothing airs; a
+  destination lacking our key NAKs `35` and our board sends it our NodeInfo (x9fa's 2026-10-30 amendment, aajj).
 - A `want_ack` unicast the phone originates gets `NUM_RELIABLE_UNICAST_ATTEMPTS = 5` attempts on 2.8
   (`NextHopRouter.h:115`), 3 on 2.7.26, then `MAX_RETRANSMIT` about one gap after the last. The gap is
   `RadioInterface::getRetransmissionMsec`: `2·air + (2^CW + 2·CWmax + 2^((CWmax+CWmin)/2))·slot + 4500 ms`, `CWmin = 3`,

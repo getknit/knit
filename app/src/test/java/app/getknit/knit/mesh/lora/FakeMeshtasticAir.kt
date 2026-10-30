@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.crypto.b64
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -28,6 +30,23 @@ import java.util.concurrent.CopyOnWriteArrayList
  * on the sending link's `scope`, which a `want_ack` send requires, and starts only once that `send` has returned: on a
  * real board an outcome crosses BLE after the handle it names, and an outcome emitted inside `send` reached a transport
  * that had no flight for it yet (the mesh-lab review of 2026-10-29).
+ *
+ * **PKI** ([pki], on by default: every board here is 2.8.1). Firmware 2.8 PKI-encrypts every `want_ack` unicast its phone
+ * originates, whatever the channel, and never falls back to the channel key (`Router.cpp:1189-1212`, `:1347-1355`):
+ * - a payload past [MeshtasticProto.MAX_PAYLOAD] less the 12-byte PKC overhead is `TOO_LARGE` from our own board, and
+ *   nothing airs;
+ * - a sender whose NodeDB holds no key for the destination ([FakeMeshtasticLink.holdsKeyFor]) refuses it with
+ *   `queueStatus.res = 39` and then a self-NAK on index 0 ([FakeMeshtasticLink.noKeyNakFirst] swaps the two), and
+ *   nothing airs;
+ * - a destination that holds no key for the sender cannot decrypt it: its board NAKs `PKI_UNKNOWN_PUBKEY` (35) — which
+ *   stops the retries — and the sender's board answers with its `NodeInfo`, one airing, which teaches the destination
+ *   the sender's key;
+ * - otherwise it is delivered on the destination's index 0 with `pki_encrypted`, and acked on index 0.
+ *
+ * A board knows every node's key unless told to [FakeMeshtasticLink.forget] it — the NodeInfo on the shared primary
+ * teaches it on a real mesh, and it keeps the key while that board is off — and learns one from an `add_contact` its
+ * phone writes, unless it is
+ * [FakeMeshtasticLink.isManaged], which drops it silently (`AdminModule.cpp:178-181`).
  */
 internal class FakeMeshtasticAir {
     // Copy-on-write: the mesh-in-a-box lab registers boards from one node's coroutine while another node is
@@ -66,20 +85,29 @@ internal class FakeMeshtasticAir {
     /** A relay repeats each airing, so the sender's board reports an implicit ack before anything else. */
     var implicitAcks = false
 
-    /** One transmission on the air: a Knit packet ([ack] false; [attempt] 0 is the send, above it a retry) or an ACK. */
+    /** Whether every `want_ack` unicast is PKI-encrypted, as firmware 2.8 does: see the class doc. */
+    var pki = true
+
+    /**
+     * One transmission on the air: a Knit packet ([ack] false; [attempt] 0 is the send, above it a retry), an ACK or a
+     * NAK ([ack] true), or the `NodeInfo` a board sends a destination that lacked its key ([nodeInfo]).
+     */
     data class Airing(
         val from: UInt,
         val to: UInt,
         val ack: Boolean,
         val attempt: Int = 0,
+        val nodeInfo: Boolean = false,
     )
 
     val airings = CopyOnWriteArrayList<Airing>()
 
-    /** The Knit packets aired, retries included — what the plane spent. ACKs are counted apart. */
-    fun knitAirings(from: UInt): Int = airings.count { it.from == from && !it.ack }
+    /** The Knit packets aired, retries included — what the plane spent. ACKs and NodeInfos are counted apart. */
+    fun knitAirings(from: UInt): Int = airings.count { it.from == from && !it.ack && !it.nodeInfo }
 
     fun ackAirings(from: UInt): Int = airings.count { it.from == from && it.ack }
+
+    fun nodeInfoAirings(from: UInt): Int = airings.count { it.from == from && it.nodeInfo }
 
     fun register(link: FakeMeshtasticLink) {
         links.addIfAbsent(link)
@@ -117,6 +145,7 @@ internal class FakeMeshtasticAir {
     }
 
     /** A `want_ack` unicast from [sender] to the board [to], handle [id]: see the class doc. */
+    @Suppress("CyclomaticComplexMethod") // one pass over the firmware's attempts; each branch is one of its rules, in order
     fun unicast(
         sender: FakeMeshtasticLink,
         to: UInt,
@@ -136,14 +165,23 @@ internal class FakeMeshtasticAir {
             val airing = Airing(sender.nodeNum, to, ack = false, attempt = attempt)
             val dest = links.firstOrNull { it.nodeNum == to }
             val reaches = dest != null && !lossy(sender.nodeNum, to)
+            // The destination's board cannot decrypt a PKI packet from a node whose key it lacks (`ReliableRouter.cpp:146-150`).
+            val undecodable = pki && reaches && !checkNotNull(dest).holdsKeyFor(sender.nodeNum)
             events += at to {
                 airings += airing
                 if (implicitAcks) sender.emitOutcome(PacketOutcome.Acked(id, byDestination = false))
-                // The firmware drops a duplicate it already took: the destination's phone sees the packet once.
-                if (reaches && !landed) {
+                // The firmware drops a duplicate it already took: the destination's phone sees the packet once. A PKI
+                // packet is reported on index 0, flagged, whatever slot the sender used.
+                if (reaches && !landed && !undecodable) {
                     landed = true
-                    dest.deliver(sender.nodeNum, indexOn(sender, dest, channelIndex), portnum, payload, to = to, wantAck = true)
+                    val index = if (pki) 0 else indexOn(sender, dest, channelIndex)
+                    dest.deliver(sender.nodeNum, index, portnum, payload, to = to, wantAck = true, pkiEncrypted = pki)
                 }
+            }
+            if (undecodable) {
+                events += (at + ackDelayMs) to { peerLacksKey(sender, checkNotNull(dest), id) }
+                schedule(scope, sent, events)
+                return
             }
             if (reaches) {
                 val ackAt = at + ackDelayMs
@@ -169,6 +207,34 @@ internal class FakeMeshtasticAir {
         at += gap
         events += at to { if (!silent(sender.nodeNum, to)) sender.emitOutcome(PacketOutcome.Unreachable(id)) }
         schedule(scope, sent, events)
+    }
+
+    /**
+     * [dest]'s board could not decrypt [sender]'s packet [id]: its `PKI_UNKNOWN_PUBKEY` NAK stops the retries, and the
+     * sender's board answers it with its NodeInfo, which teaches [dest]'s board its key (`ReliableRouter.cpp:162-168`).
+     */
+    private fun peerLacksKey(
+        sender: FakeMeshtasticLink,
+        dest: FakeMeshtasticLink,
+        id: UInt,
+    ) {
+        airings += Airing(dest.nodeNum, sender.nodeNum, ack = true)
+        if (lossy(dest.nodeNum, sender.nodeNum)) return
+        sender.emitOutcome(PacketOutcome.Refused(id, RoutingError.PKI_UNKNOWN_PUBKEY, byDestination = true))
+        // An airing whether or not it lands ([nodeInfoAirings] counts transmissions); the key is learned only where it lands.
+        if (!lossy(sender.nodeNum, dest.nodeNum)) dest.learn(sender.nodeNum, sender.publicKeyOrNone)
+        airings += Airing(sender.nodeNum, dest.nodeNum, ack = false, nodeInfo = true)
+    }
+
+    /** Our own board's refusal of [id] before it aired: its self-NAK on index 0, after the send returned. */
+    fun selfNak(
+        sender: FakeMeshtasticLink,
+        id: UInt,
+        reason: RoutingError,
+        sent: Deferred<Unit>,
+    ) {
+        val scope = checkNotNull(sender.scope) { "a want_ack unicast needs its link's scope: its outcome follows the send" }
+        schedule(scope, sent, listOf(0L to { sender.emitOutcome(PacketOutcome.Refused(id, reason)) }))
     }
 
     companion object {
@@ -249,6 +315,80 @@ internal class FakeMeshtasticLink(
     /** The mesh's NodeDB as the board reports it — what puts a name on a bridged LongFast post. */
     override val nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
 
+    /**
+     * The raw `User`s the board's NodeInfo stream showed, by node, stamped: what [nodeUser] answers. Like the session's,
+     * it is never told when the board drops a node: [forget] leaves it. A test fills it through [streamUser].
+     */
+    private val users = ConcurrentHashMap<UInt, StreamedUser>()
+    private var userStamp = 0L
+
+    override fun nodeUser(node: UInt): StreamedUser? = users[node]
+
+    override fun userSeq(): Long = userStamp
+
+    /** The board streams [raw] for [node] — a NodeDB push, or anybody's over-the-air NodeInfo claiming [node]. */
+    fun streamUser(
+        node: UInt,
+        raw: ByteArray,
+    ) {
+        users[node] = StreamedUser(BoardOwnerRaw(raw), ++userStamp)
+    }
+
+    /** Run as our board refuses a PKI send to the board it names, before the refusal reaches the phone: a NodeInfo racing the `39`. */
+    var onPkiRefusal: ((to: UInt) -> Unit)? = null
+
+    /** When set, the next local admin message is applied but its `queueStatus` never comes back; it clears. */
+    var adminTimeoutNext = false
+
+    /** When set, the next send is refused with this `queueStatus.res` — and it clears. */
+    var rejectNext: Int? = null
+
+    // The NodeDB's key table: keys learned by name (an add_contact, a NodeInfo after a 35), and boards forgotten.
+    private val learnedKeys = ConcurrentHashMap<UInt, String>()
+    private val forgotten = ConcurrentHashMap.newKeySet<UInt>()
+
+    /**
+     * Whether this board's NodeDB holds a key for [node]: one it learned, or — the default, as a board hears every
+     * NodeInfo on the shared primary and keeps a key while its board is off — any node it was not made to [forget].
+     */
+    fun holdsKeyFor(node: UInt): Boolean = learnedKeys.containsKey(node) || node !in forgotten
+
+    /** What the NodeDB holds for [node]: a key it learned by name, or null for one known off the air or none. */
+    fun learnedKeyOf(node: UInt): String? = learnedKeys[node]
+
+    /** `meshtastic --remove-node`: the board forgets [node] and its key. */
+    fun forget(node: UInt) {
+        learnedKeys.remove(node)
+        forgotten += node
+    }
+
+    /** The board stores [key] for [node]. */
+    fun learn(
+        node: UInt,
+        key: String,
+    ) {
+        forgotten -= node
+        learnedKeys[node] = key
+    }
+
+    /** This board's key as its NodeInfo carries it, or a stand-in for a board built with none. */
+    val publicKeyOrNone: String get() = publicKey ?: "none:$nodeNum"
+
+    /** `config.security.is_managed`: local admin is dropped silently, `add_contact` included. */
+    var isManaged = false
+
+    /** When set, a `39`'s self-NAK reaches the phone before its `queueStatus`: the send returns the NAK. */
+    var noKeyNakFirst = false
+
+    /** Every `add_contact` the phone wrote to this board, decoded: (node, key, the `User` it carried). */
+    data class Contact(
+        val node: UInt,
+        val key: String?,
+        val user: ByteArray,
+    )
+
+    val contactsWritten = CopyOnWriteArrayList<Contact>()
+
     /** The board's free-slot count. Assigning it also publishes a [queue] update, as a real QueueStatus does. */
     var free: Int = 16
         set(value) {
@@ -306,11 +446,10 @@ internal class FakeMeshtasticLink(
         destination: LinkDestination,
     ): SendResult {
         if (free == 0) return SendResult.Busy
-        nakNext?.let { reason ->
-            nakNext = null
-            return SendResult.Nak(nextId++, reason)
-        }
+        scriptedRefusal()?.let { return it }
         val direct = destination as? LinkDestination.Direct
+        // A local admin message to this board: handled before its queueStatus, never aired (`Router.cpp:427-432`).
+        if (portnum == MeshtasticProto.PORT_ADMIN && direct?.addr?.node == nodeNum) return admin(payload)
         sent += payload
         sentHopLimits += hopLimit
         sentChannels += channelIndex
@@ -321,6 +460,7 @@ internal class FakeMeshtasticLink(
         sentIds += id
         if (queueFills) free--
         val sentGate = CompletableDeferred<Unit>()
+        if (direct != null && direct.ack && air.pki) pkiRefusal(direct, payload, id, sentGate)?.let { return it }
         if (direct != null && direct.ack) {
             air.unicast(this, direct.addr.node, channelIndex, portnum, payload, id, sentGate)
         } else {
@@ -335,6 +475,68 @@ internal class FakeMeshtasticLink(
             }
         sentGate.complete(Unit)
         return result
+    }
+
+    /**
+     * Our own board's refusal of a PKI unicast before it airs (`Router::perhapsEncode`): too large once PKI's 12 B are
+     * added, or no key for the destination. The `queueStatus` res first, then the self-NAK — or, with [noKeyNakFirst],
+     * the NAK alone. Null when it goes.
+     */
+    private fun pkiRefusal(
+        direct: LinkDestination.Direct,
+        payload: ByteArray,
+        id: UInt,
+        sentGate: CompletableDeferred<Unit>,
+    ): SendResult? {
+        val refusal =
+            when {
+                payload.size + MeshtasticProto.PKC_OVERHEAD_BYTES > MeshtasticProto.MAX_PAYLOAD -> RoutingError.TOO_LARGE
+                !holdsKeyFor(direct.addr.node) -> RoutingError.PKI_SEND_FAIL_PUBLIC_KEY
+                else -> return null
+            }
+        onPkiRefusal?.invoke(direct.addr.node)
+        if (noKeyNakFirst) return SendResult.Nak(id, refusal)
+        air.selfNak(this, id, refusal, sentGate)
+        sentGate.complete(Unit)
+        return SendResult.Rejected(id, refusal.code)
+    }
+
+    /** The refusal [nakNext] or [rejectNext] scripts for this send, each once; null to send. */
+    private fun scriptedRefusal(): SendResult? {
+        nakNext?.let { reason ->
+            nakNext = null
+            return SendResult.Nak(nextId++, reason)
+        }
+        rejectNext?.let { res ->
+            rejectNext = null
+            val id = nextId++
+            // Every refused send draws its self-NAK after the queueStatus (`Router.cpp:591`, `:400`), want_ack or not.
+            if (scope != null) air.selfNak(this, id, RoutingError.fromCode(res), CompletableDeferred(Unit))
+            return SendResult.Rejected(id, res)
+        }
+        return null
+    }
+
+    /** An `add_contact` (or any local admin): recorded, applied unless [isManaged], answered res 0. */
+    private fun admin(payload: ByteArray): SendResult {
+        val id = nextId++
+        decodeAddContact(payload)?.let { contact ->
+            contactsWritten += contact
+            if (!isManaged) contact.key?.let { learn(contact.node, it) }
+        }
+        if (adminTimeoutNext) {
+            adminTimeoutNext = false
+            return SendResult.Timeout(id)
+        }
+        return SendResult.Queued(id, QueueInfo(free, 16, 0))
+    }
+
+    /** `AdminMessage.add_contact` (66) → `SharedContact { node_num 1, user 2 }`, or null for any other admin message. */
+    private fun decodeAddContact(payload: ByteArray): Contact? {
+        val contact = readBytesField(payload, ADMIN_ADD_CONTACT) ?: return null
+        val node = readVarintField(contact, 1)?.toUInt() ?: return null
+        val user = readBytesField(contact, 2) ?: return null
+        return Contact(node, readBytesField(user, MeshtasticProto.USER_PUBLIC_KEY)?.let(::b64), user)
     }
 
     /** The Knit channel's slot on this board, once [readyProvisioned] reported it; null on the lab's index-0 binding. */
@@ -426,6 +628,7 @@ internal class FakeMeshtasticLink(
         wantAck: Boolean = false,
         hopLimit: Int = 0,
         nextHop: Int = 0,
+        pkiEncrypted: Boolean = false,
     ) {
         _packets.tryEmit(
             ReceivedPacket(
@@ -443,6 +646,7 @@ internal class FakeMeshtasticLink(
                 wantAck = wantAck,
                 hopLimit = hopLimit,
                 nextHop = nextHop,
+                pkiEncrypted = pkiEncrypted,
             ),
         )
     }
@@ -509,5 +713,9 @@ internal class FakeMeshtasticLink(
 
     fun drop() {
         _state.value = LinkState.Disconnected("test", retryAtMs = 0, streak = 1)
+    }
+
+    private companion object {
+        const val ADMIN_ADD_CONTACT = 66
     }
 }

@@ -46,8 +46,12 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `ACK_PAYLOAD_BYTES`), `RideGate.direct`
   / `reachHeld` / `unackedFrameId`, `StaleAtSend.NOT_DIRECT` / `HELD` / `ACKED` / `SLOT_ZERO`, `noteHeard` /
   `onBoardHeard`, `onDirectPacket`, `LoraReprobe` / `reprobeDue`, `frameKey` / `LoraPacePolicy.hasQueued` /
-  `hasQueuedTo`, or `LoraSizeHint.DM_BODY_BYTES`:** READ ADR 2026-10.x9fa (it supersedes ADR 039's DM form, ADR
-  2026-10.a4pm and rp3s's probe, re-offer and repair), then "DMs" in `lora-bridge.md`. One packet, sealed pairwise, a
+  `hasQueuedTo`, `LoraDirectPolicy.payloadCap`, `ReceivedPacket.pkiEncrypted`, or `LoraSizeHint.DM_BODY_BYTES`:** READ
+  ADR 2026-10.x9fa (it supersedes ADR 039's DM form, ADR 2026-10.a4pm and rp3s's probe, re-offer and repair) and its
+  2026-10-30 PKI amendment, then "DMs" in `lora-bridge.md`. Firmware 2.8 PKI-encrypts every compact DM whatever the
+  slot: one shared cap (`payloadCap`, 219 B; `LORA_DIRECT_PLAINTEXT_BYTES` 168 B, `LORA_DIRECT_TICK_ACKS` 9), every
+  airing priced with the 12-B PKC overhead (admission, booking, the flight's `airMs`), an ACK booked at 18 B with its
+  proof, and a DM received on index 0 counted in `boardsHeard` only once it opened. One packet, sealed pairwise, a
   `want_ack` unicast to a pinned board holder with the capability, on the bound Knit secondary (never slot 0,
   `loraDirectSlotZero`); every gate re-asked at send; one copy per frame id queued or awaiting its answer; one send in
   flight per peer not known reachable. A destination's ACK is a radio's, never a person's: it marks the board
@@ -61,6 +65,20 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   compact DM releases the offers parked behind it. The re-probe's schedule is a persisted limiter, not cleared by
   `quiesce`; the reach marks and the in-flight table are in memory and are. Our board's ACK of a compact DM to us is
   booked only when the firmware sent one (`boardAcks`: `want_ack`, or a `next_hop` naming us with hops left).
+  **Before touching `LoraContactPolicy`, `MeshtasticProto.encodeAdminAddContact`, `RoutingError.PKI_SEND_FAIL_PUBLIC_KEY`
+  / `PKI_UNKNOWN_PUBKEY` on this plane, `LoraDirectPolicy.Reach.NO_KEY` / `firstNoKey` / `holdForContact` /
+  `scheduleRetry`, `LoraBoardHolder.loraKey` / `contact` / `contested`, `MeshtasticLink.nodeUser`, `DirectSend.licensed`
+  / `afterPeerKey`, or `loraDirectNoKey` / `ContactAdded` / `PeerLacksOurKey` / `BoardKeyConflict`:** READ ADR
+  2026-10.aajj. Our board's `39` (no key for theirs; queueStatus res first, then a self-NAK) is acted on once per packet
+  and the frame is held, never given up; one `add_contact` is written only for a contact's board no rival binds by its
+  own key, whose node is the CRC32 of the profile's 32-byte key. The 39 is the board's word: the phone's copy of its
+  NodeInfo stream (`StreamedUser`, stamped) is read for a key only if streamed after the send was issued — a key there
+  then stops the write (a different one a counted conflict) — never a stale or forged entry from before. The `User` is
+  an allowlist (id, names, key; `Knit abcd` and unmessagable as the fallback), never a display name, `role`, `hw_model`
+  or an unknown field; the frame goes again on the write's res 0 through the pacer, and a timed-out write re-offers
+  once unrecorded. `NO_KEY` only after a write, or when none may be written. One write per (board, key) until a
+  DM to it is acked, two keys per peer a day, in memory. The destination's `35` re-offers once after a retransmit gap,
+  our NodeInfo booked, never `REFUSED`. Never for the auto-reply.
   **Before touching `start()`'s loops, `awaitConfigured`, `quiesce`, or what runs with no board bound:** READ ADR
   2026-09.5bqu — nothing ticks, transcodes or queues until a board is configured, and losing the board quiesces
   exactly as `stop()` does.

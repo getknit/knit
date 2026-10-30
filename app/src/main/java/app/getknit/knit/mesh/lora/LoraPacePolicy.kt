@@ -577,7 +577,10 @@ internal enum class StaleAtSend {
     /** A resend or re-probe of a DM whose ✓✓ landed while it waited (ADR 2026-10.x9fa). */
     ACKED,
 
-    /** The plane was bound to slot 0 while a compact DM waited: there the firmware would PKI-encrypt it (ADR 2026-10.x9fa). */
+    /**
+     * The plane was bound to slot 0 while a compact DM waited (ADR 2026-10.x9fa): Knit's frames belong on the Knit
+     * channel. Not about PKI: firmware 2.8 PKI-encrypts a unicast on any slot (the PKI amendment).
+     */
     SLOT_ZERO,
 
     /** It aged past [LoraFramePolicy.FRESH_MS] in the queue; it is custody's business now, not a live plane's. */
@@ -689,12 +692,15 @@ internal class OutboundFrame(
     /**
      * The firmware's cliff for these packets, for [LoraAirtime] — at admission and at the booking alike. A broadcast is
      * signed under its port's cliff by a 2.8 board (a Meshtastic-room post one byte further, on the text port); a
-     * unicast never is ([LoraAirtime.UNSIGNED]): `Router::perhapsEncode` signs only a broadcast, a `NodeInfo` or a
-     * position unless the board is in ham mode, so neither a compact DM nor the auto-reply carries a signature.
+     * unicast is not ([LoraAirtime.UNSIGNED]): `Router::perhapsEncode` signs only a broadcast, a `NodeInfo` or a
+     * position unless the board is in ham mode, so neither a compact DM nor the auto-reply carries a signature. A compact
+     * DM from a board in ham mode ([DirectSend.licensed]) is the exception: no PKI there, and the unicast is signed when
+     * it fits (`Router.cpp:1271` at v2.8.1, ADR 2026-10.aajj).
      */
     val signedUpTo: Int
         get() =
             when {
+                direct?.licensed == true -> MeshtasticProto.MAX_SIGNED_PAYLOAD
                 direct != null || destination == Destination.Reply -> LoraAirtime.UNSIGNED
                 destination == Destination.Public -> MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
                 else -> MeshtasticProto.MAX_SIGNED_PAYLOAD
@@ -711,12 +717,19 @@ internal class OutboundFrame(
     }
 
     /**
-     * Bytes the firmware adds on the air that [messages] do not carry, priced at admission and at booking alike: the PKC
-     * overhead of the DM auto-reply, a PKI unicast on channel 0 (ADR 2026-10.ug4a). A compact DM rides the Knit secondary
-     * channel-encrypted and adds none. Should the board hold no key for the sender, the reply goes channel-encrypted and
-     * this over-charges it by 12 B — the conservative error.
+     * Bytes the firmware adds on the air that [messages] do not carry, priced at admission, at booking and in a compact
+     * DM's flight alike: the PKC overhead of a PKI unicast — the DM auto-reply (ADR 2026-10.ug4a) and every compact DM.
+     * Firmware 2.8 PKI-encrypts a unicast its phone originates on any channel, the Knit secondary included, and refuses
+     * it (`39`) rather than fall back to the channel key, so a compact DM that airs at all airs PKI (ADR 2026-10.x9fa's
+     * PKI amendment). Only a board in ham mode skips PKI ([DirectSend.licensed]); it signs instead ([signedUpTo]).
      */
-    val pricedExtraBytes: Int get() = if (destination == Destination.Reply) MeshtasticProto.PKC_OVERHEAD_BYTES else 0
+    val pricedExtraBytes: Int
+        get() =
+            when {
+                direct != null -> if (direct.licensed) 0 else MeshtasticProto.PKC_OVERHEAD_BYTES
+                destination == Destination.Reply -> MeshtasticProto.PKC_OVERHEAD_BYTES
+                else -> 0
+            }
 
     private companion object {
         const val SHED_ROOM = 2
@@ -742,4 +755,15 @@ internal class DirectSend(
      * (ADR 2026-10.x9fa), each asked again then whether it is still unacked.
      */
     val flushAfter: List<String> = emptyList(),
+    /**
+     * Our board was in ham mode (`User.is_licensed`) when this was queued: the firmware neither PKI-encrypts it nor can
+     * refuse it for a missing key, and signs it when it fits — priced so ([OutboundFrame.signedUpTo]). Every other
+     * board PKI-encrypts it (ADR 2026-10.aajj).
+     */
+    val licensed: Boolean = false,
+    /**
+     * The one re-offer after the destination's board answered `PKI_UNKNOWN_PUBKEY` (35) and our board sent it our
+     * `NodeInfo` (ADR 2026-10.aajj): a second 35 to it is a give-up, never another re-offer.
+     */
+    val afterPeerKey: Boolean = false,
 )
