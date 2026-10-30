@@ -181,4 +181,44 @@ class LoraDirectPolicyTest {
         assertEquals(1, p.clearFlights().size)
         assertEquals(DirectReachCounts(), p.counts(0))
     }
+
+    private fun toUs(
+        wantAck: Boolean = false,
+        hopLimit: Int = 0,
+        nextHop: Int = 0,
+    ) = ReceivedPacket(
+        from = 9u,
+        to = 0x1234abcdu,
+        id = 1u,
+        channelIndex = 1,
+        portnum = MeshtasticProto.PORT_PRIVATE_APP,
+        payload = byteArrayOf(0x11),
+        rxSnr = 6f,
+        rxRssi = -80,
+        hopsAway = 0,
+        wantAck = wantAck,
+        hopLimit = hopLimit,
+        nextHop = nextHop,
+    )
+
+    @Test
+    fun ourBoardAcksAUnicastThatAskedOrThatNamedUsItsNextHopWithHopsLeft() {
+        val us = 0x1234abcdu
+        assertTrue("want_ack draws the ACK", LoraDirectPolicy.boardAcks(toUs(wantAck = true), us))
+        assertTrue("however many hops it has left", LoraDirectPolicy.boardAcks(toUs(wantAck = true, hopLimit = 0), us))
+        assertFalse("neither asked nor routed through us: no ACK", LoraDirectPolicy.boardAcks(toUs(hopLimit = 3), us))
+        assertTrue(
+            "named as its next hop with hops left: the hop-zero ACK that stops the sender's retries",
+            LoraDirectPolicy.boardAcks(toUs(hopLimit = 3, nextHop = 0xCD), us),
+        )
+        assertFalse("no hops left: none", LoraDirectPolicy.boardAcks(toUs(hopLimit = 0, nextHop = 0xCD), us))
+        assertFalse("another node's byte: none", LoraDirectPolicy.boardAcks(toUs(hopLimit = 3, nextHop = 0xCE), us))
+    }
+
+    @Test
+    fun aNodeWhoseLowByteIsZeroAnswersToFf() {
+        assertEquals(0xFF, LoraDirectPolicy.lastByteOf(0x1234ab00u))
+        assertEquals(0xCD, LoraDirectPolicy.lastByteOf(0x1234abcdu))
+        assertFalse("an absent next_hop never names anybody", LoraDirectPolicy.boardAcks(toUs(hopLimit = 3), 0x1234ab00u))
+    }
 }

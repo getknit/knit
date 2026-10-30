@@ -95,3 +95,24 @@ normally, which is what ADR 2026-10.x9fa's compact DM rides on. Nothing here cha
 the text port and the address, still answers on index 0, and is still the one direct send without `want_ack`
 (`LinkDestination.Direct(ack = false)`). It is no longer the plane's only unicast. The 2.8 board trial of the compact
 DM is what confirms the reading on hardware.
+
+## Amendment 2026-10-29 (2): the board hands a DM to the phone once (#241)
+
+"Because the board replays its queue on reconnect and a restart is a reconnect" (above) was wrong. Traced in firmware
+332b5b0a2: `MeshService::getForPhone` dequeues a packet (`MeshService.h:129`, from `PhoneAPI::available`,
+`PhoneAPI.cpp:1738`), `PhoneAPI::getFromRadio` copies it into the `FromRadio` and frees it (`PhoneAPI.cpp:1084-1088`,
+`releasePhonePacket` at 1191-1196), and a session that closes frees a packet it had taken but not handed over
+(`PhoneAPI.cpp:381`; NimBLE drops its staged reads, `NimbleBluetooth.cpp:728`). Nothing the phone has read is handed
+over again, after a BLE reconnect or an app restart. Because `toPhoneQueue` belongs to `MeshService` and not the
+session, a reconnect brings what queued while no phone read it, and each of those still comes once. That queue is bounded
+(`MAX_RX_TOPHONE`, `mesh-pb-constants.h:28-41`: 8 on classic ESP32 and STM32WL, 16 on nRF52840 and unclassified small
+parts, 32 on medium-memory parts, RP2040 and ESP32-C3); full, it drops an incoming `PRIVATE_APP` packet and lets a
+`TEXT_MESSAGE_APP` or `ROUTING_APP` one evict the oldest (`MeshService.cpp:512-526`). A compact DM is ACKed at receive
+(`RoutingModule.cpp:31`) before it is queued for the phone (`:37`), so an ACKed one can be lost there; ADR
+2026-10.x9fa's re-probe on the missing ✓✓ is the repair.
+
+The decision stands; its reason is narrower. `LoraPlaneSnapshot.autoReplied` persists so the once-a-day cap per sender
+holds across a restart: a sender the last process answered is not answered again that day, whether they write again or
+their DM queued on the board while the phone was away. A DM refused `NOT_READY`, because the memory was not back yet,
+is never answered, and the sender's next one is. Nothing in the code changes. The comments that repeated the replay
+claim (`DmAutoReplyPolicy`, `LoraMeshTransport`, `LoraPlaneState`, `lora-bridge.md`) now say this.

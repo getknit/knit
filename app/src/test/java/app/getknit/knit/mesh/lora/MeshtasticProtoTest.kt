@@ -131,6 +131,29 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun aPacketsWantAckDecodesAndAbsentIsFalse() {
+        // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, want_ack (field 10, varint) = true }
+        val asked = MeshtasticProto.decodeFromRadio(hex("12 0E 0D 34 12 00 00 22 05 08 01 12 01 41 50 01")) as FromRadio.Packet
+        assertTrue(asked.packet.wantAck)
+        val absent = MeshtasticProto.decodeFromRadio(hex("12 0C 0D 34 12 00 00 22 05 08 01 12 01 41")) as FromRadio.Packet
+        assertFalse(absent.packet.wantAck)
+        val off = MeshtasticProto.decodeFromRadio(hex("12 0E 0D 34 12 00 00 22 05 08 01 12 01 41 50 00")) as FromRadio.Packet
+        assertFalse("an explicit false is false", off.packet.wantAck)
+    }
+
+    @Test
+    fun aPacketsNextHopDecodesBesideItsHopLimitAndAbsentIsZero() {
+        // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, hop_limit (9) = 3, next_hop (18, varint) = 0xCD }
+        val named =
+            MeshtasticProto.decodeFromRadio(hex("12 12 0D 34 12 00 00 22 05 08 01 12 01 41 48 03 90 01 CD 01")) as FromRadio.Packet
+        assertEquals(0xCD, named.packet.nextHop)
+        assertEquals(3, named.packet.hopLimit)
+        assertFalse(named.packet.wantAck)
+        val none = MeshtasticProto.decodeFromRadio(hex("12 0C 0D 34 12 00 00 22 05 08 01 12 01 41")) as FromRadio.Packet
+        assertEquals(0, none.packet.nextHop)
+    }
+
+    @Test
     fun aFullPayloadPacketStaysUnderOneWrite() {
         // 233 B payload → the whole ToRadio worst case must fit one MTU-512 write (the MTU >= 263 gate).
         val bytes =

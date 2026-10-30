@@ -9,7 +9,6 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.ReceivedFile
-import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.isPresenceEvidence
@@ -116,7 +115,8 @@ internal class LoraMeshTransport(
     private val metrics: MeshMetrics,
     /**
      * Where this plane's persisted limiters go when the process dies — the auto-reply memory and the re-probe's backoff
-     * ([LoraPlaneState]) — so a restart does not answer a replayed DM again or re-probe every silent board at the base gap.
+     * ([LoraPlaneState]) — so a restart does not answer a sender the last process answered or re-probe every silent board
+     * at the base gap.
      */
     private val state: LoraPlaneState = LoraPlaneState.None,
     private val clock: () -> Long,
@@ -166,12 +166,13 @@ internal class LoraMeshTransport(
     override val status = _status.asStateFlow()
 
     /**
-     * The fan-out's dedup, keyed on the first 8 bytes of the Ed25519 sig ([dedupKey]): one copy of our own room post per
-     * ten minutes, so a frame the composite fans twice does not air twice. The fan-out's alone since ADR 2026-10.rp3s.
-     * A compact DM never consults it: one copy per frame id is [LoraPacePolicy.hasQueued] and the in-flight table
-     * (ADR 2026-10.x9fa).
+     * The fan-out's dedup, keyed on the first 8 bytes of the Ed25519 sig ([dedupKey]): one airing of our own room post
+     * for as long as it may air — until its freshness deadline on [wallClock] ([LoraFanoutSeen], #239) — so neither the
+     * composite fanning it twice nor a re-serve between the router's ten-minute window and [LoraFramePolicy.FRESH_MS]
+     * airs it twice. The fan-out's alone since ADR 2026-10.rp3s. A compact DM never consults it: one copy per frame id
+     * is [LoraPacePolicy.hasQueued] and the in-flight table (ADR 2026-10.x9fa).
      */
-    private val sigSeen = SeenSet(ttlMillis = SIG_TTL_MS, clock = clock)
+    private val sigSeen = LoraFanoutSeen()
 
     /**
      * Who has been told the board is unmonitored, and when the board last said so — the DM auto-reply's two
@@ -286,7 +287,7 @@ internal class LoraMeshTransport(
      * Flipped once the persisted limiter state has been applied — or has failed to load, which must cost the plane a
      * re-probe schedule rather than its voice. What can put a packet on the air waits on it ([awaitRestored]): the
      * re-probe must not run on a schedule the last process had already backed off, and the auto-reply's once-a-day
-     * memory must be back before a replayed DM is answered again. [LoraPlaneState.None] flips it on the first pass.
+     * memory must be back before a sender the last process answered is answered again. [LoraPlaneState.None] flips it on the first pass.
      */
     private val restored = MutableStateFlow(false)
 
@@ -518,8 +519,9 @@ internal class LoraMeshTransport(
         val holders = boardHolders
         return LoraPlaneSnapshot(
             savedAtWall = nowWall,
-            // The DM auto-reply's once-a-day memory: the board replays its queue on reconnect, and a restart
-            // that forgot who was answered would answer the same message again.
+            // The DM auto-reply's once-a-day memory: a restart that forgot who was answered would answer the same sender
+            // twice in a day — their next DM, or one that queued on the board while the phone was away. The board hands a
+            // packet over once (`PhoneAPI::getFromRadio`), so a DM already read never comes back (ADR 2026-09.4n5p).
             autoReplied = autoReply.stamps().takeLast(STATE_AUTO_REPLY_CAP).map { SeenStamp(it.first, shift.toWall(it.second)) },
             // And the re-probe's backoff (ADR 2026-10.rp3s): forgotten, every restart would re-probe each silent
             // recipient at the base gap again. Under the cap, direct board holders first and then the soonest, so a
@@ -648,9 +650,12 @@ internal class LoraMeshTransport(
             return
         }
         val key = dedupKey(wire, env)
-        if (!sigSeen.add(key)) {
+        val now = wallClock()
+        val freshUntil = freshUntilFor(env)
+        // Held until the post could no longer air (#239); a type with no deadline — none rides here — for the window.
+        if (!sigSeen.add(key, freshUntil ?: (now + SIG_TTL_MS), now)) {
             if (preId) preIdAdmitted.decrementAndGet()
-            metrics.onLoraSuppressed() // already fanned over LoRa within the window
+            metrics.onLoraSuppressed() // already fanned over LoRa while it is fresh
             return
         }
         val accepted =
@@ -659,7 +664,7 @@ internal class LoraMeshTransport(
                 "$label:${env.type}",
                 // The fan-out's gates are answered about the mesh as it is *now*; the frame may not fly for a whole
                 // window. Carried so [staleReason] can ask them again on the way out.
-                gate = RideGate(freshUntil = freshUntilFor(env), authorId = env.senderId),
+                gate = RideGate(freshUntil = freshUntil, authorId = env.senderId),
                 sigKey = key,
             )
         if (preId && !accepted) preIdAdmitted.decrementAndGet() // the queue refused it: nothing of the cap was spent
@@ -709,7 +714,7 @@ internal class LoraMeshTransport(
     /**
      * Compacts + fragments [wire] for the hop, or null when it can't ride (counted `loraTooBig`). Deliberately
      * separate from [enqueue] and called **before** the sig dedup: recording the sig first would burn the
-     * frame's 10-minute dedup slot on a frame that never went out.
+     * frame's dedup slot on a frame that never went out.
      */
     private fun encodeOrNull(
         wire: WireEnvelope,
@@ -1224,8 +1229,11 @@ internal class LoraMeshTransport(
         if (packet.channelIndex != bound && packet.channelIndex != PublicChannelPolicy.PRIMARY_INDEX) return
         if (packet.channelIndex == bound) noteBoard(packet)
         // Our board acked it, unsigned, on our behalf, before the phone could open it — a stranger's and a forged one
-        // too: air the window owes (ADR 2026-10.x9fa).
-        pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), signedUpTo = LoraAirtime.UNSIGNED)
+        // too: air the window owes (ADR 2026-10.x9fa). Only when the firmware did send that ACK: a unicast that asked for
+        // none, and named nobody's next hop as ours, drew none.
+        if (LoraDirectPolicy.boardAcks(packet, ready.board.myNodeNum)) {
+            pace.airtime.record(LoraDirectPolicy.ACK_PAYLOAD_BYTES, clock(), signedUpTo = LoraAirtime.UNSIGNED)
+        }
         val opened =
             when (val result = crypto.open(packet.payload)) {
                 is LoraDirectOpen.Opened -> {
@@ -1689,8 +1697,8 @@ internal class LoraMeshTransport(
      * did not happen and would turn the next fan-out of the same bytes away. A compact DM that never flew lets go of
      * the offers parked behind it, through the offer's gates again — it was the one send its unconfirmed peer was
      * allowed, and no outcome will ever come for it (ADR 2026-10.x9fa). A no-op once a fragment has gone — that frame
-     * did fly, in part. `SeenSet.reopen` gives one more copy per id per window, so a frame abandoned twice inside ten
-     * minutes keeps its slot the second time. Called from every path that drops an unsent frame: the send-time re-ask,
+     * did fly, in part. [LoraFanoutSeen.reopen] hands the slot back every time: a frame refused at send however often
+     * has still never flown (#239). Called from every path that drops an unsent frame: the send-time re-ask,
      * a NAK or give-up on the first fragment, a missing config or a slot that is not Knit's, and the pacer's shed and
      * oversize evictions ([abandonShed]).
      */
@@ -2109,7 +2117,12 @@ internal class LoraMeshTransport(
         const val PUBLIC_POST_FLOOR_MS = 30_000L
 
         const val INBOUND_BUFFER = 64
-        const val SIG_TTL_MS = 10 * 60_000L // = SeenSet.DEFAULT_TTL_MS
+
+        /**
+         * The fan-out dedup's hold for a frame with no freshness deadline ([LoraFramePolicy.freshnessExempt]): none
+         * rides the fan-out today, every room post holds until its own deadline ([LoraFanoutSeen], #239).
+         */
+        const val SIG_TTL_MS = 10 * 60_000L
         const val SIG_KEY_BYTES = 8
         const val FRAG_CAP = 16
         const val FRAG_TIMEOUT_MS = 60_000L // LoRa parts are seconds apart; the NAN 5 s default would drop them

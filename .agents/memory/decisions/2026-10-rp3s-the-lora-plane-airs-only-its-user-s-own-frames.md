@@ -117,3 +117,20 @@ each fixed one starvation and exposed the next, and the field walk failed on Kni
   `LoraPocketLabTest` / `RoomTickPlanesLabTest`. The board trial is owed: a pocket-mate's post never airs, an own
   one-packet post lands, an idle board airs no `PRIVATE_APP` over 30 min (`meshtastic --listen`, `loraSent` and
   `airtime` flat), and the strand trial (the re-probe) lands both DMs.
+
+## Amendment 2026-10-29: the fan-out's dedup lasts as long as the post may air (#239)
+
+`sigSeen` was a ten-minute `SeenSet`, the same window as `MeshRouter`'s, while a room post stays fresh for 15 minutes
+(`LoraFramePolicy.FRESH_MS`). An own post re-served to us in minutes 10–15 (a neighbour's custody or a spool pull,
+re-fanned by `InboundPipeline.onDeliver`) found both windows empty and aired a second time: about 1–2 s of air at
+LongFast per affected post. `sigSeen` is now a `LoraFanoutSeen`: each key is held until the frame's own freshness
+deadline (`sentAt + FRESH_MS`, the `RideGate.freshUntil` that `StaleAtSend.STALE` reads) on the wall clock, and dropped
+on the next add once that is past. The fan-out's freshness gate and the send-time re-ask read the same deadline on the
+same clock, so the dedup cannot end before the post stops being able to air, even when the wall clock is stepped. A
+second 15-minute `SeenSet` on the elapsed clock was the alternative. It would hold from the fan-out, not from `sentAt`,
+and on the other clock, so a wall clock set back would reopen the gap; and it would be a second memory beside the first
+with the same job. A frame dropped unsent (`abandon`) now hands its slot back every time, not once per window: it never
+flew. A 256-entry cap is a backstop. Guards: `LoraFanoutSeenTest`, `LoraMeshTransportTest`'s
+`anOwnPostReServedPastTheRoutersWindowButStillFreshDoesNotAirAgain`,
+`anOwnPostRefusedAtSendHoldsNoDedupSlotAndAirsOnItsNextFanout` and
+`aVerbatimResendIsSuppressedForAsLongAsThePostCouldAir`.

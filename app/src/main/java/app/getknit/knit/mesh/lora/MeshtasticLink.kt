@@ -313,6 +313,14 @@ internal class ReceivedPacket(
      * replayed at reconnect — which the hearing hook must not take as the radio being there now (ADR 2026-10.x9fa).
      */
     val rxTime: UInt? = null,
+    /**
+     * `MeshPacket.want_ack`, [hopLimit] and `MeshPacket.next_hop` ([nextHop], a node's last byte, 0 for none) as the
+     * board received them: together they say whether our board ACKed a unicast to it on our behalf
+     * ([LoraDirectPolicy.boardAcks]), which is air the window owes (ADR 2026-10.x9fa).
+     */
+    val wantAck: Boolean = false,
+    val hopLimit: Int = 0,
+    val nextHop: Int = 0,
 )
 
 /**

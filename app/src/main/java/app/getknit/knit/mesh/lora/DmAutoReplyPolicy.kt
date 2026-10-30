@@ -23,11 +23,14 @@ import app.getknit.knit.mesh.meshNodeLabel
  * ([Refusal.REPLIED_RECENTLY]), keyed by node number, so a second message — or a neighbour's bot answering
  * our answer — costs nothing; and the board speaks at most **once per [FLOOR_MS]** across every sender
  * ([Refusal.TOO_SOON]), so a burst of curious neighbours is one reply at a time, not a chorus. The memory
- * behind the first cap outlives the process through `LoraPlaneSnapshot.autoReplied` ([stamps] / [restore]),
- * because the board replays its queue on reconnect and a restart would otherwise answer the same message
- * twice. Whether the window carries the reply is the transport's call ([LoraAirtime]'s [Ceiling.HALF], ADR
- * 2026-10.ug4a), asked through [judge]'s `carried` after every cap here and before the sender is stamped: a reply the
- * air refuses is [Refusal.NO_AIR], and the sender's one answer is still owed to their next message.
+ * behind the first cap outlives the process through `LoraPlaneSnapshot.autoReplied` ([stamps] / [restore]) so
+ * that cap holds across a restart: a sender the last process answered is not answered again that day, whether
+ * they write again or their DM queued on the board while the phone was away and is handed over at reconnect.
+ * Nothing the phone has read comes back: the board hands each packet over once (firmware `PhoneAPI::getFromRadio`,
+ * ADR 2026-09.4n5p's read-once amendment). Whether the window carries the reply is the transport's call
+ * ([LoraAirtime]'s [Ceiling.HALF], ADR 2026-10.ug4a), asked through [judge]'s `carried` after every cap here and
+ * before the sender is stamped: a reply the air refuses is [Refusal.NO_AIR], and the sender's one answer is still
+ * owed to their next message.
  *
  * **The words are fixed, in English, and never the user's.** The reply speaks for the board, not the person
  * — it carries no display name (ADR 049's rule for everything on the public frequency) and no hint of who
@@ -106,7 +109,8 @@ internal class DmAutoReplyPolicy(
         if (packet.id == 0u) return Verdict.Refused(Refusal.NO_PACKET_ID)
         val now = clock()
         // The floor is asked before the sender is stamped: a sender refused for the floor has not had their
-        // answer, and their next message — or this one, replayed by the board — still earns it.
+        // answer, and their next message still earns it. This one does not come again: the board hands a packet
+        // to the phone once.
         if (lastReplyAt != NEVER && now - lastReplyAt < FLOOR_MS) return Verdict.Refused(Refusal.TOO_SOON)
         val key = senderKey(packet.from)
         if (replied.contains(key)) return Verdict.Refused(Refusal.REPLIED_RECENTLY)

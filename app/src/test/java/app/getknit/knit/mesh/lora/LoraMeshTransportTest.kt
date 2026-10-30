@@ -329,6 +329,58 @@ class LoraMeshTransportTest {
             a.transport.stop()
         }
 
+    @Test
+    fun anOwnPostReServedPastTheRoutersWindowButStillFreshDoesNotAirAgain() =
+        runTest {
+            // #239: the router's seen window lapses at ten minutes, a room post stays fresh for fifteen. A neighbour's
+            // custody re-serving our own post in that gap is re-fanned by `InboundPipeline.onDeliver`.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val post = frame(FrameType.CHAT, "alice", body = "north gate, ten minutes", sentAt = testScheduler.currentTime)
+            a.transport.fastFanout(post)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("the post airs once", 1, a.link.sent.size)
+
+            advanceTimeBy(11 * 60_000L)
+            runCurrent()
+            val suppressed = a.metrics.lora().loraSuppressed
+            a.transport.fastFanout(post)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("fresh, already aired: not again", 1, a.link.sent.size)
+            assertEquals(suppressed + 1, a.metrics.lora().loraSuppressed)
+            a.transport.stop()
+        }
+
+    @Test
+    fun anOwnPostRefusedAtSendHoldsNoDedupSlotAndAirsOnItsNextFanout() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            val post = frame(FrameType.CHAT, "alice", body = "north gate, ten minutes", sentAt = testScheduler.currentTime)
+            // The board refuses the only packet, twice: each time the frame is abandoned unsent, the same path a send-time
+            // re-ask takes. Twice, because the old `SeenSet.reopen` handed back only the first slot in each window (#239).
+            repeat(2) { refusal ->
+                a.link.nakNext = RoutingError.NO_CHANNEL // used up by one send
+                a.transport.fastFanout(post)
+                advanceTimeBy(5_000)
+                runCurrent()
+                assertTrue("refusal ${refusal + 1}: nothing reached the air", a.link.sent.isEmpty())
+                advanceTimeBy(60_000)
+            }
+            runCurrent()
+            a.transport.fastFanout(post)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("never flew, so it is not marked: the next fan-out airs it", 1, a.link.sent.size)
+            a.transport.stop()
+        }
+
     // --- The shared-band brake (ADR 2026-10.ug4a) ---
 
     /** A provisioned board, its Knit channel on slot 1 — the shape on which the Meshtastic room has a primary to post on. */
@@ -1615,7 +1667,7 @@ class LoraMeshTransportTest {
     // --- The dedup window, then the transport's lifecycle and status. ---
 
     @Test
-    fun aVerbatimResendIsSuppressedInsideTheWindowThenAllowedAfter() =
+    fun aVerbatimResendIsSuppressedForAsLongAsThePostCouldAir() =
         runTest {
             val air = FakeMeshtasticAir()
             val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
@@ -1631,13 +1683,15 @@ class LoraMeshTransportTest {
             a.transport.fastFanout(wire) // verbatim retry (AckSync re-sends these for 24 h)
             advanceTimeBy(4_000)
             runCurrent()
-            assertEquals("suppressed inside the 10-min dedup window", afterFirst, a.link.sent.size)
+            assertEquals("suppressed at once", afterFirst, a.link.sent.size)
 
-            advanceTimeBy(10 * 60_000)
+            // Not when a ten-minute window lapses (#239): until the post's own freshness ends, after which the fan-out
+            // refuses it as stale anyway.
+            advanceTimeBy(LoraFramePolicy.FRESH_MS - 8_000)
             a.transport.fastFanout(wire)
             advanceTimeBy(4_000)
             runCurrent()
-            assertTrue("allowed again after the window", a.link.sent.size > afterFirst)
+            assertEquals("still fresh, still suppressed", afterFirst, a.link.sent.size)
             a.transport.stop()
         }
 

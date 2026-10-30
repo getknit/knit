@@ -324,10 +324,30 @@ internal class LoraDirectPolicy(
 
         /**
          * A nominal routing ACK as the destination's board airs it: a `Routing` with no error, its request id and the
-         * `Data` framing. Booked by the receiver per compact DM it opened, unsigned, since our board sent it on our
-         * behalf.
+         * `Data` framing. Booked by the receiver, unsigned, for each compact DM addressed to it that its board acked on
+         * its behalf ([boardAcks]), opened or not.
          */
         const val ACK_PAYLOAD_BYTES = 8
+
+        /**
+         * Whether our own board — node [ownNode] — ACKed [packet], a decoded unicast addressed to it, as it handed it to
+         * the phone: so whether the window owes that ACK's air. Firmware `ReliableRouter::sniffReceived`
+         * (`ReliableRouter.cpp:123-158`, 332b5b0a2): a packet that asked for `want_ack` is ACKed (a compact DM carries no
+         * `request_id` or `reply_id`); one that did not is ACKed only when the sender's next-hop routing named us as the
+         * hop to carry it and it still had hops left — a hop-zero ACK that stops that sender's own retries. A unicast with
+         * neither draws nothing. Duplicates the board ACKs again without handing them over (`NextHopRouter.cpp:163-170`)
+         * are not seen here and stay unbooked. [ownNode]'s last byte is never 0 (`NodeDB::getLastByteOfNodeNum`), so an
+         * absent `next_hop` never matches.
+         */
+        fun boardAcks(
+            packet: ReceivedPacket,
+            ownNode: UInt,
+        ): Boolean = packet.wantAck || (packet.hopLimit > 0 && packet.nextHop == lastByteOf(ownNode))
+
+        /** A node's relay byte as the firmware writes it in `next_hop` / `relay_node`: its low byte, 0xFF for a 0. */
+        fun lastByteOf(node: UInt): Int = (node and LAST_BYTE_MASK).toInt().takeIf { it != 0 } ?: LAST_BYTE_MASK.toInt()
+
+        private const val LAST_BYTE_MASK = 0xFFu
 
         /** The most sends waiting on an answer at once, and the most ended ones remembered for a late answer. */
         const val MAX_FLIGHTS = 32

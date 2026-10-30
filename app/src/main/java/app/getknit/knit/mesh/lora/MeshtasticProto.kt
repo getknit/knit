@@ -473,6 +473,8 @@ internal object MeshtasticProto {
         var viaMqtt = false
         var xeddsaSigned = false
         var rxTime = 0u
+        var wantAck = false
+        var nextHop = 0
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -513,6 +515,10 @@ internal object MeshtasticProto {
                     hopLimit = reader.readVarint32()
                 }
 
+                MP_WANT_ACK -> {
+                    wantAck = reader.readVarint32() != 0
+                }
+
                 MP_RX_RSSI -> {
                     rxRssi = reader.readVarint32()
                 }
@@ -523,6 +529,10 @@ internal object MeshtasticProto {
 
                 MP_HOP_START -> {
                     hopStart = reader.readVarint32()
+                }
+
+                MP_NEXT_HOP -> {
+                    nextHop = reader.readVarint32()
                 }
 
                 MP_XEDDSA_SIGNED -> {
@@ -548,6 +558,8 @@ internal object MeshtasticProto {
             viaMqtt,
             xeddsaSigned,
             rxTime = rxTime.takeIf { it != 0u },
+            wantAck = wantAck,
+            nextHop = nextHop,
         )
     }
 
@@ -812,11 +824,21 @@ internal object MeshtasticProto {
     private const val MP_RX_SNR = 8
     private const val MP_HOP_LIMIT = 9
 
-    /** `MeshPacket.want_ack`: ask the destination's board to acknowledge, and the firmware to retry until it does. */
+    /**
+     * `MeshPacket.want_ack`: ask the destination's board to acknowledge, and the firmware to retry until it does. Written
+     * on a compact DM, and read off one addressed to us: what draws our own board's ACK (ADR 2026-10.x9fa).
+     */
     private const val MP_WANT_ACK = 10
     private const val MP_RX_RSSI = 12
     private const val MP_VIA_MQTT = 14
     private const val MP_HOP_START = 15
+
+    /**
+     * `MeshPacket.next_hop` (uint32 carrying one byte): the last byte of the node the sender's next-hop routing chose
+     * to carry it on, 0 for none. A unicast to us without `want_ack` still draws our board's hop-zero ACK when it names
+     * us here with hops left (`ReliableRouter::sniffReceived`), so it is read beside [MP_WANT_ACK].
+     */
+    private const val MP_NEXT_HOP = 18
 
     /**
      * `MeshPacket.xeddsa_signed` — the board's own verdict: it verified the packet's signature against the
@@ -1031,6 +1053,10 @@ internal class MeshPacket(
      * what tells that replay from a live hearing.
      */
     val rxTime: UInt? = null,
+    /** `MeshPacket.want_ack` — the sender asked the destination's board to acknowledge it. */
+    val wantAck: Boolean = false,
+    /** `MeshPacket.next_hop` — the last byte of the node chosen to carry it on, 0 for no preference. */
+    val nextHop: Int = 0,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null

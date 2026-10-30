@@ -361,6 +361,35 @@ class MeshtasticSessionTest {
         }
 
     @Test
+    fun aPacketsWantAckHopLimitAndNextHopSurfaceAndAbsentOnesAreFalseAndZero() =
+        runTest {
+            // What `LoraDirectPolicy.boardAcks` reads to decide whether our board ACKed a unicast (ADR 2026-10.x9fa).
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val packets = mutableListOf<ReceivedPacket>()
+            backgroundScope.launch { session.packets.collect { packets += it } }
+            session.start("AA")
+            runCurrent()
+            board(
+                ch,
+                BoardBytes.packet(
+                    from = 0x1234u,
+                    channel = 1,
+                    portnum = MeshtasticProto.PORT_PRIVATE_APP,
+                    payload = byteArrayOf(0x11),
+                    hopLimit = 3,
+                    wantAck = true,
+                    nextHop = 0xCD,
+                ),
+            )
+            board(ch, BoardBytes.packet(from = 0x1234u, channel = 1, portnum = MeshtasticProto.PORT_PRIVATE_APP, payload = byteArrayOf(9)))
+            assertEquals(listOf(true, false), packets.map { it.wantAck })
+            assertEquals(listOf(3, 0), packets.map { it.hopLimit })
+            assertEquals(listOf(0xCD, 0), packets.map { it.nextHop })
+            session.stop()
+        }
+
+    @Test
     fun sendRefusesLocallyWhenOverThePayloadCap() =
         runTest {
             val ch = FakeGattChannel().also(::scriptHandshake)

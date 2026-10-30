@@ -269,6 +269,9 @@ internal object BoardBytes {
         to: UInt = MeshtasticProto.BROADCAST,
         rxTime: UInt? = null,
         rxRssi: Int? = null,
+        hopLimit: Int? = null,
+        wantAck: Boolean = false,
+        nextHop: Int? = null,
     ): ByteArray =
         ProtoWriter()
             .message(2) {
@@ -287,7 +290,10 @@ internal object BoardBytes {
                 }
                 fixed32(6, id)
                 if (rxTime != null) fixed32(7, rxTime)
+                if (hopLimit != null) varint(9, hopLimit)
+                if (wantAck) bool(10, true)
                 if (rxRssi != null) varint(12, rxRssi)
+                if (nextHop != null) varint(18, nextHop)
                 if (xeddsaSigned) bool(22, true)
             }.toByteArray()
 

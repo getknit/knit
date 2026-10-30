@@ -142,7 +142,7 @@ internal class FakeMeshtasticAir {
                 // The firmware drops a duplicate it already took: the destination's phone sees the packet once.
                 if (reaches && !landed) {
                     landed = true
-                    dest.deliver(sender.nodeNum, indexOn(sender, dest, channelIndex), portnum, payload, to = to)
+                    dest.deliver(sender.nodeNum, indexOn(sender, dest, channelIndex), portnum, payload, to = to, wantAck = true)
                 }
             }
             if (reaches) {
@@ -410,7 +410,8 @@ internal class FakeMeshtasticLink(
     /**
      * A packet arriving from the air: another board's broadcast, or a unicast [to] this board. [rxRssi] null is the
      * NodeDB replay at a handshake (no reading); an old [rxTime] (epoch seconds) is the to-phone queue replayed at
-     * reconnect — [replayNodeDb] and [replayQueued] say so by name.
+     * reconnect — [replayNodeDb] and [replayQueued] say so by name. [wantAck], [hopLimit] and [nextHop] are the
+     * `MeshPacket` fields that say whether this board ACKed it ([LoraDirectPolicy.boardAcks]).
      */
     fun deliver(
         from: UInt,
@@ -422,6 +423,9 @@ internal class FakeMeshtasticLink(
         to: UInt = MeshtasticProto.BROADCAST,
         rxTime: UInt? = null,
         viaMqtt: Boolean = false,
+        wantAck: Boolean = false,
+        hopLimit: Int = 0,
+        nextHop: Int = 0,
     ) {
         _packets.tryEmit(
             ReceivedPacket(
@@ -436,6 +440,9 @@ internal class FakeMeshtasticLink(
                 hopsAway = 0,
                 viaMqtt = viaMqtt,
                 rxTime = rxTime,
+                wantAck = wantAck,
+                hopLimit = hopLimit,
+                nextHop = nextHop,
             ),
         )
     }

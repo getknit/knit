@@ -901,16 +901,42 @@ class LoraDirectTransportTest {
         }
 
     @Test
-    fun ourBoardsAckIsBookedForEveryCompactDmAddressedToUsOpenedOrNot() =
+    fun ourBoardsAckIsBookedForEveryCompactDmAddressedToUsThatAskedForOneOpenedOrNot() =
         runTest {
             val air = FakeMeshtasticAir()
             val (_, b) = pair(air)
             val mallory = FakeSeal("mallory") { emptySet() }
-            b.link.deliver(9u, 1, MeshtasticProto.PORT_PRIVATE_APP, mallory.seal("bob", "m1", wallBase, byteArrayOf(1)), to = 2u)
+            b.link.deliver(
+                9u,
+                1,
+                MeshtasticProto.PORT_PRIVATE_APP,
+                mallory.seal("bob", "m1", wallBase, byteArrayOf(1)),
+                to = 2u,
+                wantAck = true,
+            )
             settle(1_000)
             assertEquals(1L, b.lora.loraDirectStranger)
             assertEquals(
+                "one ACK, booked once",
                 LoraAirtime().timeOnAirMs(LoraDirectPolicy.ACK_PAYLOAD_BYTES, LoraAirtime.UNSIGNED),
+                b.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+        }
+
+    @Test
+    fun aCompactDmThatAskedForNoAckBooksNothing() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            // Opened and delivered, but sent without want_ack and naming no next hop: the firmware ACKs nothing
+            // (`ReliableRouter::sniffReceived`), so the window owes nothing.
+            b.link.deliver(1u, 1, MeshtasticProto.PORT_PRIVATE_APP, a.seal.seal("bob", "q1", wallBase, "hi".encodeToByteArray()), to = 2u)
+            settle(1_000)
+            assertEquals(listOf("q1"), b.delivered.map { it.frameId })
+            assertEquals(
+                0L,
                 b.pace.airtime
                     .snapshot(testScheduler.currentTime)
                     .usedMs,

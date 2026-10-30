@@ -497,6 +497,9 @@ internal class MeshtasticSession(
                 signedFields = data.signedFields,
                 boardVerified = packet.xeddsaSigned,
                 rxTime = packet.rxTime,
+                wantAck = packet.wantAck,
+                hopLimit = packet.hopLimit,
+                nextHop = packet.nextHop,
             ),
         )
     }

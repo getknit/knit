@@ -38,6 +38,12 @@ seam (`MeshTransport.longRangeFanout`):
   2026-10.x9fa: a DM, its ✓✓ and a DM reaction leave compact, and every other DM-form frame (a reset, a seed, a key reply, an intro) travels custody, the spool and
   the links only. A room `reaction` and a `profile` never ride (no key bootstrap crosses the plane, so a stranger heard
   only over LoRa stays in `PendingInbound` and is never shown).
+  **One airing per post while it is fresh (#239, ADR 2026-10.rp3s's 2026-10-29 amendment).** The fan-out's dedup
+  (`sigSeen`, a `LoraFanoutSeen` keyed on the signature prefix) holds each post until its own freshness deadline
+  (`sentAt + FRESH_MS`, the `RideGate.freshUntil` the send-time re-ask reads) on the wall clock, not for a ten-minute
+  TTL: the router's seen window lapses at ten minutes, so an own post re-served in minutes 10–15 (custody, a spool
+  pull, re-fanned by `InboundPipeline.onDeliver`) used to air twice. A frame dropped unsent (`abandon`: any
+  `StaleAtSend`, a NAK or give-up on its packet, a slot that is not Knit's, a shed) hands its slot back every time.
   **The covers (ADR 054, ADR 2026-09.y5f3)** now guard the compact DM alone: one to us, or to a peer BLE/NAN holds a
   **live link** to (`skipCovered`, read off `linkedPeers`, fed only by `suppressDataPath` — links, never sightings),
   or to a peer a connected spool heard from within `SPOOL_COVER_MS` (15 min) never airs, and one already queued is
@@ -267,8 +273,9 @@ parks on `link.state`, never on its 1 s idle tick (#67).
 
 **A limiter that resets on launch is not a limiter — where it bounds something a restart replays.** These are persisted
 through `LoraPlaneState` (a JSON blob under one settings key, `LoraPlaneStateStore`; `mesh/lora/` itself stays
-Android-free): the DM auto-reply's memory (the board replays its to-phone queue on reconnect, and a restart is a
-reconnect) and the re-probe's schedule (`reprobes`, ADR 2026-10.rp3s, its keys kept by ADR 2026-10.x9fa) — the one thing
+Android-free): the DM auto-reply's memory (its once-a-day cap per sender, across a restart; the board hands a packet to
+the phone once, so a reconnect brings only what queued while the phone was away — "A DM to the board is answered once")
+and the re-probe's schedule (`reprobes`, ADR 2026-10.rp3s, its keys kept by ADR 2026-10.x9fa) — the one thing
 on the plane that airs without a user action. **The airtime ledger is not** (ADR 2026-10.ug4a, superseding 7svb's
 ledger half): the regional duty cycle is the firmware's to enforce (`Router::send` refuses with `DUTY_CYCLE_LIMIT` over
 the trailing hour, which the pacer backs off on), so 7svb's "the ledger is the only thing enforcing it" was false; a
@@ -376,7 +383,11 @@ secondary decodes and is acked — the 2.8 board trial confirms it.
   send; a destination's ack refunds the unflown ones (`LoraAirtime.refund`, counted at the quietest gap). The gap is
   `RadioInterface::getRetransmissionMsec`'s: `2·air + (2^CW + 2·CWmax + 2^((CWmax+CWmin)/2))·slot + 4.5 s`, slot ≈ 44.5 ms
   at LongFast. A relay's repeat is an implicit ack that stops the retries, so silence then follows. Our board's ACK of
-  any compact DM to us, opened or not, is booked as a nominal 8 B. At LongFast a 40-character DM is one 95-B packet
+  a compact DM to us, opened or not, is booked as a nominal 8 B when the firmware sent one
+  (`LoraDirectPolicy.boardAcks`, off the decoded `want_ack`, `hop_limit` and `next_hop`): `ReliableRouter::sniffReceived`
+  (`ReliableRouter.cpp:123-158`) ACKs a `want_ack` unicast, and one without it only when the sender's next-hop routing
+  named us with hops left; a unicast with neither draws nothing. The re-ACK of a duplicate the board never hands over
+  (`NextHopRouter.cpp:163-170`) is not seen, so not booked. At LongFast a 40-character DM is one 95-B packet
   (1.13 s) and its ✓✓ one ~76-B packet (≈ 1.0 s); the worst case is five airings each (5.7 s, 5.0 s; 10.6 s for a full
   226-B packet), with the give-up about 46 s after the send on a quiet band. A send whose `queueStatus` timed out is
   awaited under its handle; a destination's ack after the deadline still marks the board reachable (`lora direct late
@@ -764,8 +775,21 @@ secondary.
   either is claimed (`NO_AIR`, never queued, uses up nobody's answer), priced unsigned (a unicast, which 2.8 does not
   sign). The floor is asked **before** the sender is stamped, so a `TOO_SOON` sender's next message still earns the
   reply; a `REPLIED_RECENTLY` one is silence for the day, which is what breaks a
-  loop with a neighbour's bot. The per-sender memory persists in `LoraPlaneSnapshot.autoReplied` — the
-  board replays its queue on reconnect, and a restart is a reconnect.
+  loop with a neighbour's bot. The per-sender memory persists in `LoraPlaneSnapshot.autoReplied` so the once-a-day cap
+  holds across a restart (ADR 2026-09.4n5p's read-once amendment).
+- **The board hands each packet to the phone once** (firmware 332b5b0a2). `MeshService::getForPhone` dequeues it
+  (`MeshService.h:129`, called from `PhoneAPI::available`, `PhoneAPI.cpp:1738`); `getFromRadio` copies it into the
+  `FromRadio` and frees it (`PhoneAPI.cpp:1084-1088`, `releasePhonePacket` at 1191-1196); a session that closes frees a
+  packet it had taken and not handed over (`PhoneAPI.cpp:381`), and NimBLE drops the reads it had staged
+  (`NimbleBluetooth.cpp:728`), so that one is lost, never re-sent. `toPhoneQueue` belongs to `MeshService`, not the
+  session, so what a reconnect brings is only what queued while no phone read it — each packet still once. A DM
+  refused `NOT_READY` (the memory not back yet) is therefore never answered; the sender's next one is. The queue is
+  bounded (`MAX_RX_TOPHONE`, `mesh-pb-constants.h:28-41`): 8 on classic ESP32 and STM32WL, 16 on nRF52840 and on
+  unclassified small parts, 32 on medium-memory parts, RP2040 and ESP32-C3. When it is full, an incoming `PRIVATE_APP`
+  packet is dropped, while a `TEXT_MESSAGE_APP` or `ROUTING_APP` one evicts the oldest (`MeshService.cpp:512-526`). Our
+  board ACKs a compact DM as it receives it (`RoutingModule.cpp:31`, `sniffReceived`) and only then queues it for the
+  phone (`:37`), so an ACKed DM can be lost there, as at a BLE drop; the re-probe on its missing ✓✓ is the repair
+  (ADR 2026-10.x9fa).
 - **Not on hardware yet.** Needs a stock third node DMing a Knit board; the oracle is `…debug.LORA`'s
   `autoReplyHeard` / `autoReplySent` and the reply on the stock node's screen, PKI (the padlock) and once.
   The rig trap: `FakeMeshtasticLink` is node `1u`, so a test DM `from = 0x1u` is `OWN_BOARD`.

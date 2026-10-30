@@ -6,8 +6,9 @@ import kotlinx.serialization.Serializable
  * Where the LoRa plane's persisted limiters live between processes.
  *
  * Every limiter on this plane used to be process-scoped, so a restart re-ran every "first time" behaviour (ADR
- * 2026-09.7svb). What persists now is the two that bound something a restart could replay: the DM auto-reply's
- * once-a-day memory (the board replays its to-phone queue on reconnect, and a restart is a reconnect) and the
+ * 2026-09.7svb). What persists now is the two that a restart would reset: the DM auto-reply's once-a-day memory (the
+ * cap per sender, across a restart; the board hands a packet to the phone once, so what comes at reconnect is only
+ * what queued while the phone was away — ADR 2026-09.4n5p's read-once amendment) and the
  * re-probe's backoff — the one schedule on this plane that airs without a user action. The airtime ledger is **not**
  * persisted any more (ADR 2026-10.ug4a): the regional duty cycle is the firmware's to enforce (`Router::send`'s
  * `DUTY_CYCLE_LIMIT`), and once the beacon, the bridge and the gossip were gone (ADR 2026-10.rp3s) nothing autonomous
@@ -20,8 +21,8 @@ import kotlinx.serialization.Serializable
  * is a JSON blob in the settings DataStore (`SettingsStore.loraPlaneState`), and every rule about what a
  * snapshot means is unit-testable without it.
  *
- * Two pieces of state are deliberately **not** here. [LoraMeshTransport.sigSeen] is the 10-minute "is this frame
- * in flight" window, and restoring it would carry a *transmitted* record across a restart — which on a plane with no
+ * Two pieces of state are deliberately **not** here. [LoraMeshTransport.sigSeen] is the fan-out's "already aired
+ * while fresh" memory ([LoraFanoutSeen]), and restoring it would carry a *transmitted* record across a restart — which on a plane with no
  * acks is not evidence anyone heard (ADR 2026-09.y8pu). What it would have stopped, an own room post re-served back to
  * us after a restart and re-aired, the fan-out refuses on its own: a post written before this process started is not
  * one the user just typed (ADR 2026-10.ug4a). `lastHeardAt` feeds `reachable`, which only fresh frames may write (ADR
