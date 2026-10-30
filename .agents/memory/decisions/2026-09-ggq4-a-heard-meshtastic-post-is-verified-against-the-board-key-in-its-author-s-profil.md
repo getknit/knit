@@ -124,3 +124,61 @@ heard before this build, still muted and shield-less (the migration's `ORIGIN_UN
 166 bytes left the Pixel 7 as `lora tx public 166B` and arrived signed and verified (`meshPostVerified 2`),
 so the text cliff is where the arithmetic put it. Not exercised on hardware: a mismatch and a board-only
 verdict (this mesh has no third signer — its other 131 nodes are still on 2.7).
+
+## Amendment 2026-10-29: Knit verifies firmware 2.8.1's layout only (#242)
+
+**What changed upstream.** Firmware 2.8.1 (tag `v2.8.1.8e6a88d`, commit `95906609d`, PR #11422) signs a new buffer
+(`src/mesh/CryptoEngine.cpp:137` `buildSigningBuffer`, `CryptoEngine.h:33-48`): `0x01 ‖ LE32 from ‖ LE32 id ‖ LE32 to ‖
+LE32 portnum ‖ LE32 request_id ‖ LE32 reply_id ‖ LE32 emoji ‖ LE32 bitfield ‖ flags ‖ payload`, where an absent bitfield
+signs as zero, the flags byte carries `0x01` for `want_response` and `0x02` for a present bitfield, and `dest` and
+`source` are not covered. The input above (`LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload`) is 2.8.0's. So a contact on
+a 2.8.1 board failed the phone's check, was stored `ORIGIN_SIGNATURE_MISMATCH`, and was drawn as a stranger.
+
+**2.8.0 is dropped.** Meshtastic withdrew the 2.8.0 release, and Knit verifies only 2.8.1's layout (the user's decision,
+2026-10-30). A contact still on a 2.8.0 board now fails the check and reads as `ORIGIN_SIGNATURE_MISMATCH`, drawn as a
+stranger that says so. That is accepted: there is no 2.8.0 detector and no fallback. The input paragraph above is
+history. `LoraAirtime`'s signing facts are untouched: a 2.8.0 board in the field still signs, and its air is priced as
+such; that is airtime, not support. With one layout, the cross-layout argument a two-layout check needed no longer
+applies.
+
+**What Knit does now.** `MeshtasticProto.decodeData` reads `want_response` (3), `reply_id` (7, `fixed32`), `emoji`
+(8, `fixed32`) and `bitfield` (9, `optional uint32`, kept as `UInt?` so a present zero stays apart from an absent field)
+beside `request_id` (6). They travel as one value, `XeddsaVerify.DataFields`, on `MeshData` and `ReceivedPacket`, and
+`PublicChannelPolicy.judge` adds the packet's own `to` to make the `XeddsaVerify.SignedFields` that `MeshPost` carries
+across the seam. `XeddsaVerify.verify` returns a Boolean, with one Ed key and one Tink verifier per call, and tries:
+
+1. **2.8.1** (`signingInput`), with the fields as decoded.
+2. **2.8.1 with `want_response` read as signed `false`**, only when the phone sees `true`, the bitfield is present and its
+   bit 1 is set. The receiving board verifies before it ORs the bitfield's want-response bit into the field
+   (`Router.cpp:1102-1108`), so a packet signed with `false` and bit 1 set reaches the phone reading `true`. The sender's
+   `Router::perhapsEncode` sets `has_bitfield` and ORs `ok_to_mqtt << 0` and `want_response << 1` before signing
+   (`Router.cpp:1257-1259`), so most real packets carry a bitfield, and with `config_ok_to_mqtt` off by default a present
+   zero is the common case. No other shape gets this candidate: not an absent bitfield, not bit 1 clear, and never the
+   reverse (seen `false`, signed `true`). A decoded MQTT downlink skips the merge, so the phone sees the signed value and
+   the first candidate serves.
+
+One Ed25519 verify on the common case, two at most, both built from the same decoded `from`, `id` and payload. Null
+fields (not carried) are no verdict: `judgeMeshPostSignature` skips the contact check and falls to the board's own
+verdict (`SIGNED_BY_BOARD`) or `UNSIGNED`, with no mismatch count or log. Both candidates vouch for the whole envelope, so which one passed is not kept: the
+verify returns a Boolean and the counters are the existing `meshPostVerified` / `meshPostSignatureMismatch`.
+`InboundPipeline.judgeMeshPostSignature` keeps the verdict mapping, and its mismatch counter and log fire once per post,
+after both candidates failed.
+
+**What reaches the phone.** Each firmware drops a signed packet that fails its own layout, but only when it holds an
+authoritative key for the sender (`checkXeddsaReceivePolicy`, `Router.cpp:730`; `copyPublicKeyAuthoritative` at `:743`,
+the drop at `:756-758`). A signed packet from a key the board does not hold reaches the phone unverified under the
+`COMPATIBLE` and `BALANCED` policies; under `STRICT` the board drops it instead (`Router.cpp:769-770`; the policy is in
+2.8.0 and 2.8.1 alike, and #243 is a later change to what `COMPATIBLE` does, upstream `34cb8d582`, not in the tag).
+Store-and-forward replays history unsigned, so those posts read as `UNSIGNED`, never as a mismatch. A 2.8.0 board and a
+2.8.1 board that hold each other's keys drop each other's signed broadcasts, Knit's own room posts included.
+
+**Pinned by** `XeddsaVerifyTest`: five packets signed by the firmware's own code at the tag (a room post, a tapback, a
+`want_response`, an absent bitfield and the merge case), each verifying with the fields as the phone sees them, the
+buffers byte for byte, every covered field flipped, the merge gate's three negative shapes, bitfield presence, other
+keys, a null, short, long or flipped signature, no envelope, the key conversion on the lab board's real key, and the
+real on-air 2.8.0 signature and the lab board's 2.8.0 text post no longer verifying. Also
+`MeshtasticProtoSignedFieldsTest` (fields 3/6/7/8/9, a present zero apart from an absent one), `PublicChannelPolicyTest`
+(the fields and the packet's `to` reach `MeshPost`), `MeshPostTest`, `MeshtasticSessionTest` (the tapback through the
+session's decode into a pass), and `InboundPipelineTest` (2.8.1 posts and a tapback signed by contact, a 2.8.0 post a
+mismatch, a wrong key one mismatch). The vectors are sign-side only. The end-to-end oracle is an on-air 2.8.1 packet
+read through `MeshtasticProto` on two 2.8.1 boards, which becomes a test vector once it is captured.

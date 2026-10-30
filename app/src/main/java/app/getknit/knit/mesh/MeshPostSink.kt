@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.crypto.XeddsaVerify
+
 /**
  * Delivers a post the bound board heard on its own primary (slot 0) channel into the Meshtastic room —
  * locally, and nowhere else.
@@ -57,9 +59,16 @@ data class MeshPost(
     val signature: ByteArray? = null,
     /** Our own board verified [signature] against the key its NodeDB holds for [node] (`MeshPacket.xeddsa_signed`). */
     val boardVerified: Boolean = false,
+    /**
+     * What firmware 2.8.1 signs beyond [node], [packetId], the port and [payload] — the packet's `to` and the rest of
+     * its `Data` envelope — as decoded off this packet, or null when they were not carried (then no signature can
+     * be checked). A value of the crypto package's, not the radio's, so nothing above the seam learns a Meshtastic
+     * type.
+     */
+    val signedFields: XeddsaVerify.SignedFields? = null,
 ) {
     /** The scalar members, for [equals]/[hashCode]: the byte arrays are compared by content beside them. */
-    private fun scalars(): List<Any?> = listOf(node, packetId, body, name, channel, hops, snrDeci, viaMqtt, boardVerified)
+    private fun scalars(): List<Any?> = listOf(node, packetId, body, name, channel, hops, snrDeci, viaMqtt, boardVerified, signedFields)
 
     /** The byte-array members make the generated `equals`/`hashCode` identity-based; compare the bytes instead. */
     override fun equals(other: Any?): Boolean =

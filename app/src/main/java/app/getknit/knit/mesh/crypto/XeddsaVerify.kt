@@ -19,9 +19,16 @@ import java.nio.ByteOrder
  * so the Edwards public key is always the birational image of the Curve25519 key with **sign bit zero**
  * (`CryptoEngine::curve_to_ed_pub` in the firmware, RFC 7748 §4.1: `y = (u − 1) / (u + 1)`). The
  * signature itself is a standard `R ‖ s` that any Ed25519 verifier accepts — Tink's, here, the same
- * primitive every Knit frame is checked with — over the firmware's own signing input
- * (`CryptoEngine::buildSigningBuffer`): `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload`, which is what
- * makes a signature unreplayable under another sender, packet id or port.
+ * primitive every Knit frame is checked with — over firmware 2.8.1's signing input ([signingInput];
+ * `CryptoEngine::buildSigningBuffer`, `CryptoEngine.cpp:137` and `CryptoEngine.h:33-48` at `v2.8.1.8e6a88d`):
+ * `0x01 ‖ LE32 from ‖ LE32 id ‖ LE32 to ‖ LE32 portnum ‖ LE32 request_id ‖ LE32 reply_id ‖ LE32 emoji ‖ LE32 bitfield
+ * (0 when absent) ‖ flags ‖ payload`, the flags byte `0x01` for `want_response` and `0x02` for a present bitfield. The
+ * whole `Data` envelope is covered, so a signature cannot be moved to another sender, packet, port, destination,
+ * reply or tapback.
+ *
+ * **Only that layout.** 2.8.0 signed `LE32 from ‖ LE32 id ‖ LE32 portnum ‖ payload`; Meshtastic withdrew the 2.8.0
+ * release, and Knit dropped it (ADR 2026-09.ggq4, amendment 2026-10-29, the user's decision of 2026-10-30). A contact
+ * still on a 2.8.0 board fails here and reads as a mismatch.
  *
  * What a pass proves is exactly "the holder of this key transmitted these bytes as this packet" — the
  * radio, never the person holding it. Pure JVM; never throws.
@@ -33,8 +40,18 @@ object XeddsaVerify {
     /** An XEdDSA signature is 64 bytes, like any Ed25519 one. */
     const val SIGNATURE_BYTES = 64
 
-    /** `from`, `id` and `portnum`, each a little-endian `uint32`, ahead of the payload. */
-    private const val HEADER_BYTES = 12
+    /** 2.8.1's header: the version byte, eight little-endian `uint32`s and the flags byte (`XEDDSA_SIGNED_HEADER_LEN`). */
+    private const val SIGNED_HEADER_BYTES = 34
+
+    /** `XEDDSA_SIGNING_VERSION`, the first byte of a 2.8.1 buffer. */
+    private const val SIGNING_VERSION: Byte = 0x01
+
+    /** `XEDDSA_SIGNED_FLAG_WANT_RESPONSE` and `XEDDSA_SIGNED_FLAG_HAS_BITFIELD`, the flags byte's two bits. */
+    private const val FLAG_WANT_RESPONSE = 0x01
+    private const val FLAG_HAS_BITFIELD = 0x02
+
+    /** `BITFIELD_WANT_RESPONSE_MASK` (`Router.h:316`): bit 1 of `Data.bitfield`. */
+    private const val BITFIELD_WANT_RESPONSE = 0x02u
 
     /** The field prime, 2^255 − 19. (`BigInteger.TWO` is API 33; minSdk is 29.) */
     private val P: BigInteger = BigInteger.valueOf(2).pow(255).subtract(BigInteger.valueOf(19))
@@ -55,26 +72,86 @@ object XeddsaVerify {
         return y.toLittleEndian()
     }
 
-    /** The bytes the firmware signs for a packet: `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload`. */
+    /**
+     * The `Data` fields 2.8.1 signs beyond the port and the payload, as the phone decoded them
+     * (`mesh.proto` at the tag: `want_response` 3, `request_id` 6, `reply_id` 7, `emoji` 8, all `fixed32` but the
+     * first; `bitfield` 9, `optional uint32`). [bitfield] keeps its presence — null when tag 9 was absent, which
+     * signs differently from a present zero (the flags byte carries it).
+     */
+    data class DataFields(
+        val wantResponse: Boolean = false,
+        val requestId: UInt = 0u,
+        val replyId: UInt = 0u,
+        val emoji: UInt = 0u,
+        val bitfield: UInt? = null,
+    ) {
+        /** These fields on a packet addressed to [to] — the `MeshPacket` field 2.8.1 signs beside them. */
+        fun signedTo(to: UInt): SignedFields = SignedFields(to, wantResponse, requestId, replyId, emoji, bitfield)
+    }
+
+    /**
+     * Everything the 2.8.1 layout covers beyond `from`, `id`, the port and the payload: the packet's [to] and the
+     * [DataFields]. Carried from the decoded packet to the check as one value, never rebuilt from a constant.
+     */
+    data class SignedFields(
+        val to: UInt,
+        val wantResponse: Boolean = false,
+        val requestId: UInt = 0u,
+        val replyId: UInt = 0u,
+        val emoji: UInt = 0u,
+        val bitfield: UInt? = null,
+    ) {
+        /**
+         * Whether the `want_response` the phone sees may be the receiving board's merge rather than what was signed.
+         * The board verifies **before** it ORs the bitfield's want-response bit into the field (`Router.cpp:1102-1108`
+         * at the tag), so a packet signed with `false` and bit 1 set reaches the phone reading `true`. Exactly that
+         * case and no other: never an absent bitfield, never bit 1 clear, never `false` read as a signed `true`.
+         */
+        internal val mayBeMergedWantResponse: Boolean
+            get() = wantResponse && bitfield != null && (bitfield and BITFIELD_WANT_RESPONSE) != 0u
+    }
+
+    /**
+     * The bytes firmware 2.8.1 signs for a packet (`CryptoEngine::buildSigningBuffer` at `v2.8.1.8e6a88d`):
+     * `0x01 ‖ LE32 from ‖ LE32 id ‖ LE32 to ‖ LE32 portnum ‖ LE32 request_id ‖ LE32 reply_id ‖ LE32 emoji ‖
+     * LE32 bitfield ‖ flags ‖ payload`. An absent bitfield signs as zero, and its presence rides in the flags.
+     */
     fun signingInput(
         from: UInt,
         id: UInt,
         portnum: Int,
         payload: ByteArray,
-    ): ByteArray =
-        ByteBuffer
-            .allocate(HEADER_BYTES + payload.size)
+        fields: SignedFields,
+    ): ByteArray {
+        val flags =
+            (if (fields.wantResponse) FLAG_WANT_RESPONSE else 0) or
+                (if (fields.bitfield != null) FLAG_HAS_BITFIELD else 0)
+        return ByteBuffer
+            .allocate(SIGNED_HEADER_BYTES + payload.size)
             .order(ByteOrder.LITTLE_ENDIAN)
+            .put(SIGNING_VERSION)
             .putInt(from.toInt())
             .putInt(id.toInt())
+            .putInt(fields.to.toInt())
             .putInt(portnum)
+            .putInt(fields.requestId.toInt())
+            .putInt(fields.replyId.toInt())
+            .putInt(fields.emoji.toInt())
+            .putInt((fields.bitfield ?: 0u).toInt())
+            .put(flags.toByte())
             .put(payload)
             .array()
+    }
 
     /**
-     * Whether [signature] is a valid XEdDSA signature under [curvePub] for the packet ([from], [id],
-     * [portnum]) carrying [payload]. False on **any** failure — a missing or short signature, a malformed
-     * key, a point Tink rejects — and never throws, so the ingest path can record the verdict and go on.
+     * Whether [signature] is a valid XEdDSA signature by [curvePub] for the packet ([from], [id], [portnum], [fields])
+     * carrying [payload], in firmware 2.8.1's layout. Tried with the fields as decoded, then — only when
+     * [SignedFields.mayBeMergedWantResponse] — with `want_response` read as signed `false`: one Ed25519 verify on the
+     * common case, two at most, both built from the same decoded fields with one key and one verifier. [fields] null
+     * (not carried) is false here, and the caller must read it as no verdict rather than a mismatch
+     * (`InboundPipeline.judgeMeshPostSignature` skips the check). False on **any** failure — a missing or short
+     * signature, a malformed key, a point Tink rejects — and never throws, so the ingest path can record the verdict
+     * and go on.
      */
     fun verify(
         curvePub: ByteArray,
@@ -83,14 +160,23 @@ object XeddsaVerify {
         portnum: Int,
         payload: ByteArray,
         signature: ByteArray?,
+        fields: SignedFields?,
     ): Boolean {
-        if (signature == null || signature.size != SIGNATURE_BYTES) return false
+        if (fields == null || signature == null || signature.size != SIGNATURE_BYTES) return false
         val edPub = edPublicKey(curvePub) ?: return false
-        return runCatching {
-            TinkInit.ensure()
-            verifierFor(edPub).verify(signature, signingInput(from, id, portnum, payload))
-            true
-        }.getOrDefault(false)
+        // One key and one verifier for both candidates.
+        val verifier =
+            runCatching {
+                TinkInit.ensure()
+                verifierFor(edPub)
+            }.getOrNull() ?: return false
+
+        fun passes(input: ByteArray): Boolean = runCatching { verifier.verify(signature, input) }.isSuccess
+        return passes(signingInput(from, id, portnum, payload, fields)) ||
+            (
+                fields.mayBeMergedWantResponse &&
+                    passes(signingInput(from, id, portnum, payload, fields.copy(wantResponse = false)))
+            )
     }
 
     private fun verifierFor(edPub: ByteArray): PublicKeyVerify =

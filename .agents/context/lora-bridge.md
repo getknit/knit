@@ -193,8 +193,10 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   `Data.xeddsa_signature` rides up intact, and the board's own verdict `MeshPacket.xeddsa_signed` (field 22,
   computed on receive against the key *its* NodeDB holds, never trusted off the air) beside it, plus
   `NodeInfo.has_xeddsa_signed` (14) and `DeviceMetadata.has_xeddsa` (14, which `LoraAirtime.onFirmware` now
-  takes ahead of the version parse). The signing input is `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload`
-  under the board's Curve25519 key converted to Ed25519 (`y = (u − 1)/(u + 1)`, sign bit 0); on 2.8 a node
+  takes ahead of the version parse). The signing input Knit verifies is 2.8.1's versioned buffer over the whole
+  `Data` envelope (`0x01 ‖ from ‖ id ‖ to ‖ portnum ‖ request_id ‖ reply_id ‖ emoji ‖ bitfield ‖ flags ‖ payload`;
+  ggq4's 2026-10-29 amendment, #242); 2.8.0's `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload` was dropped when
+  Meshtastic withdrew that release, under the board's Curve25519 key converted to Ed25519 (`y = (u − 1)/(u + 1)`, sign bit 0); on 2.8 a node
   number **is** the CRC32 of that key. The text cliff is **166 B** (one-byte portnum), the Knit-frame one 165.
   Two rules to remember: a signed packet that fails against the key the *receiving* board holds is dropped
   before the phone sees it, whatever the policy — a stale or planted key silently blackholes that sender —
@@ -836,13 +838,17 @@ each hear the channel for themselves.
   self-asserted node number — **unless the signature checks out** (ADR 2026-09.ggq4). The profile also
   carries the board's Curve25519 key (`ProfileContent.loraKey` ← `SettingsStore.loraBoard.key`, written with
   the number in one edit, read with it from one snapshot, and only while the board signs), `peers.loraKey` stores it, and `deliverMeshPost`
-  verifies a signed post on the phone (`mesh/crypto/XeddsaVerify`, over `from ‖ id ‖ portnum ‖ payload` as
-  heard — `MeshPost.payload`, never the trimmed body) and freezes the verdict on the row as
+  verifies a signed post on the phone (`mesh/crypto/XeddsaVerify`, in 2.8.1's layout over `MeshPost.signedFields`
+  — the packet's `to` and its `Data` envelope as decoded — then, only when the board may have merged the bitfield's
+  bit into `want_response`, with it read as signed `false`; always over the payload as heard — `MeshPost.payload`,
+  never the trimmed body) and freezes the verdict on the row as
   `messages.originSigned`: `UNSIGNED` (nothing to say — pre-2.8 radios never sign, a post past the cliff
   cannot), `SIGNED_BY_BOARD` (our board's `xeddsa_signed`: the radio that has been using the number), `SIGNED_BY_CONTACT`
   (verified under the contact's advertised key — the one verified state) and `SIGNATURE_MISMATCH` (some other
   radio on the contact's number: **not attributed**, drawn as a stranger that says so). Counters:
-  `meshPostVerified` / `BoardVerified` / `SignatureMismatch`.
+  `meshPostVerified` / `BoardVerified` / `SignatureMismatch`. A contact still on a (withdrawn) 2.8.0 board reads as a
+  mismatch. A 2.8.0 board and a 2.8.1 board that hold each other's keys drop each other's signed posts before either
+  phone sees them.
 - **Signable cap.** On a board that signs (`LoraFacts.signs`) the composer caps a post at
   `PublicPostPolicy.MAX_SIGNED_TEXT_BYTES` (166, `MeshtasticProto.maxSignedPayload(PORT_TEXT_MESSAGE)`) so
   every post leaves signed, else the 200-byte client convention; `postToPublicChannel` trims to the same

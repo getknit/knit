@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.crypto.b64
 
 /**
@@ -516,6 +517,10 @@ internal object MeshtasticProto {
         var payload = ByteArray(0)
         var requestId = 0u
         var signature: ByteArray? = null
+        var wantResponse = false
+        var replyId = 0u
+        var emoji = 0u
+        var bitfield: UInt? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
@@ -523,7 +528,16 @@ internal object MeshtasticProto {
 
                 DATA_PAYLOAD -> payload = reader.readBytes()
 
+                DATA_WANT_RESPONSE -> wantResponse = reader.readVarint32() != 0
+
                 DATA_REQUEST_ID -> requestId = reader.readFixed32()
+
+                DATA_REPLY_ID -> replyId = reader.readFixed32()
+
+                DATA_EMOJI -> emoji = reader.readFixed32()
+
+                // `optional`: a present zero is still encoded, and 2.8.1 signs its presence (the flags byte).
+                DATA_BITFIELD -> bitfield = reader.readVarint32().toUInt()
 
                 // The firmware writes 0 or 64 bytes and drops anything else before the phone sees it;
                 // a wrong length here is not a signature and must not be verified as one.
@@ -532,7 +546,13 @@ internal object MeshtasticProto {
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return MeshData(portnum, payload, requestId, signature)
+        return MeshData(
+            portnum,
+            payload,
+            requestId,
+            signature,
+            signedFields = XeddsaVerify.DataFields(wantResponse, requestId, replyId, emoji, bitfield),
+        )
     }
 
     private fun decodeMyInfo(reader: ProtoReader): FromRadio.MyInfo {
@@ -762,6 +782,13 @@ internal object MeshtasticProto {
     private const val DATA_WANT_RESPONSE = 3
     private const val DATA_REQUEST_ID = 6
 
+    /** `Data.reply_id` and `Data.emoji` (`fixed32` both): a reply's or a tapback's target, and the tapback flag. */
+    private const val DATA_REPLY_ID = 7
+    private const val DATA_EMOJI = 8
+
+    /** `Data.bitfield` (`optional uint32`): bit 0 ok-to-MQTT, bit 1 want-response; the sender's board fills it in. */
+    private const val DATA_BITFIELD = 9
+
     /** `Data.xeddsa_signature` — the 64-byte XEdDSA signature 2.8 attaches to a broadcast that fits signed. */
     private const val DATA_XEDDSA_SIGNATURE = 10
 
@@ -977,11 +1004,17 @@ internal class MeshData(
     val payload: ByteArray,
     val requestId: UInt,
     /**
-     * `Data.xeddsa_signature`, exactly 64 bytes or null. The sender's board signed `from ‖ id ‖ portnum ‖
-     * payload` under its Curve25519 key; `mesh/crypto/XeddsaVerify` checks it on the phone against a key a
+     * `Data.xeddsa_signature`, exactly 64 bytes or null. The sender's board signed the packet and its whole `Data`
+     * envelope ([signedFields], 2.8.1's layout) under its Curve25519 key; `mesh/crypto/XeddsaVerify` checks it on the phone against a key a
      * contact's profile advertises, which is what turns "some radio sent this" into "their radio sent this".
      */
     val signature: ByteArray? = null,
+    /**
+     * The rest of the `Data` envelope firmware 2.8.1 signs (`want_response`, `request_id`, `reply_id`, `emoji`, the
+     * bitfield with its presence), as decoded — what `XeddsaVerify` rebuilds the 2.8.1 signing input from. Null only
+     * on a value not made by the decoder.
+     */
+    val signedFields: XeddsaVerify.DataFields? = null,
 )
 
 /** One channel as the board reports it in the config handshake, so the transport can select by [name]. */

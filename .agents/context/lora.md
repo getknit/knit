@@ -120,7 +120,9 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   ADR 2026-09.x52a, then "The Meshtastic room" in `lora-bridge.md`. The room is a local mirror of the bound board's
   slot 0: nothing minted, custodied or fanned out, no gateway gate; a post leaves through this phone's own board as the
   words alone, no author name. A heard author is resolved once at ingest through the node number their profile claims
-  and stays "unverified" unless the board key in that profile verifies the XEdDSA signature. ADR 2026-09.cf7a and
+  and stays "unverified" unless the board key in that profile verifies the XEdDSA signature — in firmware 2.8.1's
+  layout only; Meshtastic withdrew 2.8.0, so a 2.8.0 contact reads as a mismatch (ADR 2026-09.ggq4's 2026-10-29
+  amendment). ADR 2026-09.cf7a and
   2026-09.7r4d are superseded: the `meshpost` type is burned, never bring a custodial frame back for this traffic.
   `loraNode` / `loraKey` are profile fields the iOS port reads too (paired change).
   **Before touching `DmAutoReplyPolicy`, `Destination.Reply`, `OutboundFrame.to`, or `MeshtasticLink.send`'s

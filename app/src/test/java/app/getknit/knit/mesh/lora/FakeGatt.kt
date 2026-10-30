@@ -246,6 +246,12 @@ internal object BoardBytes {
         payload: ByteArray,
         id: UInt = 0u,
         requestId: UInt = 0u,
+        // The rest of the `Data` envelope firmware 2.8.1 signs (#242): want_response (3), reply_id (7) and emoji (8),
+        // and the `optional` bitfield (9), written even when zero so a present zero stays apart from an absent one.
+        wantResponse: Boolean = false,
+        replyId: UInt = 0u,
+        emoji: UInt = 0u,
+        bitfield: UInt? = null,
         signature: ByteArray? = null,
         xeddsaSigned: Boolean = false,
     ): ByteArray =
@@ -257,7 +263,11 @@ internal object BoardBytes {
                 message(4) {
                     varint(1, portnum)
                     bytes(2, payload)
+                    bool(3, wantResponse)
                     fixed32(6, requestId)
+                    fixed32(7, replyId)
+                    fixed32(8, emoji)
+                    if (bitfield != null) oneofVarint(9, bitfield.toInt())
                     if (signature != null) bytes(10, signature)
                 }
                 fixed32(6, id)

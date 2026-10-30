@@ -469,6 +469,7 @@ internal class MeshtasticSession(
                         hopsAway = packet.hopsAway,
                         viaMqtt = packet.viaMqtt,
                         signature = data.signature,
+                        signedFields = data.signedFields,
                         boardVerified = packet.xeddsaSigned,
                     ),
                 )

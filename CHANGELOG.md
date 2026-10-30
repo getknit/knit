@@ -74,6 +74,9 @@ document:
 - A phone outside a busy group no longer sends its members the same old messages over and over, and a message
   you already have no longer sends its sender a new delivery tick every ten minutes. Both used airtime and
   battery on every phone nearby.
+- Meshtastic room posts from a contact whose board runs Meshtastic 2.8.1 now show under their name instead of
+  as a stranger's. Meshtastic withdrew 2.8.0, so posts from a board still on it are marked "signature doesn't
+  match" until it's updated.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.TextLimits
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.meshNodeLabel
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -37,6 +38,7 @@ class PublicChannelPolicyTest {
         viaMqtt: Boolean = false,
         signature: ByteArray? = null,
         boardVerified: Boolean = false,
+        signedFields: XeddsaVerify.DataFields? = null,
     ) = ReceivedPacket(
         from = from,
         to = to,
@@ -50,6 +52,7 @@ class PublicChannelPolicyTest {
         viaMqtt = viaMqtt,
         signature = signature,
         boardVerified = boardVerified,
+        signedFields = signedFields,
     )
 
     private fun judge(
@@ -223,5 +226,26 @@ class PublicChannelPolicyTest {
         val unsigned = (judge(packet()) as PublicChannelPolicy.Verdict.Post).post
         assertNull(unsigned.signature)
         assertFalse(unsigned.boardVerified)
+    }
+
+    @Test
+    fun `a post carries the envelope firmware 2_8_1 signs`() {
+        // 2.8.1 signs `to` and the rest of `Data` beside the payload (#242); the post carries them to the check.
+        // `to` is read off the packet, which only matters if a unicast path is ever admitted: today `judge` refuses
+        // anything but a broadcast first, so this cannot tell the two apart.
+        val fields = XeddsaVerify.DataFields(wantResponse = true, requestId = 9u, replyId = 0x5eed0001u, emoji = 1u, bitfield = 0u)
+        val post = (judge(packet(signedFields = fields)) as PublicChannelPolicy.Verdict.Post).post
+        assertEquals(
+            XeddsaVerify.SignedFields(
+                to = MeshtasticProto.BROADCAST,
+                wantResponse = true,
+                requestId = 9u,
+                replyId = 0x5eed0001u,
+                emoji = 1u,
+                bitfield = 0u,
+            ),
+            post.signedFields,
+        )
+        assertNull("none carried, none invented", post().signedFields)
     }
 }

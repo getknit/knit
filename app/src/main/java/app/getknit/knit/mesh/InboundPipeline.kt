@@ -1035,9 +1035,10 @@ class InboundPipeline(
      *
      * The strong answer needs two things a contact's own signed profile supplied: the claim that they hold
      * this node number, and the Curve25519 key that board signs under (`peers.loraKey`). With both, the
-     * signature is checked on this phone over the bytes as heard and the exact input the firmware signs
-     * (`from ‖ id ‖ portnum ‖ payload`) — a pass binds the words to *their* radio, and a failure means some
-     * other radio is using their number, which is worse than a stranger and is recorded as such. Without a
+     * signature is checked on this phone over the bytes as heard and the exact input firmware 2.8.1 signs — the
+     * whole `Data` envelope (`XeddsaVerify.verify`; 2.8.0's layout is dropped, ADR 2026-09.ggq4's 2026-10-29
+     * amendment) — a pass binds the words to *their* radio, and a failure means some other radio is using their
+     * number (or a withdrawn 2.8.0 board), which is worse than a stranger and is recorded as such. Without a
      * key to check against, the most a post can be is what our own board vouched for
      * (`MeshPacket.xeddsa_signed`: the radio that has been using the number signed it), and an unsigned post
      * proves nothing either way — pre-2.8 radios never sign, and a post past the signature cliff cannot.
@@ -1048,8 +1049,11 @@ class InboundPipeline(
     ): Int {
         val key = contact?.loraKey?.let { runCatching { b64d(it) }.getOrNull() }
         val signature = post.signature
+        // Without the envelope 2.8.1 signs there is nothing to check the signature over: no verdict, never a
+        // mismatch — a real contact must not be recorded as spoofed because a path dropped the fields.
+        val fields = post.signedFields
         return when {
-            key != null && signature != null -> {
+            key != null && signature != null && fields != null -> {
                 val ok =
                     XeddsaVerify.verify(
                         curvePub = key,
@@ -1058,11 +1062,13 @@ class InboundPipeline(
                         portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
                         payload = post.payload,
                         signature = signature,
+                        fields = fields,
                     )
                 if (ok) {
                     metrics.onMeshPostVerified()
                     MessageEntity.ORIGIN_SIGNED_BY_CONTACT
                 } else {
+                    // Once per post, after both 2.8.1 candidates failed.
                     metrics.onMeshPostSignatureMismatch()
                     Log.w(TAG, "mesh post from ${meshNodeLabel(post.node)}: signature does not match ${contact.nodeId}'s board key")
                     MessageEntity.ORIGIN_SIGNATURE_MISMATCH

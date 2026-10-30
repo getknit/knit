@@ -119,6 +119,8 @@ internal object PublicChannelPolicy {
                 payload = packet.payload,
                 signature = packet.signature,
                 boardVerified = packet.boardVerified,
+                // `to` off this packet, never the broadcast constant the gate above admitted it by.
+                signedFields = packet.signedFields?.signedTo(packet.to),
             ),
         )
     }

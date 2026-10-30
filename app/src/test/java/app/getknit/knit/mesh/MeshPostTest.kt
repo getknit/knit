@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
@@ -15,6 +16,7 @@ class MeshPostTest {
         signature: ByteArray? = ByteArray(64) { 7 },
         hops: Int? = 2,
         boardVerified: Boolean = true,
+        signedFields: XeddsaVerify.SignedFields? = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, bitfield = 1u),
     ) = MeshPost(
         node = 0xFFFF_FFFEL,
         packetId = 42L,
@@ -27,6 +29,7 @@ class MeshPostTest {
         payload = payload,
         signature = signature,
         boardVerified = boardVerified,
+        signedFields = signedFields,
     )
 
     @Test
@@ -51,6 +54,9 @@ class MeshPostTest {
     fun theScalarsStillCount() {
         assertNotEquals(post(), post(hops = 3))
         assertNotEquals(post(), post(boardVerified = false))
+        assertNotEquals("2.8.1's signed envelope", post(), post(signedFields = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, bitfield = 0u)))
+        assertNotEquals(post(), post(signedFields = null))
+        assertEquals(post().hashCode(), post(signedFields = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, bitfield = 1u)).hashCode())
         assertNotEquals(post(), "hello")
     }
 }

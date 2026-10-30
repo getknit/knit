@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -1173,6 +1174,59 @@ class MeshtasticSessionTest {
             assertTrue("the board's own verdict rides through", received[0].boardVerified)
             assertNull("an unsigned packet carries no signature", received[1].signature)
             assertFalse(received[1].boardVerified)
+            collector.cancel()
+            session.stop()
+        }
+
+    @Test
+    fun aTwoEightOneTapbackVerifiesEndToEndThroughTheSession() =
+        runTest {
+            // The `tapback` vector `XeddsaVerifyTest` pins (signed by firmware 2.8.1's own code, a fixed test key),
+            // fed in as board bytes: the session must carry the signed `Data` envelope into `ReceivedPacket`, or the
+            // post is never checked against the contact's key at all and a 2.8.1 contact stays unverified (#242).
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            val received = mutableListOf<ReceivedPacket>()
+            val collector = backgroundScope.launch { session.packets.collect { received += it } }
+            session.start("AA")
+            runCurrent()
+            val hex = { s: String -> s.chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
+            val signature =
+                hex(
+                    "a6d552725c4a84c325a2fad70fb9d258df8d35465153335a1a300cbea8b133fd" +
+                        "7abfd03089e992b9eed4e5094d5f6d22ab02dbaae4771c03e441582ceef97105",
+                )
+            ch.enqueueRead(
+                BoardBytes.packet(
+                    from = 0x28f1a7c3u,
+                    channel = 0,
+                    portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                    payload = hex("f09f918d"),
+                    id = 0x5eed0002u,
+                    replyId = 0x5eed0001u,
+                    emoji = 1u,
+                    bitfield = 0u,
+                    signature = signature,
+                ),
+            )
+            ch.notify()
+            runCurrent()
+
+            val packet = received.single()
+            assertEquals(XeddsaVerify.DataFields(replyId = 0x5eed0001u, emoji = 1u, bitfield = 0u), packet.signedFields)
+            val post =
+                (PublicChannelPolicy.judge(packet, listOf(ChannelInfo(0, "", 1)), null) as PublicChannelPolicy.Verdict.Post).post
+            val verified =
+                XeddsaVerify.verify(
+                    curvePub = hex("e7a0ed1ad488a5ff884c273c2a17b3d2cee3195f22308326f3845f70a85b5a2b"),
+                    from = post.node.toUInt(),
+                    id = post.packetId.toUInt(),
+                    portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                    payload = post.payload,
+                    signature = post.signature,
+                    fields = post.signedFields,
+                )
+            assertTrue("a 2.8.1 tapback verifies end to end", verified)
             collector.cancel()
             session.stop()
         }

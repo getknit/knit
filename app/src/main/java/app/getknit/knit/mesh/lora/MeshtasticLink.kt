@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -250,11 +251,16 @@ internal class ReceivedPacket(
     /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. Read by the bridge only. */
     val viaMqtt: Boolean = false,
     /**
-     * `Data.xeddsa_signature` — the sender board's 64-byte XEdDSA signature over `from ‖ id ‖ portnum ‖
-     * payload`, or null when the packet came unsigned (pre-2.8 firmware, or past the signature cliff).
+     * `Data.xeddsa_signature` — the sender board's 64-byte XEdDSA signature over the packet and its whole `Data`
+     * envelope (2.8.1's layout, [signedFields]), or null when the packet came unsigned (pre-2.8 firmware, or past the signature cliff).
      * Verified on the phone against the key a contact's profile advertises (`mesh/crypto/XeddsaVerify`).
      */
     val signature: ByteArray? = null,
+    /**
+     * The rest of the `Data` envelope firmware 2.8.1 signs beside [to] (`MeshData.signedFields`), as decoded: the
+     * signature is checked over these.
+     */
+    val signedFields: XeddsaVerify.DataFields? = null,
     /**
      * `MeshPacket.xeddsa_signed` — our own board already verified [signature] against the key *its* NodeDB
      * holds for [from]. Evidence that the radio which has been using that number sent this, and no more:

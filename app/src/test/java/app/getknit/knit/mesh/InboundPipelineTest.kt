@@ -50,6 +50,7 @@ import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
@@ -4257,26 +4258,30 @@ class InboundPipelineTest {
         boardVerified = boardVerified,
     )
 
-    // A post the lab board `!e681a7c3` signed under its real key (`XeddsaVerifyTest` vector c): the
-    // Meshtastic room's own shape, TEXT_MESSAGE_APP, verified off-board before it was pinned here.
-    private val labNode = 0xe681a7c3L
-    private val labPacketId = 0x1234abcdL
-    private val labBody = "hello from Knit a7c3"
-    private val labKey = "7Wtkw91w64ahkmd8ESSsCtQ5oSnjy6lMR+fies5QPls="
+    // A room post signed by firmware 2.8.1's own code (`XeddsaVerifyTest`'s `roomPost` vector: the harness at tag
+    // v2.8.1.8e6a88d, a fixed test key), with the envelope as the phone decodes it — the only layout Knit accepts
+    // since Meshtastic withdrew 2.8.0 (ADR 2026-09.ggq4, amendment 2026-10-29).
+    private val labNode = 0x28f1a7c3L
+    private val labPacketId = 0x5eed0001L
+    private val labBody = "hello from a 2.8.1 board"
+    private val labKey = "56DtGtSIpf+ITCc8Khez0s7jGV8iMIMm84RfcKhbWis="
     private val otherKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
     private val labSignature =
-        "fbda52354547235b7400409ac34bdfbaea6a9e5d89cae1134e92efaefbe8179b2d581fc366e0af43f04e7228096e0b5b0a6f02da87c2721d8f9a79c31975760d"
+        "f934ee948475ffb5722d955e8db775bb8fa65d7eb7823a9d4c90d63a7a88b40b64d90938a8c86838daa7a92cc3b0d8cb7fc5e78526f8a62a254a8c639b43980c"
             .chunked(
                 2,
             ).map {
                 it.toInt(16).toByte()
             }.toByteArray()
+    private val labFields = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, bitfield = 1u)
 
     private fun labPost(
         signature: ByteArray? = labSignature,
         boardVerified: Boolean = false,
         packetId: Long = labPacketId,
+        fields: XeddsaVerify.SignedFields = labFields,
     ) = heardPost(labBody, node = labNode, packetId = packetId, name = "Knit a7c3", signature = signature, boardVerified = boardVerified)
+        .copy(signedFields = fields)
 
     @Test
     fun aSignedPostFromAContactsAdvertisedKeyIsVerifiedAtIngest() =
@@ -4315,6 +4320,81 @@ class InboundPipelineTest {
             assertEquals("a mismatch is not a match", 0L, rig.metrics.meshtastic().meshPostMatched)
         }
 
+    // The `tapback` vector beside `roomPost`: a reply id, an emoji and a present-zero bitfield, all signed (#242).
+    private fun labTapback() =
+        labPost(
+            signature =
+                (
+                    "a6d552725c4a84c325a2fad70fb9d258df8d35465153335a1a300cbea8b133fd" +
+                        "7abfd03089e992b9eed4e5094d5f6d22ab02dbaae4771c03e441582ceef97105"
+                ).chunked(2).map { it.toInt(16).toByte() }.toByteArray(),
+            packetId = 0x5eed0002L,
+            fields = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, replyId = 0x5eed0001u, emoji = 1u, bitfield = 0u),
+        ).copy(body = "\uD83D\uDC4D", payload = byteArrayOf(0xF0.toByte(), 0x9F.toByte(), 0x91.toByte(), 0x8D.toByte()))
+
+    @Test
+    fun aContactsTapbackSignedInTheTwoEightOneLayoutIsVerifiedAtIngest() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = labKey))
+
+            rig.pipeline.deliverMeshPost(labTapback())
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(alice.nodeId, row.originPeerId)
+            assertEquals("a 2.8.1 contact is not a stranger", MessageEntity.ORIGIN_SIGNED_BY_CONTACT, row.originSigned)
+            assertEquals(1L, rig.metrics.meshtastic().meshPostVerified)
+        }
+
+    @Test
+    fun aContactsPostSignedInTheWithdrawnTwoEightZeroLayoutIsAMismatch() =
+        runTest {
+            // A real 2.8.0 post: the lab board `!e681a7c3` signed it under its own key (`XeddsaVerifyTest` vector c).
+            // Meshtastic withdrew 2.8.0 and Knit verifies only 2.8.1's layout (2026-10-30), so a contact still on a
+            // 2.8.0 board fails the check and reads as a stranger — the accepted consequence.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val legacyNode = 0xe681a7c3L
+            val legacyKey = "7Wtkw91w64ahkmd8ESSsCtQ5oSnjy6lMR+fies5QPls="
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = legacyNode, loraKey = legacyKey))
+            val legacySignature =
+                (
+                    "fbda52354547235b7400409ac34bdfbaea6a9e5d89cae1134e92efaefbe8179b" +
+                        "2d581fc366e0af43f04e7228096e0b5b0a6f02da87c2721d8f9a79c31975760d"
+                ).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+            rig.pipeline.deliverMeshPost(
+                heardPost("hello from Knit a7c3", node = legacyNode, packetId = 0x1234abcdL, signature = legacySignature)
+                    .copy(signedFields = labFields),
+            )
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertNull("never attributed", row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNATURE_MISMATCH, row.originSigned)
+            assertEquals(0L, rig.metrics.meshtastic().meshPostVerified)
+        }
+
+    @Test
+    fun aMergeShapedPostUnderTheWrongKeyIsOneMismatch() =
+        runTest {
+            // One verdict and one count per post, however many candidates were tried.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = otherKey))
+
+            rig.pipeline.deliverMeshPost(labPost(fields = XeddsaVerify.SignedFields(to = 0xFFFF_FFFFu, wantResponse = true, bitfield = 3u)))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertNull("never attributed", row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNATURE_MISMATCH, row.originSigned)
+            assertEquals(1L, rig.metrics.meshtastic().meshPostSignatureMismatch)
+            assertEquals(0L, rig.metrics.meshtastic().meshPostVerified)
+        }
+
     @Test
     fun anUnsignedPostFromAContactsBoardStaysAnUnverifiedAttribution() =
         runTest {
@@ -4330,6 +4410,29 @@ class InboundPipelineTest {
             val row = rig.msgMap.values.single()
             assertEquals(alice.nodeId, row.originPeerId)
             assertEquals(MessageEntity.ORIGIN_UNSIGNED, row.originSigned)
+            assertEquals(0L, rig.metrics.meshtastic().meshPostVerified)
+        }
+
+    @Test
+    fun aSignedPostWithoutItsEnvelopeIsNoVerdictNeverAMismatch() =
+        runTest {
+            // Key and signature present, but the fields 2.8.1 signs were not carried: nothing to check the signature
+            // over, so no contact verdict either way — the board's own verdict, else unsigned, and no mismatch.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = labKey))
+
+            rig.pipeline.deliverMeshPost(labPost().copy(signedFields = null))
+            rig.pipeline.deliverMeshPost(labPost(packetId = labPacketId + 1, boardVerified = true).copy(signedFields = null))
+            advanceUntilIdle()
+
+            val rows = rig.msgMap.values.associateBy { it.id }
+            val plain = checkNotNull(rows[FrameId.forMeshPost(labNode, labPacketId)])
+            val vouched = checkNotNull(rows[FrameId.forMeshPost(labNode, labPacketId + 1)])
+            assertEquals(alice.nodeId, plain.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_UNSIGNED, plain.originSigned)
+            assertEquals(MessageEntity.ORIGIN_SIGNED_BY_BOARD, vouched.originSigned)
+            assertEquals(0L, rig.metrics.meshtastic().meshPostSignatureMismatch)
             assertEquals(0L, rig.metrics.meshtastic().meshPostVerified)
         }
 
