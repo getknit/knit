@@ -18,6 +18,13 @@ document:
 
 # Knit changelog
 
+## Unreleased
+
+### Fixed
+
+- Knit no longer closes during a live call on mobile data, or when your phone moves onto mobile data in the
+  middle of one.
+
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 
 > Call your contacts, even with no Internet, and send short videos in any chat

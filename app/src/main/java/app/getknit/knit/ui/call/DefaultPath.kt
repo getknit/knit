@@ -15,8 +15,10 @@ import org.webrtc.PeerConnection.AdapterType
  * the other networks still gather, and win when theirs is the only pair that works (a LAN with no internet).
  *
  * The type is read from libwebrtc's own network list ([DirectNetworkDetector.current]) for the default network's
- * handle, so a cellular network is named exactly as libwebrtc names it (`CELLULAR_4G`, not `CELLULAR`), which is
- * what the comparison needs. A VPN is preferred by the network under it.
+ * handle. Every cellular generation is preferred as plain `CELLULAR`: the JNI parses `networkPreference` by name and
+ * aborts the process on any but UNKNOWN, ETHERNET, WIFI, CELLULAR, VPN and LOOPBACK (`RTC_CHECK`, so a `CELLULAR_4G`
+ * killed every call that met an LTE default), and without the `WebRTC-SurfaceCellularTypes` field trial libwebrtc
+ * types each cellular network `CELLULAR` itself, which the comparison needs. A VPN is preferred by the network under it.
  */
 internal class DefaultPath(
     context: Context,
@@ -50,20 +52,28 @@ internal class DefaultPath(
         @Volatile
         var enabled: Boolean = true
 
-        /** libwebrtc's adapter type for a network it lists as [type] (a VPN by [underlying]); null for none to prefer. */
+        /**
+         * The preference for a network libwebrtc lists as [type] (a VPN by [underlying]); null for none to prefer. Only
+         * a type the JNI parses: any other aborts `setConfiguration` and `createPeerConnection`.
+         */
         fun adapterFor(
             type: ConnectionType,
             underlying: ConnectionType = ConnectionType.CONNECTION_NONE,
         ): AdapterType? =
             when (type) {
                 ConnectionType.CONNECTION_WIFI -> AdapterType.WIFI
+
                 ConnectionType.CONNECTION_ETHERNET -> AdapterType.ETHERNET
-                ConnectionType.CONNECTION_5G -> AdapterType.CELLULAR_5G
-                ConnectionType.CONNECTION_4G -> AdapterType.CELLULAR_4G
-                ConnectionType.CONNECTION_3G -> AdapterType.CELLULAR_3G
-                ConnectionType.CONNECTION_2G -> AdapterType.CELLULAR_2G
-                ConnectionType.CONNECTION_UNKNOWN_CELLULAR -> AdapterType.CELLULAR
+
+                ConnectionType.CONNECTION_5G,
+                ConnectionType.CONNECTION_4G,
+                ConnectionType.CONNECTION_3G,
+                ConnectionType.CONNECTION_2G,
+                ConnectionType.CONNECTION_UNKNOWN_CELLULAR,
+                -> AdapterType.CELLULAR
+
                 ConnectionType.CONNECTION_VPN -> if (underlying == ConnectionType.CONNECTION_VPN) null else adapterFor(underlying)
+
                 else -> null
             }
     }

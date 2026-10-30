@@ -281,7 +281,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     (logcat `call <id>: no direct leg (switched off)` on a caller); `--es op nettype --es as ethernet|wifi` sets what the group is reported to libwebrtc as from the next
     call on (the steering A/B); `--es op dropgroup` closes the live leg's lane as if the peer walked away, so the
     radio goes back and ICE must fail over. `--es op pathpref --es mode android|off` sets whether a call prefers the network Android
-    routes over (`DefaultPath`, on by default; logcat `webrtc: opened (…, prefer wifi|cellular_4g|…)` and `webrtc: prefer …
+    routes over (`DefaultPath`, on by default; logcat `webrtc: opened (…, prefer wifi|cellular|…)` and `webrtc: prefer …
     (android default)` when the default moves mid-call); the `pairs` line names each pair's local network. `--es op turntls --es check off|on` opens the next calls' `turns:` legs without
     checking the certificate (in memory, `state`'s `turnTls`; a diagnosis switch, never a default — libwebrtc checks
     TURN/TLS against built-in roots that hold no Let's Encrypt root); `webrtc: relays udp N, tcp N, tls N` after each
