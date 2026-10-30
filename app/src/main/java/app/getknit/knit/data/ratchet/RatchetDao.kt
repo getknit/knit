@@ -84,6 +84,13 @@ interface RatchetDao {
     @Query("DELETE FROM ratchet_recv_epochs WHERE peerId = :peerId")
     suspend fun deleteRecvEpochsFor(peerId: String)
 
+    /** [deleteRecvEpochsFor] but the chains of the one root [keepTag] names — a reclaim's purge (ADR 2026-10.4mjm). */
+    @Query("DELETE FROM ratchet_recv_epochs WHERE peerId = :peerId AND rootTag != :keepTag")
+    suspend fun deleteRecvEpochsForExcept(
+        peerId: String,
+        keepTag: Long,
+    )
+
     // --- skipped message keys ---
 
     /** Every era's stored key for `(epoch, idx)`, as [recvEpochs]. */
@@ -121,4 +128,11 @@ interface RatchetDao {
 
     @Query("DELETE FROM ratchet_skipped_keys WHERE peerId = :peerId")
     suspend fun deleteSkippedKeysFor(peerId: String)
+
+    /** [deleteSkippedKeysFor] but the keys of the one root [keepTag] names — a reclaim's purge (ADR 2026-10.4mjm). */
+    @Query("DELETE FROM ratchet_skipped_keys WHERE peerId = :peerId AND rootTag != :keepTag")
+    suspend fun deleteSkippedKeysForExcept(
+        peerId: String,
+        keepTag: Long,
+    )
 }

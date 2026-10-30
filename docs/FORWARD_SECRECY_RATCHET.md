@@ -348,7 +348,31 @@ skipped-key path absorbs.
   and from the drained root's spool scope (48 h, subscribed while our reset waits). Raced, a smaller-id peer
   would "win" and the resetter adopt the root it left while the peer adopts its reset. A peer reset that
   crossed ours carries a fresh ephemeral and derives a root of its own, so it still races. An init of an era
-  *older* than `prevRoot` is not covered (no anchor survives for it).
+  *older* than `prevRoot` still races (no anchor survives for it); the next rule heals what that race costs.
+- **A race loser re-adopts its own init when the peer answers it** (ADR 2026-10.4mjm, #189). The loser of a
+  both-initiate race records, beside the `prevRoot` it keeps, that the root is its own init abandoned unconfirmed:
+  that init's own `establishedAt` (its own clock), taken before the adoption overwrites it with the winner's `at`.
+  Only the race-loser adoption sets it; every other change of `prevRoot` — a replacement, a race won, the drain's
+  expiry, the sender's own reset — clears it, so a root that was confirmed and later replaced never qualifies. When a
+  frame opens under that `prevRoot`, sealed by the peer **as responder** and stamped (`sentAt`, the peer's clock) more
+  than `MAX_FUTURE_SKEW_MS` after the winning init's `at` (the peer's clock too), the loser moves back: that root
+  becomes active, held as its confirmed initiator with its own `establishedAt` restored; the root it had adopted drains
+  as `prevRoot` for a fresh 48 h; the peer-init anchor stays the winning init's, so its re-serves stay inert; the DH
+  base and `highestPeAcked` restart and the frame sets them; the send chain restarts with a new epoch (numbering stays
+  monotone); and every receive chain and skipped key but the reclaimed root's is dropped. The judgement holds on every
+  rung of the ladder (§6), not only a fresh derivation, and a frame with no `sentAt` never qualifies. Only a peer that
+  adopted the loser's init can seal under it as responder — a race winner never seals under the loser's root — so a
+  correctly ordered winner never triggers it, and the rule needs nothing from the peer: it is one-sided. The stamp
+  check keeps out a frame the peer sealed under the loser's init before it left it for the root the loser then lost to
+  (a restore's reset, say), which would put the pair on two roots. This is the one place a frame opened under a
+  non-active root moves the era (§4): the same step makes that root the active one. Unhealed: a restored side
+  already confirmed on its reset when the old init arrives, with the peer's clock ahead by more than the
+  race-to-restore gap, adopts the init as a replacement, and the pair reads each other read-only for up to 48 h
+  until a reset heals it; and a peer clock stepped back across its own restore can make an old frame look fresh,
+  healed by the reset heuristic as before this rule. The stamp check is also weak against a re-served *old* winning
+  init: with two restores of the peer inside custody's window, a frame it sealed after that old init but before its
+  own later reset counts as fresh and moves the loser onto a root the peer has since left — until the peer's flagged
+  reset is adopted, minutes to an hour.
 - **A reset the peer would refuse is never sent** (ADR 2026-09.qerd). The receiver adopts a flagged init
   only a minute after the last replacement it adopted from this peer, and drops a refused one as a
   `DUPLICATE`; the sender has meanwhile purged the root the receiver is still on, and its own heuristic is

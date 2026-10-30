@@ -1640,6 +1640,8 @@ class DebugBridgeReceiver :
             .put("fastOnlyDropped", snap.files.fastOnlyDropped)
             .put("carrierPullsDeferred", snap.files.carrierPullsDeferred)
             .put("dmSealedV2", snap.seals.dmSealedV2)
+            // A race loser moved back onto its own init the peer answered (rule C, ADR 2026-10.4mjm).
+            .put("ratchetSwappedBack", snap.keys.ratchetSwappedBack)
             .put("dmSealedV3", snap.seals.dmSealedV3)
             .put("ticksUnsigned", snap.receipts.ticksUnsigned)
             .put("groupSealedRatchet", snap.groups.groupSealedRatchet)
@@ -1848,6 +1850,8 @@ class DebugBridgeReceiver :
                     .put("rootHash", p.rootHash ?: JSONObject.NULL)
                     .put("prevRootExpiresAt", p.prevRootExpiresAt)
                     .put("hasPeerInitAnchor", p.hasPeerInitAnchor)
+                    // Rule C (ADR 2026-10.4mjm): non-null while prevRoot is our own init lost to a race.
+                    .put("prevRootOwnInitAt", p.prevRootOwnInitAt ?: JSONObject.NULL)
                     .put("localEpochs", JSONArray(p.localEpochs.map { (epoch, at) -> "$epoch@$at" })),
             )
         }

@@ -44,6 +44,9 @@ class RatchetSessions(
     private val transact: SessionTransactor = SessionTransactor.None,
     // Diagnostics for a seal X25519 refused (#172); the facade stays Android-free, the DI wires Log.
     private val log: (String) -> Unit = {},
+    // A committed open that moved a session back to our own abandoned init (rule C, ADR 2026-10.4mjm): the DI counts it
+    // (`MeshMetrics.onRatchetReclaimed`, the STATE dump's `ratchetSwappedBack`), the lab's oracle that the swap ran.
+    private val onReclaimed: (String) -> Unit = {},
 ) {
     /**
      * One critical section, in the one global order: transaction OUTER, [mutex] INNER. Every locked
@@ -155,6 +158,7 @@ class RatchetSessions(
             spkPrivForInit = header.init?.let { spkPrivFor(it.pkid) },
             resetRequested = header.flags and RatchetHeader.FLAG_RESET != 0,
             predatesSession = predates(session, frameSentAt),
+            sealedSinceLostRace = sealedSinceLostRace(session, frameSentAt),
             // An explicit reset request gets a far shorter floor than an incidental init. `FLAG_RESET` was
             // minted for this and, until ADR 023, was written on the wire and never read — so a peer that
             // had waited out its own 6 h reset floor could still be refused here for another 60 minutes,
@@ -235,7 +239,15 @@ class RatchetSessions(
                     synchronized(lastReplacementAt) { lastReplacementAt[peerId] = now }
                     synchronized(undecryptable) { undecryptable.remove(peerId) }
                 }
-                if (answeredOurInit(ctx.session, outcome.delta.session)) synchronized(confirmedAt) { confirmedAt[peerId] = now }
+                // A reclaim (rule C) is our init answered too: the peer adopted it, as a replacement of the root we lost
+                // to, no later than it sealed this frame, so its floor runs as after any answer.
+                if (answeredOurInit(ctx.session, outcome.delta.session) || outcome.delta.reclaimed) {
+                    synchronized(confirmedAt) { confirmedAt[peerId] = now }
+                }
+                if (outcome.delta.reclaimed) {
+                    log("reclaimed our own init with $peerId: the peer sealed under it as responder (ADR 2026-10.4mjm)")
+                    onReclaimed(peerId)
+                }
                 before = scopeView(ctx.session)
                 after = scopeView(outcome.delta.session)
                 true
@@ -363,8 +375,8 @@ class RatchetSessions(
      * contact, x9fa's 2026-10-29 amendment). It carries an init the peer already has in custody, so it starts no race;
      * our reset, re-rooted, marked or a restore's, is declined whatever the flag (#90's incidental floor). The flag rides
      * any unconfirmed init of ours with no reset stamp, a race-kept winner's included: nothing on the row tells that one
-     * from a first contact's, and declining both would turn rule 5 off again. That extends #189 by at most one receipt's
-     * custody life (x9fa's #189 residue).
+     * from a first contact's, and declining both would turn rule 5 off again. Re-served to a restored race loser, that
+     * receipt is #189's second door, closed at the loser by rule C (ADR 2026-10.4mjm), not here.
      */
     private fun declinesOwnInit(
         existing: RatchetEngine.SessionState,
@@ -634,6 +646,9 @@ class RatchetSessions(
                 prevRoot = drained?.prevRoot ?: old?.root,
                 prevRootWeAreInitiator = drained?.prevRootWeAreInitiator ?: old?.weAreInitiator ?: false,
                 prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
+                // Our reset is no race lost: whatever the slot holds now is never ours to reclaim (rule C, ADR 2026-10.4mjm),
+                // the drained root included — a reset over our own first contact's lost race abandons that init for good.
+                prevRootOwnInitAt = null,
                 lastResetSentAt = now,
             )
         val sealed = refusedAsNull(peerId) { engine.seal(session, plaintext, aad, peerSpk.pub, now) } ?: return ResetSeal.NoPrekey
@@ -932,6 +947,21 @@ class RatchetSessions(
         ): Boolean =
             session != null && frameSentAt != null && session.weAreInitiator &&
                 frameSentAt < session.establishedAt - Protocol.MAX_FUTURE_SKEW_MS
+
+        /**
+         * Whether a frame stamped [frameSentAt] (the sender's clock) was sealed after the init we lost a race to — rule C's
+         * freshness half (ADR 2026-10.4mjm), handed to the engine as `OpenContext.sealedSinceLostRace`. Only a session
+         * holding our own abandoned init in its `prevRoot` is judged ([RatchetEngine.SessionState.prevRootOwnInitAt]);
+         * there `establishedAt` is the winning init's `at`, which the race-loser branch copied from the init, so both
+         * stamps are the peer's clock. Strictly more than [Protocol.MAX_FUTURE_SKEW_MS] past it: a frame the peer sealed
+         * under our init before it moved on to the root we lost to is never fresh. An unknown stamp is never fresh.
+         */
+        fun sealedSinceLostRace(
+            session: RatchetEngine.SessionState?,
+            frameSentAt: Long?,
+        ): Boolean =
+            session?.prevRootOwnInitAt != null && frameSentAt != null &&
+                frameSentAt > session.establishedAt + Protocol.MAX_FUTURE_SKEW_MS
 
         /** Inbound session-replacement floor per peer (in-memory). */
         const val REPLACEMENT_MIN_INTERVAL_MS = 60 * 60_000L

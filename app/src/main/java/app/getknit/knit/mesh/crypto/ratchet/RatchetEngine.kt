@@ -31,6 +31,9 @@ import app.getknit.knit.mesh.crypto.AesGcm
  *   was derived by one fresh derivation under the root its tag names, which already decided then, so the
  *   live-chain and skipped-key rungs never apply them: in era it would repeat what the epoch's first frame
  *   recorded, out of era it would be wrong.
+ *   **One exception (rule C, ADR 2026-10.4mjm):** a race loser whose `prevRoot` is its own abandoned init
+ *   ([SessionState.prevRootOwnInitAt]) moves back to that root when the peer seals under it as responder, sealed
+ *   after the init we lost to — only a peer that adopted our init can, so that frame *is* the era we hold next.
  *
  * [SessionState] and [RecvEpoch] are data classes for `copy` ergonomics; their [ByteArray] fields make
  * generated equality reference-based, which nothing here relies on.
@@ -49,6 +52,13 @@ class RatchetEngine(
         val prevRoot: ByteArray? = null,
         val prevRootWeAreInitiator: Boolean = false,
         val prevRootExpiresAt: Long = 0L,
+        /**
+         * Non-null exactly while [prevRoot] is **our own init, abandoned unconfirmed because we lost a race** to the
+         * peer's (rule C, ADR 2026-10.4mjm): its own [establishedAt], our clock (ADR 026), read before the race-loser
+         * branch overwrote it with the winner's `at`. Only that branch sets it; every other write of [prevRoot] clears
+         * it, so a root that was confirmed and later replaced never qualifies. [reclaim] restores [establishedAt] from it.
+         */
+        val prevRootOwnInitAt: Long? = null,
         val establishedAt: Long,
         val initEphPub: ByteArray? = null,
         val initPkid: Int = 0,
@@ -175,6 +185,15 @@ class RatchetEngine(
          * the replaced-era check in [resolveSession] reads it.
          */
         val predatesSession: Boolean = false,
+        /**
+         * Whether the caller judged this frame sealed **after the init we lost a race to** (rule C, ADR 2026-10.4mjm):
+         * the session holds a [SessionState.prevRootOwnInitAt], and the frame's `sentAt` is more than the skew bound
+         * past the session's `establishedAt`, which the race-loser branch set to the winning init's `at`. Both stamps
+         * are the peer's clock. Supplied by the caller, which holds the envelope (`RatchetSessions.sealedSinceLostRace`),
+         * so the peek and the commit judge alike; a frame with no `sentAt` (a walkie chunk) never qualifies. Only
+         * [RootCandidate.reclaims] reads it.
+         */
+        val sealedSinceLostRace: Boolean = false,
     )
 
     sealed interface OpenOutcome {
@@ -211,6 +230,14 @@ class RatchetEngine(
         val consumedSkippedTag: Long? = null,
         /** True when a replacement init was adopted: delete ALL recv epochs + skipped keys for this peer first. */
         val purgePeerRecvState: Boolean = false,
+        /**
+         * With [purgePeerRecvState], the one root whose receive state survives the purge, by its [RatchetCrypto.rootTag]:
+         * the root a [reclaim] moved back to. Its chains and skipped keys are the era we hold now (an earlier frame of
+         * it may have been read read-only), and the purge is for the era we abandon. Null purges everything.
+         */
+        val keepRecvTag: Long? = null,
+        /** True when this open moved the session back to our own abandoned init ([reclaim], rule C). */
+        val reclaimed: Boolean = false,
     )
 
     class Initiation(
@@ -399,6 +426,11 @@ class RatchetEngine(
         val root: ByteArray,
         val senderIsInitiator: Boolean,
         val active: Boolean,
+        /**
+         * The draining `prevRoot` that is our own init, lost to a race, for a frame sealed after the init we lost to
+         * ([reclaimsPrevRoot]): a frame that opens under it moves the session back to it ([reclaim]), on every rung.
+         */
+        val reclaims: Boolean = false,
     ) {
         /** The [RatchetCrypto.rootTag] its stored receive state carries. */
         val tag: Long = RatchetCrypto.rootTag(root)
@@ -456,9 +488,12 @@ class RatchetEngine(
                     OpenOutcome.Opened(
                         plain,
                         OpenDelta(
-                            session = touch(resolved.session, header, ctx, now, eraEffects = false),
+                            session = settle(ctx, resolved, candidate, header, now, eraEffects = false),
                             recvEpoch = row?.copy(lastUsedAt = now),
                             consumedSkippedTag = candidate.tag,
+                            purgePeerRecvState = candidate.reclaims,
+                            keepRecvTag = candidate.tag.takeIf { candidate.reclaims },
+                            reclaimed = candidate.reclaims,
                         ),
                     )
                 }
@@ -475,7 +510,7 @@ class RatchetEngine(
                 consumed = true
                 return null
             }
-            val outcome = finishOpen(ctx, resolved, candidate.tag, row.chainKey, row.next, header, nonce, ct, aad, now, eraEffects = false)
+            val outcome = finishOpen(ctx, resolved, candidate, row.chainKey, row.next, header, nonce, ct, aad, now, eraEffects = false)
             if (outcome !is OpenOutcome.Opened) aeadFailed = true
             return outcome as? OpenOutcome.Opened
         }
@@ -502,7 +537,7 @@ class RatchetEngine(
                         senderEpoch = header.se,
                         baseEpoch = header.pe,
                     )
-                val outcome = finishOpen(ctx, resolved, candidate.tag, keys.chainKey, 0, header, nonce, ct, aad, now, candidate.active)
+                val outcome = finishOpen(ctx, resolved, candidate, keys.chainKey, 0, header, nonce, ct, aad, now, candidate.active)
                 if (outcome is OpenOutcome.Opened) return outcome
                 aeadFailed = true
             }
@@ -569,7 +604,7 @@ class RatchetEngine(
         }
         val candidates = mutableListOf(RootCandidate(session.root, !session.weAreInitiator, active = true))
         session.prevRoot?.takeIf { session.prevRootExpiresAt > now }?.let {
-            candidates += RootCandidate(it, !session.prevRootWeAreInitiator, active = false)
+            candidates += RootCandidate(it, !session.prevRootWeAreInitiator, active = false, reclaims = reclaimsPrevRoot(ctx, session))
         }
         if (init == null) return ResolvedSession(session, candidates)
         // An init we already resolved (responded to, adopted, or archived), riding a later unconfirmed
@@ -626,6 +661,9 @@ class RatchetEngine(
                     prevRoot = session.root,
                     prevRootWeAreInitiator = session.weAreInitiator,
                     prevRootExpiresAt = now + PREV_ROOT_TTL_MS,
+                    // A root replaced, confirmed or not, is never ours to reclaim: its drain frames would swap us back
+                    // into a dead era (rule C).
+                    prevRootOwnInitAt = null,
                     establishedAt = init.at,
                     peerInitEphPub = init.eph,
                     peerBasePub = null,
@@ -728,6 +766,10 @@ class RatchetEngine(
                         prevRoot = session.root,
                         prevRootWeAreInitiator = true,
                         prevRootExpiresAt = now + PREV_ROOT_TTL_MS,
+                        // Rule C: the root we leave is our own init, never answered — the one root a peer that adopted
+                        // it can still seal under. Its own stamp (ours, ADR 026), read before the line below takes the
+                        // winner's.
+                        prevRootOwnInitAt = session.establishedAt,
                         establishedAt = init.at,
                         peerInitEphPub = init.eph,
                         sendEpochPub = null,
@@ -753,6 +795,7 @@ class RatchetEngine(
                         prevRoot = peerRoot,
                         prevRootWeAreInitiator = false,
                         prevRootExpiresAt = now + PREV_ROOT_TTL_MS,
+                        prevRootOwnInitAt = null,
                         peerInitEphPub = init.eph,
                     ),
                 rootCandidates =
@@ -775,12 +818,12 @@ class RatchetEngine(
             peerEkPub = init.eph,
         )
 
-    /** Advances a chain positioned at [next] to the header's index and opens it; what it stores carries [rootTag]. */
+    /** Advances a chain positioned at [next] to the header's index and opens it; what it stores carries [candidate]'s tag. */
     @Suppress("LongParameterList") // internal plumbing between the two open paths; a param object would just rename it
     private fun finishOpen(
         ctx: OpenContext,
         resolved: ResolvedSession,
-        rootTag: Long,
+        candidate: RootCandidate,
         chainKeyAtNext: ByteArray,
         next: Int,
         header: FrameHeader,
@@ -790,6 +833,7 @@ class RatchetEngine(
         now: Long,
         eraEffects: Boolean,
     ): OpenOutcome {
+        val rootTag = candidate.tag
         var chainKey = chainKeyAtNext
         val skipped = mutableListOf<SkippedKey>()
         for (idx in next until header.n) {
@@ -803,15 +847,81 @@ class RatchetEngine(
             OpenOutcome.Opened(
                 plain,
                 OpenDelta(
-                    session = touch(resolved.session, header, ctx, now, eraEffects),
+                    session = settle(ctx, resolved, candidate, header, now, eraEffects),
                     recvEpoch =
                         RecvEpoch(epoch = header.se, rootTag = rootTag, chainKey = nextChain, next = header.n + 1, lastUsedAt = now),
                     skippedInserts = skipped,
-                    purgePeerRecvState = resolved.purge,
+                    purgePeerRecvState = resolved.purge || candidate.reclaims,
+                    keepRecvTag = rootTag.takeIf { candidate.reclaims },
+                    reclaimed = candidate.reclaims,
                 ),
             )
         }
     }
+
+    /**
+     * The session a frame that opened under [candidate] leaves behind: [reclaim] then the era effects when the candidate
+     * reclaims our own abandoned init, else [touch] as the rung decided.
+     */
+    @Suppress("LongParameterList") // the ladder's own inputs, as finishOpen's
+    private fun settle(
+        ctx: OpenContext,
+        resolved: ResolvedSession,
+        candidate: RootCandidate,
+        header: FrameHeader,
+        now: Long,
+        eraEffects: Boolean,
+    ): SessionState =
+        if (candidate.reclaims) {
+            touch(reclaim(resolved.session, now), header, ctx, now, eraEffects = true)
+        } else {
+            touch(resolved.session, header, ctx, now, eraEffects)
+        }
+
+    /**
+     * Whether a frame that opens under [session]'s draining `prevRoot` moves us back to it (rule C, ADR 2026-10.4mjm): the
+     * slot holds our own init, abandoned unconfirmed when we lost a race ([SessionState.prevRootOwnInitAt]), the peer's
+     * role under it is responder (it adopted our init), and the frame was sealed after the init we lost to
+     * ([OpenContext.sealedSinceLostRace]). Only a peer that adopted our init can seal under it as responder; a race
+     * winner reads the loser's root read-only and never seals under it (FSR §7). The freshness half keeps out a frame
+     * the peer sealed under our init *before* it left it for the root we then lost to — its restore's reset, say — which
+     * would put us back on a root the peer no longer holds.
+     */
+    private fun reclaimsPrevRoot(
+        ctx: OpenContext,
+        session: SessionState,
+    ): Boolean = session.prevRootOwnInitAt != null && session.prevRootWeAreInitiator && ctx.sealedSinceLostRace
+
+    /**
+     * Rule C (ADR 2026-10.4mjm, #189): back onto our own init, which the peer has answered. The active root becomes the
+     * `prevRoot` we lost the race on, held as its confirmed initiator, with its own [SessionState.establishedAt] (our
+     * clock, ADR 026); the root we had adopted drains as `prevRoot` for a fresh 48 h, and the flag goes. The peer's
+     * init stays the anchor ([SessionState.peerInitEphPub]), so its re-serves stay inert. The DH base and the acks are
+     * claims about the era we leave and start again — [touch] takes them from the frame that reclaims — and the send
+     * chain is dropped so the next seal opens a new epoch under the reclaimed root (our numbering stays monotone).
+     * [SessionState.lastResetSentAt] is untouched: it holds the reset floor and qerd's after-wipe decline.
+     */
+    private fun reclaim(
+        session: SessionState,
+        now: Long,
+    ): SessionState =
+        session.copy(
+            confirmed = true,
+            weAreInitiator = true,
+            root = checkNotNull(session.prevRoot),
+            establishedAt = checkNotNull(session.prevRootOwnInitAt),
+            initEphPub = null,
+            prevRoot = session.root,
+            prevRootWeAreInitiator = session.weAreInitiator,
+            prevRootExpiresAt = now + PREV_ROOT_TTL_MS,
+            prevRootOwnInitAt = null,
+            peerBasePub = null,
+            peerBaseEpoch = 0,
+            highestPeAcked = 0,
+            sendEpochPub = null,
+            sendChainKey = null,
+            sendEpochExport = null,
+        )
 
     /**
      * Post-success bookkeeping: adopt the peer's newest epoch as our next DH base, track pe acks, confirm —
@@ -858,7 +968,7 @@ class RatchetEngine(
         now: Long,
     ): SessionState =
         if (session.prevRoot != null && session.prevRootExpiresAt <= now) {
-            session.copy(prevRoot = null, prevRootExpiresAt = 0L)
+            session.copy(prevRoot = null, prevRootExpiresAt = 0L, prevRootOwnInitAt = null)
         } else {
             session
         }

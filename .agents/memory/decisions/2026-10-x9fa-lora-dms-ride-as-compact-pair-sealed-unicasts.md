@@ -305,6 +305,18 @@ under the unconfirmed winning session) still carries the winner's init, and re-s
 `LoraDirectLabTest.aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore` shows it and is held under #189; it needs
 only a both-initiate race and a restore inside custody's window, without LoRa.
 
+### Amendment (2026-10-29, ADR 2026-10.4mjm): both #189 doors close at the loser
+
+Rule C closes the #189 residue above, and it closes it at the restored loser, not at either door. The winner's intro
+answer and the exists-gate re-ack riding its init (`rideOwnFirstContact`) still carry its init, and either can still
+win `resolveRace` against the restored node's unanswered reset; the loser now flags that reset as its own init lost to
+a race, and the winner's answer under the reset, sealed past the skew bound after the winning init, moves it back. The
+swap does not depend on which door delivered the init. `LoraDirectLabTest.aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore`
+runs again: it forces the intro ahead of the answer, requires the swap counted (`ratchetSwappedBack`), and narrows its
+custody oracle to ✓✓s and reactions, the gate's claim (`LabNode.initBearingAnswersFrom`). Regressions:
+`RatchetSessionsReclaimTest.theSecondDoorAReAckRidingTheWinnersInitIsReclaimedPastToo`, and
+`RestoreLabTest.aRestoredRaceLoserWhoMeetsTheWinnersOldInitFirstMovesBackOntoItsReset` (board-less).
+
 ### Amendment (2026-10-29): our board's ACK is booked only when the firmware sends one
 
 - **2026-10-29 (`want_ack` decode):** Our board's ACK is booked only when the firmware sent one, replacing "Our board's ACK of every compact DM addressed to us — opened or not — is booked as a nominal 8 B" in **Air**.

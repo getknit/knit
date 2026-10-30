@@ -533,7 +533,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   wedged *before* a fix shipped — the recovery path only runs when the heuristic fires, and a stuck pair may
   not be able to produce countable failures at all (a re-served frame repeats one id and never advances the
   distinct counter). Bypasses the floor, not the X3DH inputs: with no pinned prekey it still declines, and
-  says so in `declined`.
+  says so in `declined`. `prevRootOwnInitAt` non-null means the peer's `prevRoot` is our own init lost to a race,
+  which a fresh answer from the peer under it moves us back onto (rule C, ADR 2026-10.4mjm); `STATE`'s
+  `ratchetSwappedBack` counts those moves, and the log line `reclaimed our own init with <peer>` marks each.
 - `…debug.MODEL` — dumps the on-device model **poison-pill** (ADR 037): the current build stamp, and per
   model its stored stamp, `pendingSince` marker, unexplained-death count and whether it is latched — plus
   what the platform recorded about the **previous process exit**, which is what decides a 1-strike latch.

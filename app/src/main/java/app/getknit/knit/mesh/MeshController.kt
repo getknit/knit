@@ -294,6 +294,11 @@ class RatchetPeerState(
     val prevRootExpiresAt: Long = 0L,
     /** Whether the resolved-init idempotence anchor is set ([RatchetEngine.SessionState.peerInitEphPub]). */
     val hasPeerInitAnchor: Boolean = false,
+    /**
+     * Set while `prevRoot` is our own init, lost to a race and reclaimable once the peer answers it
+     * ([RatchetEngine.SessionState.prevRootOwnInitAt], rule C, ADR 2026-10.4mjm): that init's own stamp.
+     */
+    val prevRootOwnInitAt: Long? = null,
     /** Our surviving local epoch privs for this peer, most recently minted first, as (epoch, createdAt). */
     val localEpochs: List<Pair<Int, Long>> = emptyList(),
 )

@@ -84,6 +84,8 @@ document:
   match" until it's updated.
 - Your first call now starts as soon as you let Knit use the microphone, instead of waiting for you to tap
   Call again.
+- If two contacts first messaged each other at the same moment and one of them later restored a backup, their
+  DMs could stop opening on one side for hours. Both phones now get back in step at the next reply.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

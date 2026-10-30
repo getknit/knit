@@ -205,6 +205,20 @@ LoRa plane (2026-09.ggq4).
   `pairwiseRoot` exports leave the facade, under the ratchet mutex, confirmed sessions only — a raw root never does —
   with the one exception below. A root change is an event the scope table derives on; don't fire it on an unchanged
   root.
+- **When touching `RatchetEngine.SessionState.prevRootOwnInitAt`, `RatchetEngine.reclaim` / `reclaimsPrevRoot`,
+  `OpenContext.sealedSinceLostRace`, `RatchetSessions.sealedSinceLostRace`, `OpenDelta.keepRecvTag` / `reclaimed`, the
+  `ratchet_sessions.prevRootOwnInitAt` column, any write of `SessionState.prevRoot`, or `MeshMetrics.onRatchetReclaimed`
+  (`ratchetSwappedBack`):** READ ADR 2026-10.4mjm (draft), then ADR 2026-09.pz9g's and ADR 2026-10.j67x's 2026-10-29
+  amendments, ADR 026 and FSR §7. Rule C: a race loser's `prevRoot` that is its own unconfirmed init carries that init's
+  own `establishedAt` (our clock); only the race-loser branch sets it, every other `prevRoot` write clears it (the
+  replacement, the race win, `retirePrevRoot`, the swap, `RatchetSessions.reRoot`). A frame opening under it, on any
+  rung, sealed by the peer as responder with `sentAt` more than the skew bound past the winning init's `at` (both the
+  peer's clock; judged in `contextFor` so peek and commit agree), moves the loser back: confirmed initiator, its own
+  `establishedAt` restored, the adopted root draining, the anchor kept, `lastResetSentAt` untouched, every receive row
+  but the reclaimed root's purged. No `sentAt`, no swap (a walkie chunk). The freshness half is load-bearing: without it
+  a pair whose winner restored splits. Residues: the cross-clock replacement door and a clock stepped back across a
+  restore. Regression: `RatchetEngineTest`'s rule C cases, `RatchetSessionsReclaimTest`, `KnitDatabaseMigrationTest`
+  27 → 28, `RestoreLabTest`'s two #189 scenarios, `LoraDirectLabTest.aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore`.
 - **When touching `RatchetSessions.pendingResetInit` / `exports`, `ExportedRoots.pendingResetInit` / `confirmed`,
   `ScopeRoots.pendingResetInit`, `Scope.resetInit`, `ScopeFrames.mayRefill` / `ownResetInit`, the `prevRoot` slot
   `RatchetSessions.reRoot` fills over our own unanswered reset, or what `ScopeSync` pushes into a DM scope:** READ ADR 2026-10.j67x, then `docs/SPOOL_PROTOCOL.md` C-3.1-4/5 and FSR §8. Our own
@@ -217,7 +231,8 @@ LoRa plane (2026-09.ggq4).
   predates our session (`RatchetSessions.predates`, ADR 026's initiator rule) is read under it, read-only, never
   raced: the drained scope re-serves that era's init-bearing frames for 48 h. One sealed since still races. While
   the reset is unanswered the thread reads not covered (`ScopeStatus.pendingReset`, `coveredLabelsOf`). The winner
-  adopting a race loser's stale flagged reset is #184.
+  adopting a race loser's stale flagged reset is #184. An init older than `prevRoot` still races and wins; rule C (ADR
+  2026-10.4mjm) moves us back onto our reset once the peer answers it.
   Every other unconfirmed session exports nothing; a caller that wants confirmed peers reads `ExportedRoots.confirmed`
   (`broadcastSealedProfile`). Regression: `RatchetSessionsExportTest`, `ScopeSyncTest`'s carrier push,
   `ResetOverRelayLabTest.aResetToAPeerOnlyTheRelayReaches…`.
@@ -251,8 +266,9 @@ LoRa plane (2026-09.ggq4).
   alone — never a cleartext or v1 fallback (ADR 018), never a fresh init. Every re-delivery's re-ack is an answer too,
   bounded per era by ADR 2026-10.8hn6's ledger. A ✓✓ is re-drawn by the signed copy's re-ack;
   a reaction is held until the root moves; a ✓✓ sealed by any path drops its ids from the hold. With no session it
-  declines even on an undecodable prekey. Residue: #189, the race winner's intro answer still carries its init (the
-  held `LoraDirectLabTest` scenario). Regression: `RatchetSessionsSealTest`'s answer cases, `MeshManagerTest`'s
+  declines even on an undecodable prekey. The race winner's intro answer still carries its init, and so may a
+  re-delivery's re-ack riding it (#189's two doors); both are closed at the restored loser by rule C (ADR 2026-10.4mjm,
+  below), not here. Regression: `RatchetSessionsSealTest`'s answer cases, `MeshManagerTest`'s
   no-session tick and reaction cases, `RestoreLabTest` under `KNIT_LAB_BOARDS=1`.
 
 ## Adding an entry

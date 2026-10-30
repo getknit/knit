@@ -11,7 +11,7 @@ topics: [crypto, pfs, spool]
 Status: Draft (2026-10-16; issue #182; `RatchetSessions.pendingResetInit` / `exports`, `ExportedRoots.pendingResetInit`,
 `ScopeRoots.pendingResetInit`, `Scope.resetInit`, `ScopeFrames.mayRefill` / `ownResetInit`, the `prevRoot` slot in
 `RatchetSessions.reRoot`; spec `docs/SPOOL_PROTOCOL.md` C-3.1-4, C-3.1-5, C-4.4-3, §10.1; FSR §7, §8). Amends ADR 032's export bound and the spool spec's
-C-3.1-3.
+C-3.1-3. Amended by ADR 2026-10.4mjm (2026-10-29).
 
 **What was observed.** 2026-10-16, Pixel 9 (feat/voip-calling): at 15:51:28 it reset its sessions with three peers in
 one second (the spurious resets ADR 2026-10.9wvr fixed). Two were in radio range, answered and were covered by the
@@ -187,3 +187,13 @@ cases, the pure rule), `ResetOverRelayLabTest.aSecondResetPastTheFloorWithTheFir
 `InboundPipelineTest.ourOwnResetRequestMovesAConfirmedPeerToTheResetsScopeView`, and
 `ResetOverRelayLabTest.aResetToAPeerOnlyTheRelayReachesCrossesItAndThePairCarriesOnUnderTheNewSession` (fails on the
 old export rule at "bob never adopted the reset over the relay").
+
+## Amendment (2026-10-29, ADR 2026-10.4mjm): an init older than prevRoot is healed, not refused
+
+The "not covered" init above — an init of an era older than `prevRoot`, re-served while our reset waits — still races,
+and a smaller-id peer still wins it: we adopt that era and our pending reset becomes `prevRoot`. That reset is our own
+init lost to a race, so the race-loser branch now flags it (`prevRootOwnInitAt`), and once the peer adopts the reset and
+answers it, the answer moves us back onto it (rule C). No `prevPeerInitEphPub` column was added: it could not reach the
+restored side, which holds no session row at all (#189's comment). Regression:
+`RatchetSessionsReclaimTest.issue189sThreeErasAnInitOlderThanPrevRootIsHealedByTheReclaim`.
+

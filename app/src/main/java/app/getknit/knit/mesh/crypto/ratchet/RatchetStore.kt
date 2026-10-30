@@ -53,7 +53,8 @@ interface RatchetStore {
     /**
      * Persists everything a successful open changed: the session snapshot, the recv-epoch upsert, the
      * skipped-key inserts/consumption, and — on a session replacement — the purge of the peer's stale
-     * receive state. [headerSe]/[headerN] locate the consumed skipped key; the delta names its root's tag.
+     * receive state, first, sparing the one root [RatchetEngine.OpenDelta.keepRecvTag] names when it names one (a
+     * reclaim, ADR 2026-10.4mjm). [headerSe]/[headerN] locate the consumed skipped key; the delta names its root's tag.
      */
     suspend fun applyOpen(
         peerId: String,

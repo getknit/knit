@@ -60,8 +60,14 @@ class RatchetRepository(
         headerN: Int,
     ) {
         if (delta.purgePeerRecvState) {
-            dao.deleteRecvEpochsFor(peerId)
-            dao.deleteSkippedKeysFor(peerId)
+            val keep = delta.keepRecvTag
+            if (keep == null) {
+                dao.deleteRecvEpochsFor(peerId)
+                dao.deleteSkippedKeysFor(peerId)
+            } else {
+                dao.deleteRecvEpochsForExcept(peerId, keep)
+                dao.deleteSkippedKeysForExcept(peerId, keep)
+            }
         }
         dao.upsertSession(delta.session.toEntity(clock()))
         delta.recvEpoch?.let {
@@ -167,6 +173,7 @@ class RatchetRepository(
             prevRoot = prevRoot,
             prevRootWeAreInitiator = prevRootWeAreInitiator,
             prevRootExpiresAt = prevRootExpiresAt,
+            prevRootOwnInitAt = prevRootOwnInitAt,
             establishedAt = establishedAt,
             initEphPub = initEphPub,
             initPkid = initPkid,
@@ -193,6 +200,7 @@ class RatchetRepository(
             prevRoot = prevRoot,
             prevRootWeAreInitiator = prevRootWeAreInitiator,
             prevRootExpiresAt = prevRootExpiresAt,
+            prevRootOwnInitAt = prevRootOwnInitAt,
             establishedAt = establishedAt,
             initEphPub = initEphPub,
             initPkid = initPkid,

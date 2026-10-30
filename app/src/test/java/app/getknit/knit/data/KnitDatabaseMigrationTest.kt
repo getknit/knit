@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v28) creates and opens from the exported JSON`() =
+    fun `the current schema (v29) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -1057,12 +1057,47 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 28 to 29 keeps every ratchet session and leaves its own-init stamp null`() =
+        runTest {
+            helper.createDatabase(28).use { c ->
+                c.execSQL(
+                    "INSERT INTO ratchet_sessions (peerId, confirmed, weAreInitiator, root, prevRoot, prevRootWeAreInitiator, " +
+                        "prevRootExpiresAt, establishedAt, initEphPub, initPkid, peerInitEphPub, peerBasePub, peerBaseEpoch, " +
+                        "sendEpoch, sendEpochPub, sendChainKey, sendCount, sendEpochStartedAt, sendEpochBaseEpoch, sendEpochExport, " +
+                        "highestPeAcked, lastResetSentAt, updatedAt) " +
+                        "VALUES ('peer-1',1,0,x'01',x'02',1,500,100,NULL,1,x'03',NULL,0,2,NULL,NULL,0,0,0,NULL,0,0,7)",
+                )
+            }
+            helper.runMigrationsAndValidate(29, listOf(KnitMigrations.MIGRATION_28_29)).use { c ->
+                c
+                    .prepare(
+                        "SELECT confirmed, prevRootWeAreInitiator, establishedAt, sendEpoch, prevRootOwnInitAt FROM ratchet_sessions",
+                    ).use { s ->
+                        assertTrue(s.step())
+                        assertEquals(1L, s.getLong(0))
+                        assertEquals(1L, s.getLong(1))
+                        assertEquals(100L, s.getLong(2))
+                        assertEquals(2L, s.getLong(3))
+                        // ADR 2026-10.4mjm: no build before this recorded a lost race's own init, so no session reclaims one.
+                        assertTrue(s.isNull(4))
+                        assertFalse(s.step())
+                    }
+                // The race-loser branch's write: the stamp is an ordinary nullable integer.
+                c.execSQL("UPDATE ratchet_sessions SET prevRootOwnInitAt = 90 WHERE peerId = 'peer-1'")
+                c.prepare("SELECT prevRootOwnInitAt FROM ratchet_sessions").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(90L, s.getLong(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 28
+        const val CURRENT_VERSION = 29
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

@@ -355,6 +355,7 @@ val meshModule =
         // RatchetStore bound in appModule.
         single {
             val identityKeys = get<IdentityKeyStore>()
+            val metrics = get<MeshMetrics>()
             RatchetSessions(
                 store = get(),
                 dhIdentityPriv = identityKeys::dhIdentityPrivate,
@@ -362,6 +363,7 @@ val meshModule =
                 mutex = get(ratchetMutex),
                 transact = get(),
                 log = { Log.w("RatchetSessions", it) },
+                onReclaimed = { metrics.onRatchetReclaimed() },
             )
         }
         // The group sender-key session service (crypto scheme v2's group form, docs/GROUP_FORWARD_SECRECY.md).

@@ -107,6 +107,7 @@ import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.MemoryRatchetStore
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
@@ -1427,6 +1428,7 @@ class LabNode internal constructor(
                         spkPrivFor = keyStore::prekeyPrivFor,
                         mutex = ratchetMutex,
                         transact = transactor,
+                        onReclaimed = { metrics.onRatchetReclaimed() },
                     ),
                 groupRatchet = GroupRatchetSessions(store = groupRatchetStore, mutex = ratchetMutex, transact = transactor),
                 groupRoots = groupRoots,
@@ -2550,6 +2552,112 @@ class LabNode internal constructor(
                 val r = WireCodec.decodePayload<ChatContent>(frame.envelope.payload)?.enc?.r
                 r?.init != null && r.flags and RatchetHeader.FLAG_RESET == 0 && author.messages.find(frame.envelope.id) == null
             }.map { it.envelope.id }
+
+    /** [author]'s DM-form chat frames to [to] parked on this node's pipe to [to], in send order, each with its ratchet header. */
+    fun heldDmHeaders(
+        author: LabNode,
+        to: LabNode,
+    ): List<Pair<RelayEnvelope, RatchetHeader>> = transport.held(to.transport).mapNotNull { wire -> dmHeaderOf(wire, author, to) }
+
+    /**
+     * Whether this node's pipe to [to] holds #189's two frames (ADR 2026-10.4mjm): an init-bearing ctl of [author]'s
+     * sealed before [since] — a ctl, for the opening DM carries the same init but stops at the exists-gate — and a frame of
+     * [author]'s with no init sealed since.
+     */
+    suspend fun holdsOldInitCtlAndAnswer(
+        author: LabNode,
+        to: LabNode,
+        since: Long,
+    ): Boolean {
+        val held = heldDmHeaders(author, to)
+        val oldInit =
+            held.any { (env, r) ->
+                r.init != null && r.flags and RatchetHeader.FLAG_RESET == 0 && env.sentAt < since && author.messages.find(env.id) == null
+            }
+        return oldInit && held.any { (env, r) -> r.init == null && env.sentAt >= since }
+    }
+
+    /** Opens this node's pipe to [to], delivering [author]'s init-bearing DM frames ahead of everything else parked there. */
+    suspend fun releaseInitsFirst(
+        author: LabNode,
+        to: LabNode,
+    ) {
+        transport.release(to.transport) { batch -> batch.sortedBy { dmHeaderOf(it, author, to)?.second?.init == null } }
+    }
+
+    private fun dmHeaderOf(
+        wire: WireEnvelope,
+        author: LabNode,
+        to: LabNode,
+    ): Pair<RelayEnvelope, RatchetHeader>? {
+        val env = WireCodec.decodeEnvelope(wire.signed) ?: return null
+        if (env.type != FrameType.CHAT || env.senderId != author.nodeId || env.recipientId != to.nodeId) return null
+        val r = WireCodec.decodePayload<ChatContent>(env.payload)?.enc?.r ?: return null
+        return env to r
+    }
+
+    /**
+     * Of [initBearingCtlsFrom]'s frames, the ✓✓s and reactions — the ctls `RatchetSessions.sealAnswer` gates (ADR
+     * 2026-10.x9fa's 2026-10-29 amendment) — each opened by [reader], their addressee, with [openInitCtl]. The race
+     * winner's intro answer carries its init on purpose (rule C closes it at the loser, ADR 2026-10.4mjm) and is left out.
+     * Every such ctl must open: one that does not would otherwise be no ✓✓ by default, and the oracle would pass blind.
+     */
+    suspend fun initBearingAnswersFrom(
+        author: LabNode,
+        reader: LabNode,
+    ): List<String> {
+        val ids = initBearingCtlsFrom(author).toSet()
+        return forwardStore
+            .liveFrames(now())
+            .filter { it.envelope.id in ids && it.envelope.recipientId == reader.nodeId }
+            .filter { frame ->
+                val ctl = checkNotNull(reader.openInitCtl(frame.envelope, author)) { "${reader.name} cannot open ${frame.envelope.id}" }.ctl
+                ctl == MessageContent.CTL_RECEIPT || ctl == MessageContent.CTL_REACTION
+            }.map { it.envelope.id }
+    }
+
+    /**
+     * What [env], an init-bearing DM-form frame [author] sealed to this node, says — opened from nothing: a fresh session
+     * service over an empty store answers the X3DH init with this node's identity and prekeys alone, so it reads the frame
+     * however often this node's own ratchet has consumed it, and commits nothing anywhere. Null when it does not open.
+     */
+    suspend fun openInitCtl(
+        env: RelayEnvelope,
+        author: LabNode,
+    ): MessageContent? {
+        val enc = WireCodec.decodePayload<ChatContent>(env.payload)?.enc ?: return null
+        val header = enc.r?.takeIf { it.init != null } ?: return null
+        val ik = peer(author)?.pubKey?.let { PublicKeyBundle.decode(it) }?.dhPublicKey() ?: return null
+        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, env.recipientId.orEmpty())
+        val nonce = enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }
+        val fresh =
+            RatchetSessions(
+                store = MemoryRatchetStore(),
+                dhIdentityPriv = keyStore::dhIdentityPrivate,
+                spkPrivFor = keyStore::prekeyPrivFor,
+            )
+        val opened =
+            fresh.peekOpen(
+                nodeId,
+                author.nodeId,
+                ik,
+                header,
+                nonce,
+                enc.ct,
+                aad,
+                now(),
+                env.sentAt,
+            ) as? RatchetEngine.OpenOutcome.Opened
+        return opened?.let {
+            if (enc.v ==
+                EncEnvelope.VERSION_DM_V3
+            ) {
+                MessageContentV2.decode(it.plaintext)
+            } else {
+                MessageContent.decode(it.plaintext)
+            }
+        }
+    }
 
     /**
      * The ctls [author] sealed to [to] that this node custodies, a reset aside: frames with no message row on the author's

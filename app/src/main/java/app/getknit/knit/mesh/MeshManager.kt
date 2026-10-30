@@ -1363,6 +1363,7 @@ class MeshManager(
                 rootHash = session?.root?.let { r -> sha256Hex(r).take(ROOT_HASH_HEX_CHARS) },
                 prevRootExpiresAt = session?.prevRootExpiresAt ?: 0L,
                 hasPeerInitAnchor = session?.peerInitEphPub != null,
+                prevRootOwnInitAt = session?.prevRootOwnInitAt,
                 localEpochs = ratchet.debugLocalEpochs(peer.nodeId),
             )
         }

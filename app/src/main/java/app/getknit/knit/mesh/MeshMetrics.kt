@@ -281,6 +281,7 @@ class MeshMetrics {
     private val keyRequestsSent = AtomicLong()
     private val introsSent = AtomicLong()
     private val introsAnswered = AtomicLong()
+    private val ratchetSwappedBack = AtomicLong()
     private val keysServed = AtomicLong()
     private val keysRecovered = AtomicLong()
     private val framesHeld = AtomicLong()
@@ -503,6 +504,14 @@ class MeshMetrics {
     /** A sealed frame we sent to confirm a still-unconfirmed peer's session (the intro driver's answer). */
     fun onIntroAnswered() {
         introsAnswered.incrementAndGet()
+    }
+
+    /**
+     * A DM session moved back onto our own init, lost to a race, because the peer sealed under it as responder (rule C,
+     * ADR 2026-10.4mjm, `RatchetSessions`). Non-zero means a pair that would have sat on two roots met on one.
+     */
+    fun onRatchetReclaimed() {
+        ratchetSwappedBack.incrementAndGet()
     }
 
     /** A key-request frame we sent to recover a peer's missing profile/key (see [KeyExchange]). */
@@ -1462,6 +1471,7 @@ class MeshMetrics {
             framesReplayed = framesReplayed.get(),
             introsSent = introsSent.get(),
             introsAnswered = introsAnswered.get(),
+            ratchetSwappedBack = ratchetSwappedBack.get(),
         )
 
     /** The [Snapshot.Seals] counters alone, read now. */
@@ -1734,6 +1744,8 @@ class MeshMetrics {
             val framesReplayed: Long = 0,
             val introsSent: Long = 0,
             val introsAnswered: Long = 0,
+            // ADR 2026-10.4mjm: a race loser moved back onto its own init, which the peer had answered.
+            val ratchetSwappedBack: Long = 0,
         )
 
         /** How DMs and reactions were sealed, and how many fell back to an older form. */

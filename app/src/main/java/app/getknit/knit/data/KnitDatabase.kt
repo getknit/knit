@@ -63,7 +63,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 28
+internal const val KNIT_DB_SCHEMA_VERSION = 29
 
 @Database(
     entities = [
@@ -256,6 +256,9 @@ internal const val KNIT_DB_SCHEMA_VERSION = 28
     //     bring back, keyed by frame id with the authenticated sender, our arrival clock and whether the signed copy's
     //     ratchet step has run (ADR 2026-10.x9fa). Local only and never in a backup (ratchet state); swept 48 h on.
     //     Empty on arrival; migrated by KnitMigrations.MIGRATION_27_28.
+    // v29: `ratchet_sessions.prevRootOwnInitAt` — set while the session's `prevRoot` is our own init, abandoned unconfirmed
+    //     on a lost race: that init's own `establishedAt` (rule C, ADR 2026-10.4mjm). Ratchet state, never in a backup;
+    //     null on existing rows (no row before this recorded it). Migrated by KnitMigrations.MIGRATION_28_29.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

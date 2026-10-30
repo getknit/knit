@@ -183,7 +183,12 @@ internal class MemoryRatchetStore : RatchetStore {
         headerSe: Int,
         headerN: Int,
     ) {
-        if (delta.purgePeerRecvState) purgePeerRecvState(peerId)
+        if (delta.purgePeerRecvState) {
+            // A reclaim (ADR 2026-10.4mjm) spares the one root it moved back to, as RatchetRepository's purge does.
+            val keep = delta.keepRecvTag
+            recv.keys.removeAll { it.first == peerId && it.third != keep }
+            skipped.keys.removeAll { it.peerId == peerId && it.rootTag != keep }
+        }
         sessions[peerId] = delta.session
         delta.recvEpoch?.let { recv[Triple(peerId, it.epoch, it.rootTag)] = it }
         for (key in delta.skippedInserts) skipped.putIfAbsent(SkippedKeyId(peerId, key.epoch, key.idx, key.rootTag), key)

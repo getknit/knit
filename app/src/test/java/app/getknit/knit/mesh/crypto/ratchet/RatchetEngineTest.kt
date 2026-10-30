@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.crypto.ratchet
 
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine.OpenOutcome
+import app.getknit.knit.mesh.protocol.Protocol
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -79,10 +80,12 @@ class RatchetEngineTest {
             return Frame(result.header, result.nonce, result.ct)
         }
 
+        /** [sentAt] is the frame envelope's stamp (the sender's clock), judged as `RatchetSessions.contextFor` judges it. */
         fun open(
             frame: Frame,
             now: Long,
             resetRequested: Boolean = false,
+            sentAt: Long? = null,
         ): OpenOutcome {
             val ctx =
                 RatchetEngine.OpenContext(
@@ -99,6 +102,7 @@ class RatchetEngineTest {
                             ?.takeIf { spkResolvable }
                             ?.let { if (it.pkid == spkId) spk.priv else retiredSpks[it.pkid]?.priv },
                     resetRequested = resetRequested,
+                    sealedSinceLostRace = RatchetSessions.sealedSinceLostRace(session, sentAt),
                 )
             val outcome = engine.open(ctx, frame.header, frame.nonce, frame.ct, AAD, now)
             if (outcome is OpenOutcome.Opened) apply(outcome.delta, frame.header)
@@ -111,8 +115,9 @@ class RatchetEngineTest {
         ) {
             lastDelta = delta
             if (delta.purgePeerRecvState) {
-                recvEpochs.clear()
-                skipped.clear()
+                // A reclaim (rule C) spares the root it moved back to, as RatchetRepository's purge does.
+                recvEpochs.keys.removeAll { it.second != delta.keepRecvTag }
+                skipped.keys.removeAll { it.third != delta.keepRecvTag }
             }
             session = delta.session
             delta.recvEpoch?.let { recvEpochs[it.epoch to it.rootTag] = it }
@@ -1165,10 +1170,272 @@ class RatchetEngineTest {
         assertEquals(cEra, checkNotNull(d.session).establishedAt)
         assertTrue("the race winner stays the initiator", checkNotNull(c.session).weAreInitiator)
         assertEquals(cEra, checkNotNull(c.session).establishedAt)
+
+        // 5. reclaim (rule C, ADR 2026-10.4mjm): back to initiator, so back to our own clock — the abandoned init's own
+        //    stamp, kept on the row through the lost race, never the answer's.
+        val trace = restoredLoser()
+        trace.loseTheRace()
+        assertFalse(checkNotNull(trace.b.session).weAreInitiator)
+        assertEquals("the winner's clock while we lost", NOW, checkNotNull(trace.b.session).establishedAt)
+        trace.b.open(trace.answer, RESET_AT + HOUR, sentAt = RESET_AT + 1)
+        assertTrue(checkNotNull(trace.b.session).weAreInitiator)
+        assertEquals(RESET_AT, checkNotNull(trace.b.session).establishedAt)
+    }
+
+    // --- rule C: a race loser reclaims its own init once the peer answers it (ADR 2026-10.4mjm, #189) ---
+
+    /**
+     * #189's trace, engine half. [a] (the smaller id) initiates `I_A` and [b] answers it; [b] then restores and resets
+     * (`R_B`, from no session, so no `prevRoot`); [a], confirmed, takes `R_B` as a flagged replacement and answers under
+     * it. Returned: the pair, `I_A`'s first frame (still in custody, stamped [NOW]), and [a]'s answer under `R_B`
+     * (stamped [answerAt]), neither yet at [b].
+     */
+    private class RestoredLoser(
+        val a: Side,
+        val b: Side,
+        val initFrame: Frame,
+        val answer: Frame,
+    )
+
+    private fun restoredLoser(answerAt: Long = RESET_AT + 1): RestoredLoser {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        val initFrame = a.seal("hello, I_A", NOW)
+        assertEquals("hello, I_A", text(b.open(initFrame, NOW)))
+        assertEquals("hi", text(a.open(b.seal("hi", NOW + 1), NOW + 1)))
+        assertTrue(checkNotNull(a.session).confirmed)
+
+        b.wipe()
+        val reset = b.reset(RESET_AT)
+        assertEquals("reset", text(a.open(reset, RESET_AT, resetRequested = true)))
+        assertFalse("a took R_B as a replacement", checkNotNull(a.session).weAreInitiator)
+        return RestoredLoser(a, b, initFrame, a.seal("answer under R_B", answerAt))
+    }
+
+    /** [b] meets the re-served `I_A` before the answer: it loses the race against its own unanswered reset (#189). */
+    private fun RestoredLoser.loseTheRace(): ByteArray {
+        val resetRoot = checkNotNull(b.session).root
+        assertEquals("hello, I_A", text(b.open(initFrame, RESET_AT + 2, sentAt = NOW)))
+        val lost = checkNotNull(b.session)
+        assertArrayEquals("b adopted I_A", checkNotNull(a.session).prevRoot, lost.root)
+        assertArrayEquals("its own reset drains", resetRoot, lost.prevRoot)
+        assertEquals("flagged with its own init's stamp, our clock", RESET_AT, lost.prevRootOwnInitAt)
+        return resetRoot
+    }
+
+    @Test
+    fun aRaceLoserReclaimsItsOwnInitWhenThePeerSealsUnderItAsResponder() {
+        val trace = restoredLoser()
+        val (a, b) = trace.a to trace.b
+        val resetRoot = trace.loseTheRace()
+        val adopted = checkNotNull(b.session).root
+
+        assertEquals("answer under R_B", text(b.open(trace.answer, RESET_AT + 3, sentAt = RESET_AT + 1)))
+        val delta = checkNotNull(b.lastDelta)
+        assertTrue("the open reports the reclaim", delta.reclaimed)
+        assertTrue(delta.purgePeerRecvState)
+        assertEquals("the reclaimed root's receive state survives the purge", RatchetCrypto.rootTag(resetRoot), delta.keepRecvTag)
+        val back = checkNotNull(b.session)
+        assertArrayEquals("one root: the reset's", checkNotNull(a.session).root, back.root)
+        assertTrue(back.confirmed)
+        assertTrue(back.weAreInitiator)
+        assertNull("no init rides any more", back.initEphPub)
+        assertEquals("establishedAt is our own clock again (ADR 026)", RESET_AT, back.establishedAt)
+        assertArrayEquals("the root we had adopted drains", adopted, back.prevRoot)
+        assertFalse(back.prevRootWeAreInitiator)
+        assertNull("the flag goes with the swap", back.prevRootOwnInitAt)
+        assertArrayEquals("I_A stays the anchor", checkNotNull(trace.initFrame.header.init).eph, back.peerInitEphPub)
+        assertEquals("the answer's epoch is the DH base", trace.answer.header.se, back.peerBaseEpoch)
+        assertEquals(trace.answer.header.pe, back.highestPeAcked)
+        assertEquals(
+            "only the reclaimed era's rows remain",
+            setOf(RatchetCrypto.rootTag(resetRoot)),
+            b.recvEpochs.keys
+                .map { it.second }
+                .toSet(),
+        )
+
+        // Both ways under the one root, and I_A re-served once more changes nothing.
+        assertEquals("b again", text(a.open(b.seal("b again", RESET_AT + 4), RESET_AT + 4, sentAt = RESET_AT + 4)))
+        assertEquals("a again", text(b.open(a.seal("a again", RESET_AT + 5), RESET_AT + 5, sentAt = RESET_AT + 5)))
+        b.open(trace.initFrame, RESET_AT + 6, sentAt = NOW)
+        assertArrayEquals(checkNotNull(a.session).root, checkNotNull(b.session).root)
+        assertTrue(checkNotNull(b.session).weAreInitiator)
+    }
+
+    /**
+     * Design-pass finding 1: the peer sealed under our init and *then* left it — its restore's reset `R_A` — and we lost
+     * the race to `R_A`. Its old frame, re-served, is responder-sealed under our init, but no later than the init we lost
+     * to: reclaiming would put us on a root the peer no longer holds. Sealed at `R_A.at` plus the skew bound exactly, it
+     * still is not fresh.
+     */
+    @Test
+    fun noReclaimOnAFrameSealedNoLaterThanTheInitWeLostTo() {
+        val (a, b) = pair()
+        b.initiate(NOW)
+        assertEquals("first", text(a.open(b.seal("first", NOW), NOW)))
+        val before = a.seal("reply under I_B", NOW + 1) // never reaches b before the restore
+
+        a.wipe()
+        val reset = a.reset(RESET_AT)
+        assertEquals("reset", text(b.open(reset, RESET_AT + 1, resetRequested = true, sentAt = RESET_AT)))
+        assertEquals("b lost the race on its own first contact", NOW, checkNotNull(b.session).prevRootOwnInitAt)
+
+        assertEquals(
+            "reply under I_B",
+            text(b.open(before, RESET_AT + 2, sentAt = RESET_AT + Protocol.MAX_FUTURE_SKEW_MS)),
+        )
+        assertFalse(checkNotNull(b.lastDelta).reclaimed)
+        assertArrayEquals("still on the reset's root, which a holds", checkNotNull(a.session).root, checkNotNull(b.session).root)
+        assertFalse(checkNotNull(b.session).weAreInitiator)
+    }
+
+    /** The trace's answer, but stamped inside the margin past `I_A.at`: read under `R_B`, read-only, no reclaim. */
+    @Test
+    fun noReclaimOnAResponderFrameStampedInsideTheMarginPastTheWinningInit() {
+        val trace = restoredLoser(answerAt = NOW + Protocol.MAX_FUTURE_SKEW_MS)
+        trace.loseTheRace()
+        val adopted = checkNotNull(trace.b.session).root
+        assertEquals("answer under R_B", text(trace.b.open(trace.answer, RESET_AT + 3, sentAt = NOW + Protocol.MAX_FUTURE_SKEW_MS)))
+        assertFalse(checkNotNull(trace.b.lastDelta).reclaimed)
+        assertArrayEquals(adopted, checkNotNull(trace.b.session).root)
+        assertEquals(RESET_AT, checkNotNull(trace.b.session).prevRootOwnInitAt)
+    }
+
+    /**
+     * Design-pass finding 4: a first frame of the answer's epoch stamped inside the margin is read read-only and stores a
+     * chain under `R_B`; the next frames of that epoch take the live chain or a banked skipped key, never a fresh
+     * derivation — and each still reclaims. The reclaim's purge spares `R_B`'s receive state: the live chain reads the
+     * next frame, and a second key banked beside the one the reclaim spent still opens its frame.
+     */
+    @Test
+    fun aFreshFrameReclaimsOnTheLiveChainAndOnASkippedKeyToo() {
+        for (rung in listOf("live", "skipped")) {
+            val trace = restoredLoser()
+            val (a, b) = trace.a to trace.b
+            val resetRoot = trace.loseTheRace()
+            val resetTag = RatchetCrypto.rootTag(resetRoot)
+            val second = a.seal("second", RESET_AT + 2)
+            val third = a.seal("third", RESET_AT + 3)
+            val fourth = a.seal("fourth", RESET_AT + 4)
+            val se = trace.answer.header.se
+            // The epoch's first frame, read early (its stamp moved inside the margin): read-only, a chain under R_B.
+            b.open(trace.answer, RESET_AT + 5, sentAt = NOW)
+            assertFalse(checkNotNull(b.lastDelta).reclaimed)
+            if (rung == "skipped") {
+                b.open(fourth, RESET_AT + 6, sentAt = NOW) // banks the skipped keys for "second" and "third"
+                assertEquals(setOf(Triple(se, 1, resetTag), Triple(se, 2, resetTag)), b.skipped.keys)
+            }
+            assertFalse(checkNotNull(b.session).weAreInitiator)
+
+            assertEquals("second", text(b.open(second, RESET_AT + 7, sentAt = RESET_AT + 2)))
+            assertTrue("$rung rung reclaims", checkNotNull(b.lastDelta).reclaimed)
+            assertArrayEquals(rung, resetRoot, checkNotNull(b.session).root)
+            assertTrue(rung, checkNotNull(b.session).weAreInitiator)
+            assertEquals(rung, setOf(se to resetTag), b.recvEpochs.keys)
+            if (rung == "skipped") assertEquals("the other banked key survives", setOf(Triple(se, 2, resetTag)), b.skipped.keys)
+            assertEquals(rung, "third", text(b.open(third, RESET_AT + 8, sentAt = RESET_AT + 3)))
+        }
+    }
+
+    /** A frame the winner seals as initiator under the root we adopted — its own — is the era we hold: no reclaim. */
+    @Test
+    fun noReclaimOnAFrameThePeerSealedAsInitiator() {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.initiate(NOW + 1)
+        assertEquals("from a", text(b.open(a.seal("from a", NOW), NOW + 2, sentAt = NOW)))
+        assertEquals("b lost", NOW + 1, checkNotNull(b.session).prevRootOwnInitAt)
+        // a, still the winner's unconfirmed initiator, seals again much later: under its own root, init attached.
+        assertEquals("later from a", text(b.open(a.seal("later from a", NOW + HOUR), NOW + HOUR, sentAt = NOW + HOUR)))
+        assertFalse(checkNotNull(b.lastDelta).reclaimed)
+        assertFalse(checkNotNull(b.session).weAreInitiator)
+        assertEquals(NOW + 1, checkNotNull(b.session).prevRootOwnInitAt)
+    }
+
+    /**
+     * A root that was confirmed and then replaced never qualifies: [b] initiated, [a] answered, then [a] wiped and reset.
+     * A frame [a] sealed under [b]'s init before the wipe drains under `prevRoot` even stamped far past the reset.
+     */
+    @Test
+    fun noReclaimUnderARootThatWasConfirmedAndThenReplaced() {
+        val (a, b) = pair()
+        b.initiate(NOW)
+        a.open(b.seal("hello", NOW), NOW)
+        val drain = a.seal("still in custody", NOW + 2)
+        b.open(a.seal("hi", NOW + 1), NOW + 1)
+        assertTrue(checkNotNull(b.session).confirmed)
+
+        a.wipe()
+        b.open(a.reset(RESET_AT), RESET_AT, resetRequested = true, sentAt = RESET_AT)
+        val replaced = checkNotNull(b.session)
+        assertTrue("b's init drains", replaced.prevRootWeAreInitiator)
+        assertNull("but a replacement never flags it", replaced.prevRootOwnInitAt)
+
+        assertEquals("still in custody", text(b.open(drain, RESET_AT + 1, sentAt = RESET_AT + HOUR)))
+        assertFalse(checkNotNull(b.lastDelta).reclaimed)
+        assertArrayEquals(checkNotNull(a.session).root, checkNotNull(b.session).root)
+    }
+
+    /**
+     * Flagged resets crossed (both phones reset at once): the smaller id wins and keeps its root, so it never seals under
+     * the loser's — nothing reclaims however late its frames are. And the loser's own reset cleared the flag of the race
+     * it had lost before it.
+     */
+    @Test
+    fun crossedResetsMakeNoReclaimBecauseTheWinnerNeverSealsUnderTheLosersRoot() {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.initiate(NOW)
+        b.open(a.seal("from a", NOW), NOW, sentAt = NOW)
+        assertEquals("the first race's loser", NOW, checkNotNull(b.session).prevRootOwnInitAt)
+        a.open(b.seal("answer", NOW + 1), NOW + 1, sentAt = NOW + 1)
+        assertTrue(checkNotNull(a.session).confirmed)
+
+        val fromB = b.reset(RESET_AT)
+        assertNull("our reset clears the flag", checkNotNull(b.session).prevRootOwnInitAt)
+        val fromA = a.reset(RESET_AT)
+        b.open(fromA, RESET_AT + 1, resetRequested = true, sentAt = RESET_AT)
+        a.open(fromB, RESET_AT + 1, resetRequested = true, sentAt = RESET_AT)
+        assertEquals("the second race's loser flags its reset", RESET_AT, checkNotNull(b.session).prevRootOwnInitAt)
+
+        for (i in 1..3) {
+            val at = RESET_AT + i * HOUR
+            b.open(a.seal("a $i", at), at, sentAt = at)
+            assertFalse(checkNotNull(b.lastDelta).reclaimed)
+            a.open(b.seal("b $i", at), at, sentAt = at)
+        }
+        assertArrayEquals(checkNotNull(a.session).root, checkNotNull(b.session).root)
+        assertFalse(checkNotNull(b.session).weAreInitiator)
+    }
+
+    /** Every other write of `prevRoot` clears the flag: a replacement, and the drain running out. */
+    @Test
+    fun aReplacementOrAnExpiredDrainClearsTheFlag() {
+        val replaced = restoredLoser()
+        replaced.loseTheRace()
+        replaced.a.wipe()
+        replaced.b.open(replaced.a.reset(RESET_AT + HOUR), RESET_AT + HOUR, resetRequested = true, sentAt = RESET_AT + HOUR)
+        assertNull(checkNotNull(replaced.b.session).prevRootOwnInitAt)
+
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.initiate(NOW)
+        b.open(a.seal("from a", NOW), NOW, sentAt = NOW)
+        assertEquals(NOW, checkNotNull(b.session).prevRootOwnInitAt)
+        val late = NOW + RatchetEngine.PREV_ROOT_TTL_MS + HOUR
+        assertEquals("ping", text(b.open(a.seal("ping", late), late, sentAt = late)))
+        val after = checkNotNull(b.session)
+        assertNull(after.prevRoot)
+        assertNull(after.prevRootOwnInitAt)
     }
 
     private companion object {
         const val NOW = 1_700_000_000_000L
+        const val HOUR = 60 * 60_000L
+
+        /** When #189's restored side resets: ten minutes after the init it will lose to, past the skew bound. */
+        const val RESET_AT = NOW + 10 * 60_000L
         val AAD = "id|sender|1700000000000|thread".toByteArray()
     }
 }

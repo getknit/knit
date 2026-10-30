@@ -19,6 +19,12 @@ data class RatchetSessionEntity(
     val prevRoot: ByteArray?,
     val prevRootWeAreInitiator: Boolean,
     val prevRootExpiresAt: Long,
+    /**
+     * Set exactly while [prevRoot] is our own init, abandoned unconfirmed on a lost race: that init's own
+     * `establishedAt` (rule C, ADR 2026-10.4mjm). Null on every row before v29. Added by `MIGRATION_28_29`, so the
+     * column sits last in a migrated table and here in a fresh one; Room matches columns by name.
+     */
+    val prevRootOwnInitAt: Long? = null,
     val establishedAt: Long,
     val initEphPub: ByteArray?,
     val initPkid: Int,

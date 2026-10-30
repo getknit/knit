@@ -8,7 +8,7 @@ topics: [crypto, pfs, recovery]
 
 # ADR 2026-09.pz9g — A frame moves a session's era only when it derives a fresh epoch under the active root
 
-Status: Accepted (2026-09-25)
+Status: Accepted (2026-09-25). Amended by ADR 2026-10.4mjm (2026-10-29).
 
 The mesh-lab chaos sweep (2026-09-24) turned up two DM losses with one shape: a frame arrived ahead of the
 init that announces its session, and the engine read it as evidence about the era it holds now.
@@ -87,3 +87,14 @@ and skipped-key rungs; `oldEraFramesDrainingAfterAnAdoptedResetNeverBecomeTheAdo
 `IntroSyncTest` (`a new init is answered inside the floor, once`), and `SessionLabTest`
 (`theLosersOpeningDmLandingAfterItsAnswersStillOpens` and the two `aTickSealedAfterAResetStillReaches…`
 scenarios). No wire field, derivation or vector moved; an iOS port must mirror the rule.
+
+## Amendment (2026-10-29, ADR 2026-10.4mjm): a race loser's own init
+
+One exception to "era effects only under the active root". A race loser whose `prevRoot` is its own init, abandoned
+unconfirmed (`SessionState.prevRootOwnInitAt`), moves back onto it when a frame opens under that `prevRoot`, sealed by
+the peer as responder after the init it lost to (`sentAt` more than the skew bound past that init's `at`). Only a peer
+that adopted our init can seal there, so the frame *is* the era we hold next: the same delta makes that root active,
+then records the frame's era effects under it (`RatchetEngine.reclaim`, then `touch`). It fires on every rung, the live
+chain and skipped key included, because the root becomes the active one. Every other non-active candidate still records
+nothing. Regression: `RatchetEngineTest`'s rule C cases.
+

@@ -19,7 +19,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -170,6 +169,10 @@ class LoraDirectLabTest {
 
             lab.link(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+            // Each signed copy's ratchet step must have run before the read: an answer that crossed ahead of it banks the
+            // skipped key that copy then spends (boards chaos seed 2002).
+            lab.await(1) { if (alice.loraSeen(fromBob)?.ratchetDone == true) 1 else 0 }
+            lab.await(1) { if (bob.loraSeen(fromAlice)?.ratchetDone == true) 1 else 0 }
             assertEquals("no skipped key left behind", 0, alice.skippedDmKeys() + bob.skippedDmKeys())
         }
 
@@ -520,19 +523,19 @@ class LoraDirectLabTest {
         }
 
     /**
-     * (j) First contact over LoRa only, then a restore (ADR 2026-10.x9fa's answer gate). Alice and Bob have met but hold
-     * no session; each sends a first DM the other reads compact and ✓✓s compact, while Carol, linked to both, holds their
-     * signed copies. No ✓✓ opens a session of its own: with only its sender's own init unanswered, it goes compact alone.
-     * Carol lets go, the pair links and converges on one root. Then the larger-id node restores, its reset reaches the
-     * other, and only once it is answered does Carol re-serve her custody to it. One root, no reset sent
-     * back, and no ✓✓ frame anywhere ever carried an init — the frame that, re-served to a restored node, used to win
-     * `resolveRace` against its reset and split the pair (`RestoreLabTest` with boards, seed 2000).
+     * (j) First contact over LoRa only, then a restore (ADR 2026-10.x9fa's answer gate, ADR 2026-10.4mjm's rule C). Alice
+     * and Bob have met but hold no session; each sends a first DM the other reads compact and ✓✓s compact, while Carol,
+     * linked to both, holds their signed copies. No ✓✓ opens a session of its own: with only its sender's own init
+     * unanswered, it goes compact alone. Carol lets the race's winner read the loser's init first, so the winner's intro
+     * answer carries its own init (pz9g), then the loser; the pair links and converges on one root.
      *
-     * Held under #189: the race winner's answer to the loser's init (pz9g) still carries the winner's init while it is
-     * unconfirmed, and a re-serve of that ctl to the restored loser wins `resolveRace` against its flagged reset exactly as
-     * the ✓✓ did.
+     * Past the skew bound, the larger-id node (the race's loser) restores. Its reset reaches the winner over a link of
+     * their own, the winner takes it and answers — and the winner's custody re-serve brings the restored node the old
+     * intro, carrying the winner's init, ahead of that answer. That init wins `resolveRace` against the restored node's
+     * own unanswered reset (#189); the answer under the reset then moves it back (rule C: the reset was its own init,
+     * lost to a race, and the peer sealed under it as responder). Only then does Carol re-serve her custody to it. One
+     * root, the swap counted, no reset sent back, and no ✓✓ or reaction anywhere ever carried an init.
      */
-    @Ignore("#189: the race winner's intro answer still carries its init; awaits rule C")
     @Test
     fun aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore() =
         runBlocking {
@@ -547,6 +550,7 @@ class LoraDirectLabTest {
             lab.unlink(alice, bob)
             carol.transport.hold(alice.transport)
             carol.transport.hold(bob.transport)
+            val (winner, loser) = if (alice.nodeId < bob.nodeId) alice to bob else bob to alice
 
             assertTrue(alice.sendDm(bob, "first from alice"))
             assertTrue(bob.sendDm(alice, "first from bob"))
@@ -557,38 +561,69 @@ class LoraDirectLabTest {
             assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(alice, fromAlice, bob))
             assertEquals(DeliveryPlane.LoRa, lab.awaitReceipt(bob, fromBob, alice))
 
-            carol.transport.release(alice.transport)
-            carol.transport.release(bob.transport)
+            // The winner reads the loser's signed copy first: its intro answer is sealed on its own unanswered init.
+            val losersFirst = if (loser === alice) fromAlice else fromBob
+            lab.await(1) { if (losersFirst in carol.custodyIds()) 1 else 0 }
+            carol.transport.release(winner.transport)
+            lab.await(1) { if (winner.loraSeen(losersFirst)?.ratchetDone == true) 1 else 0 }
+            lab.await(1) { winner.initBearingCtlsFrom(winner).size }
+            carol.transport.release(loser.transport)
             lab.link(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
 
-            val (restored, other) = if (alice.nodeId > bob.nodeId) alice to bob else bob to alice
+            // The answer under the restore's reset must be sealed past the winning init's stamp plus the skew bound.
+            lab.clock.advance(Protocol.MAX_FUTURE_SKEW_MS + 60_000L)
+            val restored = loser
+            val other = winner
             lab.unlink(alice, bob)
             lab.unlink(carol, restored)
-            restored.restoreFromBackup()
-            // The restore's reset goes to the other side over a link of their own and is answered; only then does Carol,
-            // who carried the whole first contact, re-serve her custody to the restored node.
-            lab.link(restored, other)
-            assertTrue(
-                "the restore's reset was never answered",
-                lab.tryAwait(1) { if (restored.session(other)?.confirmed == true) 1 else 0 },
-            )
+            restoreBehindTheWinnersOldIntro(restored, other)
             lab.link(carol, restored)
             assertTrue(alice.sendDm(bob, "after the restore"))
             assertTrue(bob.sendDm(alice, "seen"))
             lab.assertConverged(listOf(alice, bob), atLeast = 4, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
             assertEquals("one root", alice.session(bob)?.rootHash, bob.session(alice)?.rootHash)
+            assertTrue("the restored node moved back onto its reset", restored.metrics.keys().ratchetSwappedBack >= 1)
             assertEquals("no reset sent back", 0L, other.session(restored)?.lastResetSentAt)
-            for (holder in listOf(alice, bob, carol)) {
-                for (author in listOf(alice, bob)) {
-                    assertEquals(
-                        "${author.name}'s ctls carrying an init, in ${holder.name}'s custody",
-                        emptyList<String>(),
-                        holder.initBearingCtlsFrom(author),
-                    )
-                }
+            assertNoAnswerCarriesAnInit(alice, bob, carriers = listOf(carol))
+        }
+
+    /** No ✓✓ or reaction between [one] and [two], in either's or a carrier's custody, carries an X3DH init (x9fa's gate). */
+    private suspend fun assertNoAnswerCarriesAnInit(
+        one: LabNode,
+        two: LabNode,
+        carriers: List<LabNode>,
+    ) {
+        for (holder in listOf(one, two) + carriers) {
+            for ((author, reader) in listOf(one to two, two to one)) {
+                assertEquals(
+                    "${author.name}'s ✓✓s and reactions carrying an init, in ${holder.name}'s custody",
+                    emptyList<String>(),
+                    holder.initBearingAnswersFrom(author, reader),
+                )
             }
         }
+    }
+
+    /**
+     * Restores [restored] and links it to [other], the race's winner, whose side of the link is held until it carries
+     * both its old init-bearing intro and an answer sealed since the restore; the intro goes through first — the order
+     * #189 splits the pair on — and the restore's reset must end answered, [restored] its confirmed initiator.
+     */
+    private suspend fun restoreBehindTheWinnersOldIntro(
+        restored: LabNode,
+        other: LabNode,
+    ) {
+        restored.restoreFromBackup()
+        val restoredAt = lab.clock.now()
+        lab.link(restored, other) { other.transport.hold(restored.transport) }
+        lab.await(1) { if (other.holdsOldInitCtlAndAnswer(other, restored, restoredAt)) 1 else 0 }
+        other.releaseInitsFirst(other, restored)
+        assertTrue(
+            "the restore's reset was never answered",
+            lab.tryAwait(1) { restored.session(other)?.let { if (it.confirmed && it.weAreInitiator) 1 else 0 } ?: 0 },
+        )
+    }
 
     /**
      * (k) #87's shape with boards: alice resets while bob's DM reaches her compact. Her ✓✓ for it is an answer with no

@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.ResetReseal
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.first
@@ -155,6 +156,119 @@ class RestoreLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 5, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
         }
 
+    /**
+     * #189 through custody, board-less (ADR 2026-10.4mjm, rule C). Alice and Bob each write first while Carol, between
+     * them, holds both ways; the race's winner (the smaller id) reads the loser's init first, so its intro answer is
+     * sealed on its own unanswered init and Carol custodies it. The pair converges on the winner's root. Past the skew
+     * bound the loser restores; its reset crosses Carol to the winner, which takes it and answers — and Carol's way back
+     * to the restored node is held until it carries both the old intro and that answer, then lets the intro through
+     * first. The intro wins `resolveRace` against the restored node's unanswered reset, and the answer under the reset
+     * moves it back: the reset was its own init, lost to a race, and the winner sealed under it as responder.
+     */
+    @Test
+    fun aRestoredRaceLoserWhoMeetsTheWinnersOldInitFirstMovesBackOntoItsReset() =
+        runBlocking {
+            val (winner, loser, carol) = racedThroughCarol()
+            val thread = { node: LabNode -> node.dmWith(if (node === winner) loser else winner) }
+            lab.clock.advance(Protocol.MAX_FUTURE_SKEW_MS + 60_000L)
+
+            loser.restoreFromBackup()
+            val restoredAt = lab.clock.now()
+            lab.link(carol, loser) { carol.transport.hold(loser.transport) }
+            lab.await(1) { if (carol.holdsOldInitCtlAndAnswer(winner, loser, restoredAt)) 1 else 0 }
+            carol.releaseInitsFirst(winner, loser)
+
+            lab.assertConverged(listOf(winner, loser), atLeast = 2, carriers = listOf(carol), conversation = thread)
+            assertEquals("one root", winner.session(loser)?.rootHash, loser.session(winner)?.rootHash)
+            assertTrue("the restored node is its reset's initiator", loser.session(winner)?.weAreInitiator == true)
+            assertTrue("the swap ran", loser.metrics.keys().ratchetSwappedBack >= 1)
+            assertEquals("no reset sent back", 0L, winner.session(loser)?.lastResetSentAt)
+
+            assertTrue(winner.sendDm(loser, "after the restore"))
+            assertTrue(loser.sendDm(winner, "seen"))
+            lab.assertConverged(listOf(winner, loser), atLeast = 4, carriers = listOf(carol), conversation = thread)
+        }
+
+    /**
+     * Rule C's freshness half (design-pass finding 1). The smaller id answers the larger's first contact — sealed under
+     * the larger's init, as its responder — and Carol custodies that answer while her way to the larger is held; then
+     * the smaller restores. Its reset reaches the larger directly and wins the race against the larger's still
+     * unanswered init, so the larger's `prevRoot` is its own init, lost to a race. Carol's re-serve of the old answer
+     * comes after: responder-sealed under that very init, but before the reset it lost to — the peer left that root by
+     * restoring. Moving back would leave the pair on two roots; it must not.
+     */
+    @Test
+    fun anAnswerSealedBeforeTheRestoreThatWonTheRaceNeverMovesTheLoserBack() =
+        runBlocking {
+            val one = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val two = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+            val (smaller, larger) = if (one.nodeId < two.nodeId) one to two else two to one
+            val thread = { node: LabNode -> node.dmWith(if (node === smaller) larger else smaller) }
+            lab.linkAll(smaller to larger, smaller to carol, larger to carol)
+            lab.awaitAcquainted(smaller, larger, carol)
+            lab.unlink(smaller, larger)
+            carol.transport.hold(larger.transport)
+
+            assertTrue(larger.sendDm(smaller, "first from the larger id"))
+            lab.await(1) { smaller.decrypted(smaller.dmWith(larger)).size }
+            // The smaller's answers under the larger's init — its ✓✓, its intro — reach Carol and go no further.
+            lab.await(1) { carol.ctlsFromTo(smaller, larger).size }
+            val before = carol.ctlsFromTo(smaller, larger)
+            lab.unlink(carol, larger)
+            lab.clock.advance(Protocol.MAX_FUTURE_SKEW_MS + 60_000L)
+
+            smaller.restoreFromBackup()
+            lab.link(smaller, larger)
+            lab.await(1) { if (larger.session(smaller)?.let { it.confirmed && !it.weAreInitiator } == true) 1 else 0 }
+            lab.await(1) { if (smaller.session(larger)?.confirmed == true) 1 else 0 }
+
+            // The setup this case is about: the larger lost the race on its own init, so it holds the flag — a plain
+            // replacement here would pass the oracle below without ever meeting rule C's freshness half.
+            assertTrue("the larger's prevRoot is its own init, lost to a race", larger.session(smaller)?.prevRootOwnInitAt != null)
+            lab.link(carol, larger)
+            lab.await(before.size) { before.count { it in larger.custodyIds() } }
+            larger.transport.awaitInboundDrained()
+            lab.assertConverged(listOf(smaller, larger), atLeast = 1, carriers = listOf(carol), conversation = thread)
+            assertEquals("one root: the restore's reset", smaller.session(larger)?.rootHash, larger.session(smaller)?.rootHash)
+            assertEquals("no swap back onto the root the restore left", 0L, larger.metrics.keys().ratchetSwappedBack)
+
+            assertTrue(smaller.sendDm(larger, "after the restore"))
+            assertTrue(larger.sendDm(smaller, "seen"))
+            lab.assertConverged(listOf(smaller, larger), atLeast = 3, carriers = listOf(carol), conversation = thread)
+            assertEquals(smaller.session(larger)?.rootHash, larger.session(smaller)?.rootHash)
+        }
+
+    /**
+     * Alice – Carol – Bob, no boards: both write first while Carol holds both ways, the winner reads the loser's init
+     * first (so its intro answer carries its own init, and Carol custodies it), then the loser reads the winner's, and
+     * the pair converges on the winner's root. Returns (winner, loser, carol).
+     */
+    private suspend fun racedThroughCarol(): Triple<LabNode, LabNode, LabNode> {
+        val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+        val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+        lab.linkAll(alice to bob, alice to carol, bob to carol)
+        lab.awaitAcquainted(alice, bob, carol)
+        lab.unlink(alice, bob)
+        val (winner, loser) = if (alice.nodeId < bob.nodeId) alice to bob else bob to alice
+        carol.transport.hold(winner.transport)
+        carol.transport.hold(loser.transport)
+
+        assertTrue(winner.sendDm(loser, "first from the winner"))
+        assertTrue(loser.sendDm(winner, "first from the loser"))
+        val losersFirst = loser.ownMessageId(loser.dmWith(winner), "first from the loser")
+        lab.await(1) { if (losersFirst in carol.custodyIds()) 1 else 0 }
+        carol.transport.release(winner.transport)
+        lab.await(1) { winner.decrypted(winner.dmWith(loser)).count { it.first == losersFirst } }
+        lab.await(1) { carol.initBearingCtlsFrom(winner).size }
+        carol.transport.release(loser.transport)
+        val thread = { node: LabNode -> node.dmWith(if (node === winner) loser else winner) }
+        lab.assertConverged(listOf(winner, loser), atLeast = 2, carriers = listOf(carol), conversation = thread)
+        assertEquals(winner.session(loser)?.rootHash, loser.session(winner)?.rootHash)
+        return Triple(winner, loser, carol)
+    }
+
     /** Alice – Carol – Bob in a line, with a confirmed DM session between the two ends. */
     private suspend fun relayedPair(bobBoard: Boolean = true): Triple<LabNode, LabNode, LabNode> {
         val alice = lab.node("alice").apply { setDisplayName("Alice") }
@@ -166,8 +280,9 @@ class RestoreLabTest {
         lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
         // Bob answers under alice's session, never a race of his own: a compact copy can land his row before her signed
         // one reaches his ratchet, and a race stamped now refuses the restore's reset under the replacement floors. The
-        // race itself is #189 (a winner's intro answer, re-served to a restored loser, wins `resolveRace`): parked with
-        // its rule, as `LoraDirectLabTest`'s scenario (j) is, so this pair waits it out rather than meets it.
+        // race itself is #189 (a winner's intro answer, re-served to a restored loser, wins `resolveRace`), which rule C
+        // heals only once the winner's answer is sealed past the skew bound (`aRestoredRaceLoserWhoMeetsTheWinnersOld…`);
+        // this pair's subject is the dedup window, so it waits the race out rather than meets it.
         lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
         assertTrue(bob.sendDm(alice, "before too"))
         lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }

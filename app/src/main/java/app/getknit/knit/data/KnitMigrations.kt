@@ -694,6 +694,19 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v29 — `ratchet_sessions.prevRootOwnInitAt`: while a session's `prevRoot` is our own init, abandoned unconfirmed on a
+     * lost race, that init's own `establishedAt` (rule C, ADR 2026-10.4mjm). Null on every existing row: no build before
+     * this recorded it, so a session that lost its race before the upgrade never reclaims — as before. The SQL must stay
+     * byte-equivalent to what Room generates for `app/schemas/**/29.json`.
+     */
+    val MIGRATION_28_29 =
+        object : Migration(28, 29) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `ratchet_sessions` ADD COLUMN `prevRootOwnInitAt` INTEGER DEFAULT NULL")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -724,5 +737,6 @@ object KnitMigrations {
             MIGRATION_25_26,
             MIGRATION_26_27,
             MIGRATION_27_28,
+            MIGRATION_28_29,
         )
 }
