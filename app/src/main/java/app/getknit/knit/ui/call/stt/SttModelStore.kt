@@ -45,12 +45,12 @@ class SttModelStore(
     private val context: Context,
     private val gate: AndroidInternetGate,
     private val scope: CoroutineScope,
-    val model: SttModel = SttModel.MOONSHINE_SMALL_STREAMING_EN,
+    override val model: SttModel = SttModel.MOONSHINE_SMALL_STREAMING_EN,
     // Asked as a download starts, to hold the process until it ends; a refusal (a start from the background) is logged
     // and the download runs anyway.
     private val keepAlive: () -> Unit = {},
     private val log: (String) -> Unit = {},
-) {
+) : SttModelFiles {
     private val root = File(context.noBackupFilesDir, "models")
     private val lock = Any()
     private var job: Job? = null
@@ -60,11 +60,11 @@ class SttModelStore(
     private val _state = MutableStateFlow<SttModelState>(SttModelState.Absent)
 
     /** Where the model stands; [SttModelState.Ready] only once every file is in and checked. */
-    val state: StateFlow<SttModelState> = _state.asStateFlow()
+    override val state: StateFlow<SttModelState> = _state.asStateFlow()
 
     /** Bumped each time the model on disk changes (installed, deleted): an engine built over the old files is stale. */
     @Volatile
-    var generation = 0
+    override var generation = 0
         private set
 
     private val started = AtomicBoolean()
@@ -84,7 +84,7 @@ class SttModelStore(
     }
 
     /** The model's files by name, while it is [SttModelState.Ready]. */
-    fun paths(): Map<String, File>? {
+    override fun paths(): Map<String, File>? {
         if (_state.value != SttModelState.Ready) return null
         return model.files.associate { it.name to installer.pathOf(it) }
     }

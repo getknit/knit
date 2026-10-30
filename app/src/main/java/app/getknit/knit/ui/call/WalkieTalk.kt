@@ -7,6 +7,7 @@ import app.getknit.knit.call.HeardLedger
 import app.getknit.knit.call.OpusPackets
 import app.getknit.knit.call.TalkChunk
 import app.getknit.knit.call.TalkChunker
+import app.getknit.knit.call.TalkCue
 import app.getknit.knit.call.TalkIn
 import app.getknit.knit.call.TalkLink
 import app.getknit.knit.call.TalkQueue
@@ -58,11 +59,15 @@ internal sealed interface Talk {
         val level: Float,
     ) : Talk
 
-    data object Sending : Talk
+    /** The burst has stopped recording and goes out; [cue] says how it stopped, felt and heard on this phone. */
+    data class Sending(
+        val cue: TalkCue = TalkCue.RELEASED,
+    ) : Talk
 
     data object Hearing : Talk
 
-    enum class Note { SENT, TOO_SHORT, NO_MIC, NOT_SENT, NO_LINK }
+    /** [CAPPED] is [SENT] for a burst that ran to [WalkiePolicy.MAX_BURST_MS] with the button still held. */
+    enum class Note { SENT, CAPPED, TOO_SHORT, NO_MIC, NOT_SENT, NO_LINK }
 }
 
 /** The mesh as a walkie call sees its peer (§3.11): the link a chunk would take, and the call's hold on a Wi-Fi Aware one. */
@@ -144,6 +149,9 @@ internal class WalkieTalk(
     private val headset: () -> Boolean = { false },
     private val transcript: WalkieTranscriber? = null,
     private val field: FieldRecorder = FieldRecorder.NONE,
+    // How a burst spoken ended (C-3.11-5), as a tone on this phone; the call screen adds the haptic. Called with the
+    // microphone already stopped, so the tone is never part of the burst.
+    private val cue: (TalkCue) -> Unit = {},
 ) {
     private val _talk = MutableStateFlow<Talk>(Talk.Idle())
     val talk: StateFlow<Talk> = _talk.asStateFlow()
@@ -278,7 +286,7 @@ internal class WalkieTalk(
                     while (true) {
                         val elapsed = recorder.elapsedMs()
                         if (elapsed >= WalkiePolicy.MAX_BURST_MS) {
-                            scope.launch { release() }
+                            scope.launch { release(TalkCue.CAPPED) }
                             break
                         }
                         _talk.value = Talk.Recording(elapsed, recorder.amplitude())
@@ -289,26 +297,31 @@ internal class WalkieTalk(
             true
         }
 
-    /** Ends the burst: its last chunk goes out, unless it ended before its first did. */
-    suspend fun release() {
+    /**
+     * Ends the burst: its last chunk goes out, unless it ended before its first did. [how] is the user letting go, or the
+     * burst reaching [WalkiePolicy.MAX_BURST_MS] while the button is still held.
+     */
+    suspend fun release(how: TalkCue = TalkCue.RELEASED) {
         val o =
             lock.withLock {
                 val o = outgoing ?: return
                 outgoing = null
                 o.ticker.cancel()
-                _talk.value = Talk.Sending
+                _talk.value = Talk.Sending(how)
                 // Joins the drain, so every byte recorded has reached the streamer before its channel closes.
                 recorder.stop()
                 // Every sample spoken has been through the tap: sent or not, the model hears it.
                 transcript?.end(o.burst, mine = true)
                 o
             }
+        // After the stop: the microphone never takes the tone into the burst.
+        runCatching { cue(how) }.onFailure { log("walkie: cue $how not played: ${it.javaClass.simpleName}") }
         o.bytes.close()
         o.kept.complete(true)
         val note = o.streamer.await()
         hold(false)
         lastActivity = clock()
-        _talk.value = Talk.Idle(note)
+        _talk.value = Talk.Idle(if (how == TalkCue.CAPPED && note == Talk.Note.SENT) Talk.Note.CAPPED else note)
     }
 
     /** Drops the burst being spoken; a peer already hearing it is told it ended. */

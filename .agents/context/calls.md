@@ -57,7 +57,7 @@ lines.
   only to the spool whose host name is its `aud` (a privacy rule), a refusal is a stored verdict, an `ent` spool gets
   no `turnreq` without a TURN-flagged ticket and a ticketed one is asked first, and every call gathers from the
   hellos' STUN under a URL rule narrower than the spec's, because one URL libwebrtc refuses ends the call.
-  **Before touching `call/Walkie.kt` (`CallWalkie`, `WalkiePolicy`, `TalkWire`, `OpusPackets`, `TalkQueue`), `call/TalkGain`, `CallKind`,
+  **Before touching `call/Walkie.kt` (`CallWalkie`, `WalkiePolicy`, `TalkCue`, `TalkWire`, `OpusPackets`, `TalkQueue`), `call/TalkGain`, `CallKind`,
   `CallPayload.MEDIA_WALKIE`, `FrameType.TALK`, `mesh/protocol/TalkSeal`, `MeshManager.sendCallTalk`,
   `InboundPipeline.handleTalk` / `isTalkShape`, `Protocol.CAP_WALKIE`, `call/TalkRoute` (`TalkRoute`, `HeardLedger`),
   `CallPayload.hr`, `mesh/TalkRadioPaths`, `CallManager`'s `fallback` / `walkieOk` /
@@ -69,6 +69,9 @@ lines.
   and is cast beside them otherwise or while the listener's per-burst reports say they lose it (C-3.11-10, the twelfth
   amendment; never `heardIndirectly`); a live call drops to one, without a frame, only when both OFFER and ANSWER carried the walkie
   bit (parked since 2026-10-09: `CallManager.dropToWalkie` is off, so a lost live call ends `no_route`); the flag is read once, as `CallWiring.WALKIE_WIRED`, and needs no live calls.
+  A burst stops at `MAX_BURST_MS` (30 s) while a receiver takes `MAX_HEARD_BURST_MS` (60 s, an older sender's), and
+  ends with a `TalkCue` on the speaker's phone alone — the call screen's haptic on the step from `Talk.Recording` to
+  `Talk.Sending`, and at the limit `CallTone.TALK_CAPPED`, played after the recorder stops (79yb's fourteenth amendment).
   **Before touching `call/CaptureHealth` (`CaptureProfile`, `CapturePolicy`, `CaptureWatch`), `ui/call/CaptureTap`,
   the audio module in `WebRtcCallMedia`, `call/TalkCapture` or the `call_capture_` keys:** READ ADR 2026-10.kw29 (and
   79yb's thirteenth amendment: the walkie's phone microphone follows the same profile) and `docs/VOICE_CALLS.md`
@@ -96,12 +99,13 @@ lines.
   where one subscriber's cast ticket unlocks the scope.
   **Before touching `call/WalkieTranscript.kt` (`BurstPcm`, `PassGate`, `SpeechStream`, `WalkieTranscriber`, `SttPolicy`),
   `call/CallCaptions.kt` (`CallCaptioner`, `CaptionPolicy`), `WebRtcSession.listen` (the captions' sink), `LiveCaptions`
-  and the live call's CC button (`TranscriptStore.liveCaptions`),
+  and the live call's CC button (`TranscriptStore.liveCaptions`; it and the card show only from `Connected`, `CAPTIONED`),
   `call/WalkieClips.kt` and `WalkieClipFiles` (a debug build's saved bursts, off by default), `call/SttKeytermPolicy.kt` and
   `SttKeytermFeed` (the names the model listens for),
   `call/VoiceNoteTranscript.kt` (`VoiceNoteTranscriber`, `VoiceNoteSpeech`), `VoiceAudio.speechPcm`, `messages.voiceTranscript`
   and the voice bubble's Transcribe (also ADR 2026-10.am8d),
-  `call/SttModel.kt` (the pins, `SttModelInstaller`), `ui/call/stt/` (`MoonshineSpeech`, `SttModelStore`,
+  `call/SttModel.kt` (the pins, `SttModelInstaller`), `ui/call/stt/` (`MoonshineSpeech`, `MoonshineRuntime`, `JniMoonshine`,
+  `SttModelFiles`, `SttModelStore`,
   `SttDownloadService`), the Calls screen's transcripts section (`data/settings/TranscriptStore`), `TalkPlayer`'s `TalkPcmTap`,
   `WalkieTranscriptCard`, `ModelLoadGuard.STT`, the `moonshineVoice` pin or `scripts/stt-model.py`:** READ ADR
   2026-10.nz3g and `docs/VOICE_CALLS.md` C-3.11-9 and C-3.7-5 — the receiver writes each heard burst, and with CC on a

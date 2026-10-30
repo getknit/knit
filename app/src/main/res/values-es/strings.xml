@@ -293,6 +293,7 @@
     <string name="call_talk_sending">Enviando…</string>
     <string name="call_talk_hearing">%1$s está hablando…</string>
     <string name="call_talk_sent">Enviado</string>
+    <string name="call_talk_capped">Enviado al llegar al límite de %1$d segundos. Mantén presionado otra vez para seguir hablando.</string>
     <string name="call_talk_no_mic">El micrófono está ocupado</string>
     <string name="call_talk_not_sent">No se pudo enviar ese audio</string>
     <string name="call_talk_no_link">Sin enlace, así que ese audio no salió</string>
@@ -386,7 +387,7 @@
     <string name="call_transcript_title">Transcripción</string>
     <string name="call_captions_title">Subtítulos</string>
     <string name="call_transcript_marker">EN EL TELÉFONO</string>
-    <string name="call_transcript_empty">Lo que tú y %1$s digan aparece aquí como texto mientras hablan.</string>
+    <string name="call_transcript_empty">Lo que diga %1$s aparece aquí como texto mientras se reproduce cada transmisión.</string>
     <string name="call_captions_empty">Lo que diga %1$s aparece aquí como texto.</string>
     <string name="call_transcript_other_phone">el otro teléfono</string>
     <string name="call_transcript_you">Tú</string>
@@ -398,8 +399,8 @@
     <string name="call_transcript_no_speech">No se detectó voz</string>
     <string name="call_transcript_no_model">Sin transcribir: el modelo de voz no está en este teléfono</string>
     <string name="call_transcript_failed">No se pudo transcribir este fragmento</string>
-    <string name="call_transcript_offer">Convierte en texto las transmisiones que oyes y dices, en este teléfono.</string>
-    <string name="call_captions_offer">Mira como texto lo que dice %1$s, escrito en este teléfono mientras lo oyes.</string>
+    <string name="call_transcript_offer">Lee como texto cada transmisión que oyes (solo en inglés).</string>
+    <string name="call_captions_offer">Mira como texto lo que dice %1$s, escrito en este teléfono mientras lo oyes (solo en inglés).</string>
     <string name="call_transcript_model_absent">%1$s El modelo de voz es una descarga única de %2$s desde getknit.app, aquí o cuando quieras en Configuración › Llamadas.</string>
     <string name="call_transcript_download">Descargar</string>
     <string name="call_transcript_dismiss">Descartar</string>
@@ -852,7 +853,7 @@
     <string name="call_settings_prefer_mesh_title">Preferir llamadas mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">El botón de llamada de un chat hace una llamada mesh. Las llamadas en vivo pasan al menú del chat.</string>
     <string name="call_settings_transcripts_title">Transcripciones y subtítulos</string>
-    <string name="call_settings_transcripts_subtitle">Convierte la voz en texto en este teléfono: las ráfagas de walkie-talkie mientras se reproducen, las llamadas en vivo cuando activas CC y las notas de voz cuando tocas Transcribir. El texto nunca se envía.</string>
+    <string name="call_settings_transcripts_subtitle">Convierte la voz en inglés en texto en este teléfono: las ráfagas de walkie-talkie mientras se reproducen, las llamadas en vivo cuando activas CC y las notas de voz cuando tocas Transcribir. El texto nunca se envía.</string>
     <string name="call_settings_speech_model_title">Modelo de voz</string>
     <string name="call_settings_speech_model_absent">Una descarga única de %1$s desde getknit.app. Las transcripciones empiezan cuando esté en este teléfono.</string>
     <string name="call_settings_speech_model_metered">Ahora estás usando datos móviles o el Ahorro de datos.</string>

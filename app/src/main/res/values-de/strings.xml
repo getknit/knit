@@ -286,6 +286,7 @@
     <string name="call_talk_sending">Wird gesendet…</string>
     <string name="call_talk_hearing">%1$s spricht…</string>
     <string name="call_talk_sent">Gesendet</string>
+    <string name="call_talk_capped">Gesendet, %1$d Sekunden sind das Maximum. Halte erneut gedrückt, um weiterzusprechen.</string>
     <string name="call_talk_no_mic">Das Mikrofon ist belegt</string>
     <string name="call_talk_not_sent">Das konnte nicht gesendet werden</string>
     <string name="call_talk_no_link">Keine Verbindung, daher nicht gesendet</string>
@@ -378,7 +379,7 @@
     <string name="call_transcript_title">Transkript</string>
     <string name="call_captions_title">Untertitel</string>
     <string name="call_transcript_marker">AUF DEM GERÄT</string>
-    <string name="call_transcript_empty">Was du und %1$s sagt, erscheint hier während des Gesprächs als Text.</string>
+    <string name="call_transcript_empty">Was %1$s sagt, erscheint hier als Text, während jede Durchsage abgespielt wird.</string>
     <string name="call_captions_empty">Was %1$s sagt, erscheint hier als Text.</string>
     <string name="call_transcript_other_phone">das andere Smartphone</string>
     <string name="call_transcript_you">Du</string>
@@ -390,8 +391,8 @@
     <string name="call_transcript_no_speech">Keine Sprache erkannt</string>
     <string name="call_transcript_no_model">Nicht transkribiert: Das Sprachmodell ist nicht auf diesem Smartphone</string>
     <string name="call_transcript_failed">Konnte nicht transkribiert werden</string>
-    <string name="call_transcript_offer">Wandle das, was du hörst und sprichst, auf diesem Smartphone in Text um.</string>
-    <string name="call_captions_offer">Lies als Text mit, was %1$s sagt – erstellt auf diesem Smartphone, während du zuhörst.</string>
+    <string name="call_transcript_offer">Lies jede Durchsage, die du hörst, als Text (nur Englisch).</string>
+    <string name="call_captions_offer">Lies als Text mit, was %1$s sagt – erstellt auf diesem Smartphone, während du zuhörst (nur Englisch).</string>
     <string name="call_transcript_model_absent">%1$s Das Sprachmodell wird einmalig von getknit.app heruntergeladen (%2$s), hier oder jederzeit unter Einstellungen › Anrufe.</string>
     <string name="call_transcript_download">Herunterladen</string>
     <string name="call_transcript_dismiss">Schließen</string>
@@ -840,7 +841,7 @@
     <string name="call_settings_prefer_mesh_title">Mesh-Anrufe bevorzugen</string>
     <string name="call_settings_prefer_mesh_subtitle">Die Anruftaste in einem Chat startet einen Mesh-Anruf. Live-Anrufe findest du dann im Menü des Chats.</string>
     <string name="call_settings_transcripts_title">Transkripte und Untertitel</string>
-    <string name="call_settings_transcripts_subtitle">Wandelt Sprache auf diesem Smartphone in Text um: Walkie-Talkie-Durchsagen beim Abspielen, Live-Anrufe, wenn du CC aktivierst, und Sprachnachrichten, wenn du auf „Transkribieren“ tippst. Der Text wird nie gesendet.</string>
+    <string name="call_settings_transcripts_subtitle">Wandelt englische Sprache auf diesem Smartphone in Text um: Walkie-Talkie-Durchsagen beim Abspielen, Live-Anrufe, wenn du CC aktivierst, und Sprachnachrichten, wenn du auf „Transkribieren“ tippst. Der Text wird nie gesendet.</string>
     <string name="call_settings_speech_model_title">Sprachmodell</string>
     <string name="call_settings_speech_model_absent">Ein einmaliger Download von getknit.app (%1$s). Transkripte gibt es, sobald das Modell auf diesem Smartphone ist.</string>
     <string name="call_settings_speech_model_metered">Du nutzt gerade mobile Daten oder den Datensparmodus.</string>

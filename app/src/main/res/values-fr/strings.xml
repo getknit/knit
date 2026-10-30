@@ -293,6 +293,7 @@
     <string name="call_talk_sending">Envoi…</string>
     <string name="call_talk_hearing">%1$s parle…</string>
     <string name="call_talk_sent">Envoyé</string>
+    <string name="call_talk_capped">Envoyé à la limite de %1$d secondes. Maintenez à nouveau pour continuer à parler.</string>
     <string name="call_talk_no_mic">Le micro est occupé</string>
     <string name="call_talk_not_sent">Impossible d’envoyer ce message</string>
     <string name="call_talk_no_link">Pas de liaison, ce message n’est pas parti</string>
@@ -386,7 +387,7 @@
     <string name="call_transcript_title">Transcription</string>
     <string name="call_captions_title">Sous-titres</string>
     <string name="call_transcript_marker">SUR L’APPAREIL</string>
-    <string name="call_transcript_empty">Ce que vous et %1$s dites s’affiche ici sous forme de texte, pendant que vous parlez.</string>
+    <string name="call_transcript_empty">Ce que dit %1$s s’affiche ici sous forme de texte, pendant la lecture de chaque message.</string>
     <string name="call_captions_empty">Ce que dit %1$s s’affiche ici sous forme de texte.</string>
     <string name="call_transcript_other_phone">l’autre téléphone</string>
     <string name="call_transcript_you">Vous</string>
@@ -398,8 +399,8 @@
     <string name="call_transcript_no_speech">Aucune parole détectée</string>
     <string name="call_transcript_no_model">Non transcrit : le modèle vocal n’est pas sur ce téléphone</string>
     <string name="call_transcript_failed">Impossible de transcrire ce message</string>
-    <string name="call_transcript_offer">Convertissez en texte ce que vous entendez et dites, directement sur ce téléphone.</string>
-    <string name="call_captions_offer">Affichez en texte ce que dit %1$s, transcrit sur ce téléphone à mesure que vous l’entendez.</string>
+    <string name="call_transcript_offer">Lisez sous forme de texte chaque message que vous entendez (anglais uniquement).</string>
+    <string name="call_captions_offer">Affichez en texte ce que dit %1$s, transcrit sur ce téléphone à mesure que vous l’entendez (anglais uniquement).</string>
     <string name="call_transcript_model_absent">%1$s Le modèle vocal se télécharge une seule fois (%2$s) depuis getknit.app, ici ou à tout moment dans Paramètres › Appels.</string>
     <string name="call_transcript_download">Télécharger</string>
     <string name="call_transcript_dismiss">Ignorer</string>
@@ -852,7 +853,7 @@
     <string name="call_settings_prefer_mesh_title">Préférer les appels par le mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">Le bouton d’appel d’une discussion lance un appel par le mesh. Les appels en direct passent dans le menu de la discussion.</string>
     <string name="call_settings_transcripts_title">Transcriptions et sous-titres</string>
-    <string name="call_settings_transcripts_subtitle">Convertir la parole en texte, sur ce téléphone : les messages walkie-talkie pendant leur lecture, les appels en direct quand vous activez CC, et les messages vocaux quand vous appuyez sur Transcrire. Le texte n’est jamais envoyé.</string>
+    <string name="call_settings_transcripts_subtitle">Convertir la parole en anglais en texte, sur ce téléphone : les messages walkie-talkie pendant leur lecture, les appels en direct quand vous activez CC, et les messages vocaux quand vous appuyez sur Transcrire. Le texte n’est jamais envoyé.</string>
     <string name="call_settings_speech_model_title">Modèle vocal</string>
     <string name="call_settings_speech_model_absent">Un téléchargement unique de %1$s depuis getknit.app. Les transcriptions démarrent une fois le modèle sur ce téléphone.</string>
     <string name="call_settings_speech_model_metered">Vous utilisez actuellement les données mobiles ou l’Économiseur de données.</string>

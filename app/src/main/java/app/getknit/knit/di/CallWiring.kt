@@ -16,6 +16,7 @@ import app.getknit.knit.call.CallReach
 import app.getknit.knit.call.CallReachRule
 import app.getknit.knit.call.CallSignals
 import app.getknit.knit.call.CallTimings
+import app.getknit.knit.call.CallTone
 import app.getknit.knit.call.CallToneSync
 import app.getknit.knit.call.CallWalkie
 import app.getknit.knit.call.CaptureHealth
@@ -26,7 +27,9 @@ import app.getknit.knit.call.IceProbe
 import app.getknit.knit.call.OverridingTurnSource
 import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.SystemCalls
+import app.getknit.knit.call.TalkCue
 import app.getknit.knit.call.TalkLink
+import app.getknit.knit.call.TonePlayer
 import app.getknit.knit.call.TurnMeasure
 import app.getknit.knit.call.TurnProbe
 import app.getknit.knit.call.TurnRanking
@@ -426,7 +429,7 @@ private fun Module.speechGraph() {
             log = { Log.i(TAG, it) },
         )
     }
-    single { MoonshineSpeech(get(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+    single { MoonshineSpeech(get<SttModelStore>(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
     // The names a call is likely to carry, for the model to listen for: read as a call begins, never logged.
     single {
         SttKeytermFeed(
@@ -567,9 +570,13 @@ private fun Module.walkieGraph() {
             },
             transcript = if (STT_WIRED) get<WalkieTranscriber>() else null,
             field = fieldLog(),
+            cue = walkieCue(ToneGeneratorPlayer(get<CoroutineScope>(), log = { Log.w(TAG, it) })),
         )
     }
 }
+
+/** The tone a spoken burst ends with (C-3.11-5): none when the user lets go, two beeps when it ran to its limit. */
+private fun walkieCue(tones: TonePlayer): (TalkCue) -> Unit = { how -> if (how == TalkCue.CAPPED) tones.play(CallTone.TALK_CAPPED) }
 
 /**
  * The field log (ADR 2026-10.a239), resolved at each record and never as the call graph builds, like every mesh seam

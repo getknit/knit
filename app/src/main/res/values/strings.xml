@@ -368,6 +368,8 @@
     <string name="call_talk_sending">Sending…</string>
     <string name="call_talk_hearing">%1$s is talking…</string>
     <string name="call_talk_sent">Sent</string>
+    <!-- A burst ran to its limit with the button still held, and went out. %1$d is the limit in seconds (30). -->
+    <string name="call_talk_capped">Sent at the %1$d-second limit. Hold again to keep talking.</string>
     <string name="call_talk_no_mic">The microphone is busy</string>
     <string name="call_talk_not_sent">Couldn\'t send that one</string>
     <string name="call_talk_no_link">Not linked, so that one didn\'t go</string>
@@ -481,7 +483,7 @@
     <!-- The badge beside those cards' titles: the speech is turned into text on this phone, never sent anywhere. -->
     <string name="call_transcript_marker">ON DEVICE</string>
     <!-- %1$s is the other person's name, or call_transcript_other_phone when there is none. -->
-    <string name="call_transcript_empty">What you and %1$s say shows here as text, as you talk.</string>
+    <string name="call_transcript_empty">What %1$s says shows here as text, as each burst plays.</string>
     <string name="call_captions_empty">What %1$s says shows here as text.</string>
     <string name="call_transcript_other_phone">the other phone</string>
     <string name="call_transcript_you">You</string>
@@ -495,10 +497,10 @@
     <string name="call_transcript_no_speech">No speech heard</string>
     <string name="call_transcript_no_model">Not transcribed: the speech model isn\'t on this phone</string>
     <string name="call_transcript_failed">Couldn\'t transcribe this one</string>
-    <string name="call_transcript_offer">Turn the bursts you hear and speak into text, on this phone.</string>
+    <string name="call_transcript_offer">Read each burst you hear as text (English only).</string>
     <!-- %1$s is the other person's name, or call_transcript_other_phone. -->
-    <string name="call_captions_offer">See what %1$s says as text, written on this phone as you hear it.</string>
-    <!-- %1$s is call_transcript_offer or call_captions_offer; %2$s is the download's size, "44 MB". -->
+    <string name="call_captions_offer">See what %1$s says as text, written on this phone as you hear it (English only).</string>
+    <!-- %1$s is call_transcript_offer or call_captions_offer; %2$s is the download's size, "142 MB". -->
     <string name="call_transcript_model_absent">%1$s The speech model is a one-time %2$s download from getknit.app, here or any time in Settings › Calls.</string>
     <string name="call_transcript_download">Download</string>
     <string name="call_transcript_dismiss">Dismiss</string>
@@ -1027,7 +1029,7 @@
     <string name="call_settings_prefer_mesh_title">Prefer mesh calls</string>
     <string name="call_settings_prefer_mesh_subtitle">The call button in a chat places a mesh call. Live calls move to the chat\'s menu.</string>
     <string name="call_settings_transcripts_title">Transcripts and captions</string>
-    <string name="call_settings_transcripts_subtitle">Turn speech into text, on this phone: walkie-talkie bursts as they play, live calls when you turn on CC, and voice messages when you tap Transcribe. The text is never sent.</string>
+    <string name="call_settings_transcripts_subtitle">Turn English speech into text on this phone: walkie-talkie bursts as they play, live calls when you turn on CC, and voice messages when you tap Transcribe. The text is never sent.</string>
     <string name="call_settings_speech_model_title">Speech model</string>
     <string name="call_settings_speech_model_absent">A one-time %1$s download from getknit.app. Transcripts start once it\'s on this phone.</string>
     <string name="call_settings_speech_model_metered">You\'re on mobile data or Data Saver now.</string>

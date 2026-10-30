@@ -80,6 +80,17 @@ class ModelLease<T : Any>(
         }
 
     /**
+     * Runs [block] with the engine only if it is in memory now, else with `null`: never loads. For work that is only
+     * worth doing on the engine already there, like freeing a handle the engine gave out, which a reload would not know.
+     * A use that finds the engine stamps [lastUsedAt] as [use] does; one that finds none leaves the lease as it was.
+     */
+    suspend fun <R> useResident(block: (T?) -> R): R =
+        mutex.withLock {
+            if (engine != null) lastUsed = clock()
+            block(engine)
+        }
+
+    /**
      * Close the engine now and return to unloaded, so the next [use] reloads through [load]. The debug
      * bridge's fast path through the idle cycle, and how a test proves the reload. A spent lease stays spent.
      */

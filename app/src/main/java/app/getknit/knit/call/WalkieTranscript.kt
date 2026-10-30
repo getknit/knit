@@ -140,7 +140,7 @@ class PassGate(
  * soft low-pass costs nothing the model would hear. Pure (`BurstPcmTest`); not thread-safe.
  */
 class BurstPcm(
-    capMs: Long = WalkiePolicy.MAX_BURST_MS + CAP_SLACK_MS,
+    capMs: Long = WalkiePolicy.MAX_HEARD_BURST_MS + CAP_SLACK_MS,
 ) {
     private val cap = (capMs * SttPolicy.SAMPLE_RATE / MS_PER_S).toInt()
     private var held = FloatArray(INITIAL_SAMPLES)

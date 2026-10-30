@@ -1,13 +1,18 @@
 package app.getknit.knit.ui.call
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.call.CallPhase
 import app.getknit.knit.call.CallState
+import app.getknit.knit.call.Captions
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.TranscriptLine
 import app.getknit.knit.call.WalkieStats
@@ -155,6 +160,46 @@ class WalkieTranscriptScreenTest {
         compose.onNodeWithText("No Internet connection", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Try again").performClick()
         assertEquals(1, downloads)
+    }
+
+    // A live call with CC left on drew its captions card while it still rang (Connecting): an empty card squeezed
+    // between the face and the answer buttons.
+    @Test
+    fun aLiveCallsCaptionsWaitForTheAnswer() {
+        var phase by mutableStateOf(CallPhase.Connecting)
+        compose.setContent {
+            KnitTheme {
+                CallScreen(
+                    state =
+                        CallState(
+                            id = "c1",
+                            peerId = "hzwyqdbj74hu6gkurmcyxomaca",
+                            outgoing = true,
+                            phase = phase,
+                            startedAt = 0,
+                            connectedAt = if (phase == CallPhase.Connected) 0L else null,
+                        ),
+                    name = "Ada",
+                    avatarHash = null,
+                    route = null,
+                    stats = null,
+                    onAnswer = {},
+                    onDecline = {},
+                    onHangUp = {},
+                    onMute = {},
+                    onRoute = {},
+                    clock = { 0L },
+                    captions = CaptionsUi(Captions(), SttModelState.Ready, modelBytes = 141_878_244, metered = false),
+                    captionsOn = true,
+                )
+            }
+        }
+        compose.onNodeWithTag("live_captions").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Hide captions").assertDoesNotExist()
+
+        compose.runOnIdle { phase = CallPhase.Connected }
+        compose.onNodeWithTag("live_captions").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Hide captions").assertIsDisplayed()
     }
 
     @Test

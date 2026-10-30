@@ -592,3 +592,25 @@ not offer it, the Pixels say they don't, and it brings no suppression.
 Owed: a P9 ↔ P7 walkie on this build with scripted sentences, read against the 2026-10-28 clips. Then the Moto (a
 generic image) should log `walkie in: source 6`, and `…debug.CALL --es op capture --es set fallback` on a Pixel should
 move its next burst to source 6.
+
+## Amendment 2026-10-30 (14): a burst stops at 30 s, and the speaker feels it stop
+
+A held button now stops recording at 30 s (`WalkiePolicy.MAX_BURST_MS`), down from 60 s. Thirty seconds is one turn of
+a conversation, and it keeps a burst inside the stretch Moonshine advises for one line of the transcript (ADR
+2026-10.nz3g, its 2026-10-30 amendment). A receiver still takes up to 60 s (`WalkiePolicy.MAX_HEARD_BURST_MS`), since an
+older sender holds to the old limit. Nothing on the wire moves.
+
+A burst used to stop at its limit in silence, with the speaker possibly mid-sentence. Each burst spoken now ends with a
+cue on the speaker's phone alone (`TalkCue`, carried on `Talk.Sending`):
+
+- **Let go** (`RELEASED`): a light haptic (`HapticFeedbackType.Confirm`) as the button is released. No tone, since one
+  on every release would be noise.
+- **The limit** (`CAPPED`): a firmer haptic (`Reject`), and two short beeps (`CallTone.TALK_CAPPED`,
+  `ToneGenerator.TONE_PROP_ACK`) on the voice-call stream, so the call's route carries them and someone with touch
+  haptics off still hears it. `WalkieTalk.release` plays the tone after `recorder.stop()`, so the burst never records
+  it. The status line then reads "Sent at the 30-second limit. Hold again to keep talking." (`Talk.Note.CAPPED`),
+  unless the burst failed to send, whose note matters more.
+
+The call screen fires the haptic only on the step from `Recording` to `Sending`, so a screen drawn again mid-send does
+not buzz twice (`WalkieTalkCueTest`). Owed: a device check that the beep is heard on the loudspeaker and on a headset,
+and not on the peer.

@@ -27,9 +27,15 @@ internal class ToneGeneratorPlayer(
         val (type, ms) =
             when (tone) {
                 CallTone.RINGBACK -> ToneGenerator.TONE_SUP_RINGTONE to -1
+
                 CallTone.BUSY -> ToneGenerator.TONE_SUP_BUSY to ONE_SHOT_MS
+
                 CallTone.CONGESTION -> ToneGenerator.TONE_SUP_CONGESTION to ONE_SHOT_MS
+
                 CallTone.ENDED -> ToneGenerator.TONE_PROP_PROMPT to ENDED_MS
+
+                // Two short beeps, unlike the end's one: the speaker's burst stopped, the call did not.
+                CallTone.TALK_CAPPED -> ToneGenerator.TONE_PROP_ACK to CAPPED_MS
             }
         // The generator's constructor throws when the audio server has no track to give.
         val g =
@@ -66,6 +72,7 @@ internal class ToneGeneratorPlayer(
         const val VOLUME = 80
         const val ONE_SHOT_MS = 3_000
         const val ENDED_MS = 300
+        const val CAPPED_MS = 400
         const val RELEASE_SLACK_MS = 100L
     }
 }

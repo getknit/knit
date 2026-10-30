@@ -300,6 +300,7 @@
     <string name="call_talk_sending">Надсилання…</string>
     <string name="call_talk_hearing">%1$s говорить…</string>
     <string name="call_talk_sent">Надіслано</string>
+    <string name="call_talk_capped">Надіслано: досягнуто ліміту в %1$d секунд. Утримуйте знову, щоб говорити далі.</string>
     <string name="call_talk_no_mic">Мікрофон зайнятий</string>
     <string name="call_talk_not_sent">Не вдалося надіслати</string>
     <string name="call_talk_no_link">Немає зв’язку, тому не надіслано</string>
@@ -394,7 +395,7 @@
     <string name="call_transcript_title">Розшифровка</string>
     <string name="call_captions_title">Субтитри</string>
     <string name="call_transcript_marker">НА ПРИСТРОЇ</string>
-    <string name="call_transcript_empty">Те, що кажете ви та %1$s, з’являтиметься тут текстом під час розмови.</string>
+    <string name="call_transcript_empty">Те, що каже %1$s, з’являтиметься тут текстом під час відтворення кожної репліки.</string>
     <string name="call_captions_empty">Тут текстом з’являтиметься те, що каже %1$s.</string>
     <string name="call_transcript_other_phone">інший телефон</string>
     <string name="call_transcript_you">Ви</string>
@@ -406,8 +407,8 @@
     <string name="call_transcript_no_speech">Мовлення не почуто</string>
     <string name="call_transcript_no_model">Не розшифровано: на цьому телефоні немає мовної моделі</string>
     <string name="call_transcript_failed">Не вдалося розшифрувати</string>
-    <string name="call_transcript_offer">Перетворюйте репліки, які ви чуєте й кажете, на текст прямо на цьому телефоні.</string>
-    <string name="call_captions_offer">Читайте текстом те, що каже %1$s: цей телефон записує слова, поки ви слухаєте.</string>
+    <string name="call_transcript_offer">Читайте текстом кожну репліку, яку ви чуєте (лише англійською).</string>
+    <string name="call_captions_offer">Читайте текстом те, що каже %1$s: цей телефон записує слова, поки ви слухаєте (лише англійською).</string>
     <string name="call_transcript_model_absent">%1$s Мовну модель потрібно один раз завантажити з getknit.app (%2$s) — тут або будь-коли у розділі «Налаштування › Дзвінки».</string>
     <string name="call_transcript_download">Завантажити</string>
     <string name="call_transcript_dismiss">Закрити</string>
@@ -864,7 +865,7 @@
     <string name="call_settings_prefer_mesh_title">Віддавати перевагу дзвінкам через mesh</string>
     <string name="call_settings_prefer_mesh_subtitle">Кнопка дзвінка в чаті здійснює дзвінок через mesh. Дзвінки наживо переходять у меню чату.</string>
     <string name="call_settings_transcripts_title">Розшифровки та субтитри</string>
-    <string name="call_settings_transcripts_subtitle">Перетворення мовлення на текст на цьому телефоні: фрагменти рації під час відтворення, дзвінки наживо, коли ви вмикаєте субтитри, і голосові повідомлення, коли ви натискаєте «Розшифрувати». Текст нікуди не надсилається.</string>
+    <string name="call_settings_transcripts_subtitle">Перетворення англійського мовлення на текст на цьому телефоні: фрагменти рації під час відтворення, дзвінки наживо, коли ви вмикаєте субтитри, і голосові повідомлення, коли ви натискаєте «Розшифрувати». Текст нікуди не надсилається.</string>
     <string name="call_settings_speech_model_title">Модель мовлення</string>
     <string name="call_settings_speech_model_absent">Одноразове завантаження %1$s з getknit.app. Розшифровки почнуть працювати, щойно модель буде на цьому телефоні.</string>
     <string name="call_settings_speech_model_metered">Зараз ви використовуєте мобільний інтернет або Заощадження трафіку.</string>

@@ -17,6 +17,9 @@ lines.
   on a `ModelLease`: the lease owns the mutex, the ten-minute idle reaper and the attempted/resident split — a
   load that returned nothing is spent for the process (that is how the poison-pill survives an unload), a
   reload goes through `ModelLoadGuard` again, and `Interpreter.close()` is never called outside the lease.
+  `ModelLease.useResident` never loads: it is for work only worth doing on the engine in memory (the speech model's
+  streams, ADR 2026-10.nz3g's 2026-10-30 amendment). A holder that wants a spent lease tried again drops it and builds
+  a new one, as `MoonshineSpeech.unload` does at a call's end.
   Never put `NsfwImageModerator` on a warm-up path. Regression: `ModelLeaseTest`, `ModelLoadGuardTest`,
   `MlTextModeratorWarmUpTest`; on hardware `ToxicityInstrumentedTest` / `NsfwInstrumentedTest`.
 - **When touching `LexicalTextFilter`, `ScopedTextModerator`, `WordList`, `MlTextModerator`'s block thresholds,

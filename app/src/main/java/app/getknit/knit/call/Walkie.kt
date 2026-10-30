@@ -74,6 +74,14 @@ enum class TalkLink {
     }
 }
 
+/**
+ * How a burst this phone spoke ended, as the speaker feels and hears it (C-3.11-5): [RELEASED], a light tick as the
+ * button is let go; [CAPPED], the burst ran to [WalkiePolicy.MAX_BURST_MS] with the button still held, so a firmer
+ * buzz and a short double beep tell a speaker who may still be talking that the rest was not sent. Nothing reaches the
+ * peer.
+ */
+enum class TalkCue { RELEASED, CAPPED }
+
 /** A walkie session's numbers (§3.11). */
 object WalkiePolicy {
     /** Opus's rate for a burst: speech at about 1 KB/s, so a burst fits Coded PHY's 2.1 KB/s with its framing. */
@@ -82,8 +90,17 @@ object WalkiePolicy {
     /** What the microphone is captured at: Opus's wideband, enough for speech. */
     const val SAMPLE_RATE = 16_000
 
-    /** A held button is released for the user after this long. */
-    const val MAX_BURST_MS = 60_000L
+    /**
+     * A held button is released for the user after this long, with a cue that says so ([TalkCue.CAPPED]). Thirty
+     * seconds keeps a burst one line of the transcript's model (C-3.11-9) and one turn of a conversation.
+     */
+    const val MAX_BURST_MS = 30_000L
+
+    /**
+     * The longest burst a receiver plays and transcribes in full: [MAX_BURST_MS] before 2026-10-30. An older sender
+     * still holds a button that long, and it is heard whole.
+     */
+    const val MAX_HEARD_BURST_MS = 60_000L
 
     /** A session with no burst either way for this long hangs up on its own. */
     const val IDLE_END_MS = 10 * 60_000L

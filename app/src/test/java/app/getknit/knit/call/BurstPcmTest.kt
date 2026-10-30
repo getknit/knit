@@ -66,6 +66,16 @@ class BurstPcmTest {
         assertEquals(1_600, pcm.drain().size)
     }
 
+    // This phone stops its own bursts at 30 s, but one from an older sender runs to 60 s and is still heard whole.
+    @Test
+    fun anOlderSendersSixtySecondBurstIsTakenWhole() {
+        val pcm = BurstPcm()
+        val second = buffer(ShortArray(16_000))
+        repeat(60) { pcm.add(second.duplicate(), 16_000, 1) }
+        assertEquals(60 * 16_000, pcm.drain().size)
+        assertEquals(60_000, pcm.audioMs)
+    }
+
     @Test
     fun drainingHandsOverWhatCameSinceTheLastDrainAndTheTotalKeepsCounting() {
         val pcm = BurstPcm()

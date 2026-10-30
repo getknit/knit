@@ -56,6 +56,8 @@ document:
 - The Support Knit screen now says Knit is funded by its supporters and is its developer's full-time job. The
   relay screen and your profile now name your ticket key where they used to say Knit Anywhere ended or needed
   renewing.
+- Walkie-talkie bursts now stop at 30 seconds, down from 60. Your phone taps lightly when you let go, and
+  buzzes harder with two short beeps if a burst hits the limit while you're still holding the button.
 - Walkie-talkie calls now record your voice the way regular calls do, with your phone's own noise reduction
   and volume leveling. Background noise drops, and voices sound about as loud from one phone to the next.
 - Typing indicators, link previews, content filtering and the large Bluetooth download limit have moved to a

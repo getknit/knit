@@ -83,6 +83,38 @@ class ModelLeaseTest {
         }
 
     @Test
+    fun `a resident use never loads, and runs on the engine while it is in memory`() =
+        runTest {
+            val rig = rig()
+            assertEquals(null, rig.lease.useResident { it })
+            assertEquals(0, rig.loads)
+            assertFalse(rig.lease.isLoaded)
+
+            rig.lease.use { }
+            assertEquals("engine", rig.lease.useResident { it })
+
+            rig.lease.unload()
+            assertEquals(null, rig.lease.useResident { it })
+            assertEquals(1, rig.loads)
+        }
+
+    @Test
+    fun `a resident use inside the window pushes the release back`() =
+        runTest {
+            val rig = rig()
+            rig.lease.use { }
+            advanceTimeBy(idle / 2)
+            rig.lease.useResident { }
+            advanceTimeBy(idle / 2 + 1)
+            runCurrent()
+
+            assertTrue(rig.lease.isResident)
+            advanceTimeBy(idle / 2)
+            runCurrent()
+            assertFalse(rig.lease.isResident)
+        }
+
+    @Test
     fun `a use inside the window pushes the release back`() =
         runTest {
             val rig = rig()

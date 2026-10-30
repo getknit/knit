@@ -256,3 +256,37 @@ recipient only, and meeting captions show every speaker in a shared room, which 
 A release build gives the recorder no tap, so a spoken burst makes no line and no saved clip. The heard lines, live
 captions and voice notes are unchanged. Debug builds keep the own line, the `…debug.STT` `loop` op and the clips'
 `spoken` files.
+
+## Amendment (2026-10-30): a review's gaps closed
+
+A review of the feature found gaps; these are closed.
+
+- **The 30 s line.** The 2026-10-14 amendment had a 44 s clip lose its last words "at the 30 s line cut". A desktop
+  bench (moonshine-voice 0.1.5, the shipped Small files, `vad_threshold=0`) read 29, 31 and 44 s of the Dickens clip
+  each as one complete line, with the same 115 words for the 44 s clip at a 30 s and a 64 s cap. With the detector off,
+  `vad_max_segment_duration` ends nothing: the detector's fade scales a voice score fixed at 1, which stays above a
+  threshold of 0. Whatever lost those words on the phone, it was not that cap. The walkie now stops a burst at 30 s
+  instead (ADR 2026-10.79yb, amendment 14), inside Moonshine's advice for one line, and `MoonshineSpeechTest` pins
+  `MAX_BURST_MS` at or under `MoonshineSpeech.MAX_LINE_S`.
+- **A failed load.** A lease whose load failed was spent for the life of the process, and the mesh service's process
+  lives for days, so one load that failed for want of memory mid-call left every later burst "Couldn't transcribe".
+  `MoonshineSpeech.unload` (the call's end) now drops a spent lease, so the next call tries again through
+  `ModelLoadGuard`, which still refuses a model it latched after a native fault.
+- **Streams never load.** A stream's calls and its close now take `ModelLease.useResident`, which never loads. Before,
+  a stream left on a lease the other line mode replaced (a walkie after a live call) loaded that model back only to
+  find its handle gone, and the model then sat for its 2 idle minutes beside the new one.
+- **A removed model.** Remove on the Calls screen now frees the model in memory at once (`MoonshineSpeech` watches
+  `SttModelFiles.state`), not at its idle timeout.
+- **English only, said.** The model reads English alone, and the app now ships in five other languages. The walkie
+  card's and the captions card's offers say "(English only)", and the Calls screen's switch says it turns English
+  speech into text. The offer lost "and speak", since a release build transcribes only what it hears (amendment
+  2026-10-28), and the empty card names only the peer.
+- **Captions wait for the answer.** A live call with CC left on drew an empty captions card while it still rang
+  (`Connecting`). The card and the CC button now show only from `Connected`.
+- **Tests.** The runtime sits behind `MoonshineRuntime` (`JniMoonshine` on the phone), and the files behind
+  `SttModelFiles`, so `MoonshineSpeechTest` runs the lease keying, both line modes' options, the words' split into
+  settled and live, the key terms and every fix above on a fake runtime.
+
+Left open: `ModelLoadGuard` still covers the load and a probe over silence, not the speech a burst brings. A runtime
+that faults natively on real speech would take the process down on each burst, latched by nothing. Guarding every
+stream call would cost two journal writes per look, so a probe over real speech is the likelier fix.

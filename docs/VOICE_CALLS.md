@@ -679,6 +679,8 @@ Each side sends an `OFFER` to the other before seeing the other's offer.
 >   up: the captions stop for the call and say so (`CaptionStatus.BEHIND`), keeping the lines they had. A model that
 >   will not run stops them the same way (`FAILED`). Turning CC off and on tries again. While the model is not on the
 >   phone the audio is dropped and the card offers the download, its Not now turning CC off.
+> - **Once answered.** The CC button and the card show only while the call is `Connected` or `Reconnecting`. While it
+>   still rings (`Connecting`) there is nothing to caption, and the card would crowd the face and the controls.
 > - **The earpiece.** The screen is dark at the ear (§3.13), so on the earpiece the card says captions read better on
 >   the loudspeaker or a headset. The model keeps running, so the last line is there when the phone comes away.
 > - **The model** is the walkie's (C-3.11-9): the same download, lease, guard, key terms and one call at a time. It is
@@ -836,7 +838,12 @@ its media (`REASON_MEDIA`).
   a peer sends it (`CallManager.dropToWalkie`, off), so a lost live call ends `no_route`. In a P9↔P7 call over the
   Internet the drop left the two phones in a walkie session neither could send on, because the peer was off every
   radio. A walkie session placed on purpose is unchanged.
-- **C-3.11-5** A burst is Opus at 8 kbps, captured at 16 kHz mono, in 20 ms packets, up to 60 s. The phone's own
+- **C-3.11-5** A burst is Opus at 8 kbps, captured at 16 kHz mono, in 20 ms packets, up to 30 s. A receiver plays and
+  transcribes one of up to 60 s whole, the limit an older sender still holds to (ADR 2026-10.79yb's fourteenth
+  amendment). The speaker feels each burst end: a light haptic when the button is let go (`TalkCue.RELEASED`), and when
+  the burst reaches 30 s with the button still held, a firmer one and a short double beep on the voice-call stream
+  (`TalkCue.CAPPED`, `CallTone.TALK_CAPPED`), played once the microphone has stopped, so it is never part of the burst.
+  The status line then says the limit stopped it. Nothing about the cue reaches the peer. The phone's own
   microphone follows the live call's capture profile (C-3.13-12, `call/TalkCapture`): on the standard profile it
   records from `VOICE_COMMUNICATION`, the phone's call-tuned path with its own suppression and gain, then
   `VOICE_RECOGNITION`, then `MIC`; on the fallback from `VOICE_RECOGNITION`, then `MIC`. A burst from the phone's
@@ -922,7 +929,7 @@ its media (`REASON_MEDIA`).
   is still coming, settled a moment after it ends. Nothing about it is on the wire: no field, no frame, no capability
   bit, and the text is never sent, stored, logged or kept past the session.
   - **The audio.** The player's decoded PCM (48 kHz mono s16) is tapped on its way to the track
-    (`TalkPlayer`'s `TalkPcmTap`), averaged down to 16 kHz (`BurstPcm`), capped at the burst's 60 s, and fed to the
+    (`TalkPlayer`'s `TalkPcmTap`), averaged down to 16 kHz (`BurstPcm`), capped at an older sender's 60 s, and fed to the
     model as it comes. A burst under 300 ms is no speech: its stream is closed unfinished.
   - **The sender's own** *(debug builds only, `WALKIE_OWN_LINES`)*. Each burst this phone speaks is transcribed the
     same way from the recorder's PCM before the encoder (`TalkRecorder`'s tap, 16 kHz already), opened at the press and
@@ -934,13 +941,15 @@ its media (`REASON_MEDIA`).
     (`moonshine-voice`, `MoonshineSpeech`; its slim ONNX Runtime inside), packaged only where calls are, like
     libwebrtc: Small Streaming (142 MB; 7.84 % on the Open ASR average), the one model there is.
     Each burst is one stream of the model's: its streaming encoder caches what it has seen, so a look costs the new
-    audio and a decode. How a burst becomes lines is `MoonshineSpeech.lines` (`LineMode`): one line of up to 30 s with
-    the model's voice detector off (the default, since a split at a pause decodes each half without the other), or a
-    line per pause with it on, for an A/B. The model
+    audio and a decode. How a burst becomes lines is `MoonshineSpeech.lines` (`LineMode`): one line with the
+    model's voice detector off (the default, since a split at a pause decodes each half without the other), or a
+    line per pause with it on, for an A/B. With the detector off Moonshine ends no line at all, so the 30 s that keeps a
+    line inside Moonshine's advice is held at the sender (C-3.11-5). The model
     looks every 500 ms of new audio, or — on a phone that cannot keep up — once as much audio has come as its last
     look took (`PassGate`, at most 5 s). One model call runs at a time, off the player's and the recorder's threads.
-    The model is held on a `ModelLease` (released after 2 min idle) and loaded under `ModelLoadGuard` as `stt`, a
-    probe stream included.
+    The model is held on a `ModelLease` (released when the call ends, when it is removed, or after 2 min idle) and
+    loaded under `ModelLoadGuard` as `stt`, a probe stream included. A load that fails is tried again at the next call
+    (still through the guard), and a stream never loads the model back to reach a handle that went with it.
   - **The download.** Not in the APK: nine files under `https://getknit.app/models/stt/<model id>/`,
     fetched only on the user's tap (the card's Download on a walkie call, or the speech model's row on the Calls
     screen at any time), each pinned by size and SHA-256 in `SttModel`, streamed
@@ -955,7 +964,7 @@ its media (`REASON_MEDIA`).
   - **The screen.** With the walkie's diagnostics toggled off, the card's place shows the transcript: each burst
     `Listening…` until the model has heard something, then its words so far (dimmed, not read out), then its text (a
     polite live region) or why not (no speech, no model, failed). While the model is not on the phone, the card says
-    what it costs, flags a metered or Data Saver route, and offers Download, Cancel or Try again, and Dismiss: once
+    it reads English only and what it costs, flags a metered or Data Saver route, and offers Download, Cancel or Try again, and Dismiss: once
     dismissed (`TranscriptStore.offerDismissed`), no call draws the card while the model is absent.
   - **The switch.** The Calls screen's "Transcripts and captions" (`TranscriptStore.enabled`, on by default) turns
     the whole thing off: no burst is taken, nothing reaches the model, and no card is drawn. It governs a live call's

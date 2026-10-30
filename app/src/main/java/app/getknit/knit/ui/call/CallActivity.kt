@@ -115,8 +115,10 @@ import app.getknit.knit.call.Captions
 import app.getknit.knit.call.CaptureWatch
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.SystemCallSync
+import app.getknit.knit.call.TalkCue
 import app.getknit.knit.call.TalkLink
 import app.getknit.knit.call.TranscriptLine
+import app.getknit.knit.call.WalkiePolicy
 import app.getknit.knit.call.WalkieStats
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.data.GroupRepository
@@ -422,6 +424,9 @@ private const val SECONDS_PER_MINUTE = 60
 private val RINGING = setOf(CallPhase.Calling, CallPhase.Ringing, CallPhase.Alerting, CallPhase.Connecting)
 private val MEDIA_UP = setOf(CallPhase.Connecting, CallPhase.Connected, CallPhase.Reconnecting)
 
+// Where a live call shows its CC button and captions (C-3.7-5): answered, so never while it still rings.
+private val CAPTIONED = setOf(CallPhase.Connected, CallPhase.Reconnecting)
+
 /** A call that connected, then lost its path past the reconnect window (§3.8): the one ended call offered Call back. */
 private val CallState.dropped: Boolean
     get() = phase == CallPhase.Ended && reason == CallPayload.REASON_NO_ROUTE && connectedAt != null && !walkie
@@ -487,7 +492,9 @@ internal fun CallScreen(
     // With the diagnostics off and its CC button on, a walkie session shows what the peer said in the card's place
     // (C-3.11-9), and a live call its captions (C-3.7-5).
     val transcribed = transcript?.takeIf { walkieUp && showTranscript && !showStats }
-    val captioned = captions?.takeIf { captionsOn && state?.walkie != true && phase in MEDIA_UP && diagnostics == null }
+    // Captions only once the call is answered: while it still rings (Connecting) there is nothing to caption, and the
+    // card would take the room the face and the answer buttons need.
+    val captioned = captions?.takeIf { captionsOn && state?.walkie != true && phase in CAPTIONED && diagnostics == null }
     val card = diagnostics != null || transcribed != null || captioned != null
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp)) {
@@ -504,7 +511,7 @@ internal fun CallScreen(
                     captionsOn =
                         when {
                             walkieUp -> showTranscript.takeIf { transcript != null }
-                            else -> captionsOn.takeIf { captions != null && phase in MEDIA_UP && state?.walkie != true }
+                            else -> captionsOn.takeIf { captions != null && phase in CAPTIONED && state?.walkie != true }
                         },
                     // Turning captions on puts them in the card's place, so the diagnostics give way.
                     onCaptions = { on ->
@@ -870,6 +877,7 @@ private fun WalkieControls(
     onTalkSend: () -> Unit,
     onTalkCancel: () -> Unit,
 ) {
+    TalkEndHaptic(talk)
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         if (link != null && link != TalkLink.DIRECT) {
             LinkNotice(link, name)
@@ -900,6 +908,28 @@ private fun WalkieControls(
                 AudioRouteButton(routing, onRoute)
             }
         }
+    }
+}
+
+/**
+ * How a burst spoken ended, felt as it stops recording (C-3.11-5): a light tick as the button is let go, and a firmer
+ * buzz when the burst ran to its limit with the button still held — the speaker may still be talking. Only the step
+ * from recording to sending counts, so a screen drawn again mid-send does not buzz twice.
+ */
+@Composable
+private fun TalkEndHaptic(talk: Talk) {
+    val haptics = LocalHapticFeedback.current
+    var before by remember { mutableStateOf(talk) }
+    LaunchedEffect(talk) {
+        if (before is Talk.Recording && talk is Talk.Sending) {
+            haptics.performHapticFeedback(
+                when (talk.cue) {
+                    TalkCue.RELEASED -> HapticFeedbackType.Confirm
+                    TalkCue.CAPPED -> HapticFeedbackType.Reject
+                },
+            )
+        }
+        before = talk
     }
 }
 
@@ -957,7 +987,7 @@ private fun talkLine(
             stringResource(R.string.call_talk_recording, seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE)
         }
 
-        Talk.Sending -> {
+        is Talk.Sending -> {
             stringResource(R.string.call_talk_sending)
         }
 
@@ -965,13 +995,22 @@ private fun talkLine(
             stringResource(R.string.call_talk_hearing, name)
         }
 
+        is Talk.Idle if talk.note == Talk.Note.CAPPED -> {
+            stringResource(R.string.call_talk_capped, (WalkiePolicy.MAX_BURST_MS / 1_000).toInt())
+        }
+
         is Talk.Idle -> {
             stringResource(
                 when (talk.note) {
-                    Talk.Note.SENT -> R.string.call_talk_sent
+                    // CAPPED takes its limit above.
+                    Talk.Note.SENT, Talk.Note.CAPPED -> R.string.call_talk_sent
+
                     Talk.Note.NO_MIC -> R.string.call_talk_no_mic
+
                     Talk.Note.NOT_SENT -> R.string.call_talk_not_sent
+
                     Talk.Note.NO_LINK -> R.string.call_talk_no_link
+
                     Talk.Note.TOO_SHORT, null -> R.string.call_talk_hold
                 },
             )

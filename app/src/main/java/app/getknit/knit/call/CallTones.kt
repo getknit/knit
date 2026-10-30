@@ -17,6 +17,10 @@ enum class CallTone {
 
     // A connected call the peer or the path ended.
     ENDED,
+
+    // A walkie burst this phone spoke ran to its limit with the button still held (TalkCue.CAPPED): heard by the
+    // speaker alone, never sent.
+    TALK_CAPPED,
 }
 
 /** Plays one [CallTone] at a time: a new one, or [stop], cuts the last. A one-shot tone stops by itself. */
