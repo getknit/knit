@@ -1746,6 +1746,8 @@ class MeshManagerTest {
             assertEquals("each aired compact as it was declined", 2, rig.loraOffers.size)
             assertTrue(rig.sentChatFrames().isEmpty())
 
+            // The flush runs later than either stamp, so a `sentAt` of `newerAt` is the held stamp, not the flush's clock.
+            rig.clockNow += 1_000
             rig.answered(rig.bob)
             rig.manager.flushHeldReactions(rig.bob.nodeId)
             advanceUntilIdle()
