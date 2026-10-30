@@ -271,20 +271,37 @@ and the restored node adopts the dead era (crypto-reviewer's trace; seeds 2000, 
 - **A re-delivery's re-seal is an answer too, bounded per era (meets ADR 2026-10.8hn6).** Drafted at the rebase onto
   main's 8hn6 (2026-10-29). Every signed-first v2 DM from a pinned peer is marked, so a re-served signed copy lands in
   `loraDirectCopyTaken`, not at the exists-gate: both call `acknowledge` with `reDelivery`, so 8hn6's ledger bounds both
-  doors, and every re-delivery seals as an answer (`sealAnswer`): never a fresh init, never under our own unanswered
-  init or reset. Such a re-delivery is declined and held like any other answer, where 8hn6 alone re-sealed under our
-  own reset at once; its one receipt in the new era is sealed when the hold flushes (the root moves or a heal), or by
-  the next re-delivery once the author answered. `AnswerSeal.Sealed` carries the root tag its seal committed under, and
-  `sealDmReceipt` files exactly that. A decline files nothing in the ledger, so a held ✓✓ can never be skipped as
-  already answered; and a skip touches no hold. A held ✓✓ flushed by `MeshManager.flushHeldTicks` is the coalescer's
-  batch shape and records nothing either (8hn6: "neither are the LoRa coalescer's batch"), so a later re-delivery off
-  the board costs at most one more receipt, recorded then. Regression: `InboundPipelineTest`'s
-  `aReServedDmUnderOurOwnUnansweredResetIsHeldNeitherSealedNorSkipped` and
-  `aReServedDmAfterAResetDrawsExactlyOneReceiptInTheNewEra` (now the author's adopted reset).
+  doors, and every re-delivery seals as an answer (`sealAnswer`): never a fresh init, and never under our own unanswered
+  reset — re-rooted, marked or a restore's, any session with a reset stamp (`lastResetSentAt > 0`). Such a re-delivery
+  is declined and held like any other answer, where 8hn6 alone re-sealed under our reset at once; its one receipt in the
+  new era is sealed when the hold flushes (the root moves or a heal), or by the next re-delivery once the author
+  answered. The exists-gate's unmarked re-delivery (a v1 copy, or a row from before the marks) may ride our own
+  unanswered init with no reset stamp (`rideOwnFirstContact`): usually the one our first receipt minted for a v1 first
+  contact, which the author already holds in custody, and declining there switched off 8hn6's rule 5 re-arm for a
+  receipt the author custodied but never applied. The flag rides any such init, a race-kept winner's included (a v1
+  first contact, then both sides initiate and we win, then a re-serve past the floor): nothing on the row tells the two
+  apart, so the code is not narrowed, and the case is #189's (below). A marked copy's re-ack never rides our init: there it
+  would be a race's winner, whose answers re-served to a restored loser are #189. `AnswerSeal.Sealed` carries the root
+  tag its seal committed under, and `sealDmReceipt` files exactly that. A decline files nothing in the ledger, so a held
+  ✓✓ can never be skipped as already answered; and a skip touches no hold. A held ✓✓ flushed by
+  `MeshManager.flushHeldTicks` is the coalescer's batch shape and records nothing either (8hn6: "neither are the LoRa
+  coalescer's batch"), so a later re-delivery off the board costs at most one more receipt, recorded then. Residue: a
+  re-delivery with no session at all (a session forgotten since) is declined and waits for one, where 8hn6 started a
+  fresh init; the hold is in memory, so a process death loses it and only the next re-delivery holds it again; and under
+  our own reset a receipt the author custodied but never applied waits for the reset's answer. This rule rests on the
+  answer gate, so it is Android's until a port has one; 8hn6's rule stands for a port without it. Regression:
+  `InboundPipelineTest`'s `aReServedDmUnderOurOwnUnansweredResetIsHeldNeitherSealedNorSkipped`,
+  `aReServedDmAfterAResetDrawsExactlyOneReceiptInTheNewEra` (now the author's adopted reset) and
+  `aV1FirstContactsReceiptIsReSealedPastItsFloorUnderItsOwnInitButNeverUnderOurReset`;
+  `RatchetSessionsSealTest.aReDeliverysAnswerRidesOurOwnFirstContactInitButNeverOurReset`; `SessionLabTest`'s
+  `aRestoredRecipientHoldsABackFilledDmsReAckUntilItsResetIsAnswered` and
+  `aRestoredRecipientThatRestartsBeforeTheAnswerHoldsTheNextBackFillsReAck`.
 
-The residue is #189 (ADR 2026-10.j67x's "not covered", #184 its sibling): the race winner's answer to the loser's init
-(`IntroSync.onPeerFrameOpened` → `sendIntroTo` → `sealDm` under the unconfirmed winning session) still carries the
-winner's init, and re-served to a restored loser it wins `resolveRace` against the restored node's flagged reset.
+The residue is #189 (ADR 2026-10.j67x's "not covered", #184 its sibling). It has a second door since the rebase onto
+8hn6: an unmarked exists-gate re-ack past its floor rides a race-kept winner's init (`rideOwnFirstContact`, the bullet
+above), extending the strand by at most one receipt's custody life, and #189's fix must cover that door too. The
+first door: the race winner's answer to the loser's init (`IntroSync.onPeerFrameOpened` → `sendIntroTo` → `sealDm`
+under the unconfirmed winning session) still carries the winner's init, and re-served to a restored loser it wins `resolveRace` against the restored node's flagged reset.
 `LoraDirectLabTest.aLoraFirstContactLeavesNoInitInAnyTickAndSurvivesARestore` shows it and is held under #189; it needs
 only a both-initiate race and a restore inside custody's window, without LoRa.
 

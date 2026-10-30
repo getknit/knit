@@ -159,7 +159,9 @@ LoRa plane (2026-09.ggq4).
   after it; the memo records the DM's own id only, never the riding room ids. The bound holds while our receipts fit
   our own per-sender custody bucket. Both doors a re-delivery takes pass `reDelivery` (the exists-gate, and
   `loraDirectCopyTaken` for a marked signed copy), and a re-seal is an answer (`sealAnswer`, x9fa's 2026-10-29
-  amendment): declined and held under our own unanswered reset; a decline and a held tick's flush record nothing.
+  amendment, 8hn6's amendment): declined and held under our own unanswered reset (any reset stamp); only the
+  exists-gate's unmarked re-delivery rides our own first-contact init (`rideOwnFirstContact`); a decline and a held
+  tick's flush record nothing. Android-only: a port without the answer gate keeps 8hn6's rule as written.
   Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases,
   `CustodyLabTest.aDeliveredDmBackFilledToItsRecipientPastItsSeenWindowDrawsNoSecondReceipt`.
 - **When touching `CTL_RECEIPT` / `CTL_REACTION` / `CTL_PROFILE`, `AckSync.sealTick`, `MeshManager.sealDeliveryTick` /

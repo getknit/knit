@@ -347,13 +347,29 @@ class RatchetSessions(
         aad: ByteArray,
         now: Long,
         scheme: Int = EncEnvelope.VERSION_RATCHET,
+        rideOwnFirstContact: Boolean = false,
     ): AnswerSeal =
         locked {
             val existing = store.session(peerId)
-            if (existing == null || (existing.weAreInitiator && !existing.confirmed)) return@locked AnswerSeal.Declined
+            if (existing == null || declinesOwnInit(existing, rideOwnFirstContact)) return@locked AnswerSeal.Declined
             sealUnderLock(existing, peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)
                 ?.let { AnswerSeal.Sealed(it.envelope, it.rootTag) } ?: AnswerSeal.CannotSeal
         }
+
+    /**
+     * Whether [sealAnswer] declines under [existing], a session we hold: only while our own init is unanswered. With
+     * [rideOwnFirstContact] a first-contact init (no reset stamp: a plain `sealDm` init leaves `lastResetSentAt` 0) is
+     * ridden — the re-seal of a receipt whose own first seal minted that init (ADR 2026-10.8hn6 rule 5 after a v1 first
+     * contact, x9fa's 2026-10-29 amendment). It carries an init the peer already has in custody, so it starts no race;
+     * our reset, re-rooted, marked or a restore's, is declined whatever the flag (#90's incidental floor). The flag rides
+     * any unconfirmed init of ours with no reset stamp, a race-kept winner's included: nothing on the row tells that one
+     * from a first contact's, and declining both would turn rule 5 off again. That extends #189 by at most one receipt's
+     * custody life (x9fa's #189 residue).
+     */
+    private fun declinesOwnInit(
+        existing: RatchetEngine.SessionState,
+        rideOwnFirstContact: Boolean,
+    ): Boolean = existing.weAreInitiator && !existing.confirmed && (!rideOwnFirstContact || existing.lastResetSentAt > 0L)
 
     /** [sealAnswer] when [answer], else [sealDm] read as an [AnswerSeal]: the one call a ctl sender that may be either makes. */
     suspend fun sealCtl(
@@ -365,9 +381,10 @@ class RatchetSessions(
         aad: ByteArray,
         now: Long,
         scheme: Int,
+        rideOwnFirstContact: Boolean = false,
     ): AnswerSeal =
         if (answer) {
-            sealAnswer(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)
+            sealAnswer(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme, rideOwnFirstContact)
         } else {
             sealDmTagged(peerId, peerIkPub, peerSpk, plaintext, aad, now, scheme)?.let { AnswerSeal.Sealed(it.envelope, it.rootTag) }
                 ?: AnswerSeal.CannotSeal

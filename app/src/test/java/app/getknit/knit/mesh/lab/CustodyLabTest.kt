@@ -244,6 +244,8 @@ class CustodyLabTest {
             lab.unlink(bob, carol)
             lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 60_000L)
 
+            val skippedBefore = alice.metrics.receipts().receiptsReAckSkipped
+            val heldBefore = alice.metrics.receipts().receiptsHeld
             lab.link(alice, dave) { alice.transport.hold(dave.transport) }
             alice.transport.awaitNeighborsHandled()
             dave.transport.awaitNeighborsHandled()
@@ -256,14 +258,21 @@ class CustodyLabTest {
                 }
             }
             alice.transport.awaitInboundDrained()
+            // With a board the drain signal returns at the composite's merge channel, before the pipeline has answered
+            // the copy (LabTransport.inbound), and the answer could land after the oracle below (KNIT_LAB_BOARDS seed
+            // 2008). Await the answer itself: a skip, a seal or a hold — the asserts below say which it had to be.
+            lab.await(1) {
+                val r = alice.metrics.receipts()
+                ((r.receiptsReAckSkipped - skippedBefore) + (r.receiptsHeld - heldBefore) + (r.receiptsSealed - sealed)).toInt()
+            }
             alice.transport.release(dave.transport)
 
             lab.linkAll(alice to bob, bob to carol)
             lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol, dave), conversation = thread)
             assertEquals("Alice sealed one receipt for Bob's DM in all", sealed, alice.metrics.receipts().receiptsSealed)
             assertTrue(
-                "Alice's exists-gate met Dave's copy and answered it with the receipt she holds",
-                alice.metrics.receipts().receiptsReAckSkipped >= 1,
+                "Alice's re-ack gate met Dave's copy and answered it with the receipt she holds",
+                alice.metrics.receipts().receiptsReAckSkipped > skippedBefore,
             )
         }
 }

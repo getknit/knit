@@ -98,6 +98,17 @@ read the era back after the seal, and never test custody with `has`. Regression:
 first-era receipt never lands, and a carrier's back-fill inside the floor draws the one new-era receipt that ticks
 it); and the tick-healing nets `RestoreLabTest`, `SessionLabTest` and `LoraPocketLabTest`.
 
+## Amendment (2026-10-29): the re-seal meets the LoRa answer gate
+
+Android only, drafted with the LoRa rewrite's Stage 2 (ADR 2026-10.x9fa's 2026-10-29 amendment, the bullet "A
+re-delivery's re-seal is an answer too"). On Android every re-delivery's re-seal goes through
+`RatchetSessions.sealAnswer`: under our own unanswered reset (or with no session) it is declined and held, and the
+new era's one receipt is sealed when the reset is answered, not at the re-delivery; an unmarked re-delivery may still
+ride our own first-contact init, so rule 5's re-arm after a v1 first contact stands. Both doors a re-delivery takes —
+the exists-gate and a compact-marked signed copy — read the ledger. A decline and a held tick's flush record nothing.
+The hold is **not normative for a port**: it rests on the answer gate, which a port without the compact LoRa door
+(knit-ios today) does not have, and there the rule above stands as written.
+
 ## Companion change for knit-ios
 
 knit-ios ports the same exists-gate and the same unconditional sealed re-ack (#176), so it has the same loop. Port

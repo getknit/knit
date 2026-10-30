@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.protocol.EncEnvelope
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -149,6 +150,51 @@ class RatchetSessionsSealTest {
             assertTrue(a.open(checkNotNull(b.seal("answer", T + RESET_GAP)), T + RESET_GAP) is OpenOutcome.Opened)
             val sealed = a.sessions.sealAnswer(b.nodeId, b.ik.pub, a.prekey(1), "ack".toByteArray(), AAD, T + RESET_GAP)
             assertNull((sealed as RatchetSessions.AnswerSeal.Sealed).env.r?.init)
+        }
+
+    /**
+     * A re-delivery's re-seal (ADR 2026-10.8hn6 rule 5 after a v1 first contact, x9fa's 2026-10-29 amendment) may ride
+     * our own unanswered first-contact init, which the peer already has in custody — and only that: no session is still
+     * declined (never a fresh init), and so is our reset, marked over that init or re-rooted (#90).
+     */
+    @Test
+    fun aReDeliverysAnswerRidesOurOwnFirstContactInitButNeverOurReset() =
+        runTest {
+            val (a, b) = pair()
+
+            suspend fun reAnswer(now: Long = T) =
+                a.sessions.sealAnswer(b.nodeId, b.ik.pub, a.prekey(1), "ack".toByteArray(), AAD, now, rideOwnFirstContact = true)
+
+            assertSame("no session: still declined", RatchetSessions.AnswerSeal.Declined, reAnswer())
+            assertNull(a.store.session(b.nodeId))
+
+            val first = checkNotNull(a.seal("receipt", T))
+            val root = checkNotNull(a.store.session(b.nodeId)).root
+            val ridden = reAnswer() as RatchetSessions.AnswerSeal.Sealed
+            assertNotNull("it carries the same first-contact init", ridden.env.r?.init)
+            assertEquals(
+                first.r
+                    ?.init
+                    ?.eph
+                    ?.toList(),
+                ridden.env.r
+                    ?.init
+                    ?.eph
+                    ?.toList(),
+            )
+            assertEquals("under the same root", RatchetCrypto.rootTag(root), ridden.rootTag)
+            assertTrue("and the peer opens it", b.open(ridden.env, T) is OpenOutcome.Opened)
+
+            val (c, d) = pair()
+            checkNotNull(c.seal("receipt", T))
+            assertTrue(
+                c.sessions.sealResetDm(d.nodeId, d.ik.pub, c.prekey(1), "reset".toByteArray(), AAD, T + RESET_GAP) is ResetSeal.Sealed,
+            )
+            assertSame(
+                "our reset over that init: declined",
+                RatchetSessions.AnswerSeal.Declined,
+                c.sessions.sealAnswer(d.nodeId, d.ik.pub, c.prekey(1), "ack".toByteArray(), AAD, T + RESET_GAP, rideOwnFirstContact = true),
+            )
         }
 
     @After

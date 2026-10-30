@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.RatchetPeerState
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -360,10 +361,13 @@ class SessionLabTest {
     @Test
     fun anAuthorsResetDrawsOneFreshReceiptForADmACarrierBackFillsToTheRecipient() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
-            val carol = lab.node("carol").apply { setDisplayName("Carol") }
-            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            // No board on any, whatever the run: the signed re-ack's gate is the subject, and a compact copy would tick
+            // around it. A board's drain signal is early too (LabTransport.inbound): a copy still behind it past the jump
+            // re-arms Alice's seen entry and Dave's copy is deduped (KNIT_LAB_BOARDS seed 2001).
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+            val dave = lab.node("dave", board = false).apply { setDisplayName("Dave") }
             lab.linkAll(alice to bob, bob to carol)
             lab.awaitAcquainted(alice, bob, carol)
             // A confirmed session first, so Bob's reset replaces its root rather than re-sending an unanswered init; Alice
@@ -423,6 +427,131 @@ class SessionLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave), conversation = thread)
             assertEquals("Alice sealed two receipts in all, one per era", sealed + 2, alice.metrics.receipts().receiptsSealed)
         }
+
+    /**
+     * The recipient's side of the same back-fill (ADR 2026-10.8hn6 meets x9fa's answer gate, 2026-10-29). Alice's receipt
+     * for Bob's DM is lost on her link, then she restores while apart: her restore's reset goes out unanswered. Dave,
+     * fed by Carol, back-fills the DM to her. A receipt sealed now would ride her unanswered reset's init unflagged,
+     * which Bob's incidental floor refuses (#90), so the re-ack is declined and held, never sealed and never cleartext.
+     * Bob answers her reset once they meet, and the held ✓✓ is sealed then: exactly one receipt of the new era, and it
+     * ticks Bob's DM.
+     */
+    @Test
+    fun aRestoredRecipientHoldsABackFilledDmsReAckUntilItsResetIsAnswered() = runBlocking { restoredRecipientBackFill(restart = false) }
+
+    /**
+     * The hold above is in memory: Alice restarts after the back-fill and before Bob answers, and it is gone. The next
+     * back-fill (Erin, fed by Carol) is declined and held again, and the answer still draws exactly one receipt.
+     */
+    @Test
+    fun aRestoredRecipientThatRestartsBeforeTheAnswerHoldsTheNextBackFillsReAck() =
+        runBlocking { restoredRecipientBackFill(restart = true) }
+
+    private suspend fun restoredRecipientBackFill(restart: Boolean) {
+        // No board on any, whatever the run: the signed re-ack's gate is the subject, and a compact copy of the DM and
+        // its compact ✓✓ would tick it around that.
+        val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+        val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+        val dave = lab.node("dave", board = false).apply { setDisplayName("Dave") }
+        val erin = if (restart) lab.node("erin", board = false).apply { setDisplayName("Erin") } else null
+        lab.linkAll(alice to bob, bob to carol)
+        lab.awaitAcquainted(alice, bob, carol)
+        val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+        val dm = aDmWhoseReceiptIsLost(alice, bob, carol, thread)
+        lab.unlink(alice, bob)
+        lab.unlink(bob, carol)
+
+        // The restore keeps the row and wipes the sessions; its reset goes out to nobody.
+        alice.restoreFromBackup()
+        lab.await(1) { if (alice.session(bob)?.unanswered() == true) 1 else 0 }
+        backFill(alice, carol, dave, dm)
+        alice.transport.release(dave.transport)
+        if (erin != null) backFillAfterARestart(alice, bob, carol, dave, erin, dm)
+        // Metrics are the boot's own: everything counted from here is this process's.
+        val held = alice.metrics.receipts()
+        assertEquals("nothing sealed under the unanswered reset", 0L, held.receiptsSealed)
+        assertEquals("nothing cleartext in its place", 0L, held.receiptsSealedFallback)
+        assertTrue("bob still holds no tick", bob.missingAcks(bob.dmWith(alice), listOf(alice, bob)).isNotEmpty())
+
+        // Bob answers the reset: the held ✓✓ is sealed once, in the new era, and ticks his DM.
+        lab.link(alice, bob)
+        lab.await(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 }
+        lab.await(1) { if (bob.missingAcks(bob.dmWith(alice), listOf(alice, bob)).isEmpty()) 1 else 0 }
+        lab.link(bob, carol)
+        // The last carrier only: a restart's Dave is a bystander on Carol's link, whose overhear suppression may leave him
+        // the new era's frames for the 60 s re-offer, which the lab clock never runs.
+        lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, erin ?: dave), conversation = thread)
+        assertEquals("exactly one receipt, in the new era", 1L, alice.metrics.receipts().receiptsSealed)
+        assertEquals("and none cleartext", 0L, alice.metrics.receipts().receiptsSealedFallback)
+    }
+
+    /** Alice's process dies with the hold in it; the next back-fill of [dm], through [erin], is declined and held again. */
+    private suspend fun backFillAfterARestart(
+        alice: LabNode,
+        bob: LabNode,
+        carol: LabNode,
+        dave: LabNode,
+        erin: LabNode,
+        dm: String,
+    ) {
+        lab.unlink(alice, dave)
+        alice.restart()
+        lab.await(1) { if (alice.session(bob)?.unanswered() == true) 1 else 0 }
+        backFill(alice, carol, erin, dm)
+        alice.transport.release(erin.transport)
+    }
+
+    /**
+     * Bob's DM to Alice, delivered, with Alice's receipt for it sealed and lost on her link (her chat frames to Bob are
+     * lost from a confirmed session on) and the DM in Carol's custody. Returns its id; Bob holds no tick for it.
+     */
+    private suspend fun aDmWhoseReceiptIsLost(
+        alice: LabNode,
+        bob: LabNode,
+        carol: LabNode,
+        thread: (LabNode) -> String,
+    ): String {
+        assertTrue(alice.sendDm(bob, "hello"))
+        lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol), conversation = thread)
+        alice.transport.lossy(bob.transport) { it.isChatFrom(alice.nodeId) }
+        val before = alice.custodyIds()
+        assertTrue(bob.sendDm(alice, "for alice"))
+        val dm = bob.ownMessageId(bob.dmWith(alice), "for alice")
+        lab.await(1) { alice.decrypted(alice.dmWith(bob)).count { it.first == dm } }
+        lab.await(1) { if (dm in carol.custodyIds()) 1 else 0 }
+        lab.await(1) { if (alice.chatLost().any { it in alice.custodyIds() - before - dm }) 1 else 0 }
+        assertTrue("bob holds no tick for the DM", bob.missingAcks(bob.dmWith(alice), listOf(alice, bob)).isNotEmpty())
+        return dm
+    }
+
+    /** Our own init (a restore's reset here) still unanswered. */
+    private fun RatchetPeerState.unanswered(): Boolean = hasSession && weAreInitiator && !confirmed
+
+    /**
+     * [to]'s back-fill of [dm] through [carrier], who lacks it: [to] links the carrier with its own frames to it held (its
+     * copy cannot cross first), then [source] feeds the carrier, whose relay reaches [to] as a fresh flood. Returns once
+     * [to] has declined and held the re-ack (the answer itself, not the drain: a composite's drain signal is early).
+     */
+    private suspend fun backFill(
+        to: LabNode,
+        source: LabNode,
+        carrier: LabNode,
+        dm: String,
+    ) {
+        val heldBefore = to.metrics.receipts().receiptsHeld
+        lab.link(to, carrier) { to.transport.hold(carrier.transport) }
+        to.transport.awaitNeighborsHandled()
+        carrier.transport.awaitNeighborsHandled()
+        lab.link(source, carrier)
+        lab.await(1) {
+            carrier.transport.sent.count { line ->
+                line.split(' ').let { it.getOrNull(3) == dm && to.nodeId.startsWith(it[1]) }
+            }
+        }
+        to.transport.awaitInboundDrained()
+        lab.await(1) { (to.metrics.receipts().receiptsHeld - heldBefore).toInt() }
+    }
 
     /**
      * The other direction: Alice sends three DMs to an absent Bob (Dave carries them), then forces a reset.
@@ -548,8 +677,12 @@ class SessionLabTest {
     @Test
     fun aMemberWhoMissedTheSeedAsksAfterThreeUnreadableFrames() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            // No board on either, whatever the run: the seed and its key request are signed-only, and a board's bind
+            // republishes the profile (the capability bit, the board's number) after the pair is acquainted. That
+            // profile landing on Alice after the create re-sends the seed into the hold, which eats it and stamps the
+            // seed floor the request then meets — the #201 shape below, by another trigger (KNIT_LAB_BOARDS seed 2008).
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             // Acquainted means the link-up's own seed planes have finished before the seed exists (#201). One that
             // landed after the first send (the newcomer hook's flush, or a profile still being handled) re-sent the

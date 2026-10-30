@@ -1354,7 +1354,9 @@ class InboundPipeline(
     ): Boolean {
         if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) return true
         if (!messages.exists(env.id)) return false
-        acknowledge(env, me, plane, reDelivery = true)
+        // No mark: a v1 copy, or a row from before the marks. Its receipt's own first seal may have minted our init (a
+        // v1 first contact), and a re-seal past the floor rides that init rather than wait on an answer (NB1).
+        acknowledge(env, me, plane, reDelivery = true, rideOwnFirstContact = true)
         return true
     }
 
@@ -1431,6 +1433,13 @@ class InboundPipeline(
                     if (plain != null && plain.ctl == null) applyInlineAcks(env, plain, plane)
                 }
             }
+        if (!committed) {
+            // The peek opened and the re-open under the lock did not: the session moved in between. Counted and logged
+            // like any other missed ratchet-only step, never fed to the reset heuristic; it used to pass in silence, the
+            // one exit of this step that left no trace (a KNIT_LAB_BOARDS restore pair ended with no session and none).
+            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
+            Log.w(TAG, "lora direct ratchet-only ${env.id}: the commit refused what the peek opened")
+        }
         if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
     }
 
@@ -3627,6 +3636,10 @@ class InboundPipeline(
         // as an answer ([RatchetSessions.sealAnswer]), never as a fresh init nor on our own unanswered init or reset, and
         // never downgraded to cleartext when declined. Every LoRa-plane ack is one, and so is every re-delivery's.
         answer: Boolean = reDelivery || plane == DeliveryPlane.LoRa,
+        // The exists-gate's unmarked re-delivery only: the answer may ride our own unanswered first-contact init
+        // ([RatchetSessions.sealAnswer]), never our reset. A marked copy's re-ack never does: there our init would be a
+        // race's winner, whose answers re-served to a restored loser are #189.
+        rideOwnFirstContact: Boolean = false,
     ) {
         if (env.recipientId == me) {
             // A DM off the board holds its ✓✓ (ADR 054): a burst from one author becomes one sealed tick and a
@@ -3643,7 +3656,7 @@ class InboundPipeline(
                 metrics.onReAckSkipped()
                 return
             }
-            if (sealDmReceipt(env, me, plane, answer) != ReceiptSeal.CANNOT_SEAL) return
+            if (sealDmReceipt(env, me, plane, answer, rideOwnFirstContact) != ReceiptSeal.CANNOT_SEAL) return
             ackCleartext(env.id, me)
         } else {
             // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author when
@@ -3736,6 +3749,7 @@ class InboundPipeline(
         me: String,
         plane: DeliveryPlane,
         answer: Boolean,
+        rideOwnFirstContact: Boolean = false,
     ): ReceiptSeal {
         val peer = peers.find(env.senderId) ?: return ReceiptSeal.CANNOT_SEAL
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return ReceiptSeal.CANNOT_SEAL
@@ -3751,8 +3765,9 @@ class InboundPipeline(
         val riding = ackSync.takeRiding(env.senderId, DmAckCoalescer.MAX_LORA_TICK_ACKS - 1)
         val content = MessageContent(body = "", ctl = MessageContent.CTL_RECEIPT, ack = env.id, acks = riding.takeIf { it.isNotEmpty() })
         val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
+        val outcome = ratchet.sealCtl(answer, env.senderId, bundle.dhPublicKey(), prekey, plaintext, aad, now, scheme, rideOwnFirstContact)
         val tagged =
-            when (val outcome = ratchet.sealCtl(answer, env.senderId, bundle.dhPublicKey(), prekey, plaintext, aad, now, scheme)) {
+            when (outcome) {
                 is RatchetSessions.AnswerSeal.Sealed -> {
                     releaseHeldTicks(env.senderId, listOf(env.id))
                     outcome

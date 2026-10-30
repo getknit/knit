@@ -34,6 +34,7 @@ import app.getknit.knit.data.message.settledWith
 import app.getknit.knit.data.message.videoInfo
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
+import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptEntity
@@ -9454,6 +9455,110 @@ class InboundPipelineTest {
             rig.deliver(alice, dm)
             assertEquals(1L, rig.metrics.receipts().receiptsSealed)
             assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * 8hn6's rule 5 after a v1 first contact (x9fa's 2026-10-29 amendment): our only session is the init our first
+     * receipt minted, and the author may hold that receipt in custody without having applied it. Past the floor the
+     * re-delivery re-seals under that same init rather than wait on an answer that may never come; held, the ✓✓ would
+     * be lost until either side sent again. Our own reset over it is still declined and held (#90).
+     */
+    @Test
+    fun aV1FirstContactsReceiptIsReSealedPastItsFloorUnderItsOwnInitButNeverUnderOurReset() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            val dm = rig.dmChat(alice, rig.self, id = "v1-heal", body = "first words")
+
+            rig.deliver(alice, dm)
+            val first = rig.lastReceiptTo(alice)
+            val init =
+                checkNotNull(
+                    WireCodec
+                        .decodePayload<ChatContent>(first.payload)
+                        ?.enc
+                        ?.r
+                        ?.init,
+                ) { "the first receipt opened the session" }
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+
+            assertEquals("past the floor, one more receipt", 2L, rig.metrics.receipts().receiptsSealed)
+            val second = rig.lastReceiptTo(alice)
+            assertTrue(second.id != first.id)
+            val again =
+                checkNotNull(
+                    WireCodec
+                        .decodePayload<ChatContent>(second.payload)
+                        ?.enc
+                        ?.r
+                        ?.init,
+                ) { "riding our first-contact init" }
+            assertArrayEquals("the same init", init.eph, again.eph)
+            assertTrue("nothing held", rig.heldTicks.isEmpty())
+
+            val reset =
+                rig.ratchet.sealResetDm(
+                    alice.nodeId,
+                    alice.bundle.dhPublicKey(),
+                    RatchetEngine.PeerPrekey(id = 2, pub = alicePrekey.pub),
+                    "reset".toByteArray(),
+                    "aad".toByteArray(),
+                    rig.nowMs,
+                )
+            assertTrue("marked over our init: $reset", reset is RatchetSessions.ResetSeal.Sealed)
+            rig.nowMs += DmReAckLedger.MAX_FLOOR_MS
+            rig.deliver(alice, dm)
+            assertEquals("never under our reset", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(listOf(alice.nodeId to "v1-heal"), rig.heldTicks)
+        }
+
+    /**
+     * The other half of the rule above: a **marked** copy's re-ack never rides our own init, first contact or not. There
+     * our init would be a race's winner, whose answers re-served to a restored loser are #189 (x9fa's 2026-10-29
+     * amendment). Our first-contact init (no reset stamp) is unanswered and a compact-marked DM is re-served past the
+     * floor: declined and held, nothing sealed.
+     */
+    @Test
+    fun aMarkedCopysReAckNeverRidesOurOwnFirstContactInit() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            assertNotNull(
+                "our first contact",
+                rig.ratchet.sealDm(
+                    alice.nodeId,
+                    alice.bundle.dhPublicKey(),
+                    RatchetEngine.PeerPrekey(id = 2, pub = alicePrekey.pub),
+                    "hello".toByteArray(),
+                    "aad".toByteArray(),
+                    rig.nowMs,
+                ),
+            )
+            val ours = checkNotNull(rig.ratchetStore.session(alice.nodeId))
+            assertTrue(ours.weAreInitiator && !ours.confirmed && ours.lastResetSentAt == 0L)
+
+            val dm = V2Author(alice, rig).dm("v2-marked", "came compact first")
+            rig.msgMap[dm.id] =
+                MessageEntity(
+                    id = dm.id,
+                    senderId = alice.nodeId,
+                    recipientId = rig.self.nodeId,
+                    conversationId = alice.nodeId,
+                    body = "x",
+                    sentAt = 5L,
+                )
+            LoraDirectSeenRepository(rig.db).recordIfAbsent(dm.id, alice.nodeId, rig.nowMs, ratchetDone = true)
+            rig.nowMs += DmReAckLedger.FLOOR_MS
+            rig.deliver(alice, dm)
+
+            assertEquals("nothing sealed under our init", 0L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(0L, rig.metrics.receipts().receiptsSealedFallback)
+            assertEquals(listOf(alice.nodeId to "v2-marked"), rig.heldTicks)
         }
 
     /** A copy off the board still takes the coalescer whatever the ledger holds: LoRa heals a lost tick by its re-ack (ADR 039). */
