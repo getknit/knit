@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -55,6 +56,7 @@ class FakeMeshController : MeshController {
         val group: GroupInfo?,
         val replyTo: ReplyRef?,
         val styles: List<StyleSpan> = emptyList(),
+        val declared: DeclaredLangs = DeclaredLangs.NONE,
     )
 
     val sentChats = mutableListOf<SentChat>()
@@ -125,8 +127,9 @@ class FakeMeshController : MeshController {
         group: GroupInfo?,
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
     ): Boolean {
-        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo, styles)
+        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo, styles, declared)
         return sendChatResult
     }
 
@@ -146,10 +149,12 @@ class FakeMeshController : MeshController {
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested?,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
     ): Boolean {
         sentCommons += conversationId to text
         sentCommonsAttachments += attachment
         sentCommonsStyles += listOf(styles)
+        sentCommonsDeclared += declared
         return sendCommonsResult
     }
 
@@ -158,6 +163,9 @@ class FakeMeshController : MeshController {
 
     /** The styles each [sendCommons] carried, in order (empty for an unformatted post). */
     val sentCommonsStyles = mutableListOf<List<StyleSpan>>()
+
+    /** What each commons post declared about its language (ADR 2026-10.t2h6), in order. */
+    val sentCommonsDeclared = mutableListOf<DeclaredLangs>()
 
     /** Whether a screen asked the plane to re-derive its scope table (a commons joined or left). */
     var relaysRefreshed = false

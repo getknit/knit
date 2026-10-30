@@ -1276,7 +1276,15 @@ class DebugBridgeReceiver :
                     .put("videoPosterFlagged", m.videoPosterFlagged)
                     // A voice note's text, kept on the row once this phone transcribed it (ADR 2026-10.am8d).
                     .put("voiceDurationMs", m.voiceDurationMs ?: JSONObject.NULL)
-                    .put("voiceTranscript", m.voiceTranscript ?: JSONObject.NULL),
+                    .put("voiceTranscript", m.voiceTranscript ?: JSONObject.NULL)
+                    // The translation kept on the row, and the languages its author declared (ADR 2026-10.t2h6).
+                    .put("translation", m.translation ?: JSONObject.NULL)
+                    .put("translationFrom", m.translationFrom ?: JSONObject.NULL)
+                    .put("translationTo", m.translationTo ?: JSONObject.NULL)
+                    .put("translationFlagged", m.translationFlagged)
+                    .put("translationGuessed", m.translationGuessed)
+                    .put("bodyLang", m.bodyLang ?: JSONObject.NULL)
+                    .put("authorReads", m.authorReads ?: JSONObject.NULL),
             )
         }
         return arr

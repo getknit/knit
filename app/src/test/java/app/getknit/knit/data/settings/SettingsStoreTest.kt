@@ -169,6 +169,18 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `translation defaults on and round-trips off`() =
+        runTest {
+            // ADR 2026-10.t2h6's 2026-10-29 amendment: off, nothing is translated or declared on the wire.
+            val store = newStore()
+            assertTrue(store.translationEnabled.first())
+            store.setTranslationEnabled(false)
+            assertFalse(store.translationEnabled.first())
+            store.setTranslationEnabled(true)
+            assertTrue(store.translationEnabled.first())
+        }
+
+    @Test
     fun `open to chat defaults off and round-trips on`() =
         runTest {
             val store = newStore()

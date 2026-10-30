@@ -147,6 +147,19 @@ class SettingsStore(
         dataStore.data.map { it[KEY_TYPING_INDICATORS] ?: true }
 
     /**
+     * Whether this phone translates messages and declares, on what it sends, the language a message is in and the one
+     * its reader reads (ADR 2026-10.t2h6's 2026-10-29 amendment). **On by default**; off hides every translation surface
+     * and sends no language on the wire. Read only where translation is wired.
+     */
+    val translationEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_TRANSLATION_ENABLED] ?: true }
+
+    /**
+     * The language a message is translated into, as its model registry code, or null for Automatic: the language the
+     * reader writes in, else the phone's (ADR 2026-10.t2h6's 2026-10-29 amendment). Read only where translation is wired.
+     */
+    val translateTarget: Flow<String?> = dataStore.data.map { it[KEY_TRANSLATE_TARGET] }
+
+    /**
      * Relay all calls (experimental, docs/VOICE_CALLS.md C-3.7-3): every call goes through a relay's TURN server and
      * nothing this phone sends a callee names its own address, so the peer never learns it. Off by default, read by
      * `CallManager` as each call opens its media, and shown only by a build that wires live calls (`LIVE_CALLS_WIRED`). A choice
@@ -678,6 +691,12 @@ class SettingsStore(
 
     suspend fun setTypingIndicatorsEnabled(value: Boolean) = dataStore.edit { it[KEY_TYPING_INDICATORS] = value }
 
+    suspend fun setTranslationEnabled(value: Boolean) = dataStore.edit { it[KEY_TRANSLATION_ENABLED] = value }
+
+    /** [code] for a language, null for Automatic ([translateTarget]). */
+    suspend fun setTranslateTarget(code: String?) =
+        dataStore.edit { if (code == null) it.remove(KEY_TRANSLATE_TARGET) else it[KEY_TRANSLATE_TARGET] = code }
+
     suspend fun setCallsRelayAll(value: Boolean) = dataStore.edit { it[KEY_CALLS_RELAY_ALL] = value }
 
     suspend fun setFieldLogEnabled(value: Boolean) = dataStore.edit { it[KEY_FIELD_LOG] = value }
@@ -1058,6 +1077,8 @@ class SettingsStore(
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
         val KEY_LINK_PREVIEWS = booleanPreferencesKey("link_previews_enabled")
         val KEY_TYPING_INDICATORS = booleanPreferencesKey("typing_indicators_enabled")
+        val KEY_TRANSLATE_TARGET = stringPreferencesKey("translate_target")
+        val KEY_TRANSLATION_ENABLED = booleanPreferencesKey("translation_enabled")
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")
         val KEY_FIELD_LOG = booleanPreferencesKey("field_log_enabled")
         val KEY_OPEN_TO_CHAT = booleanPreferencesKey("open_to_chat")

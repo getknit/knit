@@ -7,9 +7,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.AlertDialog
@@ -20,8 +23,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -30,15 +35,23 @@ import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.translate.TranslateDirection
+import app.getknit.knit.translate.TranslateDirections
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.preview.KnitPreview
 
+/** [lang]'s name in the app's language, as a sentence carries it ("Translated from Spanish", "Übersetzt aus: Spanisch"). */
 @Composable
-internal fun languageName(lang: TranslateLang): String =
-    when (lang) {
-        TranslateLang.EN -> stringResource(R.string.translate_lang_en)
-        TranslateLang.ES -> stringResource(R.string.translate_lang_es)
-    }
+internal fun languageName(lang: TranslateLang): String {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(lang, locale) { LanguageNames.name(lang, locale) }
+}
+
+/** [lang]'s name on its own, as a button or a list carries it: capitalised where the language lowercases it. */
+@Composable
+internal fun languageTitle(lang: TranslateLang): String {
+    val locale = LocalConfiguration.current.locales[0]
+    return remember(lang, locale) { LanguageNames.title(lang, locale) }
+}
 
 /**
  * Under a translated message, whose bubble shows the translation in the original's place: what it was translated
@@ -125,6 +138,19 @@ fun TranslationBlock(
                     modifier = Modifier.clickable(onClick = onDismiss),
                 )
             }
+
+            is TranslationShown.NoTarget -> {
+                Text(
+                    if (shown.already) {
+                        stringResource(R.string.translate_already_in, languageName(shown.from))
+                    } else {
+                        stringResource(R.string.translate_no_target, languageName(shown.from))
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                    modifier = Modifier.clickable(onClick = onDismiss),
+                )
+            }
         }
     }
 }
@@ -158,25 +184,72 @@ private fun NeedsModel(
     }
 }
 
-/** Asked when CLD2 could not tell which language a message is in. */
+/** Asked when CLD2 could not tell which language a message is in, or the reader said it is not the one it guessed. */
 @Composable
 fun TranslateFromDialog(
+    choices: List<TranslateLang>,
     onPick: (TranslateLang) -> Unit,
     onDismiss: () -> Unit,
+) = LanguageChoiceDialog(
+    title = stringResource(R.string.translate_from_title),
+    body = stringResource(R.string.translate_from_body),
+    choices = choices,
+    onPick = onPick,
+    onDismiss = onDismiss,
+    modifier = Modifier.testTag("chat_translate_from"),
+)
+
+/** Asked when a draft could go into more than one language and the chat says nothing of which. */
+@Composable
+fun TranslateToDialog(
+    choices: List<TranslateLang>,
+    onPick: (TranslateLang) -> Unit,
+    onDismiss: () -> Unit,
+) = LanguageChoiceDialog(
+    title = stringResource(R.string.translate_to_title),
+    body = null,
+    choices = choices,
+    onPick = onPick,
+    onDismiss = onDismiss,
+    modifier = Modifier.testTag("chat_translate_to"),
+)
+
+// A few languages are buttons; more are a list, which scrolls inside the dialog rather than off its edge.
+@Composable
+private fun LanguageChoiceDialog(
+    title: String,
+    body: String?,
+    choices: List<TranslateLang>,
+    onPick: (TranslateLang) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val asButtons = choices.size <= BUTTON_CHOICES
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.translate_from_title)) },
-        text = { Text(stringResource(R.string.translate_from_body)) },
+        title = { Text(title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (body != null) Text(body)
+                if (!asButtons) {
+                    choices.forEach { lang ->
+                        TextButton(onClick = { onPick(lang) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(languageTitle(lang), modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+        },
         confirmButton = {
-            // A language name runs long in some languages: the two wrap as whole buttons, never off the dialog's edge.
-            FlowRow(horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { onPick(TranslateLang.ES) }) { Text(stringResource(R.string.translate_lang_es)) }
-                TextButton(onClick = { onPick(TranslateLang.EN) }) { Text(stringResource(R.string.translate_lang_en)) }
+            if (asButtons) {
+                // A language name runs long in some languages: they wrap as whole buttons, never off the dialog's edge.
+                FlowRow(horizontalArrangement = Arrangement.End) {
+                    choices.forEach { lang -> TextButton(onClick = { onPick(lang) }) { Text(languageTitle(lang)) } }
+                }
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.translate_not_now)) } },
-        modifier = Modifier.testTag("chat_translate_from"),
+        modifier = modifier,
     )
 }
 
@@ -205,11 +278,14 @@ fun TranslateMeteredDialog(
 
 private const val PERCENT = 100
 
+// More choices than this are a list.
+private const val BUTTON_CHOICES = 3
+
 @Preview(showBackground = true)
 @Composable
 fun TranslationToggleTranslatedPreview() =
     KnitPreview {
-        TranslationToggle(from = TranslateLang.ES, showingOriginal = false, onToggle = {})
+        TranslationToggle(from = TranslateDirections.ES_EN.from, showingOriginal = false, onToggle = {})
     }
 
 @Preview(showBackground = true)
@@ -223,7 +299,7 @@ fun TranslationToggleGuessedPreview() =
 @Composable
 fun TranslationToggleOriginalPreview() =
     KnitPreview {
-        TranslationToggle(from = TranslateLang.ES, showingOriginal = true, onToggle = {})
+        TranslationToggle(from = TranslateDirections.ES_EN.from, showingOriginal = true, onToggle = {})
     }
 
 @Preview(showBackground = true)
@@ -238,7 +314,7 @@ fun TranslationBlockTranslatingPreview() =
 fun TranslationBlockNeedsModelPreview() =
     KnitPreview {
         TranslationBlock(
-            shown = TranslationShown.NeedsModel(TranslateDirection.ES_EN, SttModelState.Absent),
+            shown = TranslationShown.NeedsModel(TranslateDirections.ES_EN, SttModelState.Absent),
             onDownload = {},
             onDismiss = {},
         )

@@ -26,6 +26,9 @@ class MessageTranslatorTest {
     private var now = 0L
     private val screened = mutableListOf<Pair<String, Boolean>>()
 
+    // What the translator kept on a row, in order (ADR 2026-10.t2h6's 2026-10-29 amendment).
+    private val saved = mutableListOf<Pair<String, MessageTranslation.Done>>()
+
     private class FakeEngine(
         var installed: Set<TranslateDirection> = TranslateDirection.ALL.toSet(),
         var detection: Detection? = null,
@@ -67,6 +70,7 @@ class MessageTranslatorTest {
         engine: TranslateEngine,
         flagged: Boolean = false,
         authors: AuthorLanguages? = null,
+        save: suspend (String, MessageTranslation.Done) -> Unit = { id, done -> saved += id to done },
     ): MessageTranslator {
         val dispatcher = StandardTestDispatcher(testScheduler)
         return MessageTranslator(
@@ -80,6 +84,7 @@ class MessageTranslatorTest {
             clock = { now },
             log = { logs += it },
             authors = authors,
+            save = save,
         )
     }
 
@@ -92,11 +97,17 @@ class MessageTranslatorTest {
                     "Are you coming to the park later?"
                 }
             val t = translator(engine)
-            assertTrue(t.translate("m1", "¿Vienes al parque más tarde?", TranslateLang.ES, isRoom = true))
+            assertTrue(t.translate("m1", "¿Vienes al parque más tarde?", TranslateLang("es"), TranslateLang.EN, isRoom = true))
             assertEquals(MessageTranslation.Running, t.state.value["m1"])
             advanceUntilIdle()
             assertEquals(
-                MessageTranslation.Done("Are you coming to the park later?", TranslateLang.ES, TranslateLang.EN, flagged = false, ms = 40),
+                MessageTranslation.Done(
+                    "Are you coming to the park later?",
+                    TranslateLang("es"),
+                    TranslateLang.EN,
+                    flagged = false,
+                    ms = 40,
+                ),
                 t.state.value["m1"],
             )
             assertEquals(listOf("¿Vienes al parque más tarde?"), engine.asked)
@@ -107,7 +118,7 @@ class MessageTranslatorTest {
     fun aFlaggedTranslationSaysSo() =
         runTest {
             val t = translator(FakeEngine { _, _ -> "an insult" }, flagged = true)
-            t.translate("m1", "un insulto", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "un insulto", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             assertTrue((t.state.value["m1"] as MessageTranslation.Done).flagged)
             assertEquals(listOf("an insult" to false), screened)
@@ -126,7 +137,7 @@ class MessageTranslatorTest {
                     }
                 }
             val t = translator(engine)
-            t.translate("m1", "mira esto https://getknit.app/ ahora", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "mira esto https://getknit.app/ ahora", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             assertEquals("look at this https://getknit.app/ now", (t.state.value["m1"] as MessageTranslation.Done).text)
             assertEquals(listOf("mira esto https://getknit.app/ ahora", "mira esto", "ahora"), engine.asked)
@@ -136,7 +147,7 @@ class MessageTranslatorTest {
     fun aLoopWholeAndByPiecesIsRefused() =
         runTest {
             val t = translator(FakeEngine { _, _ -> "¡".repeat(23) })
-            t.translate("m1", "congrats!! so happy for you", TranslateLang.EN, isRoom = false)
+            t.translate("m1", "congrats!! so happy for you", TranslateLang.EN, TranslateLang("es"), isRoom = false)
             advanceUntilIdle()
             assertEquals(MessageTranslation.Failed(MessageTranslation.Failed.Reason.UNUSABLE), t.state.value["m1"])
             assertTrue(screened.isEmpty())
@@ -146,7 +157,7 @@ class MessageTranslatorTest {
     fun aModelThatWillNotRunFails() =
         runTest {
             val t = translator(FakeEngine { _, _ -> null })
-            t.translate("m1", "hola", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "hola", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             assertEquals(MessageTranslation.Failed(MessageTranslation.Failed.Reason.ENGINE), t.state.value["m1"])
         }
@@ -154,11 +165,11 @@ class MessageTranslatorTest {
     @Test
     fun aMissingModelRunsNothingAndNamesTheDirection() =
         runTest {
-            val engine = FakeEngine(installed = setOf(TranslateDirection.EN_ES)) { _, _ -> "x" }
+            val engine = FakeEngine(installed = setOf(TranslateDirections.EN_ES)) { _, _ -> "x" }
             val t = translator(engine)
-            assertFalse(t.translate("m1", "hola", TranslateLang.ES, isRoom = false))
+            assertFalse(t.translate("m1", "hola", TranslateLang("es"), TranslateLang.EN, isRoom = false))
             advanceUntilIdle()
-            assertEquals(MessageTranslation.NeedsModel(TranslateDirection.ES_EN), t.state.value["m1"])
+            assertEquals(MessageTranslation.NeedsModel(TranslateDirections.ES_EN), t.state.value["m1"])
             assertTrue(engine.asked.isEmpty())
         }
 
@@ -172,12 +183,12 @@ class MessageTranslatorTest {
                     text.uppercase()
                 }
             val t = translator(engine)
-            assertTrue(t.translate("m1", "uno", TranslateLang.ES, isRoom = false))
-            assertTrue(t.translate("m2", "dos", TranslateLang.ES, isRoom = false))
+            assertTrue(t.translate("m1", "uno", TranslateLang("es"), TranslateLang.EN, isRoom = false))
+            assertTrue(t.translate("m2", "dos", TranslateLang("es"), TranslateLang.EN, isRoom = false))
             advanceUntilIdle()
             // m1 holds the engine; m2 waits its turn without reaching it.
             assertEquals(listOf("uno"), engine.asked)
-            assertFalse(t.translate("m1", "uno", TranslateLang.ES, isRoom = false))
+            assertFalse(t.translate("m1", "uno", TranslateLang("es"), TranslateLang.EN, isRoom = false))
             // Running is not dismissed.
             t.dismiss("m1")
             assertEquals(MessageTranslation.Running, t.state.value["m1"])
@@ -193,7 +204,7 @@ class MessageTranslatorTest {
     fun aDismissedTranslationIsForgotten() =
         runTest {
             val t = translator(FakeEngine { _, _ -> "hello" })
-            t.translate("m1", "hola", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "hola", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             t.dismiss("m1")
             assertFalse("m1" in t.state.value)
@@ -203,7 +214,7 @@ class MessageTranslatorTest {
     fun neitherTheBodyNorTheTranslationIsLogged() =
         runTest {
             val t = translator(FakeEngine { _, _ -> "secret plans" })
-            t.translate("m1", "planes secretos", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "planes secretos", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             assertTrue(logs.isNotEmpty())
             assertTrue(logs.none { "secret" in it || "planes" in it })
@@ -214,7 +225,7 @@ class MessageTranslatorTest {
         runTest {
             val engine = FakeEngine(detection = Detection(listOf("es" to 96, "un" to 0, "un" to 0), true, 9)) { _, _ -> "x" }
             val t = translator(engine)
-            assertEquals(LanguagePick.Picked(TranslateLang.ES), t.pick("mira esto https://getknit.app/"))
+            assertEquals(LanguagePick.Picked(TranslateLang("es")), t.pick("mira esto https://getknit.app/"))
             assertEquals(listOf("mira esto"), engine.detected)
             // Nothing but a link: nothing to read, and CLD2 is not asked.
             assertEquals(LanguagePick.Unsure, t.pick("https://getknit.app/"))
@@ -227,8 +238,8 @@ class MessageTranslatorTest {
             val engine = FakeEngine { _, _ -> "Are you coming?" }
             val t = translator(engine, flagged = true)
             assertEquals(
-                TranslateOutcome.Text("Are you coming?", TranslateLang.ES, TranslateLang.EN),
-                t.translateNow("¿Vienes?", TranslateLang.ES),
+                TranslateOutcome.Text("Are you coming?", TranslateLang("es"), TranslateLang.EN),
+                t.translateNow("¿Vienes?", TranslateLang("es"), TranslateLang.EN),
             )
             assertTrue(screened.isEmpty())
             // A draft is the person's own: nothing of it lands in the messages' state.
@@ -248,12 +259,12 @@ class MessageTranslatorTest {
                 }
             val t = translator(engine)
             assertEquals(
-                TranslateOutcome.Text("hello @Ana", TranslateLang.ES, TranslateLang.EN),
-                t.translateNow("hola @Ana", TranslateLang.ES, listOf(5 until 9)),
+                TranslateOutcome.Text("hello @Ana", TranslateLang("es"), TranslateLang.EN),
+                t.translateNow("hola @Ana", TranslateLang("es"), TranslateLang.EN, listOf(5 until 9)),
             )
             assertEquals(
                 TranslateOutcome.Failed(MessageTranslation.Failed.Reason.UNUSABLE),
-                t.translateNow("congrats!! so happy", TranslateLang.EN),
+                t.translateNow("congrats!! so happy", TranslateLang.EN, TranslateLang("es")),
             )
         }
 
@@ -262,7 +273,10 @@ class MessageTranslatorTest {
         runTest {
             val engine = FakeEngine(installed = emptySet()) { _, _ -> "x" }
             val t = translator(engine)
-            assertEquals(TranslateOutcome.NeedsModel(TranslateDirection.EN_ES), t.translateNow("hello there", TranslateLang.EN))
+            assertEquals(
+                TranslateOutcome.NeedsModel(TranslateDirections.EN_ES),
+                t.translateNow("hello there", TranslateLang.EN, TranslateLang("es")),
+            )
             assertTrue(engine.asked.isEmpty())
         }
 
@@ -276,16 +290,16 @@ class MessageTranslatorTest {
                     text.uppercase()
                 }
             val t = translator(engine)
-            t.translate("m1", "uno", TranslateLang.ES, isRoom = false)
+            t.translate("m1", "uno", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
-            val draft = async { t.translateNow("dos", TranslateLang.ES) }
+            val draft = async { t.translateNow("dos", TranslateLang("es"), TranslateLang.EN) }
             advanceUntilIdle()
             // The message holds the engine; the draft has not reached it.
             assertEquals(listOf("uno"), engine.asked)
             assertFalse(draft.isCompleted)
             gate.complete(Unit)
             advanceUntilIdle()
-            assertEquals(TranslateOutcome.Text("DOS", TranslateLang.ES, TranslateLang.EN), draft.await())
+            assertEquals(TranslateOutcome.Text("DOS", TranslateLang("es"), TranslateLang.EN), draft.await())
             assertEquals(1, engine.mostRunning)
         }
 
@@ -302,12 +316,12 @@ class MessageTranslatorTest {
     fun aShortLineTakesItsAuthorsLanguageAndHintsTheIdentifierWithIt() =
         runTest {
             val engine = FakeEngine(detection = unread) { _, _ -> "x" }
-            val t = translator(engine, authors = authorWrites(TranslateLang.ES))
+            val t = translator(engine, authors = authorWrites(TranslateLang("es")))
             assertEquals(
-                Resolution(LanguagePick.Picked(TranslateLang.ES), LanguageSource.AUTHOR),
+                Resolution(LanguagePick.Picked(TranslateLang("es")), LanguageSource.AUTHOR),
                 t.resolve("ya voy", emptyList(), "g1", "lucia", chat = TranslateLang.EN),
             )
-            assertEquals(listOf<TranslateLang?>(TranslateLang.ES), engine.hints)
+            assertEquals(listOf<TranslateLang?>(TranslateLang("es")), engine.hints)
         }
 
     @Test
@@ -326,7 +340,7 @@ class MessageTranslatorTest {
     fun aMessageOfLinksAloneHasNothingToTranslateWhateverItsAuthorWrites() =
         runTest {
             val engine = FakeEngine(detection = unread) { _, _ -> "x" }
-            val t = translator(engine, authors = authorWrites(TranslateLang.ES))
+            val t = translator(engine, authors = authorWrites(TranslateLang("es")))
             assertEquals(Resolution(LanguagePick.Unsure, null), t.resolve("https://getknit.app/", emptyList(), "g1", "lucia", null))
             assertTrue(engine.detected.isEmpty())
         }
@@ -335,10 +349,44 @@ class MessageTranslatorTest {
     fun aTranslationFromAGuessedLanguageSaysSoAndOneFromTheWordsDoesNot() =
         runTest {
             val t = translator(FakeEngine { _, _ -> "I'm coming" })
-            t.translate("guessed", "ya voy", TranslateLang.EN, isRoom = false, guessed = true)
-            t.translate("read", "ya voy", TranslateLang.ES, isRoom = false)
+            t.translate("guessed", "ya voy", TranslateLang.EN, TranslateLang("es"), isRoom = false, guessed = true)
+            t.translate("read", "ya voy", TranslateLang("es"), TranslateLang.EN, isRoom = false)
             advanceUntilIdle()
             assertTrue((t.state.value["guessed"] as MessageTranslation.Done).guessed)
             assertFalse((t.state.value["read"] as MessageTranslation.Done).guessed)
+        }
+
+    @Test
+    fun aFinishedTranslationIsKeptOnItsRowOnceAndAFailedOneNever() =
+        runTest {
+            val t = translator(FakeEngine { _, text -> if (text == "hola") "hello" else null })
+            t.translate("m1", "hola", TranslateLang("es"), TranslateLang.EN, isRoom = false)
+            t.translate("m2", "adiós", TranslateLang("es"), TranslateLang.EN, isRoom = false)
+            advanceUntilIdle()
+            assertEquals(listOf("m1" to t.state.value["m1"]), saved)
+            assertEquals(MessageTranslation.Failed(MessageTranslation.Failed.Reason.ENGINE), t.state.value["m2"])
+        }
+
+    @Test
+    fun aTranslationThatCouldNotBeKeptIsStillShownAndNothingOfItLogged() =
+        runTest {
+            val t = translator(FakeEngine { _, _ -> "secret plans" }, save = { _, _ -> error("disk full") })
+            t.translate("m1", "planes secretos", TranslateLang("es"), TranslateLang.EN, isRoom = false)
+            advanceUntilIdle()
+            assertEquals("secret plans", (t.state.value["m1"] as MessageTranslation.Done).text)
+            assertTrue(logs.any { "not kept" in it })
+            assertTrue(logs.none { "secret" in it || "planes" in it || "disk" in it })
+        }
+
+    @Test
+    fun aLanguageWithNowhereToGoSaysSoAndRunsNothing() =
+        runTest {
+            val engine = FakeEngine { _, _ -> "x" }
+            val t = translator(engine)
+            assertFalse(t.translate("m1", "hello", TranslateLang.EN, to = null, isRoom = false))
+            advanceUntilIdle()
+            assertEquals(MessageTranslation.NoTarget(TranslateLang.EN), t.state.value["m1"])
+            assertTrue(engine.asked.isEmpty())
+            assertTrue(saved.isEmpty())
         }
 }

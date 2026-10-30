@@ -1735,8 +1735,6 @@
     <string name="profile_badge_toggle_summary">Додає маленьку позначку до вашого фото для людей, до яких доходить ваш профіль.</string>
     <string name="profile_badge_lapsed">Термін дії вашого значка минув, тому він не показується. Він повернеться, щойно ваш ключ перепусток стане чинним.</string>
     <string name="chat_action_translate">Перекласти</string>
-    <string name="translate_lang_en">Англійська</string>
-    <string name="translate_lang_es">Іспанська</string>
     <string name="translate_label">Оригінал: %1$s</string>
     <string name="translate_running">Перекладаємо…</string>
     <string name="translate_hidden">Переклад приховано. Торкніться, щоб показати.</string>
@@ -1750,14 +1748,25 @@
     <string name="translate_not_now">Не зараз</string>
     <string name="translate_from_title">Яка це мова?</string>
     <string name="translate_from_body">Текст закороткий, щоб визначити мову. Перекласти з мови:</string>
+    <string name="translate_to_title">На яку мову перекласти?</string>
+    <string name="translate_already_in">Повідомлення вже цією мовою: %1$s.</string>
+    <string name="translate_no_target">Переклад з цієї мови (%1$s) на вашу мову поки недоступний.</string>
     <string name="translate_metered">Модель займає %1$s, і це завантаження використовує мобільний інтернет.</string>
     <string name="translate_no_internet">Немає з’єднання з інтернетом</string>
     <string name="translate_download_failed">Не вдалося завантажити</string>
     <string name="translate_draft_button">Перекласти перед надсиланням</string>
     <string name="translate_draft_hint">Мова цього чату: %1$s. Перекласти ваше повідомлення?</string>
+    <string name="translate_draft_hint_reads">%1$s читає цією мовою: %2$s. Перекласти ваше повідомлення?</string>
+    <string name="translate_draft_hint_group_reads">Учасники читають цією мовою: %1$s. Перекласти ваше повідомлення?</string>
     <string name="translate_draft_hint_action">Перекласти</string>
     <string name="translate_draft_undo">Скасувати переклад</string>
     <string name="translate_not_language">Не %1$s?</string>
     <string name="translate_model_title">Завантажити модель перекладу?</string>
     <string name="translate_metered_note">Це завантаження використовує мобільний інтернет.</string>
+    <string name="settings_translation_title">Переклад</string>
+    <string name="settings_translation_subtitle">Перекладати повідомлення на цьому телефоні без інтернету. Ваші повідомлення також указують мову, якою їх написано, і мову, якою ви читаєте.</string>
+    <string name="settings_translate_into_title">Мова перекладу</string>
+    <string name="settings_translate_into_auto">Автоматично (%1$s)</string>
+    <string name="settings_translate_into_auto_none">Автоматично</string>
+    <string name="settings_translate_into_body">Автоматично — мова, якою ви пишете, а якщо її не визначено, мова вашого телефона.</string>
 </resources>

@@ -40,6 +40,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.translate.TranslateDirection
+import app.getknit.knit.translate.TranslateDirections
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.preview.KnitPreview
 
@@ -52,7 +53,7 @@ import app.getknit.knit.ui.preview.KnitPreview
 fun DraftTranslateLine(
     ui: DraftTranslateUi,
     canSend: Boolean,
-    onTranslate: (from: TranslateLang?) -> Unit,
+    onTranslate: (from: TranslateLang, to: TranslateLang) -> Unit,
     onUndo: () -> Unit,
     modifier: Modifier = Modifier,
     onNotThisLanguage: () -> Unit = {},
@@ -124,12 +125,16 @@ fun DraftTranslateLine(
             hint != null && canSend -> {
                 {
                     Text(
-                        stringResource(R.string.translate_draft_hint, languageName(hint.to)),
+                        when {
+                            ui.hintBy != null -> stringResource(R.string.translate_draft_hint_reads, ui.hintBy, languageName(hint.to))
+                            ui.hintDeclared -> stringResource(R.string.translate_draft_hint_group_reads, languageName(hint.to))
+                            else -> stringResource(R.string.translate_draft_hint, languageName(hint.to))
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = muted,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    TextButton(onClick = { onTranslate(hint.from) }) { Text(stringResource(R.string.translate_draft_hint_action)) }
+                    TextButton(onClick = { onTranslate(hint.from, hint.to) }) { Text(stringResource(R.string.translate_draft_hint_action)) }
                 }
             }
 
@@ -264,9 +269,23 @@ fun DraftTranslateHintPreview() =
     KnitPreview {
         ComposerPreviewFrame {
             DraftTranslateLine(
-                ui = DraftTranslateUi(hint = TranslateDirection.ES_EN),
+                ui = DraftTranslateUi(hint = TranslateDirections.ES_EN),
                 canSend = true,
-                onTranslate = {},
+                onTranslate = { _, _ -> },
+                onUndo = {},
+            )
+        }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun DraftTranslateReadsHintPreview() =
+    KnitPreview {
+        ComposerPreviewFrame {
+            DraftTranslateLine(
+                ui = DraftTranslateUi(hint = TranslateDirections.ES_EN, hintDeclared = true, hintBy = "Sam"),
+                canSend = true,
+                onTranslate = { _, _ -> },
                 onUndo = {},
             )
         }
@@ -279,7 +298,7 @@ fun DraftTranslatedGuessedPreview() =
         DraftTranslateLine(
             ui = DraftTranslateUi(translatedFrom = TranslateLang.EN, translatedGuessed = true),
             canSend = true,
-            onTranslate = {},
+            onTranslate = { _, _ -> },
             onUndo = {},
         )
     }
@@ -289,9 +308,9 @@ fun DraftTranslatedGuessedPreview() =
 fun DraftTranslatedPreview() =
     KnitPreview {
         DraftTranslateLine(
-            ui = DraftTranslateUi(translatedFrom = TranslateLang.ES),
+            ui = DraftTranslateUi(translatedFrom = TranslateDirections.ES_EN.from),
             canSend = true,
-            onTranslate = {},
+            onTranslate = { _, _ -> },
             onUndo = {},
         )
     }

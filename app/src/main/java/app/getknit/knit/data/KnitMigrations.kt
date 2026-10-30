@@ -659,6 +659,25 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v27 — a message's translation kept on its row, and the languages its author declared on the frame (ADR
+     * 2026-10.t2h6's 2026-10-29 amendment): seven columns on `messages`, null or false on every existing row, since
+     * nothing was translated or declared before. The SQL must stay byte-equivalent to what Room generates for
+     * `app/schemas/**/27.json`.
+     */
+    val MIGRATION_26_27 =
+        object : Migration(26, 27) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `translation` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `translationFrom` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `translationTo` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `translationFlagged` INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `translationGuessed` INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `bodyLang` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `authorReads` TEXT DEFAULT NULL")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -687,5 +706,6 @@ object KnitMigrations {
             MIGRATION_23_24,
             MIGRATION_24_25,
             MIGRATION_25_26,
+            MIGRATION_26_27,
         )
 }

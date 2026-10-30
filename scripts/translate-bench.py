@@ -30,10 +30,11 @@ NATIVE = ROOT.parent / "knit-translate-native"
 BENCH = "translate-native/build/desktop/knit-translate-bench"
 REMOTE = "/data/local/tmp/translate"
 PACKAGE = "app.getknit.knit"
-# model id and file stem per direction: the pins' own (translate-model.py MODELS).
+# model id and file stem per direction, keyed "<from>-<to>": the pins' own (translate-model.py MODELS). Each runs the
+# corpus of its source language, scripts/translate-corpus/<from>.txt.
 DIRECTIONS = {
-    "es": ("mozilla-es-en-4aed7734", "esen"),
-    "en": ("mozilla-en-es-3b1c3995", "enes"),
+    "es-en": ("mozilla-es-en-4aed7734", "esen"),
+    "en-es": ("mozilla-en-es-3b1c3995", "enes"),
 }
 POLL_S = 2
 BENCH_TIMEOUT_S = 1800
@@ -66,9 +67,10 @@ def sideload(serial, stage):
     sys.exit(f"{serial}: side-load did not finish")
 
 
-def bench(serial, source, runs):
+def bench(serial, pair, runs):
+    source, target = pair.split("-")
     reply = bridge(serial, "--es", "op", "bench", "--es", "file", f"{REMOTE}/corpus/{source}.txt", "--es", "from", source,
-                   "--ei", "runs", str(runs))
+                   "--es", "to", target, "--ei", "runs", str(runs))
     if reply.get("status") != "ok":
         sys.exit(f"{serial}: bench refused: {reply}")
     remote_out = reply["out"]
@@ -83,8 +85,9 @@ def bench(serial, source, runs):
     sys.exit(f"{serial}: bench did not finish")
 
 
-def desktop(bench, stage, source):
-    model_id, stem = DIRECTIONS[source]
+def desktop(bench, stage, pair):
+    model_id, stem = DIRECTIONS[pair]
+    source = pair.split("-")[0]
     d = Path(stage) / model_id
     out = subprocess.run(
         [str(bench), "translate", str(d / f"model.{stem}.intgemm.alphas.bin"), str(d / f"vocab.{stem}.spm"),
@@ -119,7 +122,7 @@ def main():
         bench = Path(args.native) / BENCH
         if not args.stage or not bench.exists():
             sys.exit(f"--desktop needs --stage and a built {bench}")
-        reference = {source: desktop(bench, args.stage, source) for source in DIRECTIONS}
+        reference = {pair: desktop(bench, args.stage, pair) for pair in DIRECTIONS}
 
     table = [
         (
@@ -136,17 +139,18 @@ def main():
         adb(serial, "shell", "chmod", "-R", "a+rX", REMOTE)
         if args.stage:
             sideload(serial, args.stage)
-        for source in DIRECTIONS:
-            summary, remote_out = bench(serial, source, args.runs)
-            local = out / f"{model.replace(' ', '_')}-{source}.jsonl"
+        for pair in DIRECTIONS:
+            source = pair.split("-")[0]
+            summary, remote_out = bench(serial, pair, args.runs)
+            local = out / f"{model.replace(' ', '_')}-{pair}.jsonl"
             adb(serial, "pull", remote_out, str(local))
             table.append(row(model, summary))
             corpus = [line for line in (CORPUS / f"{source}.txt").read_text().splitlines() if line.strip()]
             for line in local.read_text().splitlines():
                 r = json.loads(line)
-                ref = reference.get(source, {}).get(r["n"])
+                ref = reference.get(pair, {}).get(r["n"])
                 sheet.append({
-                    "device": model, "from": source, "n": r["n"], "ms": r["ms"], "source": corpus[r["n"] - 1],
+                    "device": model, "from": source, "to": pair.split("-")[1], "n": r["n"], "ms": r["ms"], "source": corpus[r["n"] - 1],
                     "phone": r["out"], "desktop": ref, "same": ref is None or ref == r["out"], "pick": r["pick"],
                     "spansKept": r["spansKept"], "usable": r["usable"],
                 })

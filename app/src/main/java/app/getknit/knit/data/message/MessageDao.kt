@@ -271,6 +271,26 @@ interface MessageDao {
         height: Int,
     )
 
+    /**
+     * Keeps message [id]'s translation on its row (ADR 2026-10.t2h6's 2026-10-29 amendment). A targeted update, never a
+     * whole-row save that could undo a tick or a verdict written in between; a repeat of the same translation leaves the
+     * row untouched, so nothing observing it wakes.
+     */
+    @Query(
+        "UPDATE messages SET translation = :text, translationFrom = :from, translationTo = :to, " +
+            "translationFlagged = :flagged, translationGuessed = :guessed WHERE id = :id AND (translation IS NOT :text " +
+            "OR translationFrom IS NOT :from OR translationTo IS NOT :to OR translationFlagged IS NOT :flagged " +
+            "OR translationGuessed IS NOT :guessed)",
+    )
+    suspend fun setTranslation(
+        id: String,
+        text: String,
+        from: String,
+        to: String,
+        flagged: Boolean,
+        guessed: Boolean,
+    )
+
     /** Marks the inline poster of message [id] explicit, as this phone's screen judged it (ADR 2026-10.hmfe). */
     @Query("UPDATE messages SET videoPosterFlagged = 1 WHERE id = :id AND videoPosterFlagged = 0")
     suspend fun markPosterFlagged(id: String)
@@ -454,8 +474,8 @@ interface MessageDao {
     ): Boolean
 
     /**
-     * The bodies this phone wrote most recently, newest first: the translation spike reads which language its reader
-     * writes in from them (ADR 2026-10.t2h6), on the debug bridge's ask only. Never logged.
+     * The bodies this phone wrote most recently, newest first: the reader's language is read from them when Settings
+     * leaves it Automatic (ADR 2026-10.t2h6's 2026-10-29 amendment). Never logged.
      */
     @Query(
         "SELECT body FROM messages WHERE kind = 0 AND senderId = :me AND originNode IS NULL AND body <> '' " +

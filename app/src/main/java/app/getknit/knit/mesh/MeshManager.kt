@@ -69,6 +69,7 @@ import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
@@ -1461,8 +1462,11 @@ class MeshManager(
         group: GroupInfo?,
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
     ): Boolean {
         val isRoom = recipientId == null && group == null
+        // Whoever built it, a frame carries only what the wire does not imply: English by an English reader costs 0.
+        val declared = declared.normalized()
         if (isRoom && isTextFlagged(text, "outgoing", isRoom = true)) return false
         // Indexed by the caller against exactly this text (it rebases across its own trim): normalised, never shifted.
         val spans = StyleSpans.normalize(text, styles)
@@ -1501,6 +1505,8 @@ class MeshManager(
                     attachmentSourceHash = attachment?.sourceHash,
                     attachmentSize = roomSize,
                     styles = StyleStore.encode(spans),
+                    bodyLang = declared.lang,
+                    authorReads = declared.reads,
                 ).withReply(replyTo)
                     .withVideo(attachment?.video),
             )
@@ -1517,6 +1523,9 @@ class MeshManager(
                     video = attachment?.video,
                     // Cleartext in the room like the body (ADR 2026-10.p95v); absent while empty.
                     styles = spans,
+                    // Cleartext in the room too (ADR 2026-10.t2h6's 2026-10-29 amendment); absent while implied.
+                    lang = declared.langIndex,
+                    reads = declared.readsIndex,
                 )
             originateSigned(chatEnvelope(id, me, sentAt, recipientId = null, group = null, content))
             return true
@@ -1570,13 +1579,16 @@ class MeshManager(
                 pendingKey = false,
                 // Sealed off the row with the rest ([sealedContent]); the shell below never carries them.
                 styles = StyleStore.encode(spans),
+                bodyLang = declared.lang,
+                authorReads = declared.reads,
             ).withReply(replyTo)
                 // A video's duration, size and poster, sealed with the rest (ADR 2026-10.hmfe).
                 .withVideo(attachment?.video)
         // The piggyback (ADR 054): a DM to a peer that reads inline acks carries the receipts we still owe
         // it for DMs that came over the board, in place of a standalone tick that would cost ~3 s of LoRa
         // air. Attached only in the v2 arm of the seal; a v1 fallback or a parked DM gives them back.
-        val inlineAcks = inlineAcksFor(recipientId, group, text, spans, replying = replyTo != null, attached = attachment != null)
+        val inlineAcks =
+            inlineAcksFor(recipientId, group, text, spans, declared, replying = replyTo != null, attached = attachment != null)
         val inlineIds = inlineAcks.ids
         val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
         if (inlineIds.isNotEmpty() && recipientId != null) {
@@ -2414,6 +2426,7 @@ class MeshManager(
         group: GroupInfo?,
         text: String,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
         replying: Boolean,
         attached: Boolean,
     ): InlineAcks {
@@ -2422,11 +2435,12 @@ class MeshManager(
         if (waiting == 0) return InlineAcks()
         val peer = peers.find(recipientId) ?: return InlineAcks()
         if ((peer.capabilities ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return InlineAcks()
-        // A styled body's ranges ride in the same frame (ADR 2026-10.p95v), counted at the named layout's two-byte key:
-        // the larger of the two seal forms, so a fallback to v2 never overflows.
+        // A styled body's ranges ride in the same frame (ADR 2026-10.p95v), and so do its declared languages (ADR
+        // 2026-10.t2h6), both counted at the named layout's two-byte key: the larger of the two seal forms, so a fallback
+        // to v2 never overflows.
         val room =
             LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached) - LoraSizeHint.utf8Length(text) -
-                StyleSpans.wireCost(styles, StyleKey.NAMED)
+                StyleSpans.wireCost(styles, StyleKey.NAMED) - declared.wireCost(named = true)
         val fit = (room / INLINE_ACK_BYTES).coerceIn(0, MAX_INLINE_ACKS)
         if (fit == 0) return InlineAcks()
         // DM acks take the slots first: someone is waiting on each of those and this ride is the only path
@@ -4163,8 +4177,10 @@ class MeshManager(
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested?,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
+        val declared = declared.normalized()
         val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
         val id = FrameId.new()
@@ -4200,6 +4216,8 @@ class MeshManager(
                                     attachmentName = attachment?.name,
                                     attachmentKey = sealedAttachment?.key,
                                     styles = spans,
+                                    lang = declared.langIndex,
+                                    reads = declared.readsIndex,
                                 ),
                         ),
                     ),
@@ -4228,6 +4246,8 @@ class MeshManager(
                 attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
                 attachmentSourceHash = attachment?.sourceHash,
                 styles = StyleStore.encode(spans),
+                bodyLang = declared.lang,
+                authorReads = declared.reads,
             ).withReply(replyTo)
                 .withVideo(attachment?.video),
             sig = wire.sig,

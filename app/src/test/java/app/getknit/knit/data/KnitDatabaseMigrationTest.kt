@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v25) creates and opens from the exported JSON`() =
+    fun `the current schema (v27) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -992,12 +992,41 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 26 to 27 keeps every message and leaves its translation and declared languages empty`() =
+        runTest {
+            helper.createDatabase(26).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(") ", ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged) ") +
+                        "VALUES ('m1','n1','peer-1','¿vienes?',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(27, listOf(KnitMigrations.MIGRATION_26_27)).use { c ->
+                c
+                    .prepare(
+                        "SELECT body, translation, translationFrom, translationTo, translationFlagged, translationGuessed, " +
+                            "bodyLang, authorReads FROM messages WHERE id = 'm1'",
+                    ).use { s ->
+                        assertTrue(s.step())
+                        assertEquals("¿vienes?", s.getText(0))
+                        // ADR 2026-10.t2h6's 2026-10-29 amendment: nothing was kept or declared before this build.
+                        assertTrue(s.isNull(1))
+                        assertTrue(s.isNull(2))
+                        assertTrue(s.isNull(3))
+                        assertEquals(0L, s.getLong(4))
+                        assertEquals(0L, s.getLong(5))
+                        assertTrue(s.isNull(6))
+                        assertTrue(s.isNull(7))
+                    }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 26
+        const val CURRENT_VERSION = 27
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

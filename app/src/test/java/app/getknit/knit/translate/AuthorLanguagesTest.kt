@@ -34,7 +34,7 @@ class AuthorLanguagesTest {
                         ("g2" to "lucia") to listOf("en a", "en b", "en c"),
                     ),
                 )
-            assertEquals(TranslateLang.ES, langs.of("g1", "lucia"))
+            assertEquals(TranslateLang("es"), langs.of("g1", "lucia"))
             // The same person, another chat, another language.
             assertEquals(TranslateLang.EN, langs.of("g2", "lucia"))
             assertEquals(AuthorLanguages.SAMPLE, asked.first().third)

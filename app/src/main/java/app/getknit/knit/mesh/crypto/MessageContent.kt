@@ -9,6 +9,7 @@ import app.getknit.knit.data.message.replyRef
 import app.getknit.knit.data.message.videoInfo
 import app.getknit.knit.mesh.protocol.AttachmentName
 import app.getknit.knit.mesh.protocol.CallPayload
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -109,6 +110,19 @@ data class MessageContent(
     @ByteString
     @Serializable(with = StyleRunsSerializer::class)
     val styles: List<StyleSpan> = emptyList(),
+    // The body's language and the language its author reads (additive; ADR 2026-10.t2h6's 2026-10-29 amendment), each
+    // a [app.getknit.knit.mesh.protocol.LanguageRegistry] index under "l" / "r", labels 18 / 19 in the compact layout.
+    // Absent for English or unknown ("l") and for "the same as l" ("r"), so an English message by an English reader
+    // seals to the bytes it did before they existed. Conversational: mapped by [sealedContent] (through
+    // `DeclaredLangs.of`, so the implied case costs nothing even off an unnormalised row), never set on a ctl, and read
+    // only off the plaintext (`InboundPipeline.plaintextContent`), never the shell. A CBOR uint forever: a text or
+    // out-of-range value fails this whole content's decode (`DECRYPT_FAILED`, the sender's one message), and an index
+    // this phone does not know, or a negative one, reads as nothing (`DeclaredLangs.fromWire`). The sender's claim: a label for
+    // translation and the composer's hint, never a moderation, trust, routing or crypto input.
+    @SerialName("l")
+    val lang: Int? = null,
+    @SerialName("r")
+    val reads: Int? = null,
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)
@@ -201,8 +215,11 @@ data class MessageContent(
  * (ADR 2026-09.qq2r), so the first copy a reset peer could open was a file with no name (#131).
  * `MessageContentTest` fails when a new field is neither mapped here nor named as machinery.
  */
-internal fun MessageEntity.sealedContent(): MessageContent =
-    MessageContent(
+internal fun MessageEntity.sealedContent(): MessageContent {
+    // Re-normalised here, not trusted off the row: an English message by an English reader seals to its old bytes
+    // whoever wrote the row (ADR 2026-10.t2h6's 2026-10-29 amendment).
+    val declared = DeclaredLangs.of(bodyLang, authorReads)
+    return MessageContent(
         body = body,
         mentions = MentionStore.decode(mentions),
         attachmentHash = attachmentHash,
@@ -213,4 +230,7 @@ internal fun MessageEntity.sealedContent(): MessageContent =
         video = videoInfo(),
         replyTo = replyRef(),
         styles = StyleStore.decode(styles),
+        lang = declared.langIndex,
+        reads = declared.readsIndex,
     )
+}

@@ -2,8 +2,10 @@ package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
 import app.getknit.knit.ui.translate.DraftTranslateHintPreview
+import app.getknit.knit.ui.translate.DraftTranslateReadsHintPreview
 import app.getknit.knit.ui.translate.DraftTranslatedGuessedPreview
 import app.getknit.knit.ui.translate.DraftTranslatedPreview
+import app.getknit.knit.ui.translate.TranslateIntoRowPreview
 import app.getknit.knit.ui.translate.TranslationBlockNeedsModelPreview
 import app.getknit.knit.ui.translate.TranslationBlockTranslatingPreview
 import app.getknit.knit.ui.translate.TranslationToggleGuessedPreview
@@ -21,12 +23,22 @@ fun DraftTranslateHint() = DraftTranslateHintPreview()
 @PreviewTest
 @ComponentShots
 @Composable
+fun DraftTranslateReadsHint() = DraftTranslateReadsHintPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
 fun DraftTranslatedGuessed() = DraftTranslatedGuessedPreview()
 
 @PreviewTest
 @ComponentShots
 @Composable
 fun DraftTranslated() = DraftTranslatedPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun TranslateIntoRow() = TranslateIntoRowPreview()
 
 @PreviewTest
 @ComponentShots

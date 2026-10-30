@@ -277,6 +277,25 @@ data class MessageEntity(
      * (`sealedContent`). On the wire as one byte string (`StyleSpans`), never this text.
      */
     val styles: String? = null,
+    /**
+     * The body translated on this phone at its reader's tap (ADR 2026-10.t2h6's 2026-10-29 amendment), into
+     * [translationTo] from [translationFrom] (model registry codes, never ordinals), screened to [translationFlagged] in
+     * the message's scope, [translationGuessed] when its language was a prior's guess. Null until translated; written
+     * by [MessageDao.setTranslation] alone, never by a whole-row save. Not in `messages_fts`. **Local only.**
+     */
+    val translation: String? = null,
+    val translationFrom: String? = null,
+    val translationTo: String? = null,
+    val translationFlagged: Boolean = false,
+    val translationGuessed: Boolean = false,
+    /**
+     * The language its author declared the body is in, and the language they read, as registry codes (ADR 2026-10.t2h6's
+     * 2026-10-29 amendment): from the frame's `lang` and `reads`, written once on insert. Null when nothing was declared
+     * (English, unknown, or an older sender). The sender's claim: a label that orders the translation's priors and the
+     * composer's hint, never a moderation or trust input.
+     */
+    val bodyLang: String? = null,
+    val authorReads: String? = null,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

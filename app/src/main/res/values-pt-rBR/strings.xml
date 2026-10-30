@@ -1707,8 +1707,6 @@
     <string name="profile_badge_toggle_summary">Adiciona uma pequena marca à sua foto para as pessoas que seu perfil alcança.</string>
     <string name="profile_badge_lapsed">Seu selo expirou, por isso não está aparecendo. Ele volta a aparecer quando sua chave de passes estiver válida.</string>
     <string name="chat_action_translate">Traduzir</string>
-    <string name="translate_lang_en">Inglês</string>
-    <string name="translate_lang_es">Espanhol</string>
     <string name="translate_label">Traduzido (original: %1$s)</string>
     <string name="translate_running">Traduzindo…</string>
     <string name="translate_hidden">Tradução oculta. Toque para mostrar.</string>
@@ -1722,14 +1720,25 @@
     <string name="translate_not_now">Agora não</string>
     <string name="translate_from_title">Qual é o idioma?</string>
     <string name="translate_from_body">É curta demais para saber. Traduzir de:</string>
+    <string name="translate_to_title">Traduzir para qual idioma?</string>
+    <string name="translate_already_in">Esta mensagem já está em %1$s.</string>
+    <string name="translate_no_target">Ainda não há tradução do idioma %1$s para o seu.</string>
     <string name="translate_metered">O modelo tem %1$s, e este download usa dados móveis.</string>
     <string name="translate_no_internet">Sem conexão com a internet</string>
     <string name="translate_download_failed">O download falhou</string>
     <string name="translate_draft_button">Traduzir antes de enviar</string>
     <string name="translate_draft_hint">Esta conversa está em %1$s. Traduzir sua mensagem?</string>
+    <string name="translate_draft_hint_reads">%1$s lê em %2$s. Traduzir sua mensagem?</string>
+    <string name="translate_draft_hint_group_reads">Aqui se lê em %1$s. Traduzir sua mensagem?</string>
     <string name="translate_draft_hint_action">Traduzir</string>
     <string name="translate_draft_undo">Desfazer tradução</string>
     <string name="translate_not_language">Não é %1$s?</string>
     <string name="translate_model_title">Baixar o modelo de tradução?</string>
     <string name="translate_metered_note">Este download usa dados móveis.</string>
+    <string name="settings_translation_title">Tradução</string>
+    <string name="settings_translation_subtitle">Traduza mensagens neste celular, offline. O que você envia também informa o idioma em que está e o idioma que você lê.</string>
+    <string name="settings_translate_into_title">Idioma da tradução</string>
+    <string name="settings_translate_into_auto">Automático (%1$s)</string>
+    <string name="settings_translate_into_auto_none">Automático</string>
+    <string name="settings_translate_into_body">No modo automático, usa o idioma em que você escreve ou, se não houver, o do seu celular.</string>
 </resources>

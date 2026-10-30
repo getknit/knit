@@ -61,7 +61,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 26
+internal const val KNIT_DB_SCHEMA_VERSION = 27
 
 @Database(
     entities = [
@@ -245,6 +245,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 26
     //     by message id, no foreign key to `messages`, a row only while the message is pinned (an unpin deletes it) and
     //     `pinnedAt` as its order. Local only: never framed, never in custody. Carried in a backup like `reactions`.
     //     Empty on arrival; migrated by KnitMigrations.MIGRATION_25_26.
+    // v27: seven `messages` columns (ADR 2026-10.t2h6's 2026-10-29 amendment): a translation kept on its row
+    //     (`translation`, `translationFrom`, `translationTo`, `translationFlagged`, `translationGuessed`), written only by
+    //     `MessageDao.setTranslation`, and the languages its author declared on the frame (`bodyLang`, `authorReads`),
+    //     written once on insert. Local only, not in `messages_fts`, carried in a backup with the row. Null or false on
+    //     existing rows; migrated by KnitMigrations.MIGRATION_26_27.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

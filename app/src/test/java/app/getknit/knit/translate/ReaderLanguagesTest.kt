@@ -1,33 +1,53 @@
 package app.getknit.knit.translate
 
+import app.getknit.knit.mesh.protocol.LanguageRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The reader's language by the rule ADR 2026-10.t2h6 proposes: what they write in first, the system's list after, and
- * never the app's own language.
+ * The reader's language by the rule of ADR 2026-10.t2h6 and its 2026-10-29 amendment: their own choice first, then
+ * what they write in, then the system's list, and only a language a model translates into.
  */
 class ReaderLanguagesTest {
-    private val es = LanguagePick.Picked(TranslateLang.ES)
+    private val es = LanguagePick.Picked(TranslateLang("es"))
     private val en = LanguagePick.Picked(TranslateLang.EN)
 
     @Test
     fun someoneOnAnEnglishPhoneWhoWritesSpanishReadsSpanish() {
         val estimate = ReaderLanguages.estimate(listOf(es, es, en, es, LanguagePick.Unsure), listOf("en-US"))
-        assertEquals(TranslateLang.ES, estimate.target)
-        assertEquals(mapOf(TranslateLang.ES to 3, TranslateLang.EN to 1), estimate.written)
+        assertEquals(TranslateLang("es"), estimate.target)
+        assertEquals(mapOf(TranslateLang("es") to 3, TranslateLang.EN to 1), estimate.written)
         assertEquals(1, estimate.unsure)
     }
 
     @Test
     fun tooFewOwnMessagesFallBackToTheSystemList() {
-        assertEquals(TranslateLang.ES, ReaderLanguages.estimate(listOf(en, en), listOf("fr-FR", "es-MX", "en-US")).target)
+        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(en, en), listOf("fr-FR", "es-MX", "en-US")).target)
         assertEquals(TranslateLang.EN, ReaderLanguages.estimate(emptyList(), listOf("EN-gb")).target)
     }
 
     @Test
-    fun aReaderOfNeitherLanguageHasNoTarget() {
-        assertNull(ReaderLanguages.estimate(listOf(es), listOf("fr-FR", "de-DE")).target)
+    fun aReaderOfNoLanguageAModelReachesHasNoTarget() {
+        val unreached = LanguageRegistry.CODES.filter { TranslateLang(it) !in TranslateDirection.targets }.take(2)
+        check(unreached.isNotEmpty()) { "every registry language has a model: this case needs another reader" }
+        assertNull(ReaderLanguages.estimate(listOf(es), unreached).target)
+    }
+
+    @Test
+    fun theChoiceInSettingsWinsAndAutomaticIsStillKnown() {
+        val estimate = ReaderLanguages.estimate(listOf(en, en, en), listOf("en-US"), override = "es")
+        assertEquals(TranslateLang("es"), estimate.target)
+        assertEquals(TranslateLang("es"), estimate.override)
+        assertEquals(TranslateLang.EN, estimate.automatic)
+    }
+
+    @Test
+    fun aChoiceNoModelReachesIsAutomatic() {
+        // A registry language no model translates into, read off the table so a new model never turns this red.
+        val unreached = LanguageRegistry.CODES.first { TranslateLang(it) !in TranslateDirection.targets }
+        val estimate = ReaderLanguages.estimate(listOf(en, en, en), listOf("en-US"), override = unreached)
+        assertNull(estimate.override)
+        assertEquals(TranslateLang.EN, estimate.target)
     }
 }

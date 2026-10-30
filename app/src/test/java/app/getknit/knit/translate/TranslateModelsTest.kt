@@ -5,7 +5,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The spike's two pinned directions (ADR 2026-10.t2h6); `scripts/translate-model.py --check` pins the bytes. */
+/**
+ * The generated table of directions (ADR 2026-10.t2h6), every one to or from English; `scripts/translate-model.py
+ * --check` pins its bytes against Mozilla's registry.
+ */
 class TranslateModelsTest {
     @Test
     fun eachDirectionPinsItsThreeFilesAndTheLicenceUnderItsOwnId() {
@@ -22,12 +25,36 @@ class TranslateModelsTest {
     }
 
     @Test
-    fun theDirectionsAreTheTwoWaysOfThePair() {
-        assertEquals(TranslateDirection.EN_ES, TranslateDirection.of(TranslateLang.EN, TranslateLang.ES))
-        assertEquals(TranslateDirection.ES_EN, TranslateDirection.of(TranslateLang.ES, TranslateLang.EN))
+    fun everyDirectionHasEnglishOnOneSide() {
+        assertTrue(TranslateDirection.ALL.all { (it.from == TranslateLang.EN) != (it.to == TranslateLang.EN) })
+    }
+
+    @Test
+    fun theTableNamesItsLanguagesBothWays() {
+        val es = TranslateLang("es")
+        assertEquals(TranslateDirections.EN_ES, TranslateDirection.of(TranslateLang.EN, es))
+        assertEquals(TranslateDirections.ES_EN, TranslateDirection.of(es, TranslateLang.EN))
         assertNull(TranslateDirection.of(TranslateLang.EN, TranslateLang.EN))
-        assertEquals(TranslateLang.ES, TranslateLang.EN.other)
-        assertEquals(TranslateLang.EN, TranslateLang.ES.other)
-        assertEquals("model.esen.intgemm.alphas.bin", TranslateDirection.ES_EN.model)
+        // The one deliberate pin of the table's contents: it changes with each `translate-model.py --write`.
+        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.languages)
+        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.sources)
+        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.targets)
+        assertEquals("model.esen.intgemm.alphas.bin", TranslateDirections.ES_EN.model)
+    }
+
+    @Test
+    fun aCodeIsReadAsTheTableSpellsIt() {
+        val es = TranslateLang("es")
+        assertEquals(es, TranslateLang.ofCode("es"))
+        assertEquals(es, TranslateLang.ofCode("ES-mx"))
+        assertEquals(es, TranslateLang.ofCode("es-419"))
+        // A script subtag the table has no model for falls back to the language.
+        assertEquals(es, TranslateLang.ofCode("es-Latn-MX"))
+        assertEquals(TranslateLang.EN, TranslateLang.ofCode("EN_gb"))
+        assertEquals(TranslateLang.EN, TranslateLang.ofCode(" en "))
+        // Not in the table: no model translates it, so nothing names it.
+        assertNull(TranslateLang.ofCode("gl"))
+        assertNull(TranslateLang.ofCode("un"))
+        assertNull(TranslateLang.ofCode(""))
     }
 }

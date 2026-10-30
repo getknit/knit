@@ -10,14 +10,18 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -591,6 +595,13 @@ class GoldenVectorTest {
             "messageContentStyles" to MessageContent(body = STYLED_BODY, styles = STYLED_SPANS).encode(),
             "messageContentV2Styles" to compact(MessageContent(body = STYLED_BODY, styles = STYLED_SPANS)),
             "chatContentStyles" to WireCodec.encodePayload(ChatContent(body = STYLED_BODY, styles = STYLED_SPANS)),
+            // Declared languages (ADR 2026-10.t2h6's 2026-10-29 amendment): the body's language and the language its author
+            // reads, each a LanguageRegistry index, under "l" / "r" in the named layout and a room post, labels 18 / 19 in
+            // the compact one. Both set in each, with an index of 24 or more in each (a two-byte uint). Every fixture above
+            // stays byte-identical: both are absent while implied.
+            "messageContentLang" to MessageContent(body = "hola", lang = 1, reads = 24).encode(),
+            "messageContentV2Lang" to compact(MessageContent(body = "hola", lang = 27, reads = 0)),
+            "chatContentLang" to WireCodec.encodePayload(ChatContent(body = "hola", lang = 2, reads = 60)),
             // Link-preview cards: the container a card attachment's blob holds. Its own type under its own MIME,
             // so no fixture above moves; `v` is required and always emitted (an elided version cannot gate), and
             // the text-only shape pins that an absent picture costs no bytes at all.
@@ -696,8 +707,26 @@ class GoldenVectorTest {
                     put("encoded", bundle)
                     put("nodeId", NodeId.fromPublicKeyBundle(bundle))
                 }
+                putJsonArray("languageRegistry") { LanguageRegistry.CODES.forEach(::add) }
             },
         )
+    }
+
+    /**
+     * The language registry a frame's `lang` and `reads` index into (ADR 2026-10.t2h6's 2026-10-29 amendment) is wire
+     * law shared with Knit for iOS: append only. The pinned list must be a prefix of today's, so a reorder, a rename or
+     * a removal fails here; an append passes, and lands in the file with the next `KNIT_WRITE_VECTORS=1`.
+     */
+    @Test
+    fun `the language registry only ever grows at its end`() {
+        assumeFalse("KNIT_WRITE_VECTORS=1 rewrites the file instead", VectorFiles.writing)
+        assertTrue("vectors/$FILE pins no languages", languageRegistry.isNotEmpty())
+        assertTrue(
+            "LanguageRegistry.CODES must keep vectors/$FILE's languageRegistry as its prefix (append only, never reorder)",
+            languageRegistry.size <= LanguageRegistry.CODES.size,
+        )
+        assertEquals(languageRegistry, LanguageRegistry.CODES.take(languageRegistry.size))
+        assertEquals("a language is listed once", LanguageRegistry.CODES.size, LanguageRegistry.CODES.toSet().size)
     }
 
     @Test
@@ -750,8 +779,8 @@ class GoldenVectorTest {
                 StyleSpan(150, 152, BodyStyle.STRIKETHROUGH),
             )
         const val ABOUT =
-            "Knit's frozen v1 wire: the definite-length CBOR of one fixed instance of every wire type, and the raw-key " +
-                "bundle probe. GoldenVectorTest builds each fixture and compares it with these bytes. See vectors/README.md."
+            "Knit's frozen v1 wire: the definite-length CBOR of one fixed instance of every wire type, the raw-key " +
+                "bundle probe, and the append-only language registry a chat frame's lang and reads index into. GoldenVectorTest builds each fixture and compares it with these bytes. See vectors/README.md."
 
         private val file by lazy { VectorFiles.read(FILE) }
         val expected: Map<String, String> by lazy {
@@ -763,6 +792,9 @@ class GoldenVectorTest {
                 .jsonObject
                 .getValue("encoded")
                 .jsonPrimitive.content
+        }
+        val languageRegistry: List<String> by lazy {
+            file.getValue("languageRegistry").jsonArray.map { it.jsonPrimitive.content }
         }
         val bundleNodeId: String by lazy {
             file

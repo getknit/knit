@@ -32,6 +32,7 @@ import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.translate.ChatTranslation
+import app.getknit.knit.translate.ReaderLanguage
 import app.getknit.knit.ui.StorageGate
 import app.getknit.knit.ui.addcontact.AddContactViewModel
 import app.getknit.knit.ui.backup.BackupViewModel
@@ -169,7 +170,7 @@ val uiModule =
             )
         }
         viewModel { OnboardingViewModel(get(), get()) }
-        viewModel { ChatSettingsViewModel(get()) }
+        viewModel { ChatSettingsViewModel(get(), reader = if (TRANSLATE_WIRED) get<ReaderLanguage>() else null) }
         viewModel {
             SettingsViewModel(
                 get(),

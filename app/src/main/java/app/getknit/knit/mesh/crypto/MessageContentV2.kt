@@ -98,6 +98,8 @@ internal object MessageContentV2 {
                     )
                 },
             st = StyleSpans.pack(content.styles),
+            lang = content.lang,
+            reads = content.reads,
         )
 
     private fun replyRefOf(ref: ReplyRef): ReplyRefV2 =
@@ -159,6 +161,8 @@ internal object MessageContentV2 {
                         )
                     },
                 styles = StyleSpans.unpack(w.st),
+                lang = w.lang,
+                reads = w.reads,
             )
         }.getOrNull()?.normalized()
 
@@ -176,7 +180,10 @@ internal object MessageContentV2 {
      * 2026-09.qq2r), which took the next free labels rather than the reserved pair, and `16` a short video's
      * duration, size and poster (ADR 2026-10.hmfe), and `17` the body's styles (ADR 2026-10.p95v): one byte string of
      * the same entries the named layouts carry under `"s"`, absent while there are none. Its type is a byte string
-     * forever; a new style rides inside the bytes. Never recycle a label.
+     * forever; a new style rides inside the bytes. `18` and `19` are the body's declared language and the language its
+     * author reads (ADR 2026-10.t2h6's 2026-10-29 amendment), each a `LanguageRegistry` index, the named layouts' `"l"`
+     * and `"r"`: absent while implied (English, or the same as `18`), and a CBOR uint forever, so a text or out-of-range
+     * value fails this decode. Never recycle a label.
      * The nested layouts are append-only too: `ProfileV2`'s label 5 is the open-to-chat flag (defaulted, so
      * elided while off — a profile without it decodes as before), label 6 the bound LoRa board's node
      * number (nullable, elided while unbound) and label 7 that board's signing key (32 raw bytes here, base64
@@ -218,6 +225,10 @@ internal object MessageContentV2 {
         val video: VideoV2? = null,
         @CborLabel(17)
         val st: ByteArray? = null,
+        @CborLabel(18)
+        val lang: Int? = null,
+        @CborLabel(19)
+        val reads: Int? = null,
     )
 
     /** [VideoInfo] (label 16, ADR 2026-10.hmfe): its own layout, like every nested type here. */

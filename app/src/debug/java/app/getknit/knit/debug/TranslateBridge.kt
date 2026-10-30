@@ -7,15 +7,17 @@ import android.os.LocaleList
 import android.os.SystemClock
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.message.MessageDao
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.translate.ComposePolicy
 import app.getknit.knit.translate.LanguagePick
 import app.getknit.knit.translate.LanguagePolicy
 import app.getknit.knit.translate.MessageTranslation
 import app.getknit.knit.translate.MessageTranslator
-import app.getknit.knit.translate.ReaderLanguages
+import app.getknit.knit.translate.ReaderLanguage
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
+import app.getknit.knit.translate.TranslateTarget
 import app.getknit.knit.translate.TranslationCheck
 import app.getknit.knit.translate.VerbatimSpans
 import app.getknit.knit.ui.translate.SlimtEngine
@@ -23,6 +25,7 @@ import app.getknit.knit.ui.translate.TranslateModelStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -41,21 +44,23 @@ import kotlin.math.ceil
  *   stages; push it world-readable, e.g. under /data/local/tmp). `download --es direction en-es` fetches one from
  *   getknit.app as the bubble's Download does.
  * - `detect --es text <text>`: CLD2's raw answer and the pick, read without the text's links, positions and mentions.
- * - `translate --es text <text> [--es from es]`: the chat's own path (spans, the check, the screen); poll `status`.
- * - `bench --es file <corpus> --es from en [--ei runs 1]`: in the background, a cold load timed, then every line of the
+ * - `translate --es text <text> [--es from es] [--es to en]`: the chat's own path (spans, the check, the screen), into
+ *   [to] or else the reader's language by the product rule ([TranslateTarget]); poll `status`.
+ * - `target --es from es`: where a message in that language goes for this reader, by [TranslateTarget].
+ * - `bench --es file <corpus> --es from en --es to es [--ei runs 1]`: in the background, a cold load timed, then every line of the
  *   corpus through the model whole, `runs` times (each later run numbered, past slimt's cache); writes one JSON line
  *   per message to the app's external files (`translate-bench/<from>-<to>.jsonl`, the translation included) and puts
  *   the timings and memory in `status`.
  * - `audit [--ei limit 300]`: the language read over this phone's newest messages from other people, by the words
  *   alone and then with the author's and the chat's language behind them (ADR 2026-10.t2h6's short-line amendment):
  *   how many each settles, how many are still unsure, and how many the priors changed. Counts only, no text.
- * - `reader`: what the product rule would pick as this reader's language, from this phone's own recent messages and the
- *   system's language list, beside the app's resolved locale.
+ * - `reader`: this reader's language as the chats use it (ADR 2026-10.t2h6's 2026-10-29 amendment): the Settings choice,
+ *   what this phone's own recent messages are in, and the system's language list, beside the app's resolved locale and
+ *   the per-app list (`LocaleList.getDefault()`), which the rule never reads.
  * - `unload`: lets both models go.
  */
 internal object TranslateBridge : KoinComponent {
     private const val TAG_RUN = "bridge-"
-    private const val OWN_SAMPLE = 50
     private const val SHORT = 40
     private const val MEDIUM = 160
     private const val PERCENTILE_50 = 0.5
@@ -107,22 +112,35 @@ internal object TranslateBridge : KoinComponent {
                 val from =
                     intent.getStringExtra("from")?.let(TranslateLang::ofCode)
                         ?: (translator.pick(text) as? LanguagePick.Picked)?.lang
-                        ?: return reply("unsure", "the identifier can't tell; pass --es from en|es")
+                        ?: return reply("unsure", "the identifier can't tell; pass --es from <code>")
+                val to = intent.getStringExtra("to")?.let(TranslateLang::ofCode) ?: TranslateTarget.of(from, readerTarget())
                 val id = TAG_RUN + ++asked
-                if (!translator.translate(id, text, from, isRoom = false)) return reply("refused", "running, or the model isn't installed")
-                return reply("ok", "translating as $id; poll status").put("id", id)
+                if (!translator.translate(id, text, from, to, isRoom = false)) {
+                    return reply("refused", "running, no target from $from, or the model isn't installed").put("id", id)
+                }
+                return reply("ok", "translating as $id into $to; poll status").put("id", id)
+            }
+
+            "target" -> {
+                val from = intent.getStringExtra("from")?.let(TranslateLang::ofCode) ?: return reply("error", "from is a model's code")
+                val reader = readerTarget()
+                return reply("ok", "target")
+                    .put("from", from.code)
+                    .put("reader", reader?.code ?: JSONObject.NULL)
+                    .put("target", TranslateTarget.of(from, reader)?.code ?: JSONObject.NULL)
             }
 
             "bench" -> {
                 val file = intent.getStringExtra("file")?.let(::File) ?: return reply("error", "missing 'file' extra")
-                val from = intent.getStringExtra("from")?.let(TranslateLang::ofCode) ?: return reply("error", "from is en or es")
-                val direction = TranslateDirection.of(from, from.other) ?: return reply("error", "no direction from $from")
+                val from = intent.getStringExtra("from")?.let(TranslateLang::ofCode) ?: return reply("error", "from is a model's code")
+                val to = intent.getStringExtra("to")?.let(TranslateLang::ofCode) ?: return reply("error", "to is a model's code")
+                val direction = TranslateDirection.of(from, to) ?: return reply("error", "no direction from $from into $to")
                 if (store.paths(direction) == null) return reply("error", "$direction isn't installed")
                 val lines =
                     withContext(Dispatchers.IO) { runCatching { file.readLines() }.getOrNull() }
                         ?: return reply("error", "can't read $file")
                 val runs = intent.getIntExtra("runs", 1).coerceIn(1, 100)
-                val out = File(context.getExternalFilesDir("translate-bench"), "${from.code}-${from.other.code}.jsonl")
+                val out = File(context.getExternalFilesDir("translate-bench"), "${from.code}-${to.code}.jsonl")
                 benchRun?.cancel()
                 lastBench = JSONObject().put("status", "running").put("direction", direction.toString())
                 benchRun =
@@ -133,7 +151,7 @@ internal object TranslateBridge : KoinComponent {
             }
 
             "reader" -> {
-                return reader(context, translator)
+                return reader(context)
             }
 
             "audit" -> {
@@ -203,6 +221,10 @@ internal object TranslateBridge : KoinComponent {
 
                             is MessageTranslation.NeedsModel -> {
                                 JSONObject().put("state", "needs model ${state.direction}")
+                            }
+
+                            is MessageTranslation.NoTarget -> {
+                                JSONObject().put("state", "no target from ${state.from}")
                             }
 
                             is MessageTranslation.Failed -> {
@@ -310,27 +332,26 @@ internal object TranslateBridge : KoinComponent {
             .put("max", sorted.last())
     }
 
-    // The product rule's pick for this reader (ADR 2026-10.t2h6), measured: never what the spike translates into.
-    private suspend fun reader(
-        context: Context,
-        translator: MessageTranslator,
-    ): JSONObject {
-        val me = get<Identity>().nodeId()
-        val own = get<MessageDao>().recentOwnBodies(me, OWN_SAMPLE)
-        val picks = own.map { translator.pick(it) }
-        val system = LocaleList.getDefault()
-        val preferred = (0 until system.size()).map { system[it].toLanguageTag() }
-        val estimate = ReaderLanguages.estimate(picks, preferred)
+    // The reader's language as a chat reads it: the Settings choice, else the rule (ADR 2026-10.t2h6).
+    private suspend fun readerTarget(): TranslateLang? = get<ReaderLanguage>().estimate(get<SettingsStore>().translateTarget.first()).target
+
+    // The reader's language as the chats use it (ADR 2026-10.t2h6's 2026-10-29 amendment), with what went into it.
+    private suspend fun reader(context: Context): JSONObject {
+        val override = get<SettingsStore>().translateTarget.first()
+        val estimate = get<ReaderLanguage>().estimate(override)
+        val perApp = LocaleList.getDefault()
         return reply("ok", "reader languages")
-            .put("ownSampled", own.size)
+            .put("override", override ?: JSONObject.NULL)
             .put("written", JSONObject().also { w -> estimate.written.forEach { (lang, n) -> w.put(lang.code, n) } })
             .put("unsure", estimate.unsure)
-            .put("systemLanguages", JSONArray(preferred))
+            .put("systemLanguages", JSONArray(estimate.preferred))
+            .put("perAppLanguages", JSONArray((0 until perApp.size()).map { perApp[it].toLanguageTag() }))
             .put(
                 "appLocale",
                 context.resources.configuration.locales[0]
                     .toLanguageTag(),
-            ).put("target", estimate.target?.code ?: JSONObject.NULL)
+            ).put("automatic", estimate.automatic?.code ?: JSONObject.NULL)
+            .put("target", estimate.target?.code ?: JSONObject.NULL)
     }
 
     private const val KB = 1024
@@ -360,7 +381,8 @@ internal object TranslateBridge : KoinComponent {
         val bySource = mutableMapOf<String, Int>()
         for (m in rows) {
             val words = translator.pick(m.body)
-            val resolved = translator.resolve(m.body, emptyList(), m.conversationId, m.senderId, chats[m.conversationId])
+            val declared = m.bodyLang?.let(TranslateLang::ofCode)
+            val resolved = translator.resolve(m.body, emptyList(), m.conversationId, m.senderId, chats[m.conversationId], declared)
             val short = VerbatimSpans.wordsOnly(m.body).length <= AUDIT_SHORT
             if (words == LanguagePick.Unsure) wordsUnsure++
             if (short) {

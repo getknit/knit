@@ -8,11 +8,13 @@ import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.DirectInvite
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupRootPayload
 import app.getknit.knit.mesh.protocol.GroupSeed
+import app.getknit.knit.mesh.protocol.LanguageRegistry
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
@@ -25,7 +27,10 @@ import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
+import kotlinx.serialization.cbor.CborLabel
 import kotlinx.serialization.descriptors.elementNames
 import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.json.Json
@@ -79,6 +84,8 @@ class MessageContentTest {
                 attachmentName = "quarterly-report.pdf",
                 attachmentSize = 1_400_000L,
                 styles = StyleStore.encode(listOf(StyleSpan(4, 10, BodyStyle.BOLD))),
+                bodyLang = "es",
+                authorReads = "en",
             ).withReply(ReplyRef(messageId = "m0", authorId = "bob00000", author = "Bob", snippet = "send it?"))
                 .withVideo(VideoInfo(durationMs = 30_000L, width = 480, height = 854, poster = byteArrayOf(1, 2, 3)))
 
@@ -104,6 +111,114 @@ class MessageContentTest {
         assertEquals("m0", content.replyTo?.messageId)
         assertEquals(VideoInfo(30_000L, 480, 854, byteArrayOf(1, 2, 3)), content.video)
         assertEquals(listOf(StyleSpan(4, 10, BodyStyle.BOLD)), content.styles)
+        assertEquals(LanguageRegistry.indexOf("es"), content.lang)
+        assertEquals(LanguageRegistry.indexOf("en"), content.reads)
+    }
+
+    // --- Declared languages (ADR 2026-10.t2h6's 2026-10-29 amendment): "l" / "r", labels 18 / 19 ---
+
+    /**
+     * The amendment's hard requirement: a message in English by an English reader is the bytes it was, in both sealed
+     * layouts, whatever the row holds — `sealedContent` re-normalises (`DeclaredLangs.of`) rather than trusting a row
+     * written as `en`/`en`. Hand-written hex, so neither half can drift with the codec.
+     */
+    @Test
+    fun anEnglishMessageByAnEnglishReaderSealsToItsOldBytesInBothLayouts() {
+        // {"body": "hi"} and {1: "hi"}: what every build before the declaration sealed.
+        val named = "a1" + "64626f6479" + "626869"
+        val compact = "a1" + "01" + "626869"
+        val row = MessageEntity(id = "m1", senderId = "alice000", recipientId = "bob00000", body = "hi", sentAt = 1L)
+        for (declared in listOf(
+            row,
+            row.copy(bodyLang = "en", authorReads = "en"),
+            row.copy(bodyLang = "en"),
+            row.copy(authorReads = "en"),
+        )) {
+            val content = declared.sealedContent()
+            assertEquals("${declared.bodyLang}/${declared.authorReads}", named, hex(content.encode()))
+            assertEquals("${declared.bodyLang}/${declared.authorReads}", compact, hex(checkNotNull(MessageContentV2.encodeOrNull(content))))
+        }
+        // A row written un-normalised still seals only what the wire does not imply: Spanish by a Spanish reader is "l" alone.
+        assertNull(row.copy(bodyLang = "es", authorReads = "es").sealedContent().reads)
+        // A code the registry does not name is never declared.
+        assertNull(row.copy(bodyLang = "tlh").sealedContent().lang)
+    }
+
+    /** Both fields round-trip both layouts, cost what [DeclaredLangs.wireCost] says, and read back as codes. */
+    @Test
+    fun aDeclarationRoundTripsBothLayoutsAndCostsWhatItSays() {
+        val plain = MessageContent(body = "hola")
+        for ((lang, reads) in listOf(1 to null, null to 1, 1 to 0, 27 to 60)) {
+            val declared = plain.copy(lang = lang, reads = reads)
+            val codes = DeclaredLangs.fromWire(lang, reads)
+            val namedBytes = declared.encode()
+            val compactBytes = checkNotNull(MessageContentV2.encodeOrNull(declared))
+            assertEquals(declared, MessageContent.decode(namedBytes))
+            assertEquals(declared, MessageContentV2.decode(compactBytes))
+            assertEquals(codes.wireCost(named = true), namedBytes.size - plain.encode().size)
+            assertEquals(codes.wireCost(named = false), compactBytes.size - checkNotNull(MessageContentV2.encodeOrNull(plain)).size)
+        }
+        // {"body": "hola", "l": 1, "r": 24} by hand: one-byte "l", two-byte "r".
+        assertEquals(
+            "a3" + "64626f6479" + "64686f6c61" + "616c" + "01" + "6172" + "1818",
+            hex(plain.copy(lang = 1, reads = 24).encode()),
+        )
+        // {1: "hola", 18: 1, 19: 24}
+        assertEquals(
+            "a3" + "01" + "64686f6c61" + "12" + "01" + "13" + "1818",
+            hex(checkNotNull(MessageContentV2.encodeOrNull(plain.copy(lang = 1, reads = 24)))),
+        )
+    }
+
+    /** An index this phone does not know decodes (the frame is the sender's, not malformed) and reads as nothing. */
+    @Test
+    fun anUnknownIndexDecodesAndReadsAsNothing() {
+        val content = checkNotNull(MessageContent.decode(MessageContent(body = "x", lang = 1, reads = 200).encode()))
+        assertEquals(200, content.reads)
+        assertEquals(DeclaredLangs(lang = "es"), DeclaredLangs.fromWire(content.lang, content.reads))
+        assertEquals(DeclaredLangs.NONE, DeclaredLangs.fromWire(-1, LanguageRegistry.CODES.size))
+    }
+
+    /**
+     * The value is a CBOR uint forever: a text, or one past an Int, fails the whole content's decode in both layouts.
+     * Decode is what `InboundPipeline` reads after the AEAD opened and before anything commits, so such a frame is dropped
+     * `DECRYPT_FAILED` (the sender's one message, no reset, no chain moved) — `InboundPipelineTest` walks it through.
+     */
+    @Test
+    fun aWrongTypedOrOversizedDeclarationFailsTheDecodeInBothLayouts() {
+        // {"body": "hi", "l": "es"} and {"body": "hi", "r": 2^32}
+        assertNull(MessageContent.decode(unhex("a2" + "64626f6479" + "626869" + "616c" + "626573")))
+        assertNull(MessageContent.decode(unhex("a2" + "64626f6479" + "626869" + "6172" + "1b0000000100000000")))
+        // {1: "hi", 18: "es"} and {1: "hi", 19: 2^32}
+        assertNull(MessageContentV2.decode(unhex("a2" + "01" + "626869" + "12" + "626573")))
+        assertNull(MessageContentV2.decode(unhex("a2" + "01" + "626869" + "13" + "1b0000000100000000")))
+        // The same maps with a uint in range decode, so it is the type that failed, not the shape.
+        assertEquals(1, MessageContent.decode(unhex("a2" + "64626f6479" + "626869" + "616c" + "01"))?.lang)
+        assertEquals(1, MessageContentV2.decode(unhex("a2" + "01" + "626869" + "12" + "01"))?.lang)
+        // A negative integer is an int, not a uint: it decodes, and names no language ({"l": -1}, {18: -1}).
+        val negative = checkNotNull(MessageContent.decode(unhex("a2" + "64626f6479" + "626869" + "616c" + "20")))
+        assertEquals(-1, negative.lang)
+        assertEquals(null, DeclaredLangs.fromWire(negative.lang, negative.reads).lang)
+        assertEquals(-1, MessageContentV2.decode(unhex("a2" + "01" + "626869" + "12" + "20"))?.lang)
+    }
+
+    /**
+     * Every fielded build reads a declared frame (WIRE_COMPAT rule 1): its decoders, the named and compact plaintexts and
+     * the room's chat payload as they were compiled before the amendment, skip `"l"` / `"r"` and labels 18 / 19.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun aBuildBeforeTheDeclarationReadsADeclaredMessage() {
+        val bold = listOf(StyleSpan(0, 2, BodyStyle.BOLD))
+        val declared = MessageContent(body = "hola", styles = bold, lang = 1, reads = 60)
+        val named = cryptoCbor.decodeFromByteArray(PreLangContent.serializer(), declared.encode())
+        assertEquals("hola", named.body)
+        assertEquals(checkNotNull(StyleSpans.pack(bold)).toList(), named.styles?.toList())
+        val compact = compactCbor.decodeFromByteArray(PreLangWire.serializer(), checkNotNull(MessageContentV2.encodeOrNull(declared)))
+        assertEquals("hola", compact.body)
+        assertEquals(checkNotNull(StyleSpans.pack(bold)).toList(), compact.st?.toList())
+        val room = WireCodec.encodePayload(ChatContent(body = "hola", lang = 1, reads = 60))
+        assertEquals("hola", WireCodec.decodePayload<OlderContent>(room)?.body)
     }
 
     /** A video's description survives the named layout byte for byte, poster included (ADR 2026-10.hmfe). */
@@ -535,6 +650,32 @@ class MessageContentTest {
         val partial = offer.copy(dw = DirectInvite(s = "DIRECT-kn-abcdefgh"))
         assertEquals(partial, MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = partial).encode())!!.cl)
     }
+
+    /** The named sealed layout as a build before the 2026-10-29 declaration decoded it: `"s"`, no `"l"` / `"r"`. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable
+    private class PreLangContent(
+        val v: Int = 1,
+        val body: String,
+        val ctl: Int? = null,
+        @SerialName("s")
+        @ByteString
+        val styles: ByteArray? = null,
+    )
+
+    /** The compact layout as a build before the declaration decoded it: labels to 17. */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Serializable
+    private class PreLangWire(
+        @CborLabel(0)
+        val v: Int = 1,
+        @CborLabel(1)
+        val body: String = "",
+        @CborLabel(7)
+        val ctl: Int? = null,
+        @CborLabel(17)
+        val st: ByteArray? = null,
+    )
 
     /** The named layout as a build before ADR 2026-10.p95v decoded it: no `"s"`. */
     @Serializable

@@ -29,9 +29,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.data.settings.BluetoothDownloadLimit
+import app.getknit.knit.di.TRANSLATE_WIRED
+import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.rememberWifiAwareSupported
+import app.getknit.knit.ui.translate.TranslateIntoForm
+import app.getknit.knit.ui.translate.TranslateIntoRow
 import org.koin.androidx.compose.koinViewModel
 
 /** UI-local projection of [ChatSettingsViewModel]'s per-setting flows for the stateless content. */
@@ -40,6 +44,9 @@ internal data class ChatSettingsForm(
     val linkPreviewsEnabled: Boolean = false,
     val contentFilteringEnabled: Boolean = true,
     val bluetoothDownloadLimit: BluetoothDownloadLimit = BluetoothDownloadLimit.DEFAULT,
+    // Null where translation is not wired: no rows. [translateInto] shows only while translation is on.
+    val translationEnabled: Boolean? = null,
+    val translateInto: TranslateIntoForm? = null,
 )
 
 /**
@@ -55,6 +62,8 @@ fun ChatSettingsScreen(
     val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
     val bluetoothDownloadLimit by viewModel.bluetoothDownloadLimit.collectAsStateWithLifecycle()
+    val translationEnabled = if (TRANSLATE_WIRED) viewModel.translationEnabled.collectAsStateWithLifecycle().value else null
+    val translateInto = if (TRANSLATE_WIRED) viewModel.translateInto.collectAsStateWithLifecycle().value else null
     ChatSettingsScreenContent(
         form =
             ChatSettingsForm(
@@ -62,12 +71,16 @@ fun ChatSettingsScreen(
                 linkPreviewsEnabled = linkPreviewsEnabled,
                 contentFilteringEnabled = contentFilteringEnabled,
                 bluetoothDownloadLimit = bluetoothDownloadLimit,
+                translationEnabled = translationEnabled,
+                translateInto = translateInto,
             ),
         onBack = onBack,
         onToggleTypingIndicators = viewModel::setTypingIndicatorsEnabled,
         onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
         onToggleContentFiltering = viewModel::setContentFilteringEnabled,
         onSelectBluetoothDownloadLimit = viewModel::setBluetoothDownloadLimit,
+        onToggleTranslation = viewModel::setTranslationEnabled,
+        onSelectTranslateInto = viewModel::setTranslateInto,
     )
 }
 
@@ -80,6 +93,8 @@ internal fun ChatSettingsScreenContent(
     onToggleLinkPreviews: (Boolean) -> Unit = {},
     onToggleContentFiltering: (Boolean) -> Unit = {},
     onSelectBluetoothDownloadLimit: (BluetoothDownloadLimit) -> Unit = {},
+    onToggleTranslation: (Boolean) -> Unit = {},
+    onSelectTranslateInto: (TranslateLang?) -> Unit = {},
     // Link previews are the one other thing that uses the Internet, so they ship under the relay plane's build switch. A
     // parameter rather than a bare BuildConfig read so the hidden case is previewable and testable.
     showLinkPreviews: Boolean = BuildConfig.INTERNET_PLANE,
@@ -150,6 +165,27 @@ internal fun ChatSettingsScreenContent(
                 onSelect = onSelectBluetoothDownloadLimit,
                 modifier = Modifier.testTag("settings_bt_download"),
             )
+
+            // Offline translation (ADR 2026-10.t2h6), only where it is wired. The subtitle discloses what goes on the wire:
+            // off, no message declares a language. The language it translates into shows only while it is on.
+            form.translationEnabled?.let { on ->
+                ToggleRow(
+                    title = stringResource(R.string.settings_translation_title),
+                    subtitle = stringResource(R.string.settings_translation_subtitle),
+                    enabled = on,
+                    onToggle = onToggleTranslation,
+                    modifier = Modifier.testTag("settings_translation"),
+                )
+                if (on) {
+                    form.translateInto?.let { into ->
+                        TranslateIntoRow(
+                            form = into,
+                            onSelect = onSelectTranslateInto,
+                            modifier = Modifier.testTag("settings_translate_into"),
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -168,6 +204,26 @@ fun ChatSettingsScreenPreview() =
     KnitPreview {
         ChatSettingsScreenContent(
             form = ChatSettingsForm(linkPreviewsEnabled = true, bluetoothDownloadLimit = BluetoothDownloadLimit.MB_5),
+            onBack = {},
+            wifiAware = true,
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ChatSettingsTranslationPreview() =
+    KnitPreview {
+        ChatSettingsScreenContent(
+            form =
+                ChatSettingsForm(
+                    translationEnabled = true,
+                    translateInto =
+                        TranslateIntoForm(
+                            selected = null,
+                            automatic = TranslateLang.EN,
+                            choices = listOf(TranslateLang.EN, TranslateLang("es")),
+                        ),
+                ),
             onBack = {},
             wifiAware = true,
         )

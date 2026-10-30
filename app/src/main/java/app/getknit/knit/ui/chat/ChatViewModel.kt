@@ -96,6 +96,7 @@ import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.meshNodeLabel
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
@@ -111,12 +112,17 @@ import app.getknit.knit.transfer.TransferRefusal
 import app.getknit.knit.transfer.TransferState
 import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.ComposePolicy
+import app.getknit.knit.translate.LanguageChoices
 import app.getknit.knit.translate.LanguagePick
 import app.getknit.knit.translate.LanguageSource
 import app.getknit.knit.translate.MessageTranslation
+import app.getknit.knit.translate.Resolution
+import app.getknit.knit.translate.StoredTranslation
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.TranslateOutcome
+import app.getknit.knit.translate.TranslateTarget
+import app.getknit.knit.ui.translate.LanguageNames
 import app.getknit.knit.ui.voice.VoicePlayer
 import app.getknit.knit.ui.voice.VoiceRecorder
 import kotlinx.coroutines.Deferred
@@ -154,6 +160,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 
 /** How far a received quote could be checked against the original it names (ADR 2026-10.gpa3). */
 enum class QuoteState {
@@ -334,6 +341,12 @@ data class ChatRow(
     // A voice note's words, written out on this phone on the person's tap (ADR 2026-10.am8d); null until then, empty
     // when the model heard no speech. Never on the wire.
     val voiceTranscript: String? = null,
+    // The body translated on this phone at the reader's tap and kept on the row (ADR 2026-10.t2h6); null until then.
+    val translation: StoredTranslation? = null,
+    // The language its author declared the body is in, and the one they read (registry codes off the frame); null when
+    // nothing was declared. Labels for the translation's priors and the composer's hint, never trusted beyond that.
+    val bodyLang: String? = null,
+    val authorReads: String? = null,
     val mentions: List<Mention> = emptyList(),
     // The sender's formatting over [body] (ADR 2026-10.p95v), canonical as the receiver stored it; the bubble draws
     // it ([bubbleStyles]), and every other surface reads the plain body.
@@ -807,22 +820,51 @@ class ChatViewModel(
     }
 
     /**
+     * The language this phone's reader wants translations in (ADR 2026-10.t2h6's 2026-10-29 amendment): the choice in
+     * Settings, else what they write, else the system's list. Read again each time a chat opens.
+     */
+    private val readerLanguage: StateFlow<TranslateLang?> =
+        translation?.reader?.stateIn(viewModelScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)
+
+    /** Settings › Chats › Translation: off, no bubble, menu or composer offers translation and nothing is declared. */
+    private val translationOn: StateFlow<Boolean> =
+        translation?.let { settings.translationEnabled.stateIn(viewModelScope, SharingStarted.Eagerly, false) }
+            ?: MutableStateFlow(false)
+
+    /**
      * What the bubbles show of translations (ADR 2026-10.t2h6), with Content filtering's switch for a flagged one: null
      * where translation is not wired, which offers no Translate.
      */
     val translateView: StateFlow<TranslateView?> =
         translation
             ?.let { t ->
-                combine(t.translations, t.models, settings.contentFilteringEnabled) { done, models, filterOn ->
-                    TranslateView(done, models, filterOn)
+                combine(t.translations, t.models, settings.contentFilteringEnabled, readerLanguage, translationOn) {
+                    done,
+                    models,
+                    filterOn,
+                    reader,
+                    on,
+                    ->
+                    // Off in Settings: null, as in a build without translation, so nothing is drawn or offered.
+                    if (on) TranslateView(done, models, filterOn, reader) else null
                 }
             }?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
             ?: MutableStateFlow(null)
 
-    private val _translateAsk = MutableStateFlow<ChatRow?>(null)
+    /** A message whose language the reader is asked for, and the languages offered, likeliest first. */
+    data class TranslateAsk(
+        val row: ChatRow,
+        val choices: List<TranslateLang>,
+    )
 
-    /** The message whose language the reader is asked for: the identifier could not tell. */
-    val translateAsk: StateFlow<ChatRow?> = _translateAsk.asStateFlow()
+    private val _translateAsk = MutableStateFlow<TranslateAsk?>(null)
+
+    /** The message whose language the reader is asked for: the identifier could not tell, or guessed wrong. */
+    val translateAsk: StateFlow<TranslateAsk?> = _translateAsk.asStateFlow()
+
+    // What each message's language was resolved to on this chat's screen, by message id: the Translate offer resolves
+    // it when the menu opens, and the tap that follows reuses it.
+    private val resolutions = mutableMapOf<String, Resolution>()
 
     // Translations a download was started for, by direction: run once that model is in, if this chat is still open.
     private val awaitingTranslation = mutableMapOf<TranslateDirection, MutableList<ChatRow>>()
@@ -841,7 +883,7 @@ class ChatViewModel(
                             awaitingTranslation
                                 .remove(
                                     direction,
-                                )?.forEach { translateRow(t, it, direction.from, guessedRows[it.id] == true) }
+                                )?.forEach { translateRow(t, it, direction.from, direction.to, guessedRows[it.id] == true) }
                         }
                 }
             }
@@ -849,8 +891,9 @@ class ChatViewModel(
     }
 
     /**
-     * Translates [row]'s body into the pair's other language, from [from] or, without it, from what the identifier
-     * reads. An unsure read asks the reader ([translateAsk]); a missing model shows its download in the bubble.
+     * Translates [row]'s body into the reader's language ([TranslateTarget]), from [from] or, without it, from what the
+     * identifier and the priors read. An unsure read asks the reader ([translateAsk]); a missing model shows its
+     * download in the bubble, and a language with nowhere to go says so there.
      */
     fun translateMessage(
         row: ChatRow,
@@ -860,18 +903,79 @@ class ChatViewModel(
         if (row.body.isBlank()) return
         _translateAsk.value = null
         viewModelScope.launch {
+            val reader = readerLanguage.value
             if (from != null) {
                 // The reader said which language it is: no guess to offer a way out of.
-                translateRow(t, row, from, guessed = false)
+                translateRow(t, row, from, TranslateTarget.of(from, reader), guessed = false)
                 return@launch
             }
-            // The words first, then what this author writes here, then the chat's language; only then the reader.
-            val resolution = t.resolve(row.body, mentionRanges(row), conversationId, row.senderNodeId, threadLanguage.value)
+            val resolution = resolve(t, row)
             when (val pick = resolution.pick) {
-                is LanguagePick.Picked -> translateRow(t, row, pick.lang, guessed = resolution.source != LanguageSource.TEXT)
-                LanguagePick.Unsure -> _translateAsk.value = row
+                is LanguagePick.Picked -> {
+                    translateRow(t, row, pick.lang, TranslateTarget.of(pick.lang, reader), guessed = resolution.guessed)
+                }
+
+                LanguagePick.Unsure -> {
+                    _translateAsk.value = TranslateAsk(row, choices(resolution, row, exclude = null))
+                }
             }
         }
+    }
+
+    /**
+     * Whether [row]'s menu offers Translate (ADR 2026-10.t2h6's 2026-10-29 amendment): not on a message already in the
+     * reader's language by its words or its author's declaration, nor on one already translated into it. A language
+     * only a prior settled keeps the offer, as does one nobody can tell: the reader may know better.
+     */
+    suspend fun offersTranslate(row: ChatRow): Boolean {
+        val t = translation ?: return false
+        if (row.body.isBlank() || !translationOn.value) return false
+        val reader = readerLanguage.value
+        row.translation?.let { kept -> return TranslateTarget.of(kept.from, reader).let { it != null && it != kept.to } }
+        val resolution = resolve(t, row)
+        val lang = (resolution.pick as? LanguagePick.Picked)?.lang ?: return true
+        return when (resolution.source) {
+            LanguageSource.TEXT, LanguageSource.DECLARED -> TranslateTarget.of(lang, reader) != null
+            else -> true
+        }
+    }
+
+    /** "Not English?": [row] is not in [wrong]. One language left translates at once; more ask which. */
+    fun notThisLanguage(
+        row: ChatRow,
+        wrong: TranslateLang,
+    ) {
+        val t = translation ?: return
+        viewModelScope.launch {
+            val left = choices(resolve(t, row), row, exclude = wrong)
+            left.singleOrNull()?.let { translateMessage(row, it) } ?: run { _translateAsk.value = TranslateAsk(row, left) }
+        }
+    }
+
+    // The row's language, resolved once per screen: the menu's offer and the tap read the same answer.
+    private suspend fun resolve(
+        t: ChatTranslation,
+        row: ChatRow,
+    ): Resolution =
+        resolutions[row.id] ?: t
+            .resolve(
+                row.body,
+                mentionRanges(row),
+                conversationId,
+                row.senderNodeId,
+                threadLanguage.value,
+                row.bodyLang?.let(TranslateLang::ofCode),
+            ).also { resolutions[row.id] = it }
+
+    // Every language a model translates from, the likeliest for [row] first.
+    private fun choices(
+        resolution: Resolution,
+        row: ChatRow,
+        exclude: TranslateLang?,
+    ): List<TranslateLang> {
+        val locale = Locale.getDefault()
+        val likely = resolution.ranked + listOfNotNull(row.bodyLang?.let(TranslateLang::ofCode), threadLanguage.value)
+        return LanguageChoices.order(likely, TranslateDirection.sources, { LanguageNames.name(it, locale) }, exclude)
     }
 
     /** The reader closed the "Which language is this?" question. */
@@ -901,10 +1005,11 @@ class ChatViewModel(
         t: ChatTranslation,
         row: ChatRow,
         from: TranslateLang,
+        to: TranslateLang?,
         guessed: Boolean,
     ) {
         guessedRows[row.id] = guessed
-        t.translate(row.id, row.body, from, Conversations.isPublicRoom(conversationId), mentionRanges(row), guessed)
+        t.translate(row.id, row.body, from, to, Conversations.isPublicRoom(conversationId), mentionRanges(row), guessed)
     }
 
     // Where the row's mentions sit in its body, for the translation to hand back untouched.
@@ -1427,6 +1532,9 @@ class ChatViewModel(
                         voiceDurationMs = m.voiceDurationMs,
                         voicePeaks = m.voicePeaks,
                         voiceTranscript = m.voiceTranscript,
+                        translation = m.storedTranslation(),
+                        bodyLang = m.bodyLang,
+                        authorReads = m.authorReads,
                         attachmentReady = heldBytes != null,
                         attachmentName = m.attachmentName,
                         attachmentSize = m.attachmentSize,
@@ -1771,12 +1879,23 @@ class ChatViewModel(
             val text: String,
             val from: TranslateLang,
             val guessed: Boolean = false,
+            val to: TranslateLang? = null,
         ) : DraftTranslation
 
-        /** The identifier could not tell which language the draft is in: the person is asked. */
+        /** The identifier could not tell which language the draft is in, or guessed wrong: the person is asked. */
         data class AskFrom(
             val draft: String,
             val mentions: List<IntRange>,
+            val choices: List<TranslateLang>,
+        ) : DraftTranslation
+
+        /** The draft, in [from], could go into more than one language and the chat does not say which: asked too. */
+        data class AskTo(
+            val draft: String,
+            val mentions: List<IntRange>,
+            val from: TranslateLang,
+            val guessed: Boolean,
+            val choices: List<TranslateLang>,
         ) : DraftTranslation
 
         data class NeedsModel(
@@ -1804,43 +1923,79 @@ class ChatViewModel(
                 state
                     .map { s -> s.rows.filter { !it.mine && it.body.isNotBlank() }.takeLast(ComposePolicy.THREAD_SAMPLE) }
                     .distinctUntilChangedBy { rows -> rows.map { it.id } }
-                    .mapLatest { rows -> ComposePolicy.threadLanguage(rows.map { t.pick(it.body, mentionRanges(it)) }) }
+                    .combine(translationOn) { rows, on -> rows.takeIf { on } }
+                    // Off in Settings, nothing is read: no identifier runs for a chat that offers no translation.
+                    .mapLatest { rows -> rows?.let { r -> ComposePolicy.threadLanguage(r.map { t.pick(it.body, mentionRanges(it)) }) } }
                     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
             } ?: MutableStateFlow(null)
 
     /**
-     * The composer's suggestion (ADR 2026-10.t2h6's amendment): the direction from the draft's language into the chat's,
-     * when other people's recent messages are in one language of the pair and the draft is confidently in the other.
-     * Null where translation is not wired, the draft is too short to read, or the two agree.
+     * What the chat's other people read by their own declarations on the frame (ADR 2026-10.t2h6's 2026-10-29
+     * amendment), with the peer's name in a one-to-one chat; null when they do not say.
+     */
+    private val declaredReaders: StateFlow<DeclaredReaders?> =
+        translation
+            ?.let {
+                state
+                    .map { s ->
+                        val others =
+                            s.rows
+                                .filter { !it.mine && it.body.isNotBlank() }
+                                .takeLast(ComposePolicy.THREAD_SAMPLE)
+                                .asReversed()
+                        val oneToOne = !s.isRoom && !s.isGroup && others.distinctBy { it.senderNodeId }.size == 1
+                        val declared = others.map { ComposePolicy.Declared(it.senderNodeId, it.bodyLang, it.authorReads) }
+                        ComposePolicy.declaredReaders(declared, oneToOne)?.let { lang ->
+                            DeclaredReaders(lang, others.firstOrNull()?.senderPlainName?.takeIf { oneToOne })
+                        }
+                    }.distinctUntilChanged()
+                    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+            } ?: MutableStateFlow(null)
+
+    /** The language a draft goes into here: what the chat's people declared reading, else what they write. */
+    private fun chatReads(): TranslateLang? = declaredReaders.value?.lang ?: threadLanguage.value
+
+    /**
+     * The composer's suggestion (ADR 2026-10.t2h6's amendment): the direction from the draft's language into the one
+     * the chat reads — what its people declared, else what they write — when the draft is confidently in another. Null
+     * where translation is not wired, the draft is too short to read, or the two agree.
      */
     @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-    val draftHint: StateFlow<TranslateDirection?> =
+    val draftHint: StateFlow<DraftHint?> =
         translation
             ?.let { t ->
                 val draftLanguage =
                     draft
                         .debounce(DRAFT_READ_MS)
-                        .mapLatest { text -> if (ComposePolicy.readable(text)) t.pick(text, emptyList()) else LanguagePick.Unsure }
-                combine(draftLanguage, threadLanguage) { pick, thread -> ComposePolicy.suggest(pick, thread) }
-                    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+                        .mapLatest { text ->
+                            if (translationOn.value && ComposePolicy.readable(text)) t.pick(text, emptyList()) else LanguagePick.Unsure
+                        }
+                combine(draftLanguage, threadLanguage, declaredReaders, translationOn) { pick, thread, declared, on ->
+                    ComposePolicy.suggest(pick, declared?.lang ?: thread)?.takeIf { on }?.let { direction ->
+                        DraftHint(direction, declared = declared != null, by = declared?.name)
+                    }
+                }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
             } ?: MutableStateFlow(null)
 
     /**
      * Translates [draft] (with the mentions at [mentions]) from [from] or, without it, from what the identifier reads,
-     * into the pair's other language. The result lands in [draftTranslation] for the screen to put in the field; the
-     * person reads it there, and may edit it, before sending.
+     * into [to] or, without it, the chat's language ([TranslateTarget.forDraft]). The result lands in [draftTranslation]
+     * for the screen to put in the field; the person reads it there, and may edit it, before sending. [fromGuessed] when
+     * a given [from] was itself a prior's guess (the person picked only the target), so "Not English?" stays offered.
      */
     fun translateDraft(
         draft: String,
         mentions: List<IntRange>,
         from: TranslateLang? = null,
+        to: TranslateLang? = null,
+        fromGuessed: Boolean = false,
     ) {
         val t = translation ?: return
         if (draft.isBlank() || _draftTranslation.value == DraftTranslation.Running) return
         _draftTranslation.value = DraftTranslation.Running
         viewModelScope.launch {
             // A draft is the person's own: when its words cannot tell, what they write in this chat does.
-            val resolution = if (from == null) t.resolve(draft, mentions, conversationId, myNodeId.value, chat = null) else null
+            val resolution = if (from == null) t.resolve(draft, mentions, conversationId, myNodeId.value, null, null) else null
             val lang =
                 from ?: when (val pick = resolution?.pick) {
                     is LanguagePick.Picked -> {
@@ -1848,18 +2003,68 @@ class ChatViewModel(
                     }
 
                     else -> {
-                        _draftTranslation.value = DraftTranslation.AskFrom(draft, mentions)
+                        val choices = draftSources(resolution, exclude = null)
+                        _draftTranslation.value = DraftTranslation.AskFrom(draft, mentions, choices)
                         return@launch
                     }
                 }
-            val guessed = resolution != null && resolution.source != LanguageSource.TEXT
+            val guessed = resolution?.guessed ?: fromGuessed
+            val target = to ?: TranslateTarget.forDraft(lang, chatReads())
             _draftTranslation.value =
-                when (val outcome = t.translateDraft(draft, lang, mentions)) {
-                    is TranslateOutcome.Text -> DraftTranslation.Done(draft, outcome.text, outcome.from, guessed)
-                    is TranslateOutcome.NeedsModel -> DraftTranslation.NeedsModel(outcome.direction)
-                    is TranslateOutcome.Failed -> DraftTranslation.Failed(outcome.reason == MessageTranslation.Failed.Reason.UNUSABLE)
+                if (target == null) {
+                    askDraftTarget(draft, mentions, lang, guessed)
+                } else {
+                    draftOutcome(draft, guessed, t.translateDraft(draft, lang, target, mentions))
                 }
         }
+    }
+
+    // The draft could go into more than one language and the chat says nothing of which: the person picks.
+    private fun askDraftTarget(
+        draft: String,
+        mentions: List<IntRange>,
+        from: TranslateLang,
+        guessed: Boolean,
+    ): DraftTranslation {
+        val choices = TranslateTarget.draftChoices(from).sortedBy { LanguageNames.name(it, Locale.getDefault()) }
+        return if (choices.isEmpty()) {
+            DraftTranslation.Failed(
+                unusable = false,
+            )
+        } else {
+            DraftTranslation.AskTo(draft, mentions, from, guessed, choices)
+        }
+    }
+
+    private fun draftOutcome(
+        draft: String,
+        guessed: Boolean,
+        outcome: TranslateOutcome,
+    ): DraftTranslation =
+        when (outcome) {
+            is TranslateOutcome.Text -> DraftTranslation.Done(draft, outcome.text, outcome.from, guessed, outcome.to)
+            is TranslateOutcome.NeedsModel -> DraftTranslation.NeedsModel(outcome.direction)
+            is TranslateOutcome.Failed -> DraftTranslation.Failed(outcome.reason == MessageTranslation.Failed.Reason.UNUSABLE)
+        }
+
+    /** The draft's translation guessed [wrong] for the original's language: one left translates at once, more ask. */
+    fun draftNotThisLanguage(
+        original: String,
+        mentions: List<IntRange>,
+        wrong: TranslateLang,
+    ) {
+        val left = draftSources(null, exclude = wrong)
+        left.singleOrNull()?.let { translateDraft(original, mentions, it) }
+            ?: run { _draftTranslation.value = DraftTranslation.AskFrom(original, mentions, left) }
+    }
+
+    // Every language a draft can be read as, the identifier's own reads first.
+    private fun draftSources(
+        resolution: Resolution?,
+        exclude: TranslateLang?,
+    ): List<TranslateLang> {
+        val locale = Locale.getDefault()
+        return LanguageChoices.order(resolution?.ranked.orEmpty(), TranslateDirection.sources, { LanguageNames.name(it, locale) }, exclude)
     }
 
     /** The screen put the translation in the field. */
@@ -2352,11 +2557,16 @@ class ChatViewModel(
         token: String,
     ): String = text.clampToUtf16(TextLimits.MESSAGE - token.length - 1)
 
+    /**
+     * Sends the draft. [translatedInto] is the language the composer translated it into, while the field holds that
+     * translation: the language the message then declares (ADR 2026-10.t2h6's 2026-10-29 amendment).
+     */
     fun send(
         text: String,
         mentions: List<Mention> = emptyList(),
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
+        translatedInto: TranslateLang? = null,
     ) {
         val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
@@ -2394,7 +2604,7 @@ class ChatViewModel(
                     _events.tryEmit(R.string.chat_gone)
                     return@launch
                 }
-                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans)
+                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans, declaredFor(trimmed, translatedInto))
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
                 if (sent) {
@@ -2443,8 +2653,11 @@ class ChatViewModel(
         mentions: List<Mention>,
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
+        declared: DeclaredLangs,
     ): Boolean {
-        if (isCommons) return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment, styles = styles)
+        if (isCommons) {
+            return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment, styles = styles, declared = declared)
+        }
         val group = if (isRoom) null else groups.find(conversationId)
         if (group != null) {
             return meshManager.sendChat(
@@ -2455,11 +2668,29 @@ class ChatViewModel(
                 group = group.toGroupInfo(),
                 replyTo = replyTo,
                 styles = styles,
+                declared = declared,
             )
         }
         // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
         val recipientId = if (isRoom) null else conversationId
-        return meshManager.sendChat(body, attachment, mentions, recipientId, replyTo = replyTo, styles = styles)
+        return meshManager.sendChat(body, attachment, mentions, recipientId, replyTo = replyTo, styles = styles, declared = declared)
+    }
+
+    /**
+     * What a message of [text] declares (ADR 2026-10.t2h6's 2026-10-29 amendment): its language — the one the composer
+     * translated it into, else what its words say when the identifier is sure, never a prior's guess — and the
+     * language this reader reads, each only when not implied. Nothing where translation is not wired (the identifier
+     * is in its library) or is off in Settings, read at the send so a switch just flipped is obeyed.
+     */
+    private suspend fun declaredFor(
+        text: String,
+        translatedInto: TranslateLang?,
+    ): DeclaredLangs {
+        val t = translation ?: return DeclaredLangs.NONE
+        if (!settings.translationEnabled.first()) return DeclaredLangs.NONE
+        val words = if (translatedInto == null) t.pick(text, emptyList()) else LanguagePick.Unsure
+        val (lang, reads) = TranslateTarget.declaration(translatedInto, words, readerLanguage.value)
+        return DeclaredLangs.of(lang, reads)
     }
 
     /**
@@ -3346,12 +3577,40 @@ class ChatViewModel(
     }
 }
 
-/** Every translation this process holds, the two models' state and Content filtering's switch (ADR 2026-10.t2h6). */
+/** What a chat's other people declared reading (ADR 2026-10.t2h6): [name] is the peer's, in a one-to-one chat. */
+data class DeclaredReaders(
+    val lang: TranslateLang,
+    val name: String?,
+)
+
+/**
+ * The composer's suggestion: [direction] from the draft's language into the chat's, [declared] when the chat's people
+ * said what they read (by [by], the peer's name, in a one-to-one chat) rather than the words said what they write.
+ */
+data class DraftHint(
+    val direction: TranslateDirection,
+    val declared: Boolean = false,
+    val by: String? = null,
+)
+
+/**
+ * Every translation this process holds, every model's state, Content filtering's switch and the reader's language
+ * (ADR 2026-10.t2h6).
+ */
 data class TranslateView(
     val translations: Map<String, MessageTranslation>,
     val models: Map<TranslateDirection, SttModelState>,
     val filterOn: Boolean,
+    val reader: TranslateLang? = null,
 )
+
+// The translation kept on [this] row, or null when there is none (or a half-written one, which nothing writes).
+private fun MessageEntity.storedTranslation(): StoredTranslation? {
+    val text = translation ?: return null
+    val from = translationFrom ?: return null
+    val to = translationTo ?: return null
+    return StoredTranslation(text, TranslateLang(from), TranslateLang(to), translationFlagged, translationGuessed)
+}
 
 /**
  * The voice bubbles' speech offer (ADR 2026-10.am8d): where the shared model stands, each note asked for in this

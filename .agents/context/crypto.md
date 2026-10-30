@@ -172,6 +172,15 @@ LoRa plane (2026-09.ggq4).
   cleartext shell; `sealedContent` is their only builder, so a re-seal carries them and a ctl never does. The value is a
   CBOR byte string forever: a wrong-typed `"s"` or label 17 fails the plaintext decode (`DECRYPT_FAILED`, nothing
   committed), malformed bytes inside it never throw. An unformatted message seals to the bytes it did before the field.
+- **When touching `MessageContent.lang` / `reads` / `MessageContentV2` labels 18 / 19, `MessageEntity.sealedContent`'s
+  `DeclaredLangs.of` mapping, or `InboundPipeline.plaintextContent`'s `lang` / `reads`:** READ ADR 2026-10.t2h6's
+  2026-10-29 amendment and `docs/WIRE_COMPAT.md`'s declared-languages precedent. A sealed message's declaration comes
+  from its plaintext alone, never the cleartext shell; `sealedContent` is its only builder and re-normalises off the row,
+  so an English message by an English reader seals to its old bytes in both layouts and a ctl never carries one. Each is
+  a `LanguageRegistry` index and a CBOR uint forever: a text or out-of-range value fails the plaintext decode
+  (`DECRYPT_FAILED`, nothing committed), an unknown index reads as nothing. The registry is append-only, pinned by
+  `vectors/wire-v1.json`'s `languageRegistry`. A label for translation and the composer's hint, never a moderation,
+  trust, routing or crypto input.
 - **When touching `CTL_SCOPE_CONFIG`, `MessageContent.sc` / `ScopeConfigPayload`, `InboundPipeline.applyScopeConfig`
   / `commitGroupCtl`, `ScopeConfigPolicy`, `ScopeConfigRepository`, `MeshManager.sendScopeConfig`, `RatchetSessions.sealDm`'s
   `confirmedOnly`, or the scope-config row `GroupRepository.recordDeparture` drops:** READ ADR 2026-10.m4fk (draft),

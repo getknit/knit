@@ -129,6 +129,31 @@ class DatabaseExportTest {
         }
 
     @Test
+    fun aTranslationKeptOnItsRowRidesTheBackupAndStaysOutOfSearch() =
+        runTest {
+            // ADR 2026-10.t2h6's 2026-10-29 amendment: it goes with the message, as a voice note's transcript does.
+            seed()
+            live.messageDao().setTranslation("m2", "segundo aire", "en", "es", flagged = false, guessed = false)
+            val dest = File(dir, "export.db")
+            exporter().export(liveFile, PASSPHRASE, dest)
+            val copy = Room.databaseBuilder(context, KnitDatabase::class.java, dest.absolutePath).allowMainThreadQueries().build()
+            try {
+                val kept = checkNotNull(copy.messageDao().findById("m2"))
+                assertEquals("segundo aire", kept.translation)
+                assertEquals("en", kept.translationFrom)
+                assertEquals("es", kept.translationTo)
+                // The body is indexed in the copy; its translation is not.
+                assertEquals(listOf("m2"), copy.messageDao().searchBodies("second*", listOf("bob"), emptyList(), false, 10).map { it.id })
+                assertEquals(
+                    emptyList<String>(),
+                    copy.messageDao().searchBodies("segundo*", listOf("bob"), emptyList(), false, 10).map { it.id },
+                )
+            } finally {
+                copy.close()
+            }
+        }
+
+    @Test
     fun aWriteLandingBeforeTheCopyIsCarriedAndOneDuringItIsNotBlocked() =
         runTest {
             seed()

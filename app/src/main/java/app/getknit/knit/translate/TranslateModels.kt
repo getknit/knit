@@ -2,30 +2,53 @@ package app.getknit.knit.translate
 
 import app.getknit.knit.call.SttFile
 
-/** A language of the translation spike's one pair (ADR 2026-10.t2h6). Mozilla trains every model with English on one side. */
-enum class TranslateLang(
+/**
+ * A language as its code in Mozilla's model registry (ADR 2026-10.t2h6): `en`, `es`, and in time `zh_hant`. Every model
+ * has English on one side, so [EN] is the hub. A value is only as known as the table: [ofCode] answers the languages a
+ * model translates from or into, and a stored code the table no longer names still carries its name.
+ */
+@JvmInline
+value class TranslateLang(
     val code: String,
 ) {
-    EN("en"),
-    ES("es"),
-    ;
-
-    /** The pair's other language: what the spike translates into, whatever the app is shown in. */
-    val other: TranslateLang get() = if (this == EN) ES else EN
+    override fun toString(): String = code
 
     companion object {
-        fun ofCode(code: String): TranslateLang? = entries.firstOrNull { it.code == code }
+        val EN = TranslateLang("en")
+
+        /**
+         * The table's language for [code] — a registry code, a BCP-47 tag (`EN-gb`, `es-419`) or CLD2's answer — or
+         * null when no model translates from or into it. Case and region are dropped; a script subtag is kept, since a
+         * script is its own model (`zh-Hant` is `zh_hant`).
+         */
+        fun ofCode(code: String): TranslateLang? {
+            val parts =
+                code
+                    .trim()
+                    .lowercase()
+                    .replace('_', '-')
+                    .split('-')
+            val primary = ALIASES[parts[0]] ?: parts[0]
+            val script = parts.drop(1).firstOrNull { it.length == SCRIPT_LENGTH }
+            val candidates = listOfNotNull(script?.let { "${primary}_$it" }, primary)
+            return candidates.firstNotNullOfOrNull { c -> TranslateDirection.languages.firstOrNull { it.code == c } }
+        }
+
+        // A code CLD2 or a locale spells otherwise than the registry; empty until a model needs one (`iw` for `he`).
+        private val ALIASES = emptyMap<String, String>()
+        private const val SCRIPT_LENGTH = 4
     }
 }
 
 /**
- * One direction of the spike (ADR 2026-10.t2h6): a Mozilla Firefox Translations model (MPL-2.0) — int8 Marian weights,
- * the lexical shortlist that bounds each decoding step, and the SentencePiece vocabulary — fetched file by file under
- * [baseUrl] and pinned by size and hash here, so the host is trusted with nothing. `scripts/translate-model.py --check`
- * re-derives the pins from Mozilla's registry; never edit them by hand.
+ * One direction (ADR 2026-10.t2h6): a Mozilla Firefox Translations model (MPL-2.0) — int8 Marian weights, the lexical
+ * shortlist that bounds each decoding step, and the SentencePiece vocabulary — fetched file by file under [baseUrl] and
+ * pinned by size and hash, so the host is trusted with nothing. The pins live in [TranslateDirections], which
+ * `scripts/translate-model.py --write` generates from Mozilla's registry; never edit them by hand.
  *
- * Both directions are the registry's "base-memory" release: six encoder layers and [decoderLayers] (four) decoder
- * layers, which slimt is told at load since it cannot read them from the file. Told two, it loads and writes nonsense.
+ * Every model has six encoder layers and [decoderLayers] decoder layers, set by its architecture ("base-memory" has
+ * four), which slimt is told at load since it cannot read them from the file. Told the wrong count, it loads and writes
+ * nonsense.
  */
 class TranslateDirection(
     val from: TranslateLang,
@@ -57,56 +80,20 @@ class TranslateDirection(
     override fun toString(): String = "${from.code}->${to.code}"
 
     companion object {
-        /** Every base-memory model's encoder depth. */
+        /** Every model's encoder depth. */
         const val ENCODER_LAYERS = 6
 
-        private const val BASE_MEMORY_DECODER_LAYERS = 4
-        private val SAFE_NAME = Regex("[A-Za-z0-9._-]+")
+        /** Every direction a phone can download, from the generated table. */
+        val ALL: List<TranslateDirection> get() = TranslateDirections.ALL
 
-        val EN_ES =
-            TranslateDirection(
-                from = TranslateLang.EN,
-                to = TranslateLang.ES,
-                id = "mozilla-en-es-3b1c3995",
-                baseUrl = "https://getknit.app/models/translate/mozilla-en-es-3b1c3995/",
-                files =
-                    listOf(
-                        SttFile(
-                            "model.enes.intgemm.alphas.bin",
-                            31_561_787,
-                            "3b1c399511c01c84c36fae5c0524df44096288efdc8236e182b5c97d7ad2244c",
-                        ),
-                        SttFile("lex.50.50.enes.s2t.bin", 4_198_436, "7d51237c0a07027dcd61643cfbbb0f8c48597d19907ef53d2cae9d6bec2cf25c"),
-                        SttFile("vocab.enes.spm", 816_054, "5ae254fa9b15aa182e70fd2a6186b1333c63a29a48043a9224c6aa4fcac058ad"),
-                        SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
-                    ),
-                decoderLayers = BASE_MEMORY_DECODER_LAYERS,
-            )
-
-        val ES_EN =
-            TranslateDirection(
-                from = TranslateLang.ES,
-                to = TranslateLang.EN,
-                id = "mozilla-es-en-4aed7734",
-                baseUrl = "https://getknit.app/models/translate/mozilla-es-en-4aed7734/",
-                files =
-                    listOf(
-                        SttFile(
-                            "model.esen.intgemm.alphas.bin",
-                            31_561_787,
-                            "4aed7734152ae0045d1a69ae49c86cfda18f53c61f90e95e1d1de1c7c7c3b033",
-                        ),
-                        SttFile("lex.50.50.esen.s2t.bin", 4_636_248, "e2610211d3b9577d012638fe7e7e74ed7b4b708ce96b9e792e67c282a6492daa"),
-                        SttFile("vocab.esen.spm", 816_054, "5ae254fa9b15aa182e70fd2a6186b1333c63a29a48043a9224c6aa4fcac058ad"),
-                        SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
-                    ),
-                decoderLayers = BASE_MEMORY_DECODER_LAYERS,
-            )
-
-        val ALL: List<TranslateDirection> = listOf(EN_ES, ES_EN)
+        /** Every language the table names. */
+        val languages: Set<TranslateLang> by lazy { ALL.flatMap { listOf(it.from, it.to) }.toSet() }
 
         /** Every language a model translates from: the only answers a message's language read may give. */
-        val sources: Set<TranslateLang> = ALL.map { it.from }.toSet()
+        val sources: Set<TranslateLang> by lazy { ALL.map { it.from }.toSet() }
+
+        /** Every language a model translates into: what a reader's language may be. */
+        val targets: Set<TranslateLang> by lazy { ALL.map { it.to }.toSet() }
 
         fun of(
             from: TranslateLang,
@@ -114,3 +101,5 @@ class TranslateDirection(
         ): TranslateDirection? = ALL.firstOrNull { it.from == from && it.to == to }
     }
 }
+
+private val SAFE_NAME = Regex("[A-Za-z0-9._-]+")

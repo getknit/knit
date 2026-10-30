@@ -37,7 +37,7 @@ sealed interface MessageTranslation {
 
     /**
      * [flagged] when Content filtering would hide [text] in the message's scope; [guessed] when [from] came from the
-     * author's or the chat's usual language, not the words, so the reader is offered the other one.
+     * author's or the chat's usual language, not the words or a declaration, so the reader is offered another.
      */
     data class Done(
         val text: String,
@@ -51,6 +51,14 @@ sealed interface MessageTranslation {
     /** [direction]'s model is not on the phone: nothing ran. */
     data class NeedsModel(
         val direction: TranslateDirection,
+    ) : MessageTranslation
+
+    /**
+     * The reader named [from], and nothing goes from it into their language ([TranslateTarget]): it is their language
+     * already, or English for a reader no model reaches.
+     */
+    data class NoTarget(
+        val from: TranslateLang,
     ) : MessageTranslation
 
     data class Failed(
@@ -85,8 +93,9 @@ sealed interface TranslateOutcome {
 }
 
 /**
- * Translates messages on the reader's tap, one at a time, in the order asked (ADR 2026-10.t2h6). The text is held in
- * memory, by message id, for this process only: the spike keeps nothing on the row.
+ * Translates messages on the reader's tap, one at a time, in the order asked (ADR 2026-10.t2h6). Each finished one is
+ * kept on its message's row through [save] (the amendment of 2026-10-29) and held in memory too, by message id, so the
+ * bubble never waits on the row to read it back.
  *
  * Each message goes to the model whole, which reads best, and the output is kept only if every protected span (a link,
  * a position, a mention: [VerbatimSpans]) came back unchanged and [TranslationCheck] passes it. Otherwise the words
@@ -105,6 +114,8 @@ class MessageTranslator(
     private val log: (String) -> Unit = {},
     // Each author's usual language per chat, for the lines the words cannot settle; null reads the words alone.
     private val authors: AuthorLanguages? = null,
+    // Keeps a finished translation on its message's row; a failure leaves it shown, from memory, for this process.
+    private val save: suspend (messageId: String, done: MessageTranslation.Done) -> Unit = { _, _ -> },
 ) {
     private val _state = MutableStateFlow<Map<String, MessageTranslation>>(emptyMap())
 
@@ -126,9 +137,10 @@ class MessageTranslator(
     }
 
     /**
-     * Which language [body] is in, by its words and, when they cannot tell, by what its author ([authorId]) writes in
-     * [conversationId], then by the chat's own language ([chat]) (ADR 2026-10.t2h6's short-line amendment). The likeliest
-     * prior is also handed to CLD2 as a hint, which tips a close call between neighbours without overruling plain text.
+     * Which language [body] is in, by its words and, when they cannot tell, by what its author declared on the frame
+     * ([declared]), then what its author ([authorId]) writes in [conversationId], then the chat's own language ([chat])
+     * (ADR 2026-10.t2h6's short-line amendment). The likeliest prior is also handed to CLD2 as a hint, which tips a close
+     * call between neighbours without overruling plain text.
      */
     suspend fun resolve(
         body: String,
@@ -136,61 +148,74 @@ class MessageTranslator(
         conversationId: String?,
         authorId: String?,
         chat: TranslateLang?,
+        declared: TranslateLang? = null,
     ): Resolution {
         val words = VerbatimSpans.wordsOnly(body, mentions)
         // Nothing but links, positions and mentions: nothing to translate, whatever its author writes.
         if (words.isBlank()) return Resolution(LanguagePick.Unsure, null)
         val author = if (conversationId != null && authorId != null) authors?.of(conversationId, authorId) else null
-        val detection = engine.detect(words, author ?: chat)
-        return LanguageResolver.resolve(detection, words, TranslateDirection.sources, author, chat)
+        val detection = engine.detect(words, declared ?: author ?: chat)
+        return LanguageResolver.resolve(detection, words, TranslateDirection.sources, author, chat, declared)
     }
 
     /**
-     * Queues [body] of message [messageId], read as [from], for translation into the pair's other language. False when
-     * it is already running, or its model is not on the phone ([MessageTranslation.NeedsModel]). [guessed] when [from]
-     * is a prior's, not the words' (ADR 2026-10.t2h6's short-line amendment): the result says so.
+     * Queues [body] of message [messageId], read as [from], for translation into [to] ([TranslateTarget]). False when it
+     * is already running, there is no [to] ([MessageTranslation.NoTarget]) or its model is not on the phone
+     * ([MessageTranslation.NeedsModel]). [guessed] when [from] is a prior's, not the words' (ADR 2026-10.t2h6's
+     * short-line amendment): the result says so.
      */
     fun translate(
         messageId: String,
         body: String,
         from: TranslateLang,
+        to: TranslateLang?,
         isRoom: Boolean,
         mentions: List<IntRange> = emptyList(),
         guessed: Boolean = false,
     ): Boolean {
-        val direction = TranslateDirection.of(from, from.other) ?: return false
-        synchronized(lock) {
-            if (_state.value[messageId] is MessageTranslation.Running) return false
-            if (!engine.installed(direction)) {
-                _state.update { it + (messageId to MessageTranslation.NeedsModel(direction)) }
-                return false
-            }
-            _state.update { it + (messageId to MessageTranslation.Running) }
-        }
+        val direction = to?.let { TranslateDirection.of(from, it) }
+        // Under the lock, what this tap records: nothing over one already running, else why nothing ran, else Running.
+        val chosen =
+            synchronized(lock) {
+                val next =
+                    when {
+                        _state.value[messageId] is MessageTranslation.Running -> null
+                        direction == null -> MessageTranslation.NoTarget(from)
+                        !engine.installed(direction) -> MessageTranslation.NeedsModel(direction)
+                        else -> MessageTranslation.Running
+                    }
+                next?.let { state -> _state.update { it + (messageId to state) } }
+                direction.takeIf { next == MessageTranslation.Running }
+            } ?: return false
         workScope.launch(dispatcher) {
             serial.withLock {
                 val outcome =
-                    runCatching { run(direction, body, isRoom, mentions, guessed) }
+                    runCatching { run(chosen, body, isRoom, mentions, guessed) }
                         .onFailure { log("translate $direction: ${it.javaClass.simpleName}") }
                         .getOrDefault(MessageTranslation.Failed(MessageTranslation.Failed.Reason.ENGINE))
                 _state.update { it + (messageId to outcome) }
+                if (outcome is MessageTranslation.Done) {
+                    runCatching { save(messageId, outcome) }
+                        .onFailure { log("translate $direction: not kept, ${it.javaClass.simpleName}") }
+                }
             }
         }
         return true
     }
 
     /**
-     * [body], read as [from], into the pair's other language, now: the composer's translation of the person's own draft,
-     * which they read and may edit before it is sent (ADR 2026-10.t2h6's amendment). Queued behind any message's, on the
-     * same model; not screened, since a send screens what it sends.
+     * [body], read as [from], into [to], now: the composer's translation of the person's own draft, which they read and
+     * may edit before it is sent (ADR 2026-10.t2h6's amendment). Queued behind any message's, on the same model; not
+     * screened, since a send screens what it sends.
      */
     suspend fun translateNow(
         body: String,
         from: TranslateLang,
+        to: TranslateLang,
         mentions: List<IntRange> = emptyList(),
     ): TranslateOutcome {
         val direction =
-            TranslateDirection.of(from, from.other) ?: return TranslateOutcome.Failed(MessageTranslation.Failed.Reason.ENGINE)
+            TranslateDirection.of(from, to) ?: return TranslateOutcome.Failed(MessageTranslation.Failed.Reason.ENGINE)
         if (!engine.installed(direction)) return TranslateOutcome.NeedsModel(direction)
         return withContext(dispatcher) {
             serial.withLock {
@@ -291,3 +316,15 @@ class MessageTranslator(
         return TranslateOutcome.Failed(reason)
     }
 }
+
+/**
+ * A translation kept on its message's row (ADR 2026-10.t2h6's 2026-10-29 amendment): the text, the two languages, the
+ * moderation verdict it was screened to, and whether its source language was a prior's guess.
+ */
+data class StoredTranslation(
+    val text: String,
+    val from: TranslateLang,
+    val to: TranslateLang,
+    val flagged: Boolean,
+    val guessed: Boolean,
+)

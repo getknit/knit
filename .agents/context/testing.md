@@ -750,8 +750,8 @@ before "simplifying":
   case here runs inside `runTest { }` — and `Migration.migrate` is suspend too (`KnitMigrations`). **DB v1 is the frozen launch baseline** — there is **no** destructive fallback: from
   v1 forward every `@Database` bump MUST add a tested `Migration` to `KnitMigrations` (`data/KnitMigrations.kt`,
   appended to `ALL`) and a from→to case to `KnitDatabaseMigrationTest` — a missing migration throws at
-  open time (caught here in CI), never silently wipes. The DB is at **v22** today, with twenty-one migrations
-  (`MIGRATION_1_2` … `MIGRATION_21_22`) and a `KnitDatabaseMigrationTest` case for each, plus a current-schema
+  open time (caught here in CI), never silently wipes. The DB is at **v27** today, with twenty-six migrations
+  (`MIGRATION_1_2` … `MIGRATION_26_27`) and a `KnitDatabaseMigrationTest` case for each, plus a current-schema
   smoke test whose `CURRENT_VERSION` must be bumped by hand (`SqlCipherDriverUpgradeTest` reads
   `KNIT_DB_SCHEMA_VERSION`). Keep the version count down while a branch is
   unreleased — fold its schema churn into one bump before merging, the way `MIGRATION_9_10` carries the whole

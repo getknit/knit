@@ -1679,8 +1679,6 @@
     <string name="profile_badge_toggle_summary">Zeigt an deinem Foto ein kleines Zeichen für alle, die dein Profil erreicht.</string>
     <string name="profile_badge_lapsed">Dein Abzeichen ist abgelaufen und wird deshalb nicht angezeigt. Es erscheint wieder, sobald dein Ticket-Schlüssel aktuell ist.</string>
     <string name="chat_action_translate">Übersetzen</string>
-    <string name="translate_lang_en">Englisch</string>
-    <string name="translate_lang_es">Spanisch</string>
     <string name="translate_label">Übersetzt aus: %1$s</string>
     <string name="translate_running">Wird übersetzt…</string>
     <string name="translate_hidden">Übersetzung ausgeblendet. Tippe, um sie anzuzeigen.</string>
@@ -1694,14 +1692,25 @@
     <string name="translate_not_now">Nicht jetzt</string>
     <string name="translate_from_title">Welche Sprache ist das?</string>
     <string name="translate_from_body">Der Text ist zu kurz, um das zu erkennen. Übersetzen aus:</string>
+    <string name="translate_to_title">In welche Sprache übersetzen?</string>
+    <string name="translate_already_in">Diese Nachricht ist bereits auf %1$s.</string>
+    <string name="translate_no_target">Für %1$s gibt es noch keine Übersetzung in deine Sprache.</string>
     <string name="translate_metered">Das Modell ist %1$s groß, und dieser Download nutzt mobile Daten.</string>
     <string name="translate_no_internet">Keine Internetverbindung</string>
     <string name="translate_download_failed">Download fehlgeschlagen</string>
     <string name="translate_draft_button">Vor dem Senden übersetzen</string>
     <string name="translate_draft_hint">Dieser Chat ist auf %1$s. Deine Nachricht übersetzen?</string>
+    <string name="translate_draft_hint_reads">%1$s liest %2$s. Deine Nachricht übersetzen?</string>
+    <string name="translate_draft_hint_group_reads">Hier wird %1$s gelesen. Deine Nachricht übersetzen?</string>
     <string name="translate_draft_hint_action">Übersetzen</string>
     <string name="translate_draft_undo">Rückgängig</string>
     <string name="translate_not_language">Nicht %1$s?</string>
     <string name="translate_model_title">Übersetzungsmodell herunterladen?</string>
     <string name="translate_metered_note">Dieser Download nutzt mobile Daten.</string>
+    <string name="settings_translation_title">Übersetzung</string>
+    <string name="settings_translation_subtitle">Nachrichten auf diesem Smartphone offline übersetzen. Was du sendest, sagt anderen auch, in welcher Sprache es ist und welche Sprache du liest.</string>
+    <string name="settings_translate_into_title">Sprache für Übersetzungen</string>
+    <string name="settings_translate_into_auto">Automatisch (%1$s)</string>
+    <string name="settings_translate_into_auto_none">Automatisch</string>
+    <string name="settings_translate_into_body">„Automatisch“ nimmt die Sprache, in der du schreibst, sonst die Sprache deines Smartphones.</string>
 </resources>

@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -178,7 +179,8 @@ interface MeshController {
      *
      * [styles] is the body's formatting (ADR 2026-10.p95v), indexed against exactly this [text]: the send normalises
      * it against [text] and never rebases it, so a caller that trims or clamps the draft rebases first
-     * (`StyleSpans.rebase`).
+     * (`StyleSpans.rebase`). [declared] is the body's language and the language its author reads, each only when not
+     * implied (ADR 2026-10.t2h6's 2026-10-29 amendment): cleartext on a room post, sealed with the rest otherwise.
      */
     suspend fun sendChat(
         text: String,
@@ -188,6 +190,7 @@ interface MeshController {
         group: GroupInfo? = null,
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
+        declared: DeclaredLangs = DeclaredLangs.NONE,
     ): Boolean
 
     /**
@@ -215,6 +218,7 @@ interface MeshController {
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested? = null,
         styles: List<StyleSpan> = emptyList(),
+        declared: DeclaredLangs = DeclaredLangs.NONE,
     ): Boolean = false
 
     /**

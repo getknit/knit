@@ -291,6 +291,8 @@ class MessageContentV2Test {
                 pr = ProfilePayload(name = "Alice", status = "out", version = 5L),
                 acks = listOf(FrameId.new()),
                 styles = listOf(StyleSpan(0, 5, BodyStyle.BOLD)),
+                lang = 1,
+                reads = 24,
             )
         val set = JSON.encodeToJsonElement(MessageContent.serializer(), full).jsonObject.keys
         val fields =

@@ -28,18 +28,26 @@ lines.
   `scripts/egress-check.sh` green: a fresh install with default settings sends no byte over IP (the "Egress
   check" section of `.agents/context/testing.md`).
 - **When touching `translate/`, `ui/translate/`, `di/TranslateWiring`, `BuildConfig.TRANSLATE`, the `translate-native`
-  pin, `MessageDao.recentOwnBodies` or `scripts/translate-*`:** READ ADR 2026-10.t2h6 (Proposed; the offline translation
-  spike, English ↔ Spanish) and its 2026-10-23 amendment. It is a build made with `-Ptranslate=true` only (a debug, or a
-  testers' alpha built here). The runtime, slimt and CLD2 behind `TranslateJni`, is the `app.getknit:translate-native`
-  AAR that the separate knit-translate-native repository builds reproducibly and publishes to Maven Central: `:app`
-  compiles against it everywhere and packages it only under the flag, so no build here compiles native code. Upstream
-  pins and our patches to them live in that repository; `-Pknit.translateNative=<checkout>` builds it from source in
-  place of the artifact. A translation is the reader's, on tap, held in memory, never on the wire and never logged; it is screened by
-  `ScopedTextModerator` in the message's scope; the app's language is never its target. The composer may also
-  translate the sender's own draft (`ComposePolicy`, `translateNow`, the ADR's amendment): one tap replaces the draft,
-  which the person reads and may edit before sending, never automatically. Each loaded model lives on a
-  thread of its own that ends with it (`SlimtEngine`): slimt caches ruy's packed weights per thread by address and
-  never clears them, so a reload on a reused thread reads the old model's packs.
+  pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnBodies`, `SettingsStore.translateTarget`,
+  `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`, `SettingsStore.translationEnabled` or
+  `scripts/translate-*`:** READ ADR 2026-10.t2h6
+  (Proposed; offline translation) and its 2026-10-23 and 2026-10-29 amendments. It is a build made with
+  `-Ptranslate=true` only (a debug, or a testers' alpha built here). The runtime, slimt and CLD2 behind `TranslateJni`,
+  is the `app.getknit:translate-native` AAR that the separate knit-translate-native repository builds reproducibly and
+  publishes to Maven Central: `:app` compiles against it everywhere and packages it only under the flag, so no build
+  here compiles native code. Upstream pins and our patches to them live in that repository;
+  `-Pknit.translateNative=<checkout>` builds it from source in place of the artifact. Languages are registry codes
+  (`TranslateLang`); the directions are generated (`scripts/translate-model.py --write`, never hand-edited), every one
+  to or from English with no pivot. A translation is the reader's, on tap, into the reader's language
+  (`TranslateTarget`, `ReaderLanguages`: Settings, then what they write, then the system list, never the app's
+  language), kept on the row (DB v27, `setTranslation` only), never on the wire and never logged; it is screened by
+  `ScopedTextModerator` in the message's scope. The author's own declaration (`lang` / `reads`, `LanguageRegistry`
+  indices, append-only wire law) is the one thing carried: a label for the resolver and the composer's hint, never a
+  trust input. Settings › Chats › Translation (`translationEnabled`, on by default) gates all of it: off, nothing is
+  offered or drawn and nothing is declared on the wire. The composer may also translate the sender's own draft (`ComposePolicy`, `translateNow`, the ADR's
+  amendment): one tap replaces the draft, which the person reads and may edit before sending, never automatically.
+  Each loaded model lives on a thread of its own that ends with it (`SlimtEngine`): slimt caches ruy's packed weights
+  per thread by address and never clears them, so a reload on a reused thread reads the old model's packs.
 - **When touching `location/`, the chat overflow's "Send location" item, or anything that reads the device's
   position:** READ ADR 2026-09.tss4. A shared position is a `geo:` line in the message body (no wire field,
   no capability bit); it is read only between the pin tap and the send, by `ChatViewModel.startLocation`,

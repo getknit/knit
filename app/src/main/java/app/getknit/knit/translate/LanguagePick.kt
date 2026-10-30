@@ -29,29 +29,30 @@ data class Detection(
     }
 }
 
-/** Which language of the pair a message is in, or that it cannot be told. */
+/** Which language a message is in, or that it cannot be told. */
 sealed interface LanguagePick {
     data class Picked(
         val lang: TranslateLang,
     ) : LanguagePick
 
-    /** CLD2 could not tell, or named a language outside the pair: the reader is asked. */
+    /** CLD2 could not tell, or named a language no model translates: the reader is asked. */
     data object Unsure : LanguagePick
 }
 
 /**
- * Names a message's language for the spike's one pair from CLD2's answer. Only a confident one counts: reliable, the
- * top language English or Spanish, and holding [MIN_PERCENT] of the text. Everything else is [LanguagePick.Unsure] and
+ * Names a message's language from CLD2's answer. Only a confident one counts: reliable, the top language one the table
+ * knows ([TranslateLang.ofCode]), and holding [MIN_PERCENT] of the text. Everything else is [LanguagePick.Unsure] and
  * the reader picks: on the corpus that is mostly lines of one to three words, which CLD2 calls `un`, and Spanish it
- * reads as a neighbour (Galician, Catalan, Portuguese). A neighbour is never mapped to Spanish: that would be a guess.
+ * reads as a neighbour (Galician, Catalan, Portuguese). A neighbour is never mapped to a language it is not: that would
+ * be a guess.
  *
  * One contradiction is caught: CLD2 read "qué fotos tan bonitas" as English, reliably. An English answer for text
- * carrying a mark English does not write (¿ ¡ ñ or an accented vowel) is unsure.
+ * carrying a letter English does not write (any letter outside ASCII, ¿ or ¡) is unsure.
  */
 object LanguagePolicy {
     const val MIN_PERCENT = 80
 
-    private val SPANISH_MARKS = Regex("[¿¡ñÑáéíóúÁÉÍÓÚ]")
+    private val NOT_ENGLISH_MARKS = Regex("[¿¡]|[\\p{L}&&[^\\p{ASCII}]]")
 
     fun pick(
         detection: Detection?,
@@ -61,9 +62,18 @@ object LanguagePolicy {
         val (code, percent) = detection.top.firstOrNull() ?: return LanguagePick.Unsure
         val lang = TranslateLang.ofCode(code) ?: return LanguagePick.Unsure
         if (percent < MIN_PERCENT) return LanguagePick.Unsure
-        if (lang == TranslateLang.EN && SPANISH_MARKS.containsMatchIn(text)) return LanguagePick.Unsure
+        if (lang == TranslateLang.EN && NOT_ENGLISH_MARKS.containsMatchIn(text)) return LanguagePick.Unsure
         return LanguagePick.Picked(lang)
     }
+
+    /** CLD2's named languages the table knows, in its order, for a picker to put first; `un` and the rest dropped. */
+    fun ranked(detection: Detection?): List<TranslateLang> =
+        detection
+            ?.top
+            .orEmpty()
+            .filter { it.second > 0 }
+            .mapNotNull { TranslateLang.ofCode(it.first) }
+            .distinct()
 
     /** The language most of [picks] are in, or null when fewer than [minPicks] are confident or none holds a majority. */
     fun majority(

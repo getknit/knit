@@ -137,6 +137,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -279,6 +280,7 @@ import app.getknit.knit.ui.translate.TranslateDraftButton
 import app.getknit.knit.ui.translate.TranslateFromDialog
 import app.getknit.knit.ui.translate.TranslateMeteredDialog
 import app.getknit.knit.ui.translate.TranslateModelOfferDialog
+import app.getknit.knit.ui.translate.TranslateToDialog
 import app.getknit.knit.ui.translate.TranslationBlock
 import app.getknit.knit.ui.translate.TranslationShown
 import app.getknit.knit.ui.translate.TranslationToggle
@@ -382,6 +384,8 @@ fun ChatScreen(
     val draftHint = if (TRANSLATE_WIRED) viewModel.draftHint.collectAsStateWithLifecycle().value else null
     val draftTranslation = if (TRANSLATE_WIRED) viewModel.draftTranslation.collectAsStateWithLifecycle().value else null
     var draftTranslatedFrom by remember { mutableStateOf<TranslateLang?>(null) }
+    // The language the field's translation is in: what the message declares when it is sent as it stands.
+    var draftTranslatedTo by remember { mutableStateOf<TranslateLang?>(null) }
     var draftTranslatedGuessed by remember { mutableStateOf(false) }
     var draftOriginal by remember { mutableStateOf<String?>(null) }
     // The original's formatting, which a translation drops (its words moved) and Undo puts back with the text.
@@ -391,6 +395,7 @@ fun ChatScreen(
         inputState.setTextAndPlaceCursorAtEnd(done.text)
         draftOriginal = done.original
         draftTranslatedFrom = done.from
+        draftTranslatedTo = done.to
         draftTranslatedGuessed = done.guessed
         viewModel.onDraftTranslationApplied()
     }
@@ -399,6 +404,7 @@ fun ChatScreen(
         snapshotFlow { inputState.text.isEmpty() }.collect { empty ->
             if (empty) {
                 draftTranslatedFrom = null
+                draftTranslatedTo = null
                 draftOriginal = null
             }
         }
@@ -626,7 +632,7 @@ fun ChatScreen(
             val applied = mentionsStillIn(text, pendingMentions)
             // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
             // emits clearInput only once a message is actually accepted (see the collector above).
-            viewModel.send(text, applied, replyingTo, styles = inputState.bodySpans())
+            viewModel.send(text, applied, replyingTo, styles = inputState.bodySpans(), translatedInto = draftTranslatedTo)
         },
         showPublicConsent = showPublicConsent,
         onAcceptPublicConsent = viewModel::acceptPublicConsent,
@@ -672,23 +678,30 @@ fun ChatScreen(
         draftTranslate =
             translateView?.let { view ->
                 DraftTranslateUi(
-                    hint = draftHint,
+                    hint = draftHint?.direction,
+                    hintDeclared = draftHint?.declared == true,
+                    hintBy = draftHint?.by,
                     running = draftTranslation == ChatViewModel.DraftTranslation.Running,
                     failedUnusable = (draftTranslation as? ChatViewModel.DraftTranslation.Failed)?.unusable,
                     translatedFrom = draftTranslatedFrom,
                     translatedGuessed = draftTranslatedGuessed,
+                    // The download the composer offered is the hint's direction, or the one a translation asked for.
                     downloadingPercent =
-                        view.models.values.firstNotNullOfOrNull { model ->
-                            (model as? SttModelState.Downloading)?.let { if (it.total > 0) (it.done * 100 / it.total).toInt() else 0 }
-                        },
+                        listOfNotNull(draftHint?.direction, (draftTranslation as? ChatViewModel.DraftTranslation.NeedsModel)?.direction)
+                            .firstNotNullOfOrNull { direction ->
+                                (view.models[direction] as? SttModelState.Downloading)?.let {
+                                    if (it.total > 0) (it.done * 100 / it.total).toInt() else 0
+                                }
+                            },
                 )
             },
-        onTranslateDraft = { from ->
+        onTranslateDraft = { from, to ->
             draftOriginalSpans = inputState.bodySpans()
             viewModel.translateDraft(
                 inputState.text.toString(),
                 mentionSpans(inputState.text, pendingMentions).map { it.start until it.end },
                 from,
+                to,
             )
         },
         onUndoDraftTranslation = {
@@ -696,16 +709,18 @@ fun ChatScreen(
             draftOriginal = null
             draftOriginalSpans = emptyList()
             draftTranslatedFrom = null
+            draftTranslatedTo = null
         },
-        // The guess was wrong: the original, again, from the other language.
+        // The guess was wrong: the original, again, from another language.
         onDraftNotThisLanguage = {
             val original = draftOriginal
             val wrong = draftTranslatedFrom
             if (original != null && wrong != null) {
-                viewModel.translateDraft(original, mentionSpans(original, pendingMentions).map { it.start until it.end }, wrong.other)
+                viewModel.draftNotThisLanguage(original, mentionSpans(original, pendingMentions).map { it.start until it.end }, wrong)
             }
         },
-        onTranslateFrom = { row, lang -> viewModel.translateMessage(row, lang) },
+        onTranslateNotLanguage = viewModel::notThisLanguage,
+        offersTranslate = viewModel::offersTranslate,
         linkPreviewLoading = linkPreviewLoading,
         videoEncoding = videoEncoding,
         onCancelVideo = viewModel::cancelVideoEncoding,
@@ -781,9 +796,10 @@ fun ChatScreen(
         )
     }
 
-    translateAsk?.let { row ->
+    translateAsk?.let { ask ->
         TranslateFromDialog(
-            onPick = { lang -> viewModel.translateMessage(row, lang) },
+            choices = ask.choices,
+            onPick = { lang -> viewModel.translateMessage(ask.row, lang) },
             onDismiss = viewModel::dismissTranslateAsk,
         )
     }
@@ -800,7 +816,24 @@ fun ChatScreen(
     when (draftTranslation) {
         is ChatViewModel.DraftTranslation.AskFrom -> {
             TranslateFromDialog(
+                choices = draftTranslation.choices,
                 onPick = { lang -> viewModel.translateDraft(draftTranslation.draft, draftTranslation.mentions, lang) },
+                onDismiss = viewModel::dismissDraftTranslation,
+            )
+        }
+
+        is ChatViewModel.DraftTranslation.AskTo -> {
+            TranslateToDialog(
+                choices = draftTranslation.choices,
+                onPick = { lang ->
+                    viewModel.translateDraft(
+                        draftTranslation.draft,
+                        draftTranslation.mentions,
+                        draftTranslation.from,
+                        lang,
+                        draftTranslation.guessed,
+                    )
+                },
                 onDismiss = viewModel::dismissDraftTranslation,
             )
         }
@@ -959,11 +992,12 @@ internal fun ChatScreenContent(
     onDraftChanged: (Draft) -> Unit = {},
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
     draftTranslate: DraftTranslateUi? = null,
-    onTranslateDraft: (from: TranslateLang?) -> Unit = {},
+    onTranslateDraft: (from: TranslateLang?, to: TranslateLang?) -> Unit = { _, _ -> },
     onUndoDraftTranslation: () -> Unit = {},
     onDraftNotThisLanguage: () -> Unit = {},
     // A guessed translation's "Not English?": the message again, from the language the reader names.
-    onTranslateFrom: (ChatRow, TranslateLang) -> Unit = { _, _ -> },
+    onTranslateNotLanguage: (ChatRow, TranslateLang) -> Unit = { _, _ -> },
+    offersTranslate: (suspend (ChatRow) -> Boolean)? = null,
     // True while that card is being fetched; the input bar shows a transient "Loading preview…" line.
     linkPreviewLoading: Boolean = false,
     // While a picked video is re-encoded, how far along (0..1), drawn as a tile with a Cancel (ADR 2026-10.hmfe).
@@ -1821,8 +1855,10 @@ internal fun ChatScreenContent(
                                                 translateView?.let {
                                                     translationShown(
                                                         it.translations[row.id],
+                                                        row.translation,
                                                         it.models,
                                                         it.filterOn,
+                                                        it.reader,
                                                     )
                                                 }
                                             } else {
@@ -1831,7 +1867,8 @@ internal fun ChatScreenContent(
                                         onTranslate = if (TRANSLATE_WIRED && translateView != null) onTranslate else null,
                                         onDownloadTranslateModel = onDownloadTranslateModel,
                                         onDismissTranslation = onDismissTranslation,
-                                        onTranslateFrom = onTranslateFrom,
+                                        onTranslateNotLanguage = onTranslateNotLanguage,
+                                        offersTranslate = offersTranslate,
                                         arrival = row.attachmentHash?.let(arrivals::get),
                                     )
                                 }
@@ -2671,7 +2708,10 @@ private fun MessageBubble(
     onTranslate: ((ChatRow) -> Unit)? = null,
     onDownloadTranslateModel: (ChatRow, TranslateDirection) -> Unit = { _, _ -> },
     onDismissTranslation: (messageId: String) -> Unit = {},
-    onTranslateFrom: (ChatRow, TranslateLang) -> Unit = { _, _ -> },
+    // "Not English?": the reader says the language was not the one guessed.
+    onTranslateNotLanguage: (ChatRow, TranslateLang) -> Unit = { _, _ -> },
+    // Whether the menu offers Translate on this row: not on one already in the reader's language. Null offers it.
+    offersTranslate: (suspend (ChatRow) -> Boolean)? = null,
     // How far this row's attachment has got while its bytes stream in over a nearby link (#115). Defaulted for
     // the @Preview call sites and for every row whose attachment is held or not on its way.
     arrival: ArrivingFile? = null,
@@ -3099,7 +3139,7 @@ private fun MessageBubble(
                                             onToggle = { showingOriginal = !showingOriginal },
                                             onNotThisLanguage =
                                                 if (translated.guessed) {
-                                                    { onTranslateFrom(row, translated.from.other) }
+                                                    { onTranslateNotLanguage(row, translated.from) }
                                                 } else {
                                                     null
                                                 },
@@ -3220,6 +3260,12 @@ private fun MessageBubble(
                     }
                 }
                 if (showPicker) {
+                    // Resolved as the menu opens, in milliseconds: Translate appears once the row's language is known.
+                    val translateOffered by produceState(initialValue = offersTranslate == null, row.id) {
+                        if (offersTranslate != null) value = offersTranslate(row)
+                    }
+                    // Text the reader can see: a body the filter hides is translated only once revealed.
+                    val translatable = BUBBLE_TRANSLATES && readableBody && translateOffered
                     ReactionPicker(
                         quickReactions = quickReactions,
                         canReact = canReact,
@@ -3249,9 +3295,8 @@ private fun MessageBubble(
                                     showPicker = false
                                 }
                             },
-                        // Text the reader can see: a body the filter hides is translated only once revealed.
                         onTranslate =
-                            if (BUBBLE_TRANSLATES && onTranslate != null && readableBody) {
+                            if (translatable && onTranslate != null) {
                                 {
                                     onTranslate(row)
                                     showPicker = false
@@ -4472,7 +4517,7 @@ private fun MessageInput(
     formatting: Boolean = false,
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
     draftTranslate: DraftTranslateUi? = null,
-    onTranslateDraft: (from: TranslateLang?) -> Unit = {},
+    onTranslateDraft: (from: TranslateLang?, to: TranslateLang?) -> Unit = { _, _ -> },
     onUndoDraftTranslation: () -> Unit = {},
     onDraftNotThisLanguage: () -> Unit = {},
     linkPreviewLoading: Boolean = false,
@@ -4791,7 +4836,7 @@ private fun MessageInput(
                 DraftTranslateLine(
                     ui = draftTranslate,
                     canSend = state.text.isNotBlank(),
-                    onTranslate = onTranslateDraft,
+                    onTranslate = { from, to -> onTranslateDraft(from, to) },
                     onUndo = onUndoDraftTranslation,
                     onNotThisLanguage = onDraftNotThisLanguage,
                 )
@@ -4942,7 +4987,7 @@ private fun MessageInput(
                         TranslateDraftButton(
                             lit = draftTranslate.hint != null,
                             running = draftTranslate.running,
-                            onClick = { onTranslateDraft(draftTranslate.hint?.from) },
+                            onClick = { onTranslateDraft(draftTranslate.hint?.from, draftTranslate.hint?.to) },
                         )
                     }
                 }
@@ -5629,7 +5674,8 @@ fun MessageBubbleTranslatedPreview() =
             translation =
                 TranslationShown.Text(
                     "Are you coming to the park later? We're by the big tree.",
-                    TranslateLang.ES,
+                    TranslateLang("es"),
+                    TranslateLang.EN,
                     hidden = false,
                 ),
         )
@@ -5660,7 +5706,7 @@ fun MessageBubbleTranslationHiddenPreview() =
             onDelete = {},
             onBlock = {},
             onCopy = {},
-            translation = TranslationShown.Text("hidden", TranslateLang.ES, hidden = true),
+            translation = TranslationShown.Text("hidden", TranslateLang("es"), TranslateLang.EN, hidden = true),
         )
     }
 

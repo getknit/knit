@@ -36,7 +36,7 @@ class LanguagePickTest {
 
     @Test
     fun aConfidentAnswerInThePairIsPicked() {
-        assertEquals(LanguagePick.Picked(TranslateLang.ES), LanguagePolicy.pick(cld2("es", 97), "¿Vienes al parque más tarde?"))
+        assertEquals(LanguagePick.Picked(TranslateLang("es")), LanguagePolicy.pick(cld2("es", 97), "¿Vienes al parque más tarde?"))
         assertEquals(LanguagePick.Picked(TranslateLang.EN), LanguagePolicy.pick(cld2("en", 97), "Are you coming to the park later?"))
     }
 
@@ -46,7 +46,7 @@ class LanguagePickTest {
         assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("un", 0, reliable = false), "hola"))
         assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("es", 97, reliable = false), "ya voy"))
         assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("es", LanguagePolicy.MIN_PERCENT - 1), "algo"))
-        assertEquals(LanguagePick.Picked(TranslateLang.ES), LanguagePolicy.pick(cld2("es", LanguagePolicy.MIN_PERCENT), "algo"))
+        assertEquals(LanguagePick.Picked(TranslateLang("es")), LanguagePolicy.pick(cld2("es", LanguagePolicy.MIN_PERCENT), "algo"))
     }
 
     @Test
@@ -61,6 +61,23 @@ class LanguagePickTest {
         assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("en", 95), "qué fotos tan bonitas"))
         assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("en", 95), "mañana"))
         // A Spanish answer over the same marks stands.
-        assertEquals(LanguagePick.Picked(TranslateLang.ES), LanguagePolicy.pick(cld2("es", 95), "qué fotos tan bonitas"))
+        assertEquals(LanguagePick.Picked(TranslateLang("es")), LanguagePolicy.pick(cld2("es", 95), "qué fotos tan bonitas"))
+    }
+
+    @Test
+    fun anEnglishAnswerOverAnyLetterEnglishDoesNotWriteIsUnsure() {
+        assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("en", 95), "¡vamos!"))
+        assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("en", 95), "see you at the café later"))
+        assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("en", 95), "привіт, see you soon"))
+        // An emoji or a curly quote is no letter: plain English with them stands.
+        assertEquals(LanguagePick.Picked(TranslateLang.EN), LanguagePolicy.pick(cld2("en", 95), "see you soon \uD83D\uDE00 it\u2019s fine"))
+    }
+
+    @Test
+    fun theRankedReadsAreTheLanguagesTheTableKnowsInCld2sOrder() {
+        val detection = Detection(listOf("gl" to 60, "es" to 30, "en" to 10), reliable = false, bytes = 30)
+        assertEquals(listOf(TranslateLang("es"), TranslateLang.EN), LanguagePolicy.ranked(detection))
+        assertEquals(emptyList<TranslateLang>(), LanguagePolicy.ranked(null))
+        assertEquals(emptyList<TranslateLang>(), LanguagePolicy.ranked(Detection(listOf("es" to 0, "un" to 0, "un" to 0), false, 3)))
     }
 }

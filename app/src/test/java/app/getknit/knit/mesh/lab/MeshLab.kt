@@ -97,6 +97,7 @@ import app.getknit.knit.mesh.lora.LoraGossipPolicy
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.PrekeyInfo
@@ -1614,12 +1615,16 @@ class LabNode internal constructor(
         }
     }
 
-    /** Posts in the Nearby room, quoting [replyTo] when given, formatted by [styles]; the frame the app's composer would send. */
+    /**
+     * Posts in the Nearby room, quoting [replyTo] when given, formatted by [styles], declaring [declared] (ADR
+     * 2026-10.t2h6); the frame the app's composer would send.
+     */
     suspend fun sendRoom(
         text: String,
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
-    ): Boolean = spaced { manager.sendChat(text = text, replyTo = replyTo, styles = styles) }
+        declared: DeclaredLangs = DeclaredLangs.NONE,
+    ): Boolean = spaced { manager.sendChat(text = text, replyTo = replyTo, styles = styles, declared = declared) }
 
     /** The call ids whose end this node's call layer has written to its settings file (C-3.4-3). */
     suspend fun savedCallTombs(): Set<String> = CallTombStore(dataStore).load().mapTo(HashSet()) { it.id }
@@ -1643,12 +1648,13 @@ class LabNode internal constructor(
         castToo: Boolean = false,
     ): Boolean = spaced { manager.sendCallTalk(to.nodeId, chunk, castToo = castToo) != null }
 
-    /** Sends a DM, formatted by [styles]; the frame the app's composer would send. */
+    /** Sends a DM, formatted by [styles], declaring [declared]; the frame the app's composer would send. */
     suspend fun sendDm(
         to: LabNode,
         text: String,
         styles: List<StyleSpan> = emptyList(),
-    ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId, styles = styles) }
+        declared: DeclaredLangs = DeclaredLangs.NONE,
+    ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId, styles = styles, declared = declared) }
 
     /**
      * Makes this node seal its DMs to [peer] in the named v2 layout, as it does toward a build without crypto scheme
@@ -1782,9 +1788,12 @@ class LabNode internal constructor(
         text: String,
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
+        declared: DeclaredLangs = DeclaredLangs.NONE,
     ): Boolean {
         val group = checkNotNull(groups.find(groupId)) { "$name holds no group $groupId" }
-        return spaced { manager.sendChat(text = text, group = group.toGroupInfo(), replyTo = replyTo, styles = styles) }
+        return spaced {
+            manager.sendChat(text = text, group = group.toGroupInfo(), replyTo = replyTo, styles = styles, declared = declared)
+        }
     }
 
     /**

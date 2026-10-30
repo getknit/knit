@@ -1,9 +1,12 @@
 package app.getknit.knit.di
 
+import android.content.res.Resources
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.MessageDao
+import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.identity.Identity
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ScopedTextModerator
@@ -13,6 +16,7 @@ import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.LanguagePick
 import app.getknit.knit.translate.LanguagePolicy
 import app.getknit.knit.translate.MessageTranslator
+import app.getknit.knit.translate.ReaderLanguage
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.VerbatimSpans
@@ -20,8 +24,11 @@ import app.getknit.knit.ui.translate.SlimtEngine
 import app.getknit.knit.ui.translate.TranslateModelStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.koin.android.ext.koin.androidContext
@@ -57,7 +64,29 @@ private fun translateGraph(): Module =
             )
         }
         single {
+            val engine = get<SlimtEngine>()
+            val messages = get<MessageDao>()
+            val identity = get<Identity>()
+            ReaderLanguage(
+                ownBodies = { limit -> messages.recentOwnBodies(identity.nodeId(), limit) },
+                read = { body ->
+                    val words = VerbatimSpans.wordsOnly(body)
+                    if (words.isBlank()) LanguagePick.Unsure else LanguagePolicy.pick(engine.detect(words), words)
+                },
+                // The system's list, never the app's: a per-app language says what the app is shown in, not what its
+                // reader reads (ADR 2026-10.t2h6).
+                preferred = {
+                    Resources
+                        .getSystem()
+                        .configuration.locales
+                        .let { l -> (0 until l.size()).map { l[it].toLanguageTag() } }
+                },
+                clock = SystemClock::elapsedRealtime,
+            )
+        }
+        single {
             val moderator = get<ScopedTextModerator>()
+            val messages = get<MessageDao>()
             MessageTranslator(
                 engine = get<SlimtEngine>(),
                 // A translation is screened as an inbound body is (MeshManager.isTextFlagged): its positions out first.
@@ -70,54 +99,69 @@ private fun translateGraph(): Module =
                 clock = SystemClock::elapsedRealtime,
                 log = { Log.i(TAG, it) },
                 authors = get(),
+                save = { id, done -> messages.setTranslation(id, done.text, done.from.code, done.to.code, done.flagged, done.guessed) },
             )
         }
         single<ChatTranslation> {
             val store = get<TranslateModelStore>()
-            val translator = get<MessageTranslator>()
             val scope = get<CoroutineScope>()
-            val (enEs, esEn) = TranslateDirection.EN_ES to TranslateDirection.ES_EN
             // Which models are on the phone, read once off the main thread (a chat resolves this lazily).
             scope.launch(Dispatchers.IO) { store.start() }
-            object : ChatTranslation {
-                override val translations = translator.state
-                override val models =
-                    combine(store.state(enEs), store.state(esEn)) { a, b -> mapOf(enEs to a, esEn to b) }
-                        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
-
-                override fun metered() = store.metered()
-
-                override fun download(direction: TranslateDirection) = store.download(direction)
-
-                override suspend fun pick(
-                    body: String,
-                    mentions: List<IntRange>,
-                ) = translator.pick(body, mentions)
-
-                override suspend fun resolve(
-                    body: String,
-                    mentions: List<IntRange>,
-                    conversationId: String,
-                    authorId: String?,
-                    chat: TranslateLang?,
-                ) = translator.resolve(body, mentions, conversationId, authorId, chat)
-
-                override fun translate(
-                    messageId: String,
-                    body: String,
-                    from: TranslateLang,
-                    isRoom: Boolean,
-                    mentions: List<IntRange>,
-                    guessed: Boolean,
-                ) = translator.translate(messageId, body, from, isRoom, mentions, guessed)
-
-                override fun dismiss(messageId: String) = translator.dismiss(messageId)
-
-                override suspend fun translateDraft(
-                    draft: String,
-                    from: TranslateLang,
-                    mentions: List<IntRange>,
-                ) = translator.translateNow(draft, from, mentions)
-            }
+            chatTranslation(store, get(), get(), get(), scope)
         }
+    }
+
+// What a chat sees of translation: the translator's state and calls, every model's state, and the reader's language.
+private fun chatTranslation(
+    store: TranslateModelStore,
+    translator: MessageTranslator,
+    readerLanguage: ReaderLanguage,
+    settings: SettingsStore,
+    scope: CoroutineScope,
+): ChatTranslation =
+    object : ChatTranslation {
+        override val translations = translator.state
+        override val models =
+            combine(TranslateDirection.ALL.map { d -> store.state(d).map { d to it } }) { it.toMap() }
+                .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+        @OptIn(ExperimentalCoroutinesApi::class)
+        override val reader = settings.translateTarget.mapLatest { readerLanguage.estimate(it).target }
+
+        override fun metered() = store.metered()
+
+        override fun download(direction: TranslateDirection) = store.download(direction)
+
+        override suspend fun pick(
+            body: String,
+            mentions: List<IntRange>,
+        ) = translator.pick(body, mentions)
+
+        override suspend fun resolve(
+            body: String,
+            mentions: List<IntRange>,
+            conversationId: String,
+            authorId: String?,
+            chat: TranslateLang?,
+            declared: TranslateLang?,
+        ) = translator.resolve(body, mentions, conversationId, authorId, chat, declared)
+
+        override fun translate(
+            messageId: String,
+            body: String,
+            from: TranslateLang,
+            to: TranslateLang?,
+            isRoom: Boolean,
+            mentions: List<IntRange>,
+            guessed: Boolean,
+        ) = translator.translate(messageId, body, from, to, isRoom, mentions, guessed)
+
+        override fun dismiss(messageId: String) = translator.dismiss(messageId)
+
+        override suspend fun translateDraft(
+            draft: String,
+            from: TranslateLang,
+            to: TranslateLang,
+            mentions: List<IntRange>,
+        ) = translator.translateNow(draft, from, to, mentions)
     }

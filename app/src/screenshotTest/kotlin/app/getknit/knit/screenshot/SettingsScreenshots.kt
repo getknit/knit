@@ -3,6 +3,7 @@ package app.getknit.knit.screenshot
 import androidx.compose.runtime.Composable
 import app.getknit.knit.ui.settings.BatteryOptimizationRowPreview
 import app.getknit.knit.ui.settings.ChatSettingsScreenPreview
+import app.getknit.knit.ui.settings.ChatSettingsTranslationPreview
 import app.getknit.knit.ui.settings.SettingsScreenClonePreview
 import app.getknit.knit.ui.settings.SettingsScreenNewUserPreview
 import app.getknit.knit.ui.settings.SettingsScreenPreview
@@ -17,6 +18,11 @@ import com.android.tools.screenshot.PreviewTest
 @ScreenShots
 @Composable
 fun ChatSettingsScreen() = ChatSettingsScreenPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun ChatSettingsTranslation() = ChatSettingsTranslationPreview()
 
 @PreviewTest
 @ComponentShots

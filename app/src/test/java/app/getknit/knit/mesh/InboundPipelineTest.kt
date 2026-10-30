@@ -5198,6 +5198,83 @@ class InboundPipelineTest {
             assertEquals("[[11,4,3]]", rig.msgMap["gm-styled"]?.styles)
         }
 
+    // --- Declared languages (ADR 2026-10.t2h6's 2026-10-29 amendment): a sealed message's come from its plaintext ---
+
+    @Test
+    fun aSealedDmsDeclaredLanguagesComeFromThePlaintextNeverTheShell() =
+        runTest {
+            for (v3 in listOf(true, false)) {
+                val rig = Rig(backgroundScope)
+                val alice = party()
+                rig.pin(alice)
+                val author = V2Author(alice, rig)
+
+                // Spanish, by a reader of an index this phone does not know (a newer registry's): the body's language lands,
+                // the unknown one reads as nothing. The shell's claims are ignored.
+                rig.deliver(alice, author.dm("dm-es", "hola", v3 = v3, lang = 1, reads = 200, shellLang = 2, shellReads = 3))
+                rig.deliver(alice, author.dm("dm-uk-en", "привіт", v3 = v3, lang = 2, reads = 0))
+                rig.deliver(alice, author.dm("dm-shell", "hi", v3 = v3, shellLang = 1, shellReads = 1))
+
+                assertEquals("v3=$v3", "es", rig.msgMap["dm-es"]?.bodyLang)
+                assertNull("v3=$v3: an unknown index reads as nothing", rig.msgMap["dm-es"]?.authorReads)
+                assertEquals("v3=$v3", "uk", rig.msgMap["dm-uk-en"]?.bodyLang)
+                assertEquals("v3=$v3", "en", rig.msgMap["dm-uk-en"]?.authorReads)
+                assertNull("v3=$v3: a shell's declaration never labels a sealed message", rig.msgMap["dm-shell"]?.bodyLang)
+                assertNull("v3=$v3", rig.msgMap["dm-shell"]?.authorReads)
+            }
+        }
+
+    @Test
+    fun aGroupRatchetMessagesDeclaredLanguagesLand() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            val seed = GroupKeyPayload(group.id, keys = listOf(author.seed()))
+            rig.deliver(alice, V2Author(alice, rig).dm("seed1", "", ctl = MessageContent.CTL_GROUP_KEY, gk = seed))
+
+            rig.deliver(alice, author.groupFrame(group, id = "gm-lang", body = "hallo", lang = 5, reads = 24))
+
+            assertEquals("de", rig.msgMap["gm-lang"]?.bodyLang)
+            assertEquals("cs", rig.msgMap["gm-lang"]?.authorReads)
+        }
+
+    /**
+     * A declaration's value is a CBOR uint forever: a text under it fails the plaintext's decode after the AEAD opened,
+     * which drops that one frame `DECRYPT_FAILED` before anything commits — never a `RATCHET_*` reason the reset
+     * heuristic reads, and the chain is left where it was, so the sender's next message still opens.
+     */
+    @Test
+    fun aWrongTypedDeclarationDropsOnlyItsFrameAsDecryptFailed() =
+        runTest {
+            for (v3 in listOf(true, false)) {
+                val rig = Rig(backgroundScope)
+                val alice = party()
+                rig.pin(alice)
+                val author = V2Author(alice, rig)
+                // {1: "hi", 18: "es"} and {"body": "hi", "l": "es"}
+                val hostile =
+                    if (v3) {
+                        "a2" + "01" + "626869" + "12" + "626573"
+                    } else {
+                        "a2" + "64626f6479" + "626869" + "616c" + "626573"
+                    }.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+                rig.deliver(alice, author.dm("dm-bad", "hi", v3 = v3, plaintextOverride = hostile))
+                rig.deliver(alice, author.dm("dm-next", "still here", v3 = v3, lang = 1))
+
+                assertNull("v3=$v3", rig.msgMap["dm-bad"])
+                assertEquals("v3=$v3", 1L, rig.drops(DropReason.DECRYPT_FAILED))
+                for (reason in DropReason.entries.filter { it.name.startsWith("RATCHET_") }) {
+                    assertEquals("v3=$v3: $reason", 0L, rig.drops(reason))
+                }
+                assertEquals("v3=$v3", "still here", rig.msgMap["dm-next"]?.body)
+                assertEquals("v3=$v3", "es", rig.msgMap["dm-next"]?.bodyLang)
+            }
+        }
+
     @Test
     fun aHeardMeshtasticPostCarriesNoStyles() =
         runTest {
@@ -5924,6 +6001,14 @@ class InboundPipelineTest {
             styles: List<StyleSpan> = emptyList(),
             /** Styles put on the cleartext shell beside the seal — what no honest sender does, and no receiver reads. */
             shellStyles: List<StyleSpan> = emptyList(),
+            /** The sealed body's declared language and its author's (ADR 2026-10.t2h6's 2026-10-29 amendment). */
+            lang: Int? = null,
+            reads: Int? = null,
+            /** Declarations put on the cleartext shell — what no honest sender does, and no receiver reads. */
+            shellLang: Int? = null,
+            shellReads: Int? = null,
+            /** Seals these bytes, in the layout [v3] names, in place of the content's: a hostile sender's plaintext. */
+            plaintextOverride: ByteArray? = null,
             /** Overrides the envelope's nonce field after sealing — the malformed-shape tests. */
             nonceOverride: ByteArray? = null,
             mutateHeader: (RatchetHeader) -> RatchetHeader = { it },
@@ -5943,9 +6028,11 @@ class InboundPipelineTest {
                     cl = cl,
                     sc = sc,
                     styles = styles,
+                    lang = lang,
+                    reads = reads,
                 ).sealBytes(v3)
             check(!v3 || scheme == EncEnvelope.VERSION_DM_V3) { "fixture asked for v3 but the content has no compact form" }
-            val sealed = checkNotNull(engine.seal(session, plain, aad, rig.selfSpk.pub, now = 5L, v3 = v3))
+            val sealed = checkNotNull(engine.seal(session, plaintextOverride ?: plain, aad, rig.selfSpk.pub, now = 5L, v3 = v3))
             session = sealed.session
             val h = sealed.header
             val header =
@@ -5977,6 +6064,8 @@ class InboundPipelineTest {
                                     r = header,
                                 ),
                             styles = shellStyles,
+                            lang = shellLang,
+                            reads = shellReads,
                         ),
                     ),
             )
@@ -8040,9 +8129,11 @@ class InboundPipelineTest {
             rp: ReactionPayload? = null,
             sc: ScopeConfigPayload? = null,
             styles: List<StyleSpan> = emptyList(),
+            lang: Int? = null,
+            reads: Int? = null,
         ): RelayEnvelope {
             val aad = MessageCrypto.header(id, party.nodeId, sentAt, groupId)
-            val plain = MessageContent(body = body, ctl = ctl, rp = rp, sc = sc, styles = styles).encode()
+            val plain = MessageContent(body = body, ctl = ctl, rp = rp, sc = sc, styles = styles, lang = lang, reads = reads).encode()
             val sealed = checkNotNull(engine.seal(chain, plain, aad))
             chain = sealed.chain
             return RelayEnvelope(

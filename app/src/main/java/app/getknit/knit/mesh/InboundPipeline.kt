@@ -73,6 +73,7 @@ import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
@@ -1210,6 +1211,10 @@ class InboundPipeline(
             // Only the plaintext's styles: a shell's cleartext "s" is the carrier-visible half and never formats a
             // sealed message (ADR 2026-10.p95v).
             styles = plain.styles,
+            // Nor a shell's declared languages (ADR 2026-10.t2h6's 2026-10-29 amendment): a sealed message's ride in its
+            // plaintext, or not at all.
+            lang = plain.lang,
+            reads = plain.reads,
         )
 
     /**
@@ -3269,6 +3274,10 @@ class InboundPipeline(
                 // stored, so the clamp clips them and the sender's ranges are never trusted as sent (ADR 2026-10.p95v).
                 // A heard Meshtastic post builds a content with none.
                 styles = StyleStore.encode(StyleSpans.normalize(body, content.styles)),
+                // What its author declared (ADR 2026-10.t2h6's 2026-10-29 amendment), as codes; an index this phone
+                // does not know is dropped. A label for translation and the composer's hint, never trusted beyond that.
+                bodyLang = DeclaredLangs.fromWire(content.lang, content.reads).lang,
+                authorReads = DeclaredLangs.fromWire(content.lang, content.reads).reads,
             ).withReply(admitReply(content.replyTo))
         val stored = persistQuoted(built.withVideo(video), isNew, me, conversationId, persist)
         screenPoster(stored, fresh = isNew, own = env.senderId == me)

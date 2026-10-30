@@ -818,6 +818,32 @@ carries `signed` verbatim. No version bump; `vectors/wire-v1.json` gained `messa
 `messageContentV2Styles` and `chatContentStyles`, and nothing moved. *Metadata cost:* in the room the styles are as
 public as the post; sealed, the seal does not pad, so a styled message is a few bytes longer than the same words plain.
 
+**Precedent — declared languages (`ChatContent.lang` / `reads` and `MessageContent.lang` / `reads` under `"l"` /
+`"r"`, `MessageContentV2` labels 18 / 19, ADR 2026-10.t2h6's 2026-10-29 amendment).** A sender says what language a
+message is in and what language they read: each a CBOR uint indexing `LanguageRegistry`, an append-only list of every
+language in Mozilla's translation registry with the likeliest first, so the common ones cost one byte. Rule 1: both are
+nullable and absent unless set, and the absence rules make the common case free — `"l"` absent means English or
+unknown, `"r"` absent means the same as `"l"` (English when `"l"` is absent) or unknown — so a message in English by an
+English reader is the bytes it was in every layout. The sender normalises (`DeclaredLangs.of`, and `sealedContent`
+again off the row), and that is pinned by hand-written hex in `MessageContentTest` and by no vector moving. **The value's
+type is frozen as a uint, forever, and the table is wire law:** an index never moves or changes its language (a retired
+one is burned, rule 3); `vectors/wire-v1.json` carries the whole list as `languageRegistry` and `GoldenVectorTest`
+fails unless it is a prefix of `LanguageRegistry.CODES`. A value of another type, or one past an `Int`, fails the typed
+decode, as a wrong-typed `"s"` does: a sealed message is dropped `DECRYPT_FAILED` before anything commits (never a
+`RATCHET_*` reason) and a room post is not carried by new builds — only a buggy sender's own message is lost. An index
+this phone does not know, or a negative integer (an int, not a uint: a port must accept and ignore it rather than fail
+the content), decodes and reads as nothing (`DeclaredLangs.fromWire`). In the room and a commons post they
+ride the cleartext `ChatContent`; in a DM or group they ride sealed only, mapped by `sealedContent` and read by
+`InboundPipeline.plaintextContent` off the plaintext — a sealed frame's shell never supplies them. A receiver treats
+them as the sender's claim: a label for translation and the composer's hint, never a moderation, trust, routing or
+crypto input. Older builds and the iOS port skip the keys and labels, so there is no capability bit, no `EncEnvelope.v`
+or `MessageContent.v` bump, and no paired change. `vectors/wire-v1.json` gained `messageContentLang`,
+`messageContentV2Lang`, `chatContentLang` and `languageRegistry`, and nothing moved. *Metadata cost:* 2 B for one field
+under a v3 label, 3 B under a named key, 4–6 B for both (each value one byte below index 24, two from there);
+`MeshManager.inlineAcksFor` counts them against the LoRa budget at the named size. In the room `reads` is as public as
+the body, and it partly gives away a translated draft (an English post by a Spanish reader); sealed, only the members
+see it, but the seal does not pad, so a declaring message is a few bytes longer than the same words undeclared.
+
 **Precedent — the reserved ctl spent (`CTL_SCOPE_CONFIG = 7`, `MessageContent.sc`, docs/SPOOL_PROTOCOL.md §5,
 ADR 2026-10.8kfx).** The value the `CTL_PROFILE` precedent above held back is now on the wire: `sc:
 ScopeConfigPayload?` beside `ctl = 7`, naming a conversation's relays and bounds, sealed in the DM form or the group
