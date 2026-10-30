@@ -389,4 +389,16 @@ class MessageTranslatorTest {
             assertTrue(engine.asked.isEmpty())
             assertTrue(saved.isEmpty())
         }
+
+    @Test
+    fun theLanguageAMessageWasTypedInIsCld2sHintAndAnswersWhatTheWordsCannot() =
+        runTest {
+            val engine = FakeEngine(detection = unread) { _, _ -> "x" }
+            val t = translator(engine, authors = authorWrites(TranslateLang("es")))
+            // Greek typed, no Greek model: the hint is still Greek, and the answer is Greek with nothing to offer.
+            val resolved = t.resolve("οκ", emptyList(), "g1", "eleni", null, declared = "el")
+            assertEquals(LanguagePick.Other("el"), resolved.pick)
+            assertEquals(LanguageSource.DECLARED, resolved.source)
+            assertEquals(listOf<TranslateLang?>(TranslateLang("el")), engine.hints)
+        }
 }

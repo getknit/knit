@@ -1,6 +1,7 @@
 package app.getknit.knit.translate
 
 import app.getknit.knit.call.SttFile
+import app.getknit.knit.mesh.protocol.LanguageRegistry
 
 /**
  * A language as its code in Mozilla's model registry (ADR 2026-10.t2h6): `en`, `es`, and in time `zh_hant`. Every model
@@ -18,25 +19,11 @@ value class TranslateLang(
 
         /**
          * The table's language for [code] — a registry code, a BCP-47 tag (`EN-gb`, `es-419`) or CLD2's answer — or
-         * null when no model translates from or into it. Case and region are dropped; a script subtag is kept, since a
-         * script is its own model (`zh-Hant` is `zh_hant`).
+         * null when no model translates from or into it. Spelled as [LanguageRegistry.codeOf] reads it: case and region
+         * dropped, a script kept where it is its own model (`zh-Hant` is `zh_hant`).
          */
-        fun ofCode(code: String): TranslateLang? {
-            val parts =
-                code
-                    .trim()
-                    .lowercase()
-                    .replace('_', '-')
-                    .split('-')
-            val primary = ALIASES[parts[0]] ?: parts[0]
-            val script = parts.drop(1).firstOrNull { it.length == SCRIPT_LENGTH }
-            val candidates = listOfNotNull(script?.let { "${primary}_$it" }, primary)
-            return candidates.firstNotNullOfOrNull { c -> TranslateDirection.languages.firstOrNull { it.code == c } }
-        }
-
-        // A code CLD2 or a locale spells otherwise than the registry; empty until a model needs one (`iw` for `he`).
-        private val ALIASES = emptyMap<String, String>()
-        private const val SCRIPT_LENGTH = 4
+        fun ofCode(code: String): TranslateLang? =
+            LanguageRegistry.codeOf(code)?.let { c -> TranslateDirection.languages.firstOrNull { it.code == c } }
     }
 }
 

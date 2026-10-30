@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.text.format.DateUtils
 import android.text.format.Formatter
+import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -248,6 +249,7 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleKey
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.StyleSpans
+import app.getknit.knit.translate.InputLanguageTally
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.camera.PhotoCapture
@@ -406,6 +408,19 @@ fun ChatScreen(
                 draftTranslatedFrom = null
                 draftTranslatedTo = null
                 draftOriginal = null
+            }
+        }
+    }
+    // The keyboard language each edit was typed with (ADR 2026-10.t2h6's 2026-10-29 amendment): what a sent message
+    // declares it was written in, unless it was mostly pasted or shared in. Draft-local, cleared with the field.
+    val inputLanguages = remember { InputLanguageTally() }
+    val inputMethods = LocalContext.current.getSystemService(InputMethodManager::class.java)
+    if (TRANSLATE_WIRED) {
+        LaunchedEffect(inputState) {
+            var last = inputState.text.length
+            snapshotFlow { inputState.text.length }.collect { length ->
+                if (length == 0) inputLanguages.clear() else inputLanguages.onEdit(length - last, keyboardLanguage(inputMethods))
+                last = length
             }
         }
     }
@@ -632,7 +647,14 @@ fun ChatScreen(
             val applied = mentionsStillIn(text, pendingMentions)
             // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
             // emits clearInput only once a message is actually accepted (see the collector above).
-            viewModel.send(text, applied, replyingTo, styles = inputState.bodySpans(), translatedInto = draftTranslatedTo)
+            viewModel.send(
+                text,
+                applied,
+                replyingTo,
+                styles = inputState.bodySpans(),
+                translatedInto = draftTranslatedTo,
+                typedIn = if (TRANSLATE_WIRED) inputLanguages.language(text.trim().length) else null,
+            )
         },
         showPublicConsent = showPublicConsent,
         onAcceptPublicConsent = viewModel::acceptPublicConsent,
@@ -6380,3 +6402,8 @@ fun ChatScreenReplyDraftPreview() =
             onSaveAttachment = { _, _, _ -> },
         )
     }
+
+// The current keyboard's language as a BCP-47 tag, or null when it names none (a hardware keyboard, an input method
+// with no language): no permission, read as the person types.
+private fun keyboardLanguage(inputMethods: InputMethodManager?): String? =
+    inputMethods?.currentInputMethodSubtype?.languageTag?.takeIf { it.isNotBlank() }

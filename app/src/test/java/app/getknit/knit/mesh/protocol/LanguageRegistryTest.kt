@@ -81,4 +81,16 @@ class LanguageRegistryTest {
         assertEquals(1, read.lang)
         assertEquals(0, read.reads)
     }
+
+    @Test
+    fun aDetectorsOrALocalesCodeReadsAsTheRegistrySpellsIt() {
+        assertEquals("es", LanguageRegistry.codeOf("ES-mx"))
+        assertEquals("es", LanguageRegistry.codeOf("es-Latn-419"))
+        assertEquals("zh_hant", LanguageRegistry.codeOf("zh-Hant"))
+        assertEquals("zh", LanguageRegistry.codeOf("zh-Hans-CN"))
+        assertEquals("he", LanguageRegistry.codeOf("iw"))
+        assertEquals("id", LanguageRegistry.codeOf("in"))
+        assertNull(LanguageRegistry.codeOf("un"))
+        assertNull(LanguageRegistry.codeOf(""))
+    }
 }

@@ -1,5 +1,7 @@
 package app.getknit.knit.translate
 
+import app.getknit.knit.mesh.protocol.LanguageRegistry
+
 /**
  * What CLD2 said about a text (ADR 2026-10.t2h6): its top three languages with the percent of the text each took,
  * its reliable bit and the bytes it scored. CLD2 answers `un` (unknown) for a line too short to call.
@@ -37,6 +39,14 @@ sealed interface LanguagePick {
 
     /** CLD2 could not tell, or named a language no model translates: the reader is asked. */
     data object Unsure : LanguagePick
+
+    /**
+     * Known to be [code], a registry language no model on this phone translates from (ADR 2026-10.t2h6's 2026-10-29
+     * amendment): there is nothing to offer, so Translate is not.
+     */
+    data class Other(
+        val code: String,
+    ) : LanguagePick
 }
 
 /**
@@ -64,6 +74,23 @@ object LanguagePolicy {
         if (percent < MIN_PERCENT) return LanguagePick.Unsure
         if (lang == TranslateLang.EN && NOT_ENGLISH_MARKS.containsMatchIn(text)) return LanguagePick.Unsure
         return LanguagePick.Picked(lang)
+    }
+
+    /**
+     * The language [text]'s words surely name, as a registry code: [pick]'s confident read, but of any language the
+     * registry names rather than only those a model translates, so the resolver can tell a French message on a phone
+     * with no French model from one it cannot read at all (ADR 2026-10.t2h6's 2026-10-29 amendment). Null when unsure.
+     */
+    fun named(
+        detection: Detection?,
+        text: String,
+    ): String? {
+        if (detection == null || !detection.reliable) return null
+        val (code, percent) = detection.top.firstOrNull() ?: return null
+        val lang = LanguageRegistry.codeOf(code) ?: return null
+        if (percent < MIN_PERCENT) return null
+        if (lang == TranslateLang.EN.code && NOT_ENGLISH_MARKS.containsMatchIn(text)) return null
+        return lang
     }
 
     /** CLD2's named languages the table knows, in its order, for a picker to put first; `un` and the rest dropped. */

@@ -114,7 +114,6 @@ import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.ComposePolicy
 import app.getknit.knit.translate.LanguageChoices
 import app.getknit.knit.translate.LanguagePick
-import app.getknit.knit.translate.LanguageSource
 import app.getknit.knit.translate.MessageTranslation
 import app.getknit.knit.translate.Resolution
 import app.getknit.knit.translate.StoredTranslation
@@ -918,6 +917,9 @@ class ChatViewModel(
                 LanguagePick.Unsure -> {
                     _translateAsk.value = TranslateAsk(row, choices(resolution, row, exclude = null))
                 }
+
+                // A language no model here translates from: the menu offers nothing, and a stale tap does nothing.
+                is LanguagePick.Other -> {}
             }
         }
     }
@@ -931,13 +933,8 @@ class ChatViewModel(
         val t = translation ?: return false
         if (row.body.isBlank() || !translationOn.value) return false
         val reader = readerLanguage.value
-        row.translation?.let { kept -> return TranslateTarget.of(kept.from, reader).let { it != null && it != kept.to } }
-        val resolution = resolve(t, row)
-        val lang = (resolution.pick as? LanguagePick.Picked)?.lang ?: return true
-        return when (resolution.source) {
-            LanguageSource.TEXT, LanguageSource.DECLARED -> TranslateTarget.of(lang, reader) != null
-            else -> true
-        }
+        row.translation?.let { kept -> return TranslateTarget.offersAgain(kept, reader) }
+        return TranslateTarget.offers(resolve(t, row), reader)
     }
 
     /** "Not English?": [row] is not in [wrong]. One language left translates at once; more ask which. */
@@ -964,7 +961,7 @@ class ChatViewModel(
                 conversationId,
                 row.senderNodeId,
                 threadLanguage.value,
-                row.bodyLang?.let(TranslateLang::ofCode),
+                row.bodyLang,
             ).also { resolutions[row.id] = it }
 
     // Every language a model translates from, the likeliest for [row] first.
@@ -2559,7 +2556,8 @@ class ChatViewModel(
 
     /**
      * Sends the draft. [translatedInto] is the language the composer translated it into, while the field holds that
-     * translation: the language the message then declares (ADR 2026-10.t2h6's 2026-10-29 amendment).
+     * translation, and [typedIn] the keyboard language it was typed in ([InputLanguageTally]): the first, else the
+     * second, is the language the message declares (ADR 2026-10.t2h6's 2026-10-29 amendment).
      */
     fun send(
         text: String,
@@ -2567,6 +2565,7 @@ class ChatViewModel(
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
         translatedInto: TranslateLang? = null,
+        typedIn: String? = null,
     ) {
         val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
@@ -2604,7 +2603,7 @@ class ChatViewModel(
                     _events.tryEmit(R.string.chat_gone)
                     return@launch
                 }
-                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans, declaredFor(trimmed, translatedInto))
+                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans, declaredFor(translatedInto, typedIn))
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
                 if (sent) {
@@ -2677,19 +2676,18 @@ class ChatViewModel(
     }
 
     /**
-     * What a message of [text] declares (ADR 2026-10.t2h6's 2026-10-29 amendment): its language — the one the composer
-     * translated it into, else what its words say when the identifier is sure, never a prior's guess — and the
-     * language this reader reads, each only when not implied. Nothing where translation is not wired (the identifier
-     * is in its library) or is off in Settings, read at the send so a switch just flipped is obeyed.
+     * What a message declares (ADR 2026-10.t2h6's 2026-10-29 amendment): the language the composer translated it into,
+     * else the one it was typed in ([TranslateTarget.declaration]; the receiver reads the words itself), and the language
+     * this reader says they read, each only when not implied. Nothing where translation is not wired or is off in
+     * Settings, read at the send so a switch just flipped is obeyed.
      */
     private suspend fun declaredFor(
-        text: String,
         translatedInto: TranslateLang?,
+        typedIn: String?,
     ): DeclaredLangs {
         val t = translation ?: return DeclaredLangs.NONE
         if (!settings.translationEnabled.first()) return DeclaredLangs.NONE
-        val words = if (translatedInto == null) t.pick(text, emptyList()) else LanguagePick.Unsure
-        val (lang, reads) = TranslateTarget.declaration(translatedInto, words, readerLanguage.value)
+        val (lang, reads) = TranslateTarget.declaration(translatedInto, typedIn, t.declaredReads())
         return DeclaredLangs.of(lang, reads)
     }
 

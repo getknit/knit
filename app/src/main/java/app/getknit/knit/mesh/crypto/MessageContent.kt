@@ -110,7 +110,7 @@ data class MessageContent(
     @ByteString
     @Serializable(with = StyleRunsSerializer::class)
     val styles: List<StyleSpan> = emptyList(),
-    // The body's language and the language its author reads (additive; ADR 2026-10.t2h6's 2026-10-29 amendment), each
+    // The language the body was typed in and the one its author reads (additive; ADR 2026-10.t2h6's 2026-10-29 amendment), each
     // a [app.getknit.knit.mesh.protocol.LanguageRegistry] index under "l" / "r", labels 18 / 19 in the compact layout.
     // Absent for English or unknown ("l") and for "the same as l" ("r"), so an English message by an English reader
     // seals to the bytes it did before they existed. Conversational: mapped by [sealedContent] (through

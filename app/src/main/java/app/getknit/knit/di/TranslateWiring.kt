@@ -1,6 +1,9 @@
 package app.getknit.knit.di
 
+import android.app.LocaleManager
+import android.content.Context
 import android.content.res.Resources
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
@@ -27,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -82,6 +86,8 @@ private fun translateGraph(): Module =
                         .let { l -> (0 until l.size()).map { l[it].toLanguageTag() } }
                 },
                 clock = SystemClock::elapsedRealtime,
+                // Settings › Apps › Knit › Language (Android 13+): a choice, so evidence of what this person reads.
+                perApp = { appLanguages(androidContext()) },
             )
         }
         single {
@@ -137,13 +143,15 @@ private fun chatTranslation(
             mentions: List<IntRange>,
         ) = translator.pick(body, mentions)
 
+        override suspend fun declaredReads() = readerLanguage.declaredReads(settings.translateTarget.first())
+
         override suspend fun resolve(
             body: String,
             mentions: List<IntRange>,
             conversationId: String,
             authorId: String?,
             chat: TranslateLang?,
-            declared: TranslateLang?,
+            declared: String?,
         ) = translator.resolve(body, mentions, conversationId, authorId, chat, declared)
 
         override fun translate(
@@ -165,3 +173,10 @@ private fun chatTranslation(
             mentions: List<IntRange>,
         ) = translator.translateNow(draft, from, to, mentions)
     }
+
+// The languages this person chose for Knit in Settings › Apps (Android 13+), empty when none was chosen.
+private fun appLanguages(context: Context): List<String> {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return emptyList()
+    val locales = context.getSystemService(LocaleManager::class.java)?.applicationLocales ?: return emptyList()
+    return (0 until locales.size()).map { locales[it].toLanguageTag() }
+}

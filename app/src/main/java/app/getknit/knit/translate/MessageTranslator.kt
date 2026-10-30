@@ -137,8 +137,9 @@ class MessageTranslator(
     }
 
     /**
-     * Which language [body] is in, by its words and, when they cannot tell, by what its author declared on the frame
-     * ([declared]), then what its author ([authorId]) writes in [conversationId], then the chat's own language ([chat])
+     * Which language [body] is in, by its words and, when they cannot tell, by the language its sender typed it in,
+     * declared on the frame ([declared], a registry code), then what its author ([authorId]) writes in
+     * [conversationId], then the chat's own language ([chat])
      * (ADR 2026-10.t2h6's short-line amendment). The likeliest prior is also handed to CLD2 as a hint, which tips a close
      * call between neighbours without overruling plain text.
      */
@@ -148,13 +149,14 @@ class MessageTranslator(
         conversationId: String?,
         authorId: String?,
         chat: TranslateLang?,
-        declared: TranslateLang? = null,
+        declared: String? = null,
     ): Resolution {
         val words = VerbatimSpans.wordsOnly(body, mentions)
         // Nothing but links, positions and mentions: nothing to translate, whatever its author writes.
         if (words.isBlank()) return Resolution(LanguagePick.Unsure, null)
         val author = if (conversationId != null && authorId != null) authors?.of(conversationId, authorId) else null
-        val detection = engine.detect(words, declared ?: author ?: chat)
+        // CLD2 takes any language's name as its hint, a model or not: the typed-in language tips a neighbour's misread.
+        val detection = engine.detect(words, declared?.let(::TranslateLang) ?: author ?: chat)
         return LanguageResolver.resolve(detection, words, TranslateDirection.sources, author, chat, declared)
     }
 

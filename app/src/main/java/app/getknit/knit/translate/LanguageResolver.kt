@@ -5,7 +5,7 @@ enum class LanguageSource {
     /** CLD2 read it from the words, confidently. */
     TEXT,
 
-    /** The words could not tell; the language its author declared on the frame did. */
+    /** The words could not tell; the language its sender typed it in, declared on the frame, did. */
     DECLARED,
 
     /** The words could not tell and nothing was declared; the language this author writes in this chat did. */
@@ -29,12 +29,17 @@ data class Resolution(
 }
 
 /**
- * A message's language from more than its words (ADR 2026-10.t2h6's short-line amendment). A short line is where an
- * identifier guesses, and every language added gives it more neighbours to confuse, so the words are read first and,
- * when they cannot tell, the language its author declared on the frame, then the author's own usual language in this
- * chat, then the chat's, settles it; only then is the reader asked. A declaration is the sender's claim, so plain words
- * overrule it. Only a language a model translates from ([candidates]) is an answer: a confident read of a language
- * outside them (Spanish read as Galician) is no read at all, and falls to the priors like an unsure one.
+ * A message's language from more than its words (ADR 2026-10.t2h6's short-line amendment and its 2026-10-29
+ * amendment). A short line is where an identifier guesses, and every language added gives it more neighbours to
+ * confuse, so the words are read first, with the likeliest prior already handed to CLD2 as a hint, which turns a
+ * neighbour's misread back into the language the prior names. Then:
+ *
+ * 1. Words sure of a language a model translates from ([candidates]): that language.
+ * 2. Words sure of another registry language, even with the hint behind them: that language, with no model to offer
+ *    ([LanguagePick.Other]), never a prior's guess in its place.
+ * 3. Words unsure: the language its sender typed it in, declared on the frame ([declared], a registry code, which may
+ *    name a language with no model here), then the author's usual language in this chat, then the chat's.
+ * 4. Only then is the reader asked.
  */
 object LanguageResolver {
     fun resolve(
@@ -43,12 +48,20 @@ object LanguageResolver {
         candidates: Set<TranslateLang>,
         author: TranslateLang?,
         chat: TranslateLang?,
-        declared: TranslateLang? = null,
+        declared: String? = null,
     ): Resolution {
         val ranked = LanguagePolicy.ranked(detection).filter { it in candidates }
         val read = LanguagePolicy.pick(detection, text)
         if (read is LanguagePick.Picked && read.lang in candidates) return Resolution(read, LanguageSource.TEXT, ranked)
-        val priors = listOf(LanguageSource.DECLARED to declared, LanguageSource.AUTHOR to author, LanguageSource.CHAT to chat)
+        LanguagePolicy.named(detection, text)?.let { named ->
+            val lang = TranslateLang.ofCode(named)?.takeIf { it in candidates }
+            return Resolution(lang?.let(LanguagePick::Picked) ?: LanguagePick.Other(named), LanguageSource.TEXT, ranked)
+        }
+        declared?.let { code ->
+            val lang = TranslateLang.ofCode(code)?.takeIf { it in candidates }
+            return Resolution(lang?.let(LanguagePick::Picked) ?: LanguagePick.Other(code), LanguageSource.DECLARED, ranked)
+        }
+        val priors = listOf(LanguageSource.AUTHOR to author, LanguageSource.CHAT to chat)
         for ((source, lang) in priors) {
             if (lang != null && lang in candidates) return Resolution(LanguagePick.Picked(lang), source, ranked)
         }

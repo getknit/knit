@@ -38,13 +38,37 @@ object TranslateTarget {
 
     /**
      * What a message declares (ADR 2026-10.t2h6's 2026-10-29 amendment), as codes before [DeclaredLangs.of] drops what is
-     * implied: its language is the one the composer translated it into ([translatedInto]), else what its words read as
-     * ([words], the identifier with no prior, so a guess is never declared); and the language its author reads is
-     * [reader].
+     * implied: its language is the one the composer translated it into ([translatedInto]), else the one it was typed in
+     * ([typedIn], the keyboard's, null for a pasted or shared message or a keyboard that does not say) — never the
+     * words' own read, which the receiver makes itself; and the language its author reads is [reads].
      */
     fun declaration(
         translatedInto: TranslateLang?,
-        words: LanguagePick,
+        typedIn: String?,
+        reads: String?,
+    ): Pair<String?, String?> = (translatedInto?.code ?: typedIn) to reads
+
+    /**
+     * Whether a message whose language resolved to [resolution] offers Translate to a reader of [reader] (the
+     * 2026-10-29 amendment): not when its words, or the language it was typed in, name a language with nowhere to go
+     * or no model here; a language only a prior settled, or none, keeps the offer, since the reader may know better.
+     */
+    fun offers(
+        resolution: Resolution,
         reader: TranslateLang?,
-    ): Pair<String?, String?> = (translatedInto ?: (words as? LanguagePick.Picked)?.lang)?.code to reader?.code
+    ): Boolean {
+        // A language no model here translates from: nothing to offer, however it was known.
+        if (resolution.pick is LanguagePick.Other) return false
+        val lang = (resolution.pick as? LanguagePick.Picked)?.lang ?: return true
+        return when (resolution.source) {
+            LanguageSource.TEXT, LanguageSource.DECLARED -> of(lang, reader) != null
+            else -> true
+        }
+    }
+
+    /** Whether a message already translated ([kept]) offers Translate again: only into a target it is not in yet. */
+    fun offersAgain(
+        kept: StoredTranslation,
+        reader: TranslateLang?,
+    ): Boolean = of(kept.from, reader).let { it != null && it != kept.to }
 }

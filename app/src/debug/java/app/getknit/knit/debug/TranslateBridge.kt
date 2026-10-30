@@ -6,15 +6,21 @@ import android.os.Debug
 import android.os.LocaleList
 import android.os.SystemClock
 import app.getknit.knit.call.SttModelState
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageDao
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.protocol.DeclaredLangs
+import app.getknit.knit.mesh.protocol.LanguageRegistry
 import app.getknit.knit.translate.ComposePolicy
 import app.getknit.knit.translate.LanguagePick
 import app.getknit.knit.translate.LanguagePolicy
 import app.getknit.knit.translate.MessageTranslation
 import app.getknit.knit.translate.MessageTranslator
 import app.getknit.knit.translate.ReaderLanguage
+import app.getknit.knit.translate.Resolution
+import app.getknit.knit.translate.StoredTranslation
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.TranslateTarget
@@ -47,6 +53,12 @@ import kotlin.math.ceil
  * - `translate --es text <text> [--es from es] [--es to en]`: the chat's own path (spans, the check, the screen), into
  *   [to] or else the reader's language by the product rule ([TranslateTarget]); poll `status`.
  * - `target --es from es`: where a message in that language goes for this reader, by [TranslateTarget].
+ * - `switch [--ez on false]`: Settings › Chats › Translation; with no `on`, reports it.
+ * - `into --es lang es|auto`: Settings › Chats › "Translate messages into"; `auto` is Automatic.
+ * - `offers --es id <messageId>`: whether that row's menu offers Translate (the chat's own rule, [TranslateTarget.offers]),
+ *   with the language it resolved to and what settled it.
+ * - `translate --es id <messageId> [--es from es] [--es to en]`: translates a real row as its bubble would, so the
+ *   result is kept on the row (`setTranslation`); poll `status`, or read the row with `STATE`.
  * - `bench --es file <corpus> --es from en --es to es [--ei runs 1]`: in the background, a cold load timed, then every line of the
  *   corpus through the model whole, `runs` times (each later run numbered, past slimt's cache); writes one JSON line
  *   per message to the app's external files (`translate-bench/<from>-<to>.jsonl`, the translation included) and puts
@@ -107,7 +119,37 @@ internal object TranslateBridge : KoinComponent {
                     .put("pick", pickJson(LanguagePolicy.pick(detection, words)))
             }
 
+            "switch" -> {
+                val settings = get<SettingsStore>()
+                if (intent.hasExtra("on")) settings.setTranslationEnabled(intent.getBooleanExtra("on", true))
+                return reply("ok", "translation switch").put("on", settings.translationEnabled.first())
+            }
+
+            "into" -> {
+                val lang = intent.getStringExtra("lang") ?: return reply("error", "lang is a model's code or auto")
+                val code = if (lang == "auto") null else TranslateLang.ofCode(lang)?.code ?: return reply("error", "no model for $lang")
+                get<SettingsStore>().setTranslateTarget(code)
+                return reader(context)
+            }
+
+            "offers" -> {
+                val row = messageRow(intent) ?: return reply("error", "missing or unknown 'id' extra")
+                val reader = readerTarget()
+                val resolution = resolveRow(translator, row)
+                val kept = row.keptTranslation()
+                val offered =
+                    get<SettingsStore>().translationEnabled.first() &&
+                        (kept?.let { TranslateTarget.offersAgain(it, reader) } ?: TranslateTarget.offers(resolution, reader))
+                return reply("ok", "offer")
+                    .put("offered", offered)
+                    .put("lang", pickJson(resolution.pick))
+                    .put("source", resolution.source?.name ?: JSONObject.NULL)
+                    .put("reader", reader?.code ?: JSONObject.NULL)
+                    .put("kept", kept?.to?.code ?: JSONObject.NULL)
+            }
+
             "translate" -> {
+                intent.getStringExtra("id")?.let { return translateRow(translator, intent) }
                 val text = intent.getStringExtra("text") ?: return reply("error", "missing 'text' extra")
                 val from =
                     intent.getStringExtra("from")?.let(TranslateLang::ofCode)
@@ -197,6 +239,7 @@ internal object TranslateBridge : KoinComponent {
         when (pick) {
             is LanguagePick.Picked -> pick.lang.code
             LanguagePick.Unsure -> "unsure"
+            is LanguagePick.Other -> "${pick.code} (no model)"
         }
 
     private fun askedJson(translator: MessageTranslator): JSONObject =
@@ -332,6 +375,67 @@ internal object TranslateBridge : KoinComponent {
             .put("max", sorted.last())
     }
 
+    private suspend fun messageRow(intent: Intent): MessageEntity? = intent.getStringExtra("id")?.let { get<MessageDao>().findById(it) }
+
+    // The row's language as its chat resolves it: the words, its author's declaration, then the author's own language.
+    private suspend fun resolveRow(
+        translator: MessageTranslator,
+        row: MessageEntity,
+    ): Resolution = translator.resolve(row.body, emptyList(), row.conversationId, row.senderId, null, row.bodyLang)
+
+    private fun MessageEntity.keptTranslation(): StoredTranslation? {
+        val text = translation ?: return null
+        return StoredTranslation(
+            text,
+            TranslateLang(translationFrom ?: return null),
+            TranslateLang(translationTo ?: return null),
+            translationFlagged,
+            translationGuessed,
+        )
+    }
+
+    // A real row through the chat's path, kept on the row when it finishes.
+    private suspend fun translateRow(
+        translator: MessageTranslator,
+        intent: Intent,
+    ): JSONObject {
+        val row = messageRow(intent) ?: return reply("error", "unknown 'id'")
+        val resolution = resolveRow(translator, row)
+        val from =
+            intent.getStringExtra("from")?.let(TranslateLang::ofCode)
+                ?: (resolution.pick as? LanguagePick.Picked)?.lang
+                ?: return reply("unsure", "the row's language can't be told; pass --es from <code>")
+        val to = intent.getStringExtra("to")?.let(TranslateLang::ofCode) ?: TranslateTarget.of(from, readerTarget())
+        val guessed = intent.getStringExtra("from") == null && resolution.guessed
+        val isRoom = Conversations.isPublicRoom(row.conversationId)
+        if (!translator.translate(row.id, row.body, from, to, isRoom, emptyList(), guessed)) {
+            return reply("refused", "running, no target from $from, or the model isn't installed").put("id", row.id)
+        }
+        return reply("ok", "translating ${row.id} from $from into $to; read the row with STATE").put("id", row.id)
+    }
+
+    /**
+     * What `SEND --es declare auto [--es into <code>] [--es typed <tag>]` declares: the chat composer's rule
+     * ([TranslateTarget.declaration]) with [typed] standing in for the keyboard's language and this reader's
+     * [ReaderLanguage.declaredReads]; nothing while the Translation switch is off; null where translation is not wired.
+     */
+    suspend fun declaredFor(
+        into: String?,
+        typed: String?,
+    ): DeclaredLangs? {
+        if (getKoin().getOrNull<TranslateModelStore>() == null) return null
+        val settings = get<SettingsStore>()
+        if (!settings.translationEnabled.first()) return DeclaredLangs.NONE
+        val reads = get<ReaderLanguage>().declaredReads(settings.translateTarget.first())
+        val (lang, declaredReads) =
+            TranslateTarget.declaration(
+                into?.let(TranslateLang::ofCode),
+                typed?.let(LanguageRegistry::codeOf),
+                reads,
+            )
+        return DeclaredLangs.of(lang, declaredReads)
+    }
+
     // The reader's language as a chat reads it: the Settings choice, else the rule (ADR 2026-10.t2h6).
     private suspend fun readerTarget(): TranslateLang? = get<ReaderLanguage>().estimate(get<SettingsStore>().translateTarget.first()).target
 
@@ -351,6 +455,7 @@ internal object TranslateBridge : KoinComponent {
                 context.resources.configuration.locales[0]
                     .toLanguageTag(),
             ).put("automatic", estimate.automatic?.code ?: JSONObject.NULL)
+            .put("declaredReads", get<ReaderLanguage>().declaredReads(override) ?: JSONObject.NULL)
             .put("target", estimate.target?.code ?: JSONObject.NULL)
     }
 
@@ -381,8 +486,7 @@ internal object TranslateBridge : KoinComponent {
         val bySource = mutableMapOf<String, Int>()
         for (m in rows) {
             val words = translator.pick(m.body)
-            val declared = m.bodyLang?.let(TranslateLang::ofCode)
-            val resolved = translator.resolve(m.body, emptyList(), m.conversationId, m.senderId, chats[m.conversationId], declared)
+            val resolved = translator.resolve(m.body, emptyList(), m.conversationId, m.senderId, chats[m.conversationId], m.bodyLang)
             val short = VerbatimSpans.wordsOnly(m.body).length <= AUDIT_SHORT
             if (words == LanguagePick.Unsure) wordsUnsure++
             if (short) {

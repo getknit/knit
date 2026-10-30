@@ -1,5 +1,7 @@
 package app.getknit.knit.translate
 
+import app.getknit.knit.mesh.protocol.LanguageRegistry
+
 /**
  * The language a reader wants a translation in (ADR 2026-10.t2h6 and its 2026-10-29 amendment). The app's language says
  * nothing reliable: a direct install shows English, Google Play translates the strings into the phone's language by
@@ -48,4 +50,19 @@ object ReaderLanguages {
         val chosen = override?.let(TranslateLang::ofCode)?.takeIf { it in targets }
         return Estimate(written, unsure, preferred, chosen, most ?: fromSystem)
     }
+
+    /**
+     * The language this reader says they read, on what they send (ADR 2026-10.t2h6's 2026-10-29 amendment), a registry
+     * code: [override], their choice in Settings, else the first of [perApp], the language they chose for this app,
+     * else the first of [system], the phone's own. A choice is the evidence: never the language the app fell back to
+     * showing, and never only one a model on this phone translates into.
+     */
+    fun declaredReads(
+        override: String?,
+        perApp: List<String>,
+        system: List<String>,
+    ): String? =
+        override?.let(LanguageRegistry::codeOf)
+            ?: perApp.firstOrNull()?.let(LanguageRegistry::codeOf)
+            ?: system.firstOrNull()?.let(LanguageRegistry::codeOf)
 }

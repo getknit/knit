@@ -2,7 +2,9 @@ package app.getknit.knit.translate
 
 import app.getknit.knit.mesh.protocol.LanguageRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -54,13 +56,47 @@ class TranslateTargetTest {
     }
 
     @Test
-    fun aMessageDeclaresTheLanguageItWasTranslatedIntoElseWhatItsWordsReadNeverAGuess() {
-        val read = LanguagePick.Picked(es)
-        // The composer's translation wins over the words.
-        assertEquals("fr" to "es", TranslateTarget.declaration(TranslateLang("fr"), read, es))
-        assertEquals("es" to "es", TranslateTarget.declaration(null, read, es))
-        // Words the identifier could not tell declare no language; the reader's own is still said.
-        assertEquals(null to "es", TranslateTarget.declaration(null, LanguagePick.Unsure, es))
-        assertEquals(null to null, TranslateTarget.declaration(null, LanguagePick.Unsure, null))
+    fun aMessageDeclaresTheLanguageItWasTranslatedIntoElseTheOneItWasTypedIn() {
+        // The composer's translation wins over the keyboard: Greek typed, then translated into Spanish, is Spanish.
+        assertEquals("es" to "el", TranslateTarget.declaration(es, "el", "el"))
+        // The keyboard's, any registry language: Greek declares before a Greek model ships.
+        assertEquals("el" to "en", TranslateTarget.declaration(null, "el", "en"))
+        // Pasted or shared in, or a keyboard that says nothing: no language; the reader's own is still said.
+        assertEquals(null to "es", TranslateTarget.declaration(null, null, "es"))
+        assertEquals(null to null, TranslateTarget.declaration(null, null, null))
+    }
+
+    @Test
+    fun translateIsOfferedUnlessTheWordsOrADeclarationSayItIsAlreadyTheReaders() {
+        fun resolved(
+            lang: TranslateLang?,
+            source: LanguageSource?,
+        ) = Resolution(lang?.let(LanguagePick::Picked) ?: LanguagePick.Unsure, source)
+        // English words for an English reader: nothing to offer. Spanish words: offered.
+        assertFalse(TranslateTarget.offers(resolved(TranslateLang.EN, LanguageSource.TEXT), TranslateLang.EN))
+        assertTrue(TranslateTarget.offers(resolved(es, LanguageSource.TEXT), TranslateLang.EN))
+        // A declaration counts like the words; a prior's guess never hides it, nor does a language nobody can tell.
+        assertFalse(TranslateTarget.offers(resolved(TranslateLang.EN, LanguageSource.DECLARED), TranslateLang.EN))
+        assertTrue(TranslateTarget.offers(resolved(TranslateLang.EN, LanguageSource.AUTHOR), TranslateLang.EN))
+        assertTrue(TranslateTarget.offers(resolved(TranslateLang.EN, LanguageSource.CHAT), TranslateLang.EN))
+        assertTrue(TranslateTarget.offers(resolved(null, null), TranslateLang.EN))
+        // A language no model here translates from has nothing to offer, whatever settled it.
+        assertFalse(TranslateTarget.offers(Resolution(LanguagePick.Other("el"), LanguageSource.DECLARED), TranslateLang.EN))
+        assertFalse(TranslateTarget.offers(Resolution(LanguagePick.Other("fr"), LanguageSource.TEXT), es))
+    }
+
+    @Test
+    fun aKeptTranslationIsOfferedAgainOnlyIntoATargetItIsNotInYet() {
+        val kept = StoredTranslation("coming?", es, TranslateLang.EN, flagged = false, guessed = false)
+        assertFalse(TranslateTarget.offersAgain(kept, TranslateLang.EN))
+        // The reader now reads Spanish: a Spanish message has nowhere to go.
+        assertFalse(TranslateTarget.offersAgain(kept, es))
+        // A reader no model reaches: Spanish goes into English, which it already is.
+        assertFalse(TranslateTarget.offersAgain(kept, uk))
+        val intoSpanish = StoredTranslation("¿vienes?", TranslateLang.EN, es, flagged = false, guessed = false)
+        // Kept in Spanish for a reader who now reads English: an English message has nowhere to go either.
+        assertFalse(TranslateTarget.offersAgain(intoSpanish, TranslateLang.EN))
+        // Kept in another language than the reader's target (an older choice in Settings): offered again.
+        assertTrue(TranslateTarget.offersAgain(kept.copy(to = TranslateLang("de")), TranslateLang.EN))
     }
 }

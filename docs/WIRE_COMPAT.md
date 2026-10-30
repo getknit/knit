@@ -820,7 +820,7 @@ public as the post; sealed, the seal does not pad, so a styled message is a few 
 
 **Precedent — declared languages (`ChatContent.lang` / `reads` and `MessageContent.lang` / `reads` under `"l"` /
 `"r"`, `MessageContentV2` labels 18 / 19, ADR 2026-10.t2h6's 2026-10-29 amendment).** A sender says what language a
-message is in and what language they read: each a CBOR uint indexing `LanguageRegistry`, an append-only list of every
+message was typed in (its keyboard's, or a composer translation's target) and what language they read: each a CBOR uint indexing `LanguageRegistry`, an append-only list of every
 language in Mozilla's translation registry with the likeliest first, so the common ones cost one byte. Rule 1: both are
 nullable and absent unless set, and the absence rules make the common case free — `"l"` absent means English or
 unknown, `"r"` absent means the same as `"l"` (English when `"l"` is absent) or unknown — so a message in English by an

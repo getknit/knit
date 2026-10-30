@@ -31,6 +31,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   on-device shell**: `adb` re-parses the command on the device, so a bare `--es text "hi there"` is
   word-split and truncated to `hi`. Wrap the whole remote command in double quotes and single-quote the
   value (see the example).
+  `--es declare auto [--es into <code>] [--es typed <tag>]` declares its languages as the chat's composer would (ADR
+  2026-10.t2h6: the Translation switch; `into` the language a draft was translated into, else `typed`, standing in for the
+  keyboard's; and the reader's chosen language), and `--es declare es:en` an explicit `lang:reads` pair; the reply's
+  `declared` is what the frame carries.
   `--es styles <start,length,code,…>` formats it (ADR 2026-10.p95v): triples over the text as sent, codes 0 bold,
   1 italic, 2 strikethrough, 3 monospace, normalised by `sendChat` as the composer's are. A malformed list is an
   `error`, and the Meshtastic room ignores it.
@@ -469,8 +473,17 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     checks would refuse (`unsure`, `spansLost`, `unusable`). One JSON line per message, translation included, goes to
     the app's external files (`translate-bench/<from>-<to>.jsonl`, `out`). `scripts/translate-bench.py` drives it
     across phones and lays the results beside the desktop bench's.
-  - `reader` reports the product rule's pick of this reader's language (`target`), from this phone's last 50 own
-    messages (`written`, `unsure`) and the system's languages, beside the app's resolved locale, which the rule ignores.
+  - `reader` reports this reader's language as the chats use it (`target`) and as their messages declare it
+    (`declaredReads`: the Settings choice, else the per-app language, else the system's first): the Settings choice (`override`), else
+    `automatic`, from this phone's last 50 own messages (`written`, `unsure`) and the system's languages
+    (`systemLanguages`), beside the per-app list and the app's resolved locale, which the rule ignores.
+  - `target --es from <code>` is where a message in that language goes for this reader. `switch [--ez on false]` sets or
+    reports Settings › Chats › Translation; `into --es lang <code>|auto` sets "Translate messages into".
+  - `offers --es id <messageId>` is whether that row's menu offers Translate (`offered`, the chat's own rule), with
+    the language it resolved to (`lang`, `source`), the `reader` and any `kept` translation's target. `translate --es
+    id <messageId> [--es from <code>] [--es to <code>]` translates a real row as its bubble would, so the result is kept
+    on the row: read it back with `STATE`'s message fields (`translation`, `translationFrom`, `translationTo`), and the
+    declared `bodyLang` / `authorReads` beside them.
   - `audit [--ei limit 300]` reads the language of this phone's newest messages from other people twice — by the
     words alone, then with the author's and the chat's language behind them (the ADR's short-line amendment) — and
     replies with counts only: `wordsAloneUnsure`, `resolvedBy` (`text`, `author`, `chat`, `unsure`), `changedByHint`

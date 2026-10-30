@@ -50,4 +50,15 @@ class ReaderLanguagesTest {
         assertNull(estimate.override)
         assertEquals(TranslateLang.EN, estimate.target)
     }
+
+    @Test
+    fun aReaderDeclaresTheLanguageTheyChoseNotOneTheAppFellBackTo() {
+        // The Settings choice first, then the language chosen for this app, then the phone's own.
+        assertEquals("es", ReaderLanguages.declaredReads("es", listOf("fr-FR"), listOf("el-GR")))
+        assertEquals("fr", ReaderLanguages.declaredReads(null, listOf("fr-FR"), listOf("el-GR")))
+        // A Greek phone shows Knit in English (no Greek strings ship), but its reader chose Greek.
+        assertEquals("el", ReaderLanguages.declaredReads(null, emptyList(), listOf("el-GR", "en-US")))
+        assertEquals("zh_hant", ReaderLanguages.declaredReads(null, emptyList(), listOf("zh-Hant-TW")))
+        assertNull(ReaderLanguages.declaredReads(null, emptyList(), emptyList()))
+    }
 }

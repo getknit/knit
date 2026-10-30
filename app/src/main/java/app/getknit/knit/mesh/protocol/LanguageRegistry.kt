@@ -2,7 +2,7 @@ package app.getknit.knit.mesh.protocol
 
 /**
  * The languages a frame may declare, by index (ADR 2026-10.t2h6's 2026-10-29 amendment): a chat frame's `lang` (the
- * body's language) and `reads` (the language its author reads) each carry one of these as a small CBOR uint, so a
+ * language the body was typed in) and `reads` (the language its author reads) each carry one of these as a small CBOR uint, so a
  * declaration costs a byte where a code would cost three. Every language of Mozilla's translation registry is here
  * whether or not a model for it ships yet, so a newer phone's declaration means the same thing to an older one.
  *
@@ -82,6 +82,29 @@ object LanguageRegistry {
 
     private val INDEX: Map<String, Int> = CODES.withIndex().associate { (i, code) -> code to i }
 
+    /**
+     * Codes the identifier (CLD2) or a locale spells otherwise than the registry: CLD2 still writes Hebrew as `iw` and
+     * Indonesian as `in`, the codes ISO 639 retired.
+     */
+    val ALIASES: Map<String, String> = mapOf("iw" to "he", "in" to "id")
+
+    /**
+     * The registry's code for [code] — CLD2's answer or a BCP-47 tag (`ES-mx`, `zh-Hant`, `iw`) — or null for a language
+     * it does not name. Case and region are dropped; a four-letter script subtag is kept when the registry names that
+     * script (`zh-Hant` is `zh_hant`), else the language alone counts.
+     */
+    fun codeOf(code: String): String? {
+        val parts =
+            code
+                .trim()
+                .lowercase()
+                .replace('_', '-')
+                .split('-')
+        val primary = ALIASES[parts[0]] ?: parts[0]
+        val script = parts.drop(1).firstOrNull { it.length == SCRIPT_LENGTH }
+        return listOfNotNull(script?.let { "${primary}_$it" }, primary).firstOrNull { it in INDEX }
+    }
+
     /** [code]'s index, or null for a language the registry does not name (it is then not declared at all). */
     fun indexOf(code: String?): Int? = code?.let(INDEX::get)
 
@@ -97,11 +120,12 @@ object LanguageRegistry {
         }
 
     private const val CBOR_INLINE = 24
+    private const val SCRIPT_LENGTH = 4
 }
 
 /**
  * What a sender declares about one message (ADR 2026-10.t2h6's 2026-10-29 amendment), as registry codes: [lang] the
- * body's language, [reads] the language its author reads. [of] leaves out what the wire implies — English for an
+ * language the body was typed in, [reads] the language its author reads. [of] leaves out what the wire implies — English for an
  * absent [lang], [lang] for an absent [reads] — and anything the registry does not name, so the common case costs
  * nothing.
  */

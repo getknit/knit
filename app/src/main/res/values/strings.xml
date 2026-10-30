@@ -2059,7 +2059,7 @@
     <string name="translate_model_title">Download the translation model?</string>
     <string name="translate_metered_note">This download uses mobile data.</string>
     <string name="settings_translation_title">Translation</string>
-    <string name="settings_translation_subtitle">Translate messages on this phone, offline. What you send also tells people the language it\'s in and the one you read.</string>
+    <string name="settings_translation_subtitle">Translate messages on this phone, offline. What you send also tells people the language you type in and the one you read.</string>
     <string name="settings_translate_into_title">Translate messages into</string>
     <string name="settings_translate_into_auto">Automatic (%1$s)</string>
     <string name="settings_translate_into_auto_none">Automatic</string>

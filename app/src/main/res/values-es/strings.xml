@@ -1736,7 +1736,7 @@
     <string name="translate_model_title">¿Descargar el modelo de traducción?</string>
     <string name="translate_metered_note">Esta descarga usa datos móviles.</string>
     <string name="settings_translation_title">Traducción</string>
-    <string name="settings_translation_subtitle">Traduce mensajes en este teléfono, sin conexión. Lo que envías también indica en qué idioma está y qué idioma lees.</string>
+    <string name="settings_translation_subtitle">Traduce mensajes en este teléfono, sin conexión. Lo que envías también indica en qué idioma escribes y qué idioma lees.</string>
     <string name="settings_translate_into_title">Idioma de traducción</string>
     <string name="settings_translate_into_auto">Automático (%1$s)</string>
     <string name="settings_translate_into_auto_none">Automático</string>

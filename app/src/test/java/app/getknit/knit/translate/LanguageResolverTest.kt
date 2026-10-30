@@ -4,9 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * A message's language from more than its words (ADR 2026-10.t2h6's short-line amendment): the words when they are
- * sure, then what its author declared on the frame, then the author's usual language in the chat, then the chat's,
- * and only languages a model translates from.
+ * A message's language from more than its words (ADR 2026-10.t2h6's short-line and 2026-10-29 amendments): the words
+ * when they are sure, any registry language (one with no model has nothing to offer); then the language it was typed
+ * in, declared on the frame; then the author's usual language in the chat, then the chat's.
  */
 class LanguageResolverTest {
     private val pair = setOf(TranslateLang.EN, TranslateLang("es"))
@@ -41,17 +41,22 @@ class LanguageResolverTest {
     }
 
     @Test
-    fun aSureReadOfALanguageNoModelTranslatesIsNoReadAtAll() {
-        // The corpus's own: CLD2 read "@Ana ¿sigues en la estación?" as Galician, reliably.
+    fun aSureReadOfALanguageNoModelTranslatesIsThatLanguageWithNothingToOffer() {
+        // The hint has had its say inside CLD2 (an author's Spanish turns a Galician misread back into Spanish), so a read
+        // still sure of Galician stands: no model, and no prior's guess in its place.
         assertEquals(
-            Resolution(LanguagePick.Picked(TranslateLang("es")), LanguageSource.AUTHOR),
+            Resolution(LanguagePick.Other("gl"), LanguageSource.TEXT),
             LanguageResolver.resolve(cld2("gl", 96), "¿sigues en la estación?", pair, TranslateLang("es"), null),
         )
-        assertEquals(Resolution(LanguagePick.Unsure, null), LanguageResolver.resolve(cld2("gl", 96), "x", pair, null, null))
-        // A language the app knows but no model on hand translates from: a sure read of it is no answer either.
+        // A language the table knows but no model on hand translates from: the same.
         assertEquals(
-            Resolution(LanguagePick.Picked(TranslateLang.EN), LanguageSource.CHAT),
+            Resolution(LanguagePick.Other("es"), LanguageSource.TEXT),
             LanguageResolver.resolve(cld2("es"), "¿sigues en la estación?", setOf(TranslateLang.EN), null, TranslateLang.EN),
+        )
+        // An unsure read is still no read: the priors answer.
+        assertEquals(
+            Resolution(LanguagePick.Picked(TranslateLang("es")), LanguageSource.AUTHOR),
+            LanguageResolver.resolve(cld2("gl", 96, reliable = false), "x", pair, TranslateLang("es"), null),
         )
     }
 
@@ -64,19 +69,19 @@ class LanguageResolverTest {
     }
 
     @Test
-    fun aDeclarationSettlesWhatTheWordsCannotAndYieldsToWhatTheyCan() {
+    fun theLanguageItWasTypedInSettlesWhatTheWordsCannotAndYieldsToWhatTheyCan() {
         val es = TranslateLang("es")
-        val declared = LanguageResolver.resolve(unread, "ya voy", pair, author = TranslateLang.EN, chat = TranslateLang.EN, declared = es)
-        assertEquals(LanguagePick.Picked(es), declared.pick)
-        assertEquals(LanguageSource.DECLARED, declared.source)
-        assertEquals(false, declared.guessed)
-        // Plain words overrule the sender's claim.
-        val read = LanguageResolver.resolve(cld2("en"), "see you at the park later", pair, null, null, declared = es)
+        val typed = LanguageResolver.resolve(unread, "ya voy", pair, author = TranslateLang.EN, chat = TranslateLang.EN, declared = "es")
+        assertEquals(LanguagePick.Picked(es), typed.pick)
+        assertEquals(LanguageSource.DECLARED, typed.source)
+        assertEquals(false, typed.guessed)
+        // Plain words overrule the keyboard: English typed on a Spanish keyboard is English.
+        val read = LanguageResolver.resolve(cld2("en"), "see you at the park later", pair, null, null, declared = "es")
         assertEquals(LanguagePick.Picked(TranslateLang.EN), read.pick)
         assertEquals(LanguageSource.TEXT, read.source)
-        // A declaration of a language no model translates from is no answer.
-        val other = LanguageResolver.resolve(unread, "ok", pair, author = es, chat = null, declared = TranslateLang("uk"))
-        assertEquals(LanguageSource.AUTHOR, other.source)
-        assertEquals(true, other.guessed)
+        // Typed in a language no model here translates from: that language, not the author's usual one in its place.
+        val other = LanguageResolver.resolve(unread, "ok", pair, author = es, chat = null, declared = "el")
+        assertEquals(LanguagePick.Other("el"), other.pick)
+        assertEquals(LanguageSource.DECLARED, other.source)
     }
 }

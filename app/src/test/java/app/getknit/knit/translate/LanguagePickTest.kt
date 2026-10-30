@@ -80,4 +80,27 @@ class LanguagePickTest {
         assertEquals(emptyList<TranslateLang>(), LanguagePolicy.ranked(null))
         assertEquals(emptyList<TranslateLang>(), LanguagePolicy.ranked(Detection(listOf("es" to 0, "un" to 0, "un" to 0), false, 3)))
     }
+
+    @Test
+    fun theWordsNameAnyRegistryLanguageTheyAreSureOfNotOnlyOnesWithAModel() {
+        // No French model ships yet: the translation's read names nothing, the named read names French.
+        assertEquals(LanguagePick.Unsure, LanguagePolicy.pick(cld2("fr", 96), "on se voit à la gare demain"))
+        assertEquals("fr", LanguagePolicy.named(cld2("fr", 96), "on se voit à la gare demain"))
+        assertEquals("es", LanguagePolicy.named(cld2("es", 97), "nos vemos mañana"))
+        // CLD2's own spellings: a script that is its own model, and the retired code for Hebrew.
+        assertEquals("zh_hant", LanguagePolicy.named(cld2("zh-Hant", 99), "明天見"))
+        assertEquals("he", LanguagePolicy.named(cld2("iw", 99), "נתראה מחר"))
+    }
+
+    @Test
+    fun anUnsureOrUnnamedReadNamesNothing() {
+        assertNull(LanguagePolicy.named(cld2("fr", 96, reliable = false), "à demain"))
+        assertNull(LanguagePolicy.named(cld2("fr", 60), "à demain"))
+        assertNull(LanguagePolicy.named(cld2("un", 0), "ok"))
+        assertNull(LanguagePolicy.named(cld2("xx", 99), "something"))
+        assertNull(LanguagePolicy.named(null, "anything"))
+        // The English contradiction holds here too.
+        assertNull(LanguagePolicy.named(cld2("en", 95), "qué fotos tan bonitas"))
+        assertEquals("en", LanguagePolicy.named(cld2("en", 95), "see you tomorrow"))
+    }
 }

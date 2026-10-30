@@ -284,20 +284,21 @@ what the other side says about its own language rather than only guess it from w
   what they write (three confident picks of their 50 newest), else the system's list, read with
   `Resources.getSystem()`: `LocaleList.getDefault()` follows the per-app language that `generateLocaleConfig`
   offers, which says what the app is shown in. Only a language a model translates into counts.
-- **Translate is not offered on a message already in the reader's language.** The menu resolves the row's language
-  as it opens. It is hidden only when the words, or the author's declaration with the words unsure, name a language
-  with no target, or when the row's kept translation is already in the target. A language only a prior settled keeps
-  the offer: the reader may know better.
+- **Translate is not offered on a message already in the reader's language, nor on one in a language no model here
+  translates from.** The menu resolves the row's language as it opens. It is hidden when the words, or the language
+  the message was typed in with the words unsure, name a language with no target or no model (`LanguagePick.Other`),
+  or when the row's kept translation is already in the target. A language only a prior settled keeps the offer: the
+  reader may know better.
 - **"Not English?"** offers the other languages a model translates from, CLD2's own reads first; with one left it
   translates at once.
 - **Kept on the row**, as the bullet above proposed: DB v27 adds `translation`, `translationFrom`, `translationTo`,
   `translationFlagged` and `translationGuessed` to `messages`, written only by `MessageDao.setTranslation`, never by a
   whole-row save. The verdict is applied live against Content filtering, as `videoPosterFlagged` is. It rides a
   backup with the row and stays out of `messages_fts`.
-- **Declared on the frame.** A sender says what language a message is in and what language they read, so the other
-  side does not have to guess either. The receiver's translation is still never carried; this is the author's own
-  statement.
-  - **Fields.** `lang`, the body's language, and `reads`, the language the author reads, each an index into
+- **Declared on the frame.** A sender says what the receiver cannot read off the message itself: the language they
+  typed it in and the language they read. The receiver reads the words with its own CLD2, so the sender never spends
+  bytes on that read. The receiver's translation is still never carried; this is the author's own statement.
+  - **Fields.** `lang`, the language the message was typed in, and `reads`, the language the author reads, each an index into
     `LanguageRegistry`, an append-only list of every language in Mozilla's registry with the likeliest first.
     `lang` is left off for English or unknown, `reads` for the same as `lang`. A message in English by an English
     reader is the bytes it was. They ride under `"l"` and `"r"` on a room or commons post's `ChatContent` and on the
@@ -307,13 +308,28 @@ what the other side says about its own language rather than only guess it from w
     three under a named key, four or six for both; a later language costs a byte more per field, so at most six on
     v3 and eight named. `MeshManager.inlineAcksFor` counts them against the LoRa budget at the named size; the
     composer's LoRa size hint does not (it cannot know the declaration while the person types).
-  - **What a sender declares.** `lang` is the language the composer translated the draft into, else a sure read of
-    its words, never a prior's guess. `reads` is the reader's language above. Only a build with translation
-    wired declares, since the identifier is in its library; every build reads them. Stored on the row as
-    `bodyLang` and `authorReads` (DB v27, written once on insert).
+  - **What a sender declares as `lang`.** The language the composer translated the draft into, when the field holds
+    that translation. Otherwise the keyboard's language (`InputMethodManager.currentInputMethodSubtype`, no
+    permission), sampled at each edit and weighted by the characters it added (`InputLanguageTally`). A keyboard is a
+    strong hint: a draft typed on a Greek keyboard is very likely Greek. An edit adding more than 24 characters at once
+    counts for no language: a paste, a shared text, a restored draft, an applied translation or a phrase of voice
+    typing. The draft declares a language only when one keyboard language typed at least two thirds of what was typed,
+    and typed characters could make up most of the message, so a mostly pasted message declares none. A keyboard with
+    no language (hardware, some input methods) declares none. Any registry language counts, model or not.
+  - **What a sender declares as `reads`.** The language they chose, which is evidence they read it: the "Translate
+    messages into" choice, else the language chosen for Knit in Settings › Apps (`LocaleManager`, Android 13+), else the
+    phone's first system language (`ReaderLanguages.declaredReads`). It is never the language Knit fell back to
+    showing: a Greek phone shows Knit in English, since no Greek strings ship, but its reader chose Greek. It is also
+    never the local estimate from what they write, which picks only the translation's target here. Any registry
+    language counts.
+  - **Who declares.** Only a build with translation wired, with the switch below on; every build reads them. Stored on
+    the row as `bodyLang` and `authorReads` (DB v27, written once on insert).
   - **What a receiver does with them.** A declaration is the sender's claim: a label, never a moderation, trust or
-    routing input. In the resolver it comes after sure words and before the author's and the chat's usual
-    language, and a translation it settled is not marked guessed. The composer's hint reads what the chat's other
+    routing input. The resolver hands the typed-in language to CLD2 as its hint, which turns a neighbour's misread
+    back into it. Words the identifier is still sure of win, in any registry language: English typed on a Spanish
+    keyboard is English, and a sure read of a language with no model here is that language, with nothing to offer.
+    Only with the words unsure does the typed-in language answer, before the author's and the chat's usual language,
+    and a translation it settled is not marked guessed. The composer's hint reads what the chat's other
     people declared reading before it reads their words: in a one-to-one chat, the peer's newest message ("Ana
     reads Spanish. Translate your message?"); in a group, only when every author among the 20 newest declared, at
     least two of them, all the same language, since a member who declared nothing may read English or run a build
@@ -326,7 +342,10 @@ received is still kept on its row, which costs nothing and serves the reader the
 subtitle says what is sent, so the switch is the person's say over that disclosure.
 
 **What it costs.** `reads` tells the people a message reaches the language its author reads, which partly gives away
-a translated draft (an English message from someone who reads Spanish). In a sealed chat only its members see it; in
+a translated draft (an English message from someone who reads Spanish), and `lang` the keyboard they typed it on.
+A pasted message typed around in another language, a multilingual keyboard that reports one language, or Greek
+written in Latin letters on an English keyboard can declare the wrong language; sure words still overrule it on the
+receiver. In a sealed chat only its members see it; in
 the Nearby room it is cleartext to every neighbour, as the body is. Knit for iOS ignores the keys until it reads them.
 The draft hint for a group says nothing while one member is silent.
 

@@ -1764,7 +1764,7 @@
     <string name="translate_model_title">Завантажити модель перекладу?</string>
     <string name="translate_metered_note">Це завантаження використовує мобільний інтернет.</string>
     <string name="settings_translation_title">Переклад</string>
-    <string name="settings_translation_subtitle">Перекладати повідомлення на цьому телефоні без інтернету. Ваші повідомлення також указують мову, якою їх написано, і мову, якою ви читаєте.</string>
+    <string name="settings_translation_subtitle">Перекладати повідомлення на цьому телефоні без інтернету. Ваші повідомлення також указують мову, якою ви набираєте текст, і мову, якою ви читаєте.</string>
     <string name="settings_translate_into_title">Мова перекладу</string>
     <string name="settings_translate_into_auto">Автоматично (%1$s)</string>
     <string name="settings_translate_into_auto_none">Автоматично</string>

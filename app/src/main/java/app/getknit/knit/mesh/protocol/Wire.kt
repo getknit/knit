@@ -248,7 +248,7 @@ data class ChatContent(
     @ByteString
     @Serializable(with = StyleRunsSerializer::class)
     val styles: List<StyleSpan> = emptyList(),
-    // The body's language and the language its author reads (additive; ADR 2026-10.t2h6's 2026-10-29 amendment), each a
+    // The language the body was typed in and the one its author reads (additive; ADR 2026-10.t2h6's 2026-10-29 amendment), each a
     // [LanguageRegistry] index under a one-letter key, left off for English or unknown ("l") and for "the same as l"
     // ("r"), so a post in English by an English reader is the bytes it was before they existed. Room and commons only,
     // as [styles]: a sealed frame's shell never sets them (they ride sealed in `MessageContent`), and `plaintextContent`

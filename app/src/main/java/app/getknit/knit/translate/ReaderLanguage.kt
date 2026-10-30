@@ -13,6 +13,8 @@ class ReaderLanguage(
     private val read: suspend (String) -> LanguagePick,
     private val preferred: () -> List<String>,
     private val clock: () -> Long,
+    // The language this person chose for the app itself, empty when they chose none (or before Android 13).
+    private val perApp: () -> List<String> = { emptyList() },
 ) {
     private val mutex = Mutex()
     private var own: Pair<Long, List<LanguagePick>>? = null
@@ -24,6 +26,9 @@ class ReaderLanguage(
                 ?: ownBodies(ReaderLanguages.OWN_SAMPLE).map { read(it) }.also { mutex.withLock { own = clock() to it } }
         return ReaderLanguages.estimate(picks, preferred(), override)
     }
+
+    /** What this reader declares reading on what they send ([ReaderLanguages.declaredReads]), with [override]. */
+    fun declaredReads(override: String?): String? = ReaderLanguages.declaredReads(override, perApp(), preferred())
 
     companion object {
         const val TTL_MS = 10 * 60_000L

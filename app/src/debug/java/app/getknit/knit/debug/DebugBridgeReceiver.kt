@@ -122,6 +122,7 @@ import app.getknit.knit.mesh.power.LOW_POWER_OFFERED
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.BodyStyle
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.sha256Hex
@@ -748,24 +749,45 @@ class DebugBridgeReceiver :
                 ?.let { raw ->
                     parseStyleTriples(raw) ?: return reply("error", "bad 'styles' extra (start,length,code triples): $raw")
                 }.orEmpty()
+        // Optional declared languages (ADR 2026-10.t2h6): `--es declare auto [--es into es] [--es typed el]` is what the chat's
+        // composer would declare (the Translation switch; the language a draft was translated into, else the keyboard's,
+        // which `typed` stands in for; and the reader's chosen language), `--es declare es:en` an explicit `lang:reads`
+        // pair (either side may be empty). Without it, nothing is declared, as before.
+        val declared =
+            when (val raw = intent.getStringExtra(EXTRA_DECLARE)) {
+                null -> {
+                    DeclaredLangs.NONE
+                }
+
+                "auto" -> {
+                    TranslateBridge.declaredFor(intent.getStringExtra(EXTRA_INTO), intent.getStringExtra(EXTRA_TYPED))
+                        ?: return reply("error", "this build wires no translation (-Ptranslate=true)")
+                }
+
+                else -> {
+                    DeclaredLangs(raw.substringBefore(':').ifEmpty { null }, raw.substringAfter(':', "").ifEmpty { null })
+                }
+            }
         // Route exactly as ChatViewModel.send does, resolving the thread kind from its id.
         val sent =
             when (Conversations.kindFor(conv)) {
                 ConversationKind.NEARBY -> {
-                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo, styles = styles)
+                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo, styles = styles, declared = declared)
                 }
 
                 ConversationKind.DM -> {
-                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo, styles = styles)
+                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo, styles = styles, declared = declared)
                 }
 
                 ConversationKind.GROUP -> {
-                    groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo, styles = styles) }
+                    groups.find(conv)?.let {
+                        mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo, styles = styles, declared = declared)
+                    }
                 }
 
                 // A commons post goes to the relay that runs the room, never a radio (§7.4).
                 ConversationKind.COMMONS -> {
-                    mesh.sendCommons(conv, text, emptyList(), replyTo, styles = styles)
+                    mesh.sendCommons(conv, text, emptyList(), replyTo, styles = styles, declared = declared)
                 }
 
                 // The Meshtastic room posts through this phone's own board, and the outcome says why not.
@@ -790,6 +812,13 @@ class DebugBridgeReceiver :
             true -> reply("ok", "sent to $conv")
             false -> reply("blocked", "blocked by on-device content filter")
         }.put("conversation", conv)
+            .put(
+                "declared",
+                JSONObject().put("lang", declared.normalized().lang ?: JSONObject.NULL).put(
+                    "reads",
+                    declared.normalized().reads ?: JSONObject.NULL,
+                ),
+            )
     }
 
     /**
@@ -4186,6 +4215,9 @@ class DebugBridgeReceiver :
         const val EXTRA_INDICATORS = "indicators"
         const val EXTRA_REPLY_TO = "replyTo"
         const val EXTRA_STYLES = "styles"
+        const val EXTRA_DECLARE = "declare"
+        const val EXTRA_INTO = "into"
+        const val EXTRA_TYPED = "typed"
         const val EXTRA_ID = "id"
         const val EXTRA_EMOJI = "emoji"
         const val EXTRA_LIMIT = "limit"

@@ -1708,7 +1708,7 @@
     <string name="translate_model_title">Übersetzungsmodell herunterladen?</string>
     <string name="translate_metered_note">Dieser Download nutzt mobile Daten.</string>
     <string name="settings_translation_title">Übersetzung</string>
-    <string name="settings_translation_subtitle">Nachrichten auf diesem Smartphone offline übersetzen. Was du sendest, sagt anderen auch, in welcher Sprache es ist und welche Sprache du liest.</string>
+    <string name="settings_translation_subtitle">Nachrichten auf diesem Smartphone offline übersetzen. Was du sendest, sagt anderen auch, in welcher Sprache du tippst und welche Sprache du liest.</string>
     <string name="settings_translate_into_title">Sprache für Übersetzungen</string>
     <string name="settings_translate_into_auto">Automatisch (%1$s)</string>
     <string name="settings_translate_into_auto_none">Automatisch</string>

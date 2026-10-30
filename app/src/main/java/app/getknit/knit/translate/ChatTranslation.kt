@@ -28,8 +28,14 @@ interface ChatTranslation {
     ): LanguagePick
 
     /**
-     * [body]'s language by its words, then what its author declared on the frame ([declared]), then its author's usual
-     * language in the chat, then the chat's ([chat]).
+     * The language this reader declares reading on what they send (ADR 2026-10.t2h6's 2026-10-29 amendment), a registry
+     * code: their choice in Settings, else the language they chose for this app, else the phone's first language.
+     */
+    suspend fun declaredReads(): String?
+
+    /**
+     * [body]'s language by its words, then the language its sender typed it in ([declared], a registry code off the
+     * frame), then its author's usual language in the chat, then the chat's ([chat]).
      */
     suspend fun resolve(
         body: String,
@@ -37,7 +43,7 @@ interface ChatTranslation {
         conversationId: String,
         authorId: String?,
         chat: TranslateLang?,
-        declared: TranslateLang?,
+        declared: String?,
     ): Resolution
 
     /** Translates [body] from [from] into [to] ([TranslateTarget]); a null [to] shows that nothing goes there. */
