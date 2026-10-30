@@ -271,6 +271,9 @@ jobs:
           ./gradlew :app:assembleRelease --console=plain --stacktrace
           [ -f "$APK_DIR/app-release.apk" ] \
             || { echo "::error::$APK_DIR/app-release.apk not produced — did signing credentials resolve?"; exit 1; }
+          # A platform class R8 renamed breaks the first vector drawable at runtime (GitHub #59); android.jar is
+          # the compile SDK the build above installed under $ANDROID_HOME.
+          scripts/r8-platform-gate.sh app/build/outputs/mapping/release/mapping.txt
           mkdir -p out
           cp "$APK_DIR/app-release.apk" "out/$APK"
           # R8 obfuscates, so this is the only way to symbolicate a crash from this build. Keep it forever.
@@ -293,6 +296,7 @@ jobs:
           rm -f "$APK_DIR/app-release.apk" app/build/outputs/mapping/release/mapping.txt
           ./gradlew :app:assembleRelease -Pslim=true --console=plain --stacktrace
           [ -f "$APK_DIR/app-release.apk" ] || { echo "::error::slim $APK_DIR/app-release.apk not produced"; exit 1; }
+          scripts/r8-platform-gate.sh app/build/outputs/mapping/release/mapping.txt
           cp "$APK_DIR/app-release.apk" "out/$SLIM_APK"
           gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "out/mapping-$VERSION-slim.txt.gz"
 

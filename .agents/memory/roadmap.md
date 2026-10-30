@@ -107,7 +107,9 @@ doc). **Don't start a deferred item without explicit direction.**
   token is decoupled from its enum constant name (`FileKind.wire`). See decisions ADR 012. The broad library
   `{ *; }` keeps are **no longer deferred**: ADR 050 dropped the Tink / ARSCLib / apksig ones (97% rates,
   dex 9.9 → 6.0 MB) and added `scripts/r8-dex-gate.sh` to CI so a library's consumer keep rule can't quietly
-  undo it. Still pinned by choice: `net.zetetic.**`, `org.tensorflow.lite.**`, `org.xmlpull.v1.**`.
+  undo it. Still pinned by choice: `net.zetetic.**`, `org.tensorflow.lite.**`. ARSCLib's platform copies
+  (`org.xmlpull.v1.*` and two `android.*` interfaces) are stripped before R8 instead of pinned (ADR 050's 2026-10-29
+  amendment, GitHub #59).
 - **Forward secrecy for DMs is implemented** — the epoch-rekey ratchet (crypto scheme v2,
   `docs/FORWARD_SECRECY_RATCHET.md`; ADR 016): X3DH-style bootstrap off a signed prekey published in the
   profile, per-epoch X25519 rekeying, session state in the `ratchet_*` tables, capability-gated dual-stack

@@ -2,6 +2,9 @@ import com.android.build.api.variant.BuildConfigField
 import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
 import java.io.ByteArrayOutputStream
 import java.util.Properties
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 
 plugins {
@@ -778,6 +781,80 @@ androidComponents {
             variant.sources.keepRules?.addStaticSourceDirectory("src/stt/keepRules")
         }
     }
+}
+
+// ARSCLib's jar carries its own copies of six platform classes (org.xmlpull.v1.*, android.util.AttributeSet,
+// android.content.res.XmlResourceParser). Packaged, they reach R8 as program classes that shadow the platform's: R8
+// renamed them and reasoned about them as a closed world, and three times that broke the first vector drawable of a
+// minified build (ADRs 012 and 050, GitHub #59: 2.11.0-alpha.1 crashed at its first frame). The platform's copy is the
+// one that loads on a phone anyway, so this transform drops every class the compile SDK's android.jar defines from each
+// plain jar an app variant packages, and R8 resolves them as library classes. Unit-test classpaths keep the copies, and
+// an AAR's classes are not seen: scripts/r8-platform-gate.sh still fails a release whose mapping renames a platform
+// class, wherever it came from.
+val platformCopiesStripped: Attribute<Boolean> = Attribute.of("app.getknit.platformCopiesStripped", Boolean::class.javaObjectType)
+
+abstract class StripPlatformCopies : TransformAction<StripPlatformCopies.Params> {
+    interface Params : TransformParameters {
+        @get:InputFiles
+        @get:PathSensitive(PathSensitivity.NONE)
+        val bootClasspath: ConfigurableFileCollection
+    }
+
+    @get:InputArtifact
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val jar: Provider<FileSystemLocation>
+
+    override fun transform(outputs: TransformOutputs) {
+        val platform =
+            parameters.bootClasspath.files.flatMapTo(HashSet()) { boot ->
+                ZipFile(boot).use { zip ->
+                    zip
+                        .entries()
+                        .asSequence()
+                        .map { it.name }
+                        .filter { it.endsWith(".class") }
+                        .toList()
+                }
+            }
+        val input = jar.get().asFile
+        ZipFile(input).use { zip ->
+            val entries = zip.entries().toList()
+            if (entries.none { it.name in platform }) {
+                outputs.file(jar)
+                return
+            }
+            // Entry order and times are the input's, so the output is as reproducible as the jar it came from.
+            ZipOutputStream(outputs.file("${input.nameWithoutExtension}-platform-stripped.jar").outputStream().buffered()).use { out ->
+                for (entry in entries.filterNot { it.name in platform }) {
+                    out.putNextEntry(ZipEntry(entry.name).apply { time = entry.time })
+                    zip.getInputStream(entry).use { it.copyTo(out) }
+                    out.closeEntry()
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+    attributesSchema { attribute(platformCopiesStripped) }
+    artifactTypes.maybeCreate(ArtifactTypeDefinition.JAR_TYPE).attributes.attribute(platformCopiesStripped, false)
+    registerTransform(StripPlatformCopies::class) {
+        from
+            .attribute(
+                ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE,
+                ArtifactTypeDefinition.JAR_TYPE,
+            ).attribute(platformCopiesStripped, false)
+        to
+            .attribute(
+                ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE,
+                ArtifactTypeDefinition.JAR_TYPE,
+            ).attribute(platformCopiesStripped, true)
+        parameters.bootClasspath.from(androidComponents.sdkComponents.bootClasspath)
+    }
+}
+
+androidComponents {
+    onVariants { variant -> variant.runtimeConfiguration.attributes.attribute(platformCopiesStripped, true) }
 }
 
 // Guards against building an APK whose moderation models are Git LFS pointer stubs (or otherwise

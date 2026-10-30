@@ -112,24 +112,36 @@ JNI Zero's Java classes, which `src/liveCalls/keepRules` pins because libwebrtc'
 `org` grew from 27 KB to 255 KB, and the named-package share went from 4.4% to 6.6%, still well under the 15%
 alarm. So the ceiling is now 10,200,000, about 12% above the measured size, as the last two raises were.
 
-## Amendment 2026-10-29 — every platform copy is pinned, and the mapping is gated (GitHub #59)
+## Amendment 2026-10-29 — the platform copies are stripped before R8 (GitHub #59)
 
 The duplication bit a third time. ARSCLib's jar ships `android.content.res.XmlResourceParser` and
-`android.util.AttributeSet` beside `org.xmlpull.v1.*`, and only the xmlpull package was ever pinned, so every
-release since the share path landed renamed the other two (`v0b` and `c10` in 2.11.0-alpha.1). It stayed
-harmless until AGP 9.5.0's R8, the only toolchain change between 2.11.0-alpha.0 and alpha.1, cast the parser in
-Compose's `loadVectorResourceInner` to the renamed `XmlResourceParser`. The framework's `XmlBlock$Parser` does not
-implement `v0b`, so 2.11.0-alpha.1 threw `ClassCastException` on the chat list's room avatar, the first vector
-drawable after onboarding: every phone with an identity, at every launch. A fresh install renders onboarding and
-passes a launch check. Reproduced on an API 36 emulator by updating 2.10.0 to 2.11.0-alpha.1 in place.
+`android.util.AttributeSet` beside `org.xmlpull.v1.*`. Only the xmlpull package was ever pinned, so every release
+since the share path landed renamed the other two (`v0b` and `c10` in 2.11.0-alpha.1); ADR 012's comment that the
+pin stopped those renames was never checked against a mapping. It stayed harmless until AGP 9.5.0's R8 (9.5.28),
+the only toolchain change between 2.11.0-alpha.0 and alpha.1, cast the parser in Compose's `loadVectorResourceInner`
+to the renamed `XmlResourceParser`. The framework's `XmlBlock$Parser` does not implement `v0b`, so 2.11.0-alpha.1
+threw `ClassCastException` at the first vector drawable it drew: onboarding's welcome page on a new install, the chat
+list's room avatar on a phone already set up. Every launch crashed, and no minified build had been launched between
+the AGP bump and the tag.
 
-`knit-r8.keep` now pins both names `{ *; }` next to `org.xmlpull.v1.**`. Nothing calls through either interface,
-so the closed-world inference above has nothing to act on today; it is still the residual risk if a dependency
-starts calling an `AttributeSet` method. `scripts/r8-platform-gate.sh` checks the release mapping against
-android.jar and fails on any renamed class the platform defines, whichever library brought it in. It runs in
-`build:release` after the two dex gates and in the release skill's CI mirror, which the Play bundle's tag goes
-through. A launch check alone would not have caught this. The gate fails 2.11.0-alpha.1's mapping.
+Fixed in three layers:
 
-Root-cause alternative, not taken: strip the platform copies from ARSCLib's jar with a Gradle artifact transform,
-so R8 resolves them against android.jar and none of the three bites can happen. It would also retire both xmlpull
-rules, but it sits in AGP's own transform chain, and the share path would need re-verifying on a device.
+- **The copies are gone before R8.** `StripPlatformCopies` in `app/build.gradle.kts` is an artifact transform
+  requested on every app variant's runtime classpath. It drops each class the compile SDK's android.jar defines from
+  the plain jars a variant packages, today ARSCLib's six. R8 then resolves them as library classes, open-world, so
+  neither a rename nor the closed-world inference above can happen, and the three pins and the implementor keep are
+  retired. Unit-test classpaths keep the copies. Built from 2.11.0-alpha.2's tree with the alpha's flags, only
+  `classes*.dex` and the baseline profile differ from the shipped APK, and defined dex code is 6 KB smaller.
+- **A mapping gate.** `scripts/r8-platform-gate.sh` fails a build whose mapping renames any class android.jar
+  defines, whichever artifact brought it in; the transform does not see an AAR's classes. It runs in GitLab
+  `build:release`, after both signed builds in `release.yml`, and in the release skill's CI mirror. It fails
+  2.11.0-alpha.1's mapping.
+- **A smoke test past onboarding.** `scripts/release-smoke.py` installs a minified APK on an emulator, walks
+  onboarding, renders the chat list, sends in Nearby, opens Settings and cold-restarts, failing on any crash. The CI
+  mirror runs it, and distribution.md's pre-release steps ask for it before an alpha's tag. It fails 2.11.0-alpha.1 on
+  the welcome page and passes 2.11.0-alpha.2.
+
+2.11.0-alpha.2 (code 36) shipped the interim fix, both names pinned, the same evening. The transform was verified on
+an API 36 emulator: the smoke test passes on its minified APK, and Install offline on a split install of its bundle
+merges and signs `Knit-2.11.0-alpha.2-36-merged-r1.apk`. Installing that merged APK on a second phone was not tried.
+This supersedes the residual above that called both xmlpull keep rules load-bearing.

@@ -6,15 +6,16 @@
 # android.util.AttributeSet and android.content.res.XmlResourceParser) hands R8 a *program* class with a
 # platform name, and R8 full mode renames it like any other. At runtime the platform's own class wins, so
 # every reference R8 rewrote now names a type the framework's objects do not implement. It has bitten three
-# times, each at the first vector drawable, which is a chat-list avatar: an IncompatibleClassChangeError
-# (ADR 012), a `throw null` (ADR 050), and a ClassCastException to a renamed XmlResourceParser that shipped
-# in 2.11.0-alpha.1 and stopped every phone past onboarding from opening Knit (GitHub #59). The renames sat in
-# every mapping for months before an R8 upgrade made one fatal, and a fresh install's onboarding never loads
-# a vector drawable, so neither a launch check nor a dex size gate sees it.
+# times, each at a vector drawable: an IncompatibleClassChangeError (ADR 012), a `throw null` on the chat
+# list (ADR 050), and a ClassCastException to a renamed XmlResourceParser that shipped in 2.11.0-alpha.1 and
+# stopped Knit opening at all (GitHub #59). The renames sat in every mapping for months before an R8 upgrade
+# made one fatal, and no dex size gate sees them. app/build.gradle.kts's StripPlatformCopies transform now
+# removes such copies from every plain jar a variant packages; this gate catches one that gets past it, such
+# as a copy inside an AAR, which the transform does not see.
 #
 # WHAT IT MEASURES. Every class R8's mapping lists under a new name, checked against the classes android.jar
-# defines. One match fails the build: pin it in app/src/main/keepRules/knit-r8.keep's "Bundled platform XML
-# types" section.
+# defines. One match fails the build: find the artifact that ships the copy and strip it (StripPlatformCopies), or
+# pin the name in app/src/main/keepRules/knit-r8.keep and keep one implementor alive (ADR 050).
 #
 # Usage: scripts/r8-platform-gate.sh <mapping.txt> [android.jar]
 set -euo pipefail
@@ -38,8 +39,8 @@ if [ -n "$hits" ]; then
   printf '%s\n' "$hits" | sed 's/^/    /'
   echo
   echo "      A dependency bundles a copy of each. The platform's copy is the one that loads, so the renamed name"
-  echo "      matches nothing at runtime. Pin each in app/src/main/keepRules/knit-r8.keep (\"Bundled platform XML"
-  echo "      types\") and check its implementors survive (ADR 050)."
+  echo "      matches nothing at runtime. Strip the copy before R8 (app/build.gradle.kts, StripPlatformCopies only"
+  echo "      sees plain jars), or pin the name in app/src/main/keepRules/knit-r8.keep (ADR 050)."
   exit 1
 fi
 echo "OK"

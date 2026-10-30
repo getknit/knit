@@ -88,34 +88,13 @@
 -dontwarn com.reandroid.**
 -dontwarn com.android.apksig.**
 
-# ---- Bundled platform XML types (ARSCLib's jar ships copies of org.xmlpull.v1.*, android.util.AttributeSet and
-# android.content.res.XmlResourceParser) ------------------------------------------------------------------------
-# These are PLATFORM classes (bootclasspath), but ARSCLib bundles copies INTO the apk, so R8 full mode treats
-# them as program classes and renames them (org.xmlpull.v1.XmlPullParser -> ao3). At runtime the platform's
-# own, unrenamed classes win, so the framework's android.content.res.XmlBlock$Parser no longer "implements"
-# a renamed interface and ANY resource-XML inflation (Compose vector drawables / fonts) dies at the first
-# frame: `IncompatibleClassChangeError: ... does not implement interface 'ao3' in call to 'int ao3.next()'`
-# (reproduced on-device 2026-07-09, ADR 012). Every platform copy is pinned, not just the package that bit
-# first: pinning org.xmlpull.v1 alone left XmlResourceParser and AttributeSet renamed in every release since,
-# harmless until AGP 9.5.0's R8 cast the parser in Compose's loadVectorResourceInner to the renamed type, and
-# 2.11.0-alpha.1 threw `ClassCastException: XmlBlock$Parser cannot be cast to v0b` on the chat list's room
-# avatar: every phone past onboarding, at every launch (GitHub #59). scripts/r8-platform-gate.sh fails a
-# release build whose mapping renames any class android.jar defines.
--keep class org.xmlpull.v1.** { *; }
--keep class android.content.res.XmlResourceParser { *; }
--keep class android.util.AttributeSet { *; }
--dontwarn org.xmlpull.v1.**
-# ...and a second, subtler consequence of that same duplication, found when ADR 050 dropped the blanket
-# ARSCLib keep. Because `org.xmlpull.v1.XmlPullParser` is a *program* interface here, R8 full mode reasons
-# about it under the closed-world assumption: it counts the implementors it can see. The only ones in the
-# APK are ARSCLib's (KXmlParser, ResXmlPullParser) — the framework's android.content.res.XmlBlock$Parser is
-# a library class implementing the *library* copy of the interface, which the program copy shadows, so R8
-# does not count it. Shrink ARSCLib's away and R8 concludes the interface is uninhabited, every value of
-# that type must be null, and it compiles `parser.next()` down to a literal `throw null`. Compose's
-# painterResource() then dies with an NPE inside seekToStartTag on the first vector drawable — which is a
-# chat-list avatar, so: crash on the first screen. Keeping one implementor alive is enough to stop the
-# inference; renaming and optimizing it are fine, only its removal is not.
--keep,allowobfuscation,allowoptimization class * implements org.xmlpull.v1.XmlPullParser
+# ---- Bundled platform classes (ARSCLib ships org.xmlpull.v1.*, android.util.AttributeSet, XmlResourceParser) ---
+# Nothing to pin. app/build.gradle.kts's StripPlatformCopies transform removes every class android.jar defines from
+# the jars a variant packages, so R8 resolves these as library classes: it cannot rename them out from under the
+# framework's XmlBlock$Parser (ADR 012), infer the interface uninhabited and compile `parser.next()` to `throw null`
+# (ADR 050), or cast to a renamed XmlResourceParser (GitHub #59, 2.11.0-alpha.1). The three pins and the implementor
+# keep that stood here are gone with the copies. scripts/r8-platform-gate.sh fails a release whose mapping still
+# renames a class the platform defines.
 
 # ---- Google Play In-App Review (optional GMS; pre-gated + failures swallowed at runtime) ------------------
 -dontwarn com.google.android.gms.**

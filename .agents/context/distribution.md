@@ -273,7 +273,12 @@ To cut one:
    release if any of them names the pre-release.
 3. Optionally add `fastlane/metadata/android/en-US/changelogs/<code>.txt`; without one the Release notes
    use CHANGELOG.md's `## Unreleased` section.
-4. Tag `v<versionName>` and push. The Release is published (not drafted) as soon as CI is green.
+4. Build `./gradlew :app:assembleRelease` with the bump and the alpha's flags in place, then run
+   `python3 scripts/release-smoke.py app/build/outputs/apk/release/app-release-unsigned.apk` on an emulator and
+   `scripts/r8-platform-gate.sh app/build/outputs/mapping/release/mapping.txt`. The release skill's CI mirror runs
+   both for a stable; an alpha has no mirror, and 2.11.0-alpha.1 shipped a build that crashed at its first frame
+   because no minified build had been launched since an AGP bump (GitHub #59).
+5. Tag `v<versionName>` and push. The Release is published (not drafted) as soon as CI is green.
 
 **Before the first pre-release tag ever lands, the `UpdateCheckMode` filter must be merged into
 fdroiddata.** Preflight reads `.fdroid.yml`, but `fdroid checkupdates` runs against the merged
