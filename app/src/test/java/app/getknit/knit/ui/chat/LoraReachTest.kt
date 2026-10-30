@@ -66,6 +66,35 @@ class LoraReachTest {
     }
 
     @Test
+    fun `the room says the band is busy while the brake holds posts and somebody is behind the board`() {
+        val busy = live.copy(bandBusy = true)
+        assertEquals(LoraReach.RoomBandBusy, loraRoomReachFor(busy, loraOnlyPeer = true))
+        // The brake holds room posts whatever the DM switch says.
+        assertEquals(LoraReach.RoomBandBusy, loraRoomReachFor(busy.copy(dms = false), loraOnlyPeer = true))
+        // Busy and spent: a braked post may never cross LoRa, which outranks a spent window's delay.
+        assertEquals(LoraReach.RoomBandBusy, loraRoomReachFor(busy.copy(airtimeSpent = true), loraOnlyPeer = true))
+    }
+
+    @Test
+    fun `the room stays quiet about a busy band that holds nobody's post, or with no live board`() {
+        val busy = live.copy(bandBusy = true)
+        // Everyone we have heard is on a phone radio: the held posts keep nobody waiting.
+        assertEquals(LoraReach.Silent, loraRoomReachFor(busy, loraOnlyPeer = false))
+        assertEquals(LoraReach.Silent, loraRoomReachFor(busy.copy(airtimeSpent = true), loraOnlyPeer = false))
+        // No board, or one that is down: the header glyph is what speaks.
+        assertEquals(LoraReach.Silent, loraRoomReachFor(LoraFacts(LoraPlane.Down, bandBusy = true), loraOnlyPeer = true))
+        assertEquals(LoraReach.Silent, loraRoomReachFor(LoraFacts(bandBusy = true), loraOnlyPeer = true))
+    }
+
+    @Test
+    fun `a busy band says nothing in a DM or a group, which the brake never holds`() {
+        val busy = live.copy(bandBusy = true)
+        assertEquals(LoraReach.LoraOnly, loraReachFor("ana", busy, boardOnly, RelayReach.Silent))
+        assertEquals(LoraReach.Silent, loraReachFor(Conversations.NEARBY, busy, boardOnly, RelayReach.Room))
+        assertEquals(LoraReach.GroupUnsupported, loraGroupReachFor(busy, loraOnlyMember = true, RelayReach.Silent))
+    }
+
+    @Test
     fun `the room stays quiet when a spent window delays nobody, or when there is air left`() {
         val spent = live.copy(airtimeSpent = true)
         // Everyone we have heard is on a phone radio: the queue holds nothing anyone is waiting for.

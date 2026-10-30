@@ -2626,6 +2626,39 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun theRoomSaysWhenTheBusyBandHoldsItsPostsAndClearsWhenTheBrakeLifts() =
+        runTest {
+            loraFactsFlow.value = LoraFacts(LoraPlane.Live, dms = true, bandBusy = true, airtimeSpent = true)
+            mesh.peerTransports.value = mapOf("ana" to setOf(TransportKind.LoRa))
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            // Braked and spent: the brake is the larger change, so it is the one the room names.
+            assertEquals(LoraReach.RoomBandBusy, vm.state.value.loraReach)
+
+            // The brake lifts with the window still spent: back to the spent notice.
+            loraFactsFlow.value = LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = true)
+            advanceUntilIdle()
+            assertEquals(LoraReach.RoomSaturated, vm.state.value.loraReach)
+
+            // Braked again, but Bluetooth reaches her too: nobody is waiting on the held posts.
+            loraFactsFlow.value = LoraFacts(LoraPlane.Live, dms = true, bandBusy = true)
+            mesh.peerTransports.value = mapOf("ana" to setOf(TransportKind.LoRa, TransportKind.Bluetooth))
+            advanceUntilIdle()
+            assertEquals(LoraReach.Silent, vm.state.value.loraReach)
+
+            // Behind the board again, then the brake lifts with air to spare: the room goes quiet.
+            mesh.peerTransports.value = mapOf("ana" to setOf(TransportKind.LoRa))
+            advanceUntilIdle()
+            assertEquals(LoraReach.RoomBandBusy, vm.state.value.loraReach)
+            loraFactsFlow.value = LoraFacts(LoraPlane.Live, dms = true)
+            advanceUntilIdle()
+            assertEquals(LoraReach.Silent, vm.state.value.loraReach)
+            assertEquals(LoraCarry.Room, vm.state.value.loraCarry)
+        }
+
+    @Test
     fun aDmIgnoresAnotherPeerSittingBehindTheBoard() =
         runTest {
             stubDm("ana")

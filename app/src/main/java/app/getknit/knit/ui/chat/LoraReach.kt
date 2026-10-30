@@ -38,12 +38,23 @@ enum class LoraReach {
     GroupUnsupported,
 
     /**
-     * The room's one and only LoRa state: the window is spent and somebody here is behind the board, so
+     * One of the room's two LoRa states: the window is spent and somebody here is behind the board, so
      * posts reach them minutes late while everyone in phone-radio range still gets them at once. The room
      * has no [LoraOnly] counterpart on purpose (ADR 2026-09.ursc) — its audience is always a mix, so a
      * standing "some people are far away" strip would be permanent chrome saying nothing the user can act on.
      */
     RoomSaturated,
+
+    /**
+     * The room's other LoRa state: the board reports the shared channel busy (`LoraFacts.bandBusy`, the
+     * busy-band brake of ADR 2026-10.ug4a) and somebody here is behind the board, so posts wait in the LoRa
+     * queue and drop from LoRa if the band is still busy past `LoraFramePolicy.FRESH_MS` from the post's send,
+     * while everyone in phone-radio range still gets them at once. Like [RoomSaturated] it speaks only of a change in what to
+     * expect, and only when someone is behind the board (ADR 2026-09.ursc). It outranks [RoomSaturated]: a
+     * spent window delays a post, a braked one may never cross LoRa at all. Room only — the brake never holds
+     * a DM, so the DM and group rules never return it.
+     */
+    RoomBandBusy,
 }
 
 /**
@@ -85,16 +96,21 @@ fun loraReachFor(
     }
 
 /**
- * The [LoraReach] for the Nearby room, whose airtime is the only LoRa story it has (ADR 2026-09.ursc). [loraOnlyPeer] is true
- * while at least one peer anywhere is reachable over the board alone — the room is addressed to nobody, so
- * the question is not "can we reach *them*" but "is there anyone out there a spent window would delay". If
- * the phone radios reach everyone we have heard, the queue holds nothing anybody is waiting for and this
- * stays [LoraReach.Silent].
+ * The [LoraReach] for the Nearby room, whose air is the only LoRa story it has (ADR 2026-09.ursc): a busy
+ * band holding its posts ([LoraReach.RoomBandBusy], ADR 2026-10.ug4a) or a spent window delaying them
+ * ([LoraReach.RoomSaturated]). [loraOnlyPeer] is true while at least one peer anywhere is reachable over the
+ * board alone — the room is addressed to nobody, so the question is not "can we reach *them*" but "is there
+ * anyone out there the held queue would keep waiting". If the phone radios reach everyone we have heard, the
+ * queue holds nothing anybody is waiting for and this stays [LoraReach.Silent], braked or spent.
+ *
+ * The brake outranks the spent window: a spent window only delays a post, while a braked one is dropped from
+ * LoRa if the band is still busy past `LoraFramePolicy.FRESH_MS` from the post's send, so it is the larger change
+ * in what to expect.
  *
  * No [RelayReach] gate, unlike [loraReachFor]: the room is never scope-eligible on the Internet plane
  * ([RelayReach.Room] is permanent by design, `SPOOL_PROTOCOL` §4.4), so no better carrier can exist to
- * silence this. And no dismissal: the state clears itself as the rolling window ages air back, so a
- * "never show again" would hide it on the one occasion it matters.
+ * silence this. And no dismissal: both states clear themselves, as the rolling window ages air back or the
+ * board reports a quieter band, so a "never show again" would hide them on the one occasion they matter.
  */
 fun loraRoomReachFor(
     facts: LoraFacts,
@@ -103,8 +119,9 @@ fun loraRoomReachFor(
     when {
         facts.plane != LoraPlane.Live -> LoraReach.Silent
         !loraOnlyPeer -> LoraReach.Silent
-        !facts.airtimeSpent -> LoraReach.Silent
-        else -> LoraReach.RoomSaturated
+        facts.bandBusy -> LoraReach.RoomBandBusy
+        facts.airtimeSpent -> LoraReach.RoomSaturated
+        else -> LoraReach.Silent
     }
 
 /**

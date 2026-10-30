@@ -113,6 +113,19 @@ class ChatLoraIndicatorTest {
     }
 
     @Test
+    fun theRoomSaysABusyBandHoldsItsPostsAndNamesNobody() {
+        render(conversationId = Conversations.NEARBY, loraReach = LoraReach.RoomBandBusy, loraCarry = LoraCarry.Room)
+        compose.onNodeWithText("The LoRa channel is busy — posts wait to reach distant people").assertIsDisplayed()
+
+        // Like the spent window's, the explanation is about a mixed audience and formats in no peer name.
+        compose.onNodeWithTag("chat_lora_notice").performClick()
+        compose.onNodeWithText("The LoRa channel is busy").assertIsDisplayed()
+        compose.onNodeWithText("Everyone in Wi-Fi or Bluetooth range", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("still busy 15 minutes after you post", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Ana", substring = true).assertDoesNotExist()
+    }
+
+    @Test
     fun aGroupSaysWhyItsMessagesWaitAndNamesNobody() {
         render(conversationId = "g-trailhead", title = "Trailhead Crew", loraReach = LoraReach.GroupUnsupported)
         compose.onNodeWithText("Group chats don't travel over LoRa — distant members get these later").assertIsDisplayed()

@@ -47,6 +47,8 @@ internal class LoraStatusRepository(
                     room = roomHere,
                     battery = status.battery.takeIf { plane == LoraPlane.Live },
                     airtimeSpent = plane == LoraPlane.Live && status.airtime?.let(::saturated) == true,
+                    // Already a boolean on the status, so a busy band never re-emits the facts per reading.
+                    bandBusy = plane == LoraPlane.Live && status.braked,
                     // Both change only on a link transition (the channel table reloads after a setup
                     // reboot), so the per-send status republish never churns them.
                     primaryChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },

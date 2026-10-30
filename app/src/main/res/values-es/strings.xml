@@ -1617,6 +1617,9 @@
     <string name="chat_lora_room_saturated">Se agotó el tiempo de aire de LoRa: las publicaciones tardan en llegar a quienes están lejos</string>
     <string name="chat_lora_room_saturated_title">Se agotó el tiempo de aire de LoRa</string>
     <string name="chat_lora_room_saturated_body">La última señal de algunas personas de aquí llegó por la radio LoRa, y la radio ya usó su parte del aire por ahora. Todas las personas al alcance de Wi-Fi o Bluetooth siguen recibiendo tus publicaciones al instante; las dirigidas a quienes están lejos esperan su turno y llegan en los próximos minutos.</string>
+    <string name="chat_lora_room_band_busy">El canal LoRa está ocupado: las publicaciones esperan para llegar a quienes están lejos</string>
+    <string name="chat_lora_room_band_busy_title">El canal LoRa está ocupado</string>
+    <string name="chat_lora_room_band_busy_body">La última señal de algunas personas de aquí llegó por la radio LoRa, y ahora el canal LoRa está muy ocupado, así que Knit cede el paso a otras radios. Todas las personas al alcance de Wi-Fi o Bluetooth siguen recibiendo tus publicaciones al instante; las dirigidas a quienes están lejos esperan a que el canal se despeje, y no salen por LoRa si sigue ocupado 15 minutos después de publicar.</string>
     <string name="chat_lora_group">Los chats de grupo no viajan por LoRa: quienes están lejos los recibirán después</string>
     <string name="chat_lora_group_title">Los chats de grupo no viajan por LoRa</string>
     <string name="chat_lora_group_body">La radio LoRa lleva la sala Cerca y los mensajes privados, no los chats de grupo. La última señal de alguien de aquí llegó por LoRa, así que no verá estos mensajes hasta que vuelva al alcance de Wi-Fi o Bluetooth, o se pueda llegar a esa persona por un retransmisor de Internet. No se pierde nada: los mensajes la esperan.</string>

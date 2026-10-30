@@ -1590,6 +1590,9 @@
     <string name="chat_lora_room_saturated">LoRa-Sendezeit aufgebraucht – Beiträge erreichen weiter Entfernte nur langsam</string>
     <string name="chat_lora_room_saturated_title">LoRa-Sendezeit ist aufgebraucht</string>
     <string name="chat_lora_room_saturated_body">Einige Personen hier wurden zuletzt per LoRa-Funk empfangen, und das Funkgerät hat seinen Anteil an der Sendezeit vorerst aufgebraucht. Alle in WLAN- oder Bluetooth-Reichweite bekommen deine Beiträge sofort; Beiträge an weiter Entfernte warten, bis sie dran sind, und kommen in den nächsten Minuten an.</string>
+    <string name="chat_lora_room_band_busy">LoRa-Kanal ausgelastet – Beiträge an weiter Entfernte warten</string>
+    <string name="chat_lora_room_band_busy_title">Der LoRa-Kanal ist ausgelastet</string>
+    <string name="chat_lora_room_band_busy_body">Einige Personen hier wurden zuletzt per LoRa-Funk empfangen, und der LoRa-Kanal ist gerade ausgelastet, deshalb hält sich Knit zurück, um anderen Funkgeräten Platz zu lassen. Alle in WLAN- oder Bluetooth-Reichweite bekommen deine Beiträge sofort; Beiträge an weiter Entfernte warten, bis der Kanal ruhiger wird, und werden gar nicht per LoRa gesendet, wenn er 15 Minuten nach dem Absenden noch ausgelastet ist.</string>
     <string name="chat_lora_group">Gruppenchats laufen nicht über LoRa – entfernte Mitglieder bekommen sie später</string>
     <string name="chat_lora_group_title">Gruppenchats laufen nicht über LoRa</string>
     <string name="chat_lora_group_body">Über LoRa laufen der Raum „In der Nähe“ und private Nachrichten, aber keine Gruppenchats. Jemand hier wurde zuletzt per LoRa empfangen und sieht diese Nachrichten erst wieder in WLAN- oder Bluetooth-Reichweite oder über ein Internet-Relay. Nichts geht verloren – die Nachrichten warten auf diese Person.</string>

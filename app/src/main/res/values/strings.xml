@@ -1915,6 +1915,10 @@
     <string name="chat_lora_room_saturated">LoRa airtime is used up — posts are slow to reach distant people</string>
     <string name="chat_lora_room_saturated_title">LoRa airtime is used up</string>
     <string name="chat_lora_room_saturated_body">Some people here were last heard over the LoRa radio, and the radio has used its share of the airwaves for now. Everyone in Wi-Fi or Bluetooth range still gets your posts straight away; posts to the distant ones wait their turn and arrive over the next few minutes.</string>
+    <!-- The busy-band brake, room posts only: the radio reports the shared channel busy, so posts to people behind it wait, and leave LoRa out if still busy 15 minutes after the post. -->
+    <string name="chat_lora_room_band_busy">The LoRa channel is busy — posts wait to reach distant people</string>
+    <string name="chat_lora_room_band_busy_title">The LoRa channel is busy</string>
+    <string name="chat_lora_room_band_busy_body">Some people here were last heard over the LoRa radio, and the LoRa channel is crowded right now, so Knit holds back to leave room for other radios. Everyone in Wi-Fi or Bluetooth range still gets your posts straight away; posts to the distant ones wait until the channel quiets down, and don\'t go over LoRa at all if it\'s still busy 15 minutes after you post.</string>
     <!-- A group thread: the plane refuses group-form frames, so this is a capability, not congestion. -->
     <string name="chat_lora_group">Group chats don\'t travel over LoRa — distant members get these later</string>
     <string name="chat_lora_group_title">Group chats don\'t travel over LoRa</string>

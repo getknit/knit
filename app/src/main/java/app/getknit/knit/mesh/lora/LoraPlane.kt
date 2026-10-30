@@ -46,6 +46,14 @@ data class LoraFacts(
      */
     val airtimeSpent: Boolean = false,
     /**
+     * Whether the shared-band brake holds Knit room posts now (`LoraStatus.braked`, ADR 2026-10.ug4a): the board
+     * reports the channel at or over 40 % busy, so a room post waits in the LoRa queue and drops from LoRa if the band
+     * is still busy past `LoraFramePolicy.FRESH_MS` from the post's send — 15 minutes after it was sent, not after 15
+     * busy minutes. DMs are never braked, so only the room reads it. As of the status's last publish, so it can read
+     * busy for up to a minute after the brake lifts. False unless [plane] is Live.
+     */
+    val bandBusy: Boolean = false,
+    /**
      * The board's primary (slot 0) channel as the Meshtastic room names it — its own name, else the preset's
      * (`LongFast`, `MediumFast`, …) — while [plane] is [LoraPlane.Live]; null otherwise, and null on a board
      * that has neither named it nor reported its preset. The room's title and the chat-list row read it.

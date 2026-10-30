@@ -157,6 +157,22 @@ class LoraStatusRepositoryTest {
         }
 
     @Test
+    fun `the busy-band brake rides the facts only while the link is live`() =
+        runTest {
+            status.value = LoraStatus(state = LinkState.Idle, braked = true)
+            assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
+            status.value = LoraStatus(state = ready, braked = true)
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, bandBusy = true, canPost = true), repo.facts.first())
+            // The brake lifts: the facts follow the status.
+            status.value = LoraStatus(state = ready, braked = false)
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, bandBusy = false, canPost = true), repo.facts.first())
+            // Switched off while braked: Off, never busy.
+            status.value = LoraStatus(state = ready, braked = true)
+            enabled.value = false
+            assertFalse(repo.facts.first().bandBusy)
+        }
+
+    @Test
     fun `the primary channel's name and the posting verdict ride the facts only while the link is live`() =
         runTest {
             val radio =

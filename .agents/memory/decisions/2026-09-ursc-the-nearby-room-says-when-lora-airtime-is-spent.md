@@ -67,3 +67,25 @@ and `aDmIgnoresAnotherPeerSittingBehindTheBoard` — the existential rule must n
 `ChatLoraIndicatorTest` (the room strip, its explanation, and that the body formats **no** peer name into
 itself — the room header renders `nearby_title`, so that assertion has teeth). **Still owed:** the room leg
 of the three-phone airtime trial in `context/lora-bridge.md`.
+
+## Amendment 2026-10-29 — a second room state for the busy-band brake
+
+Decision 2 named `RoomSaturated` the room's only LoRa state. ADR 2026-10.ug4a's shared-band brake adds a second
+change in what to expect: while the board reports the channel at or over 40 % busy, Knit room posts wait in the LoRa
+queue and drop from LoRa (`STALE`) if the band is still busy past `LoraFramePolicy.FRESH_MS` from the post's send
+(the age-out is `sentAt + FRESH_MS`, so a post already queued when the band went busy drops after fewer busy
+minutes). `LoraFacts.bandBusy` (`LoraStatus.braked`, only while the plane is Live) feeds `loraRoomReachFor`, which returns `LoraReach.RoomBandBusy`
+under the same existential audience test as decision 1 — braked with nobody behind the board stays `Silent`.
+
+1. **The brake outranks the spent window.** A spent window delays a post; a braked one may never cross LoRa, so
+   braked-and-spent reads `RoomBandBusy`.
+2. **Room only.** The brake never holds a DM, the Meshtastic room or the auto-reply, so `loraReachFor` and
+   `loraGroupReachFor` ignore `bandBusy`.
+3. **Still no `LoraOnly` counterpart and no dismissal** (decisions 2 and 4): the state clears itself when a reading
+   under 40 % arrives or the last one goes stale. `LoraStatus.braked` is as of the last publish, so the strip can
+   outlast a lifted brake by up to the linger sweep's minute.
+
+Tests: `LoraReachTest` (busy with and without a LoRa-only peer, busy and spent, not Live, DM and group unchanged),
+`LoraStatusRepositoryTest` (`bandBusy` follows `braked`, false off Live), `ChatViewModelTest`
+(`theRoomSaysWhenTheBusyBandHoldsItsPostsAndClearsWhenTheBrakeLifts`), `ChatLoraIndicatorTest` (the strip and its
+explanation name nobody). **Owed:** a device trial on a board reporting `channel_utilization` ≥ 40 % (GitLab #240).
