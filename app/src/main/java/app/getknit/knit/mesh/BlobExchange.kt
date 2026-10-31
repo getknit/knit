@@ -107,10 +107,12 @@ import kotlin.coroutines.cancellation.CancellationException
  * past it. A holder whose stream passes it, or whose `blobhas` size does, is marked for the hash for the session
  * ([PartialBlobs.markHolder]) and passed over ([passOver]): its ask withdrawn, never queried, asked or asked to pull it
  * again by this want or a later one, while the others are asked as for any failed holder. Neither signal can be checked
- * against the hash before the file is whole, so it speaks for that holder alone; only the photo's author ([Want.author])
- * speaks for the photo, and its signal refuses the hash for the session ([PartialBlobs.refuse]): the want ends
- * ([endRefused]), every ask is withdrawn, and a later photo want for it makes none. The wire cannot stop a feed already
- * running, so each holder's one copy may still cross, and is discarded. Any other want of our own for the same hash — an
+ * against the hash before the file is whole, so it speaks for that holder alone — the want's author included, since
+ * [Want.author] is whoever advertised the hash, not whose photo it is. Once every holder in reach is marked the want
+ * runs out like any want whose holders are exhausted. Only bytes held and found over the ceiling refuse the hash for the
+ * session ([refuseAsPhoto], [PartialBlobs.refuse]): the want ends ([endRefused]), every ask is withdrawn, and a later
+ * photo want for it makes none. The wire cannot stop a feed already running, so each holder's one copy may still
+ * cross, and is discarded. Any other want of our own for the same hash — an
  * attachment, a carried frame, a group photo — lifts the cap: the larger ceiling wins. A neighbour's ask moves no ceiling.
  *
  * Pure (no Android/Room): the transport, blob storage, and identity are injected, so the recursion
@@ -490,8 +492,8 @@ class BlobExchange(
      * The holders [hash]'s want passes over (#234): when only a profile photo wants it, those marked for it this session
      * ([PartialBlobs.markHolder]) — a link aborted or skipped their stream past the ceiling, or they answered a size past
      * it ([recordAnswers]). A newly marked one with our ask on it gets a `blobcancel` (its queued copy is dropped; a feed
-     * already running ends on its own, discarded). When the want's author is among them the hash itself is refused, and
-     * [endRefused] ends the want. The want's own [Want.passedOver] is returned with them, so a mark the session's bounded
+     * already running ends on its own, discarded). Its author is a holder like any other here: no holder's claim refuses
+     * the hash. The want's own [Want.passedOver] is returned with them, so a mark the session's bounded
      * set has since dropped never lets this want ask that holder again. Empty for every other want.
      */
     private suspend fun passOver(hash: String): Set<String> {
@@ -500,7 +502,6 @@ class BlobExchange(
                 val w = fetching[hash]?.takeIf { it.ceiling != null } ?: return emptySet()
                 val marked = partials.markedHolders(hash)
                 if (marked.isEmpty() && w.passedOver.isEmpty()) return emptySet()
-                if (w.author in marked) partials.refuse(hash)
                 val fresh = marked.filter { it !in w.passedOver && w.passedOver.size < MAX_PASSED_OVER && w.passedOver.add(it) }
                 // Withdrawn whatever it answered: unlike a holder that said HAVE after our ask, its copy is unwanted.
                 val withdrawn =
@@ -519,8 +520,8 @@ class BlobExchange(
     }
 
     /**
-     * Ends [hash]'s want when only a profile photo wants it and the hash was refused over its ceiling (#234): its author
-     * streamed or answered past it ([passOver]), or a held copy was found over it (`InboundPipeline`). Every neighbour
+     * Ends [hash]'s want when only a profile photo wants it and the hash was refused over its ceiling (#234): a held copy
+     * was found over it ([refuseAsPhoto]), proven by the bytes rather than claimed. Every neighbour
      * still asked gets a `blobcancel`, and nobody else is asked; a feed already running ends on its own, its bytes
      * discarded. True when it ended the want. Checked at every step, so the step that would widen to the next holder
      * ends it instead.
@@ -1622,8 +1623,8 @@ class BlobExchange(
     }
 
     /**
-     * A holder's size over a photo want's ceiling (#234) passes it over before a byte is asked of it; its author's ends
-     * the want ([passOver]). The size is the holder's claim, so it speaks for [from] alone. Under [lock].
+     * A holder's size over a photo want's ceiling (#234) passes it over before a byte is asked of it ([passOver]). The
+     * size is the holder's claim, so it speaks for [from] alone, the want's author included. Under [lock].
      */
     private fun markOverCeiling(
         w: Want,
@@ -2306,8 +2307,8 @@ class BlobExchange(
     }
 
     /**
-     * Whether [hash] was refused as a profile photo this session (#234): its author's stream or size passed the photo
-     * ceiling, or a held copy was found over it ([refuseAsPhoto]). A photo want of it makes nothing.
+     * Whether [hash] was refused as a profile photo this session (#234): a held copy was found over the photo ceiling
+     * ([refuseAsPhoto]). A photo want of it makes nothing.
      */
     fun refusedAsPhoto(hash: String): Boolean = partials.isRefused(hash)
 
@@ -2892,7 +2893,7 @@ class BlobExchange(
         ProofHeld,
 
         // A want made only for a profile photo: a holder passed over because its stream or its size passed the photo
-        // ceiling, and a want ended because its author's did, or a held copy did (#234).
+        // ceiling, and a want ended because a held copy of it was over the ceiling (#234).
         HolderOverCeiling,
         OverCeiling,
     }

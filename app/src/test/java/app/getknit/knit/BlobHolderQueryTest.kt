@@ -2732,8 +2732,9 @@ class BlobHolderQueryTest {
         }
 
     @Test
-    fun theAuthorsOwnSizeOverThePhotoCeilingEndsTheWantForTheSession() =
+    fun theAuthorsOwnSizeOverThePhotoCeilingPassesItOverLikeAnyHolder() =
         runTest(UnconfinedTestDispatcher()) {
+            // The want's author is whoever advertised the hash, not whose photo it is: its claim speaks for itself alone.
             val a = Node("a", backgroundScope)
             val author = Node("b", backgroundScope)
             val holder = Node("c", backgroundScope)
@@ -2743,20 +2744,61 @@ class BlobHolderQueryTest {
 
             a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
 
-            assertTrue("the author speaks for its photo", a.exchange.refusedAsPhoto(hash))
-            assertTrue("the want ended", hash !in a.exchange.wantedHashes())
-            assertTrue(author.asksFrom(hash).isEmpty())
-            assertEquals(1, a.events.count { it == BlobExchange.BlobEvent.OverCeiling })
+            assertEquals(setOf("b"), a.partials.markedHolders(hash))
+            assertFalse("no holder's claim refuses the hash", a.exchange.refusedAsPhoto(hash))
+            assertTrue("every holder in reach is marked: the want asks nobody", author.asksFrom(hash).isEmpty())
+            assertEquals(0, a.events.count { it == BlobExchange.BlobEvent.OverCeiling })
 
-            // Fetched at most once per session: a later profile's want, a holder linking and the re-ask ask nothing.
+            // An honest holder links: the want goes on to it, and the author is still never asked.
             a.transport.connect(holder.transport)
             a.exchange.linked(listOf("c"))
-            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
             a.exchange.reask()
-            assertTrue(hash !in a.exchange.wantedHashes())
-            assertTrue(holder.asksFrom(hash).isEmpty())
-            assertTrue(holder.queriesFrom("a").none { hash in it })
+            assertEquals(listOf("a"), holder.asksFrom(hash))
+            assertTrue(a.store.has(hash))
             assertTrue(author.asksFrom(hash).isEmpty())
+        }
+
+    @Test
+    fun anAdvertiserWhoseStreamPassedTheCeilingDoesNotKeepThePhotoFromAnHonestHolder() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A peer whose profile names someone else's photo hash is the want's author; its junk stream marks it alone.
+            val a = Node("a", backgroundScope)
+            val advertiser = Node("b", backgroundScope)
+            val holder = Node("c", backgroundScope)
+            a.transport.connect(advertiser.transport)
+            val hash = holder.store.seed(picture(PHOTO_BYTES))
+            advertiser.store.lying[hash] = PHOTO_BYTES.toLong() // says HAVE, small; streams past the ceiling
+
+            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
+            assertEquals(listOf("a"), advertiser.asksFrom(hash))
+            a.partials.markHolder(hash, "b") // the link that took its stream kept nothing past the ceiling (FileIntake)
+            a.transport.connect(holder.transport)
+            a.exchange.linked(listOf("c"))
+            a.exchange.reask()
+
+            assertFalse(a.exchange.refusedAsPhoto(hash))
+            assertEquals(listOf("a"), holder.asksFrom(hash))
+            assertTrue("fetched from the honest holder", a.store.has(hash))
+            assertEquals("the advertiser asked once, never again", listOf("a"), advertiser.asksFrom(hash))
+        }
+
+    @Test
+    fun heldBytesOverTheCeilingEndTheWantForTheSession() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The one session refusal left: a copy held and found over the ceiling, proven by its bytes (InboundPipeline).
+            val a = Node("a", backgroundScope)
+            val holder = Node("b", backgroundScope).apply { mute = true }
+            a.transport.connect(holder.transport)
+            val hash = sha256Hex(picture(PHOTO_BYTES))
+            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
+
+            a.exchange.refuseAsPhoto(hash)
+            a.exchange.reask()
+
+            assertTrue("the want ended", hash !in a.exchange.wantedHashes())
+            assertEquals(1, a.events.count { it == BlobExchange.BlobEvent.OverCeiling })
+            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
+            assertTrue("and a later photo want makes none", hash !in a.exchange.wantedHashes())
         }
 
     @Test

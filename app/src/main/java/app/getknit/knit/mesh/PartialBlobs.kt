@@ -42,10 +42,10 @@ import java.io.InputStream
  *   reads it once, at a stream's header. No entry is the attachment ceiling.
  * - **The holders passed over under it** ([markHolder], [markedHolders]): one whose stream passed the per-hash ceiling,
  *   or whose size answer did. Neither claim can be checked against the hash before the whole file is in, so it speaks
- *   for that holder alone: `BlobExchange` asks it for the hash no more this session and goes on to the others, and only
- *   when the holder is the photo's author does it refuse the hash itself ([refuse], [isRefused]) and end the want. One
- *   oversized photo costs at most one copy per holder per session, and one lying neighbour cannot end an honest peer's
- *   photo. Both are purged with the prefixes at each mesh start.
+ *   for that holder alone, whoever it is: `BlobExchange` asks it for the hash no more this session and goes on to the
+ *   others. Only bytes held and found over the ceiling refuse the hash itself ([refuse], [isRefused]). One oversized
+ *   photo costs at most one copy per holder per session, and no neighbour's claim can end an honest peer's photo. Both
+ *   are purged with the prefixes at each mesh start.
  *
  * Pure of Android, thread-safe, every disk touch under one short-held [lock] except the caller's copy.
  */
@@ -100,8 +100,7 @@ class PartialBlobs(
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkedHashSet<String>>): Boolean = size > MAX_REFUSED
         }
 
-    // Hashes refused as a profile photo this session ([refuse]): their author sent or claimed more than the ceiling, or
-    // a held copy was found over it. Capped, oldest first. Guarded by [lock].
+    // Hashes refused as a profile photo this session ([refuse]): a held copy was found over the ceiling. Capped, oldest first. Guarded by [lock].
     private val refused =
         object : LinkedHashMap<String, Unit>(16, 0.75f, false) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>): Boolean = size > MAX_REFUSED
@@ -140,7 +139,7 @@ class PartialBlobs(
     /** The holders passed over for [hash] under its per-hash ceiling this session ([markHolder]). */
     fun markedHolders(hash: String): Set<String> = synchronized(lock) { marked[hash]?.toSet() ?: emptySet() }
 
-    /** [hash] is refused as a profile photo for the rest of the session: its author passed the ceiling, or a held copy did. */
+    /** [hash] is refused as a profile photo for the rest of the session: a held copy of it was over the ceiling. */
     fun refuse(hash: String) =
         synchronized(lock) {
             if (refused.put(hash, Unit) == null) log("partial ${hash.take(LOG_HASH)} refused over its ceiling")

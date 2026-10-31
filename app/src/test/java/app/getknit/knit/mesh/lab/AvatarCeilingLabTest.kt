@@ -117,10 +117,21 @@ class AvatarCeilingLabTest {
         lab.await(1) { if ((m.bob.peer(m.alice)?.updatedAt ?: 0L) >= version) 1 else 0 }
     }
 
-    /** One fetch cycle: the calendar moves a round on, and Bob's 60 s re-offer runs. */
-    private suspend fun cycle(bob: LabNode) {
+    /**
+     * One fetch cycle: the calendar moves a round on, and Bob's 60 s re-offer runs. Before and after, every holder has
+     * handled what it was sent — an ask served, its stream through Bob's link and the mark it earned — before the next jump: a phone's
+     * header lands long before its asker's next cycle, and a jump that outran it would ask the same holder again.
+     */
+    private suspend fun cycle(m: Mesh) {
+        settle(m)
         lab.clock.advance(BlobExchange.CYCLE_MS)
-        bob.reoffer()
+        m.bob.reoffer()
+        settle(m)
+    }
+
+    private suspend fun settle(m: Mesh) {
+        (m.holders + m.relay).forEach { it.transport.awaitInboundDrained() }
+        m.bob.transport.awaitInboundDrained()
     }
 
     /** A DM each way, so the oracle has a thread to read across Alice and Bob, with Relay carrying it. */
@@ -149,21 +160,32 @@ class AvatarCeilingLabTest {
             val m = mesh(photo, lie = 3L * OVERSIZE)
             publishFace(m, photo)
 
-            // Every holder is passed over: the two that answer by their size, the iOS port by the stream Bob's link refused.
+            // Every holder is passed over: the two that answer by their size first, before the calendar moves (a jump past
+            // the query wait would have Bob ask a holder whose answer is still in flight blind), then the iOS port by the
+            // stream Bob's link refused. Its blind ask may wait on Relay, which said it is fetching the photo itself: the
+            // cycles move that wait on the calendar, not the scenario's wall time.
+            val answering = listOf(m.liar, m.honest)
+            lab.await(answering.size) { answering.count { it.nodeId in m.bob.partials.markedHolders(hash) } }
+            repeat(CYCLES) { cycle(m) }
             lab.await(m.holders.size) { m.holders.count { it.nodeId in m.bob.partials.markedHolders(hash) } }
-            repeat(CYCLES) { cycle(m.bob) }
+            // From here every holder is marked: whatever was asked before, nothing more is.
+            settle(m)
+            val askedWhenMarked = m.holders.associateWith { m.bob.asksTo(it, hash) }
+            cycle(m)
             m.alice.setStatus("a second receipt of the profile")
             val version =
                 m.alice.settings.profileVersion
                     .first()
             lab.await(1) { if ((m.bob.peer(m.alice)?.updatedAt ?: 0L) >= version) 1 else 0 }
-            cycle(m.bob)
+            cycle(m)
 
             for (holder in m.holders) {
                 assertTrue("${holder.name} sent ${copies(holder, m.bob, hash)} copies", copies(holder, m.bob, hash) <= 1)
             }
             assertEquals("a holder that answered is never asked", 0, m.bob.asksTo(m.liar, hash) + m.bob.asksTo(m.honest, hash))
-            assertTrue("the iOS port is asked once at most", m.bob.asksTo(m.ios, hash) <= 1)
+            for (holder in m.holders) {
+                assertEquals("${holder.name} asked again once marked", askedWhenMarked.getValue(holder), m.bob.asksTo(holder, hash))
+            }
             assertTrue(
                 m.bob.metrics
                     .files()

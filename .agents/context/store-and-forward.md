@@ -137,7 +137,8 @@ after the byte cap (`ForwardRepository.store`, every origin; a frame over both c
 proofs (`peer_profiles`), which `KeyExchange` would otherwise serve; the pin stays. Both count
 `profileOversizeRefused`. Its photo half: a profile photo over `FileIntake.MAX_AVATAR_BYTES` (1 MiB) is never stored as
 a peer's face, pushed or fetched; a holder that signals over-ceiling is passed over for that hash for the session
-(the author's own signal refuses the hash), so each is fetched at most once per holder per session. Shared with knit-ios
+(the want's author too: no claim refuses the hash, only held bytes do), so each is fetched at most once per holder per
+session. Shared with knit-ios
 through `vectors/custody-v1.json` (`limits.maxProfileSignedBytes`) and `vectors/keyed-v1.json`.
 
 **The group gate** (same ADR). A frame naming a group (`RelayEnvelope.group`) is custodied only when its `members` and

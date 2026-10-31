@@ -54,10 +54,11 @@ largest honest profile is about a kilobyte, and every honest photo is a 256 × 2
     claim, and streamed bytes are hash-checked only at the end), so the refusal is keyed by holder. A holder that
     streams past the ceiling, or answers a size over it, is discarded and marked for that hash for the session: passed
     over like a failed holder and never asked for it again, by the re-ask round, the periodic re-want or a new want.
-    The want goes on to the others, and ends like any want once no unmarked holder is left. Only when the signal comes
-    from the want's author, the peer whose photo it is, is the hash refused as a profile photo for the session: the want
-    ends and the asks sent to the others are cancelled. A hash also wanted as an attachment keeps the attachment
-    ceiling. The receiver cannot stop a feed that is already running (a `blobcancel` drops only a queued copy, ADR
+    The want goes on to the others, and ends like any want once no unmarked holder is left. No holder's signal refuses
+    the hash outright, not even the want's author's: the author is only whoever advertised the hash, and any peer can
+    sign a profile naming someone else's photo, so it is marked like any other holder. Only held bytes over the ceiling
+    (the adoption backstop, the face sweep) refuse a hash for the session. A hash also wanted as an attachment keeps
+    the attachment ceiling. The receiver cannot stop a feed that is already running (a `blobcancel` drops only a queued copy, ADR
     2026-10.nsr7, and the stream cut is not built, #197), so those bytes cross and are discarded;
   - adoption is the backstop: `adoptAdvertisedAvatar` and the profile writers' `avatarAdoptable` refuse a held blob over
     the ceiling and release it.
@@ -101,7 +102,8 @@ cross the fast or LoRa planes anyway, and it sits well below the 61,440 byte cap
   (its fields are frozen), so that neighbour fetches the photo whole before it reaches us and we abort. That cost
   predates this change.
 - A holder that lies about a photo's size, or streams junk past the ceiling, loses only its own turn for that photo
-  until the next start; an honest holder still serves it. Only the photo's author can refuse its own photo.
+  until the next start; an honest holder still serves it. A peer that advertises someone else's photo is no more
+  than such a holder.
 
 Not covered, each its own change: blocking reaching presentation (knit-ios ADR 2026-10.5wgg keeps profiles and photo
 fetches of a blocked sender on purpose), receive-time stamps for peer eviction (a new column), a cap on knit-ios's
