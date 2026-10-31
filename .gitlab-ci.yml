@@ -142,7 +142,7 @@ workflow:
 # `./gradlew :app:testDebugUnitTest --dry-run` if AGP renames or adds one. Shared as a plain YAML anchor
 # rather than GitLab's `!reference` tag so the repo's yamllint can still parse this file.
 .compile-unit-tests: &compile-unit-tests
-  ./gradlew :app:compileDebugUnitTestJavaWithJavac :app:packageDebugUnitTestForUnitTest :app:bundleDebugClassesToRuntimeJar :app:processDebugUnitTestJavaRes :app:processDebugJavaRes :app:generateDebugUnitTestConfig :app:koverFindJar --stacktrace --console=plain
+  ./gradlew :app:compileDebugUnitTestJavaWithJavac :app:packageDebugUnitTestForUnitTest :app:bundleDebugClassesToRuntimeJar :app:extractDebugUnitTestJavaRes :app:compressDebugUnitTestJavaRes :app:compressDebugJavaRes :app:generateDebugUnitTestConfig :app:koverFindJar --stacktrace --console=plain
 
 # Every job that compiles runs on skuld for now (`tags: [skuld]` here and on the three test jobs;
 # build:release is already on bigmem). On the 1 vCPU `service` runner a cold compile alone takes ~44 min —
