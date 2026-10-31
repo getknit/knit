@@ -115,6 +115,25 @@ workflow:
           settings.buildCache { local { directory = new File(settings.rootDir, '.gradle/build-cache') } }
       }
       EOF
+    # The unit tests' external runtime jars, fetched by build:debug so the deps cache it saves holds them. Only
+    # the Test task resolves that classpath, and the build jobs never run one, so every Robolectric job pulled
+    # nativeruntime-dist-compat (152 MB) from Maven Central at once from one IP, and Central answered 429
+    # (pipelines 1295, 1304). External modules only: the classpath's own project is ambiguous outside AGP's view.
+    - |
+      cat > "$GRADLE_USER_HOME/init.d/ci-fetch-test-deps.gradle" <<'EOF'
+      allprojects {
+          plugins.withId('com.android.application') {
+              tasks.register('ciFetchTestDeps') {
+                  inputs.files(project.configurations.named('debugUnitTestRuntimeClasspath').map { c ->
+                      c.incoming.artifactView {
+                          componentFilter { it instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+                      }.files
+                  })
+                  doLast { }
+              }
+          }
+      }
+      EOF
     - |
       if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
         wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip" -O /tmp/clt.zip
@@ -159,6 +178,8 @@ build:debug:
   script:
     - ./gradlew :app:assembleDebug --stacktrace --console=plain
     - *compile-unit-tests
+    - ./gradlew :app:ciFetchTestDeps --stacktrace --console=plain
+    - ./gradlew -Pknit.wear=true :wear:ciFetchTestDeps --stacktrace --console=plain
   cache:
     - <<: *gradle-deps-cache
       policy: pull-push
@@ -241,8 +262,8 @@ test:unit:
 
 # The watch app's JVM tests (wear/src/test/: the status words in every shipped language under Robolectric, the ring
 # code, the day stats, the read cadence). `:wear` is opt-in (`-Pknit.wear=true`), so no other job configures it and
-# nothing here reaches :app's release. Same compile/run split as test:unit, for the same memory reason. The deps
-# cache holds no wear-only artifacts (only the build jobs save it), so they are downloaded each run.
+# nothing here reaches :app's release. Same compile/run split as test:unit, for the same memory reason. Its test
+# runtime jars come from the deps cache (build:debug's ciFetchTestDeps); its compile-only ones are downloaded each run.
 test:wear:
   extends: .android
   stage: test
