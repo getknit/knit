@@ -963,8 +963,8 @@ its media (`REASON_MEDIA`).
     the files for upload.
   - **The screen.** With the walkie's diagnostics toggled off, the card's place shows the transcript: each burst
     `Listening…` until the model has heard something, then its words so far (dimmed, not read out), then its text (a
-    polite live region) or why not (no speech, no model, failed). While the model is not on the phone, the card says
-    it reads English only and what it costs, flags a metered or Data Saver route, and offers Download, Cancel or Try again, and Dismiss: once
+    polite live region) or why not (no speech, no model, failed). While the model is not on the phone, the card draws
+    no bursts — those it heard show, as no model, once it is in — and says it reads English only and what it costs, flags a metered or Data Saver route, and offers Download, Cancel or Try again, and Dismiss: once
     dismissed (`TranscriptStore.offerDismissed`), no call draws the card while the model is absent.
   - **The switch.** The Calls screen's "Transcripts and captions" (`TranscriptStore.enabled`, on by default) turns
     the whole thing off: no burst is taken, nothing reaches the model, and no card is drawn. It governs a live call's

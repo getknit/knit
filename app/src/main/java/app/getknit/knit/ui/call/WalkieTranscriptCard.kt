@@ -23,7 +23,6 @@ import androidx.compose.material.icons.outlined.ClosedCaption
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -79,11 +78,10 @@ internal data class TranscriptUi(
  * The walkie session's transcript (docs/VOICE_CALLS.md C-3.11-9), in the call screen's card slot while the header's
  * diagnostics toggle is off: each burst from [name] as text while it plays, settled once it has ended, and each burst
  * spoken here as the model heard it from the microphone, before Opus — newest at the bottom — and while the speech
- * model is not on the
- * phone, what it costs, the button that fetches it and Dismiss ([onDismiss]: the offer is closed for good, the caller
- * draws no card while the model is absent, and the download stays on the Calls screen). Experimental, debug only:
- * a spoken line set beside the other phone's for the same burst shows what the codec cost the model. Nothing here
- * leaves the phone.
+ * model is not on the phone, in their place, what it costs, the button that fetches it and Dismiss ([onDismiss]: the
+ * offer is closed for good, the caller draws no card while the model is absent, and the download stays on the Calls
+ * screen). Experimental, debug only: a spoken line set beside the other phone's for the same burst shows what the codec
+ * cost the model. Nothing here leaves the phone.
  */
 @Composable
 internal fun WalkieTranscript(
@@ -99,7 +97,7 @@ internal fun WalkieTranscript(
     val list = rememberLazyListState()
     val reduceMotion = LocalReduceMotion.current
     // The newest burst in view as it comes, as its words stream in and as its text lands — once the model is in. Before
-    // that the panel at the top is what matters, and a short screen would scroll it away.
+    // that the card draws the offer alone.
     LaunchedEffect(ui.lines.size, ui.lines.lastOrNull()?.state, ui.lines.lastOrNull()?.live, ready) {
         if (!ready || ui.lines.isEmpty()) return@LaunchedEffect
         val last = ui.lines.lastIndex
@@ -146,14 +144,13 @@ private fun LazyListScope.transcriptItems(
     timeWidth: Dp,
     onCancel: () -> Unit,
 ) {
+    // Until the model is in, the offer alone: every burst heard so far reads "no model", which the offer already says.
+    // They are drawn once it is in, beside the bursts it wrote out.
     if (!ready) {
-        item(key = "model") {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ModelPanel(ui, onCancel)
-                if (ui.lines.isNotEmpty()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            }
-        }
-    } else if (ui.lines.isEmpty()) {
+        item(key = "model") { ModelPanel(ui, onCancel) }
+        return
+    }
+    if (ui.lines.isEmpty()) {
         item(key = "empty") {
             Text(
                 stringResource(R.string.call_transcript_empty, name.ifBlank { stringResource(R.string.call_transcript_other_phone) }),
