@@ -1345,7 +1345,26 @@ class LabNode internal constructor(
      * Datagrams this node has sent on the lab's Internet to anything but its STUN server ([LabInternet.Phone.sentOut]): a
      * punch's probes, then its link's traffic. 0 for a node off it.
      */
-    fun linkDatagramsSent(): Int = internet?.sentOut?.invoke() ?: 0
+    fun linkDatagramsSent(): Int = internet?.sentOut() ?: 0
+
+    /**
+     * The network this node's phone is on now goes dark once it has carried [bytes] more either way, as Wi-Fi does walking
+     * out of range ([FakeLinkNet.Phone.darkAfter]); [networkDark] says when it has.
+     */
+    fun darkenNetworkAfter(bytes: Long) = checkNotNull(internet) { "$name is not on the lab's Internet" }.network.darkAfter(bytes)
+
+    /** Whether the network this node's phone is on now has gone dark ([darkenNetworkAfter]). */
+    val networkDark: Boolean get() = internet?.network?.dark == true
+
+    /**
+     * This node's phone moves to another network, behind a NAT of [nat] at an address of its own ([LabInternet.Phone.move]):
+     * its links' ports stay on the one it left, and its links hear of the new default network as `di/DirectLinkWiring`
+     * tells them (`DirectLinks.onRouteChanged`).
+     */
+    fun switchNetwork(nat: FakeLinkNet.Nat) {
+        checkNotNull(internet) { "$name is not on the lab's Internet" }.move(nat)
+        links?.onRouteChanged()
+    }
 
     /**
      * How many uses this node's direct-link plane has noted (`DirectLinkTransport.onUse`: a frame or file sent or taken),
@@ -1380,6 +1399,13 @@ class LabNode internal constructor(
 
     /** How many direct links [MeshLab.directLink] has made to this node: the link-up a [linkFrames] line was sent in. */
     val linkUps = AtomicInteger()
+
+    /**
+     * How many links this node's direct-link plane has adopted, made by [MeshLab.directLink] or its real links, each
+     * counted in the plane's link-up hook, once the plane holds it in place of any old link to that peer: what a wait for a
+     * link made again reads, since the plane's neighbour set does not change when one link replaces another.
+     */
+    val linksAdopted = AtomicInteger()
 
     /** This node's hand-off of a file its direct-link plane landed to the manager, holdable ([LabFileGate]). */
     val linkFileGate = LabFileGate()
@@ -1421,7 +1447,10 @@ class LabNode internal constructor(
                     links?.noteUse(it)
                     linkUses.incrementAndGet()
                 },
-                onLinkUp = { manager.onDirectLinkUp(it) },
+                onLinkUp = {
+                    linksAdopted.incrementAndGet()
+                    manager.onDirectLinkUp(it)
+                },
                 // A walkie's hold, as `di/DirectLinkWiring` decides it: a link only where the radios have no path.
                 onHold = { peer -> !manager.talkRadioPath(peer) && links?.raise(peer) == true },
             )

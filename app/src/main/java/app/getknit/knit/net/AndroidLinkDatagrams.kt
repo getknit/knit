@@ -54,7 +54,7 @@ class AndroidLinkDatagrams(
 private class AndroidLinkPort(
     private val socket: DatagramSocket,
     private val network: Network,
-    gate: AndroidInternetGate,
+    private val gate: AndroidInternetGate,
 ) : LinkPort {
     override val localPort: Int = socket.localPort
 
@@ -105,6 +105,8 @@ private class AndroidLinkPort(
         } catch (_: IOException) {
             emptyList()
         }
+
+    override fun onDefaultNetwork(): Boolean = gate.currentNetwork() == network
 
     override fun close() = socket.close()
 

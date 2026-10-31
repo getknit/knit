@@ -562,7 +562,140 @@ class InternetLinkLabTest {
             .firstOrNull { it.holderId == holder.nodeId }
             ?.let { DeliveryPlane.fromCode(it.plane) }
 
+    /**
+     * The receiver moves to another network mid-file (ADR 2026-10.a5yj's network-change amendment, `docs/DIRECT_LINKS.md`
+     * L-4-2, L-7-9). Alice's photo, which no relay takes, is crossing the link when Bob's Wi-Fi goes dark under it, and his
+     * phone moves to another network: his link closes at once (`ROUTE`), keeping the part of the photo that landed, while
+     * Alice's end still holds the old one. That link had no chance at the photo, so it is not counted against Bob's want:
+     * a minute after the message arrived his own demand offers Alice a link from his new network, her answer replaces the
+     * link she held, and the photo crosses from where the first copy stopped.
+     */
+    @Test
+    fun aPhotoCutByTheReceiversMoveToAnotherNetworkResumesOverTheLinkHisWantRaises() =
+        runBlocking {
+            val (alice, bob) = contacts(filesGatedRelay(), Nat.PORT_RESTRICTED)
+            val bobDemand = checkNotNull(bob.demand)
+            val hash = cutMidFile(alice, bob, darkened = bob, caption = "cut by bob's move", seed = 2_031)
+            val adopted = adoptedBy(alice, bob)
+
+            bob.switchNetwork(Nat.PORT_RESTRICTED)
+            awaitCutLinkGone(bob, alice)
+            assertFalse(bob.holdsBlob(hash))
+            // Every ask of Bob's that crossed the cut link answered, so none is served past the jump and renews the memo.
+            lab.await(1) { if (alice.metrics.files().blobAsksHandled >= alice.linkAsksIn.size) 1 else 0 }
+
+            // Past the serve memo of the copy that was cut, and a minute past the message: Bob's want is due.
+            lab.clock.advance(LinkDemandPolicy.WANT_WAIT_MS)
+            bobDemand.round()
+            awaitRelinked(bob, alice, adopted)
+            bob.reoffer()
+            val got = lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 }
+            assertTrue("bob never got the photo after his move\n${bob.linkLog}\n${lab.report(listOf(alice, bob))}", got)
+            assertEquals(LinkWhy.WANT, checkNotNull(bob.links).lastTries()[alice.nodeId]?.why)
+            assertTrue("the photo never resumed: ${alice.linkFiles}", alice.linkFiles.any { hash in it && " from " in it })
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * The sender moves (`docs/DIRECT_LINKS.md` L-4-2, L-7-7): Alice's Wi-Fi goes dark with her photo part way across, and
+     * her phone moves to another network. Her link closes at once, mid-file, so the photo no relay takes is due again
+     * without a wait, and her next round offers from the new network; Bob, who still held the old link, answers, and the
+     * answer replaces it. His ask over the new link meets Alice's serve memo for the copy the old one carried, and the
+     * next round's ask, past it, brings the rest from where it stopped.
+     */
+    @Test
+    fun aPhotoCutByTheSendersMoveToAnotherNetworkIsOfferedAgainAtOnce() =
+        runBlocking {
+            val (alice, bob) = contacts(filesGatedRelay(), Nat.PORT_RESTRICTED)
+            val demand = checkNotNull(alice.demand)
+            val links = checkNotNull(alice.links)
+            val hash = cutMidFile(alice, bob, darkened = alice, caption = "cut by alice's move", seed = 2_032)
+            val adopted = adoptedBy(alice, bob)
+            val firstTry = links.lastTries()[bob.nodeId]
+
+            alice.switchNetwork(Nat.PORT_RESTRICTED)
+            awaitCutLinkGone(alice, bob)
+
+            // No clock moves: the photo is due again at once, with no backoff on the new network.
+            demand.round()
+            awaitRelinked(alice, bob, adopted)
+            val again = checkNotNull(links.lastTries()[bob.nodeId])
+            assertTrue(
+                "no new offer for the photo: ${alice.linkLog}",
+                again !== firstTry && again.offerer && again.why == LinkWhy.FILE && again.outcome == LinkOutcome.UP,
+            )
+            // Every ask that reached Alice answered, so none is served past the jump and renews the memo.
+            lab.await(1) { if (alice.metrics.files().blobAsksHandled >= alice.linkAsksIn.size) 1 else 0 }
+            lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
+            bob.reoffer()
+            val got = lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 }
+            assertTrue("bob never got the photo after alice's move\n${alice.linkLog}\n${lab.report(listOf(alice, bob))}", got)
+            assertTrue("the photo never resumed: ${alice.linkFiles}", alice.linkFiles.any { hash in it && " from " in it })
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    // [moved]'s link to [peer] closed mid-file on its move, and its link plane has dropped it: logged once the link has left
+    // its links, so its demand no longer reads it as up, and dropped once the plane let go of the file it was landing, so
+    // its mesh no longer reads that file as arriving.
+    private suspend fun awaitCutLinkGone(
+        moved: LabNode,
+        peer: LabNode,
+    ) {
+        val closed = lab.tryAwait(1) { moved.linkLog.count { "ROUTE mid-file" in it } }
+        assertTrue("${moved.name}'s link never closed mid-file on the move\n${moved.linkLog}", closed)
+        lab.await(1) { if (moved.linkPlaneHolds(peer)) 0 else 1 }
+    }
+
+    // How many links each of [nodes]' planes has adopted so far, for [awaitRelinked].
+    private fun adoptedBy(vararg nodes: LabNode): Map<LabNode, Int> = nodes.associateWith { it.linksAdopted.get() }
+
+    // A link made again between [a] and [b] has reached both planes: each adopted one since [before], which the neighbour
+    // sets cannot show on an end whose plane still held the old link when the new one replaced it.
+    private suspend fun awaitRelinked(
+        a: LabNode,
+        b: LabNode,
+        before: Map<LabNode, Int>,
+    ) {
+        lab.await(1) { if (listOf(a, b).all { it.linksAdopted.get() > before.getValue(it) }) 1 else 0 }
+        awaitLinked(a, b)
+    }
+
+    // Alice sends Bob a photo no relay takes, and her demand raises a link for it; [darkened]'s network goes dark once
+    // [DARK_AFTER_BYTES] have crossed it, with part of the photo landed on Bob's end and the rest still to come: both
+    // ends are mid-file. Returns the photo's hash.
+    private suspend fun cutMidFile(
+        alice: LabNode,
+        bob: LabNode,
+        darkened: LabNode,
+        caption: String,
+        seed: Int,
+    ): String {
+        darkened.darkenNetworkAfter(DARK_AFTER_BYTES)
+        assertTrue(alice.sendImage(Random(seed).nextBytes(BIG_PHOTO_BYTES), caption, to = bob))
+        lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.second == caption } }
+        val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), alice.ownMessageId(alice.dmWith(bob), caption)))
+        checkNotNull(alice.demand).round()
+        val cut =
+            lab.tryAwait(1) {
+                val mid = darkened.networkDark && checkNotNull(alice.link).busy(bob.nodeId) && checkNotNull(bob.link).busy(alice.nodeId)
+                if (mid) 1 else 0
+            }
+        val state = "dark ${darkened.networkDark}, alice busy ${alice.link?.busy(bob.nodeId)}, bob busy ${bob.link?.busy(alice.nodeId)}"
+        assertTrue("the network never went dark mid-file: $state\n${alice.linkFiles}\n${alice.linkLog}\n${bob.linkLog}", cut)
+        assertFalse(bob.holdsBlob(hash))
+        return hash
+    }
+
     private companion object {
+        // A photo the cut lands well inside of on both ends: past what crosses before the network goes dark, and past what
+        // the sender's stream then holds unacknowledged (its window, grown on the acks that came back, and its send
+        // buffer), so the sender's writer is still blocked on the stream, as on a slow path, when the path dies.
+        const val BIG_PHOTO_BYTES = 512 * 1024
+
+        // What crosses a network before it goes dark: the link's handshake and sync, and well over `PartialBlobs.MIN_BYTES`
+        // of the photo, so the part that landed is kept.
+        const val DARK_AFTER_BYTES = 64 * 1024L
+
         // The hash prefix `BlobExchange`'s log lines name.
         const val HASH_CHARS = 8
 

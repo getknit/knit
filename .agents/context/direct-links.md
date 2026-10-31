@@ -71,6 +71,16 @@ and the entry is fixed.
   TTL rather than the 15-min window — never a memo of what was asked, never a count (FETCHING is asked again), never a
   group's picture, and never an attachment that is not stuck, so a sender's `DirectLink` holder row means the link
   carried it. The spool plane's next look (`reopenUploads`, the hourly recheck) then settles it PROVED (ADR 2026-10.vy27).
+- **When touching `DirectLinks.onRouteChanged` / `lastUpAt` / `lostMidFile`, `LinkPort.onDefaultNetwork`,
+  `LinkSession.endedBusy` / `EndReason.ROUTE`, `InternetGate.routeChanges` as the links collect it, or the lab's
+  `FakeLinkNet.Phone.move` / `darkAfter` and `LabNode.switchNetwork` / `darkenNetworkAfter`:** READ ADR 2026-10.a5yj's
+  network-change amendment and `docs/DIRECT_LINKS.md` L-4-2, L-7-7. A link's socket stays on the network it was bound
+  to, so a new default network closes every link whose port is off it (`ROUTE`) — never every link, which a network
+  blinking out of validation and back would cost. A link that ended `SILENT` or `ROUTE` with a file crossing it is not
+  counted as up, so the demand offers for the file again (at once after a `ROUTE`; after a `SILENT`, on the backoff
+  counted over such losses in a row) — never on a count that a clean end or a new network does not clear. The sender's
+  "crossing" ends when its last chunk is written to the stream, not when it is acknowledged; the receiver's want covers
+  that last second.
 - **When touching `FrameType.LINK`, `LinkSignal` / `LinkCand`, `MeshManager.sendLinkSignal` / `canSignalLink`,
   `ScopeSync.sig` / `canSig`, `LinkPeers.canSignal`, `LinkOutcome.NO_SIG`, `InboundPipeline`'s `link` arm or
   `onLinkSignal`, `mesh/crypto/LinkKeys` or the `link` half of `ScopeFrames.sigEligible`:** READ ADR 2026-10.a5yj (its

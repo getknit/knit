@@ -11,7 +11,8 @@ import kotlin.random.Random
  * An in-process Internet for direct links (ADR 2026-10.a5yj): phones behind NATs of a chosen [Nat] kind, an IPv6
  * address behind a stateful firewall where asked, a LAN shared by phones behind one NAT, and STUN servers that answer
  * with the mapping they saw. Datagrams cross at once (or are lost, at [loss]), so a session runs on the test's virtual
- * time. Nothing here is Android: it implements the [LinkDatagrams] seam the real link uses.
+ * time. A phone can move to another network ([Phone.move]), and the one it is on can go dark under it
+ * ([Phone.darkAfter]). Nothing here is Android: it implements the [LinkDatagrams] seam the real link uses.
  */
 @OptIn(ExperimentalCoroutinesApi::class) // select's onTimeout
 class FakeLinkNet(
@@ -47,6 +48,20 @@ class FakeLinkNet(
         val inbound = HashMap<Int, Pair<FakePort, String>>() // external port → (port, mapping key)
         val permitted = HashSet<String>() // "extPort|addr" or "extPort|addr|port"
         var sentOut = 0 // datagrams sent to anything but a STUN server, lost ones too
+    }
+
+    // One phone's stay on one network: its NAT (shared by every phone behind it), its LAN and IPv6 addresses, and whether
+    // it still carries anything. [left]: the phone moved off it ([Phone.move]), so a port on it sends nothing and is off the
+    // default network. [dark]: it carries nothing either way, the phone still on it ([Phone.darkAfter]).
+    private class Attachment(
+        val gateway: Nat4,
+        val lan: ByteArray,
+        val v6: ByteArray?,
+    ) {
+        @Volatile var left = false
+
+        @Volatile var dark = false
+        var darkAfter: Long? = null // bytes it carries, either way, before it goes dark
     }
 
     private val nats = ArrayList<Nat4>()
@@ -89,30 +104,77 @@ class FakeLinkNet(
         external: ByteArray,
         v6: ByteArray? = null,
         kind: Int = LinkSignal.NET_WIFI,
-    ): LinkDatagrams {
-        val gateway = nats.firstOrNull { it.external.contentEquals(external) } ?: Nat4(nat, external).also { nats += it }
-        val lan = if (nat == Nat.NONE) external else byteArrayOf(192.toByte(), 168.toByte(), 1, (nextHost++).toByte())
-        return object : LinkDatagrams {
-            override fun open(): LinkPort = open(gateway, lan, v6)
+    ): Phone = Phone(nat, external, v6, kind)
 
-            override fun networkKind(): Int = kind
+    /**
+     * One phone on this Internet: the network it is on now, where every port it [open]s is bound, as a socket is bound to
+     * the default network on Android. Its ports stay on that network when the phone [move]s.
+     */
+    inner class Phone internal constructor(
+        nat: Nat,
+        external: ByteArray,
+        v6: ByteArray?,
+        private val kind: Int,
+    ) : LinkDatagrams {
+        private var at: Attachment = attach(nat, external, v6)
+
+        /** The external address of the network it is on now. */
+        val external: ByteArray get() = synchronized(this@FakeLinkNet) { at.gateway.external }
+
+        /** Whether the network it is on now has gone dark ([darkAfter]). */
+        val dark: Boolean get() = synchronized(this@FakeLinkNet) { at.dark }
+
+        // Never null here, but typed as the seam is, so a test that opens one reads as it would against Android.
+        override fun open(): LinkPort? = synchronized(this@FakeLinkNet) { open(at) }
+
+        override fun networkKind(): Int = kind
+
+        /**
+         * Moves the phone to another network, behind a NAT of [nat] at [external], with [v6] if given: the network it was
+         * on is left — a port bound to it sends nothing, nothing reaches it, and it is off the default network
+         * ([LinkPort.onDefaultNetwork]) — and every port opened from now on is on the new one.
+         */
+        fun move(
+            nat: Nat,
+            external: ByteArray,
+            v6: ByteArray? = null,
+        ) {
+            synchronized(this@FakeLinkNet) {
+                at.left = true
+                at = attach(nat, external, v6)
+            }
+        }
+
+        /**
+         * The network the phone is on now goes dark once it has carried [bytes] more, either way and STUN aside: from then
+         * nothing crosses it, as Wi-Fi does walking out of range, while the phone stays on it until it [move]s.
+         */
+        fun darkAfter(bytes: Long) {
+            synchronized(this@FakeLinkNet) { at.darkAfter = bytes }
         }
     }
 
-    @Synchronized
-    private fun open(
-        gateway: Nat4,
-        lan: ByteArray,
+    // A phone's stay on the network behind [external], sharing its NAT and LAN with the phones already there.
+    private fun attach(
+        nat: Nat,
+        external: ByteArray,
         v6: ByteArray?,
-    ): LinkPort = FakePort(this, gateway, lan, v6, 50_000 + ports.size).also { ports += it }
+    ): Attachment {
+        val gateway = nats.firstOrNull { it.external.contentEquals(external) } ?: Nat4(nat, external).also { nats += it }
+        val lan = if (nat == Nat.NONE) external else byteArrayOf(192.toByte(), 168.toByte(), 1, (nextHost++).toByte())
+        return Attachment(gateway, lan, v6)
+    }
+
+    private fun open(attachment: Attachment): LinkPort = FakePort(this, attachment, 50_000 + ports.size).also { ports += it }
 
     private class FakePort(
         val net: FakeLinkNet,
-        val gateway: Nat4,
-        val lan: ByteArray,
-        val v6: ByteArray?,
+        val attachment: Attachment,
         override val localPort: Int,
     ) : LinkPort {
+        val gateway: Nat4 get() = attachment.gateway
+        val lan: ByteArray get() = attachment.lan
+        val v6: ByteArray? get() = attachment.v6
         val queue = Channel<Datagram>(Channel.UNLIMITED)
         val v6Permitted = HashSet<String>()
 
@@ -128,7 +190,7 @@ class FakeLinkNet(
             address: ByteArray,
             port: Int,
             data: ByteArray,
-        ): Boolean = !closed && net.route(this, address, port, data)
+        ): Boolean = !closed && !attachment.left && net.route(this, address, port, data) // a left network fails the send
 
         // A select, not withTimeoutOrNull around receive: a timeout that fires in the instant a datagram is handed over
         // would cancel the receive and lose the datagram (prompt cancellation), which no socket does.
@@ -144,6 +206,8 @@ class FakeLinkNet(
 
         override fun resolveV4(host: String): List<ByteArray> = listOfNotNull(net.stun[host] ?: net.silent[host])
 
+        override fun onDefaultNetwork(): Boolean = synchronized(net) { !attachment.left }
+
         override fun close() {
             closed = true
             queue.close()
@@ -158,12 +222,13 @@ class FakeLinkNet(
         data: ByteArray,
     ): Boolean {
         if (lost(from, address)) return true
-        if (address.size == V6) return routeV6(from, address, port, data)
+        if (address.size == V6) return routeV6(from, address, port, data).also { carry(from.attachment, data.size) }
         stun.entries.firstOrNull { it.value.contentEquals(address) }?.let { (_, server) ->
             val (srcAddr, srcPort) = outbound(from, server, port)
             answerStun(from, server, port, srcAddr, srcPort, data)
             return true
         }
+        carry(from.attachment, data.size)
         // The LAN: another phone behind the same NAT, reached by its private address.
         ports.firstOrNull { it !== from && it.gateway === from.gateway && it.lan.contentEquals(address) && it.localPort == port }?.let {
             deliver(it, Datagram(data, from.lan, from.localPort))
@@ -181,11 +246,13 @@ class FakeLinkNet(
         return true
     }
 
-    // Counts a datagram [from] sends to anything but a STUN server ([sentOut]), then rolls whether it is lost on the way.
+    // Counts a datagram [from] sends to anything but a STUN server ([sentOut]), then rolls whether it is lost on the way;
+    // on a dark network it leaves and goes nowhere, uncounted.
     private fun lost(
         from: FakePort,
         address: ByteArray,
     ): Boolean {
+        if (from.attachment.dark) return true
         if ((stun.values + silent.values).none { it.contentEquals(address) }) from.gateway.sentOut++
         return loss > 0 && random.nextDouble() < loss
     }
@@ -272,7 +339,23 @@ class FakeLinkNet(
         to: FakePort,
         datagram: Datagram,
     ) {
-        if (!to.closed) to.queue.trySend(datagram)
+        if (to.closed || to.attachment.left || to.attachment.dark) return
+        if (stun.values.none { it.contentEquals(datagram.address) }) carry(to.attachment, datagram.data.size)
+        to.queue.trySend(datagram)
+    }
+
+    // [n] bytes crossed [attachment]: it goes dark once it has carried what [Phone.darkAfter] allowed it.
+    private fun carry(
+        attachment: Attachment,
+        n: Int,
+    ) {
+        val budget = attachment.darkAfter ?: return
+        if (budget > n) {
+            attachment.darkAfter = budget - n
+        } else {
+            attachment.darkAfter = null
+            attachment.dark = true
+        }
     }
 
     private companion object {

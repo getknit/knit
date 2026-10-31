@@ -35,7 +35,9 @@ import java.util.concurrent.atomic.AtomicLong
  * keeps its path warm as a held one does: a keepalive after [holdKeepaliveMs] with nothing sent — one each way in a whole
  * idle wait. A link that sent DATA and has heard nothing that opens for [silenceMs] since lost its path and ends
  * [EndReason.SILENT] (a stream's own probes keep going while its data is unanswered, so a path dead mid-transfer is
- * found within that); one that hears nothing at all for [holdSilenceMs] ends so too. A **held** link ([hold],
+ * found within that); one that hears nothing at all for [holdSilenceMs] ends so too. A phone that moved to another
+ * network closes it at once instead ([EndReason.ROUTE], `DirectLinks.onRouteChanged`): its port stays on the network it
+ * left ([onDefaultNetwork]). Either way [endedBusy] says whether a file was crossing it. A **held** link ([hold],
  * [holdFor]: a live session, such as a walkie, that must outlast its pauses) does not idle out; once its hold ends it
  * idles out as any link does, its idle and its silence counted from that end. A BYE ends either at once.
  * Every datagram is one [LinkLane] seal, so the counter is shared by every path and nothing is ever sealed twice.
@@ -64,8 +66,11 @@ class LinkSession(
     /** Where a session stands. */
     enum class State { PUNCHING, UP, CLOSED }
 
-    /** Why a session closed. [YIELDED]: idle, it gave its slot to a contact waiting for one (`LinkDemandPolicy.evict`). */
-    enum class EndReason { NO_PATH, IDLE, SILENT, BYE, LOCAL, YIELDED }
+    /**
+     * Why a session closed. [YIELDED]: idle, it gave its slot to a contact waiting for one (`LinkDemandPolicy.evict`).
+     * [ROUTE]: the phone moved to another network, which its port is not on.
+     */
+    enum class EndReason { NO_PATH, IDLE, SILENT, BYE, LOCAL, YIELDED, ROUTE }
 
     /** How the punch went: up through a target of [kind] (null: an address the peer never listed), or not. */
     sealed interface Outcome {
@@ -119,6 +124,14 @@ class LinkSession(
     /** Whether any DATA crossed either way: a link that closes without it was answered for nothing. */
     @Volatile
     var carriedData = false
+        private set
+
+    /**
+     * Whether its transport was moving a file when it closed, once [state] is [State.CLOSED]: a link that lost its path
+     * then did not finish what it was moving (`DirectLinks.lastUpAt`).
+     */
+    @Volatile
+    var endedBusy = false
         private set
 
     // Peer-reflexive targets: sources of PROBEs that opened but match no listed target. Bounded like the list itself.
@@ -191,16 +204,22 @@ class LinkSession(
      */
     fun idleSince(): Long? = if (state.value != State.UP || clock() < heldUntil || busy()) null else maxOf(lastData, heldUntil)
 
+    /** Whether this session's port is still on the phone's default network ([LinkPort.onDefaultNetwork]). */
+    fun onDefaultNetwork(): Boolean = port.onDefaultNetwork()
+
     /** Closes the session, telling the peer with a BYE when [sayBye] and the link is up. Idempotent. */
     fun close(
         reason: EndReason = EndReason.LOCAL,
         sayBye: Boolean = true,
     ) {
+        // Read before the stream under the transport ends, which ends the file it was moving.
+        val moving = _state.value == State.UP && busy()
         val was =
             synchronized(stateLock) {
                 val prior = _state.value
                 if (prior == State.CLOSED) return
                 endReason = reason
+                endedBusy = moving && prior == State.UP
                 _state.value = State.CLOSED
                 prior
             }

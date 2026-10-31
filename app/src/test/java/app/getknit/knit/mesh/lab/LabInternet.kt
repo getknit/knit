@@ -30,26 +30,34 @@ class LabInternet {
     private var nextAddress = 1
 
     /**
-     * One node's place on the Internet: its datagrams behind its own NAT, how its links' streams are made, and how many
-     * datagrams it has sent to anything but the STUN server ([FakeLinkNet.sentOut]).
+     * One node's place on the Internet: its datagrams behind its own NAT ([network]), how its links' streams are made, and
+     * how many datagrams it has sent from the network it is on now to anything but the STUN server
+     * ([FakeLinkNet.sentOut]).
      */
-    class Phone(
-        val nat: FakeLinkNet.Nat,
-        val datagrams: LinkDatagrams,
+    inner class Phone internal constructor(
+        val network: FakeLinkNet.Phone,
         val streams: LinkStream,
-        val sentOut: () -> Int,
-    )
+    ) {
+        val datagrams: LinkDatagrams get() = network
+
+        fun sentOut(): Int = net.sentOut(network.external)
+
+        /** Moves to another network, behind a NAT of [nat] at a public address no other node shares ([FakeLinkNet.Phone.move]). */
+        fun move(nat: FakeLinkNet.Nat) = network.move(nat, address())
+    }
 
     /** A phone behind a NAT of [nat] at a public address no other node shares. */
     @Synchronized
     fun phone(nat: FakeLinkNet.Nat): Phone {
-        val external = byteArrayOf(81, 0, (nextAddress shr 8).toByte(), nextAddress.toByte()).also { nextAddress++ }
         val streams =
             LinkStream { session ->
                 LinkStream.arq(scope) { System.nanoTime() / NANOS_PER_MS }.open(session).also { opened += it as LinkArq }
             }
-        return Phone(nat, net.phone(nat, external), streams) { net.sentOut(external) }
+        return Phone(net.phone(nat, address()), streams)
     }
+
+    @Synchronized
+    private fun address(): ByteArray = byteArrayOf(81, 0, (nextAddress shr 8).toByte(), nextAddress.toByte()).also { nextAddress++ }
 
     /** Ends every stream a link opened, so no `FramedLink` reader stays parked, and stops their timers. */
     fun close() {

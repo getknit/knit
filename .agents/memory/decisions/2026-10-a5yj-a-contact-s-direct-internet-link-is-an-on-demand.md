@@ -700,3 +700,49 @@ left for a later need.
 - The link's liveness still counts datagrams, not progress, so a stream that has fallen behind is never closed or
   routed around. The relay's copies carry the pair meanwhile, and a cue that arrives late on a link alone would show a
   stale "typing…" for its 12 s.
+
+## Amendment 2026-10-30 — a network change closes the link, and a file it cut is offered for again
+
+Status: draft (2026-10-30), for the maintainer's call. Built and checked on the JVM and in the lab
+(`DirectLinksTest.aMoveToAnotherNetworkClosesTheLinkLeftOnTheOldOneAndAFileItCutIsOfferedForAtOnce`,
+`aLinkThatGoesSilentMidFileIsOfferedForAgainAfterABackoffThatGrowsWhileLinksKeepDyingSo`,
+`InternetLinkLabTest.aPhotoCutByTheReceiversMoveToAnotherNetworkResumesOverTheLinkHisWantRaises` and
+`aPhotoCutByTheSendersMoveToAnotherNetworkIsOfferedAgainAtOnce`, each of which fails without its half). The device
+trial is owed. Amends the spool-first amendment and the file's-whole-day amendment; `docs/DIRECT_LINKS.md` L-4-2, L-7-7
+and L-7-9.
+
+The gap: a link's socket is bound to the network that was the default when it was punched, and stays on it. When the
+phone moves (Wi-Fi to cellular, or back), the link's sends fail or go nowhere, and only the silence bound found it: 65 s
+after DATA went unanswered, 200 s for a quiet link. A new default network only cleared the punch backoffs. Then the
+demand's rule that a link which was up had its chance at every row older than its end held the file it was moving to
+that chance: a photo no spool takes, cut mid-file, was offered for again only for something newer, or carried by the
+radios when the two met. The part that landed was kept (ADR 2026-10.wtyc), but nothing raised the link to finish it.
+
+- **A new default network closes every link whose port is on the network the phone left** (`DirectLinks.onRouteChanged`,
+  `LinkPort.onDefaultNetwork`, `LinkSession.EndReason.ROUTE`), with a BYE the old network may still carry, rather than
+  wait out its silence. A route change that leaves a link's network the default closes nothing, so a network that
+  blinks out of validation and back keeps its links.
+- **A link that lost its path while a file crossed it does not count as up** (`DirectLinks.lastUpAt`): one that ended
+  `SILENT` or `ROUTE` while its transport was moving a file (`LinkSession.endedBusy`). The demand offers for that file
+  again: after a `ROUTE` at once, after a `SILENT` once the attempt backoff has passed, counted over the links lost
+  that way in a row, so a path that drops every file is raised at most about fifty times over the file's day. A link
+  that ends any other way, and a new default network, clear the count. The resumed copy goes on from the bytes the
+  receiver kept.
+
+Moving a link to the new network without a fresh punch (a new socket and a re-punch signal under the same lane and
+stream, as ICE restarts) was the other way, and is left for a later need: a punch is a few seconds against a file's
+minutes, and it would need a wire change.
+
+**The costs and the traps:**
+
+- The sender reads a file as crossing until its last chunk is written to the stream, which on a slow path is about a
+  second of the path (the queue bound) before the end; a cut in that last second is not mid-file to the sender, and the
+  receiver's want (L-7-9) asks for the rest. The lab's photo is sized so its writer is still blocked when the path dies,
+  as on a slow path; on a fast one the whole file can be in the stream's buffers at once.
+- The receiver's ask over the new link meets the sender's serve memo for the copy that was cut
+  (`BlobExchange.SERVE_MEMO_MS`, 45 s) and is refused silently; the blob exchange's next round asks again. A move soon
+  after the file started finishes up to a round later than it could.
+- An attempt still punching from the old network when the phone moves is not closed: it ends with no path within its
+  10 s and starts a backoff that the move cleared a moment before.
+- A VPN keeps one network across the change underneath it, so no route change is seen, and its link lives or dies as
+  the tunnel does.

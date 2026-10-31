@@ -18,7 +18,8 @@ import app.getknit.knit.data.forward.ForwardRepository
  *    the frame for free;
  *  - no link to them is up, or has been since that row's time: a link that was up had its chance at it — sent while it
  *    was up, or named in its digest at link-up — and offering again for the same row would open, idle and close a link a
- *    minute for a tick that will not come (a peer that cannot open it, a peer gone);
+ *    minute for a tick that will not come (a peer that cannot open it, a peer gone). A link that lost its path while a
+ *    file crossed it had no chance at the file, and `DirectLinks.lastUpAt` does not count it;
  *  - they have not declined an offer since that row's time (`DirectLinks.declinedAt`, L-2-6): their person has
  *    links off, and only something newer asks again;
  *  - no offer to them is in flight, and they are not resting after a refusal that sent nothing ([due]'s `quietUntil`).

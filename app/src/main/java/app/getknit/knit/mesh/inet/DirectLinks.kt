@@ -117,11 +117,14 @@ fun interface LaneKeys {
  * answered at the cost of that link); an offer that finds its own attempt superseded while it gathered never leaves. A
  * walkie call's [raise] makes both ends offer at once, so the crossing is the rule there, not a rarity. A contact that
  * does not answer within [ANSWER_WAIT_MS], or whose punch finds no path, waits [PunchPolicy.backoffMs] before the next
- * attempt. A contact's offers are answered as often as it uses the links they make: what is budgeted is an answer that
- * came to nothing — a punch that found no path, or a link that closed without carrying any data — at most
- * [EMPTY_ANSWERS_PER_HOUR] an hour per contact, so a contact cannot keep this phone's modem waking for nothing, while one
- * that writes many times an hour is answered every time. One answer per contact is in flight at once. A contact this
- * person does not want to hear from is blocked: its signals are dropped unopened (`InboundPipeline`), never answered.
+ * attempt. A link that loses its path while a file crosses it is not counted as up ([lastUpAt]), so the demand offers
+ * again for what it was moving: at once after a move to another network ([onRouteChanged]), after the same backoff
+ * after a silence, counted over the links that died that way in a row. A contact's offers are answered as often as it
+ * uses the links they make: what is budgeted is an answer that came to nothing — a punch that found no path, or a link
+ * that closed without carrying any data — at most [EMPTY_ANSWERS_PER_HOUR] an hour per contact, so a contact cannot keep
+ * this phone's modem waking for nothing, while one that writes many times an hour is answered every time. One answer per
+ * contact is in flight at once. A contact this person does not want to hear from is blocked: its signals are dropped
+ * unopened (`InboundPipeline`), never answered.
  * Nothing here runs while [enabled] says no, but an offer that arrives then is recorded, and answered with a DECLINE when
  * the person has links switched off ([declining], `docs/DIRECT_LINKS.md` L-2-6): the offerer stops offering until it has
  * something newer, rather than waiting out a backoff for an answer that will not come. A DECLINE received is kept
@@ -157,6 +160,10 @@ class DirectLinks(
     private val attempts = ConcurrentHashMap<String, Attempt>()
     private val failures = ConcurrentHashMap<String, Int>()
     private val nextTryAt = ConcurrentHashMap<String, Long>()
+
+    // Per contact: how many links in a row went silent while a file crossed them, what the next offer's backoff counts.
+    // A link that ends any other way clears it, as a new default network does.
+    private val lostMidFile = ConcurrentHashMap<String, Int>()
 
     // Per contact: when each answer that came to nothing ended, and whether an answer to it is in flight now.
     private val empties = ConcurrentHashMap<String, MutableList<Long>>()
@@ -337,12 +344,15 @@ class DirectLinks(
     /** The links up now, by peer. */
     val links: StateFlow<Map<String, LinkSession>> = _links.asStateFlow()
 
-    // When each contact's last link to us ended: what [lastUpAt] reads once it is down.
+    // When each contact's last link to us ended, but for one that lost its path mid-file: what [lastUpAt] reads once it
+    // is down.
     private val lastDownAt = ConcurrentHashMap<String, Long>()
 
     /**
      * When a link to [peerId] was last up: now while one is, else when the last one ended; null when none has been up
-     * since this phone started. What a frame sent before it had its chance on (`LinkDemandPolicy`).
+     * since this phone started. What a frame sent before it had its chance on (`LinkDemandPolicy`). A link that lost its
+     * path while a file crossed it — it went silent, or this phone moved to another network — is not counted: it had no
+     * chance at what it was moving, so a row it was raised for calls for a link again.
      */
     fun lastUpAt(peerId: String): Long? = if (links.value.containsKey(peerId)) clock() else lastDownAt[peerId]
 
@@ -528,10 +538,16 @@ class DirectLinks(
         links.value.values.forEach { it.close() }
     }
 
-    /** A new default network: an old route's failures say nothing about this one, so every backoff starts over. */
+    /**
+     * A new default network: an old route's failures say nothing about this one, so every backoff starts over; and a link
+     * whose port is on the network the phone left closes now ([LinkSession.EndReason.ROUTE]) rather than wait out its
+     * silence, with a BYE that network may still carry, so the next offer goes out from the new one at once.
+     */
     fun onRouteChanged() {
         failures.clear()
         nextTryAt.clear()
+        lostMidFile.clear()
+        links.value.values.forEach { if (!it.onDefaultNetwork()) it.close(LinkSession.EndReason.ROUTE) }
     }
 
     @Suppress("ReturnCount") // a ladder of refusals ahead of the answer
@@ -671,7 +687,7 @@ class DirectLinks(
         }
     }
 
-    // Punches, records the try, and on success holds the link in [links] until it closes, then records its end.
+    // Punches, records the try, and on success holds the link in [links] until it closes ([holdUntilClosed]).
     @Suppress("LongParameterList") // the attempt's parts, each from a different step of it
     private suspend fun run(
         peerId: String,
@@ -702,18 +718,47 @@ class DirectLinks(
         declined.remove(peerId)
         _links.update { it + (peerId to session) }
         onStream?.invoke(peerId, socket, offerer) ?: drain(peerId, socket)
-        scope.launch {
-            session.state.first { it == LinkSession.State.CLOSED }
-            sockets.remove(peerId, socket)
-            _links.update { if (it[peerId] === session) it - peerId else it }
-            lastDownAt[peerId] = clock()
-            val (bytesIn, bytesOut) = session.bytes()
-            val reason = session.endReason ?: LinkSession.EndReason.LOCAL
-            log("link end ${peerId.take(SHORT)} $reason after ${clock() - upAt}ms in=$bytesIn out=$bytesOut")
-            fieldLog.record(FieldEvent.LinkEnd(peerId, offerer, reason, clock() - upAt, bytesIn, bytesOut))
-            if (!offerer && !session.carriedData) noteEmpty(peerId)
-        }
+        scope.launch { holdUntilClosed(peerId, session, socket, offerer, upAt) }
         return LinkOutcome.UP
+    }
+
+    // Holds the up link in [links] until it closes, then records its end.
+    private suspend fun holdUntilClosed(
+        peerId: String,
+        session: LinkSession,
+        socket: LinkSocket,
+        offerer: Boolean,
+        upAt: Long,
+    ) {
+        session.state.first { it == LinkSession.State.CLOSED }
+        val reason = session.endReason ?: LinkSession.EndReason.LOCAL
+        // Stamped before the link leaves [links], so [lastUpAt] never reads an older end in between.
+        if (session.endedBusy && reason in LOST_PATH) pathLost(peerId, reason) else ended(peerId)
+        sockets.remove(peerId, socket)
+        _links.update { if (it[peerId] === session) it - peerId else it }
+        val (bytesIn, bytesOut) = session.bytes()
+        val midFile = if (session.endedBusy) " mid-file" else ""
+        log("link end ${peerId.take(SHORT)} $reason$midFile after ${clock() - upAt}ms in=$bytesIn out=$bytesOut")
+        fieldLog.record(FieldEvent.LinkEnd(peerId, offerer, reason, clock() - upAt, bytesIn, bytesOut))
+        if (!offerer && !session.carriedData) noteEmpty(peerId)
+    }
+
+    // A link to [peerId] ended having had its chance at what it carried: rows older than now wait for something newer.
+    private fun ended(peerId: String) {
+        lastDownAt[peerId] = clock()
+        lostMidFile.remove(peerId)
+    }
+
+    // A link to [peerId] lost its path while a file crossed it: [lastUpAt] keeps the end before it, so the file's row calls
+    // for a link again. After a move to another network at once; after a silence once the backoff of the links lost this
+    // way in a row is waited out, so a path that drops every file is not raised again every minute for a day.
+    private fun pathLost(
+        peerId: String,
+        reason: LinkSession.EndReason,
+    ) {
+        if (reason != LinkSession.EndReason.SILENT) return
+        val n = lostMidFile.merge(peerId, 1, Int::plus) ?: 1
+        nextTryAt[peerId] = clock() + PunchPolicy.backoffMs(n)
     }
 
     private fun finish(
@@ -834,6 +879,9 @@ class DirectLinks(
 
         /** How many DECLINEs a contact gets from this phone an hour (L-2-6): its offers past that pass unanswered. */
         const val DECLINES_PER_HOUR = 6
+
+        // The ends of a link that lost its path, rather than closed: mid-file, it had no chance at the file.
+        private val LOST_PATH = setOf(LinkSession.EndReason.SILENT, LinkSession.EndReason.ROUTE)
 
         private const val HOUR_MS = 60 * 60_000L
         private const val SECOND_MS = 1_000L

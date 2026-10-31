@@ -48,6 +48,7 @@ class DirectLinksTest {
         var stun = listOf("stun:stun.example")
         var sendRefused = false
         var queued: Long? = null
+        var busy = false // a transport moving a file over the link
     }
 
     private fun TestScope.pair(
@@ -91,6 +92,7 @@ class DirectLinksTest {
                     scope = scope,
                     declining = { me.declining },
                     clock = { testScheduler.currentTime },
+                    linkBusy = { me.busy },
                     fieldLog = FieldRecorder { me.lines += it },
                     random = java.util.Random(me.id.hashCode().toLong()),
                 )
@@ -115,6 +117,8 @@ class DirectLinksTest {
     private fun FakeLinkNet.withStun() = also { it.stunServer("stun.example", stunAt) }
 
     private fun tries(phone: Phone) = phone.lines.filterIsInstance<FieldEvent.LinkTry>()
+
+    private fun ends(phone: Phone) = phone.lines.filterIsInstance<FieldEvent.LinkEnd>()
 
     // The offers [phone] answered: its tries less the ones it held back.
     private fun answered(phone: Phone) = tries(phone).count { it.outcome != LinkOutcome.BUDGET && it.outcome != LinkOutcome.OFF }
@@ -464,6 +468,86 @@ class DirectLinksTest {
                     .single()
                     .reason,
             )
+        }
+
+    @Test
+    fun aMoveToAnotherNetworkClosesTheLinkLeftOnTheOldOneAndAFileItCutIsOfferedForAtOnce() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val aNet = net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4))
+            val (a, b) = pair(aNet, net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            // A route change that leaves the link's network the default one closes nothing.
+            a.links.onRouteChanged()
+            testScheduler.advanceTimeBy(10)
+            assertTrue(b.id in a.links.links.value)
+
+            a.busy = true
+            aNet.move(Nat.PORT_RESTRICTED, v4(82, 2, 3, 4))
+            a.links.onRouteChanged()
+            a.links.links.first { it.isEmpty() }
+            testScheduler.runCurrent()
+            assertEquals(LinkSession.EndReason.ROUTE, ends(a).single().reason)
+            // It had no chance at the file it was moving: not counted as up, and no backoff on the new network.
+            assertEquals(null, a.links.lastUpAt(b.id))
+            // Its BYE went out on the network the phone left, so Bob still holds his end; the next offer replaces it.
+            assertTrue(a.id in b.links.links.value)
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it && it.getValue(a.id).state.value == LinkSession.State.UP }
+
+            // The control: a link the move closes with no file crossing it had its chance, and counts.
+            a.busy = false
+            aNet.move(Nat.PORT_RESTRICTED, v4(83, 2, 3, 4))
+            a.links.onRouteChanged()
+            a.links.links.first { it.isEmpty() }
+            testScheduler.runCurrent()
+            assertEquals(LinkSession.EndReason.ROUTE, ends(a).last().reason)
+            assertEquals(testScheduler.currentTime, a.links.lastUpAt(b.id))
+        }
+
+    @Test
+    fun aLinkThatGoesSilentMidFileIsOfferedForAgainAfterABackoffThatGrowsWhileLinksKeepDyingSo() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val bNet = net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7))
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), bNet)
+            var moves = 0
+
+            // A link up with a file crossing it, whose path goes dark under it: Alice's end goes silent mid-file. Bob then
+            // moves on, so the next offer finds a path.
+            suspend fun dieMidFile() {
+                a.busy = true
+                assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+                bNet.darkAfter(0)
+                a.links.links.first { it.isEmpty() }
+                testScheduler.runCurrent()
+                assertEquals(LinkSession.EndReason.SILENT, ends(a).last().reason)
+                bNet.move(Nat.PORT_RESTRICTED, v4(92 + moves++, 5, 6, 7))
+                b.links.onRouteChanged()
+                b.links.links.first { it.isEmpty() }
+            }
+
+            dieMidFile()
+            assertEquals(null, a.links.lastUpAt(b.id))
+            assertEquals(LinkOutcome.BACKOFF, a.links.offer(b.id))
+            testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
+            dieMidFile()
+            // Two in a row: the second backoff is the doubled one.
+            testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
+            assertEquals(LinkOutcome.BACKOFF, a.links.offer(b.id))
+            testScheduler.advanceTimeBy(PunchPolicy.backoffMs(2) - PunchPolicy.backoffMs(1))
+
+            // A link that ends once its file is through starts the count over, and is counted as up.
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            a.busy = false
+            a.links.close(b.id)
+            a.links.links.first { it.isEmpty() }
+            testScheduler.runCurrent()
+            assertEquals(testScheduler.currentTime, a.links.lastUpAt(b.id))
+            dieMidFile()
+            testScheduler.advanceTimeBy(PunchPolicy.backoffMs(1))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
         }
 
     @Test

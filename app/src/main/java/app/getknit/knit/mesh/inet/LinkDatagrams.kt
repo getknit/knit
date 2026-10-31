@@ -38,6 +38,13 @@ interface LinkPort : Closeable {
 
     /** [host]'s public IPv4 addresses, resolved through this port's network; empty when it names none. */
     fun resolveV4(host: String): List<ByteArray>
+
+    /**
+     * Whether the network this port is bound to is still the validated default one. A socket stays on the network it
+     * was bound to, and the phone has left that one once another is the default: lost already, or torn down soon after
+     * (`DirectLinks.onRouteChanged` closes the link it carries).
+     */
+    fun onDefaultNetwork(): Boolean = true
 }
 
 /** One datagram in: its bytes and where it came from. */
