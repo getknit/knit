@@ -378,8 +378,7 @@ internal fun ProfileDetailsScreenContent(
 /**
  * The profile's voice-call buttons (experimental), the chat's in the profile's register: the live Call, then the Mesh
  * call beside it, each where [ProfileDetailsUiState] offers it. The microphone is asked for on the press that finds it
- * missing and, as there, the call does not start on the grant: the user taps again. A phone with no microphone draws
- * neither.
+ * missing and, as there, the call starts on the grant. A phone with no microphone draws neither.
  */
 @Composable
 private fun CallButtons(
@@ -394,11 +393,11 @@ private fun CallButtons(
     val gate = rememberMicGate(onDenied = { scope.launch { snackbarHostState.showSnackbar(denied) } })
     if (!gate.hasMicrophone) return
     if (state.canCall) {
-        CallButton(Icons.Filled.Call, R.string.profile_details_call, "profile_details_call") { gate.runOrRequest(onCall) }
+        CallButton(Icons.Filled.Call, R.string.profile_details_call, "profile_details_call") { gate.runOrRequestThen(onCall) }
     }
     if (state.canMeshCall) {
         CallButton(Icons.Filled.WifiCalling3, R.string.chat_mesh_call, "profile_details_mesh_call") {
-            gate.runOrRequest(onMeshCall)
+            gate.runOrRequestThen(onMeshCall)
         }
     }
 }

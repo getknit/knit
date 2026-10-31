@@ -73,6 +73,8 @@ document:
 - Meshtastic room posts from a contact whose board runs Meshtastic 2.8.1 now show under their name instead of
   as a stranger's. Meshtastic withdrew 2.8.0, so posts from a board still on it are marked "signature doesn't
   match" until it's updated.
+- Your first call now starts as soon as you let Knit use the microphone, instead of waiting for you to tap
+  Call again.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

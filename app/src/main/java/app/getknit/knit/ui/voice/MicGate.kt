@@ -27,7 +27,7 @@ import androidx.core.content.ContextCompat
 class MicGate(
     val hasMicrophone: Boolean,
     val granted: Boolean,
-    private val request: () -> Unit,
+    private val request: (onGranted: (() -> Unit)?) -> Unit,
 ) {
     /**
      * Runs [onGranted] when recording is already permitted, otherwise asks for the permission and returns
@@ -38,11 +38,21 @@ class MicGate(
     fun runOrRequest(onGranted: () -> Unit): Boolean {
         if (!hasMicrophone) return false
         if (!granted) {
-            request()
+            request(null)
             return false
         }
         onGranted()
         return true
+    }
+
+    /**
+     * As [runOrRequest], but carries [onGranted] across the dialog and runs it once the user allows: for a tap
+     * nothing is timed to, such as placing a call, where the call placed on the grant is the one the person asked
+     * for and a second tap after saying yes would read as the first one not having worked (the `LocationGate` rule).
+     */
+    fun runOrRequestThen(onGranted: () -> Unit) {
+        if (!hasMicrophone) return
+        if (granted) onGranted() else request(onGranted)
     }
 }
 
@@ -63,11 +73,21 @@ fun rememberMicGate(onDenied: (permanently: Boolean) -> Unit = {}): MicGate {
     val currentOnDenied by rememberUpdatedState(onDenied)
     val hasMicrophone = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE) }
     var granted by remember { mutableStateOf(hasRecordAudioPermission(context)) }
+    // The action [MicGate.runOrRequestThen] carried into the dialog: run on the grant, dropped on a refusal.
+    val pending = remember { mutableStateOf<(() -> Unit)?>(null) }
+    // One request at a time. Android answers a second while the first's dialog is up with an empty result, which the
+    // contract reads as a refusal: a double tap would drop the first tap's action and report a denial nobody gave.
+    val asking = remember { mutableStateOf(false) }
 
     val launcher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
+            asking.value = false
+            val action = pending.value
+            pending.value = null
             granted = allowed
-            if (!allowed) {
+            if (allowed) {
+                action?.invoke()
+            } else {
                 val canAskAgain =
                     activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.RECORD_AUDIO) }
                         ?: true
@@ -79,7 +99,15 @@ fun rememberMicGate(onDenied: (permanently: Boolean) -> Unit = {}): MicGate {
         MicGate(
             hasMicrophone = hasMicrophone,
             granted = granted,
-            request = { launcher.launch(Manifest.permission.RECORD_AUDIO) },
+            request = { action ->
+                if (!asking.value) {
+                    asking.value = true
+                    pending.value = action
+                    launcher.launch(Manifest.permission.RECORD_AUDIO)
+                } else if (action != null) {
+                    pending.value = action
+                }
+            },
         )
     }
 }

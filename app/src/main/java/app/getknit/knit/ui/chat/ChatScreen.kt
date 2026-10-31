@@ -1530,7 +1530,7 @@ internal fun ChatScreenContent(
                                         modifier = Modifier.testTag(if (meshFirst) "chat_call_menu" else "chat_mesh_call_menu"),
                                         onClick = {
                                             headerMenuOpen = false
-                                            callGate.runOrRequest(if (meshFirst) onStartCall else onStartMeshCall)
+                                            callGate.runOrRequestThen(if (meshFirst) onStartCall else onStartMeshCall)
                                         },
                                     )
                                 }
@@ -5272,7 +5272,8 @@ private fun rememberCallMicGate(): MicGate {
 
 /**
  * The top bar's call button (experimental): a live voice call or a mesh call (§3.11). The microphone is asked for on
- * the press that finds it missing and, like the voice-note mic, the call does not start on the grant: the user taps again.
+ * the press that finds it missing and, unlike the voice-note mic, the call starts on the grant: a tap is not timed to a
+ * finger, so the call placed then is the one the person asked for.
  */
 @Composable
 private fun CallButton(
@@ -5284,7 +5285,7 @@ private fun CallButton(
 ) {
     if (!gate.hasMicrophone) return
     IconButton(
-        onClick = { gate.runOrRequest(onStart) },
+        onClick = { gate.runOrRequestThen(onStart) },
         modifier = Modifier.size(48.dp).testTag(tag),
     ) {
         Icon(icon, contentDescription = stringResource(label))
