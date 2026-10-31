@@ -337,7 +337,7 @@ every answer to something that crossed a link stays inside the link's rule (`Pai
   `InboundPipeline.onCarriedFrame`): a recipient only a link reaches cannot fetch a carrier's copy over it, since the
   link carries an attachment addressed to both ends only.
 
-Left as it was: a fast-only want (ADR 2026-10.js2p) neither asks nor serves over a link, which has no Wi-Fi Aware route.
+Left as it was: a fast-only want (ADR 2026-10.js2p) neither asks nor serves over a link, which has no Wi-Fi Aware route. (Changed by the 2026-10-31 amendment: an unmetered link is a fast route.)
 Whether a large attachment over the user's Bluetooth limit may ride a link (cellular data) is a question for the
 link's own data policy, not decided here.
 
@@ -752,3 +752,70 @@ minutes, and it would need a wire change.
 - The receiving end's offer waits out its want's minute from the message's arrival (L-7-9), whenever the cut came: in
   the trial the cut was 21 s after arrival, so the new link came 41 s after it. The other end, which never saw the
   change, holds its dead link until that offer replaces it, or for its silence.
+
+## Amendment 2026-10-31 — a link is a fast route for a large download, unless the network is metered
+
+Status: draft (2026-10-31), for the maintainer's call. Amends ADR 2026-10.js2p (a fast-only want) and this ADR's custody
+and blobs amendment, whose "Left as it was" line it replaces; `docs/DIRECT_LINKS.md` L-7-9 and L-7-10. Built and checked
+on the JVM and in the lab (`LinkDownloadLimitLabTest.aFileOverTheDownloadLimitCrossesAnUnmeteredLinkWithNoTap`,
+`aFileOverTheDownloadLimitWaitsForTheTapOnAMeteredNetworkThenCrossesTheLink`,
+`aWantHeldWhileMeteredRaisesItsOwnLinkOnceTheNetworkIsUnmetered`; `BlobExchangeTest`'s link-route cases (`aLinkOnlyHolderWifiAwareSightsIsAskedOnlyUnmeteredAndNeverArmed`,
+`aFastOnlyWantReadUnmeteredWithNoStepIsLinkableFromThatRead` among them),
+`CompositeMeshTransportTest`'s fast-only link cases, `MeshLinkPendingTest`'s held and linkable-later cases). Device trial
+passed 2026-10-31 (P7 sending, P9 receiving with its limit at 5 MB, Bluetooth off on both, no relay taking the P7's
+files; three 6 MB files): on home Wi-Fi the P9 held the want until the P7's FILE link came up, asked over it fast-only and
+took the file in 9.4 s with no tap; on cellular it held the next `network metered` with the link up and nothing
+crossed for 1 min 43 s, then the tap's plain ask took it over the link in 37 s; a third, held on cellular and left
+untapped, was fetched fast-only over the P9's own WANT link 70 s after its Wi-Fi came back, in 7.5 s.
+
+The gap: an attachment over the person's "Ask before large Bluetooth downloads" limit is a fast-only want, fetched on
+its own only over Wi-Fi Aware. A link has no Wi-Fi Aware route, so the want asked nobody over it, a holder refused its
+ask, and the composite never sent a fast-only copy down a link: the bubble showed "Tap to download" with a link up that
+moves several Mbit/s. Worse, the receiving end's want (L-7-9) still raised a link for it a minute after it arrived, which
+carried nothing for the file, and the link's having been up then kept a later tap from raising another.
+
+- **A live link counts as a fast route for a fast-only want when this phone's network is unmetered**
+  (`BlobExchange`'s `Candidate.freeLink`: `MeshTransport.fileRidesInternet` and not `InternetGate.isMetered`). Metered is
+  Android's own flag: a network without `NET_CAPABILITY_NOT_METERED`. `TEMPORARILY_NOT_METERED` does not count: carriers
+  set and clear it on some 5G plans without a network change. On a metered network the want waits for the tap as
+  before, and once tapped rides the link like any want. A peer whose file rides the link here (`linkRides`: no
+  high-throughput child holds it) is asked fast-only only from an unmetered network, whatever Wi-Fi Aware sights of it:
+  the holder sends a fast-only copy down a link before it arms Wi-Fi Aware, so a sighting must not stand in for the
+  plane the copy will take. The limit was set for Bluetooth's few KiB/s; on an unmetered
+  network a link's cost is the sender's to choose, and an honest sender sends at most 8 MiB (files under the limit
+  already rode links on cellular). A later direct send of large files will gate cellular itself, on the same seam.
+- **Metering is read when an ask is decided, never mid-stream.** A fetch outstanding on a link peer runs to its end if
+  the phone turns metered; only the next new ask reads it. A meter flip is never a link-up edge that clears a want's
+  asked state, so a flapping flag costs nothing.
+- **The holder serves a link peer's fast-only ask whatever its own metering** (`BlobExchange.refusesFastOnly`), and the
+  composite sends a fast-only copy down the link when the link, not a radio, is the plane a file to that peer takes
+  (`CompositeMeshTransport.sendFastOnly`, `file route: … over direct link (fast-only)`). Bluetooth still never carries
+  one. The tap protects the receiver's data; an honest asker on a metered network never sends that ask.
+- **The receiving end's want counts from when a link could carry it** (`BlobExchange.Want.linkableSince`,
+  `MeshManager.attachmentWantedSince`, `MeshLinkPending`): its record for a plain want, the tap for a tapped one, the
+  first look that finds the network unmetered for a fast-only one (a blob step, or the demand's own read: with nothing
+  linked no step runs, and the link that read raises is the only way the file can come), and never while a fast-only
+  want is held on a metered network. The WANT row's time is the later of that and the message's arrival, so a link that came and went while the
+  want was held is no reason never to ask once it can be carried. A restart or the fetch sweep sets the time again at
+  the re-arm: at most one more offer.
+
+**The costs and the traps:**
+
+- Two ends can read a peer's plane differently (the holder mid-dial on Bluetooth to an asker that sees only the link):
+  the holder refuses the fast-only ask silently and the asker waits out its grace. Links are off in release, so build
+  skew is limited to experiment builds.
+- With a VPN up, `activeNetwork` is the VPN, which reads metered unless its app says otherwise: a fast-only want then
+  waits for the tap even on home Wi-Fi. Conservative; a device check with a VPN is owed before anything reads the
+  underlying network instead.
+- The other asymmetry leaks: an asker that sees the holder over Bluetooth and Wi-Fi Aware's sighting, while the holder
+  sees only the link, sends a fast-only ask the holder answers over the link, whatever the asker's metering. It needs a
+  half-formed Bluetooth link on one end and a link up on both.
+- A tapped want still waits the minute (`WANT_WAIT_MS`) from the tap before it raises a link, and a DM older than the
+  file window (24 h) raises none.
+- A phone that is metered keeps the sender's spool deferral held while the pair's chat keeps a link up (the custody and
+  blobs amendment's "a recipient that never fetches over the link"): that sentence now holds only for a metered
+  receiver.
+- A HAVE answered before the phone turned metered is re-asked as a new ask, so it is held until the tap or until the
+  network is unmetered.
+- The lab composite has no high-throughput child, so its fast-only copy takes the composite's no-fast-plane branch to
+  the link; `sendFastOnly`'s link branch is pinned by `CompositeMeshTransportTest` alone.

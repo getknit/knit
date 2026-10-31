@@ -23,14 +23,16 @@ class MeshLinkPendingTest : RoomDbTest() {
     private val receipts by lazy { MessageReceiptRepository(db.messageReceiptDao(), messages, db) }
     private val groups = mutableMapOf<String, GroupEntity>()
     private val stuck = mutableSetOf<String>()
-    private val wanted = mutableSetOf<String>()
+
+    // hash -> since when the blob exchange's want of it is one a link may carry (`MeshManager.attachmentWantedSince`).
+    private val wanted = mutableMapOf<String, Long>()
     private val pending by lazy {
         MeshLinkPending(
             messages,
             receipts,
             group = { groups[it] },
             stuck = { _, hash -> hash in stuck },
-            wanted = { _, hash -> hash in wanted },
+            wantedSince = { _, hash -> wanted[hash] },
         )
     }
 
@@ -122,7 +124,7 @@ class MeshLinkPendingTest : RoomDbTest() {
             dao.upsert(dm("m5", ME, sentAt = 150, from = ME, received = true).copy(attachmentHash = "H5", arrivedAt = 150))
             // A contact's group post: a group's picture is never a DM's to ask its sender for.
             dao.upsert(post("p1", "g-1", sentAt = 5, from = "bob").copy(attachmentHash = "H6", arrivedAt = 150))
-            wanted += setOf("H1", "H3", "H4", "H5", "H6")
+            listOf("H1", "H3", "H4", "H5", "H6").forEach { wanted[it] = 0L }
 
             assertEquals(listOf(Pending("bob", 150, LinkWhy.WANT)), pending.between(ME, since = 50, until = 200))
         }
@@ -138,6 +140,60 @@ class MeshLinkPendingTest : RoomDbTest() {
             stuck += "H1"
 
             assertEquals(listOf(Pending("carol", early, LinkWhy.FILE)), pending.between(ME, since = 0, until = until))
+        }
+
+    /**
+     * ADR 2026-10.js2p and a5yj: a fast-only want held on a metered network is no row at all, and once it can use a link —
+     * the tap, or the network turning unmetered — its row is timed from then, not from its message's arrival. A link the
+     * pair's chat raised and closed while the want was held (a move to Wi-Fi ends it `ROUTE`) had no chance at the file,
+     * and a row left at the arrival would never call for a link again.
+     */
+    @Test
+    fun aWantThatBecameLinkableAfterALinkCameAndWentIsOfferedForAndAHeldOneIsNot() =
+        runTest {
+            val dao = db.messageDao()
+            dao.upsert(dm("m1", ME, sentAt = 5, from = "bob").copy(attachmentHash = "H1", arrivedAt = 100))
+            val linkUpAt = 200L // the chat's link was up then, while the want was held, and closed
+            val lastUpAt = { peer: String -> linkUpAt.takeIf { peer == "bob" } }
+            val noRadio = { _: String -> false }
+
+            // Held: fast-only on a metered network, so the exchange reports no linkable time.
+            assertEquals(emptyList<Pending>(), pending.between(ME, since = 0, until = 1_000))
+
+            // The tap (or the turn to unmetered) at 300: the row is timed from it, after the link that came and went.
+            wanted["H1"] = 300L
+            val rows = pending.between(ME, since = 0, until = 1_000)
+            assertEquals(listOf(Pending("bob", 300, LinkWhy.WANT)), rows)
+            assertEquals(
+                "not before its minute, counted from the tap",
+                emptyList<Pair<String, LinkWhy>>(),
+                LinkDemandPolicy.offers(rows, now = 300 + LinkDemandPolicy.WANT_WAIT_MS - 1, noRadio, up = emptySet(), lastUpAt = lastUpAt),
+            )
+            assertEquals(
+                listOf("bob" to LinkWhy.WANT),
+                LinkDemandPolicy.offers(rows, now = 300 + LinkDemandPolicy.WANT_WAIT_MS, noRadio, up = emptySet(), lastUpAt = lastUpAt),
+            )
+
+            // Timed from the arrival instead, the link that was up at 200 would have had its chance: no offer, ever.
+            assertEquals(
+                emptyList<Pair<String, LinkWhy>>(),
+                LinkDemandPolicy.offers(
+                    listOf(Pending("bob", 100, LinkWhy.WANT)),
+                    now = 300 + LinkDemandPolicy.WANT_WAIT_MS,
+                    noRadio,
+                    up = emptySet(),
+                    lastUpAt = lastUpAt,
+                ),
+            )
+        }
+
+    @Test
+    fun aWantLinkableBeforeItsMessageArrivedIsTimedFromTheArrival() =
+        runTest {
+            db.messageDao().upsert(dm("m1", ME, sentAt = 5, from = "bob").copy(attachmentHash = "H1", arrivedAt = 150))
+            wanted["H1"] = 120L // a custody pull wanted it before the row was written
+
+            assertEquals(listOf(Pending("bob", 150, LinkWhy.WANT)), pending.between(ME, since = 50, until = 200))
         }
 
     private companion object {

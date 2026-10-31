@@ -148,6 +148,18 @@ class AndroidInternetGate(
             .filterNotNull()
             .map { }
 
+    /**
+     * Metered unless the default network's capabilities have `NET_CAPABILITY_NOT_METERED` (see [InternetGate.isMetered]):
+     * read off the platform's default (`activeNetwork`), validated or not, so a phone with no network reads metered.
+     * `NET_CAPABILITY_TEMPORARILY_NOT_METERED` is deliberately not read.
+     */
+    override fun isMetered(): Boolean {
+        val cm = connectivity ?: return true
+        val network = cm.activeNetwork ?: return true
+        val capabilities = cm.getNetworkCapabilities(network) ?: return true
+        return !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
     private fun reachesTheInternet(capabilities: NetworkCapabilities): Boolean =
         capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&

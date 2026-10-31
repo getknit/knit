@@ -173,7 +173,7 @@ private fun Module.linkDemand() =
                 get(),
                 groups::find,
                 stuck = { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) },
-                wanted = { _, hash -> getKoin().get<MeshManager>().attachmentWanted(hash) },
+                wantedSince = { _, hash -> getKoin().get<MeshManager>().attachmentWantedSince(hash) },
             )
         LinkDemand(
             pending = { since, until -> pending.between(identity.nodeId(), since, until) },

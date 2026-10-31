@@ -364,7 +364,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `PunchPolicy.GIVE_UP_MS` taken once the offerer's first probe is out (`LabNode.linkDatagramsSent` moved), rather than
   sitting out its ten seconds; the streams' ARQ reads a monotonic clock, which no jump moves. `FakeSpool.mute()` keeps
   the relay connected and fanning out casts while it takes nothing else — a link that is the only path. The set is
-  `InternetLinkLabTest`.
+  `InternetLinkLabTest`, and `LinkDownloadLimitLabTest` for the download limit over a link (`LabNode.metered` is the
+  phone's network as `InternetGate.isMetered` reads it).
 - **Wait for the frame, not for the state that precedes it.** A settings or DB write the scenario can see
   lands *before* the frame it triggers reaches the transport (`broadcastProfile` bumps the version, then
   stamps, signs and floods), so "the version moved" is not "the frame is parked": `ProfileUpdateLabTest`

@@ -508,6 +508,9 @@ val meshModule =
                 onTurnHosts = { hosts -> if (LIVE_CALLS_WIRED) getKoin().getOrNull<TurnTargets>()?.hosts?.value = hosts },
                 // ...and the snapshot the plane reads before each dial: no validated route, no dial.
                 online = get<InternetGate>()::isOnline,
+                // Whether this phone's network is metered: a fast-only blob want asks over a contact's direct link only
+                // from an unmetered one (ADR 2026-10.js2p, a5yj).
+                blobMetered = get<InternetGate>()::isMetered,
                 publicChannel = { body -> get<PublicChannelSink>().postToPublicChannel(body) },
                 onTransferSignal = { sender, payload, sentAt -> get<TransferManager>().onSignal(sender, payload, sentAt) },
                 // Voice calls (experimental, `CALLS_WIRED` — di/CallWiring): resolved late like the transfer hook, and

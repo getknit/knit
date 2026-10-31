@@ -751,6 +751,39 @@ class CompositeMeshTransportTest {
         }
 
     @Test
+    fun aFastOnlyFileToAPeerOnlyADirectLinkHoldsRidesTheLink() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-10.js2p, a5yj: a contact's direct link is a fast route; the asker asked fast-only over it.
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(highThroughput = true).apply { armBulk = true }
+            val link = FakeChild(kind = TransportKind.DirectLink, shortRange = false, viaInternet = true)
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            link.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), fastOnlyAttachment()))
+            assertEquals(1, link.sentFiles.size)
+            assertTrue("the link carries it: Wi-Fi Aware is not armed", nan.expectBulkCalls.isEmpty())
+            assertTrue(bt.sentFiles.isEmpty() && nan.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aFastOnlyFileToAPeerBluetoothHoldsBesideItsDirectLinkIsStillNeverSentOverBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(highThroughput = true) // won't arm
+            val link = FakeChild(kind = TransportKind.DirectLink, shortRange = false, viaInternet = true)
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"), Peer("q"))
+            link.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue("its file would ride Bluetooth: dropped", !composite.sendFile(fileOfSize(1_000), Peer("p"), fastOnlyAttachment()))
+            assertTrue("a Bluetooth-only peer too", !composite.sendFile(fileOfSize(1_000), Peer("q"), fastOnlyAttachment()))
+            assertTrue(bt.sentFiles.isEmpty() && link.sentFiles.isEmpty() && nan.sentFiles.isEmpty())
+        }
+
+    @Test
     fun bigAttachmentSkipsTheWaitWhenTheFastPlaneWontArm() =
         runTest(UnconfinedTestDispatcher()) {
             val bt = FakeChild()

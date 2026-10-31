@@ -9,9 +9,17 @@ import app.getknit.knit.data.group.GroupMembersStore
  * What a direct link's demand reads from the database (`docs/DIRECT_LINKS.md` L-7-7, L-7-9): each DM of ours still
  * unticked, for each post of ours in a group every member who has not acked it (both over the last
  * [LinkDemandPolicy.WINDOW_MS] alone), each DM attachment of ours with no spool to go up to ([stuck]:
- * `MeshManager.attachmentStuck`), and each DM attachment of a contact's we want and do not hold ([wanted]:
- * `MeshManager.attachmentWanted`), by when its message arrived. One class for the app's wiring and the mesh lab's, so
- * the lab reads what a phone does.
+ * `MeshManager.attachmentStuck`), and each DM attachment of a contact's we want and do not hold ([wantedSince]:
+ * `MeshManager.attachmentWantedSince`). One class for the app's wiring and the mesh lab's, so the lab reads what a phone
+ * does.
+ *
+ * A wanted attachment's row is timed from when its message arrived or, if later, from when the want became one a link
+ * may carry ([wantedSince]: the tap on a fast-only want held on a metered network, or the network turning unmetered,
+ * ADR 2026-10.js2p, a5yj). [LinkDemandPolicy] offers for a row only while no link to the peer has been up since its
+ * time, so a row left at the arrival would never call for a link once a link had come and gone while the want was held
+ * (a chat's link, say, closed by a move to Wi-Fi, `ROUTE`). The row still waits [LinkDemandPolicy.WANT_WAIT_MS] from
+ * that time, a tap's too: the sender's own offer or a radio may bring it first. A want is still read only for a message
+ * that arrived within [LinkDemandPolicy.FILE_WINDOW_MS], so a tap on a DM older than that raises no link.
  */
 class MeshLinkPending(
     private val messages: MessageRepository,
@@ -20,13 +28,14 @@ class MeshLinkPending(
     private val group: suspend (groupId: String) -> GroupEntity?,
     // Whether our DM attachment (peer, hash) has no spool to go up to and is not proved held: the bulk trigger.
     private val stuck: suspend (peerId: String, hash: String) -> Boolean = { _, _ -> false },
-    // Whether we want a contact's DM attachment and hold none of it: the receiving end's trigger.
-    private val wanted: suspend (peerId: String, hash: String) -> Boolean = { _, _ -> false },
+    // Since when we have wanted a contact's DM attachment in a way a link may carry, holding none of it, or null: the
+    // receiving end's trigger.
+    private val wantedSince: suspend (peerId: String, hash: String) -> Long? = { _, _ -> null },
 ) {
     /**
      * The rows in [since]..[until] that call for a link, one per (contact, message): our unticked messages over the last
      * [LinkDemandPolicy.WINDOW_MS] of it only, our stuck attachments by when they were sent and their wanted ones by when
-     * they arrived.
+     * they arrived or became linkable, the later.
      */
     suspend fun between(
         me: String,
@@ -42,8 +51,9 @@ class MeshLinkPending(
                 .map { LinkDemandPolicy.Pending(it.peerId, it.sentAt, LinkWhy.FILE) } +
                 messages
                     .peerDmAttachmentsArrivedBetween(me, since, until)
-                    .filter { wanted(it.peerId, it.hash) }
-                    .map { LinkDemandPolicy.Pending(it.peerId, it.sentAt, LinkWhy.WANT) }
+                    .mapNotNull { row ->
+                        wantedSince(row.peerId, row.hash)?.let { LinkDemandPolicy.Pending(row.peerId, maxOf(row.sentAt, it), LinkWhy.WANT) }
+                    }
         val posts = messages.ownGroupPostsBetween(me, recent, until)
         if (posts.isEmpty()) return dms + files
         val acked = receipts.ackersOf(posts.map { it.id })

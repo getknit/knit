@@ -94,6 +94,15 @@ import kotlin.coroutines.cancellation.CancellationException
  * again. The flag is the latest local want's ([want], [wantAll]) — the database re-arm re-derives it every tick, and the
  * user's tap re-wants it plain, which steps at once — never a memo of its own.
  *
+ * A contact's direct Internet link is a fast route too (the maintainer's call, ADR 2026-10.js2p and a5yj): a neighbour
+ * only such a link holds ([MeshTransport.fileRidesInternet]) is asked fast-only while this phone's network is unmetered
+ * ([metered], read once per step: [Candidate.freeLink]), and its holder serves it over the link, whatever its own
+ * network costs. On a metered network the want waits for the tap, and once tapped rides the link like any want.
+ * Metering is judged only before an ask starts (the maintainer's call: a blob is at most 8 MiB, so a flip mid-fetch is
+ * not worth acting on): a fetch on a link's peer runs to its end whatever the meter does meanwhile, and a flip is never
+ * an edge that forgets a holder. A turn to unmetered is picked up by the next ordinary step — the tick, or the link-up a
+ * route change brings. When a want became one a link may carry is [linkableSince], which the link demand counts from.
+ *
  * **Proof of a hold (ADR 2026-10.vy27).** A DM photo its recipient holds never goes up to a spool, and the sender's proof
  * is that recipient's own HAVE: [confirmHeld] sends it the same holder query, and the answer to it reaches [onPeerHolds]
  * and nothing else. It asks, serves, wants and stamps nothing.
@@ -170,6 +179,10 @@ class BlobExchange(
     // to a proof query of ours ([confirmHeld]), that it holds [hash] whole: the sender's end of the spool deferral's
     // proof (docs/SPOOL_PROTOCOL.md §9.5, ADR 2026-10.vy27, a5yj).
     private val onPeerHolds: suspend (hash: String, peer: String, plane: DeliveryPlane) -> Unit = { _, _, _ -> },
+    // Whether this phone's current network is metered (`InternetGate.isMetered`): a fast-only want asks over a contact's
+    // direct link only from an unmetered one (ADR 2026-10.js2p, a5yj). Read once per step ([linkedNow]) for its new asks
+    // and nothing else; the default (every rig, `mesh/lab` unless a node sets it) says no.
+    private val metered: () -> Boolean = { false },
 ) {
     /**
      * Whether this node queries capable neighbours before it asks ([enabled]), how long it waits for their answers, and
@@ -272,7 +285,8 @@ class BlobExchange(
      * we are pulling it for ([onRequest]): it lacks the bytes, so this cycle neither queries nor asks it, but a later
      * one does — it may be the one path the bytes have to us by then.
      *
-     * [fastOnly] keeps the fetch to neighbours whose copy would ride Wi-Fi Aware (ADR 2026-10.js2p, see the class KDoc).
+     * [fastOnly] keeps the fetch to neighbours whose copy would ride Wi-Fi Aware, or an unmetered direct link (ADR
+     * 2026-10.js2p, a5yj; see the class KDoc).
      * A want of our own sets it, whichever way: the latest one wins, so the user's tap (false) lifts a hold at once. An
      * [asker]'s sets it only on a want it creates — a neighbour's ask never widens or narrows a fetch of our own.
      * [approved] is the user's tap: the want is plain from then on, whatever a later want read before the tap says.
@@ -337,7 +351,7 @@ class BlobExchange(
     /** [wantAll]'s body: each of [wanted] recorded and stepped, the queries left for the caller to flush. */
     private suspend fun stepEach(
         wanted: List<Pair<String, String?>>,
-        linked: List<Candidate>,
+        linked: Linked,
         fastOnly: Set<String>,
         until: Map<String, Long>,
     ) {
@@ -465,13 +479,33 @@ class BlobExchange(
     }
 
     /**
+     * When our own want of [hash] last became one a contact's direct link may carry, or null: not wanted by us, or a
+     * fast-only want while this phone's network is metered. The read is itself a look at the network ([noteLinkable], as
+     * a step's is): read metered it clears the time, and the first read unmetered sets it to now — so it never waits on a
+     * step, which a receiver with no neighbour at all (the very one the link is for) never gets. The link demand reads it
+     * every round, so it is at most a round late. Its receiving trigger counts its wait and "no link since" from it
+     * (`MeshManager.attachmentWantedSince`, `MeshLinkPending`, ADR 2026-10.a5yj L-7-9), so a link that came and went
+     * while the want was held never stands in for a link the want could have used.
+     */
+    internal fun linkableSince(hash: String): Long? {
+        val metered = metered()
+        val t = now()
+        return synchronized(lock) {
+            fetching[hash]?.let { w ->
+                noteLinkable(w, metered, t)
+                w.linkableSince
+            }
+        }
+    }
+
+    /**
      * One step of [hash]'s fetch against the [linked] neighbours: the queries [decide] owes go into the outbox (the
      * caller flushes them), its asks go out, and its next wake is timed so a grace, a wait for answers or a stream's
      * end is acted on without waiting for the tick.
      */
     private suspend fun step(
         hash: String,
-        linked: List<Candidate>,
+        linked: Linked,
     ) {
         val passed = passOver(hash)
         if (endRefused(hash)) return
@@ -485,7 +519,9 @@ class BlobExchange(
         // A marked holder is not a holder for this want: gone, as far as it is concerned, so an ask on it fails over.
         val pool = if (passed.isEmpty()) linked else linked.filterNot { it.id in passed }
         val reach = reachingFor(hash, pool)
-        val plan = synchronized(lock) { fetching[hash]?.let { decideMarking(it, reach, kept) }?.also { queue(hash, it) } } ?: return
+        val plan =
+            synchronized(lock) { fetching[hash]?.let { decideMarking(it, reach, kept, linked.metered) }?.also { queue(hash, it) } }
+                ?: return
         if (plan.asks.isNotEmpty()) {
             val req = blobRequest(selfId(), hash, plan.fastOnly, plan.pull, plan.until)
             for (ask in plan.asks) {
@@ -562,7 +598,8 @@ class BlobExchange(
         w: Want,
         linked: List<Candidate>,
         kept: Long,
-    ): Plan = decide(w, linked, kept, now()).also { if (w.fastOnly && it.asks.isNotEmpty()) w.fastAsked = true }
+        metered: Boolean,
+    ): Plan = decide(w, linked, kept, now(), metered).also { if (w.fastOnly && it.asks.isNotEmpty()) w.fastAsked = true }
 
     /** Moves the queries [plan] owes into the outbox. Under [lock]. */
     private fun queue(
@@ -580,38 +617,99 @@ class BlobExchange(
         linked: List<Candidate>,
         kept: Long,
         t: Long,
+        metered: Boolean,
     ): Plan {
         val p = Plan(fastOnly = w.fastOnly, pull = w.budget, until = w.until)
-        // A fast-only want sees only the neighbours whose copy would ride Wi-Fi Aware (ADR 2026-10.js2p).
-        val eligible = if (w.fastOnly) linked.filter { it.route != BulkRoute.None } else linked
+        noteLinkable(w, metered, t)
+        // What an outstanding fetch is held to and what counts as fast-linked (never metering), and whom a new ask may go
+        // to (a direct link's peer only from an unmetered network): ADR 2026-10.js2p, a5yj.
+        val (waitOn, eligible) = fastRoutesOf(w, linked)
         // Ahead of the fetch's wait, so an ask outstanding on another holder never consumes the edge.
-        if (w.fastOnly) fastLinkSeen(w, eligible)
+        if (w.fastOnly) fastLinkSeen(w, waitOn)
         w.fetch?.let { f ->
-            // An ask made before the want turned fast-only, on a neighbour that would send over Bluetooth: let it go.
-            if (eligible.none { it.id == f.peer } && linked.any { it.id == f.peer }) {
+            // Metering is judged only before an ask: a fetch on a peer only a direct link holds runs to its end whatever
+            // the meter does meanwhile. An ask made before the want turned fast-only, on a neighbour that would send over
+            // Bluetooth: let it go.
+            if (waitOn.none { it.id == f.peer } && linked.any { it.id == f.peer }) {
                 w.over(f, "fast-only", p)
             } else {
                 // Queries go out mid-fetch too (a newcomer, a fetching neighbour's recheck): fresh answers for the fallback.
-                owedQueries(w, capableOf(eligible.filter { it.id !in w.pullers }), t, p, stuckOn = stuckOn(f, eligible))
-                fetchWait(w, f, eligible, kept, t, p)?.let { return p.waitFor(it) }
+                owedQueries(w, capableOf(eligible.filter { it.id !in w.pullers }), t, p, stuckOn = stuckOn(f, waitOn))
+                fetchWait(w, f, waitOn, kept, t, p)?.let { return p.waitFor(it) }
             }
         }
         // A cycle closes only with no ask outstanding, so an ask's grace always runs out inside the cycle it began in.
         if (w.cycleDue(t)) openCycle(w, t)
         val live = eligible.filter { it.id !in w.pullers }
-        if (w.fastOnly && live.isEmpty()) {
-            // Nobody to ask over Wi-Fi Aware: ask nobody and stamp nothing. A link-up, a route coming up (the tick
-            // steps it) or the user's tap moves it on; Bluetooth holders are never asked blind in its place.
-            p.events += BlobEvent.FastOnlyHeld
-            if (!w.fastHeld) log("blob fast-only ${w.hash8}… held: no Wi-Fi Aware holder among ${linked.size} linked")
-            w.fastHeld = true
-            return p
-        }
+        if (w.fastOnly && live.isEmpty()) return p.also { holdFastOnly(w, it, linked.size, metered) }
         w.fastHeld = false
         val capable = capableOf(live)
         owedQueries(w, capable, t, p)
         if (!askHolder(w, capable, kept, t, p) && !askBlind(w, live, capable, t, p)) pullThrough(w, capable, t, p)
         return p
+    }
+
+    /**
+     * [decide] for a fast-only want with nobody to ask over a fast route: ask nobody and stamp nothing. A link-up, a route
+     * coming up (the tick steps it, an unmetered network included) or the user's tap moves it on; Bluetooth holders are
+     * never asked blind in its place. Under [lock].
+     */
+    private fun holdFastOnly(
+        w: Want,
+        p: Plan,
+        linkedCount: Int,
+        metered: Boolean,
+    ) {
+        p.events += BlobEvent.FastOnlyHeld
+        // The prefix is a device grep's (`blob fast-only <hash>… held:`): keep it byte for byte, reword only the tail.
+        if (!w.fastHeld) {
+            log(
+                "blob fast-only ${w.hash8}… held: no fast holder (Wi-Fi Aware or an unmetered direct link) " +
+                    "among $linkedCount linked${if (metered) ", network metered" else ""}",
+            )
+        }
+        w.fastHeld = true
+    }
+
+    /**
+     * The neighbours among [linked] a fast-only [w] may wait on and a fast route reaches at all — Wi-Fi Aware (ADR
+     * 2026-10.js2p) or a contact's direct link (ADR 2026-10.a5yj), read by presence and never by metering — and, of those,
+     * the ones a new ask may go to: a direct link's peer only from an unmetered network ([Candidate.freeLink]). Both are
+     * [linked] for a plain want.
+     */
+    private fun fastRoutesOf(
+        w: Want,
+        linked: List<Candidate>,
+    ): Pair<List<Candidate>, List<Candidate>> {
+        if (!w.fastOnly) return linked to linked
+        val routes = linked.filter { it.route != BulkRoute.None || it.linkRides }
+        return routes to routes.filter(::fastAskable)
+    }
+
+    /**
+     * Whether a new fast-only ask may go to [c], by the plane its copy will actually ride: a peer only a contact's direct
+     * link holds is served over that link whatever Wi-Fi Aware says of it (`CompositeMeshTransport.sendFastOnly` takes the
+     * link before it arms), so it is asked only from an unmetered network ([Candidate.freeLink]); any other by its Wi-Fi
+     * Aware route (ADR 2026-10.js2p, a5yj). Such a peer is never Wi-Fi Aware `Linked` — that child would be its file
+     * child — so a `Reachable` sighting of it must not make a metered ask (the blobs-reviewer's finding: 8 MiB over a
+     * metered link, no tap).
+     */
+    private fun fastAskable(c: Candidate): Boolean = if (c.linkRides) c.freeLink else c.route != BulkRoute.None
+
+    /**
+     * Keeps [w]'s [Want.linkableSince] to what this step read at [t] (ADR 2026-10.a5yj, js2p): a fast-only want on a
+     * [metered] network is not one a link may carry, and one that is unmetered now became one at the first step that saw
+     * it so. A plain want's is set where it is recorded or lifted. Under [lock].
+     */
+    private fun noteLinkable(
+        w: Want,
+        metered: Boolean,
+        t: Long,
+    ) {
+        when {
+            w.fastOnly && metered -> w.linkableSince = null
+            w.ownWant && w.linkableSince == null -> w.linkableSince = t
+        }
     }
 
     /**
@@ -629,7 +727,9 @@ class BlobExchange(
         w: Want,
         eligible: List<Candidate>,
     ) {
-        val linkedNow = eligible.filter { it.route == BulkRoute.Linked }.mapTo(HashSet()) { it.id }
+        // A contact's direct link counts as linked by its presence alone: its coming up is the edge that asks its peer
+        // again (ADR 2026-10.a5yj). A meter flip is never an edge — metering is judged only before an ask.
+        val linkedNow = eligible.filter { it.route == BulkRoute.Linked || it.linkRides }.mapTo(HashSet()) { it.id }
         // The first look is a baseline, not an edge: what a fresh want finds linked it never knew otherwise. The edges
         // [fastLinkUp] handed over count too, for the neighbours linked now: a flap between two steps is still an edge.
         val seen = w.fastLinked?.let { linkedNow - it }.orEmpty()
@@ -655,7 +755,7 @@ class BlobExchange(
     private fun armsFastOnly(
         w: Want,
         c: Candidate,
-    ): Boolean = w.fastOnly && c.route == BulkRoute.Reachable
+    ): Boolean = w.fastOnly && c.route == BulkRoute.Reachable && !c.linkRides
 
     /** The neighbours among [live] this build queries: those whose link says they answer, while querying is on. */
     private fun capableOf(live: List<Candidate>): List<Candidate> = if (holderQuery.enabled) live.filter { it.capable } else emptyList()
@@ -1005,7 +1105,8 @@ class BlobExchange(
             w.blindAsked += pick.id
             w.askedAt[pick.id] = t
             w.fetch = Fetch(pick.id, w.hash8, Tier.Blind, t, grace)
-            p.ask(pick.peer, arm = pick.route == BulkRoute.Reachable, line = "first")
+            // A fast-only copy to a peer only a direct link holds rides the link, never an armed Wi-Fi Aware path.
+            p.ask(pick.peer, arm = pick.route == BulkRoute.Reachable && !(w.fastOnly && pick.linkRides), line = "first")
             p.why = rankOf(w, pick).label
             p.events += BlobEvent.BlindAsk
             p.waitFor(grace)
@@ -1279,18 +1380,26 @@ class BlobExchange(
      * The linked neighbours as a step reads them: each one's plane for a file, whether it is streaming to us, whether
      * its link says it answers a query, whether that link is a slow one, and whether a phone radio holds it at all.
      */
-    private fun linkedNow(): List<Candidate> =
-        transport.neighbors.value.map {
-            Candidate(
-                peer = it,
-                route = transport.bulkRouteTo(it.nodeId),
-                streaming = transport.fileArrivingFrom(it.nodeId),
-                capable = it.capabilities and Protocol.CAP_BLOB_HAVE != 0L,
-                slow = transport.slowLinkTo(it.nodeId),
-                streamLeftMs = transport.fileArrivingEtaMs(it.nodeId),
-                radio = transport.radioLinked(it.nodeId),
-            )
-        }
+    private fun linkedNow(): Linked {
+        // Once per step, never per neighbour: every candidate of one step reads the same network (ADR 2026-10.js2p, a5yj).
+        val metered = metered()
+        val candidates =
+            transport.neighbors.value.map {
+                val linkRides = transport.fileRidesInternet(it.nodeId)
+                Candidate(
+                    peer = it,
+                    route = transport.bulkRouteTo(it.nodeId),
+                    streaming = transport.fileArrivingFrom(it.nodeId),
+                    capable = it.capabilities and Protocol.CAP_BLOB_HAVE != 0L,
+                    slow = transport.slowLinkTo(it.nodeId),
+                    streamLeftMs = transport.fileArrivingEtaMs(it.nodeId),
+                    radio = transport.radioLinked(it.nodeId),
+                    linkRides = linkRides,
+                    freeLink = linkRides && !metered,
+                )
+            }
+        return Linked(candidates, metered)
+    }
 
     /**
      * [linked] less the neighbours that only a contact's direct link reaches and whose link would not carry a frame
@@ -1797,9 +1906,10 @@ class BlobExchange(
      * once all landed at the end; one at a time, the first lands in a quarter of that, and its receiver holds it — a
      * second source for the rest.
      *
-     * A [fastOnly] ask (ADR 2026-10.js2p) is served only over Wi-Fi Aware: refused at once when the asker is neither
-     * linked nor reachable on it, never parked behind a Bluetooth feed, and handed to the transport marked so it is
-     * never sent over Bluetooth. Not holding it, we pull it through fast-only too.
+     * A [fastOnly] ask (ADR 2026-10.js2p) is served only over a fast route — Wi-Fi Aware, or a contact's direct link that
+     * is the asker's only link (a5yj): refused at once when the asker has neither, never parked behind a Bluetooth feed,
+     * and handed to the transport marked so it is never sent over Bluetooth. Not holding it, we pull it through
+     * fast-only too.
      *
      * Not holding it, we want it with one hop less of the ask's [pull] budget ([budgetOf]: an older build's ask, with
      * none, is a fetch only) and its [until] (#195). An ask with no budget left, or past its deadline, makes no want
@@ -1813,6 +1923,30 @@ class BlobExchange(
         pull: Int? = null,
         until: Long? = null,
     ) = serveOrWant(hash, fromNodeId, offset, mayPark = true, fastOnly = fastOnly, pull = pull, until = until)
+
+    /**
+     * Whether a [fastOnly] ask from [fromNodeId] for [hash] is refused: nothing reaches it over Wi-Fi Aware, and its file
+     * would not ride a contact's direct link. Refused before the store is read, with no memo stamped, so a SENDING answer
+     * never covers a copy that went nowhere and its next ask, once a route is up, is served at once. A link's peer is
+     * served whatever our own network costs: it asked fast-only over the link only from an unmetered network or after
+     * its tap, and the tap protects the receiver's data (ADR 2026-10.js2p, a5yj). The two ends can see different planes
+     * — we mid-dial on Bluetooth to an asker that sees only the link, so its file would ride Bluetooth here — and then
+     * this refuses silently and the asker waits out its grace and moves on; accepted, as the asymmetric Wi-Fi Aware
+     * sighting is. One more of that kind remains the other way round: the asker sees us over Bluetooth and Wi-Fi Aware
+     * `Reachable` (so it asked fast-only for an Aware copy, whatever its metering), while we see it only over the link —
+     * its Bluetooth link not yet, or no longer, up on our side — and this serves it over the link, possibly on its
+     * metered network. A window as long as the two ends disagree about one Bluetooth link; the same accepted asymmetry.
+     */
+    private fun refusesFastOnly(
+        hash: String,
+        fromNodeId: String,
+        fastOnly: Boolean,
+    ): Boolean {
+        if (!fastOnly || transport.bulkRouteTo(fromNodeId) != BulkRoute.None || transport.fileRidesInternet(fromNodeId)) return false
+        onEvent(BlobEvent.FastOnlyRefused)
+        log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: fast-only, no fast route")
+        return true
+    }
 
     /** [onRequest], where [mayPark] false serves at once whatever else is being fed (a park that waited its longest). */
     private suspend fun serveOrWant(
@@ -1833,13 +1967,7 @@ class BlobExchange(
             log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: not carried by its direct link")
             return
         }
-        // Nothing reaches it over Wi-Fi Aware: refuse before the store is read, and stamp no memo, so a SENDING answer
-        // never covers a copy that went nowhere and its next ask, once a route is up, is served at once.
-        if (fastOnly && transport.bulkRouteTo(fromNodeId) == BulkRoute.None) {
-            onEvent(BlobEvent.FastOnlyRefused)
-            log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: fast-only, no Wi-Fi Aware route")
-            return
-        }
+        if (refusesFastOnly(hash, fromNodeId, fastOnly)) return
         val file = store.fileFor(hash)
         if (file != null) {
             // Holding the bytes is what decides a serve; a missing mime row only costs us the type.
@@ -2298,11 +2426,13 @@ class BlobExchange(
             fetching[hash] =
                 Want(hash, nowMs, author, via, asker).also {
                     it.approved = approved
-                    it.fastOnly = fastOnly && !approved
                     it.budget = reach.budget
                     it.until = reach.until
                     it.ceiling = ceiling
                     it.ownWant = asker == null
+                    // A plain want of ours is linkable from its record; a fast-only one waits for its first step's read
+                    // of the network ([noteLinkable]). A fresh want is plain, so this lifts nothing.
+                    setFastOnly(it, fastOnly && !approved, nowMs)
                 }
             partials.cap(hash, ceiling)
         } else {
@@ -2400,6 +2530,9 @@ class BlobExchange(
     ) {
         val lifted = w.fastOnly && !fastOnly
         w.fastOnly = fastOnly
+        // The tap, a limit lifted, or a want only neighbours' asks made turning ours: a link may carry it from now, if it
+        // could not already (ADR 2026-10.a5yj).
+        if (!fastOnly) noteLinkable(w, metered = false, t)
         if (!lifted) return
         w.endDeadStreak()
         if (w.fetch == null) w.openCycle(t, natural = false)
@@ -2581,6 +2714,14 @@ class BlobExchange(
         var approved = false
         var fastAsked = false
         var fastLinked: Set<String>? = null
+
+        // When this want last became one a contact's direct link may carry (ADR 2026-10.a5yj, js2p): a plain want of our
+        // own at its record, a lifted one (the tap) at the lift, a fast-only one at the first step that read this phone
+        // unmetered; null while it is fast-only on a metered network, and for a want only neighbours' asks made. Set
+        // again whenever the want is made afresh (a restart, the [FETCH_TTL_MS] sweep, an eviction the re-arm restores),
+        // which costs the link demand at most one more offer and never strands it ([linkableSince]). Wall-clock ms, the
+        // domain of `LinkDemand`'s clock and the message's `arrivedAt`.
+        var linkableSince: Long? = null
 
         // Fast links [fastLinkUp] saw come up since the last step, whatever the snapshots say ([fastLinkSeen]).
         val fastEdges = HashSet<String>()
@@ -2887,9 +3028,20 @@ class BlobExchange(
         val streamLeftMs: Long? = null,
         // A phone radio holds it ([MeshTransport.radioLinked]); false for a peer only a contact's direct link reaches.
         val radio: Boolean = true,
+        // A file from it would ride a contact's direct link ([MeshTransport.fileRidesInternet]): no radio holds it.
+        val linkRides: Boolean = false,
+        // [linkRides], and this phone's network is unmetered as the step read it: a fast route for a fast-only want
+        // (ADR 2026-10.js2p, a5yj). A link from a metered network waits for the tap.
+        val freeLink: Boolean = false,
     ) {
         val id: String get() = peer.nodeId
     }
+
+    /** The linked neighbours as one step reads them ([linkedNow]), and whether this phone's network was metered then. */
+    private class Linked(
+        candidates: List<Candidate>,
+        val metered: Boolean,
+    ) : List<Candidate> by candidates
 
     /**
      * What a step decided: the queries it owes, the asks it makes, and when it wants to be stepped again. [fastOnly] is

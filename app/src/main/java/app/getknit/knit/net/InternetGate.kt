@@ -46,4 +46,21 @@ interface InternetGate {
      * silence so a fake need not model it.
      */
     val routeChanges: Flow<Unit> get() = emptyFlow()
+
+    /**
+     * Whether this phone's current default network is metered: true unless the platform says it is not
+     * (`NET_CAPABILITY_NOT_METERED`), so no network at all reads as metered too. The one judgement of "the person
+     * pays for these bytes" that a transfer the person did not tap for must defer to — a contact's direct link
+     * fetching an attachment over the Bluetooth download limit (ADR 2026-10.js2p, a5yj) today, and any later
+     * cellular gate (a Direct Send) — so it is a seam of its own rather than a rule inside one plane.
+     *
+     * Not `TranslateModelStore.metered()` / `SttModelStore.metered()`, which ask "cellular, or Data Saver on" to word
+     * a model download's prompt, and stay as they are. A carrier's temporary unmetering
+     * (`NET_CAPABILITY_TEMPORARILY_NOT_METERED`, set and cleared on some 5G plans without a network change) does not
+     * count: the rule names a network defined as metered. With a VPN up, the default network is the VPN's, which reads
+     * metered unless its app calls `VpnService.Builder.setMetered(false)`: over such a VPN a fast-only want waits for the
+     * tap — conservative, accepted for now, a device check owed. A snapshot, cheap and non-blocking; the default (every
+     * fake, every build without the platform gate) says no.
+     */
+    fun isMetered(): Boolean = false
 }

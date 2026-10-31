@@ -1173,7 +1173,18 @@ class BlobExchangeTest {
         t: FakeLoopTransport,
         store: FakeBlobStore = FakeBlobStore(Files.createTempDirectory("blob-fast").toFile()),
         now: () -> Long = { 0L },
-    ) = BlobExchange(transport = t, store = store, selfId = { t.nodeId }, onObtained = { _, _ -> }, now = now, partials = partials())
+        metered: () -> Boolean = { false },
+        onEvent: (BlobExchange.BlobEvent) -> Unit = {},
+    ) = BlobExchange(
+        transport = t,
+        store = store,
+        selfId = { t.nodeId },
+        onObtained = { _, _ -> },
+        now = now,
+        partials = partials(),
+        onEvent = onEvent,
+        metered = metered,
+    )
 
     @Test
     fun aFastOnlyWantAsksNoNeighbourThatWouldSendOverBluetoothUntilAPlainWantLiftsIt() =
@@ -1307,6 +1318,204 @@ class BlobExchangeTest {
 
             exchange.onRequest(PICTURE_HASH, "n", offset = null, fastOnly = false)
             assertEquals("a plain ask meets the same memo", 2, h.filesSent.size)
+        }
+
+    // --- A contact's direct link is a fast route from an unmetered network (ADR 2026-10.js2p, a5yj) ---
+
+    @Test
+    fun aFastOnlyWantWhoseOnlyHolderIsOnAnUnmeteredDirectLinkAsksItFastOnly() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val link = FakeLoopTransport("l").also(r::connect)
+            val bt = FakeLoopTransport("bt").also(r::connect)
+            r.internetOnly += "l"
+            var now = 10L
+            val exchange = exchangeOn(r, now = { now })
+            val toLink = backgroundScope.requestsArrivingAt(link)
+            val toBt = backgroundScope.requestsArrivingAt(bt)
+
+            exchange.want("H", author = "l", fastOnly = true)
+            assertEquals(listOf(BlobReqContent("H", fastOnly = true, pull = BlobExchange.PULL_BUDGET)), toLink)
+            assertTrue("the Bluetooth neighbour is never asked", toBt.isEmpty())
+            assertTrue("a link carries it: nothing armed", r.bulkArmed.isEmpty())
+            now = 20L // read later than the step, so the read's own first look cannot be what dated it
+            assertEquals("linkable from its first step", 10L, exchange.linkableSince("H"))
+        }
+
+    /**
+     * The blobs-reviewer's finding: a link-only holder that Wi-Fi Aware also sights (`Reachable`) serves a fast-only ask
+     * over the link (`CompositeMeshTransport.sendFastOnly` takes the link before it arms), so a metered asker must not ask
+     * it, and nobody arms Wi-Fi Aware toward it either way.
+     */
+    @Test
+    fun aLinkOnlyHolderWifiAwareSightsIsAskedOnlyUnmeteredAndNeverArmed() =
+        runTest(UnconfinedTestDispatcher()) {
+            for (metered in listOf(true, false)) {
+                val r = FakeLoopTransport("r")
+                val link = FakeLoopTransport("l").also(r::connect)
+                r.internetOnly += "l"
+                r.bulkRoutes["l"] = BulkRoute.Reachable
+                var now = 0L
+                val exchange = exchangeOn(r, now = { now }, metered = { metered })
+                val toLink = backgroundScope.requestsArrivingAt(link)
+
+                exchange.want("H", author = "l", fastOnly = true)
+                now += BlobExchange.FIRST_ASK_GRACE_MS + CompositeMeshTransport.BULK_GRACE_MS
+                exchange.reask()
+                if (metered) {
+                    assertTrue("metered: no ask over the link", toLink.isEmpty())
+                } else {
+                    assertEquals(BlobReqContent("H", fastOnly = true, pull = BlobExchange.PULL_BUDGET), toLink.first())
+                }
+                assertTrue("metered=$metered: nothing armed", r.bulkArmed.isEmpty())
+            }
+        }
+
+    /**
+     * A receiver with no neighbour at all gets no step (the re-offer tick re-arms and re-asks only with neighbours), yet it
+     * is the one whose want must raise its own link (L-7-9): the read itself is the first unmetered look (the coordinator's
+     * `LinkDownloadLimitLabTest.aWantHeldWhileMeteredRaisesItsOwnLinkOnceTheNetworkIsUnmetered`).
+     */
+    @Test
+    fun aFastOnlyWantReadUnmeteredWithNoStepIsLinkableFromThatRead() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r") // no neighbours
+            var now = 0L
+            var metered = true
+            val exchange = exchangeOn(r, now = { now }, metered = { metered })
+
+            exchange.want("H", author = "a", fastOnly = true)
+            now = 1_000L
+            assertEquals("metered: none", null, exchange.linkableSince("H"))
+
+            now = 2_000L
+            metered = false // no step follows
+            now = 3_000L
+            assertEquals("the first unmetered read sets it", 3_000L, exchange.linkableSince("H"))
+            now = 4_000L
+            assertEquals("and later reads keep it", 3_000L, exchange.linkableSince("H"))
+
+            metered = true
+            assertEquals("a metered read clears it", null, exchange.linkableSince("H"))
+        }
+
+    @Test
+    fun aMeteredFastOnlyWantIsHeldUntilTheTapWhichAsksTheLinkPeerPlain() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val link = FakeLoopTransport("l").also(r::connect)
+            r.internetOnly += "l"
+            var now = 0L
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(r, now = { now }, metered = { true }, onEvent = { events += it })
+            val toLink = backgroundScope.requestsArrivingAt(link)
+
+            exchange.want("H", author = "l", fastOnly = true)
+            now += BlobExchange.ROUND_MS
+            exchange.reask()
+            assertTrue("nobody asked over a metered link", toLink.isEmpty())
+            assertTrue(BlobExchange.BlobEvent.FastOnlyHeld in events)
+            assertEquals("held: no link may carry it", null, exchange.linkableSince("H"))
+
+            now += 1_000
+            exchange.want("H", author = "l", approved = true) // the tap
+            assertEquals("asked at once, plain", listOf(BlobReqContent("H", pull = BlobExchange.PULL_BUDGET)), toLink)
+            assertEquals("linkable from the tap", now, exchange.linkableSince("H"))
+        }
+
+    @Test
+    fun anOutstandingFetchOnALinkPeerIsNotLetGoWhenThePhoneTurnsMetered() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val link = FakeLoopTransport("l").also(r::connect)
+            r.internetOnly += "l"
+            var now = 0L
+            var metered = false
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(r, now = { now }, metered = { metered }, onEvent = { events += it })
+            val toLink = backgroundScope.requestsArrivingAt(link)
+
+            exchange.want("H", author = "l", fastOnly = true)
+            assertEquals(1, toLink.size)
+
+            metered = true // the phone moved to cellular while the ask stands
+            now += 1_000
+            exchange.reask()
+            assertTrue("not let go for the metered read: $events", BlobExchange.BlobEvent.FastOnlyHeld !in events)
+
+            r.arrivingFrom += "l" // its file is streaming in
+            now += BlobExchange.FIRST_ASK_GRACE_MS + CompositeMeshTransport.BULK_GRACE_MS
+            exchange.reask()
+            assertTrue("runs to its end, never held: $events", BlobExchange.BlobEvent.FastOnlyHeld !in events)
+            assertTrue(BlobExchange.BlobEvent.CancelSent !in events && BlobExchange.BlobEvent.Fallback !in events)
+            assertEquals("asked once", 1, toLink.size)
+        }
+
+    @Test
+    fun aHolderServesAFastOnlyAskFromALinkPeerWhateverItsOwnMeteringButNotOneFromBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = FakeLoopTransport("h")
+            FakeLoopTransport("l").also(h::connect)
+            FakeLoopTransport("b").also(h::connect)
+            h.internetOnly += "l"
+            val store =
+                FakeBlobStore(
+                    Files.createTempDirectory("blob-link-serve").toFile(),
+                ).apply { seed(PICTURE_HASH, "image/jpeg", PICTURE) }
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(h, store, metered = { true }, onEvent = { events += it })
+
+            exchange.onRequest(PICTURE_HASH, "l", fastOnly = true)
+            assertTrue("served over the link, marked fast-only", h.filesSent.single().fastOnly)
+
+            exchange.onRequest(PICTURE_HASH, "b", fastOnly = true)
+            assertEquals("a Bluetooth-only asker is still refused", 1, h.filesSent.size)
+            assertEquals(listOf(BlobExchange.BlobEvent.FastOnlyRefused), events.filter { it == BlobExchange.BlobEvent.FastOnlyRefused })
+        }
+
+    @Test
+    fun linkableSinceIsTheRecordTheTapTheFirstUnmeteredStepAndTheReArmAfterASweep() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            var now = 100L
+            var metered = false
+            val exchange = exchangeOn(r, now = { now }, metered = { metered })
+
+            // Each time is read later than what set it, so the read's own first look (`linkableSince` notes it too) never
+            // stands in for the record, the tap or the step under test.
+            exchange.want("P", author = "a") // plain
+            now = 150L
+            assertEquals("a plain want: its record", 100L, exchange.linkableSince("P"))
+            now = 200L
+            exchange.wantAll(listOf("P" to "a")) // the tick's re-arm of a standing want moves nothing
+            assertEquals(100L, exchange.linkableSince("P"))
+
+            metered = true
+            exchange.want("F", author = "a", fastOnly = true)
+            assertEquals("fast-only and metered: none", null, exchange.linkableSince("F"))
+            now = 300L
+            exchange.want("F", author = "a", approved = true)
+            now = 350L
+            assertEquals("the tap", 300L, exchange.linkableSince("F"))
+
+            exchange.want("G", author = "a", fastOnly = true)
+            assertEquals(null, exchange.linkableSince("G"))
+            now = 400L
+            metered = false
+            exchange.reask() // the first ordinary step that reads the network unmetered
+            now = 450L
+            assertEquals("fast-only: the first step that sees this phone unmetered", 400L, exchange.linkableSince("G"))
+            now = 500L
+            exchange.reask()
+            assertEquals("later steps keep it", 400L, exchange.linkableSince("G"))
+
+            now = 500L + BlobExchange.FETCH_TTL_MS + 1
+            exchange.sweepExpired()
+            assertEquals("swept: not wanted", null, exchange.linkableSince("P"))
+            exchange.wantAll(listOf("P" to "a")) // the database re-arm makes it afresh
+            val rearmedAt = now
+            now += 1
+            assertEquals("set again at the re-arm", rearmedAt, exchange.linkableSince("P"))
         }
 
     @Test

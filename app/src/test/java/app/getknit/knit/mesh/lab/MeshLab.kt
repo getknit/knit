@@ -1338,6 +1338,13 @@ class LabNode internal constructor(
     @Volatile
     var linksOn = true
 
+    /**
+     * Whether this phone's network is metered, as `InternetGate.isMetered` answers its blob exchange: a fast-only want then
+     * never asks over a direct link, and waits for the tap (ADR 2026-10.js2p, 2026-10.a5yj). Unmetered unless a scenario says.
+     */
+    @Volatile
+    var metered = false
+
     /** What this node's direct links logged (`DirectLinks`' log): each attempt's end and each link's. */
     val linkLog = CopyOnWriteArrayList<String>()
 
@@ -1487,7 +1494,7 @@ class LabNode internal constructor(
                 receipts,
                 groups::find,
                 stuck = { peer, hash -> manager.attachmentStuck(peer, hash) },
-                wanted = { _, hash -> manager.attachmentWanted(hash) },
+                wantedSince = { _, hash -> manager.attachmentWantedSince(hash) },
             )
         demand =
             LinkDemand(
@@ -1809,6 +1816,7 @@ class LabNode internal constructor(
                 // each opened signal handed to its links, resolved late.
                 onLinkSignal = { sender, signal, sentAt -> links?.onSignal(sender, signal, sentAt) },
                 extraCapabilities = if (internet != null) Protocol.CAP_INET_LINK else 0L,
+                blobMetered = { metered },
             )
         buildLinks(scope, meshTransport)
         bindBoard()

@@ -283,6 +283,10 @@ class MeshManager(
     // plane reads it before every dial, so a relay is never dialled — and never counted as failing — over
     // no route at all. The default always says yes, which is every test and every build without the plane.
     private val online: () -> Boolean = { true },
+    // Whether this phone's current network is metered (`InternetGate.isMetered`): a fast-only blob want asks over a
+    // contact's direct link only from an unmetered one (ADR 2026-10.js2p, a5yj). The default says unmetered, which is
+    // every test, `mesh/lab` unless a node sets it, and every build without the platform gate.
+    private val blobMetered: () -> Boolean = { false },
     // The commons (docs/SPOOL_PROTOCOL.md §7.4): the joined rooms, their outbox and their members. Null —
     // every test, and a build with no Internet plane — derives no commons scope and refuses a commons send.
     private val commons: CommonsStore? = null,
@@ -470,6 +474,7 @@ class MeshManager(
             // answer crossed, which the exchange took only because it `provesHold`.
             onPeerHolds = { hash, peer, plane -> blobs.recordHolder(hash, peer, plane, clock()) },
             log = { Log.d(TAG, it) },
+            metered = blobMetered,
         )
 
     /**
@@ -4443,13 +4448,16 @@ class MeshManager(
     }
 
     /**
-     * Whether the receiving end wants a contact's DM attachment [hash] and nothing is bringing it — a direct link's
-     * receiving trigger (`docs/DIRECT_LINKS.md` L-7-9): the blob exchange still wants it ([BlobExchange.wantedHashes]: the
-     * person's download limits and taps already said yes), none of it is held here, and no plane is streaming it in. The
-     * sender is the one phone sure to hold it; a spool that had it would have brought it by now.
+     * Since when the receiving end has wanted a contact's DM attachment [hash] in a way a direct link may carry, with
+     * nothing bringing it — a direct link's receiving trigger (`docs/DIRECT_LINKS.md` L-7-9): the blob exchange's own
+     * want ([BlobExchange.linkableSince]: the person's download limits and taps already said yes, and a fast-only want
+     * only from an unmetered network, ADR 2026-10.js2p, a5yj), none of it held here, and no plane streaming it in. Null
+     * otherwise. The sender is the one phone sure to hold it; a spool that had it would have brought it by now.
      */
-    suspend fun attachmentWanted(hash: String): Boolean =
-        hash in blobExchange.wantedHashes() && !blobs.exists(hash) && hash !in transport.arrivingFiles()
+    suspend fun attachmentWantedSince(hash: String): Long? {
+        val since = blobExchange.linkableSince(hash) ?: return null
+        return since.takeIf { !blobs.exists(hash) && hash !in transport.arrivingFiles() }
+    }
 
     /**
      * Asks each of [linkPeers] that no radio links whether it holds our DM attachments to it that are still

@@ -115,12 +115,13 @@ and the entry is fixed.
   shows bursts stalling, never a second stream.
 - **When touching `LinkSignal.PHASE_DECLINE`, `DirectLinks.declinedAt` / `declining` / `DECLINES_PER_HOUR`,
   `LinkOutcome.DECLINED` / `BUDGET`, `LinkWhy`, `LinkDemandPolicy.FILE_WINDOW_MS` / `WANT_WAIT_MS` / `offers`,
-  `MeshManager.attachmentWanted`, `MessageDao.peerDmAttachmentsArrivedBetween` or `PunchPolicy.MAX_BACKOFF_MS`:** READ ADR
+  `MeshManager.attachmentWantedSince`, `MessageDao.peerDmAttachmentsArrivedBetween` or `PunchPolicy.MAX_BACKOFF_MS`:** READ ADR
   2026-10.a5yj's decline amendment and `docs/DIRECT_LINKS.md` L-2-6, L-7-7 and L-7-9. Only the person's switch declines
   (low-power and a pause pass, saying nothing); a decline is never backed off and holds until something newer than it,
   never on a timer. A file no spool carries is offered for custody's 24 h at a backoff capped at 30 min; a message keeps
-  its 15 min. The receiving end's WANT reads the blob exchange's own want, so a download the person's limits hold back
-  never calls a link. Every offer not answered is a `link_try` line on the answering end, and every offer of ours names
+  its 15 min. The receiving end's WANT reads the blob exchange's own want from when a link could first carry it
+  (`Want.linkableSince`, the a5yj 2026-10-31 amendment), so a download the person's limits hold back on a metered network
+  never calls a link, and a link that came and went while it was held never stops one later. Every offer not answered is a `link_try` line on the answering end, and every offer of ours names
   its `why`.
 - **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
   `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28

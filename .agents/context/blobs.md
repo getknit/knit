@@ -135,9 +135,12 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   fast-only route, `CompositeMeshTransport.fastLinked` / `BlobExchange.fastLinkUp`, `CarriedAttachment.roster`,
   `BluetoothFetchGate`, `MessageDao.attachmentFetchRows`, `MeshController.downloadAttachment`,
   `messages.attachmentFetchApproved`, or what `rewantMissingBlobs`, `InboundPipeline.onCarriedFrame` and `deliverChat`
-  pass as the flag:** READ ADR 2026-10.js2p. An attachment every row of which declares over the user's Bluetooth
-  download limit, untapped, is fetched only over Wi-Fi Aware — the rule folds per row in Kotlin, so a stranger's row
-  cannot hold a contact's. A fast-only want queries, asks and pulls through only a neighbour linked or reachable on that
+  pass as the flag, or `Candidate.freeLink` / `linkRides`, `fastRoutesOf`, `refusesFastOnly`, `Want.linkableSince`,
+  `InternetGate.isMetered`:** READ ADR 2026-10.js2p and ADR 2026-10.a5yj's 2026-10-31 amendment. An attachment every
+  row of which declares over the user's Bluetooth download limit, untapped, is fetched only over Wi-Fi Aware, or over a
+  contact's direct link while this phone's network is unmetered (read when an ask is decided, never mid-stream; the
+  holder serves a link peer's fast-only ask whatever its own metering) — the rule folds per row in Kotlin, so a
+  stranger's row cannot hold a contact's. A fast-only want queries, asks and pulls through only a neighbour linked or reachable on that
   plane; with none it asks nobody and stamps nothing (never a blind ask of a Bluetooth holder); a cycle that asked and
   still wants it is dead and backs off; a Wi-Fi Aware link coming up — seen per holder, at the edge, even to a neighbour
   already linked over Bluetooth — asks that holder again at once, and resets nothing else (links flap per sync). The holder serves over a live link or one it
@@ -153,7 +156,7 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   custody's read loads that size only while no row names the hash, and holds what it cannot judge between its reads
   (`CarriedAttachment.rowCovered`, a frame trimmed between custody's two reads) until the next re-arm (js2p's
   2026-10-19 amendment).
-  Lab: `LargeAttachmentLabTest`, `AttachmentLabTest`'s two #132 cases; unit: `BlobExchangeTest`'s fast-only cases,
+  Lab: `LargeAttachmentLabTest`, `LinkDownloadLimitLabTest` (over a direct link), `AttachmentLabTest`'s two #132 cases; unit: `BlobExchangeTest`'s fast-only cases,
   `CompositeMeshTransportTest`, `BluetoothFetchGateTest`.
 - **When touching `KeyExchange`'s cache / `profileFor` / `serveKey`, `peer_profiles` (`PeerProfileEntity`,
   `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`keylessSenders`):** READ ADR

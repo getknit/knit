@@ -493,11 +493,13 @@ class CompositeMeshTransport(
     }
 
     /**
-     * [sendFile] for an asker that takes the bytes over Wi-Fi Aware only ([FileMeta.fastOnly], ADR 2026-10.js2p): a live
-     * fast link carries them whatever their size, else the fast plane is armed for them whatever their size and waited
-     * on as any large blob is. Never the link holder — not on a refused enqueue, not when the grace runs out, not when
-     * the plane will not arm: the asker's user has not agreed to wait on Bluetooth for these bytes. A copy given up
-     * after it was accepted calls [FileMeta.onDropped].
+     * [sendFile] for an asker that takes the bytes over a fast route only ([FileMeta.fastOnly], ADR 2026-10.js2p): a live
+     * fast link carries them whatever their size; else, when the asker's file would ride a contact's direct Internet link
+     * ([fileChildFor] is a [viaInternet] child: no radio holds it), that link carries them (ADR 2026-10.a5yj — the asker
+     * asked us fast-only over it only from an unmetered network, `BlobExchange`); else the fast plane is armed for them
+     * whatever their size and waited on as any large blob is. Never Bluetooth — not on a refused enqueue, not when the
+     * grace runs out, not when the plane will not arm: the asker's user has not agreed to wait on Bluetooth for these
+     * bytes. A copy given up after it was accepted calls [FileMeta.onDropped].
      */
     private suspend fun sendFastOnly(
         fast: MeshTransport,
@@ -506,12 +508,18 @@ class CompositeMeshTransport(
         meta: FileMeta,
         tag: String,
     ): Boolean {
-        if (fast.neighbors.value.any { it.nodeId == to.nodeId }) {
-            if (fast.sendFile(file, to, meta)) {
-                log("file route: $tag over fast link (fast-only)")
+        // A live fast link carries it; else a peer only a contact's direct link holds has that link as its fast route
+        // (ADR 2026-10.a5yj). A peer a radio holds too resolves to the radio in [fileChildFor], and Bluetooth stays refused.
+        val live =
+            fast.takeIf { f -> f.neighbors.value.any { it.nodeId == to.nodeId } }
+                ?: fileChildFor(to.nodeId)?.takeIf { it.viaInternet }
+        if (live != null) {
+            val over = if (live === fast) "fast link" else "direct link"
+            if (live.sendFile(file, to, meta)) {
+                log("file route: $tag over $over (fast-only)")
                 return true
             }
-            log("file route: $tag fast-only — dropped (fast enqueue refused)")
+            log("file route: $tag fast-only — dropped (${if (live === fast) "fast" else "direct link"} enqueue refused)")
             metrics?.onFastOnlyDropped()
             return false
         }
