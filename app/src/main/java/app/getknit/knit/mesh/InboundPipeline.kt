@@ -4138,7 +4138,7 @@ class InboundPipeline(
         val size = blobs.sizes(listOf(hash))[hash] ?: return false
         if (size <= FileIntake.MAX_AVATAR_BYTES) return false
         Log.w(TAG, "avatar ${hash.take(ID_CHARS)} held at ${size}B, over the photo ceiling; not adopted")
-        metrics.onPhotoOverCeiling()
+        metrics.onAvatarOverCeiling()
         blobExchange.refuseAsPhoto(hash)
         blobs.deleteIfUnreferenced(hash)
         return true
@@ -4230,7 +4230,7 @@ class InboundPipeline(
         // The link already kept no more than the photo ceiling (#234); checked again before the whole file is read.
         if (File(srcPath).length() > FileIntake.MAX_AVATAR_BYTES) {
             Log.w(TAG, "Dropping avatar from $nodeId: over the photo ceiling")
-            metrics.onPhotoOverCeiling()
+            metrics.onAvatarOverCeiling()
             File(srcPath).delete()
             return
         }

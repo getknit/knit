@@ -67,9 +67,10 @@ largest honest profile is about a kilobyte, and every honest photo is a 256 × 2
     one join on the held blob's length), its blob released and the hash refused for the session; the peer shows its
     monogram until it advertises another photo. knit-ios does the same (its ADR 2026-10.r88m).
 
-  Each refusal counts `photosOverCeiling` (knit-ios's name): a holder passed over, a pushed avatar that reached the
-  pipeline, a held copy refused before adoption, a face the sweep cleared. A pushed avatar the link aborts mid-stream
-  never reaches the pipeline and is not counted. Group photos and attachments keep their ceilings.
+  `photosOverCeiling`, knit-ios's name and meaning, counts one per holder passed over on a photo-only want, for a
+  stream past the ceiling or a `blobhas` size over it; a pushed avatar the link aborts mid-stream is not counted.
+  Android's own `avatarsOverCeiling` counts a refusal from bytes it held: a pushed avatar that reached the pipeline, a
+  held copy refused before adoption, a face the sweep cleared. Group photos and attachments keep their ceilings.
 - **The KeyExchange cache is bounded**: an LRU of about 1,024 entries, dropped with the peer `sweepCap` evicts, and it
   never caches or serves a profile over the cap. A miss refills from the pin store.
 - **Startup collects blobs after the local sweep**, so a peer the sweep evicts has its photo collected on the same

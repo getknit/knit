@@ -348,6 +348,7 @@ class MeshMetrics {
     private val custodyOversizeRefused = AtomicLong()
     private val profileOversizeRefused = AtomicLong()
     private val photosOverCeiling = AtomicLong()
+    private val avatarsOverCeiling = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
@@ -555,18 +556,19 @@ class MeshMetrics {
      */
     fun onBlobEvent(event: BlobExchange.BlobEvent) {
         blobEvents.getValue(event).incrementAndGet()
-        // A holder passed over for a profile photo past its ceiling is one photo refused at it, as knit-ios counts.
+        // `photosOverCeiling`, knit-ios's name and meaning: one per holder passed over on a photo-only want, for a stream
+        // past the ceiling or a `blobhas` size over it. A pushed avatar the link aborted mid-stream is not counted.
         if (event == BlobExchange.BlobEvent.HolderOverCeiling) photosOverCeiling.incrementAndGet()
     }
 
     /**
-     * A profile photo refused at the photo ceiling (`FileIntake.MAX_AVATAR_BYTES`, #234), knit-ios's `photosOverCeiling`:
-     * a holder whose fetch or `blobhas` size passed it ([onBlobEvent]), a pushed avatar over it that reached the pipeline,
-     * a held copy found over it before adoption, and a face over it the local sweep cleared. A pushed avatar the link
-     * itself aborted mid-stream never reaches the pipeline and is not counted.
+     * A profile photo refused at the photo ceiling (`FileIntake.MAX_AVATAR_BYTES`, #234) from bytes this phone held, not
+     * from a holder's claim: a pushed avatar over it that reached the pipeline, a held copy found over it before
+     * adoption, and a face over it the local sweep cleared. Android's own count. `photosOverCeiling`, the one knit-ios
+     * reports too, counts only the holders passed over ([onBlobEvent]).
      */
-    fun onPhotoOverCeiling(count: Int = 1) {
-        photosOverCeiling.addAndGet(count.toLong())
+    fun onAvatarOverCeiling(count: Int = 1) {
+        avatarsOverCeiling.addAndGet(count.toLong())
     }
 
     /**
@@ -1442,6 +1444,7 @@ class MeshMetrics {
             blobHoldersOverCeiling = blob(BlobExchange.BlobEvent.HolderOverCeiling),
             blobOverCeiling = blob(BlobExchange.BlobEvent.OverCeiling),
             photosOverCeiling = photosOverCeiling.get(),
+            avatarsOverCeiling = avatarsOverCeiling.get(),
             fastOnlyDropped = fastOnlyDropped.get(),
         )
 
@@ -1714,8 +1717,10 @@ class MeshMetrics {
             // the photo ceiling, and a want ended because its author's did or a held copy did.
             val blobHoldersOverCeiling: Long = 0,
             val blobOverCeiling: Long = 0,
-            // #234: every profile photo refused at the photo ceiling, by any path ([onPhotoOverCeiling]); knit-ios's name.
+            // #234: a holder passed over on a photo-only want for a stream or a size past the photo ceiling; knit-ios's
+            // name and meaning. And a photo refused from bytes held over it ([onAvatarOverCeiling]), Android's own.
             val photosOverCeiling: Long = 0,
+            val avatarsOverCeiling: Long = 0,
         )
 
         /**

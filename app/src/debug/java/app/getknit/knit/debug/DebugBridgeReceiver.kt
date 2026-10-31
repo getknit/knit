@@ -1633,8 +1633,10 @@ class DebugBridgeReceiver :
             // A profile photo's holder passed over, and its want ended, over the photo ceiling (#234).
             .put("blobHoldersOverCeiling", snap.files.blobHoldersOverCeiling)
             .put("blobOverCeiling", snap.files.blobOverCeiling)
-            // Profile photos refused at the 1 MiB ceiling by any path (#234); knit-ios reports the same key.
+            // Holders passed over for a profile photo past the 1 MiB ceiling (#234); knit-ios reports the same key.
             .put("photosOverCeiling", snap.files.photosOverCeiling)
+            // Profile photos refused from bytes held over the ceiling: a push, the adoption backstop, the face sweep.
+            .put("avatarsOverCeiling", snap.files.avatarsOverCeiling)
             .put("fastOnlyDropped", snap.files.fastOnlyDropped)
             .put("carrierPullsDeferred", snap.files.carrierPullsDeferred)
             .put("dmSealedV2", snap.seals.dmSealedV2)

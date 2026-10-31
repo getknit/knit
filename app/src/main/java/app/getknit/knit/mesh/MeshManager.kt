@@ -3070,7 +3070,7 @@ class MeshManager(
             blobs.deleteIfUnreferenced(hash)
         }
         if (faces.isNotEmpty()) {
-            metrics.onPhotoOverCeiling(faces.size)
+            metrics.onAvatarOverCeiling(faces.size)
             Log.w(TAG, "cleared ${faces.size} faces over the photo ceiling")
         }
     }
