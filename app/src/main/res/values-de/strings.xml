@@ -22,9 +22,9 @@
     <string name="channel_alerts_name">Verbindung &amp; Warnungen</string>
     <string name="channel_alerts_desc">Änderungen der Mesh-Verbindung und Fehler</string>
     <string name="storage_alert_title">Knit konnte das Mesh nicht starten</string>
-    <string name="storage_alert_text">Der sichere Speicher dieses Smartphones hat nicht reagiert, deshalb konnte Knit deine Nachrichten nicht öffnen. Es wurde nichts gelöscht. Tippe, um es noch einmal zu versuchen.</string>
+    <string name="storage_alert_text">Der sichere Speicher dieses Smartphones hat nicht geantwortet, deshalb konnte Knit deine Nachrichten nicht öffnen. Es wurde nichts gelöscht. Tippe, um es noch einmal zu versuchen.</string>
     <string name="storage_unavailable_title">Warten auf den sicheren Speicher</string>
-    <string name="storage_unavailable_body">Der sichere Speicher dieses Smartphones hat nicht reagiert, deshalb kann Knit deine Nachrichten noch nicht öffnen. Es wurde nichts gelöscht. Versuche es gleich noch einmal – auch ein Neustart des Smartphones kann helfen.</string>
+    <string name="storage_unavailable_body">Der sichere Speicher dieses Smartphones hat nicht geantwortet, deshalb kann Knit deine Nachrichten noch nicht öffnen. Es wurde nichts gelöscht. Versuche es gleich noch einmal – auch ein Neustart des Smartphones kann helfen.</string>
     <string name="storage_unavailable_retry">Versuche es nochmal</string>
     <string name="storage_unavailable_start_over">Neu beginnen</string>
     <string name="storage_start_over_title">Auf diesem Smartphone neu beginnen?</string>
