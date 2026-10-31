@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-10-25T01:20:20Z
+  updated: 2026-10-30T23:39:43Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -65,20 +65,29 @@ document:
 
 ### Fixed
 
-- Knit no longer closes during a live call on mobile data, or when your phone moves onto mobile data in the
-  middle of one.
-- Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
-  which from a chat or Settings left Knit on a blank screen.
 - Voice notes and files no longer show up in the Nearby room. Knit never offered them there, but a modified
   app could post one, and Knit can't screen either for nearby strangers.
-- Tapping a quote, a pinned message or a search result now lands on that message while someone is typing.
-  It used to stop one message short, so after a photo or a long message the one you wanted sat off screen.
 - A phone outside a busy group no longer sends its members the same old messages over and over, and a message
   you already have no longer sends its sender a new delivery tick every ten minutes. Both used airtime and
   battery on every phone nearby.
 - Meshtastic room posts from a contact whose board runs Meshtastic 2.8.1 now show under their name instead of
   as a stranger's. Meshtastic withdrew 2.8.0, so posts from a board still on it are marked "signature doesn't
   match" until it's updated.
+
+## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
+
+> Calls that closed Knit on mobile data, and a double Back that left a blank screen.
+
+### Fixed
+
+- Knit no longer closes during a live call on mobile data, or when your phone moves onto mobile data in the
+  middle of one.
+- Tapping Back twice quickly now goes back one screen. The second tap used to close the screen underneath too,
+  which from a chat or Settings left Knit on a blank screen.
+- Tapping a quote or a search result now lands on that message while someone is typing. It used to stop one
+  message short, so after a photo or a long message the one you wanted sat off screen.
+- The keyboard now stays up when you open the menu at the top of a chat. It used to drop as the menu opened
+  and pop back up when it closed.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 
