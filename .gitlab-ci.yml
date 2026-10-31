@@ -117,6 +117,22 @@ workflow:
           settings.buildCache { local { directory = new File(settings.rootDir, '.gradle/build-cache') } }
       }
       EOF
+    # Robolectric's native runtime from Google's Cloud Storage mirror of Maven Central, never Central itself: Central
+    # caps downloads of that 152 MB jar per IP per day, and CI's re-fetches used up skuld's IPv4 and IPv6 allowances
+    # (2026-10-31). Same bytes (sha1 1f6befcd…), still checked against gradle/verification-metadata.xml. CI only.
+    - |
+      cat > "$GRADLE_USER_HOME/init.d/ci-central-mirror.gradle" <<'EOF'
+      settingsEvaluated { settings ->
+          settings.dependencyResolutionManagement.repositories {
+              exclusiveContent {
+                  forRepository {
+                      maven { name = 'centralGcsMirror'; url = 'https://maven-central.storage-download.googleapis.com/maven2/' }
+                  }
+                  filter { includeModule('org.robolectric', 'nativeruntime-dist-compat') }
+              }
+          }
+      }
+      EOF
     # The unit tests' external runtime jars, fetched by build:debug so the deps cache it saves holds them. Only
     # the Test task resolves that classpath, and the build jobs never run one, so every Robolectric job pulled
     # nativeruntime-dist-compat (152 MB) from Maven Central at once from one IP, and Central answered 429
