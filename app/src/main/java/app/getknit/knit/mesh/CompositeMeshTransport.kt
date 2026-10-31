@@ -2,6 +2,7 @@ package app.getknit.knit.mesh
 
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -9,12 +10,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import kotlin.time.TimeSource
 
 /**
  * A [MeshTransport] that runs several sibling transports **simultaneously** behind the single-transport seam,
@@ -215,18 +219,38 @@ class CompositeMeshTransport(
             }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
         }
 
-    /**
-     * The node ids the [highThroughput] children (Wi-Fi Aware) hold a live link to now. A neighbour already linked over
-     * Bluetooth that gains a Wi-Fi Aware link changes the merged [neighbors] not at all, so this is the one place that
-     * edge shows: `MeshManager.watchFastLinks` steps the fast-only blob wants on it (ADR 2026-10.js2p). Not on the
-     * [MeshTransport] seam; nothing routes on it.
-     */
-    val fastLinked: StateFlow<Set<String>> =
-        children.filter { it.highThroughput }.let { fast ->
-            if (fast.isEmpty()) {
+    /** Every [viaInternet] child's free links (L-7-11): the peers an attachment may cross a link to beside a radio. */
+    override val freeLinked: StateFlow<Set<String>> =
+        children.filter { it.viaInternet }.let { links ->
+            if (links.isEmpty()) {
                 MutableStateFlow(emptySet())
             } else {
-                combine(fast.map { it.neighbors }) { sets -> sets.flatMapTo(HashSet()) { set -> set.map { it.nodeId } } }
+                combine(links.map { it.freeLinked }) { sets -> sets.flatMapTo(HashSet()) { it } }
+                    .stateIn(scope, SharingStarted.Eagerly, emptySet())
+            }
+        }
+
+    /**
+     * The node ids an attachment has a fast plane to now, beside whatever else links them: a live link on a
+     * [highThroughput] child (Wi-Fi Aware), or a free direct link to a peer a radio links too (L-7-11). A neighbour already
+     * linked over Bluetooth that gains either changes the merged [neighbors] not at all, so this is the one place that
+     * edge shows: `MeshManager.watchFastLinks` steps the fast-only blob wants on it (ADR 2026-10.js2p). A link to a peer
+     * no radio links is left out: it is a neighbour edge of its own. Not on the [MeshTransport] seam; nothing routes on it.
+     */
+    val fastLinked: StateFlow<Set<String>> =
+        run {
+            val fast = children.filter { it.highThroughput }
+            val radios = children.filter { it.shortRange }
+            val links = children.filter { it.viaInternet }
+            if (fast.isEmpty() && links.isEmpty()) {
+                MutableStateFlow(emptySet())
+            } else {
+                val ids: (List<Set<Peer>>) -> Set<String> = { sets -> sets.flatMapTo(HashSet()) { set -> set.map { it.nodeId } } }
+                combine(
+                    combine(fast.map { it.neighbors } + flowOf(emptySet())) { ids(it.toList()) },
+                    combine(radios.map { it.neighbors } + flowOf(emptySet())) { ids(it.toList()) },
+                    combine(links.map { it.freeLinked } + flowOf(emptySet())) { sets -> sets.flatMapTo(HashSet()) { it } },
+                ) { aware, radio, free -> aware + free.intersect(radio) }
                     .stateIn(scope, SharingStarted.Eagerly, emptySet())
             }
         }
@@ -370,6 +394,22 @@ class CompositeMeshTransport(
         return held
     }
 
+    /** Asked of each [viaInternet] child: its own links, not a merged set a dispatch behind. */
+    override fun freeLinkTo(nodeId: String): Boolean = children.any { it.viaInternet && it.freeLinkTo(nodeId) }
+
+    /** The [viaInternet] child's: only a direct link is raised for an attachment beside a radio (L-7-11). */
+    override suspend fun raiseFreeLink(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = children.firstOrNull { it.viaInternet }?.raiseFreeLink(nodeId, blobKey) ?: false
+
+    override suspend fun freeLinkMay(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = children.firstOrNull { it.viaInternet }?.freeLinkMay(nodeId, blobKey) ?: false
+
+    override fun freeLinkRaising(nodeId: String): Boolean = children.any { it.viaInternet && it.freeLinkRaising(nodeId) }
+
     /** The high-throughput child's answer: the plane an attachment would ride, whichever child carries the ask. */
     override fun bulkRouteTo(nodeId: String): BulkRoute = children.firstOrNull { it.highThroughput }?.bulkRouteTo(nodeId) ?: BulkRoute.None
 
@@ -439,9 +479,30 @@ class CompositeMeshTransport(
 
     override fun fileRidesInternet(nodeId: String): Boolean = fileChildFor(nodeId)?.viaInternet ?: false
 
-    /** The child an attachment to [nodeId] would go out on now: a live high-throughput link, else the link holder. */
+    /**
+     * The child an attachment to [nodeId] would go out on now: a live high-throughput link, else a free direct link (L-7-11),
+     * else the link holder. Per peer: whether the free link carries a given blob is the pair's rule ([pairView]), which
+     * [sendFile] asks per key and the blob exchange per want.
+     */
     private fun fileChildFor(nodeId: String): MeshTransport? =
-        children.firstOrNull { c -> c.highThroughput && c.neighbors.value.any { it.nodeId == nodeId } } ?: childHoldingLinkTo(nodeId)
+        children.firstOrNull { c -> c.highThroughput && c.neighbors.value.any { it.nodeId == nodeId } }
+            ?: freeLinkChildTo(nodeId)
+            ?: childHoldingLinkTo(nodeId)
+
+    // The [viaInternet] child holding a free link to [nodeId], or null.
+    private fun freeLinkChildTo(nodeId: String): MeshTransport? = children.firstOrNull { it.viaInternet && it.freeLinkTo(nodeId) }
+
+    // The free link to [nodeId] when it would carry the attachment [key] (the pair's rule, as its sendFile reads it).
+    private suspend fun freeLinkFor(
+        nodeId: String,
+        key: String,
+    ): MeshTransport? = freeLinkChildTo(nodeId)?.takeIf { it.pairView(nodeId)?.admitsBlob(key) == true }
+
+    // The link holder other than [except]: where a copy a free link refused goes instead.
+    private fun holderOtherThan(
+        nodeId: String,
+        except: MeshTransport,
+    ): MeshTransport? = children.firstOrNull { c -> c !== except && c.neighbors.value.any { it.nodeId == nodeId } }
 
     /**
      * Files route like frames — preference-order link holder — EXCEPT attachment blobs, which prefer the
@@ -455,111 +516,197 @@ class CompositeMeshTransport(
      * a child refusing the enqueue (link died in the check→enqueue window) falls back the same way instead
      * of silently losing the file. Below the size gate the NDP *setup* (~1-4 s) costs more than BLE's whole
      * transfer, so small blobs don't arm — and avatars/digests keep today's path byte-for-byte. Every
-     * decision is logged (`file route: …`) so "which plane and why" is one grep away.
+     * decision is logged (`file route: …`) so "which plane and why" is one grep away. A free direct link (ADR
+     * 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-7-11) is the second fast plane: it carries an attachment it admits at any
+     * size, and beside a radio a large one raises it when Wi-Fi Aware will not arm, waited for the same way.
      */
     override suspend fun sendFile(
         file: File,
         to: Peer,
         meta: FileMeta,
+    ): Boolean =
+        if (meta.kind != FileKind.ATTACHMENT) {
+            childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
+        } else {
+            sendAttachment(file, to, meta)
+        }
+
+    // [sendFile]'s ladder for an attachment.
+    private suspend fun sendAttachment(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
     ): Boolean {
         val fast = children.firstOrNull { it.highThroughput }
-        if (meta.kind != FileKind.ATTACHMENT || fast == null) {
-            return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
-        }
         // A resume sends only the rest of the file (#116): the size gate and the log read the bytes still to send
         // (the link's own `file …` line names the offset).
         val bytes = file.length() - meta.offset.coerceIn(0L, file.length())
         val tag = "${meta.kind}/${meta.key} ${bytes}B → ${to.nodeId}"
         if (meta.fastOnly) return sendFastOnly(fast, file, to, meta, tag)
-        if (fast.neighbors.value.any { it.nodeId == to.nodeId }) {
-            // Fast link already up (e.g. a custody sync in flight) — ride it whatever the size; fall back
-            // on a teardown race.
+        overLivePlane(fast, file, to, meta, tag)?.let { return it }
+        // A small blob isn't worth RAISING an NDP for (BLE finishes before the setup would); a big one
+        // arms the on-demand bring-up unless the fast plane declines (stale sighting / cooldown / off).
+        val small = bytes < BULK_MIN_BYTES
+        if (!small && armed(fast, file, to, meta, tag)) return true // scheduled: the waiter commits to exactly one plane
+        log("file route: $tag ${if (small) "below ${BULK_MIN_BYTES}B arm gate" else "fast plane won't arm"} — link holder")
+        return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
+    }
+
+    // An attachment's live fast plane, whatever its size, or null with none: a fast link already up (e.g. a custody sync in
+    // flight), falling back on a teardown race; else a free direct link (L-7-11) that admits it, beside a radio or not,
+    // a copy it refuses going on to the next holder.
+    private suspend fun overLivePlane(
+        fast: MeshTransport?,
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+        tag: String,
+    ): Boolean? {
+        if (fast != null && fast.neighbors.value.any { it.nodeId == to.nodeId }) {
             log("file route: $tag over fast link")
             return fast.sendFile(file, to, meta) ||
                 (childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false)
         }
-        // A small blob isn't worth RAISING an NDP for (BLE finishes before the setup would); a big one
-        // arms the on-demand bring-up unless the fast plane declines (stale sighting / cooldown / off).
-        val small = bytes < BULK_MIN_BYTES
-        if (small || !fast.expectBulkTransfer(to.nodeId)) {
-            log("file route: $tag ${if (small) "below ${BULK_MIN_BYTES}B arm gate" else "fast plane won't arm"} — link holder")
-            return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
-        }
-        // Armed: whichever side of the pair is larger initiates the data path (both sides mark — the
-        // requester at pull time, this serve side here). Wait for it detached, then send exactly once.
-        log("file route: $tag armed — waiting ≤${BULK_GRACE_MS}ms for the fast link")
-        awaitFastLinkThenSend(fast, file, to, meta, tag)
-        return true // scheduled: the waiter commits to exactly one plane (or drops if the peer left)
+        val link = freeLinkFor(to.nodeId, meta.key) ?: return null
+        log("file route: $tag over free direct link")
+        return link.sendFile(file, to, meta) || (holderOtherThan(to.nodeId, link)?.sendFile(file, to, meta) ?: false)
     }
 
     /**
-     * [sendFile] for an asker that takes the bytes over a fast route only ([FileMeta.fastOnly], ADR 2026-10.js2p): a live
-     * fast link carries them whatever their size; else, when the asker's file would ride a contact's direct Internet link
-     * ([fileChildFor] is a [viaInternet] child: no radio holds it), that link carries them (ADR 2026-10.a5yj — the asker
-     * asked us fast-only over it only from an unmetered network, `BlobExchange`); else the fast plane is armed for them
-     * whatever their size and waited on as any large blob is. Never Bluetooth — not on a refused enqueue, not when the
-     * grace runs out, not when the plane will not arm: the asker's user has not agreed to wait on Bluetooth for these
-     * bytes. A copy given up after it was accepted calls [FileMeta.onDropped].
+     * Arms an on-demand fast plane for a copy and schedules its wait ([awaitPlaneThenSend]): Wi-Fi Aware first — whichever
+     * side of the pair is larger initiates the data path, and both sides mark (the requester at pull time, this serve side
+     * here) — else, beside a radio, a free direct link raised for this blob (L-7-11). False when neither will come.
      */
-    private suspend fun sendFastOnly(
-        fast: MeshTransport,
+    private suspend fun armed(
+        fast: MeshTransport?,
         file: File,
         to: Peer,
         meta: FileMeta,
         tag: String,
     ): Boolean {
-        // A live fast link carries it; else a peer only a contact's direct link holds has that link as its fast route
-        // (ADR 2026-10.a5yj). A peer a radio holds too resolves to the radio in [fileChildFor], and Bluetooth stays refused.
-        val live =
-            fast.takeIf { f -> f.neighbors.value.any { it.nodeId == to.nodeId } }
-                ?: fileChildFor(to.nodeId)?.takeIf { it.viaInternet }
-        if (live != null) {
-            val over = if (live === fast) "fast link" else "direct link"
-            if (live.sendFile(file, to, meta)) {
-                log("file route: $tag over $over (fast-only)")
-                return true
-            }
-            log("file route: $tag fast-only — dropped (${if (live === fast) "fast" else "direct link"} enqueue refused)")
-            metrics?.onFastOnlyDropped()
-            return false
+        val what = if (meta.fastOnly) " (fast-only)" else ""
+        if (fast != null && fast.expectBulkTransfer(to.nodeId)) {
+            log("file route: $tag armed$what — waiting ≤${BULK_GRACE_MS}ms for the fast link")
+            awaitPlaneThenSend(fast, linkedTo(fast, to.nodeId), file, to, meta, tag, "fast link")
+            return true
         }
-        if (!fast.expectBulkTransfer(to.nodeId)) {
-            log("file route: $tag fast-only — dropped (fast plane won't arm)")
-            metrics?.onFastOnlyDropped()
-            return false
-        }
-        log("file route: $tag armed (fast-only) — waiting ≤${BULK_GRACE_MS}ms for the fast link")
-        awaitFastLinkThenSend(fast, file, to, meta, tag)
+        val link = children.firstOrNull { it.viaInternet }
+        if (link == null || !shortRangeLinked(to.nodeId) || !link.raiseFreeLink(to.nodeId, meta.key)) return false
+        log("file route: $tag raising a free direct link$what — waiting ≤${BULK_GRACE_MS}ms")
+        awaitPlaneThenSend(link, freeLinkReady(link, to.nodeId), file, to, meta, tag, "free direct link")
         return true
     }
 
-    /** The armed-grace tail of [sendFile], detached so the serial inbound dispatch never suspends on it. */
-    private fun awaitFastLinkThenSend(
-        fast: MeshTransport,
+    /**
+     * [sendFile] for an asker that takes the bytes over a fast route only ([FileMeta.fastOnly], ADR 2026-10.js2p): a live
+     * fast link carries them whatever their size; else a free direct link that admits them (L-7-11); else, when the asker's
+     * file would ride a contact's direct Internet link ([fileChildFor] is a [viaInternet] child: no radio holds it), that
+     * link carries them (ADR 2026-10.a5yj — the asker asked us fast-only over it only from an unmetered network,
+     * `BlobExchange`); else a fast plane is armed for them whatever their size and waited on as any large blob is ([armed]).
+     * Never Bluetooth — not on a refused enqueue, not when the grace runs out, not when no plane will arm: the asker's user
+     * has not agreed to wait on Bluetooth for these bytes. A copy given up after it was accepted calls [FileMeta.onDropped].
+     */
+    private suspend fun sendFastOnly(
+        fast: MeshTransport?,
         file: File,
         to: Peer,
         meta: FileMeta,
         tag: String,
+    ): Boolean {
+        // A peer a radio holds too, with no free link, resolves to the radio in [fileChildFor], and Bluetooth stays refused.
+        val live =
+            fast?.takeIf { f -> f.neighbors.value.any { it.nodeId == to.nodeId } }
+                ?: freeLinkFor(to.nodeId, meta.key)
+                ?: fileChildFor(to.nodeId)?.takeIf { it.viaInternet }
+        if (live != null) {
+            val over = if (live === fast) "fast link" else "direct link"
+            val sent = live.sendFile(file, to, meta)
+            if (sent) {
+                log("file route: $tag over $over (fast-only)")
+            } else {
+                log("file route: $tag fast-only — dropped ($over enqueue refused)")
+                metrics?.onFastOnlyDropped()
+            }
+            return sent
+        }
+        if (armed(fast, file, to, meta, tag)) return true
+        log("file route: $tag fast-only — dropped (fast plane won't arm)")
+        metrics?.onFastOnlyDropped()
+        return false
+    }
+
+    // Whether [plane] holds a live link to [nodeId], as a flow: what an armed fast plane's wait reads (true: go; null: wait).
+    private fun linkedTo(
+        plane: MeshTransport,
+        nodeId: String,
+    ): Flow<Boolean?> = plane.neighbors.map { set -> set.any { it.nodeId == nodeId }.takeIf { it } }
+
+    // A raised free link's wait (L-7-11): true once [link] holds a free link to [nodeId]; false as soon as the attempt ended
+    // without one — the contact refused it as metered, the punch found no path, a link that is not free came up — so the
+    // radio takes the file then, not when the grace runs out; null while it is under way. Read every [FREE_LINK_POLL_MS].
+    private fun freeLinkReady(
+        link: MeshTransport,
+        nodeId: String,
+    ): Flow<Boolean?> =
+        flow {
+            while (true) {
+                emit(
+                    when {
+                        link.freeLinkTo(nodeId) -> true
+                        !link.freeLinkRaising(nodeId) -> false
+                        else -> null
+                    },
+                )
+                delay(FREE_LINK_POLL_MS)
+            }
+        }
+
+    /**
+     * The armed-grace tail of [sendFile], detached so the serial inbound dispatch never suspends on it: waits up to
+     * [BULK_GRACE_MS] for [ready] to say true — an armed fast plane's link, or a free direct link raised for this blob —
+     * or false (none will come), then sends over [plane] once, else drops a fast-only copy, else hands it to the link
+     * holder other than [plane].
+     */
+    @Suppress("LongParameterList") // the copy, and the plane it waits for under its own name
+    private fun awaitPlaneThenSend(
+        plane: MeshTransport,
+        ready: Flow<Boolean?>,
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+        tag: String,
+        name: String,
     ) {
         scope.launch {
-            val linked =
-                withTimeoutOrNull(BULK_GRACE_MS) {
-                    fast.neighbors.first { set -> set.any { it.nodeId == to.nodeId } }
-                } != null
-            if (!linked) metrics?.onBulkGraceTimeout()
-            val overFast = linked && fast.sendFile(file, to, meta)
-            if (overFast) {
-                log("file route: $tag over fast link after grace")
+            val started = TimeSource.Monotonic.markNow()
+            val verdict = withTimeoutOrNull(BULK_GRACE_MS) { ready.first { it != null } }
+            val linked = verdict == true
+            if (verdict == null) metrics?.onBulkGraceTimeout()
+            val over = linked && plane.sendFile(file, to, meta)
+            val waited = started.elapsedNow().inWholeMilliseconds
+            if (over) {
+                log("file route: $tag over $name after ${waited}ms")
             } else if (meta.fastOnly) {
-                log("file route: $tag fast-only — dropped (${if (linked) "fast enqueue refused" else "grace expired"})")
+                log("file route: $tag fast-only — dropped ($name ${missed(linked, verdict)})")
                 metrics?.onFastOnlyDropped()
                 meta.onDropped?.invoke()
             } else {
-                log("file route: $tag ${if (linked) "fast enqueue refused" else "grace expired"} — link holder")
-                childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
+                log("file route: $tag $name ${missed(linked, verdict)} after ${waited}ms — link holder")
+                holderOtherThan(to.nodeId, plane)?.sendFile(file, to, meta)
             }
         }
     }
+
+    // Why a wait's plane did not take its copy, for the `file route:` line.
+    private fun missed(
+        linked: Boolean,
+        verdict: Boolean?,
+    ): String =
+        when {
+            linked -> "enqueue refused"
+            verdict == false -> "will not come"
+            else -> "grace expired"
+        }
 
     override suspend fun sendDigest(
         to: Peer,
@@ -661,5 +808,8 @@ class CompositeMeshTransport(
         // q70 animated WebP (field-observed 176/233 KB), which is why the original 256 KiB gate routed
         // "large GIFs" over BLE. 128 KiB captures those while stickers/thumbnails stay on BLE.
         const val BULK_MIN_BYTES = 128L * 1024
+
+        // How often a raised free link's wait reads whether the link came, or cannot ([freeLinkReady]).
+        const val FREE_LINK_POLL_MS = 200L
     }
 }

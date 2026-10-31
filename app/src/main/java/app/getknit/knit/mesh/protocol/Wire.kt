@@ -1000,7 +1000,9 @@ data class CallPayload(
  * derive them. A contact whose person has links switched off sends a DECLINE ([PHASE_DECLINE]) under the OFFER's [id]
  * instead, with an empty [k] and no candidates: the offerer stops offering until it has something newer to send
  * (`docs/DIRECT_LINKS.md` L-2-6). [nt] is the sender's network kind ([NET_WIFI], [NET_CELLULAR], [NET_OTHER]) for the
- * field log. An older build's `ct` (a cast-ticket hint from when the signal could ride a cast) is an unknown key now,
+ * field log. [m] says the sender's network is metered as it signs (L-2-7), absent otherwise: a link that carries
+ * attachments beside a radio needs both ends unmetered, and a DECLINE that carries [m] says only that, never that links
+ * are off. An older build's `ct` (a cast-ticket hint from when the signal could ride a cast) is an unknown key now,
  * and ignored; an older build opens and commits a DECLINE, then refuses its shape at decode (`PAYLOAD_DECODE_FAILED`),
  * so its offerer waits out the answer as before.
  *
@@ -1015,6 +1017,7 @@ class LinkSignal(
     @ByteString val k: ByteArray,
     val c: List<LinkCand> = emptyList(),
     val nt: Int = NET_OTHER,
+    val m: Boolean = false,
 ) {
     companion object {
         const val PHASE_OFFER = 1

@@ -69,6 +69,45 @@ class PunchPolicyTest {
         assertEquals(PunchPolicy.MAX_BACKOFF_MS, PunchPolicy.backoffMs(Int.MAX_VALUE))
     }
 
+    @Test
+    fun aPreferredPathStaysOnThisPhonesNetworkTheLanOrAnIpv6AddressOnThisLink() {
+        val onLink: (ByteArray) -> Boolean = { it.contentEquals(v6.address) }
+        assertTrue(PunchPolicy.preferred(host, onLink))
+        assertTrue(PunchPolicy.preferred(v6, onLink))
+        assertFalse("an IPv6 address on another network", PunchPolicy.preferred(v6temp, onLink))
+        assertFalse("a hairpin, which may be a carrier's", PunchPolicy.preferred(reflexive, onLink))
+    }
+
+    @Test
+    fun aLinkOnAPreferredPathLeavesItOnlyOnceItWentQuiet() {
+        // Off a preferred path, it follows anything; onto one, always.
+        assertTrue(PunchPolicy.adopts(onPreferred = false, fromPreferred = false, sincePreferredMs = 0L))
+        assertTrue(PunchPolicy.adopts(onPreferred = false, fromPreferred = true, sincePreferredMs = 0L))
+        assertTrue(PunchPolicy.adopts(onPreferred = true, fromPreferred = true, sincePreferredMs = 0L))
+        // On one, a datagram from elsewhere moves it only once nothing came from a preferred path for the sticky time.
+        assertFalse(PunchPolicy.adopts(onPreferred = true, fromPreferred = false, sincePreferredMs = PunchPolicy.STICKY_MS - 1))
+        assertTrue(PunchPolicy.adopts(onPreferred = true, fromPreferred = false, sincePreferredMs = PunchPolicy.STICKY_MS))
+    }
+
+    @Test
+    fun anAddressIsOnTheLinkWhenItSharesThePrefixBitForBit() {
+        val own = v6(0x24, 0x01).also { it[7] = 0x10 }
+
+        fun at(byte7: Int) =
+            own.copyOf().also {
+                it[7] = byte7.toByte()
+                it[15] = 0x55
+            }
+        assertTrue(PunchPolicy.inPrefix(own, 64, at(0x10)))
+        assertFalse("bit 63", PunchPolicy.inPrefix(own, 64, at(0x11)))
+        assertTrue("a /60 ends mid-byte", PunchPolicy.inPrefix(own, 60, at(0x1f)))
+        assertFalse(PunchPolicy.inPrefix(own, 60, at(0x20)))
+        assertFalse("another family", PunchPolicy.inPrefix(own, 64, v4(192, 168, 1, 20)))
+        assertFalse("no prefix", PunchPolicy.inPrefix(own, 0, at(0x10)))
+        assertTrue(PunchPolicy.inPrefix(v4(192, 168, 1, 7), 24, v4(192, 168, 1, 20)))
+        assertFalse(PunchPolicy.inPrefix(v4(192, 168, 1, 7), 24, v4(192, 168, 2, 20)))
+    }
+
     private companion object {
         val v6temp = LinkCandidate(v6(0x24, 0x01), 40_001, Kind.V6_TEMPORARY)
         val v6 = LinkCandidate(v6(0x2a, 0x02), 40_002, Kind.V6)

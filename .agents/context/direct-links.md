@@ -63,8 +63,8 @@ and the entry is fixed.
   `ownGroupPostsBetween` or `MessageReceiptRepository.ackersOf`:** READ ADR 2026-10.a5yj's "spool first" amendment and
   `docs/DIRECT_LINKS.md` L-7-7. The spool goes first; a link is offered only for a message of ours a contact has not
   ticked in 20 s (last 15 min), or at once for a DM attachment no spool carrying the pair will take and not proved held,
-  while no radio links them and no link has been up since it was sent — never a hold on the spool's copy (link first was
-  weighed and set aside). Read only while the link plane
+  while no radio links them (L-7-11's free link for a held want aside) and no link has been up since it was sent — never
+  a hold on the spool's copy (link first was weighed and set aside). Read only while the link plane
   runs; low-power mode offers and answers none. The sender proves a stuck photo over the link: each demand round asks
   every link-only contact (`MeshManager.proveStuckOverLinks`), through `HolderAskBatch` and `BlobExchange.confirmHeld`,
   about our DM attachments to them that are still `attachmentStuck`, read over the custody
@@ -123,6 +123,26 @@ and the entry is fixed.
   (`Want.linkableSince`, the a5yj 2026-10-31 amendment), so a download the person's limits hold back on a metered network
   never calls a link, and a link that came and went while it was held never stops one later. Every offer not answered is a `link_try` line on the answering end, and every offer of ours names
   its `why`.
+- **When touching `LinkSignal.m`, `DirectLinks.freeLinkTo` / `raiseBulk` / `mayRaiseBulk` / `meteredAt` /
+  `METERED_RETRY_MS` / `passMetered`, `LinkOutcome.METERED`, `LinkWhy.BULK`, `MeshTransport.freeLinked` / `freeLinkTo` /
+  `raiseFreeLink` / `freeLinkMay`, `DirectLinkTransport.raiseFreeLink`, `CompositeMeshTransport.fileChildFor` /
+  `freeLinkFor` / `awaitPlaneThenSend` / `fastLinked`, `LinkDemandPolicy.Pending.beside`, `MeshLinkPending`'s
+  `fastHeld` or `MeshManager.attachmentFastHeld`:** READ ADR 2026-10.a5yj's beside-a-radio amendment (#236) and
+  `docs/DIRECT_LINKS.md` L-2-7, L-7-11. Beside a radio a link carries attachments, never frames, and only a **free** one:
+  neither end's network metered when its OFFER and ANSWER were signed, read once there and never mid-link — never a
+  same-LAN test (a hairpin answers first as often as not, `HOST` covers carrier NAT and Tailscale space, and routed
+  subnets or bridged WANs cannot be seen). A metered end beside a radio declines with `m`, which is never a decline
+  (L-2-6): the contact's links stay on. The sender raises one (`BULK`) for a blob of 128 KiB or more the link would
+  carry to that peer, after Wi-Fi Aware will not arm, and waits 10 s for it; the receiver raises one only for a want
+  held for a fast route, at once. A copy the link refuses goes to the radio, never dropped (a fast-only one excepted).
+- **When touching `PunchPolicy.preferred` / `adopts` / `inPrefix` / `UPGRADE_WINDOW_MS` / `STICKY_MS`,
+  `LinkSession.pathKind` / `follow` / `upgrade` / `onPathUpgrade`, `LinkPort.onLink`, `AndroidInternetGate.OwnAddress`'s
+  `prefixLength`, `FieldEvent.LinkEnd.path` or `FakeLinkNet.lanDown`:** READ ADR 2026-10.a5yj's beside-a-radio amendment
+  and `docs/DIRECT_LINKS.md` L-4-3. Up goes at the first ACK, as before — never a wait for a better path — and a link
+  that came up on a path leaving the phone's network probes its preferred targets (a host one, an IPv6 one inside this
+  network's prefix) for one second more and moves to the first that answers; on one, it follows a datagram from
+  elsewhere only after 3 s of nothing from a preferred one. `link_try`'s `path` is the first answer, `link_end`'s the
+  path the data took.
 - **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
   `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28
   amendment. A link shows its own face (two arrows, "over a direct link"), never the Internet's: a link on one network

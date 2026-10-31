@@ -58,15 +58,20 @@ private class AndroidLinkPort(
 ) : LinkPort {
     override val localPort: Int = socket.localPort
 
+    private val own = gate.ownAddresses(network)
+
+    // The network's IPv6 prefixes: a peer's IPv6 address inside one is on this link (`PunchPolicy.preferred`).
+    private val prefixes = own.filter { it.bytes.size == V6_BYTES && it.prefixLength > 0 }
+
     override val candidates: List<LinkCandidate> =
-        gate.ownAddresses(network).mapNotNull { own ->
+        own.mapNotNull { address ->
             val kind =
                 when {
-                    own.bytes.size == V6_BYTES && own.temporary -> LinkCandidate.Kind.V6_TEMPORARY
-                    own.bytes.size == V6_BYTES -> LinkCandidate.Kind.V6
+                    address.bytes.size == V6_BYTES && address.temporary -> LinkCandidate.Kind.V6_TEMPORARY
+                    address.bytes.size == V6_BYTES -> LinkCandidate.Kind.V6
                     else -> LinkCandidate.Kind.HOST
                 }
-            LinkCandidate(own.bytes, localPort, kind).takeIf(PunchPolicy::sane)
+            LinkCandidate(address.bytes, localPort, kind).takeIf(PunchPolicy::sane)
         }
 
     override fun send(
@@ -107,6 +112,8 @@ private class AndroidLinkPort(
         }
 
     override fun onDefaultNetwork(): Boolean = gate.currentNetwork() == network
+
+    override fun onLink(address: ByteArray): Boolean = prefixes.any { PunchPolicy.inPrefix(it.bytes, it.prefixLength, address) }
 
     override fun close() = socket.close()
 

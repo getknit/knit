@@ -45,6 +45,12 @@ interface LinkPort : Closeable {
      * (`DirectLinks.onRouteChanged` closes the link it carries).
      */
     fun onDefaultNetwork(): Boolean = true
+
+    /**
+     * Whether [address] (4 or 16 bytes) lies inside one of the prefixes of the network this port is bound to — a peer on
+     * the same link, which a datagram reaches without leaving it (`PunchPolicy.preferred`). Default false.
+     */
+    fun onLink(address: ByteArray): Boolean = false
 }
 
 /** One datagram in: its bytes and where it came from. */

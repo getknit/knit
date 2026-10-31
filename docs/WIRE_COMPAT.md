@@ -115,6 +115,13 @@ moved and no field changed meaning — a null key has always meant "plaintext" t
 (the room's own rows), so it needs no capability bit. A file passed along also reuses the ciphertext hash and key
 it arrived under, which no receiver can tell from a fresh seal.
 
+**A direct-link signal says when its sender's network is metered** (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md`
+L-2-7): `LinkSignal.m`, defaulted false and so absent from every signal sent on an unmetered network, which stays
+byte-for-byte what it was (`vectors/wire-v1.json` pins the OFFER and DECLINE unchanged and adds a DECLINE with `m`).
+An older build ignores the key, and reads a DECLINE that carries it as links switched off: it offers again only for
+something newer, which costs nothing but a link it would not have been answered for. Links run only between builds
+that advertise `Protocol.CAP_INET_LINK`, which no release build does yet.
+
 A change that genuinely needs a break does **not** get to schedule one. Park it in
 `docs/NEXT_WIRE_BREAK.md` — the staging list of everything waiting on the next coordinated break, so that
 if one ever happens they all ride it together and no single item has to justify the partition alone.

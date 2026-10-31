@@ -8,16 +8,19 @@ import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -178,6 +181,37 @@ class CompositeMeshTransportTest {
             expectBulkCalls += nodeId
             return armBulk
         }
+
+        /** The peers this plane holds a free direct link to (L-7-11). */
+        val free = MutableStateFlow<Set<String>>(emptySet())
+        override val freeLinked: StateFlow<Set<String>> = free
+
+        /** What [raiseFreeLink] answers, and the peers it was asked for; and [freeLinkRaising]'s answer while one is raised. */
+        var raiseFree = false
+        val raiseCalls = mutableListOf<String>()
+        var raising = true
+
+        override fun freeLinkRaising(nodeId: String): Boolean = raising
+
+        override suspend fun raiseFreeLink(
+            nodeId: String,
+            blobKey: String,
+        ): Boolean {
+            raiseCalls += nodeId
+            return raiseFree
+        }
+
+        /** The blob keys this plane's pair rule admits; null, it has no pair view (not a link). */
+        var admitsKeys: Set<String>? = null
+
+        override suspend fun pairView(nodeId: String): PairView? =
+            admitsKeys?.let { keys ->
+                object : PairView {
+                    override fun admits(env: RelayEnvelope) = true
+
+                    override suspend fun admitsBlob(hash: String) = hash in keys
+                }
+            }
 
         /** What this plane's links report streaming in. */
         var arriving: Map<String, ArrivingFile> = emptyMap()
@@ -781,6 +815,219 @@ class CompositeMeshTransportTest {
             assertTrue("its file would ride Bluetooth: dropped", !composite.sendFile(fileOfSize(1_000), Peer("p"), fastOnlyAttachment()))
             assertTrue("a Bluetooth-only peer too", !composite.sendFile(fileOfSize(1_000), Peer("q"), fastOnlyAttachment()))
             assertTrue(bt.sentFiles.isEmpty() && link.sentFiles.isEmpty() && nan.sentFiles.isEmpty())
+        }
+
+    // --- A free direct link beside a radio (ADR 2026-10.a5yj, L-7-11, #236) ---
+
+    // Bluetooth, a Wi-Fi Aware child that will not arm, and a direct link whose pair rule admits the attachment's key.
+    private fun besideARadio(): Triple<FakeChild, FakeChild, FakeChild> =
+        Triple(
+            FakeChild(kind = TransportKind.Bluetooth),
+            FakeChild(highThroughput = true),
+            FakeChild(kind = TransportKind.DirectLink, shortRange = false, viaInternet = true).apply { admitsKeys = setOf("k") },
+        )
+
+    @Test
+    fun aFreeLinkCarriesAnAttachmentBesideBluetoothWhateverItsSizeAndOnlyOneItAdmits() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            link.setNeighbors(Peer("p"))
+            link.free.value = setOf("p")
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("p"), bigAttachment()))
+            assertEquals("a small one rides the free link", listOf("k"), link.sentFiles.map { it.second.key })
+            assertTrue(bt.sentFiles.isEmpty())
+            assertTrue("a file ours to the peer rides the Internet", composite.fileRidesInternet("p"))
+
+            // A blob the link would not carry to this peer (a carrier's pull of a stranger's photo) stays on Bluetooth.
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("p"), FileMeta(FileKind.ATTACHMENT, "other", "image/jpeg")))
+            assertEquals(listOf("other"), bt.sentFiles.map { it.second.key })
+            assertEquals(1, link.sentFiles.size)
+        }
+
+    @Test
+    fun aLinkThatIsNotFreeLeavesAnAttachmentBesideBluetoothOnBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            link.raiseFree = true
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            link.setNeighbors(Peer("p")) // up, but one end was metered when it was made
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("p"), bigAttachment()))
+            assertEquals(1, bt.sentFiles.size)
+            assertTrue(link.sentFiles.isEmpty())
+            assertFalse(composite.fileRidesInternet("p"))
+        }
+
+    @Test
+    fun aFreeLinkThatRefusesTheEnqueueHandsTheAttachmentToBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            link.acceptFiles = false
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            link.setNeighbors(Peer("p"))
+            link.free.value = setOf("p")
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("p"), bigAttachment()))
+            assertEquals(1, link.sentFiles.size)
+            assertEquals("the copy went on, to the radio", 1, bt.sentFiles.size)
+        }
+
+    @Test
+    fun aLargeAttachmentBesideBluetoothRaisesAFreeLinkAndRidesItOnceItIsUp() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            link.raiseFree = true
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            assertEquals("Wi-Fi Aware first", listOf("p"), nan.expectBulkCalls)
+            assertEquals(listOf("p"), link.raiseCalls)
+            assertTrue("nothing sent while the grace waits", bt.sentFiles.isEmpty() && link.sentFiles.isEmpty())
+
+            advanceTimeBy(1_000)
+            link.setNeighbors(Peer("p"))
+            advanceTimeBy(CompositeMeshTransport.FREE_LINK_POLL_MS + 1)
+            assertTrue("up, but not yet free: still waiting", link.sentFiles.isEmpty() && bt.sentFiles.isEmpty())
+            link.free.value = setOf("p")
+            advanceTimeBy(CompositeMeshTransport.FREE_LINK_POLL_MS + 1)
+            assertEquals("the blob rode the free link", 1, link.sentFiles.size)
+            assertTrue("exactly one route fires", bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aRaisedLinkThatNeverComesFreeLeavesTheAttachmentToBluetoothWhenTheGraceRunsOut() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            link.raiseFree = true
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            advanceTimeBy(CompositeMeshTransport.BULK_GRACE_MS - 1)
+            assertTrue(bt.sentFiles.isEmpty())
+            advanceTimeBy(2)
+            advanceUntilIdle()
+            assertEquals(1, bt.sentFiles.size)
+            assertTrue(link.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aRaisedLinkThatCannotComeHandsTheAttachmentToBluetoothBeforeTheGraceRunsOut() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            link.raiseFree = true
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            advanceTimeBy(1_000)
+            assertTrue(bt.sentFiles.isEmpty())
+            // The contact refused it as metered: the attempt ended with no link, and the radio takes the file at once.
+            link.raising = false
+            advanceTimeBy(CompositeMeshTransport.FREE_LINK_POLL_MS + 1)
+            assertEquals(1, bt.sentFiles.size)
+            assertTrue(link.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aRefusedRaiseOrASmallAttachmentGoesOverBluetoothAtOnce() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            assertEquals("asked, refused: no wait", 1, bt.sentFiles.size)
+            assertEquals(listOf("p"), link.raiseCalls)
+
+            link.raiseFree = true
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES - 1), Peer("p"), bigAttachment()))
+            assertEquals("below the gate: never asked", listOf("p"), link.raiseCalls)
+            assertEquals(2, bt.sentFiles.size)
+        }
+
+    @Test
+    fun withNoWiFiAwareChildALargeAttachmentBesideARadioStillRaisesAFreeLink() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val link =
+                FakeChild(kind = TransportKind.DirectLink, shortRange = false, viaInternet = true).apply {
+                    admitsKeys = setOf("k")
+                    raiseFree = true
+                }
+            val composite = CompositeMeshTransport(listOf(bt, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            link.setNeighbors(Peer("p"))
+            link.free.value = setOf("p")
+            advanceTimeBy(CompositeMeshTransport.FREE_LINK_POLL_MS + 1)
+            assertEquals(1, link.sentFiles.size)
+            assertTrue(bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aFastOnlyFileBesideBluetoothRidesAFreeLinkOrOneRaisedForItAndNeverBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"), Peer("q"))
+            link.setNeighbors(Peer("p"))
+            link.free.value = setOf("p")
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("p"), fastOnlyAttachment()))
+            assertEquals(1, link.sentFiles.size)
+
+            // q: no link up; one raised for it carries the file, and a grace that runs out drops it.
+            var dropped = 0
+            link.raiseFree = true
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("q"), fastOnlyAttachment()))
+            link.setNeighbors(Peer("p"), Peer("q"))
+            link.free.value = setOf("p", "q")
+            advanceTimeBy(CompositeMeshTransport.FREE_LINK_POLL_MS + 1)
+            assertEquals(2, link.sentFiles.size)
+            link.free.value = setOf("p")
+            link.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+            assertTrue(composite.sendFile(fileOfSize(1_000), Peer("q"), fastOnlyAttachment { dropped++ }))
+            advanceTimeBy(CompositeMeshTransport.BULK_GRACE_MS + 1)
+            advanceUntilIdle()
+            assertEquals(1, dropped)
+            assertTrue(bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aFreeLinkIsAFastEdgeOnlyToAPeerARadioLinksToo() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            link.setNeighbors(Peer("p"), Peer("far"))
+            advanceUntilIdle()
+            assertEquals(emptySet<String>(), composite.fastLinked.value)
+
+            link.free.value = setOf("p", "far")
+            advanceUntilIdle()
+            assertEquals("far: a link no radio sits beside is a neighbour edge of its own", setOf("p"), composite.fastLinked.value)
+            assertEquals(setOf("p", "far"), composite.freeLinked.value)
+            nan.setNeighbors(Peer("n"))
+            advanceUntilIdle()
+            assertEquals(setOf("p", "n"), composite.fastLinked.value)
         }
 
     @Test

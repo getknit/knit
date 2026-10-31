@@ -342,6 +342,16 @@ route byte-for-byte. Every routing decision logs `file route: <kind>/<key> <N>B 
 `bulkTimeouts` ride `…debug.STATE`. `bulkTimeouts` climbing much faster than `filesNan` means ghosts are
 being armed.
 
+
+**A free direct link is the second fast plane beside a radio** (ADR 2026-10.a5yj's beside-a-radio amendment, #236). An
+attachment's ladder in `sendFile`: a live NAN link; else a **free** direct link (`MeshTransport.freeLinkTo`: neither end
+metered when it was made) whose pair rule admits the key (`pairView(to)?.admitsBlob`) — any size, and a refusal goes on
+to the radio; else below `BULK_MIN_BYTES` the link holder; else NAN arms and is waited for as above; else, for a peer a
+radio links, `raiseFreeLink` (the link plane's `BULK` offer) and the same detached ≤ 10 s wait on `freeLinked`
+(`awaitPlaneThenSend`), then the radio. The early `fast == null` return is for non-attachments only, so a node with no
+NAN child (the lab, a phone without Wi-Fi Aware) runs the ladder too. `fastLinked` carries the free links to
+radio-linked peers beside NAN's, the edge `BlobExchange.fastLinkUp` steps fast-only wants on.
+
 ## The BLE scan is demand-gated, and a *settled* clique used to scan continuously
 
 `BluetoothMeshTransport.scanLoop` duty-cycles the scan, but `onScanResult` pokes the loop's wake channel

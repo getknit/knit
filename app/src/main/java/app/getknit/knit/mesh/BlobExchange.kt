@@ -103,6 +103,14 @@ import kotlin.coroutines.cancellation.CancellationException
  * an edge that forgets a holder. A turn to unmetered is picked up by the next ordinary step — the tick, or the link-up a
  * route change brings. When a want became one a link may carry is [linkableSince], which the link demand counts from.
  *
+ * **A free link beside a radio (L-7-11, #236).** A contact a radio links may also hold a *free* direct link (both ends
+ * unmetered at its setup), which carries an attachment addressed to both ends and nothing else. So its peer's copy rides
+ * the link — a fast route, never parked behind a radio feed — only for a hash that link admits, read per want
+ * ([reachingFor]) and per ask ([ridesLink]); for any other it rides the radio as before. A large copy from a holder a
+ * radio links may wait up to [CompositeMeshTransport.BULK_GRACE_MS] while the holder raises a free link, so an ask of
+ * one that may ([Candidate.linkMay]) outlasts that wait as it does a Wi-Fi Aware arm. A held fast-only want is the one
+ * whose own link demand may call for such a link ([fastHeld]).
+ *
  * **Proof of a hold (ADR 2026-10.vy27).** A DM photo its recipient holds never goes up to a spool, and the sender's proof
  * is that recipient's own HAVE: [confirmHeld] sends it the same holder query, and the answer to it reaches [onPeerHolds]
  * and nothing else. It asks, serves, wants and stamps nothing.
@@ -499,6 +507,14 @@ class BlobExchange(
     }
 
     /**
+     * Whether our own want of [hash] is held for a fast route ([Want.fastHeld]): fast-only, and its last step found no
+     * holder a fast plane reaches (`holdFastOnly`). The one want whose link demand row may go beside a radio
+     * (`MeshManager.attachmentFastHeld`, `MeshLinkPending`, L-7-11): a radio will not carry it, and a free link may. A
+     * plain want rides the radio, and a holder raises a free link for a large copy itself (`CompositeMeshTransport`).
+     */
+    internal fun fastHeld(hash: String): Boolean = synchronized(lock) { fetching[hash]?.let { it.fastOnly && it.fastHeld } == true }
+
+    /**
      * One step of [hash]'s fetch against the [linked] neighbours: the queries [decide] owes go into the outbox (the
      * caller flushes them), its asks go out, and its next wake is timed so a grace, a wait for answers or a stream's
      * end is acted on without waiting for the tick.
@@ -518,7 +534,7 @@ class BlobExchange(
         val kept = partials.length(hash)
         // A marked holder is not a holder for this want: gone, as far as it is concerned, so an ask on it fails over.
         val pool = if (passed.isEmpty()) linked else linked.filterNot { it.id in passed }
-        val reach = reachingFor(hash, pool)
+        val reach = reachingFor(hash, pool, linked)
         val plan =
             synchronized(lock) { fetching[hash]?.let { decideMarking(it, reach, kept, linked.metered) }?.also { queue(hash, it) } }
                 ?: return
@@ -1099,9 +1115,10 @@ class BlobExchange(
         if (blind.isEmpty()) return false
         if (!w.blindWidened) {
             val pick = blind.minWith(compareBy({ rankOf(w, it) }, { it.id }))
-            // A holder that can raise the Wi-Fi Aware link waits for it before it falls back to Bluetooth.
-            val grace =
-                firstAskGraceMs + rttOf(pick.id) + if (pick.route == BulkRoute.Reachable) CompositeMeshTransport.BULK_GRACE_MS else 0L
+            // A holder that can raise the Wi-Fi Aware link, or a free direct link beside its radio (L-7-11), waits for it
+            // before it falls back to Bluetooth; the size is not known yet, so as for a large one.
+            val linkWait = pick.route == BulkRoute.Reachable || pick.linkMay
+            val grace = firstAskGraceMs + rttOf(pick.id) + if (linkWait) CompositeMeshTransport.BULK_GRACE_MS else 0L
             w.blindAsked += pick.id
             w.askedAt[pick.id] = t
             w.fetch = Fetch(pick.id, w.hash8, Tier.Blind, t, grace)
@@ -1301,7 +1318,8 @@ class BlobExchange(
 
     /**
      * An ask's grace: the plain one, plus the round trip [c]'s link last took ([rttOf]), plus the composite's link wait
-     * when the holder may raise Wi-Fi Aware for it.
+     * when the holder may raise Wi-Fi Aware, or a free direct link beside its radio ([Candidate.linkMay], L-7-11), for a
+     * copy large enough that it would.
      */
     private fun graceFor(
         w: Want,
@@ -1309,7 +1327,8 @@ class BlobExchange(
         kept: Long,
     ): Long {
         val left = w.answers[c.id]?.size?.let { it - kept }
-        val linkWait = c.route == BulkRoute.Reachable && (w.fastOnly || left == null || left >= CompositeMeshTransport.BULK_MIN_BYTES)
+        val raises = c.route == BulkRoute.Reachable || c.linkMay
+        val linkWait = raises && (w.fastOnly || left == null || left >= CompositeMeshTransport.BULK_MIN_BYTES)
         return firstAskGraceMs + rttOf(c.id) + if (linkWait) CompositeMeshTransport.BULK_GRACE_MS else 0L
     }
 
@@ -1414,10 +1433,38 @@ class BlobExchange(
      */
     private suspend fun reachingFor(
         hash: String,
-        linked: List<Candidate>,
+        pool: List<Candidate>,
+        linked: Linked,
     ): List<Candidate> {
-        if (linked.all { it.radio }) return linked
-        return linked.filter { it.radio || reaches(it.id, hash) }
+        val plain = synchronized(lock) { fetching[hash]?.fastOnly == false }
+        return pool.mapNotNull { c ->
+            if (!c.radio) return@mapNotNull c.takeIf { reaches(c.id, hash) }
+            besideRadio(hash, c, linked.metered, plain)
+        }
+    }
+
+    /**
+     * [c], a neighbour a radio links, as [hash] sees it (L-7-11, #236). A free direct link beside the radio carries only a
+     * blob addressed to both ends, as `CompositeMeshTransport.sendFile` asks per key: for any other the copy rides the
+     * radio, so [Candidate.linkRides] is the peer's free link only when its view admits [hash] — or a carrier's ask would
+     * go fast-only to a holder whose link refuses the copy and drops it, and every link-up edge would re-arm it. And for a
+     * [plain] want with no fast plane to [c], whether its holder may raise a free link for the copy and wait for it
+     * ([Candidate.linkMay]), which the ask's grace must outlast as it does a Wi-Fi Aware arm, or a carrier asked past it
+     * sends a second copy (#79's shape).
+     */
+    private suspend fun besideRadio(
+        hash: String,
+        c: Candidate,
+        metered: Boolean,
+        plain: Boolean,
+    ): Candidate {
+        val rides = c.linkRides && transport.pairView(c.id)?.admitsBlob(hash) == true
+        // A free link already up that refuses this blob is no link the holder would wait for. Otherwise the pair's rule
+        // alone ([MeshTransport.freeLinkMay]: a contact, a sig lane, a blob the link would carry) and never this phone's
+        // own links state, metering or backoff: the holder raises on its own reading and waits whether or not we answer,
+        // so a wrong yes costs only a later widening and a wrong no a second copy (the blobs-reviewer's finding).
+        val may = plain && !c.linkRides && c.route == BulkRoute.None && transport.freeLinkMay(c.id, hash)
+        return if (rides == c.linkRides && !may) c else c.copy(linkRides = rides, freeLink = rides && !metered, linkMay = may)
     }
 
     /**
@@ -1429,6 +1476,19 @@ class BlobExchange(
         peer: String,
         hash: String,
     ): Boolean = transport.radioLinked(peer) || transport.pairView(peer)?.admitsBlob(hash) ?: true
+
+    /**
+     * Whether a copy of [hash] to [peer] would go over a contact's direct link: the plane its files take is a link
+     * ([MeshTransport.fileRidesInternet]), and beside a radio that free link carries this blob ([PairView.admitsBlob],
+     * as `CompositeMeshTransport.sendFile` asks per key; else the copy rides the radio, L-7-11, #236). A link-only peer's
+     * link is taken at its word: an ask for a blob it does not carry was refused before this ([reaches]).
+     */
+    private suspend fun ridesLink(
+        peer: String,
+        hash: String,
+    ): Boolean =
+        transport.fileRidesInternet(peer) &&
+            (!transport.radioLinked(peer) || transport.pairView(peer)?.admitsBlob(hash) == true)
 
     /**
      * Steps [hash] again after [ms]: when an ask's grace is up, answers are due, or a holder's stream may have ended.
@@ -1937,12 +1997,12 @@ class BlobExchange(
      * its Bluetooth link not yet, or no longer, up on our side — and this serves it over the link, possibly on its
      * metered network. A window as long as the two ends disagree about one Bluetooth link; the same accepted asymmetry.
      */
-    private fun refusesFastOnly(
+    private suspend fun refusesFastOnly(
         hash: String,
         fromNodeId: String,
         fastOnly: Boolean,
     ): Boolean {
-        if (!fastOnly || transport.bulkRouteTo(fromNodeId) != BulkRoute.None || transport.fileRidesInternet(fromNodeId)) return false
+        if (!fastOnly || transport.bulkRouteTo(fromNodeId) != BulkRoute.None || ridesLink(fromNodeId, hash)) return false
         onEvent(BlobEvent.FastOnlyRefused)
         log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: fast-only, no fast route")
         return true
@@ -1982,7 +2042,14 @@ class BlobExchange(
             if (transport.fileInFlightTo(fromNodeId, hash)) return
             // A fast-only copy never rides a Bluetooth budget, so it never waits behind a Bluetooth feed either.
             if (mayPark && !fastOnly &&
-                parkBehindFeed(hash, fromNodeId, Reached(offset, pull, until), file.length() - from, addressees(hash))
+                parkBehindFeed(
+                    hash,
+                    fromNodeId,
+                    Reached(offset, pull, until),
+                    file.length() - from,
+                    addressees(hash),
+                    overLink = ridesLink(fromNodeId, hash),
+                )
             ) {
                 return
             }
@@ -2037,9 +2104,10 @@ class BlobExchange(
         ask: Reached,
         bytes: Long,
         to: Set<String>?,
+        overLink: Boolean,
     ): Boolean {
         val scope = timers()?.takeIf { it.isActive } ?: return false
-        if (memoHolds(hash, asker) || !ridesSharedBudget(asker, bytes) || !waitsBehindFeed(hash, asker, bytes, to)) return false
+        if (memoHolds(hash, asker) || !ridesSharedBudget(asker, bytes, overLink) || !waitsBehindFeed(hash, asker, bytes, to)) return false
         val fresh =
             synchronized(lock) {
                 val asks = parked.getOrPut(hash) { LinkedHashMap() }
@@ -2067,13 +2135,15 @@ class BlobExchange(
      * so it would read as Bluetooth here: parked behind a radio feed, its own copy never going ahead (its rate is not
      * one the radio planes measure), it idled its link out and the parked ask was dropped with it. A link's own feeds
      * stay out of [liveFeeds] for the same reason: the link plane reports no [MeshTransport.fileFeed], so no radio
-     * asker ever waits behind a copy going over the Internet.
+     * asker ever waits behind a copy going over the Internet. [overLink] is [ridesLink] for the hash: a free link beside
+     * a radio refuses a blob not addressed to both ends, whose copy then rides the radio and its budget (L-7-11, #236).
      */
     private fun ridesSharedBudget(
         asker: String,
         bytes: Long,
+        overLink: Boolean,
     ): Boolean =
-        if (transport.fileRidesInternet(asker)) {
+        if (overLink) {
             false
         } else {
             sharesRadioBudget(asker, bytes)
@@ -3017,8 +3087,8 @@ class BlobExchange(
         var at: Long,
     )
 
-    /** A linked neighbour as a step reads it ([linkedNow]). */
-    private class Candidate(
+    /** A linked neighbour as a step reads it ([linkedNow]), refined per hash by [reachingFor]. */
+    private data class Candidate(
         val peer: Peer,
         val route: BulkRoute,
         val streaming: Boolean,
@@ -3028,11 +3098,15 @@ class BlobExchange(
         val streamLeftMs: Long? = null,
         // A phone radio holds it ([MeshTransport.radioLinked]); false for a peer only a contact's direct link reaches.
         val radio: Boolean = true,
-        // A file from it would ride a contact's direct link ([MeshTransport.fileRidesInternet]): no radio holds it.
+        // A file from it would ride a contact's direct link ([MeshTransport.fileRidesInternet]): no radio holds it, or
+        // a free link beside one carries this hash ([reachingFor], L-7-11).
         val linkRides: Boolean = false,
         // [linkRides], and this phone's network is unmetered as the step read it: a fast route for a fast-only want
         // (ADR 2026-10.js2p, a5yj). A link from a metered network waits for the tap.
         val freeLink: Boolean = false,
+        // A radio holds it with no fast plane for this hash, and the pair's rule lets its holder raise a free link for it
+        // ([MeshTransport.freeLinkMay]): it may wait up to [CompositeMeshTransport.BULK_GRACE_MS] for one (L-7-11, #236).
+        val linkMay: Boolean = false,
     ) {
         val id: String get() = peer.nodeId
     }

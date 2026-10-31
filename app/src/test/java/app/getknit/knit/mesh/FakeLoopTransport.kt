@@ -215,7 +215,30 @@ class FakeLoopTransport(
 
     override fun radioLinked(nodeId: String): Boolean = nodeId in links && nodeId !in internetOnly
 
-    override fun fileRidesInternet(nodeId: String): Boolean = nodeId in internetOnly
+    /**
+     * Peers a test declares radio-linked with a free direct link beside the radio too (L-7-11): a file to one rides the
+     * link ([fileRidesInternet]) when it carries the blob, while frames keep to the radio.
+     */
+    val freeLinks = mutableSetOf<String>()
+
+    /**
+     * Peers a test declares the pair's rule lets raise a free link ([freeLinkMay]), for a blob their [linkViews] entry
+     * admits (every blob without one): nothing of this node's own state counts, as the seam says.
+     */
+    val freeLinkMays = mutableSetOf<String>()
+
+    /** Every [freeLinkMay] read, as (peer, blob), in order. */
+    val freeLinkMayReads = CopyOnWriteArrayList<Pair<String, String>>()
+
+    override fun fileRidesInternet(nodeId: String): Boolean = nodeId in internetOnly || nodeId in freeLinks
+
+    override suspend fun freeLinkMay(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean {
+        freeLinkMayReads += nodeId to blobKey
+        return nodeId in freeLinkMays && linkViews[nodeId]?.admitsBlob(blobKey) != false
+    }
 
     override suspend fun pairView(nodeId: String): PairView? = linkViews[nodeId]?.takeIf { nodeId in links }
 

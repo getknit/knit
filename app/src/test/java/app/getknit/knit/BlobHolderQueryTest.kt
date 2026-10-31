@@ -2922,6 +2922,39 @@ class BlobHolderQueryTest {
         }
 
     /**
+     * L-7-11, #236 (the design pass's second finding): a free direct link beside a radio carries only a blob addressed to
+     * both ends, so a carrier whose free link refuses this one is served over Bluetooth — it parks behind the radio feed
+     * like any carrier, and its fast-only ask is refused (the link would drop the copy). A member whose free link carries
+     * the blob goes at once over the link.
+     */
+    @Test
+    fun aCarrierWhoseFreeLinkRefusesTheBlobRidesTheRadioAndParksBehindItsFeed() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = Node("h", backgroundScope, timers = backgroundScope)
+            val a = Node("a", backgroundScope)
+            val c = Node("c", backgroundScope)
+            val m = Node("m", backgroundScope)
+            for (n in listOf(a, c, m)) h.transport.connect(n.transport)
+            backgroundScope.recordServes(h, c, m)
+            val hash = h.store.seed(picture(3_230))
+            h.transport.freeLinks += setOf("c", "m")
+            h.transport.linkViews["c"] = LinkView(emptySet())
+            h.transport.linkViews["m"] = LinkView(setOf(hash))
+            h.transport.feeds["a" to hash] = feeding(8 * 60_000) // a radio copy fed live to a
+
+            h.exchange.onRequest(hash, "c", fastOnly = true)
+            assertEquals("its link refuses the copy: no fast-only serve", 0, h.served(hash, "c"))
+            assertEquals(1, h.events.count { it == BlobExchange.BlobEvent.FastOnlyRefused })
+
+            h.exchange.onRequest(hash, "c")
+            assertEquals("its copy rides Bluetooth: parked behind the feed", 0, h.served(hash, "c"))
+            assertEquals(1, h.events.count { it == BlobExchange.BlobEvent.Park })
+
+            h.exchange.onRequest(hash, "m")
+            assertEquals("the member's free link carries it: at once", 1, h.served(hash, "m"))
+        }
+
+    /**
      * A contact's direct link is proof as a radio is (ADR 2026-10.vy27, a5yj; the owner's call of 2026-10-27): a proof
      * query goes to the link's peer for the hashes its link carries, and the peer's HAVE back over the link proves the
      * hold, recorded under the link's plane. A hash the link does not carry stays out of the frame, which the link would

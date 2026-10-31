@@ -14,10 +14,11 @@ import java.util.concurrent.ConcurrentHashMap
  * brings ([pending], over the last [LinkDemandPolicy.FILE_WINDOW_MS]), and offers a link to each contact
  * [LinkDemandPolicy] finds due, one offer per contact at a time, saying why. A contact that declined (its person has links
  * off, [declinedAt]) is offered again only for something newer. A contact the links refused before anything went out
- * (not qualified, no sig lane, no port, off) rests [QUIET_MS], so a round never asks again for what it was just told; a
- * punch that failed rests on the links' own backoff. Each round also asks every contact a link holds now about our DM
- * attachments to them that no spool takes ([prove], `LinkHolderProof`), ahead of any offer: the link that carried such a
- * photo is the only path its proof can come back on. Thin: the rule is [LinkDemandPolicy], the attempt `DirectLinks`.
+ * (not qualified, no sig lane, no port, off, or a metered network beside a radio) rests [QUIET_MS], so a round never
+ * asks again for what it was just told; a punch that failed rests on the links' own backoff. Each round also asks every
+ * contact a link holds now about our DM attachments to them that no spool takes ([prove], `LinkHolderProof`), ahead of
+ * any offer: the link that carried such a photo is the only path its proof can come back on. Thin: the rule is
+ * [LinkDemandPolicy], the attempt `DirectLinks`.
  */
 @Suppress("LongParameterList") // the seams the rule reads and the one it acts through
 class LinkDemand(
@@ -34,6 +35,8 @@ class LinkDemand(
     private val prove: suspend (linkPeers: Set<String>) -> Unit = {},
     // When each contact last declined an offer of ours (`DirectLinks.declinedAt`, L-2-6).
     private val declinedAt: (peerId: String) -> Long? = { null },
+    // When each contact last refused a link beside a radio as metered (`DirectLinks.meteredAt`, L-7-11).
+    private val meteredAt: (peerId: String) -> Long? = { null },
     // The up links that could give up their slot, by since when each has been idle (`DirectLinks.idleSince`), and how one
     // is closed for a contact that waits (`DirectLinks.close`, YIELDED).
     private val idleSince: () -> Map<String, Long> = { emptyMap() },
@@ -70,12 +73,15 @@ class LinkDemand(
         val upNow = up()
         val quiet = HashMap(quietUntil)
         // Every slot taken and a contact waiting: the link idle longest makes room, and the next round offers.
-        LinkDemandPolicy.evict(rows, now, radioLinked, upNow, idleSince(), offering.toSet(), lastUpAt, quiet, declinedAt)?.let {
+        val inFlight = offering.toSet()
+        val yielding =
+            LinkDemandPolicy.evict(rows, now, radioLinked, upNow, idleSince(), inFlight, lastUpAt, quiet, declinedAt, meteredAt = meteredAt)
+        yielding?.let {
             log("link demand ${it.take(SHORT)}: yields its slot")
             yieldLink(it)
             return
         }
-        val due = LinkDemandPolicy.offers(rows, now, radioLinked, upNow, offering.toSet(), lastUpAt, quiet, declinedAt)
+        val due = LinkDemandPolicy.offers(rows, now, radioLinked, upNow, inFlight, lastUpAt, quiet, declinedAt, meteredAt = meteredAt)
         due.forEach { (peer, why) ->
             if (!offering.add(peer)) return@forEach
             scope.launch {
@@ -99,7 +105,7 @@ class LinkDemand(
         const val QUIET_MS = 60_000L
 
         // The refusals that sent nothing, and carry no backoff of their own.
-        private val QUIET = setOf(LinkOutcome.NOT_QUALIFIED, LinkOutcome.NO_SIG, LinkOutcome.NO_PORT, LinkOutcome.OFF)
+        private val QUIET = setOf(LinkOutcome.NOT_QUALIFIED, LinkOutcome.NO_SIG, LinkOutcome.NO_PORT, LinkOutcome.OFF, LinkOutcome.METERED)
         private const val SHORT = 6
     }
 }

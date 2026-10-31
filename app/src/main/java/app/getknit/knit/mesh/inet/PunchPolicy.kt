@@ -64,6 +64,19 @@ object PunchPolicy {
     /** Most targets one attempt sends to, whatever the peer listed. */
     const val MAX_TARGETS = 8
 
+    /**
+     * How long after a link comes up on a path that leaves this phone's own network a path that does not — a
+     * [preferred] target, probed on through this window — may still take it (L-4-3): the LAN answer and a router's
+     * hairpin go out in one round and come back within milliseconds of each other, so whichever came first is chance.
+     */
+    const val UPGRADE_WINDOW_MS = 1_000L
+
+    /**
+     * How long a link on a [preferred] path keeps it while the peer's datagrams come from elsewhere: about the round trip
+     * its peer needs to follow, and past it — nothing heard on the preferred path — the link follows the peer again.
+     */
+    const val STICKY_MS = 3_000L
+
     /** The first wait before a contact is tried again after an attempt failed; it doubles per failure. */
     const val FIRST_BACKOFF_MS = 60_000L
 
@@ -106,6 +119,42 @@ object PunchPolicy {
             LinkCandidate.Kind.HOST -> a.size == LinkCandidate.V4_BYTES && privateV4(a)
             LinkCandidate.Kind.V4_REFLEXIVE -> a.size == LinkCandidate.V4_BYTES && publicV4(a)
         }
+    }
+
+    /**
+     * Whether [target] is a path that stays on this phone's own network (L-4-3): a LAN address ([LinkCandidate.Kind.HOST]),
+     * or an IPv6 address inside one of the prefixes of the network this phone's port is on ([onLink]) — never a hairpin
+     * through a NAT's public address, which may be a carrier's, nor an IPv6 address on another network.
+     */
+    fun preferred(
+        target: LinkCandidate,
+        onLink: (ByteArray) -> Boolean,
+    ): Boolean = target.kind == LinkCandidate.Kind.HOST || (target.v6 && onLink(target.address))
+
+    /**
+     * Whether an up link moves its path to a datagram's source ([fromPreferred]: one of the peer's [preferred] targets),
+     * given whether its path is [onPreferred] now and how long since a datagram came from a preferred one: always onto a
+     * preferred path, always while off one, and off one only once nothing came from it for [STICKY_MS].
+     */
+    fun adopts(
+        onPreferred: Boolean,
+        fromPreferred: Boolean,
+        sincePreferredMs: Long,
+    ): Boolean = fromPreferred || !onPreferred || sincePreferredMs >= STICKY_MS
+
+    /** Whether [address] lies in [own]'s first [prefixLength] bits, both of one family: on the network [own] is on. */
+    fun inPrefix(
+        own: ByteArray,
+        prefixLength: Int,
+        address: ByteArray,
+    ): Boolean {
+        if (own.size != address.size || prefixLength !in 1..own.size * Byte.SIZE_BITS) return false
+        val whole = prefixLength / Byte.SIZE_BITS
+        for (i in 0 until whole) if (own[i] != address[i]) return false
+        val rest = prefixLength % Byte.SIZE_BITS
+        if (rest == 0) return true
+        val mask = (BYTE shl (Byte.SIZE_BITS - rest)) and BYTE
+        return (own[whole].toInt() and mask) == (address[whole].toInt() and mask)
     }
 
     /** The wait before the next probe round, [elapsedMs] into an attempt: quick while both ends start, slower after. */

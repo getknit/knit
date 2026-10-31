@@ -88,6 +88,9 @@ internal val NEVER_DORMANT: StateFlow<Boolean> = MutableStateFlow(false)
 /** Shared empty default for [MeshTransport.awareCandidatesNear] / [MeshTransport.awareCandidatesHeard]. */
 internal val NO_AWARE_CANDIDATES: StateFlow<Set<String>> = MutableStateFlow(emptySet())
 
+// [MeshTransport.freeLinked]'s default: a transport that makes no direct links holds no free one.
+private val NO_FREE_LINKS: StateFlow<Set<String>> = MutableStateFlow(emptySet())
+
 /** Shared "no newcomer watch" default for [MeshTransport.seesNewcomers]: a plane that does not say so never counts. */
 internal val SEES_NO_NEWCOMERS: StateFlow<Boolean> = MutableStateFlow(false)
 
@@ -521,6 +524,45 @@ interface MeshTransport {
      * radio's pace budget, so it never parks behind a radio feed. Default false.
      */
     fun fileRidesInternet(nodeId: String): Boolean = false
+
+    /**
+     * The peers this transport holds a **free** direct link to (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-7-11): one
+     * made while neither end's network was metered, the one kind of link that carries an attachment beside a radio.
+     * Default none: only the link plane makes one.
+     */
+    val freeLinked: StateFlow<Set<String>> get() = NO_FREE_LINKS
+
+    /** Whether [nodeId] is in [freeLinked] now. */
+    fun freeLinkTo(nodeId: String): Boolean = nodeId in freeLinked.value
+
+    /**
+     * Asks for a free link to [nodeId] to carry the attachment [blobKey] beside a radio (L-7-11): true when one is up or
+     * being raised, so the caller may wait for [freeLinked] to name the peer; false when none will come for it — the
+     * link would not carry that blob, this phone's network is metered, or the contact cannot be offered a link now.
+     * Never waits for the link. Default false.
+     */
+    suspend fun raiseFreeLink(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = false
+
+    /**
+     * Whether [nodeId], holding the attachment [blobKey], may raise a free link to this phone for it (L-7-11): the pair
+     * qualifies for a link and a link between them would carry that blob. Nothing of this phone's own state — its network,
+     * its switch, its backoff — counts: the holder decides with its own, and an asker that waits too long only widens
+     * later, where one that waits too short takes a second copy. What an asker's grace counts on, as it counts on a
+     * [BulkRoute.Reachable] plane. Default false.
+     */
+    suspend fun freeLinkMay(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = false
+
+    /**
+     * Whether a free link to [nodeId] is up or still being raised ([raiseFreeLink]): what a copy waiting for one reads,
+     * so it goes to the radio as soon as the attempt ends without one. Default false.
+     */
+    fun freeLinkRaising(nodeId: String): Boolean = false
 
     /**
      * How a file from [nodeId] would most likely reach us: over a live high-throughput link, over one such a plane

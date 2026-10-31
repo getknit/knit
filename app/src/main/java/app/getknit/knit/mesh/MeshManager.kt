@@ -4460,6 +4460,15 @@ class MeshManager(
     }
 
     /**
+     * Whether our own want of [hash] is held for a fast route ([BlobExchange.fastHeld], the want's `fastHeld`): over the
+     * person's download limit, untapped, and its last step found no holder Wi-Fi Aware or a free link reaches. The one
+     * receiving-end want whose link demand row may call for a link to a contact a radio links too (`MeshLinkPending`,
+     * L-7-11, #236): the radio will not carry it. A plain want rides the radio, and its holder raises a free link for a
+     * large copy itself.
+     */
+    fun attachmentFastHeld(hash: String): Boolean = blobExchange.fastHeld(hash)
+
+    /**
      * Asks each of [linkPeers] that no radio links whether it holds our DM attachments to it that are still
      * [attachmentStuck] (ADR 2026-10.a5yj L-7-7, vy27; [LinkHolderProof]): the sender's proof of a photo the link carried
      * because no spool would take it. Run by the link demand's every round; the yes lands

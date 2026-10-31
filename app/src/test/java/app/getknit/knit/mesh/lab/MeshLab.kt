@@ -266,6 +266,9 @@ class MeshLab {
         // `DirectLinks` — offers and answers sent as sigs through [spool], the punch over the fake NATs, the lane, the stream
         // handed to its link plane — and a `LinkDemand` a scenario drives by [LabNode.demand]. Null builds none.
         internet: FakeLinkNet.Nat? = null,
+        // With [internet]: the home network the node joins ([lan]), shared with the nodes already on it. Null puts it
+        // behind a NAT of its own.
+        lan: LabInternet.Lan? = null,
     ): LabNode {
         val started = System.nanoTime()
         val board = air ?: boardsAir?.takeIf { board }
@@ -296,7 +299,7 @@ class MeshLab {
                 publicRelays = publicRelays,
                 home = home,
                 directLinks = directLinks,
-                internet = internet?.let { labInternet().phone(it) },
+                internet = internet?.let { labInternet().phone(it, lan) },
             )
         nodes += node
         node.boot()
@@ -378,6 +381,12 @@ class MeshLab {
 
     @Synchronized
     private fun labInternet(): LabInternet = internetNet ?: LabInternet().also { internetNet = it }
+
+    /** A home network on the lab's Internet that nodes built with `internet` join by `lan` ([LabInternet.Lan]). */
+    internal fun lan(): LabInternet.Lan = labInternet().lan()
+
+    /** The lab's Internet, for a scenario that isolates the home networks' clients ([LabInternet.lanDown]). */
+    internal val internet: LabInternet get() = labInternet()
 
     // The latest direct link [directLink] made per pair of node ids (the lower id first), for [cutDirectLink].
     private val directLinks = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, LabDirectLink>()
@@ -1339,8 +1348,16 @@ class LabNode internal constructor(
     var linksOn = true
 
     /**
-     * Whether this phone's network is metered, as `InternetGate.isMetered` answers its blob exchange: a fast-only want then
-     * never asks over a direct link, and waits for the tap (ADR 2026-10.js2p, 2026-10.a5yj). Unmetered unless a scenario says.
+     * Whether this phone's links are held off the way low-power mode or a pause holds them (`DirectLinks.enabled` false,
+     * its switch still on): an offer to it is answered with nothing, not declined (L-2-6).
+     */
+    @Volatile
+    var linksQuiet = false
+
+    /**
+     * Whether this phone's network is metered, as `InternetGate.isMetered` answers its blob exchange and its direct links: a
+     * fast-only want then never asks over a direct link, and waits for the tap (ADR 2026-10.js2p, 2026-10.a5yj); and its
+     * links' signals carry `m`, so none is made beside a radio (L-7-11). Unmetered unless a scenario says.
      */
     @Volatile
     var metered = false
@@ -1460,6 +1477,11 @@ class LabNode internal constructor(
                 },
                 // A walkie's hold, as `di/DirectLinkWiring` decides it: a link only where the radios have no path.
                 onHold = { peer -> !manager.talkRadioPath(peer) && links?.raise(peer) == true },
+                // Free links beside a radio (L-7-11), as `di/DirectLinkWiring` wires them.
+                freeLink = { peer -> links?.freeLinkTo(peer) == true },
+                onBulk = { peer -> links?.raiseBulk(peer) == true },
+                bulkMay = { peer -> links?.mayRaiseBulk(peer) == true },
+                bulkRaising = { peer -> links?.bulkUnderWay(peer) == true },
             )
         }
 
@@ -1477,9 +1499,12 @@ class LabNode internal constructor(
                 selfId = { nodeId },
                 datagrams = phone.datagrams,
                 peers = ManagerLinkPeers(),
-                enabled = { linksOn },
+                enabled = { linksOn && !linksQuiet },
                 scope = scope,
                 declining = { !linksOn },
+                // This node's network as the scenario sets it ([metered]), and its radios, as `di/DirectLinkWiring` reads them.
+                metered = { metered },
+                radioLinked = mesh::radioLinked,
                 clock = now,
                 streams = phone.streams,
                 onStream = { peer, socket, offerer -> plane.adopt(peer, socket, offerer) },
@@ -1495,6 +1520,8 @@ class LabNode internal constructor(
                 groups::find,
                 stuck = { peer, hash -> manager.attachmentStuck(peer, hash) },
                 wantedSince = { _, hash -> manager.attachmentWantedSince(hash) },
+                // As `di/DirectLinkWiring` wires it: only a want held for a fast route goes beside a radio (L-7-11).
+                fastHeld = { manager.attachmentFastHeld(it) },
             )
         demand =
             LinkDemand(
@@ -1509,6 +1536,7 @@ class LabNode internal constructor(
                 log = { linkLog += it },
                 prove = { manager.proveStuckOverLinks(it) },
                 declinedAt = built::declinedAt,
+                meteredAt = built::meteredAt,
                 idleSince = built::idleSince,
                 yieldLink = { peer -> built.close(peer, LinkSession.EndReason.YIELDED) },
             )

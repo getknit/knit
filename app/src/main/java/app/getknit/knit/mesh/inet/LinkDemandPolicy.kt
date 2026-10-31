@@ -15,7 +15,9 @@ import app.getknit.knit.data.forward.ForwardRepository
  *
  * and, for each,
  *  - no radio holds a link to them: a radio neighbour's tick is slow for the radio's own reasons, and the radio carries
- *    the frame for free;
+ *    the frame for free. The one exception is a [Pending.beside] row (L-7-11): a wanted attachment held for a fast route
+ *    the radio cannot give, offered for at once rather than after [WANT_WAIT_MS], and only while they have not refused a
+ *    link beside the radio as metered since that row's time (`DirectLinks.meteredAt`);
  *  - no link to them is up, or has been since that row's time: a link that was up had its chance at it — sent while it
  *    was up, or named in its digest at link-up — and offering again for the same row would open, idle and close a link a
  *    minute for a tick that will not come (a peer that cannot open it, a peer gone). A link that lost its path while a
@@ -36,12 +38,14 @@ import app.getknit.knit.data.forward.ForwardRepository
 object LinkDemandPolicy {
     /**
      * One row that calls for a link to [peerId] at [at] (when it was sent; for a [LinkWhy.WANT], when its message
-     * arrived), by [why]: [LinkWhy.TICK], [LinkWhy.FILE] or [LinkWhy.WANT].
+     * arrived), by [why]: [LinkWhy.TICK], [LinkWhy.FILE] or [LinkWhy.WANT]. [beside]: a want held for a fast route, which
+     * may call for a link to a contact a radio links too (L-7-11).
      */
     data class Pending(
         val peerId: String,
         val at: Long,
         val why: LinkWhy = LinkWhy.TICK,
+        val beside: Boolean = false,
     )
 
     /** How long a message of ours waits for its tick before the contact is offered a link. */
@@ -65,7 +69,8 @@ object LinkDemandPolicy {
     /**
      * The contacts to offer a link now, longest-waiting first, each with the [LinkWhy] of its longest-waiting row, from
      * [pending] at [now]. [up] is the contacts a link is up to, [offering] those an offer to is in flight, [lastUpAt]
-     * when a link to one was last up (`DirectLinks.lastUpAt`), [declinedAt] when one last declined (`DirectLinks.declinedAt`).
+     * when a link to one was last up (`DirectLinks.lastUpAt`), [declinedAt] when one last declined (`DirectLinks.declinedAt`),
+     * [meteredAt] when one last refused a link beside a radio as metered (`DirectLinks.meteredAt`).
      */
     @Suppress("LongParameterList") // the demand's inputs, each one of the rule's clauses
     fun offers(
@@ -78,18 +83,23 @@ object LinkDemandPolicy {
         quietUntil: Map<String, Long> = emptyMap(),
         declinedAt: (String) -> Long? = { null },
         maxLinks: Int = MAX_LINKS,
+        meteredAt: (String) -> Long? = { null },
     ): List<Pair<String, LinkWhy>> {
         val room = maxLinks - up.size - offering.size
         if (room <= 0) return emptyList()
+        // Beside a radio only a want held for a fast route calls for a link, and only past the contact's last metered
+        // refusal (L-7-11).
+        val radio = HashMap<String, Boolean>()
+        val besideRadio: (Pending) -> Boolean = { radio.getOrPut(it.peerId) { radioLinked(it.peerId) } }
         return pending
             .asSequence()
-            .filter { now - it.at in windowOf(it.why) }
+            .filter { p -> !besideRadio(p) || (p.beside && meteredAt(p.peerId)?.let { p.at > it } ?: true) }
+            .filter { now - it.at in windowOf(it.why, besideRadio(it)) }
             .filter { it.peerId !in up && it.peerId !in offering && now >= (quietUntil[it.peerId] ?: 0L) }
             .filter { p -> lastUpAt(p.peerId)?.let { p.at > it } ?: true }
             .filter { p -> declinedAt(p.peerId)?.let { p.at > it } ?: true }
             .groupBy { it.peerId }
             .mapValues { (_, rows) -> rows.minBy { it.at } }
-            .filterKeys { !radioLinked(it) }
             .values
             .sortedBy { it.at }
             .take(room)
@@ -108,7 +118,9 @@ object LinkDemandPolicy {
         quietUntil: Map<String, Long> = emptyMap(),
         declinedAt: (String) -> Long? = { null },
         maxLinks: Int = MAX_LINKS,
-    ): List<String> = offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks).map { it.first }
+        meteredAt: (String) -> Long? = { null },
+    ): List<String> =
+        offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks, meteredAt).map { it.first }
 
     /**
      * The up link to close now so a waiting contact can have its slot, or null: every slot is taken ([up] and
@@ -128,10 +140,11 @@ object LinkDemandPolicy {
         quietUntil: Map<String, Long> = emptyMap(),
         declinedAt: (String) -> Long? = { null },
         maxLinks: Int = MAX_LINKS,
+        meteredAt: (String) -> Long? = { null },
     ): String? {
         val taken = up.size + offering.size
         if (taken < maxLinks) return null
-        val waiting = offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks = taken + 1)
+        val waiting = offers(pending, now, radioLinked, up, offering, lastUpAt, quietUntil, declinedAt, maxLinks = taken + 1, meteredAt)
         if (waiting.isEmpty()) return null
         return idleSince
             .filter { (peer, since) -> peer in up && now - since >= EVICT_IDLE_MS }
@@ -139,11 +152,15 @@ object LinkDemandPolicy {
             ?.key
     }
 
-    // How old a row of [why] may be, from its time, and call for a link.
-    private fun windowOf(why: LinkWhy): LongRange =
-        when (why) {
-            LinkWhy.FILE -> 0L..FILE_WINDOW_MS
-            LinkWhy.WANT -> WANT_WAIT_MS..FILE_WINDOW_MS
+    // How old a row of [why] may be, from its time, and call for a link. A want beside a radio waits for nothing: the radio
+    // will not bring what it is held for.
+    private fun windowOf(
+        why: LinkWhy,
+        besideRadio: Boolean,
+    ): LongRange =
+        when {
+            why == LinkWhy.FILE -> 0L..FILE_WINDOW_MS
+            why == LinkWhy.WANT -> (if (besideRadio) 0L else WANT_WAIT_MS)..FILE_WINDOW_MS
             else -> TICK_WAIT_MS..WINDOW_MS
         }
 }

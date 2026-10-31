@@ -365,7 +365,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   sitting out its ten seconds; the streams' ARQ reads a monotonic clock, which no jump moves. `FakeSpool.mute()` keeps
   the relay connected and fanning out casts while it takes nothing else — a link that is the only path. The set is
   `InternetLinkLabTest`, and `LinkDownloadLimitLabTest` for the download limit over a link (`LabNode.metered` is the
-  phone's network as `InternetGate.isMetered` reads it).
+  phone's network as `InternetGate.isMetered` reads it, for its blob exchange and its links' `m` alike), and
+  `LinkBesideRadioLabTest` for a free link beside a radio (#236): `LabInternet.phone(nat, external)` puts two nodes
+  behind one NAT on one LAN, where `FakeLinkNet` routes their host candidates and hairpins their reflexive ones, and
+  `FakeLinkNet.lanDown` isolates the LAN's clients so only the hairpin answers.
 - **Wait for the frame, not for the state that precedes it.** A settings or DB write the scenario can see
   lands *before* the frame it triggers reaches the transport (`broadcastProfile` bumps the version, then
   stamps, signs and floods), so "the version moved" is not "the frame is parked": `ProfileUpdateLabTest`

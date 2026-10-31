@@ -699,6 +699,18 @@ class GoldenVectorTest {
                         nt = LinkSignal.NET_WIFI,
                     ),
                 ),
+            // A DECLINE with `m` (L-2-7, L-7-11): beside a radio, this end's network is metered — not links off. An `m`
+            // left false is absent, so the two vectors above are unchanged by it.
+            "linkSignalDeclineMetered" to
+                WireCodec.encodePayload(
+                    LinkSignal(
+                        ph = LinkSignal.PHASE_DECLINE,
+                        id = bytes(LinkSignal.ID_BYTES, 15),
+                        k = ByteArray(0),
+                        nt = LinkSignal.NET_CELLULAR,
+                        m = true,
+                    ),
+                ),
         )
 
     private fun compact(content: MessageContent): ByteArray =

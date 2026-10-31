@@ -27,7 +27,12 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * **The path.** This end sends to the source of the last datagram that opened ([endpoint]) — not to a candidate it was
  * told about — so a NAT that rebinds the peer's port, or a peer that answered from an address it never listed, is
- * followed at once, and only an authenticated datagram can move it.
+ * followed at once, and only an authenticated datagram can move it. One kind of path is kept once taken: a
+ * [PunchPolicy.preferred] one, which stays on this phone's network (the peer's LAN address, or an IPv6 address on this
+ * link). A link that came up another way — a router's hairpin answering a hair before the LAN — probes the preferred
+ * targets on for [PunchPolicy.UPGRADE_WINDOW_MS] and moves to the first that answers ([onPathUpgrade]); on one, it
+ * follows a datagram from elsewhere only once nothing came from a preferred path for [PunchPolicy.STICKY_MS]. The peer
+ * follows this end's source in turn, so one end's move carries both. [pathKind] names the path the link is on (L-4-3).
  *
  * **Liveness.** A link exists to move something: one that has carried no DATA either way (under a transport, no frame
  * or file: [noteUse]) for [idleMs] closes with a BYE ([EndReason.IDLE]). That wait outlasts the shortest idle-path life
@@ -61,6 +66,9 @@ class LinkSession(
     // the file's whole length, so it never idles out under one.
     private val busy: () -> Boolean = { false },
     onData: (ByteArray) -> Unit = {},
+    // The link moved from the path it came up on ([from]: a target's kind, null for one the peer never listed) to a
+    // preferred one ([to]), [afterMs] after it came up: for the log.
+    private val onPathUpgrade: (from: LinkCandidate.Kind?, to: LinkCandidate.Kind, afterMs: Long) -> Unit = { _, _, _ -> },
     private val random: java.util.Random = SecureRandom(),
 ) {
     /** Where a session stands. */
@@ -103,6 +111,21 @@ class LinkSession(
     private val probesLock = Any()
 
     @Volatile private var endpoint: Pair<ByteArray, Int>? = null
+
+    // The targets whose path stays on this phone's network (L-4-3), whether the link is on one, and when a datagram last
+    // came from one.
+    private val preferredTargets = targets.filter { PunchPolicy.preferred(it, port::onLink) }
+
+    @Volatile private var onPreferred = false
+
+    @Volatile private var preferredHeardAt = 0L
+
+    @Volatile private var upAt = 0L
+
+    /** The kind of the target the link sends to now, or null for an address the peer never listed. */
+    @Volatile
+    var pathKind: LinkCandidate.Kind? = null
+        private set
 
     @Volatile private var lastHeard = started
 
@@ -237,8 +260,26 @@ class LinkSession(
             learnt.forEach { probe(it) }
             delay(PunchPolicy.probeIntervalMs(elapsed))
         }
-        if (_state.value == State.UP) watch()
+        if (_state.value == State.UP) {
+            upgrade()
+            watch()
+        }
     }
+
+    // Up on a path that leaves this phone's network while a preferred target was listed: probes the preferred targets on
+    // for the window; an answer from one moves the link there ([follow]).
+    private suspend fun upgrade() {
+        val until = upAt + PunchPolicy.UPGRADE_WINDOW_MS
+        while (scope.isActive && upgrading(until)) {
+            preferredTargets.forEach { probe(it.address to it.port) }
+            delay(PunchPolicy.probeIntervalMs(0L))
+        }
+        synchronized(probesLock) { probes.clear() }
+    }
+
+    // Whether the link is still up off a preferred path, a preferred target listed, before [until].
+    private fun upgrading(until: Long): Boolean =
+        _state.value == State.UP && !onPreferred && preferredTargets.isNotEmpty() && clock() < until
 
     // The link's liveness while it is up: an unheld link's idle close, the silence bounds, and the keepalive that keeps a
     // quiet path warm, held or not.
@@ -316,7 +357,23 @@ class LinkSession(
             }
         }
         // A late PROBE from a candidate the peer is still trying says nothing about the path it settled on.
-        if (_state.value == State.UP && plain[0] != PROBE) endpoint = from
+        if (_state.value == State.UP && plain[0] != PROBE) follow(from)
+    }
+
+    // Moves the path to [from], where the peer's datagram came from — unless the link is on a preferred path (L-4-3) and
+    // [from] is not, and a preferred one was heard within [PunchPolicy.STICKY_MS].
+    private fun follow(from: Pair<ByteArray, Int>) {
+        val target = targets.firstOrNull { it.address.contentEquals(from.first) && it.port == from.second }
+        val preferred = target?.takeIf { it in preferredTargets }
+        val now = clock()
+        if (preferred != null) preferredHeardAt = now
+        if (!PunchPolicy.adopts(onPreferred, preferred != null, now - preferredHeardAt)) return
+        val was = pathKind
+        val upgraded = !onPreferred
+        endpoint = from
+        pathKind = target?.kind
+        onPreferred = preferred != null
+        if (preferred != null && upgraded) onPathUpgrade(was, preferred.kind, now - upAt)
     }
 
     // The gap measurement's three types (debug builds only drive them; any build answers an ECHO). An ECHO from the peer
@@ -404,16 +461,21 @@ class LinkSession(
         nonce: Long,
     ) {
         val sentAt = synchronized(probesLock) { probes[nonce] } ?: return
+        val target = targets.firstOrNull { it.address.contentEquals(from.first) && it.port == from.second }
         // Under the state lock: a give-up closing the session in this instant must not see it come back UP.
         synchronized(stateLock) {
             if (_state.value != State.PUNCHING) return
             endpoint = from
+            pathKind = target?.kind
+            onPreferred = target != null && target in preferredTargets
+            if (onPreferred) preferredHeardAt = clock()
+            upAt = clock()
             lastData = clock()
             _state.value = State.UP
         }
-        val kind = targets.firstOrNull { it.address.contentEquals(from.first) && it.port == from.second }?.kind
+        val kind = target?.kind
         outcome.complete(Outcome.Up(kind, clock() - started, clock() - sentAt))
-        synchronized(probesLock) { probes.clear() }
+        if (onPreferred) synchronized(probesLock) { probes.clear() }
     }
 
     private fun sendTo(

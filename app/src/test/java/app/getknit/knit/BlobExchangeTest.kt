@@ -8,12 +8,14 @@ import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.MeshRouter
+import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.CoroutineScope
@@ -1747,6 +1749,203 @@ class BlobExchangeTest {
             exchange.want("H", author = "reach", approved = true) // the tap, deep in a backoff
             assertEquals("a fresh plain cycle, at once", before + 1, toReach.size)
             assertEquals(BlobReqContent("H", pull = BlobExchange.PULL_BUDGET), toReach.last())
+        }
+
+    // --- A free direct link beside a radio (L-7-11, #236) ---
+
+    /** A direct link's rule for blobs, as `LinkPairFilter` reads it: admitted when it is one of [blobs]. */
+    private class BlobsView(
+        private val blobs: Set<String>,
+    ) : PairView {
+        override fun admits(env: RelayEnvelope): Boolean = true
+
+        override suspend fun admitsBlob(hash: String): Boolean = hash in blobs
+    }
+
+    /**
+     * The design pass's first finding: a Bluetooth holder with no Wi-Fi Aware route may raise a free link for a large copy
+     * and wait up to the composite's bulk grace for it. An asker that widened at the plain grace bought a carrier's
+     * Bluetooth copy and then the holder's own, late (#79's shape). The blind round waits that out when a free link may
+     * come, and only then.
+     */
+    @Test
+    fun aBlindAskOfAHolderThatMayRaiseAFreeLinkWaitsOutItsLinkWaitBeforeTheRoundWidens() =
+        runTest(UnconfinedTestDispatcher()) {
+            for (may in listOf(true, false)) {
+                val r = FakeLoopTransport("r")
+                val h = FakeLoopTransport("h").also(r::connect)
+                val c = FakeLoopTransport("c").also(r::connect)
+                if (may) r.freeLinkMays += "h"
+                var now = 0L
+                val exchange = exchangeOn(r, now = { now })
+                val toH = backgroundScope.requestsArrivingAt(h)
+                val toC = backgroundScope.requestsArrivingAt(c)
+
+                exchange.want("H", author = "h")
+                assertEquals("may=$may: the author first, alone", 1, toH.size)
+                assertTrue(toC.isEmpty())
+                now += BlobExchange.FIRST_ASK_GRACE_MS + 1
+                exchange.reask()
+                assertEquals("may=$may: widened at the plain grace only with no link to wait for", if (may) 0 else 1, toC.size)
+                now += CompositeMeshTransport.BULK_GRACE_MS
+                exchange.reask()
+                assertEquals("may=$may: widened past the link wait", 1, toC.size)
+            }
+        }
+
+    /**
+     * The blobs-reviewer's full pass: the wait is the pair's to decide, never the asker's own state. An asker whose own
+     * network is metered (or whose links are off, or backing off) still gives a holder the pair lets raise a free link its
+     * link wait, since that holder raises on its own reading and waits whether or not we answer; a holder whose link
+     * would not carry this blob gets none, for this blob only.
+     */
+    @Test
+    fun theLinkWaitIsThePairsPerBlobAndNeverTheAskersOwnState() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val h = FakeLoopTransport("h").also(r::connect)
+            val c = FakeLoopTransport("c").also(r::connect)
+            r.freeLinkMays += "h"
+            r.linkViews["h"] = BlobsView(setOf("H"))
+            var now = 0L
+            val exchange = exchangeOn(r, now = { now }, metered = { true })
+            val toC = backgroundScope.requestsArrivingAt(c)
+
+            exchange.want("H", author = "h")
+            exchange.want("G", author = "h")
+            assertEquals("read per blob", setOf("H", "G"), r.freeLinkMayReads.filter { it.first == "h" }.mapTo(HashSet()) { it.second })
+            now += BlobExchange.FIRST_ASK_GRACE_MS + 1
+            exchange.reask()
+            assertEquals("only the blob the link would not carry widens at the plain grace", listOf("G"), toC.map { it.hash })
+            now += CompositeMeshTransport.BULK_GRACE_MS
+            exchange.reask()
+            assertEquals("the carried one past the link wait, metered or not", setOf("G", "H"), toC.mapTo(HashSet()) { it.hash })
+        }
+
+    /**
+     * The same wait on a holder that answered HAVE ([BlobExchange]'s `graceFor`): a large copy's fetch outlasts the
+     * holder's free-link wait before its grace is up and the holder is confirmed (#140); a small one, which the composite
+     * never raises a link for, does not.
+     */
+    @Test
+    fun aFetchFromAHolderThatMayRaiseAFreeLinkOutlastsItsLinkWaitForALargeCopyOnly() =
+        runTest(UnconfinedTestDispatcher()) {
+            for (size in listOf(CompositeMeshTransport.BULK_MIN_BYTES, 1_000L)) {
+                val r = FakeLoopTransport("r")
+                val a = FakeLoopTransport("a").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+                FakeLoopTransport("b").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+                r.freeLinkMays += "a"
+                var now = 0L
+                val exchange =
+                    BlobExchange(
+                        transport = r,
+                        store = FakeBlobStore(Files.createTempDirectory("blob-free-fetch").toFile()),
+                        selfId = { "r" },
+                        onObtained = { _, _ -> },
+                        now = { now },
+                        partials = partials(),
+                        holderQuery = BlobExchange.HolderQuery(enabled = true),
+                    )
+                val toA = backgroundScope.requestsArrivingAt(a)
+                val queriesToA = CopyOnWriteArrayList<String>()
+                backgroundScope.launch { a.inbound.collect { if (it.envelope.type == FrameType.BLOB_HAVE) queriesToA += it.envelope.id } }
+
+                exchange.want("H")
+                now += 100
+                exchange.onHaveAnswer(BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, size = size)), load = 0), "a")
+                exchange.onHaveAnswer(BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, size = size)), load = 1), "b")
+                assertEquals("size=$size: the idler holder asked", 1, toA.size)
+                assertEquals(1, queriesToA.size)
+                now += BlobExchange.FIRST_ASK_GRACE_MS + 1
+                exchange.reask()
+                val large = size >= CompositeMeshTransport.BULK_MIN_BYTES
+                assertEquals("size=$size: its grace is up only past the link wait of a large copy", if (large) 1 else 2, queriesToA.size)
+                now += CompositeMeshTransport.BULK_GRACE_MS
+                exchange.reask()
+                assertEquals("size=$size: confirmed once its grace is up", 2, queriesToA.size)
+            }
+        }
+
+    /**
+     * The design pass's second finding: a free link beside a radio carries only blobs addressed to both ends. A carrier
+     * holder whose free link refuses this blob is no fast route for it — asked fast-only, its link would refuse the copy
+     * and drop it, and every link-up edge would re-ask it — so the want is held and nobody is asked.
+     */
+    @Test
+    fun aFreeLinkThatRefusesTheBlobIsNoFastRouteForIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val c = FakeLoopTransport("c").also(r::connect)
+            r.freeLinks += "c"
+            r.linkViews["c"] = BlobsView(setOf("other"))
+            var now = 0L
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(r, now = { now }, onEvent = { events += it })
+            val toC = backgroundScope.requestsArrivingAt(c)
+
+            exchange.want("H", author = "a", fastOnly = true)
+            now += BlobExchange.ROUND_MS
+            exchange.fastLinkUp(listOf("c"))
+            exchange.reask()
+            assertTrue("the carrier's link refuses it: never asked fast-only", toC.isEmpty())
+            assertTrue(BlobExchange.BlobEvent.FastOnlyHeld in events)
+            assertTrue("held for a fast route", exchange.fastHeld("H"))
+            assertTrue("no free-link wait read for a fast-only want", r.freeLinkMayReads.isEmpty())
+        }
+
+    /**
+     * A free link coming up to the author a radio already links is a fast route for the blob it carries: an edge that asks
+     * it fast-only at once, as a Wi-Fi Aware link coming up is — and for that blob only.
+     */
+    @Test
+    fun aFreeLinkComingUpBesideARadioAsksItsPeerFastOnlyForTheBlobItCarries() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val a = FakeLoopTransport("a").also(r::connect)
+            r.linkViews["a"] = BlobsView(setOf("H"))
+            var now = 0L
+            val exchange = exchangeOn(r, now = { now })
+            val toA = backgroundScope.requestsArrivingAt(a)
+
+            exchange.want("H", author = "a", fastOnly = true)
+            exchange.want("G", author = "a", fastOnly = true)
+            assertTrue("Bluetooth alone: nobody asked", toA.isEmpty())
+
+            now += 1_000
+            r.freeLinks += "a"
+            exchange.fastLinkUp(listOf("a"))
+            val asked = BlobReqContent("H", fastOnly = true, pull = BlobExchange.PULL_BUDGET)
+            assertEquals("asked at once over it, for its blob", listOf(asked), toA)
+            now += 1_000
+            exchange.reask()
+            assertEquals("and only that one", 1, toA.size)
+            assertTrue("the blob it refuses is still held", exchange.fastHeld("G"))
+            assertTrue("the one it carries is not", !exchange.fastHeld("H"))
+        }
+
+    /**
+     * [BlobExchange.fastHeld], what `MeshManager.attachmentFastHeld` hands the link demand: true only for a fast-only want
+     * its last step found no fast holder for — never a plain want, and not once the tap made it one.
+     */
+    @Test
+    fun aWantIsFastHeldOnlyWhileItIsFastOnlyWithNoFastHolder() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            FakeLoopTransport("a").also(r::connect)
+            var now = 0L
+            val exchange = exchangeOn(r, now = { now })
+
+            exchange.want("P", author = "a")
+            exchange.want("H", author = "a", fastOnly = true)
+            now += 1_000
+            assertTrue("a plain want is never held", !exchange.fastHeld("P"))
+            assertTrue("a fast-only want with only Bluetooth is", exchange.fastHeld("H"))
+            assertTrue("no want, nothing held", !exchange.fastHeld("X"))
+
+            now += 1_000
+            exchange.want("H", author = "a", approved = true) // the tap
+            now += 1_000
+            assertTrue("the tap lifts it", !exchange.fastHeld("H"))
         }
 
     private companion object {

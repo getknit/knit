@@ -42,6 +42,8 @@ class LinkSessionTest {
         // Both ends under a transport: only noteUse and a busy transport are use (L-7-4).
         dataIsUse: Boolean = true,
         busy: () -> Boolean = { false },
+        // Each path upgrade A's session makes (L-4-3): from, to, ms after it came up.
+        upgradesA: MutableList<Triple<LinkCandidate.Kind?, LinkCandidate.Kind, Long>>? = null,
         onDataB: (ByteArray) -> Unit = {},
     ): Pair {
         net.stunServer("stun.example", stunAt)
@@ -65,6 +67,7 @@ class LinkSessionTest {
                 clock,
                 dataIsUse = dataIsUse,
                 busy = busy,
+                onPathUpgrade = { from, to, ms -> upgradesA?.add(Triple(from, to, ms)) },
             )
         val b =
             LinkSession(
@@ -95,6 +98,70 @@ class LinkSessionTest {
             it[0] = 0x24
             it[1] = 0x01
             it[15] = last.toByte()
+        }
+
+    @Test
+    fun aLinkUpOnItsRoutersHairpinMovesToTheLanWhenItAnswersWithinTheWindowAndBothEndsFollow() =
+        runTest {
+            val net = FakeLinkNet()
+            val home = v4(81, 2, 3, 4)
+            // The access point isolates its clients at first: the punch finds only the router's hairpin.
+            net.lanDown = true
+            val upgrades = mutableListOf<Triple<LinkCandidate.Kind?, LinkCandidate.Kind, Long>>()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, home), upgradesA = upgrades)
+            val up = pair.a.awaitOutcome() as LinkSession.Outcome.Up
+            pair.b.awaitOutcome()
+            assertEquals(LinkCandidate.Kind.V4_REFLEXIVE, up.kind)
+            assertEquals(LinkCandidate.Kind.V4_REFLEXIVE, pair.a.pathKind)
+
+            net.lanDown = false
+            testScheduler.advanceTimeBy(PunchPolicy.probeIntervalMs(0L) + 1)
+            assertEquals(LinkCandidate.Kind.HOST, pair.a.pathKind)
+            val (from, to, after) = upgrades.single()
+            assertEquals(LinkCandidate.Kind.V4_REFLEXIVE to LinkCandidate.Kind.HOST, from to to)
+            assertTrue("$after", after <= PunchPolicy.UPGRADE_WINDOW_MS)
+            // The other end follows where A's datagrams now come from, or moves by its own probes.
+            assertTrue(pair.a.sendData("over the lan".toByteArray()))
+            testScheduler.advanceTimeBy(100)
+            assertEquals(LinkCandidate.Kind.HOST, pair.b.pathKind)
+        }
+
+    @Test
+    fun aLinkWhoseLanStaysSilentKeepsItsPathAndStopsProbingTheLanAfterTheWindow() =
+        runTest {
+            val net = FakeLinkNet()
+            val home = v4(81, 2, 3, 4)
+            net.lanDown = true
+            val upgrades = mutableListOf<Triple<LinkCandidate.Kind?, LinkCandidate.Kind, Long>>()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, home), upgradesA = upgrades)
+            pair.a.awaitOutcome()
+            pair.b.awaitOutcome()
+            testScheduler.advanceTimeBy(PunchPolicy.UPGRADE_WINDOW_MS + PunchPolicy.probeIntervalMs(0L))
+            val sent = net.sentOut(home)
+            // A LAN that answers only now, past the window, is never probed again: the link stays on its hairpin.
+            net.lanDown = false
+            testScheduler.advanceTimeBy(10_000L)
+            assertEquals("probes past the window", sent, net.sentOut(home))
+            assertEquals(LinkCandidate.Kind.V4_REFLEXIVE, pair.a.pathKind)
+            assertTrue(upgrades.isEmpty())
+        }
+
+    @Test
+    fun aLinkUpOnTheLanStaysThereAndProbesNothingMore() =
+        runTest {
+            val net = FakeLinkNet()
+            val home = v4(81, 2, 3, 4)
+            val upgrades = mutableListOf<Triple<LinkCandidate.Kind?, LinkCandidate.Kind, Long>>()
+            val pair = link(net, net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, home), upgradesA = upgrades)
+            assertEquals(LinkCandidate.Kind.HOST, (pair.a.awaitOutcome() as LinkSession.Outcome.Up).kind)
+            pair.b.awaitOutcome()
+            testScheduler.advanceTimeBy(100)
+            val sent = net.sentOut(home)
+            testScheduler.advanceTimeBy(PunchPolicy.UPGRADE_WINDOW_MS)
+            assertEquals(sent, net.sentOut(home))
+            assertEquals(LinkCandidate.Kind.HOST, pair.a.pathKind)
+            assertEquals(LinkCandidate.Kind.HOST, pair.b.pathKind)
+            assertTrue(upgrades.isEmpty())
         }
 
     @Test
@@ -174,6 +241,8 @@ class LinkSessionTest {
                 }
             pair.a.awaitOutcome()
             pair.b.awaitOutcome()
+            // Up across the Internet, each end probes the other's LAN address on through the upgrade window (L-4-3) first.
+            testScheduler.advanceTimeBy(PunchPolicy.UPGRADE_WINDOW_MS + PunchPolicy.probeIntervalMs(0L))
             val sent = pair.a.bytes().second
             testScheduler.advanceTimeBy(LinkSession.HOLD_KEEPALIVE_MS - 5_000L)
             assertEquals("a keepalive before its time", sent, pair.a.bytes().second)

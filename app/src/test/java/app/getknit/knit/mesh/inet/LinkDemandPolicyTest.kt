@@ -152,4 +152,33 @@ class LinkDemandPolicyTest {
         assertEquals("dave", LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = mapOf("dave" to idleLong)))
         assertEquals(null, LinkDemandPolicy.evict(waiting, now, none, up = setOf("bob", "dave"), idleSince = emptyMap()))
     }
+
+    @Test
+    fun besideARadioOnlyAWantHeldForAFastRouteCallsForALinkAndAtOnce() {
+        val radio: (String) -> Boolean = { true }
+        val arrived = now - 1_000L
+        val rows =
+            listOf(
+                Pending("bob", arrived, LinkWhy.WANT, beside = true),
+                Pending("carol", arrived, LinkWhy.WANT),
+                Pending("dave", waited, LinkWhy.TICK),
+                Pending("erin", arrived, LinkWhy.FILE),
+            )
+        assertEquals(listOf("bob" to LinkWhy.WANT), LinkDemandPolicy.offers(rows, now, radio, emptySet()))
+        // With no radio between them, the same want waits the spool's minute like any other.
+        assertEquals(setOf("dave", "erin"), LinkDemandPolicy.due(rows, now, none, emptySet()).toSet())
+    }
+
+    @Test
+    fun besideARadioAMeteredRefusalHoldsBackOnlyTheRowsOlderThanIt() {
+        val radio: (String) -> Boolean = { true }
+        val refused: (String) -> Long? = { now - 500L }
+        val older = listOf(Pending("bob", now - 1_000L, LinkWhy.WANT, beside = true))
+        val newer = listOf(Pending("bob", now - 100L, LinkWhy.WANT, beside = true))
+        assertTrue(LinkDemandPolicy.due(older, now, radio, emptySet(), meteredAt = refused).isEmpty())
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(newer, now, radio, emptySet(), meteredAt = refused))
+        // No radio between them: a metered refusal was about the radio only.
+        val later = listOf(Pending("bob", now - LinkDemandPolicy.WANT_WAIT_MS - 1, LinkWhy.WANT, beside = true))
+        assertEquals(listOf("bob"), LinkDemandPolicy.due(later, now, none, emptySet(), meteredAt = { now }))
+    }
 }

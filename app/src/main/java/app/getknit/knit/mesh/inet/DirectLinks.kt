@@ -25,16 +25,18 @@ import java.util.concurrent.ConcurrentHashMap
  * pair's DM scope advertises sigs, the one lane a signal rides (C-7.8-17), so nothing was sealed or sent. [DECLINED]: the
  * contact's person has links switched off, and said so (L-2-6) — or, on the answering end, this phone said so. On the
  * answering end, an offer held back is recorded too: [OFF] for low-power mode or a pause, which say nothing back, and
- * [BUDGET] for a contact whose answers this hour came to nothing too often.
+ * [BUDGET] for a contact whose answers this hour came to nothing too often. [METERED]: a radio links the pair and one end's
+ * network is metered, so no link is made beside it (L-7-11) — the offerer's answer said so, or this end's network is.
  */
-enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_SIG, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED, DECLINED, BUDGET }
+enum class LinkOutcome { UP, NO_PATH, NO_ANSWER, NO_SIG, NO_PORT, NOT_QUALIFIED, OFF, BACKOFF, BUSY, SUPERSEDED, DECLINED, BUDGET, METERED }
 
 /**
  * Why this phone offered a link, for the field log (`link_try`'s `why`): the person's try from the debug bridge
  * ([MANUAL]); a message of ours a contact has not ticked ([TICK]); a DM attachment of ours no spool will take ([FILE]); a
- * DM attachment of theirs we want and nobody brings ([WANT]); a walkie call with no radio path ([WALKIE]).
+ * DM attachment of theirs we want and nobody brings ([WANT]); a walkie call with no radio path ([WALKIE]); an attachment
+ * of ours a radio would carry slowly, beside which a free link carries it ([BULK], L-7-11).
  */
-enum class LinkWhy { MANUAL, TICK, FILE, WANT, WALKIE }
+enum class LinkWhy { MANUAL, TICK, FILE, WANT, WALKIE, BULK }
 
 /** The path a link came up on: a candidate's kind, or an address the peer never listed. */
 enum class LinkPath { V6_TEMPORARY, V6, HOST, V4_REFLEXIVE, PEER_REFLEXIVE }
@@ -129,7 +131,17 @@ fun interface LaneKeys {
  * the person has links switched off ([declining], `docs/DIRECT_LINKS.md` L-2-6): the offerer stops offering until it has
  * something newer, rather than waiting out a backoff for an answer that will not come. A DECLINE received is kept
  * ([declinedAt]) until the contact's next offer or link.
+ *
+ * **Beside a radio** (L-7-11, #236). Each signal says whether its sender's network is metered ([metered], read as it is
+ * signed: L-2-7), and a link is **free** when neither end's was: read once, at the offer and the answer, never again,
+ * since a new network closes the link anyway ([onRouteChanged]). A link to a peer a radio links ([radioLinked]) is made
+ * only free — there the radio carries everything for nothing, and a link is worth its data only for attachments when
+ * neither end pays for it. So an answering end on a metered network declines such an offer with `m` set, and an offerer
+ * whose answer (or own network) is metered ends the attempt before its punch, both recorded [LinkOutcome.METERED]; a
+ * metered refusal received is kept ([meteredAt]), and an attachment's [raiseBulk] waits [METERED_RETRY_MS] past it.
+ * [freeLinkTo] says which up links are free. A link to a peer no radio links is made as before, metered or not.
  */
+@Suppress("LargeClass") // one phone's links whole: offer, answer, punch, record, and the debug builds' measurements
 class DirectLinks(
     private val selfId: suspend () -> String,
     private val datagrams: LinkDatagrams,
@@ -140,6 +152,11 @@ class DirectLinks(
     // Whether an offer gets a DECLINE back (L-2-6): the person has links switched off. Low-power mode and a pause make
     // [enabled] false too, but say nothing: they pass, and the offerer's backoff waits them out.
     private val declining: () -> Boolean = { false },
+    // Whether this phone's network is metered now (`InternetGate.isMetered`): read once per offer and once per answer,
+    // into the signal's `m` (L-2-7) and the link's free stamp, and never again for that link.
+    private val metered: () -> Boolean = { false },
+    // Whether a radio links this phone to a peer now (`MeshTransport.radioLinked`): a link beside one is made only free.
+    private val radioLinked: (peerId: String) -> Boolean = { false },
     private val clock: () -> Long,
     private val streams: LinkStream = LinkStream.arq(scope, clock),
     // What takes each link's stream once the link is up — the transport that runs `FramedLink` over it, told whether
@@ -176,6 +193,16 @@ class DirectLinks(
     // of its recent declines (at most [DECLINES_PER_HOUR]).
     private val declined = ConcurrentHashMap<String, Long>()
     private val declines = ConcurrentHashMap<String, MutableList<Long>>()
+
+    // Per contact: when it last refused a link beside a radio because a network was metered (a DECLINE with `m`, or an
+    // ANSWER with `m` this end dropped), cleared by a free link with it.
+    private val meteredRefusals = ConcurrentHashMap<String, Long>()
+
+    // The up link to each contact that is free ([freeLinkTo]): both ends unmetered when it was made.
+    private val freeUp = ConcurrentHashMap<String, LinkSession>()
+
+    // The contacts a [raiseBulk] attempt is launched for and not yet ended.
+    private val raising: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     // A live session's asks ([raise]) per contact: the last one, and the first of the run it belongs to.
     private val lastAskAt = ConcurrentHashMap<String, Long>()
@@ -363,6 +390,71 @@ class DirectLinks(
     fun declinedAt(peerId: String): Long? = declined[peerId]
 
     /**
+     * When [peerId] last refused a link beside a radio because a network was metered (L-7-11), or null: none since its
+     * last free link with us. Nothing older than it is offered for again beside a radio (`LinkDemandPolicy`).
+     */
+    fun meteredAt(peerId: String): Long? = meteredRefusals[peerId]
+
+    /** Whether the link up to [peerId] is free: neither end's network was metered when it was made (L-7-11). */
+    fun freeLinkTo(peerId: String): Boolean =
+        links.value[peerId]?.let { it.state.value == LinkSession.State.UP && freeUp[peerId] === it } == true
+
+    /**
+     * An attachment of ours to [peerId] that a radio would carry slowly asks for a free link to carry it (L-7-11, the
+     * composite's `raiseFreeLink`): true when one is up, or an attempt to [peerId] is under way, or one starts now —
+     * [LinkWhy.BULK], through [offer]'s own rules. False, so the radio carries it at once, when this phone's network is
+     * metered, a link that is not free is up, the contact does not qualify or no sig lane would carry the offer, it is
+     * waiting out a backoff, it declined (L-2-6) or refused as metered in the last [METERED_RETRY_MS], or
+     * [LinkDemandPolicy.MAX_LINKS] links are up or being offered. Never waits for the attempt.
+     */
+    suspend fun raiseBulk(peerId: String): Boolean {
+        bulkVerdict(peerId)?.let { return it }
+        // Marked before the attempt is placed, so a copy waiting on [bulkUnderWay] never reads the gap as an attempt ended.
+        raising += peerId
+        scope.launch {
+            try {
+                offer(peerId, why = LinkWhy.BULK)
+            } finally {
+                raising -= peerId
+            }
+        }
+        return true
+    }
+
+    /**
+     * Whether the pair qualifies for a link [peerId] may raise for an attachment it holds (L-7-11): the contact may be
+     * offered one and a sig lane would carry the offer. Nothing of this end's own state counts — its network, its
+     * switch, its backoff: the holder raises on its own, and an asker that counts on a link that does not come only
+     * widens later, where one that does not count on one that comes takes a second copy.
+     */
+    suspend fun mayRaiseBulk(peerId: String): Boolean = peerId != selfId() && peers.mayOffer(peerId) && peers.canSignal(peerId)
+
+    /** Whether a free link to [peerId] is up, or an attempt to it is being made or answered: a waiting copy's answer. */
+    fun bulkUnderWay(peerId: String): Boolean =
+        freeLinkTo(peerId) || peerId in raising || attempts.containsKey(peerId) || peerId in answering
+
+    // [raiseBulk]'s answer without starting anything: true when a free link is up or an attempt is under way, false when
+    // none will come, null when one may start now.
+    @Suppress("ReturnCount") // a ladder of refusals, each sending the file over the radio at once
+    private suspend fun bulkVerdict(peerId: String): Boolean? {
+        if (bulkUnderWay(peerId)) return true
+        if (!enabled() || metered() || peerId == selfId()) return false
+        if (links.value.containsKey(peerId) || bulkHeldBack(peerId)) return false
+        if (!peers.mayOffer(peerId) || !peers.canSignal(peerId)) return false
+        return null
+    }
+
+    // Whether [peerId] waits before a [raiseBulk] offers it a link: its backoff, a decline (L-2-6) or a recent metered
+    // refusal of ours to it (L-7-11), or every link slot taken.
+    private fun bulkHeldBack(peerId: String): Boolean {
+        val now = clock()
+        return now < (nextTryAt[peerId] ?: 0L) ||
+            declined.containsKey(peerId) ||
+            meteredRefusals[peerId]?.let { now - it < METERED_RETRY_MS } == true ||
+            links.value.size + attempts.size >= LinkDemandPolicy.MAX_LINKS
+    }
+
+    /**
      * Offers [peerId] a link and runs the attempt to its outcome. [force] skips the backoff (the debug bridge's try);
      * [why] is what called for it, for the field log.
      */
@@ -380,13 +472,14 @@ class DirectLinks(
         val port = datagrams.open() ?: return finish(peerId, attempt, LinkOutcome.NO_PORT)
         val own = LinkGather.candidates(port, peers.stunUrls(), clock, random)
         val gatheredMs = clock() - started
+        val ownMetered = metered()
         // Crossed while it gathered: the contact's own offer was answered here, which supersedes this one, or is being.
         // Sent anyway, it would reach a contact whose link to us may be up by then, and cost it that link.
         if (synchronized(crossing) { attempt.answer.isCompleted || peerId in answering }) {
             port.close()
             return finish(peerId, attempt, LinkOutcome.SUPERSEDED)
         }
-        val offer = signal(LinkSignal.PHASE_OFFER, attempt.linkId, attempt.kOffer, own)
+        val offer = signal(LinkSignal.PHASE_OFFER, attempt.linkId, attempt.kOffer, own, ownMetered)
         val queued = peers.queuedAhead(peerId)
         if (!peers.send(peerId, offer)) {
             // Gathered, and then no spool took it: most likely its socket's queue was past the limit (an upload under
@@ -406,35 +499,67 @@ class DirectLinks(
             if (!superseded) record(peerId, true, outcome, null, null, clock() - started, own, why = why, sentMs = sentMs, queued = queued)
             return finish(peerId, attempt, outcome)
         }
-        log("link answer ← ${peerId.take(SHORT)} at ${clock() - started}ms")
-        if (answer.ph == LinkSignal.PHASE_DECLINE) {
-            // Its person has links off: nothing older than now is offered for again, and no backoff — this is not the
-            // network's doing, and the next thing worth a link asks once more.
+        log("link answer ← ${peerId.take(SHORT)} at ${clock() - started}ms${meteredTag(answer)}")
+        // Beside a radio, a link is made only free (L-7-11): a metered answer, or this end's network, ends it here.
+        val free = !(ownMetered || answer.m)
+        val refused = refusalOf(peerId, answer, free)
+        if (refused != null) {
             port.close()
             attempt.kOffer.fill(0)
-            declined[peerId] = clock()
-            record(
-                peerId,
-                true,
-                LinkOutcome.DECLINED,
-                null,
-                LinkNet.of(answer.nt),
-                clock() - started,
-                own,
-                why = why,
-                sentMs = sentMs,
-                queued = queued,
-            )
-            return finish(peerId, attempt, LinkOutcome.DECLINED)
+            answer.k.fill(0)
+            noteRefusal(peerId, refused, answer)
+            record(peerId, true, refused, null, LinkNet.of(answer.nt), clock() - started, own, why = why, sentMs = sentMs, queued = queued)
+            return finish(peerId, attempt, refused)
         }
         val (send, recv) = keys.derive(true, attempt.kOffer, answer.k, attempt.linkId, selfId(), peerId)
         attempt.kOffer.fill(0)
         answer.k.fill(0)
         val (session, socket) = session(peerId, port, send, recv, attempt.linkId, answer, own)
         val outcome =
-            run(peerId, session, socket, offerer = true, started, LinkNet.of(answer.nt), own, why = why, sentMs = sentMs, queued = queued)
+            run(
+                peerId,
+                session,
+                socket,
+                offerer = true,
+                started,
+                LinkNet.of(answer.nt),
+                own,
+                why = why,
+                sentMs = sentMs,
+                queued = queued,
+                free = free,
+            )
         return finish(peerId, attempt, outcome)
     }
+
+    // An offer to [peerId] refused before its punch: links off (L-2-6) — nothing older than now is offered for again, and
+    // no backoff, since this is not the network's doing and the next thing worth a link asks once more — or, beside a
+    // radio, a metered network (L-7-11), kept apart when it was the contact's.
+    private fun noteRefusal(
+        peerId: String,
+        outcome: LinkOutcome,
+        answer: LinkSignal,
+    ) {
+        when {
+            outcome == LinkOutcome.DECLINED -> declined[peerId] = clock()
+            answer.m -> meteredRefusals[peerId] = clock()
+        }
+    }
+
+    // How [answer] ends an offer to [peerId] before its punch, or null when it does not: METERED for a DECLINE that says
+    // so or an ANSWER whose link would not be [free] beside a radio (L-7-11), DECLINED for any other DECLINE (L-2-6).
+    private fun refusalOf(
+        peerId: String,
+        answer: LinkSignal,
+        free: Boolean,
+    ): LinkOutcome? =
+        when (answer.ph) {
+            LinkSignal.PHASE_DECLINE -> if (answer.m) LinkOutcome.METERED else LinkOutcome.DECLINED
+            LinkSignal.PHASE_ANSWER -> LinkOutcome.METERED.takeIf { !free && radioLinked(peerId) }
+            else -> null
+        }
+
+    private fun meteredTag(signal: LinkSignal): String = if (signal.m) " (metered)" else ""
 
     // Why [offer] would not start an attempt to [peerId] now, or null when it would.
     @Suppress("ReturnCount") // a ladder of refusals, each its own outcome
@@ -446,6 +571,8 @@ class DirectLinks(
         if (links.value[peerId]?.state?.value == LinkSession.State.UP) return LinkOutcome.UP
         if (peerId in answering) return LinkOutcome.BUSY
         if (!force && clock() < (nextTryAt[peerId] ?: 0L)) return LinkOutcome.BACKOFF
+        // Beside a radio a link is made only free (L-7-11): from a metered network, nothing to offer.
+        if (metered() && radioLinked(peerId)) return LinkOutcome.METERED
         if (!peers.mayOffer(peerId)) return LinkOutcome.NOT_QUALIFIED
         if (!peers.canSignal(peerId)) return LinkOutcome.NO_SIG
         return null
@@ -560,6 +687,9 @@ class DirectLinks(
         // An offer is the contact's word that its links are on: a decline of theirs is history.
         declined.remove(offererId)
         if (!enabled()) return passOn(offererId, offer)
+        // Read once for this answer: its `m`, the link's free stamp, and whether it is made at all beside a radio.
+        val ownMetered = metered()
+        if (ownMetered && radioLinked(offererId)) return passMetered(offererId, offer)
         // Two offers crossed: the lower id's stands. Ours stands — theirs is dropped, and they answer ours — whether ours
         // still waits or its link came up in the last [ANSWER_WAIT_MS]: theirs may have left before they answered ours,
         // and answering it would close the link they hold. Later, an offer is a link they lost, and replaces ours.
@@ -573,7 +703,7 @@ class DirectLinks(
         try {
             if (!mayAnswer(offererId)) return held(offererId, offer, LinkOutcome.BUDGET)
             ours?.answer?.complete(null)
-            answerNow(offererId, offer)
+            answerNow(offererId, offer, ownMetered)
         } finally {
             answering.remove(offererId)
         }
@@ -590,6 +720,20 @@ class DirectLinks(
         val decline = LinkSignal(LinkSignal.PHASE_DECLINE, offer.id.copyOf(), ByteArray(0), nt = datagrams.networkKind())
         val sent = peers.send(offererId, decline)
         held(offererId, offer, if (sent) LinkOutcome.DECLINED else LinkOutcome.NO_SIG)
+    }
+
+    // An offer from a contact a radio links, while this phone's network is metered: no link is made beside the radio
+    // (L-7-11). A DECLINE with `m` says so — the offerer stops at once, and its links stay on for anything else — within
+    // the same hourly budget as any decline; past it, nothing, and the offer waits out its answer.
+    private suspend fun passMetered(
+        offererId: String,
+        offer: LinkSignal,
+    ) {
+        if (!mayDecline(offererId)) return held(offererId, offer, LinkOutcome.METERED)
+        noteDecline(offererId)
+        val decline = LinkSignal(LinkSignal.PHASE_DECLINE, offer.id.copyOf(), ByteArray(0), nt = datagrams.networkKind(), m = true)
+        val sent = peers.send(offererId, decline)
+        held(offererId, offer, if (sent) LinkOutcome.METERED else LinkOutcome.NO_SIG)
     }
 
     // An offer this phone did not answer, recorded as its `link_try` line: no candidates offered, no time spent.
@@ -610,6 +754,7 @@ class DirectLinks(
     private suspend fun answerNow(
         offererId: String,
         offer: LinkSignal,
+        ownMetered: Boolean,
     ) {
         links.value[offererId]?.close(LinkSession.EndReason.LOCAL, sayBye = false)
         val started = clock()
@@ -619,7 +764,7 @@ class DirectLinks(
         val (send, recv) = keys.derive(false, offer.k, kAnswer, offer.id, offererId, selfId())
         offer.k.fill(0)
         val (session, socket) = session(offererId, port, send, recv, offer.id, offer, own)
-        val reply = signal(LinkSignal.PHASE_ANSWER, offer.id, kAnswer, own)
+        val reply = signal(LinkSignal.PHASE_ANSWER, offer.id, kAnswer, own, ownMetered)
         kAnswer.fill(0)
         session.start()
         if (!peers.send(offererId, reply)) {
@@ -627,7 +772,8 @@ class DirectLinks(
             record(offererId, false, LinkOutcome.NO_SIG, null, LinkNet.of(offer.nt), clock() - started, own)
             return
         }
-        run(offererId, session, socket, offerer = false, started, LinkNet.of(offer.nt), own, alreadyStarted = true)
+        val free = !ownMetered && !offer.m
+        run(offererId, session, socket, offerer = false, started, LinkNet.of(offer.nt), own, alreadyStarted = true, free = free)
     }
 
     @Suppress("LongParameterList") // the attempt's parts, each from a different step of it
@@ -663,13 +809,30 @@ class DirectLinks(
                     holdSilenceMs = FOREVER_MS,
                     dataIsUse = dataIsUse,
                     busy = { linkBusy(peerId) },
+                    onPathUpgrade = pathUpgraded(peerId),
                 )
             } else {
-                LinkSession(peerId, port, lane, targets, scope, clock, dataIsUse = dataIsUse, busy = { linkBusy(peerId) })
+                LinkSession(
+                    peerId,
+                    port,
+                    lane,
+                    targets,
+                    scope,
+                    clock,
+                    dataIsUse = dataIsUse,
+                    busy = { linkBusy(peerId) },
+                    onPathUpgrade = pathUpgraded(peerId),
+                )
             }
         // Before the session starts, so nothing the peer sends once the path is up is missed.
         return session to streams.open(session)
     }
+
+    // A link to [peerId] moved onto a path on this phone's network after it came up another way (L-4-3).
+    private fun pathUpgraded(peerId: String): (LinkCandidate.Kind?, LinkCandidate.Kind, Long) -> Unit =
+        { from, to, afterMs ->
+            log("link ${peerId.take(SHORT)}: path ${LinkPath.valueOf(to.name)} (from ${pathOf(from)}, +${afterMs}ms)")
+        }
 
     // A stream no transport takes yet (Phase 0): read and counted, so the peer's writes are never held at the window.
     private fun drain(
@@ -701,6 +864,7 @@ class DirectLinks(
         why: LinkWhy? = null,
         sentMs: Long? = null,
         queued: Long? = null,
+        free: Boolean = false,
     ): LinkOutcome {
         if (!alreadyStarted) session.start()
         val outcome = session.awaitOutcome()
@@ -710,12 +874,19 @@ class DirectLinks(
             if (!offerer) noteEmpty(peerId)
             return LinkOutcome.NO_PATH
         }
-        val path = outcome.kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
+        val path = pathOf(outcome.kind)
         record(peerId, offerer, LinkOutcome.UP, path, peerNet, clock() - startedAt, own, outcome.rttMs, why, sentMs, queued)
         val upAt = clock()
         sockets[peerId] = socket
         if (offerer) offeredUpAt[peerId] = upAt else offeredUpAt.remove(peerId)
         declined.remove(peerId)
+        // Stamped before the link is listed, so its transport never sees it up and not yet free.
+        if (free) {
+            freeUp[peerId] = session
+            meteredRefusals.remove(peerId)
+        } else {
+            freeUp.remove(peerId)
+        }
         _links.update { it + (peerId to session) }
         onStream?.invoke(peerId, socket, offerer) ?: drain(peerId, socket)
         scope.launch { holdUntilClosed(peerId, session, socket, offerer, upAt) }
@@ -735,11 +906,13 @@ class DirectLinks(
         // Stamped before the link leaves [links], so [lastUpAt] never reads an older end in between.
         if (session.endedBusy && reason in LOST_PATH) pathLost(peerId, reason) else ended(peerId)
         sockets.remove(peerId, socket)
+        freeUp.remove(peerId, session)
         _links.update { if (it[peerId] === session) it - peerId else it }
         val (bytesIn, bytesOut) = session.bytes()
         val midFile = if (session.endedBusy) " mid-file" else ""
-        log("link end ${peerId.take(SHORT)} $reason$midFile after ${clock() - upAt}ms in=$bytesIn out=$bytesOut")
-        fieldLog.record(FieldEvent.LinkEnd(peerId, offerer, reason, clock() - upAt, bytesIn, bytesOut))
+        val path = pathOf(session.pathKind)
+        log("link end ${peerId.take(SHORT)} $reason$midFile after ${clock() - upAt}ms in=$bytesIn out=$bytesOut on $path")
+        fieldLog.record(FieldEvent.LinkEnd(peerId, offerer, reason, clock() - upAt, bytesIn, bytesOut, path))
         if (!offerer && !session.carriedData) noteEmpty(peerId)
     }
 
@@ -827,7 +1000,8 @@ class DirectLinks(
         sentMs: Long? = null,
         queued: Long? = null,
     ) {
-        log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms ${why ?: ""}")
+        val rtt = rttMs?.let { " rtt ${it}ms" } ?: ""
+        log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms$rtt ${why ?: ""}")
         lastTries[peerId] = Try(clock(), offerer, outcome, path, peerNet, ms, rttMs, why)
         fieldLog.record(
             FieldEvent.LinkTry(
@@ -854,12 +1028,14 @@ class DirectLinks(
         linkId: ByteArray,
         k: ByteArray,
         own: List<LinkCandidate>,
+        meteredNow: Boolean,
     ) = LinkSignal(
         ph = phase,
         id = linkId.copyOf(),
         k = k.copyOf(),
         c = own.map { LinkCand(it.address, it.port, it.kind.code) },
         nt = datagrams.networkKind(),
+        m = meteredNow,
     )
 
     private fun bytes(n: Int) = ByteArray(n).also(random::nextBytes)
@@ -880,6 +1056,13 @@ class DirectLinks(
         /** How many DECLINEs a contact gets from this phone an hour (L-2-6): its offers past that pass unanswered. */
         const val DECLINES_PER_HOUR = 6
 
+        /**
+         * How long an attachment's [raiseBulk] leaves a contact alone after it refused a link beside a radio as metered
+         * (L-7-11): a burst of photos sends one offer, not one each, and a network that stopped being metered is tried
+         * again within this.
+         */
+        const val METERED_RETRY_MS = 10 * 60_000L
+
         // The ends of a link that lost its path, rather than closed: mid-file, it had no chance at the file.
         private val LOST_PATH = setOf(LinkSession.EndReason.SILENT, LinkSession.EndReason.ROUTE)
 
@@ -895,6 +1078,9 @@ class DirectLinks(
         // A quiet link's keepalive and silence bound: never, within any trial's life.
         private const val FOREVER_MS = 365L * 24 * 60 * 60_000L
         private const val SHORT = 6
+
+        /** The path a target of [kind] is, or [LinkPath.PEER_REFLEXIVE] for an address the peer never listed. */
+        fun pathOf(kind: LinkCandidate.Kind?): LinkPath = kind?.let { LinkPath.valueOf(it.name) } ?: LinkPath.PEER_REFLEXIVE
 
         /** [cand] as a candidate this phone may send to, or null when its kind is unknown. */
         fun candidate(cand: LinkCand): LinkCandidate? = LinkCandidate.Kind.fromCode(cand.t)?.let { LinkCandidate(cand.a, cand.p, it) }

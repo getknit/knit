@@ -819,3 +819,78 @@ carried nothing for the file, and the link's having been up then kept a later ta
   network is unmetered.
 - The lab composite has no high-throughput child, so its fast-only copy takes the composite's no-fast-plane branch to
   the link; `sendFastOnly`'s link branch is pinned by `CompositeMeshTransportTest` alone.
+
+## Amendment 2026-10-31 — beside a radio, a link carries attachments only when neither end is metered
+
+Status: draft (2026-10-31), for the maintainer's call. GitLab #236. Amends `docs/DIRECT_LINKS.md` L-2-3, L-7-7, L-7-8 and
+L-7-9 ("while no radio links them"), and adds L-2-7, L-4-3 and L-7-11. Built and checked on the JVM and in the lab
+(`LinkBesideRadioLabTest`'s five scenarios; `CompositeMeshTransportTest`'s free-link cases, among them
+`aLargeAttachmentBesideBluetoothRaisesAFreeLinkAndRidesItOnceItIsUp` and
+`aRaisedLinkThatCannotComeHandsTheAttachmentToBluetoothBeforeTheGraceRunsOut`; `DirectLinksTest`'s beside-a-radio
+cases; `LinkSessionTest`'s path-upgrade cases; `LinkBesideRadioLabTest.anAskerWaitsOutAHoldersLinkBesideTheRadioBeforeAskingAnotherHolder`; `BlobExchangeTest`'s `aBlindAskOfAHolderThatMayRaiseAFreeLinkWaitsOutItsLinkWaitBeforeTheRoundWidens`,
+`aFreeLinkThatRefusesTheBlobIsNoFastRouteForIt` and `aFreeLinkComingUpBesideARadioAsksItsPeerFastOnlyForTheBlobItCarries`;
+`BlobHolderQueryTest.aCarrierWhoseFreeLinkRefusesTheBlobRidesTheRadioAndParksBehindItsFeed`; the `linkSignalDeclineMetered`
+vector). Device trial owed.
+
+The gap: two contacts that a radio links and no Wi-Fi Aware carries (a phone without it, or with it off) moved every
+attachment over Bluetooth at 5–10 KB/s, minutes per photo, while a link between them moves 5–6 Mbit/s (the 2026-10-31
+trial). Nothing used one: the demand skips a radio-linked peer, the composite routes a file to such a peer over the radio
+whatever else holds it, and a holder refuses a fast-only ask from it. The issue proposed "same LAN only": keep a link
+for files only when it came up `HOST`. The 2026-10-31 trial ruled that test out: two phones on one Wi-Fi came up
+`V4_REFLEXIVE`, a hairpin through the router, as often as `HOST`, since both probes go out in one round and come back
+within milliseconds of each other. And `HOST` also covers 100.64/10 (carrier NAT, Tailscale), while routed subnets and
+bridged WANs on one site cannot be told from a contact across town.
+
+- **The test is the data, not the topology.** What "same LAN" was to protect is cellular data. Each signal carries `m`
+  when its sender's network is metered as it signs (L-2-7, absent otherwise, so no byte moves on an unmetered network);
+  a link is **free** when neither its OFFER nor its ANSWER carried it. Read once there and never again for that link,
+  since a new default network closes the link anyway (the network-change amendment): a meter flip mid-link is never an
+  edge, as the fast-route amendment reads it for asks.
+- **Beside a radio, only a free link, and only for attachments.** The radio carries every frame for nothing, so a link
+  to a peer a radio links is made only free: an end that sees the radio and is metered answers with a DECLINE carrying
+  `m` — never read as links off, so the contact's other links are untouched — and an offerer that finds the answer, or
+  its own network, metered ends the attempt before its punch; both record `METERED`. A link to a peer no radio links is
+  made as before, metered or not.
+- **The sender raises one for a large attachment** (`why` BULK, `DirectLinks.raiseBulk`, the composite's
+  `raiseFreeLink`): 128 KiB or more, after Wi-Fi Aware will not arm, for a blob the link would carry to that peer, at
+  most one attempt per contact, within the two-link cap, not while metered, and not within 10 min of the contact's last
+  metered refusal (`METERED_RETRY_MS`), so a burst of photos costs one offer. The file waits up to 10 s for the link,
+  detached from the inbound dispatch as a Wi-Fi Aware wait is, and the wait ends as soon as the attempt ends without one
+  (a metered refusal, no path: `MeshTransport.freeLinkRaising`), so the radio takes the file then. The asker waits as
+  long before it widens to another holder (`BlobExchange`'s `Candidate.linkMay`), or a carrier's Bluetooth copy would
+  cross beside the link's. It counts on the pair alone (`MeshTransport.freeLinkMay`: the pair qualifies and the link
+  would carry the blob), never on its own network, switch or backoff: a holder raises from its own state, and an asker
+  that waits too long only widens later, where one that waits too short takes a second copy. A metered phone never
+  offers beside a radio, its demand resting the contact as for any refusal that sent nothing.
+- **The receiver raises one for a want over its limit** (`why` WANT, at once, without the minute's wait): only a want
+  held for a fast route (`MeshManager.attachmentFastHeld`), which the radio cannot carry; a plain want is the sender's
+  to raise for.
+- **Per blob, not per peer.** A link carries only blobs addressed to its peer (L-7-4), so a free link is a fast route
+  for a blob only when it admits that blob (`BlobExchange.besideRadio`, `ridesLink`; the composite's `freeLinkFor`): a
+  carrier's pull rides the radio and parks behind its feed as before, and a copy the link refuses goes to the radio.
+- **The punch prefers this phone's own network** (L-4-3). A link still goes up at its first ACK, then probes its
+  preferred targets — a host one, or an IPv6 one inside this network's prefix — for one second more and moves to the
+  first that answers, and on one it follows a datagram from elsewhere only after 3 s of nothing from a preferred one.
+  Without it, the endpoint followed whichever late ACK came last, so `link_try`'s `path`, the first answer, need not
+  have been the path data took; `link_end` now names that one.
+
+**The costs and the traps:**
+
+- A cellular router, a pocket hotspot or a satellite link that reports itself unmetered still sends the bytes over
+  cellular when the path leaves the LAN. The path preference narrows that to the case where the LAN does not answer;
+  it does not close it. The same gap the fast-route amendment accepted for asks.
+- Two ends can see the radio differently: an answerer that does not see it answers a metered `m`, punches, and the
+  offerer that does drops it, so the answerer's punch runs out its ten seconds and counts against the contact's answer
+  budget. Bounded by the budget and by the 10-min retry.
+- An older experiment build reads a DECLINE with `m` as links off and offers again only for something newer. Links run
+  only between builds that advertise `CAP_INET_LINK`, which no release does.
+- A copy already streaming over Bluetooth when a link comes up stays there: the holder refuses a re-ask for a copy in
+  flight (ADR 2026-09.4tx5). A large file that started slowly finishes slowly.
+- An Internet link now probes the peer's host candidates for one second after it comes up, about five probes each: a
+  private address on this LAN that happens to be another device's gets those few sealed datagrams.
+- The 10 s grace was measured for Wi-Fi Aware; the `file route: … after Nms` lines give a link's real setup time, from
+  which a trial sizes it.
+- An asker whose own links are held off (low-power mode, a pause, metered) still waits a link's grace on a holder that
+  may raise one: a later widening when that holder never serves.
+- The offer still rides a relay's signal lane (L-2-2): a pair with no shared relay has no link beside the radio either
+  (GitLab #237).

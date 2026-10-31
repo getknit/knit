@@ -89,6 +89,13 @@ class DirectLinkTransport(
     private val onLinkUp: (peerId: String) -> Unit = {},
     // A live call's hold on its link to a peer (`holdLink`, a walkie's): true while one is held. The links decide it.
     private val onHold: (peerId: String) -> Boolean = { false },
+    // Whether the link to a peer was made free (`DirectLinks.freeLinkTo`, L-7-11): stamped before the link is adopted.
+    private val freeLink: (peerId: String) -> Boolean = { false },
+    // An attachment's ask for a free link beside a radio (`DirectLinks.raiseBulk`), whether the pair qualifies for one
+    // (`DirectLinks.mayRaiseBulk`), and whether one is up or being raised (`DirectLinks.bulkUnderWay`). The links decide.
+    private val onBulk: suspend (peerId: String) -> Boolean = { false },
+    private val bulkMay: suspend (peerId: String) -> Boolean = { false },
+    private val bulkRaising: (peerId: String) -> Boolean = { false },
     private val handshakeMs: Long = HANDSHAKE_MS,
     private val log: (String) -> Unit = {},
 ) : MeshTransport {
@@ -130,6 +137,10 @@ class DirectLinkTransport(
 
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors: StateFlow<Set<Peer>> = _neighbors.asStateFlow()
+
+    // The adopted links that were made free, updated with [neighbors], so a peer is named here only once a file can go.
+    private val _freeLinked = MutableStateFlow<Set<String>>(emptySet())
+    override val freeLinked: StateFlow<Set<String>> = _freeLinked.asStateFlow()
 
     // The composite never reads it ([viaInternet]); the switch around this plane reads Unavailable while it holds it off.
     override val health: StateFlow<TransportHealth> = MutableStateFlow(TransportHealth.Healthy)
@@ -309,6 +320,7 @@ class DirectLinkTransport(
 
     private fun publish() {
         _neighbors.value = links.values.mapTo(HashSet()) { it.peer }
+        _freeLinked.value = links.keys.filterTo(HashSet(), freeLink)
     }
 
     override suspend fun send(
@@ -379,6 +391,28 @@ class DirectLinkTransport(
     // A walkie's hold (docs/VOICE_CALLS.md C-3.11-8): the link held through the call's pauses, or raised, while the plane
     // runs; the radios' own holds are their children's, asked beside this one.
     override fun holdLink(nodeId: String): Boolean = running && onHold(nodeId)
+
+    // An attachment beside a radio (L-7-11): a free link, held or raised, only for a blob the link would carry to [nodeId]
+    // — one addressed to it, as [sendFile] admits — so no link is raised for a copy it would refuse.
+    override suspend fun raiseFreeLink(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = running && blobView(nodeId)?.admitsBlob(blobKey) == true && onBulk(nodeId)
+
+    // Read whether the plane runs or not: an asker in low-power mode is still asked over a link it will not answer, and
+    // waits as long as the holder does (L-7-11).
+    override suspend fun freeLinkMay(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = blobView(nodeId)?.admitsBlob(blobKey) == true && bulkMay(nodeId)
+
+    override fun freeLinkRaising(nodeId: String): Boolean = bulkRaising(nodeId)
+
+    // The pair's rule for [peer] whether or not a link is up: what a link to it would carry.
+    private suspend fun blobView(peer: String): LinkView? {
+        if (self == null) self = selfId()
+        return view(peer)
+    }
 
     // A frame crossed the link to or from [peerId]. Only a content frame is use. A blob control frame is the exchange's
     // bookkeeping, which re-asks on its own rounds and would keep a link open for a blob nobody can supply: neither use nor

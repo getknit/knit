@@ -64,6 +64,13 @@ class FakeLinkNet(
         var darkAfter: Long? = null // bytes it carries, either way, before it goes dark
     }
 
+    /**
+     * Whether the LAN between phones behind one NAT carries nothing — an access point isolating its clients — while the
+     * NAT still turns a datagram sent to its own public address back in (a hairpin).
+     */
+    @Volatile
+    var lanDown = false
+
     private val nats = ArrayList<Nat4>()
     private val ports = ArrayList<FakePort>()
     private val stun = HashMap<String, ByteArray>() // name → address
@@ -229,11 +236,7 @@ class FakeLinkNet(
             return true
         }
         carry(from.attachment, data.size)
-        // The LAN: another phone behind the same NAT, reached by its private address.
-        ports.firstOrNull { it !== from && it.gateway === from.gateway && it.lan.contentEquals(address) && it.localPort == port }?.let {
-            deliver(it, Datagram(data, from.lan, from.localPort))
-            return true
-        }
+        if (onLan(from, address, port, data)) return true
         val (srcAddr, srcPort) = outbound(from, address, port)
         val gateway = nats.firstOrNull { it.external.contentEquals(address) } ?: return true
         val to =
@@ -243,6 +246,21 @@ class FakeLinkNet(
                 gateway.inbound[port]?.takeIf { !expired(gateway, port) && admits(gateway, port, srcAddr, srcPort) }?.first
             }
         to?.let { deliver(it, Datagram(data, srcAddr, srcPort)) }
+        return true
+    }
+
+    // The LAN: another phone behind the same NAT, reached by its private address — delivered unless the LAN is [lanDown].
+    // Whether [address]:[port] was such a phone.
+    private fun onLan(
+        from: FakePort,
+        address: ByteArray,
+        port: Int,
+        data: ByteArray,
+    ): Boolean {
+        val to =
+            ports.firstOrNull { it !== from && it.gateway === from.gateway && it.lan.contentEquals(address) && it.localPort == port }
+                ?: return false
+        if (!lanDown) deliver(to, Datagram(data, from.lan, from.localPort))
         return true
     }
 

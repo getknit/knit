@@ -49,6 +49,9 @@ class DirectLinksTest {
         var sendRefused = false
         var queued: Long? = null
         var busy = false // a transport moving a file over the link
+        var metered = false // this phone's network
+        var radio = false // a radio links it to the other phone
+        val sent = mutableListOf<LinkSignal>() // every signal it handed the spools
     }
 
     private fun TestScope.pair(
@@ -75,6 +78,7 @@ class DirectLinksTest {
                     ): Boolean {
                         if (!me.signalOk || me.sendRefused) return false
                         me.signals++
+                        me.sent += signal
                         val bytes = checkNotNull(LinkSignals.encode(signal)) { "a well-formed signal" }
                         scope.launch {
                             delay(SIG_MS)
@@ -91,6 +95,8 @@ class DirectLinksTest {
                     enabled = { me.enabled },
                     scope = scope,
                     declining = { me.declining },
+                    metered = { me.metered },
+                    radioLinked = { me.radio },
                     clock = { testScheduler.currentTime },
                     linkBusy = { me.busy },
                     fieldLog = FieldRecorder { me.lines += it },
@@ -139,6 +145,134 @@ class DirectLinksTest {
             assertFalse(tries(b).single().out)
         }
 
+    // --- Beside a radio, a link only free (L-2-7, L-7-11, #236) ---
+
+    @Test
+    fun aLinkIsFreeAtBothEndsOnlyWhenNeitherEndsNetworkIsMeteredAndEachSignalSaysWhich() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.ADDRESS_RESTRICTED, v4(91, 5, 6, 7)))
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            assertTrue(a.links.freeLinkTo(b.id) && b.links.freeLinkTo(a.id))
+            assertEquals(listOf(false), (a.sent + b.sent).map { it.m }.distinct())
+        }
+
+    @Test
+    fun withNoRadioBetweenThemALinkToAMeteredContactIsMadeAsBeforeButIsNotFree() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.ADDRESS_RESTRICTED, v4(91, 5, 6, 7)))
+            b.metered = true
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            b.links.links.first { a.id in it }
+            assertFalse(a.links.freeLinkTo(b.id))
+            assertFalse(b.links.freeLinkTo(a.id))
+            assertEquals(listOf(LinkSignal.PHASE_ANSWER to true), b.sent.map { it.ph to it.m })
+            // An attachment's raise finds a link up that is not free: it raises no other, and the radio carries the file.
+            assertFalse(a.links.raiseBulk(b.id))
+            assertEquals(1, a.signals)
+        }
+
+    @Test
+    fun besideARadioAMeteredContactDeclinesWithMAtOnceAndItsLinksStayOnForAnythingElse() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val home = v4(81, 2, 3, 4)
+            val away = v4(91, 5, 6, 7)
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, away))
+            a.radio = true
+            b.radio = true
+            b.metered = true
+            val started = testScheduler.currentTime
+            assertEquals(LinkOutcome.METERED, a.links.offer(b.id, why = LinkWhy.BULK))
+            assertTrue("declined only after the answer wait", testScheduler.currentTime - started < DirectLinks.ANSWER_WAIT_MS)
+            assertEquals(LinkSignal.PHASE_DECLINE to true, b.sent.single().let { it.ph to it.m })
+            assertEquals(LinkOutcome.METERED to LinkWhy.BULK, tries(a).single().let { it.outcome to it.why })
+            assertEquals(LinkOutcome.METERED, tries(b).single().outcome)
+            assertNotNull(a.links.meteredAt(b.id))
+            assertEquals("not a decline: its links are on", null, a.links.declinedAt(b.id))
+            assertEquals("nothing punched", 0 to 0, net.sentOut(home) to net.sentOut(away))
+            // The radio gone, its links answer as before.
+            a.radio = false
+            b.radio = false
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            assertFalse(a.links.freeLinkTo(b.id))
+        }
+
+    @Test
+    fun besideARadioAnOffererDropsAMeteredAnswerBeforeItsPunch() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val home = v4(81, 2, 3, 4)
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            // Only the offerer sees the radio yet: the contact answers, metered, and the offerer stops there.
+            a.radio = true
+            b.metered = true
+            assertEquals(LinkOutcome.METERED, a.links.offer(b.id))
+            assertNotNull(a.links.meteredAt(b.id))
+            assertEquals("no probe left this end", 0, net.sentOut(home))
+            assertTrue(b.id !in a.links.links.value)
+        }
+
+    @Test
+    fun besideARadioAnOfferFromAMeteredNetworkEndsBeforeItsPunchAndBlamesNoContact() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val home = v4(81, 2, 3, 4)
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, home), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            a.radio = true
+            a.metered = true
+            // Refused before it gathers, a forced try too: nothing is signed, and the demand rests the contact.
+            assertEquals(LinkOutcome.METERED, a.links.offer(b.id, force = true))
+            assertEquals(LinkOutcome.METERED, a.links.offer(b.id, why = LinkWhy.WANT))
+            assertTrue(a.sent.isEmpty())
+            assertEquals(null, a.links.meteredAt(b.id))
+            assertEquals(0, net.sentOut(home))
+            // Off the radio, the same network offers as before.
+            a.radio = false
+            assertEquals(LinkOutcome.UP, a.links.offer(b.id))
+            assertEquals(listOf(true), a.sent.map { it.m })
+        }
+
+    @Test
+    fun aBulkRaiseStartsOneFreeLinkAndRefusesWhileMeteredOrSoonAfterAMeteredRefusal() =
+        runTest {
+            val net = FakeLinkNet().withStun()
+            val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
+            a.radio = true
+            b.radio = true
+            a.metered = true
+            assertFalse("this phone metered", a.links.raiseBulk(b.id))
+            assertTrue("the pair qualifies, whatever this end's network: an asker waits on it", a.links.mayRaiseBulk(b.id))
+            a.metered = false
+            a.qualifies = false
+            assertFalse("not a contact a link may be offered", a.links.raiseBulk(b.id))
+            assertFalse(a.links.mayRaiseBulk(b.id))
+            a.qualifies = true
+            assertEquals(0, a.signals)
+            assertFalse(a.links.bulkUnderWay(b.id))
+
+            b.metered = true
+            assertTrue(a.links.raiseBulk(b.id))
+            assertTrue("under way before the attempt is placed", a.links.bulkUnderWay(b.id))
+            assertTrue("one attempt under way", a.links.raiseBulk(b.id))
+            testScheduler.advanceTimeBy(DirectLinks.ANSWER_WAIT_MS)
+            assertEquals(1, a.signals)
+            assertEquals(LinkOutcome.METERED to LinkWhy.BULK, tries(a).single().let { it.outcome to it.why })
+            assertFalse("ended with no link", a.links.bulkUnderWay(b.id))
+            assertFalse("a burst sends one offer", a.links.raiseBulk(b.id))
+
+            b.metered = false
+            testScheduler.advanceTimeBy(DirectLinks.METERED_RETRY_MS)
+            assertTrue(a.links.raiseBulk(b.id))
+            a.links.links.first { b.id in it }
+            assertTrue(a.links.freeLinkTo(b.id))
+            assertEquals(null, a.links.meteredAt(b.id))
+            assertTrue("up and free: no new offer", a.links.raiseBulk(b.id))
+            assertEquals(2, a.signals)
+        }
+
     @Test
     fun aContactInLowPowerOrPausedIsNeverAnsweredAndWaitsOutItsBackoff() =
         runTest {
@@ -166,7 +300,7 @@ class DirectLinksTest {
             b.declining = true
             val started = testScheduler.currentTime
             assertEquals(LinkOutcome.DECLINED, a.links.offer(b.id, why = LinkWhy.FILE))
-            assertTrue("waited out the answer", testScheduler.currentTime - started < DirectLinks.ANSWER_WAIT_MS)
+            assertTrue("declined only after the answer wait", testScheduler.currentTime - started < DirectLinks.ANSWER_WAIT_MS)
             assertNotNull(a.links.declinedAt(b.id))
             val mine = tries(a).single()
             assertEquals(LinkOutcome.DECLINED to LinkWhy.FILE, mine.outcome to mine.why)

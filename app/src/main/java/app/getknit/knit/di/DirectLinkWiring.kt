@@ -108,6 +108,11 @@ private fun directLinkGraph(): Module =
                 onLinkUp = { peer -> getKoin().getOrNull<MeshManager>()?.onDirectLinkUp(peer) },
                 // A walkie's hold (C-3.11-8), resolved late like the rest: a link only for a peer the radios have no path to.
                 onHold = { peer -> walkieHold(peer) },
+                // Free links beside a radio (L-7-11), the links resolved late like the rest.
+                freeLink = { peer -> getKoin().getOrNull<DirectLinks>()?.freeLinkTo(peer) ?: false },
+                onBulk = { peer -> getKoin().getOrNull<DirectLinks>()?.raiseBulk(peer) ?: false },
+                bulkMay = { peer -> getKoin().getOrNull<DirectLinks>()?.mayRaiseBulk(peer) ?: false },
+                bulkRaising = { peer -> getKoin().getOrNull<DirectLinks>()?.bulkUnderWay(peer) ?: false },
                 log = { Log.d(TAG, it) },
             )
         }
@@ -137,6 +142,10 @@ private fun Module.directLinks() =
                 scope = scope,
                 // The person's switch off: a contact's offer gets a DECLINE (L-2-6); low-power and a pause say nothing.
                 declining = { !on.value },
+                // Each signal's `m` and each link's free stamp (L-2-7, L-7-11), and the radios a link beside is made
+                // free for: the composite resolved late, as the demand does.
+                metered = get<InternetGate>()::isMetered,
+                radioLinked = { getKoin().get<MeshTransport>().radioLinked(it) },
                 clock = System::currentTimeMillis,
                 // Each up link's stream goes to the transport, the offerer writing the first HELLO.
                 onStream = { peer, socket, offerer -> get<DirectLinkTransport>().adopt(peer, socket, offerer) },
@@ -174,6 +183,8 @@ private fun Module.linkDemand() =
                 groups::find,
                 stuck = { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) },
                 wantedSince = { _, hash -> getKoin().get<MeshManager>().attachmentWantedSince(hash) },
+                // A want held for a fast route may call for a link beside a radio (L-7-11); a plain one never does.
+                fastHeld = { getKoin().get<MeshManager>().attachmentFastHeld(it) },
             )
         LinkDemand(
             pending = { since, until -> pending.between(identity.nodeId(), since, until) },
@@ -188,6 +199,7 @@ private fun Module.linkDemand() =
             // The sender's proof of a photo the link carried because no spool would take it (L-7-7, ADR 2026-10.vy27).
             prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
             declinedAt = links::declinedAt,
+            meteredAt = links::meteredAt,
             idleSince = links::idleSince,
             yieldLink = { peer -> links.close(peer, LinkSession.EndReason.YIELDED) },
         ).also { it.start() }

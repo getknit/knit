@@ -46,14 +46,38 @@ class LabInternet {
         fun move(nat: FakeLinkNet.Nat) = network.move(nat, address())
     }
 
-    /** A phone behind a NAT of [nat] at a public address no other node shares. */
+    /**
+     * One home network several nodes can join ([phone]'s [lan]): one NAT at one public address, and one LAN behind it on
+     * which [FakeLinkNet] routes the nodes' host candidates and hairpins their reflexive ones.
+     */
+    class Lan internal constructor(
+        internal val external: ByteArray,
+    )
+
+    /** A home network of its own: a public address no node holds yet. */
+    fun lan(): Lan = Lan(address())
+
+    /**
+     * Whether every [Lan]'s access point isolates its clients ([FakeLinkNet.lanDown]): their host candidates answer
+     * nothing, while their NATs still hairpin.
+     */
+    var lanDown: Boolean
+        get() = net.lanDown
+        set(value) {
+            net.lanDown = value
+        }
+
+    /** A phone behind a NAT of [nat]: on [lan], with the nodes already there, or at a public address no other node shares. */
     @Synchronized
-    fun phone(nat: FakeLinkNet.Nat): Phone {
+    fun phone(
+        nat: FakeLinkNet.Nat,
+        lan: Lan? = null,
+    ): Phone {
         val streams =
             LinkStream { session ->
                 LinkStream.arq(scope) { System.nanoTime() / NANOS_PER_MS }.open(session).also { opened += it as LinkArq }
             }
-        return Phone(net.phone(nat, address()), streams)
+        return Phone(net.phone(nat, lan?.external ?: address()), streams)
     }
 
     @Synchronized

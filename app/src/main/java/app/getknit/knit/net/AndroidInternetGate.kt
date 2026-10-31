@@ -52,10 +52,14 @@ class AndroidInternetGate(
 
     override fun isOnline(): Boolean = currentNetwork() != null
 
-    /** One address this phone holds on a network: its raw bytes (4 or 16), and whether it is an IPv6 temporary one. */
+    /**
+     * One address this phone holds on a network: its raw bytes (4 or 16), whether it is an IPv6 temporary one, and the
+     * length of its network's prefix — which peers are on the same link.
+     */
     class OwnAddress(
         val bytes: ByteArray,
         val temporary: Boolean,
+        val prefixLength: Int = 0,
     )
 
     /**
@@ -67,7 +71,9 @@ class AndroidInternetGate(
         val properties = connectivity?.getLinkProperties(network) ?: return emptyList()
         return properties.linkAddresses
             .filter { it.flags and OsConstants.IFA_F_DEPRECATED == 0 }
-            .map { OwnAddress(it.address.address, temporary = it.flags and OsConstants.IFA_F_TEMPORARY != 0) }
+            .map {
+                OwnAddress(it.address.address, temporary = it.flags and OsConstants.IFA_F_TEMPORARY != 0, prefixLength = it.prefixLength)
+            }
     }
 
     override fun routeKind(): InternetGate.RouteKind {

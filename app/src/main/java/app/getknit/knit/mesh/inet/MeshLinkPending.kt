@@ -20,6 +20,10 @@ import app.getknit.knit.data.group.GroupMembersStore
  * (a chat's link, say, closed by a move to Wi-Fi, `ROUTE`). The row still waits [LinkDemandPolicy.WANT_WAIT_MS] from
  * that time, a tap's too: the sender's own offer or a radio may bring it first. A want is still read only for a message
  * that arrived within [LinkDemandPolicy.FILE_WINDOW_MS], so a tap on a DM older than that raises no link.
+ *
+ * A wanted attachment held for a fast route ([fastHeld]: over the person's download limit, with no fast holder) is marked
+ * [LinkDemandPolicy.Pending.beside]: the one row that may call for a link to a contact a radio links too (L-7-11), since
+ * the radio may not carry it and a free link may.
  */
 class MeshLinkPending(
     private val messages: MessageRepository,
@@ -31,6 +35,8 @@ class MeshLinkPending(
     // Since when we have wanted a contact's DM attachment in a way a link may carry, holding none of it, or null: the
     // receiving end's trigger.
     private val wantedSince: suspend (peerId: String, hash: String) -> Long? = { _, _ -> null },
+    // Whether that want is held for a fast route (`MeshManager.attachmentFastHeld`): its row may go beside a radio.
+    private val fastHeld: suspend (hash: String) -> Boolean = { false },
 ) {
     /**
      * The rows in [since]..[until] that call for a link, one per (contact, message): our unticked messages over the last
@@ -52,7 +58,9 @@ class MeshLinkPending(
                 messages
                     .peerDmAttachmentsArrivedBetween(me, since, until)
                     .mapNotNull { row ->
-                        wantedSince(row.peerId, row.hash)?.let { LinkDemandPolicy.Pending(row.peerId, maxOf(row.sentAt, it), LinkWhy.WANT) }
+                        wantedSince(row.peerId, row.hash)?.let {
+                            LinkDemandPolicy.Pending(row.peerId, maxOf(row.sentAt, it), LinkWhy.WANT, beside = fastHeld(row.hash))
+                        }
                     }
         val posts = messages.ownGroupPostsBetween(me, recent, until)
         if (posts.isEmpty()) return dms + files

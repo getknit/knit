@@ -773,6 +773,7 @@ sealed interface FieldEvent {
         val lifeMs: Long,
         val bytesIn: Long,
         val bytesOut: Long,
+        val path: Enum<*>? = null,
     ) : FieldEvent {
         override val kind get() = "link_end"
 
@@ -783,6 +784,7 @@ sealed interface FieldEvent {
             out.num("life", lifeMs)
             out.num("in", bytesIn)
             out.num("outBytes", bytesOut)
+            path?.let { out.enum("path", it) }
         }
     }
 

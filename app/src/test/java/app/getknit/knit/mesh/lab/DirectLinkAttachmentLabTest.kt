@@ -346,7 +346,8 @@ class DirectLinkAttachmentLabTest {
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { alice.deferred() },
             )
             assertEquals("pushed while the link was up: ${spool.chunksPut}", 0L, alice.pushed())
-            assertTrue("bob's asks were not parked", link.heldFrom(bob) > 0)
+            // Bob sends from his own coroutines once he has decrypted: Alice's deferral, made at her send, can come first.
+            lab.await(1) { link.heldFrom(bob) }
 
             lab.cutDirectLink(alice, bob)
             val cutAt = System.nanoTime()
