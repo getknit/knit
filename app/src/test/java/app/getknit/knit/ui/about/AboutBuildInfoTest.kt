@@ -108,8 +108,9 @@ class AboutBuildInfoTest {
     @Test
     fun aBitWithNoNameIsNamedByItsValue() {
         assertEquals(
-            listOf("CAP_GROUPS" to 0x2L, "0x20000" to 0x20000L),
-            capabilityBits(Protocol.CAP_GROUPS or 0x20000L),
+            // Bit 62: capability bits are appended from the bottom, so no named bit ever reaches it.
+            listOf("CAP_GROUPS" to 0x2L, "0x4000000000000000" to (1L shl 62)),
+            capabilityBits(Protocol.CAP_GROUPS or (1L shl 62)),
         )
     }
 

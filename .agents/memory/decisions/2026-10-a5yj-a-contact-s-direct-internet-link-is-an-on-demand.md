@@ -830,7 +830,17 @@ L-7-9 ("while no radio links them"), and adds L-2-7, L-4-3 and L-7-11. Built and
 cases; `LinkSessionTest`'s path-upgrade cases; `LinkBesideRadioLabTest.anAskerWaitsOutAHoldersLinkBesideTheRadioBeforeAskingAnotherHolder`; `BlobExchangeTest`'s `aBlindAskOfAHolderThatMayRaiseAFreeLinkWaitsOutItsLinkWaitBeforeTheRoundWidens`,
 `aFreeLinkThatRefusesTheBlobIsNoFastRouteForIt` and `aFreeLinkComingUpBesideARadioAsksItsPeerFastOnlyForTheBlobItCarries`;
 `BlobHolderQueryTest.aCarrierWhoseFreeLinkRefusesTheBlobRidesTheRadioAndParksBehindItsFeed`; the `linkSignalDeclineMetered`
-vector). Device trial owed.
+vector). Device trial passed 2026-10-31, 14:22 to 15:06, on the P7 and the P9, Bluetooth-linked with no Wi-Fi Aware,
+on `exp/dht-links` `f32a5eb55`. Both phones were on the home Wi-Fi; the P9's download limit was 5 MB.
+
+- **A 2 MB file:** the P7 raised a `BULK` link (`HOST`, 519 ms), and the file crossed in 3.4 s. The P9 waited out the
+  link's grace instead of fetching over Bluetooth, and the message itself crossed the radio.
+- **A 6 MB file:** the P9 held it, then raised a `WANT` link (`HOST`, 553 ms) and fetched it fast-only in 7.1 s, with
+  no tap.
+- **The P9's Wi-Fi set to metered:** the P7's link for a 2 MB file was declined with `m` in 319 ms, both ends logged
+  `METERED`, and the file went to Bluetooth at 406 ms. A 6 MB file was held as `network metered` with no offer, and
+  after the tap it went over Bluetooth.
+- **The path upgrade:** one link came up `V4_REFLEXIVE` and moved to `HOST` 112 ms later.
 
 The gap: two contacts that a radio links and no Wi-Fi Aware carries (a phone without it, or with it off) moved every
 attachment over Bluetooth at 5–10 KB/s, minutes per photo, while a link between them moves 5–6 Mbit/s (the 2026-10-31
@@ -893,4 +903,6 @@ bridged WANs on one site cannot be told from a contact across town.
 - An asker whose own links are held off (low-power mode, a pause, metered) still waits a link's grace on a holder that
   may raise one: a later widening when that holder never serves.
 - The offer still rides a relay's signal lane (L-2-2): a pair with no shared relay has no link beside the radio either
-  (GitLab #237).
+  (GitLab #237). A peer whose own lane is down cannot decline, so the holder waits out its whole grace before taking
+  the radio. The trial hit this when the P9 left Wi-Fi for a weak cellular signal: the P7 waited 10 s, and the offer
+  ended `NO_ANSWER` after 15 s.
