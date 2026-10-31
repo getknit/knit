@@ -123,7 +123,8 @@ class WalkieTranscriptScreenTest {
         render(ui(model = SttModelState.Absent, lines = listOf(TranscriptLine(0, 0, TranscriptLine.State.NoModel))))
         compose.onNodeWithContentDescription("Hide walkie diagnostics").performClick()
         compose.onNodeWithText("44 MB", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("Not transcribed", substring = true).assertIsDisplayed()
+        // The bursts heard so far wait for the model: the offer says why they have no text.
+        compose.onNodeWithText("Not transcribed", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Download").performClick()
         assertEquals(1, downloads)
     }
