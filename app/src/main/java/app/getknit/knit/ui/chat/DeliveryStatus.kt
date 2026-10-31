@@ -223,6 +223,8 @@ fun tickGlyphTag(
         DeliveryStatus.RadioReached -> "chat_tick_lora_reached"
         else -> null
     }
+
+/**
  * The plane a message's row shows: [DeliveryPlane.DirectLink] when a contact's direct link carried its file (ADR
  * 2026-10.a5yj), else [messagePlane], the one its frame or its receipt crossed. [linkHolders] are who a link proved holds
  * the file (`BlobRepository.observeLinkHolders`): for one we received, us — the bytes reached us over a link; for one of

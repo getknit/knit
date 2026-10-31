@@ -120,7 +120,7 @@ L-2-7): `LinkSignal.m`, defaulted false and so absent from every signal sent on 
 byte-for-byte what it was (`vectors/wire-v1.json` pins the OFFER and DECLINE unchanged and adds a DECLINE with `m`).
 An older build ignores the key, and reads a DECLINE that carries it as links switched off: it offers again only for
 something newer, which costs nothing but a link it would not have been answered for. Links run only between builds
-that advertise `Protocol.CAP_INET_LINK`, which no release build does yet.
+that advertise `Protocol.CAP_INET_LINK` (`0x20000`, the bit after `CAP_LORA_DIRECT`), which no release build does yet.
 
 A change that genuinely needs a break does **not** get to schedule one. Park it in
 `docs/NEXT_WIRE_BREAK.md` — the staging list of everything waiting on the next coordinated break, so that
