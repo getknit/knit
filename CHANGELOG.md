@@ -83,6 +83,8 @@ document:
   starts shrinking it. If you cancel, nothing is sent.
 - Blocking someone now also stops their new name, status and photo from showing on your phone, and Knit no
   longer downloads their photo. Until you unblock them, they show with their initial instead of a picture.
+- A photo or file your internet relays won't carry is now marked Not on relays instead of Nearby only. The
+  mark goes away once your contact has it, and tapping it still says why the relays won't take it.
 
 ### Fixed
 

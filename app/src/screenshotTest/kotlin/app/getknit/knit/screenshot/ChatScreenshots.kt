@@ -26,7 +26,7 @@ import app.getknit.knit.ui.chat.MessageBubbleLinkPreview
 import app.getknit.knit.ui.chat.MessageBubbleMineLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageBubbleMinePreview
 import app.getknit.knit.ui.chat.MessageBubbleMineViaInternetPreview
-import app.getknit.knit.ui.chat.MessageBubbleNearbyOnlyLockedPreview
+import app.getknit.knit.ui.chat.MessageBubbleNotRelayedLockedPreview
 import app.getknit.knit.ui.chat.MessageBubblePhotoArrivingPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsViaInternetPreview
@@ -83,7 +83,7 @@ fun MessageBubbleMine() = MessageBubbleMinePreview()
 @PreviewTest
 @ComponentShots
 @Composable
-fun MessageBubbleNearbyOnlyLocked() = MessageBubbleNearbyOnlyLockedPreview()
+fun MessageBubbleNotRelayedLocked() = MessageBubbleNotRelayedLockedPreview()
 
 @PreviewTest
 @ComponentShots

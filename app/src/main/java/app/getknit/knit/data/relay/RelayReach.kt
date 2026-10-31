@@ -173,8 +173,11 @@ enum class AttachmentRelay {
     Locked,
 }
 
-/** Whether [this] draws a sent attachment's "Nearby only" marker: a cause that lasts, never Silent or Relayable. */
-fun AttachmentRelay.marksNearbyOnly(): Boolean =
+/**
+ * Whether [this] draws a sent attachment's "Not on relays" marker: a cause that lasts, never Silent or Relayable. It
+ * names the relays rather than "nearby", since a contact's direct link (ADR 2026-10.a5yj) can carry what no relay takes.
+ */
+fun AttachmentRelay.marksNotRelayed(): Boolean =
     this == AttachmentRelay.TooLarge || this == AttachmentRelay.Unsupported || this == AttachmentRelay.Locked
 
 /**

@@ -23924,7 +23924,7 @@ SPLapp/getknit/knit/data/relay/RelayReach;->values()[Lapp/getknit/knit/data/rela
 Lapp/getknit/knit/data/relay/RelayReachKt;
 SPLapp/getknit/knit/data/relay/RelayReachKt;->coveredLabelsOf(Ljava/util/List;)Ljava/util/Set;
 SPLapp/getknit/knit/data/relay/RelayReachKt;->dismissable(Lapp/getknit/knit/data/relay/RelayReach;)Z
-SPLapp/getknit/knit/data/relay/RelayReachKt;->marksNearbyOnly(Lapp/getknit/knit/data/relay/AttachmentRelay;)Z
+SPLapp/getknit/knit/data/relay/RelayReachKt;->marksNotRelayed(Lapp/getknit/knit/data/relay/AttachmentRelay;)Z
 SPLapp/getknit/knit/data/relay/RelayReachKt;->noticeFor(Ljava/lang/String;Lapp/getknit/knit/data/relay/RelayFacts;ZZ)Lapp/getknit/knit/data/relay/RelayReach;
 SPLapp/getknit/knit/data/relay/RelayReachKt;->planeFor(Lapp/getknit/knit/data/relay/RelayFacts;)Lapp/getknit/knit/data/relay/RelayPlane;
 SPLapp/getknit/knit/data/relay/RelayReachKt;->reachFor(Ljava/lang/String;Lapp/getknit/knit/data/relay/RelayFacts;Z)Lapp/getknit/knit/data/relay/RelayReach;

@@ -231,7 +231,7 @@ import app.getknit.knit.data.relay.AttachmentWait
 import app.getknit.knit.data.relay.FreeUploadOffer
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.relay.dismissable
-import app.getknit.knit.data.relay.marksNearbyOnly
+import app.getknit.knit.data.relay.marksNotRelayed
 import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.demo.DemoComposeCommand
 import app.getknit.knit.demo.DemoComposer
@@ -1111,7 +1111,7 @@ internal fun ChatScreenContent(
     var showRelayInfo by remember { mutableStateOf(false) }
     var showLoraInfo by remember { mutableStateOf(false) }
     var showMeshInfo by remember { mutableStateOf(false) }
-    // The message whose "nearby only" marker was tapped, so the explanation can name its actual cause
+    // The message whose "Not on relays" marker was tapped, so the explanation can name its actual cause
     // (too big vs. relays that carry no photos). Null when no explanation is open.
     var relayMarkerExplained by remember { mutableStateOf<AttachmentRelay?>(null) }
     // The contact a tapped heard-author avatar resolved to, held until the caveat is dismissed or followed
@@ -2120,25 +2120,31 @@ internal fun ChatScreenContent(
                 )
             },
             text = {
-                Text(
-                    stringResource(
-                        when {
-                            // No peer to name: in a commons nothing else carries it, so there is no "arrives when".
-                            state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_body
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        stringResource(
+                            when {
+                                // No peer to name: in a commons nothing else carries it, so there is no "arrives when".
+                                state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_body
 
-                            state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_body
+                                state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_body
 
-                            state.isCommons -> R.string.chat_relay_commons_too_large_body
+                                state.isCommons -> R.string.chat_relay_commons_too_large_body
 
-                            cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
+                                cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
 
-                            cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_body
+                                cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_body
 
-                            else -> R.string.chat_relay_too_large_body
-                        },
-                        other,
-                    ),
-                )
+                                else -> R.string.chat_relay_too_large_body
+                            },
+                            other,
+                        ),
+                    )
+                    // A DM whose peer's build takes direct links, while ours is on: a link can carry what no relay takes.
+                    if (state.relayDirectLinkNote && !state.isCommons) {
+                        Text(stringResource(R.string.chat_relay_direct_link_note, other))
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = { relayMarkerExplained = null }) {
@@ -2661,15 +2667,17 @@ private fun EncryptionBadge(onClick: () -> Unit) {
 }
 
 /**
- * The in-bubble "nearby only" marker: this attachment will not cross the Internet plane.
+ * The in-bubble "Not on relays" marker: no relay will carry this attachment. It names the relays, not "nearby": a
+ * contact's direct link (ADR 2026-10.a5yj) can still carry it over the Internet.
  *
  * Deliberately unalarming — `onSurfaceVariant`, not `error`. Nothing has gone wrong: the message is
  * being delivered by radio exactly as it would be with relays switched off. Only *permanent* causes
  * reach this marker (too large for every relay, or relays that carry no photos at all), so it never
- * appears and then quietly disappears once a retry succeeds; see `attachmentReach`.
+ * appears and then quietly disappears once a retry succeeds; see `attachmentReach`. It goes for good once
+ * the DM's peer proves it holds the file (ADR 2026-10.vy27): delivered, the file needs no relay.
  */
 @Composable
-private fun ColumnScope.NearbyOnlyMarker(
+private fun ColumnScope.NotRelayedMarker(
     // In a commons nothing else carries the attachment, so the marker says it was not uploaded at all.
     commons: Boolean = false,
     onClick: () -> Unit,
@@ -2688,12 +2696,12 @@ private fun ColumnScope.NearbyOnlyMarker(
         Icon(
             imageVector = Icons.Filled.CloudOff,
             contentDescription =
-                stringResource(if (commons) R.string.chat_relay_commons_not_uploaded_desc else R.string.chat_relay_nearby_only_desc),
+                stringResource(if (commons) R.string.chat_relay_commons_not_uploaded_desc else R.string.chat_relay_not_relayed_desc),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(12.dp),
         )
         Text(
-            text = stringResource(if (commons) R.string.chat_relay_commons_not_uploaded else R.string.chat_relay_nearby_only),
+            text = stringResource(if (commons) R.string.chat_relay_commons_not_uploaded else R.string.chat_relay_not_relayed),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2731,7 +2739,7 @@ private fun MessageBubble(
     canReact: Boolean = true,
     // False where nothing can be posted (a stale commons), so the long-press menu offers no Reply.
     canReply: Boolean = true,
-    // A commons, where an attachment its relay will not take reaches nobody: the marker says so, not "Nearby only".
+    // A commons, where an attachment its relay will not take reaches nobody: the marker says so, not "Not on relays".
     relayIsCommons: Boolean = false,
     // The long-press menu's quick-reaction row and its "+" (opens the full picker); defaulted for previews.
     quickReactions: List<String> = RecentReactions.DEFAULTS,
@@ -2747,7 +2755,7 @@ private fun MessageBubble(
     onCopy: (text: String) -> Unit,
     // Opens this message's details screen ("Message info"); defaulted no-op for previews.
     onOpenMessageDetails: (messageId: String) -> Unit = {},
-    // Tapping the "nearby only" marker; defaulted no-op for previews and for bubbles that never show it.
+    // Tapping the "Not on relays" marker; defaulted no-op for previews and for bubbles that never show it.
     onExplainRelay: (AttachmentRelay) -> Unit = {},
     // Tapping the avatar of a heard author who resolved to a contact: the caveat, then the way through to
     // that contact's profile. Defaulted no-op for previews and for every bubble outside the bridged room.
@@ -3217,8 +3225,8 @@ private fun MessageBubble(
                         // Reach, not delivery — kept on its own line above the tick so the two facts stay
                         // visually separate. This says the photo will not take the Internet shortcut; the
                         // tick below still reports whether the message itself got there.
-                        if (row.attachmentRelay.marksNearbyOnly()) {
-                            NearbyOnlyMarker(commons = relayIsCommons, onClick = { onExplainRelay(row.attachmentRelay) })
+                        if (row.attachmentRelay.marksNotRelayed()) {
+                            NotRelayedMarker(commons = relayIsCommons, onClick = { onExplainRelay(row.attachmentRelay) })
                         }
                         Row(
                             modifier = Modifier.align(Alignment.End),
@@ -4540,7 +4548,7 @@ private fun MessageInput(
     isSending: Boolean = false,
     pendingAttachment: AttachmentStore.Ingested?,
     stagedAttachmentRelay: AttachmentRelay = AttachmentRelay.Silent,
-    // A commons: the staged caption says the room won't get an attachment its relay refuses, not "Nearby only".
+    // A commons: the staged caption says the room won't get an attachment its relay refuses, not the relays' own cause.
     relayIsCommons: Boolean = false,
     candidates: List<MentionCandidate>,
     // What the `@everyone` row would mention, or null where the row is not offered (see [everyoneMentions]).
@@ -5574,11 +5582,18 @@ private fun AttachmentPreview(
     val caption =
         when (relay) {
             AttachmentRelay.TooLarge if commons -> R.string.chat_relay_commons_staged_too_large
+
             AttachmentRelay.Unsupported if commons -> R.string.chat_relay_commons_staged_unsupported
+
             AttachmentRelay.Locked if commons -> R.string.chat_relay_commons_staged_locked
-            AttachmentRelay.TooLarge -> R.string.chat_relay_staged_too_large
-            AttachmentRelay.Unsupported -> R.string.chat_relay_staged_unsupported
-            AttachmentRelay.Locked -> R.string.chat_relay_staged_locked
+
+            // The cause alone, as the marker's dialog titles it: the file still goes by radio, or a direct link.
+            AttachmentRelay.TooLarge -> R.string.chat_relay_too_large_title
+
+            AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_title
+
+            AttachmentRelay.Locked -> R.string.chat_relay_locked_title
+
             else -> null
         }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -5800,10 +5815,10 @@ fun MessageBubbleMinePreview() =
         )
     }
 
-/** A sent file no relay takes from this phone (C-7.6-24): the "Nearby only" marker above the tick. */
+/** A sent file no relay takes from this phone (C-7.6-24): the "Not on relays" marker above the tick. */
 @Preview(showBackground = true)
 @Composable
-fun MessageBubbleNearbyOnlyLockedPreview() =
+fun MessageBubbleNotRelayedLockedPreview() =
     KnitPreview {
         MessageBubble(
             row =
@@ -6085,7 +6100,7 @@ fun MessageInputPreview() =
         )
     }
 
-/** A file staged while no relay takes this phone's uploads (C-7.6-24): the composer's "Nearby only" caption. */
+/** A file staged while no relay takes this phone's uploads (C-7.6-24): the composer's caption naming why. */
 @Preview(showBackground = true)
 @Composable
 fun MessageInputStagedLockedPreview() =

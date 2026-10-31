@@ -62,6 +62,7 @@ class ChatRelayIndicatorTest {
         rows: List<ChatRow> = emptyList(),
         reach: RelayReach = RelayReach.Silent,
         staged: AttachmentRelay = AttachmentRelay.Silent,
+        directLinkNote: Boolean = false,
         onDismissRelayNotice: () -> Unit = {},
         arrivals: Map<String, ArrivingFile> = emptyMap(),
     ) {
@@ -76,6 +77,7 @@ class ChatRelayIndicatorTest {
                             myNodeId = "me",
                             title = "Ana",
                             relayReach = reach,
+                            relayDirectLinkNote = directLinkNote,
                         ),
                     inputState = TextFieldState(""),
                     pendingAttachment = null,
@@ -176,10 +178,11 @@ class ChatRelayIndicatorTest {
     }
 
     @Test
-    fun anOversizeAttachmentIsMarkedNearbyOnly() {
+    fun anOversizeAttachmentIsMarkedNotOnRelays() {
+        // It names the relays, not "nearby": a contact's direct link can still carry it (ADR 2026-10.a5yj).
         render(rows = listOf(row(attachmentRelay = AttachmentRelay.TooLarge)))
         compose.onNodeWithTag("chat_relay_marker").assertIsDisplayed()
-        compose.onNodeWithText("Nearby only").assertIsDisplayed()
+        compose.onNodeWithText("Not on relays").assertIsDisplayed()
     }
 
     @Test
@@ -251,6 +254,17 @@ class ChatRelayIndicatorTest {
                 "This attachment is bigger than your relays will take from this phone, so it is not being uploaded. " +
                     "It still arrives when you and Ana are in Wi-Fi or Bluetooth range of each other.",
             ).assertIsDisplayed()
+        compose.onNodeWithText(DIRECT_LINK_NOTE).assertDoesNotExist()
+    }
+
+    @Test
+    fun theMarkerNamesADirectLinkWhereOneCanCarryTheFile() {
+        // A DM whose peer takes links while our switch is on (ChatUiState.relayDirectLinkNote): the dialog keeps the
+        // radio fallback and adds the link, conditional on the peer's own switch, which this phone can't see.
+        render(rows = listOf(row(attachmentRelay = AttachmentRelay.Locked)), directLinkNote = true)
+        compose.onNodeWithTag("chat_relay_marker").performClick()
+        compose.onNodeWithText("Your relays are not taking files from this phone").assertIsDisplayed()
+        compose.onNodeWithText(DIRECT_LINK_NOTE).assertIsDisplayed()
     }
 
     @Test
@@ -263,7 +277,7 @@ class ChatRelayIndicatorTest {
     @Test
     fun anAttachmentNoRelayTakesFromThisPhoneIsMarkedAndExplained() {
         render(rows = listOf(row(attachmentRelay = AttachmentRelay.Locked)))
-        compose.onNodeWithText("Nearby only").assertIsDisplayed()
+        compose.onNodeWithText("Not on relays").assertIsDisplayed()
         compose.onNodeWithTag("chat_relay_marker").performClick()
         compose.onNodeWithText("Your relays are not taking files from this phone").assertIsDisplayed()
         // The rule, both ways it locks (no ticket, or today's amount sent), the fallback, and that receiving still works.
@@ -377,3 +391,5 @@ class ChatRelayIndicatorTest {
 }
 
 private const val LOADING_PHOTO = "Photo appears once a device that has it is reachable"
+private const val DIRECT_LINK_NOTE =
+    "If Ana has Connect directly to contacts on too, it can also travel over a direct link between your phones."

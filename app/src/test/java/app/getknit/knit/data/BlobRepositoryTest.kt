@@ -315,4 +315,32 @@ class BlobRepositoryTest : RoomDbTest() {
             every { dao.observeOnPlane(any(), any()) } throws AssertionError("queried the holders table for nothing")
             assertEquals(emptyMap<String, Set<String>>(), repo(holders = dao).observeLinkHolders(emptySet()).first())
         }
+
+    @Test
+    fun `observeHolders names every proven holder of the asked hashes with the plane its proof came over`() =
+        runTest {
+            // The chat's one read of the holders table: the link mark keeps the link's rows, and the sender's relay
+            // marker ends on any of them, a radio's included.
+            val repo = repo()
+            repo.recordHolder("h1", "me", DeliveryPlane.DirectLink, 1L)
+            repo.recordHolder("h1", "bob", DeliveryPlane.Nearby, 2L)
+            repo.recordHolder("h2", "bob", DeliveryPlane.Bluetooth, 3L)
+            repo.recordHolder("h3", "bob", DeliveryPlane.DirectLink, 4L)
+
+            assertEquals(
+                mapOf(
+                    "h1" to mapOf("me" to DeliveryPlane.DirectLink.code, "bob" to DeliveryPlane.Nearby.code),
+                    "h2" to mapOf("bob" to DeliveryPlane.Bluetooth.code),
+                ),
+                repo.observeHolders(setOf("h1", "h2", "h4")).first(),
+            )
+        }
+
+    @Test
+    fun `observeHolders answers an empty ask without a query`() =
+        runTest {
+            val dao = mockk<AttachmentHolderDao>()
+            every { dao.observeOnPlanes(any(), any()) } throws AssertionError("queried the holders table for nothing")
+            assertEquals(emptyMap<String, Map<String, Int>>(), repo(holders = dao).observeHolders(emptySet()).first())
+        }
 }

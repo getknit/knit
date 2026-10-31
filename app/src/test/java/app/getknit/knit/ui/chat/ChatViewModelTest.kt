@@ -39,6 +39,7 @@ import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.pin.PinnedMessage
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.relay.AttachmentRelay
 import app.getknit.knit.data.relay.AttachmentWait
 import app.getknit.knit.data.relay.FreeUploadOffer
 import app.getknit.knit.data.relay.FreeUploads
@@ -167,7 +168,9 @@ class ChatViewModelTest {
     private val recentsFlow = MutableStateFlow(RecentReactions.DEFAULTS)
     private val blockedFlow = MutableStateFlow(emptySet<String>())
     private val sizesFlow = MutableStateFlow(emptyMap<String, Int>())
-    private val linkHoldersFlow = MutableStateFlow(emptyMap<String, Set<String>>())
+
+    // Hash → holder → the plane its proof came over (`BlobRepository.observeHolders`).
+    private val holdersFlow = MutableStateFlow(emptyMap<String, Map<String, Int>>())
     private val flaggedFlow = MutableStateFlow(emptyList<String>())
     private val filteringFlow = MutableStateFlow(true)
     private val downloadLimitFlow = MutableStateFlow<Long?>(1_000_000L)
@@ -202,7 +205,7 @@ class ChatViewModelTest {
         // Keyed by the window's hashes in production; the test map simply holds every hash a test names.
         every { blobs.observeSizes(any()) } returns sizesFlow
         // Folded into the blob state beside the sizes: a relaxed mock's silent flow would stall every row.
-        every { blobs.observeLinkHolders(any()) } returns linkHoldersFlow
+        every { blobs.observeHolders(any()) } returns holdersFlow
         every { imageScreening.observeFlaggedHashes() } returns flaggedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         // Combined with the filter into the blob state: a relaxed mock's silent flow would stall every row.
@@ -291,6 +294,7 @@ class ChatViewModelTest {
         conversationId: String = Conversations.NEARBY,
         preferMeshCalls: Flow<Boolean> = flowOf(false),
         pins: PinRepository? = null,
+        directLinksOn: Flow<Boolean> = flowOf(false),
     ) = ChatViewModel(
         conversationId,
         messages,
@@ -321,6 +325,7 @@ class ChatViewModelTest {
         calls = calls,
         freeUploads = freeUploads,
         preferMeshCalls = preferMeshCalls,
+        directLinksOn = directLinksOn,
         pins = pins,
     )
 
@@ -1694,8 +1699,23 @@ class ChatViewModelTest {
                     msg(senderId = "me", id = "ours", conversationId = BOB, attachmentHash = "h1", received = true, receivedVia = relay),
                     msg(senderId = BOB, id = "theirs", conversationId = BOB, attachmentHash = "h2", receivedVia = relay),
                     msg(senderId = BOB, id = "relayed", conversationId = BOB, attachmentHash = "h3", receivedVia = relay),
+                    msg(
+                        senderId = "me",
+                        id = "radioHeld",
+                        conversationId = BOB,
+                        attachmentHash = "h4",
+                        received = true,
+                        receivedVia = relay,
+                    ),
                 )
-            linkHoldersFlow.value = mapOf("h1" to setOf(BOB), "h2" to setOf("me"), "h3" to setOf(BOB))
+            val link = DeliveryPlane.DirectLink.code
+            holdersFlow.value =
+                mapOf(
+                    "h1" to mapOf(BOB to link),
+                    "h2" to mapOf("me" to link),
+                    "h3" to mapOf(BOB to link),
+                    "h4" to mapOf(BOB to DeliveryPlane.Nearby.code),
+                )
             val vm = vm(conversationId = BOB)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             advanceUntilIdle()
@@ -1707,6 +1727,112 @@ class ChatViewModelTest {
             assertEquals(DeliveryPlane.DirectLink, planes["theirs"])
             // Bob holding h3 says nothing of how it reached us: the relay that carried its message stands.
             assertEquals(DeliveryPlane.Internet, planes["relayed"])
+            // A proof a radio gave is no link's: the row keeps its message's plane.
+            assertEquals(DeliveryPlane.Internet, planes["radioHeld"])
+        }
+
+    @Test
+    fun aDmFileOfOursLosesItsRelayMarkerOnceThePeerProvesItHoldsIt() =
+        runTest {
+            // ADR 2026-10.vy27: Bob proving he holds h1 settles it, whichever plane carried it, so "Not on relays" has
+            // nothing left to say. Its neighbour keeps the marker: only Bob's proof counts, not ours or a carrier's.
+            stubDm(BOB)
+            relayFactsFlow.value =
+                RelayFacts(
+                    enabled = true,
+                    configured = 1,
+                    active = 1,
+                    connected = 1,
+                    coveredLabels = setOf(BOB),
+                    maxAttachBytes = 1_000_000,
+                    uploadRooms = emptyList(),
+                )
+            sizesFlow.value = mapOf("h1" to 2_000, "h2" to 2_000)
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "me", id = "proved", conversationId = BOB, attachmentHash = "h1"),
+                    msg(senderId = "me", id = "unproved", conversationId = BOB, attachmentHash = "h2"),
+                )
+            val vm = vm(conversationId = BOB)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            fun relayOf(id: String) =
+                vm.state.value.rows
+                    .single { it.id == id }
+                    .attachmentRelay
+            assertEquals(AttachmentRelay.Locked, relayOf("proved"))
+
+            holdersFlow.value =
+                mapOf(
+                    "h1" to mapOf(BOB to DeliveryPlane.Nearby.code),
+                    "h2" to mapOf("me" to DeliveryPlane.DirectLink.code, "carol" to DeliveryPlane.Nearby.code),
+                )
+            advanceUntilIdle()
+            assertEquals(AttachmentRelay.Silent, relayOf("proved"))
+            assertEquals(AttachmentRelay.Locked, relayOf("unproved"))
+        }
+
+    @Test
+    fun aGroupFileKeepsItsRelayMarkerWhateverOneMemberHolds() =
+        runTest {
+            // One member's proof says nothing of the others', so a change that let a member's holding end a group
+            // file's marker would fail here.
+            groupFlow.value = group(GROUP, members = listOf("me", BOB, "carol"))
+            relayFactsFlow.value =
+                RelayFacts(
+                    enabled = true,
+                    configured = 1,
+                    active = 1,
+                    connected = 1,
+                    coveredLabels = setOf(GROUP),
+                    maxAttachBytes = 1_000_000,
+                    uploadRooms = emptyList(),
+                )
+            sizesFlow.value = mapOf("h1" to 2_000)
+            holdersFlow.value = mapOf("h1" to mapOf(BOB to DeliveryPlane.Nearby.code))
+            messagesFlow.value = listOf(msg(senderId = "me", id = "m1", conversationId = GROUP, attachmentHash = "h1"))
+            val vm = vm(conversationId = GROUP)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertEquals(
+                AttachmentRelay.Locked,
+                vm.state.value.rows
+                    .single()
+                    .attachmentRelay,
+            )
+        }
+
+    @Test
+    fun theRelayMarkerNamesADirectLinkOnlyInADmWhosePeerTakesLinksWhileOurSwitchIsOn() =
+        runTest {
+            // ADR 2026-10.a5yj: a link carries a DM file no relay takes, so the marker's dialog may say so, but only where
+            // one can come: our switch on, and Bob's build taking links. His own switch is the dialog's "if".
+            val switch = MutableStateFlow(true)
+            stubDm(BOB)
+            peersFlow.value = listOf(peer(BOB, "Bob", capabilities = Protocol.LOCAL_CAPABILITIES or Protocol.CAP_INET_LINK))
+            val dm = vm(conversationId = BOB, directLinksOn = switch)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { dm.state.collect {} }
+            advanceUntilIdle()
+            assertTrue(dm.state.value.relayDirectLinkNote)
+
+            switch.value = false
+            advanceUntilIdle()
+            assertFalse("our switch off: no link can come", dm.state.value.relayDirectLinkNote)
+
+            switch.value = true
+            peersFlow.value = listOf(peer(BOB, "Bob", capabilities = Protocol.LOCAL_CAPABILITIES))
+            advanceUntilIdle()
+            assertFalse("a build that takes no links is never offered one", dm.state.value.relayDirectLinkNote)
+
+            // A group whose only other member takes links still says nothing: a change that read the members' bits for
+            // a group would fail here.
+            groupFlow.value = group(GROUP, members = listOf("me", BOB))
+            peersFlow.value = listOf(peer(BOB, "Bob", capabilities = Protocol.LOCAL_CAPABILITIES or Protocol.CAP_INET_LINK))
+            val inGroup = vm(conversationId = GROUP, directLinksOn = switch)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { inGroup.state.collect {} }
+            advanceUntilIdle()
+            assertFalse("a group's file takes no link to every member", inGroup.state.value.relayDirectLinkNote)
         }
 
     @Test

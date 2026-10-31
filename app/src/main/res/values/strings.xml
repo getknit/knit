@@ -1902,21 +1902,22 @@
     <string name="chat_relay_no_fs_title">Relays need forward secrecy</string>
     <string name="chat_relay_no_fs_body">Messages here travel by Wi-Fi and Bluetooth, end-to-end encrypted. Relays carry a direct message only when both sides use forward secrecy, and %1$s\'s version of Knit doesn\'t support it.</string>
     <string name="chat_relay_notice_dismiss">Dismiss</string>
-    <string name="chat_relay_nearby_only">Nearby only</string>
-    <string name="chat_relay_nearby_only_desc">Attachment will not be sent over the Internet</string>
+    <string name="chat_relay_not_relayed">Not on relays</string>
+    <string name="chat_relay_not_relayed_desc">Your relays won\'t carry this attachment</string>
     <string name="chat_relay_too_large_title">Too large for your relays</string>
     <!-- Over every relay's budget, or over the per-file limit this phone's ticket carries there (C-7.6-32). -->
     <string name="chat_relay_too_large_body">This attachment is bigger than your relays will take from this phone, so it is not being uploaded. It still arrives when you and %1$s are in Wi-Fi or Bluetooth range of each other.</string>
     <string name="chat_relay_unsupported_title">Your relays carry messages only</string>
     <string name="chat_relay_unsupported_body">None of your relays accepts attachments, so this one is not being uploaded. It still arrives when you and %1$s are in Wi-Fi or Bluetooth range of each other.</string>
-    <string name="chat_relay_staged_too_large">Nearby only — too large for your relays</string>
-    <string name="chat_relay_staged_unsupported">Nearby only — your relays carry messages only</string>
     <!-- No relay takes this phone's uploads: each takes files only from phones with a ticket for sending them, up to a
          daily amount per ticket, and this phone has none there or has sent today's amount (C-7.6-24). Receiving
          still works. Name no product, price or shop; the daily amount is a sending allowance, never a storage cap. -->
     <string name="chat_relay_locked_title">Your relays are not taking files from this phone</string>
     <string name="chat_relay_locked_body">They take attachments from phones with a ticket for sending files, up to a daily amount for each ticket. This phone has none there, or has sent today\'s amount, so this one is not being uploaded. It still arrives when you and %1$s are in Wi-Fi or Bluetooth range of each other, and attachments sent to you still come through your relays.</string>
-    <string name="chat_relay_staged_locked">Nearby only — your relays are not taking your files</string>
+    <!-- Below the "Not on relays" dialog's reason in a DM, while this phone's direct links switch is on and the contact's
+         Knit takes direct links (ADR 2026-10.a5yj). %1$s is the contact's name and "it" the attachment; nothing may agree
+         with the name. It quotes the switch's own title, relays_direct_links_title. -->
+    <string name="chat_relay_direct_link_note">If %1$s has Connect directly to contacts on too, it can also travel over a direct link between your phones.</string>
     <!-- The same three causes in a commons, where nothing else carries an attachment the room's relay will not. -->
     <string name="chat_relay_commons_not_uploaded">Not uploaded</string>
     <string name="chat_relay_commons_not_uploaded_desc">The room won\'t receive this attachment</string>

@@ -106,7 +106,7 @@ lines.
   `RelayFacts.uploadRooms`: READ ADR 2026-10.8t2y (knit-spool ADR 2026-10.h6pt) — each gate is its own bit of
   `entGates` (C-7.6-30); an attachment of ours on a connection the files gate locks is settled with no `ahave` and no
   `aput` while fetching is untouched; a `budget` spends the ticket's pseudonym per relay host in memory, never in the
-  verdict journal; and the sender's "Nearby only" reads `Locked` only when no connected relay takes this phone's
+  verdict journal; and the sender's "Not on relays" marker reads `Locked` only when no connected relay takes this phone's
   uploads. The gate reading and the marker ship in every build; getting a ticket and the readouts stay behind
   `ANYWHERE_WIRED` (ADR 2026-10.swvp).
   Before touching a ticket's `am` (`SpoolTicket.am` / `maxChunks`, `SpoolConnection.uploadLimitChunks`,

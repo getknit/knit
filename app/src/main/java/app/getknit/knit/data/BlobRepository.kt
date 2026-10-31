@@ -106,6 +106,22 @@ class BlobRepository(
         }
 
     /**
+     * Hash → holder → the plane its proof came over (a `DeliveryPlane` code), for the attachments among [hashes] with
+     * proof that someone holds the bytes (`DeliveryPlane.provesHold`, ADR 2026-10.vy27). The chat reads it once for
+     * both of its uses: the link mark on a file a contact's direct link proved ([observeLinkHolders]'s rows), and the
+     * sender's relay marker, which a DM peer proved to hold the file no longer needs. A hash with no proof is absent,
+     * and an empty set is answered without a query, as [observeSizes] is.
+     */
+    fun observeHolders(hashes: Set<String>): Flow<Map<String, Map<String, Int>>> =
+        if (hashes.isEmpty()) {
+            flowOf(emptyMap())
+        } else {
+            holders.observeOnPlanes(hashes.toList(), DeliveryPlane.provesHoldCodes).map { rows ->
+                rows.groupBy({ it.hash }, { it.holderId to it.plane }).mapValues { (_, held) -> held.toMap() }
+            }
+        }
+
+    /**
      * Hash → byte length for the stored blobs among [hashes]; a hash not held is absent. The chat observes
      * this for the attachments in its window plus the one staged in its composer, to flip an attachment
      * from loading to shown (a hash being present at all) and to decide whether one can cross an Internet

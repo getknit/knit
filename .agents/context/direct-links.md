@@ -143,6 +143,11 @@ and the entry is fixed.
   network's prefix) for one second more and moves to the first that answers; on one, it follows a datagram from
   elsewhere only after 3 s of nothing from a preferred one. `link_try`'s `path` is the first answer, `link_end`'s the
   path the data took.
+- **When touching `AttachmentRelay.marksNotRelayed`, `ChatUiState.relayDirectLinkNote`, `BlobRepository.observeHolders`,
+  `AttachmentHolderDao.observeOnPlanes` or the `chat_relay_not_relayed` / `chat_relay_direct_link_note` strings:** READ ADR
+  2026-10.a5yj's amendment on the "Not on relays" marker. The marker names the relays, never "nearby" (a link can carry
+  the file); the dialog names a link only in a DM whose peer takes links while our switch is on; and the marker goes
+  once the DM peer proves it holds the file, never in a group.
 - **When touching `shownPlane`, `planeGlyph` / `deliveryLabel`'s `DirectLink` arms, `BlobRepository.observeLinkHolders`,
   `AttachmentHolderDao.observeOnPlane` or the `chat_status_*_link` strings:** READ ADR 2026-10.a5yj's 2026-10-28
   amendment. A link shows its own face (two arrows, "over a direct link"), never the Internet's: a link on one network

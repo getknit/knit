@@ -352,8 +352,8 @@ class RelayReachTest {
     }
 
     @Test
-    fun `only locked, too large and unsupported draw the nearby only marker`() {
-        val marked = AttachmentRelay.entries.filter { it.marksNearbyOnly() }
+    fun `only locked, too large and unsupported draw the not on relays marker`() {
+        val marked = AttachmentRelay.entries.filter { it.marksNotRelayed() }
         assertEquals(listOf(AttachmentRelay.TooLarge, AttachmentRelay.Unsupported, AttachmentRelay.Locked), marked)
     }
 

@@ -97,6 +97,7 @@ val uiModule =
                 if (CALLS_WIRED) get<CallManager>() else null,
                 freeUploads = if (ANYWHERE_WIRED) get<FreeUploads>() else null,
                 preferMeshCalls = if (LIVE_CALLS_WIRED && WALKIE_WIRED) get<CallPreferenceStore>().preferMesh else flowOf(false),
+                directLinksOn = if (DIRECT_LINKS_WIRED) get<SettingsStore>().directLinksEnabled else flowOf(false),
                 noteSpeech = if (STT_WIRED) get<VoiceNoteSpeech>() else null,
                 translation = if (TRANSLATE_WIRED) get<ChatTranslation>() else null,
                 pins = get<PinRepository>(),

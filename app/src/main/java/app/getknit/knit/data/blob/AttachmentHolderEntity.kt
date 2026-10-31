@@ -74,6 +74,16 @@ interface AttachmentHolderDao {
         plane: Int,
     ): Flow<List<AttachmentHolderEntity>>
 
+    /**
+     * The proofs among [hashes] learnt over any of [planes], live: the chat's sender marker drops once the DM peer is
+     * among them (`ChatViewModel`'s relay marker, ADR 2026-10.a5yj). Read only.
+     */
+    @Query("SELECT * FROM attachment_holders WHERE plane IN (:planes) AND hash IN (:hashes)")
+    fun observeOnPlanes(
+        hashes: List<String>,
+        planes: List<Int>,
+    ): Flow<List<AttachmentHolderEntity>>
+
     /** Every proof held for [hash], oldest first: the developer view's holder rows (ADR 2026-10.s7wg). Read only. */
     @Query("SELECT * FROM attachment_holders WHERE hash = :hash ORDER BY provedAt ASC, holderId ASC")
     suspend fun holdersOf(hash: String): List<AttachmentHolderEntity>

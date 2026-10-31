@@ -531,6 +531,11 @@ data class ChatUiState(
     // The Internet plane's whole-device state, for the connection header. Coarser than [relayReach] and
     // about a different thing: whether the plane is up at all, not whether it covers this thread.
     val relayPlane: RelayPlane = RelayPlane.Off,
+    // Whether the dialog behind a file's "Not on relays" marker says a direct link can carry it too (ADR 2026-10.a5yj):
+    // a DM whose peer's build takes links ([Protocol.CAP_INET_LINK]) while this phone's switch is on. The peer's own
+    // switch can't be seen from here, so the dialog says the link needs it on too. A group's file never takes a link to
+    // every member, so a group never says it.
+    val relayDirectLinkNote: Boolean = false,
     // The LoRa plane's whole-device state, for the same header (the board glyph beside the cloud).
     val loraPlane: LoraPlane = LoraPlane.Off,
     // Whether the board alone can hear this DM's peer — the pinned notice under the header. See [loraReachFor].
@@ -671,6 +676,10 @@ class ChatViewModel(
     // The Calls screen's "Prefer mesh calls" (C-3.11-3): on, [meshCallFirst] holds whatever the route says and a DM
     // offers only the calls its peer takes. A plain parameter, read by the initializers alone.
     preferMeshCalls: Flow<Boolean> = flowOf(false),
+    // This phone's "Connect directly to contacts" switch, in a build that wires direct links (ADR 2026-10.a5yj): the
+    // relay marker's dialog then says a link can carry what no relay takes ([ChatUiState.relayDirectLinkNote]). A plain
+    // parameter, read by the initializers alone.
+    directLinksOn: Flow<Boolean> = flowOf(false),
     // A voice note's text on tap (ADR 2026-10.am8d): null where speech is not wired, which draws no control.
     private val noteSpeech: VoiceNoteSpeech? = null,
     // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired, which offers no Translate. A plain
@@ -1121,10 +1130,11 @@ class ChatViewModel(
             .flatMapLatest { blobs.observeSizes(it) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    // Hash → who a contact's direct link proved holds it, for the same hashes ([shownPlane]). The holders table, not the
-    // blobs table, so [heldSizes] stays the screen's only read of the blobs.
+    // Hash → holder → the plane its proof of holding came over, for the same hashes: the link mark ([shownPlane]) and the
+    // sender's relay marker both read it. The holders table, not the blobs table, so [heldSizes] stays the screen's only
+    // read of the blobs.
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val linkHolders: Flow<Map<String, Set<String>>> = heldHashes.flatMapLatest { blobs.observeLinkHolders(it) }
+    private val holders: Flow<Map<String, Map<String, Int>>> = heldHashes.flatMapLatest { blobs.observeHolders(it) }
 
     // The window's attachments still on their way: shown, not held, and not a link card (a card never draws
     // progress). Read off the one shared [heldSizes] — never a second blob query (ADR 2026-09.fjcw) — and only
@@ -1164,14 +1174,19 @@ class ChatViewModel(
     // enforced elsewhere regardless.
     private val blobState =
         combine(
-            combine(heldSizes.filterNotNull(), linkHolders, ::Pair),
+            combine(heldSizes.filterNotNull(), holders, ::Pair),
             imageScreening.observeFlaggedHashes(),
             // The download limit rides with the filter: both are settings that change how a received attachment shows.
             combine(settings.contentFilteringEnabled, settings.bluetoothDownloadLimitBytes) { hide, limit -> hide to limit },
             linkCards.cards,
             combine(transfers.states, retrySources) { live, readable -> live to readable },
-        ) { (sizes, link), flagged, (hideSensitive, limit), cards, (live, readable) ->
-            BlobState(sizes, link, flagged.toSet(), hideSensitive, limit, cards, live, readable)
+        ) { (sizes, held), flagged, (hideSensitive, limit), cards, (live, readable) ->
+            val link =
+                held
+                    .mapValues { (_, by) -> by.filterValues { it == DeliveryPlane.DirectLink.code }.keys }
+                    .filterValues { it.isNotEmpty() }
+            val proven = held.mapValues { (_, by) -> by.keys }
+            BlobState(sizes, link, proven, flagged.toSet(), hideSensitive, limit, cards, live, readable)
         }
 
     init {
@@ -1234,6 +1249,8 @@ class ChatViewModel(
         val blobSizes: Map<String, Int>,
         // blob hash -> who a contact's direct link proved holds it ([shownPlane]).
         val linkHolders: Map<String, Set<String>>,
+        // blob hash -> who a radio or a contact's direct link proved holds it (ADR 2026-10.vy27): the relay marker's end.
+        val provenHolders: Map<String, Set<String>>,
         val flaggedHashes: Set<String>,
         val hideSensitiveContent: Boolean,
         // "Ask before large Bluetooth downloads" in bytes, null for never (ADR 2026-10.js2p).
@@ -1256,6 +1273,7 @@ class ChatViewModel(
     private data class BlobState(
         val sizes: Map<String, Int>,
         val linkHolders: Map<String, Set<String>>,
+        val provenHolders: Map<String, Set<String>>,
         val flagged: Set<String>,
         val hideSensitive: Boolean,
         val downloadLimit: Long?,
@@ -1311,6 +1329,7 @@ class ChatViewModel(
                 blocked,
                 blob.sizes,
                 blob.linkHolders,
+                blob.provenHolders,
                 blob.flagged,
                 blob.hideSensitive,
                 blob.downloadLimit,
@@ -1417,11 +1436,13 @@ class ChatViewModel(
     // Folded ahead of the state combine, whose typed arity stops at five: who this device posts to a room
     // as, whether it may post to the foreign public channel, and — for a commons thread — the room's row and
     // its members. The two commons flows are empty everywhere else (`flowOf`), so they cost nothing there.
+    // Rides with them: whether this phone's direct links switch is on.
     private class PublicInputs(
         val myName: String,
         val publicConsented: Boolean,
         val commonsRoom: CommonsEntity?,
         val commonsMembers: List<String>,
+        val directLinksOn: Boolean,
     )
 
     private val publicIdentity: Flow<PublicInputs> =
@@ -1430,7 +1451,8 @@ class ChatViewModel(
             settings.meshtasticPostConsented,
             if (isCommons) commons?.observe(conversationId) ?: flowOf(null) else flowOf(null),
             if (isCommons) commons?.observeMemberIds(conversationId) ?: flowOf(emptyList()) else flowOf(emptyList()),
-        ) { name, consented, room, roster -> PublicInputs(name, consented, room, roster) }
+            directLinksOn,
+        ) { name, consented, room, roster, linksOn -> PublicInputs(name, consented, room, roster, linksOn) }
 
     // The peer directory, read once for this screen: the thread state and the pinned bar both name senders from it, and
     // each change to the peer table reads the whole table and rebuilds its label index, so it is shared, not collected
@@ -1457,6 +1479,7 @@ class ChatViewModel(
             val blocked = bundle.blocked
             val blobSizes = bundle.blobSizes
             val linkHolders = bundle.linkHolders
+            val provenHolders = bundle.provenHolders
             val flaggedHashes = bundle.flaggedHashes
             val hideSensitive = bundle.hideSensitiveContent
             val downloadLimit = bundle.downloadLimit
@@ -1479,6 +1502,16 @@ class ChatViewModel(
             val callable = isPeerThread && conversationId !in blocked
 
             fun offers(bit: Long) = peerCaps and bit != 0L
+
+            // Whether this DM's peer proved it holds [hash] (ADR 2026-10.vy27), which ends a file's relay marker. A group
+            // sender asks no member for proof, and one member's holding says nothing of the others'.
+            fun proven(hash: String?) = isPeerThread && hash != null && conversationId in provenHolders[hash].orEmpty()
+
+            // Whether a row of ours may carry the relay marker at all: an attachment, not a link card, not yet proven held.
+            fun marksRelay(
+                m: MessageEntity,
+                mine: Boolean,
+            ) = mine && m.attachmentMime != LinkPreviewBlob.MIME && !proven(m.attachmentHash)
             // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
             // message yet) simply never produce a row until their message arrives.
             val reactionsByMessage = reacts.groupBy { it.messageId }
@@ -1576,12 +1609,13 @@ class ChatViewModel(
                         videoPoster = m.videoPoster,
                         posterFlagged = hideSensitive && m.videoPosterFlagged,
                         // Outbound reach only: a received attachment has already arrived, so telling its
-                        // reader it is "nearby only" would describe a journey that is over. Unknown size
+                        // reader no relay carries it would describe a journey that is over. Unknown size
                         // (bytes reclaimed by retention) falls through to Silent rather than guessing. A
                         // link-preview card stays Silent too: a card that does not make the Internet
-                        // shortcut is no loss worth a marker.
+                        // shortcut is no loss worth a marker. So does a DM file its peer proved it holds
+                        // (ADR 2026-10.vy27): delivered, it needs no relay, whatever plane carried it.
                         attachmentRelay =
-                            if (mine && heldBytes != null && m.attachmentMime != LinkPreviewBlob.MIME) {
+                            if (heldBytes != null && marksRelay(m, mine)) {
                                 attachmentReach(conversationId, heldBytes, relay)
                             } else {
                                 AttachmentRelay.Silent
@@ -1727,6 +1761,7 @@ class ChatViewModel(
                         peerLacksForwardSecrecy = peerLacksFs,
                     ),
                 relayPlane = planeFor(relay),
+                relayDirectLinkNote = isPeerThread && publicId.directLinksOn && peerCaps and Protocol.CAP_INET_LINK != 0L,
                 loraPlane = mesh.lora.facts.plane,
                 loraReach =
                     when (val audience = mesh.lora.audience) {

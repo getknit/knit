@@ -906,3 +906,38 @@ bridged WANs on one site cannot be told from a contact across town.
   (GitLab #237). A peer whose own lane is down cannot decline, so the holder waits out its whole grace before taking
   the radio. The trial hit this when the P9 left Wi-Fi for a weak cellular signal: the P7 waited 10 s, and the offer
   ended `NO_ANSWER` after 15 s.
+
+## Amendment 2026-10-31 — a file no relay takes is marked "Not on relays", not "Nearby only"
+
+Status: Accepted (2026-10-31), the maintainer's call during the #236 trial.
+
+**Context:** a sent attachment no connected relay will take (`AttachmentRelay.TooLarge`, `Unsupported` or `Locked`, ADR
+2026-10.8t2y) carried a "Nearby only" marker, and its dialog said the file "still arrives when you and %1$s are in Wi-Fi
+or Bluetooth range". A DM file no relay takes is exactly the one a contact's direct link is offered for (L-7-7's `FILE`
+row, `MeshManager.attachmentStuck`), so with links on both claims were wrong: the file could reach a contact across the
+Internet after all.
+
+**Decision:**
+
+- The marker names what doesn't happen, not where the file can't go. It reads "Not on relays"
+  (`chat_relay_not_relayed`, `AttachmentRelay.marksNotRelayed`), which is true in every build, links or not. The composer's
+  staged caption drops its "Nearby only —" prefix and says the cause alone, reusing the dialog's titles.
+- The dialog keeps its radio sentence and adds one line, `chat_relay_direct_link_note`, only where a link can come: a DM,
+  this phone's switch on, and the peer's pinned profile carrying `CAP_INET_LINK` (`ChatUiState.relayDirectLinkNote`). The
+  peer's own switch can't be seen from here, so the line says the link needs it on too. A group never says it: a link
+  reaches one member, and group attachments raise no link demand.
+- The marker goes once the DM peer proves it holds the file (ADR 2026-10.vy27's `attachment_holders`, any proving plane,
+  read through `BlobRepository.observeHolders`): delivered, the file needs no relay. It does not break the marker's rule
+  against appearing and quietly disappearing, which is about a relay retry: proof of delivery is permanent. A group file
+  keeps its marker, since one member's proof says nothing of the others'.
+
+**Consequences / limits:**
+
+- The marker no longer tells a person without links that the file is radio-only; the dialog still says it arrives in
+  range.
+- A recipient who never answers the holder query leaves the marker standing even after delivery.
+- Guarded by `ChatViewModelTest`'s `aDmFileOfOursLosesItsRelayMarkerOnceThePeerProvesItHoldsIt`,
+  `aGroupFileKeepsItsRelayMarkerWhateverOneMemberHolds` and
+  `theRelayMarkerNamesADirectLinkOnlyInADmWhosePeerTakesLinksWhileOurSwitchIsOn`, `ChatRelayIndicatorTest`'s
+  `theMarkerNamesADirectLinkWhereOneCanCarryTheFile`, `RelayReachTest`'s marker case, and the `MessageBubbleNotRelayedLocked`
+  and `MessageInputStagedLocked` screenshots.
