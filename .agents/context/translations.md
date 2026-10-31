@@ -11,6 +11,8 @@ the fourth: a neutral base for every French speaker, written with vous, the typo
 no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». German (`values-de/`, machine pass 2026-10-28,
 awaiting native review) is the fifth: a neutral base for Germany, Austria and Switzerland, written with du (as
 Android's own German and German messengers use it), „ “ quotes, and WLAN for plain Wi-Fi as Android names it.
+Argentine Spanish (`values-es-rAR/`, 2026-10-31) is the first regional overlay: it landed empty, so it reads as
+`values-es/` until Argentine translators override single strings on Weblate (`es_AR`).
 Progress per language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
@@ -57,9 +59,12 @@ same way and doesn't call a string missing from a regional folder when the langu
 
 - **Start from the language.** `values-es/`, `values-fr/` and `values-de/` are written for every speaker, and a fix
   there reaches every region. A region gets a folder when a speaker of it asks for one, in an issue or through
-  Weblate's contact address, the same way a new language is requested.
+  Weblate's contact address, the same way a new language is requested, or when the maintainer opens it for
+  translators ahead of a request (`es-rAR`).
 - **The repo creates the folder.** It lands as a pull request carrying the region's differences, from the translator
-  or from a machine pass told to change register and vocabulary and nothing else. Weblate finds it on its next pull.
+  or from a machine pass told to change register and vocabulary and nothing else, or empty (`<resources>` and a
+  comment, as `values-es-rAR/` did) for Weblate's translators to fill. Weblate finds it on its next pull (it
+  cannot create one itself: `new_lang: contact`).
 - **`scripts/translation-check.py` reads it as an overlay.** A string left out is fine. A string copied unchanged
   from the language folder is a warning: the copy pins it, and a later fix in `values-es/` would stop short of
   Argentina. The strings the region does carry get every other check. A regional folder with no language folder
@@ -68,7 +73,9 @@ same way and doesn't call a string missing from a regional folder when the langu
   first day, and that figure drags the project's total down. Read the region's strings, not its percentage. Its
   pull requests stay sparse, because an Android file leaves out a string Weblate has no translation for, which is
   exactly the overlay Android wants. The translator instructions ask a region's translators to translate only what
-  reads wrong in their region and to leave everything else empty.
+  reads wrong in their region and to leave everything else empty. Weblate shows a translator the English source,
+  not the base language: adding the base (Spanish) under Profile › Languages › Secondary languages shows its
+  translation beside each string.
 - **The picker follows on its own.** `generateLocaleConfig` adds the region to Android 13's per-app language list.
   Play has no `es-AR` listing (Argentina reads `es-419`), so a region gets a `fastlane/metadata/android/` folder only
   when Play has a code for it.

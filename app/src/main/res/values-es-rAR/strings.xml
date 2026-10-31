@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Argentine Spanish: an overlay on values-es. Android falls back to values-es one string at a time, so this file
+     holds only the strings Argentina says differently (voseo, local words), translated on Weblate. Never copy a
+     string here unchanged: the copy would stop a later fix in values-es from reaching Argentina.
+     .agents/context/translations.md, "A regional variant". -->
+<resources>
+</resources>

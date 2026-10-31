@@ -25,8 +25,9 @@ locale's own section before adding strings to it (mode B). A new pass adds its s
 
 - **Folder** `values-es`, listing `fastlane/metadata/android/es/`. Play has no plain `es`: `play.sh` pushes it as
   `es-419` and `es-ES`. Machine pass 2026-10-26.
-- **Scope:** the base every Spanish speaker falls back to; a region (`values-es-rAR` for voseo) overrides single
-  strings later.
+- **Scope:** the base every Spanish speaker falls back to; a region overrides single strings. `values-es-rAR`
+  (voseo, celular) exists since 2026-10-31, empty until Weblate's translators fill it: a fix here reaches it unless
+  it carries that string.
 - **Register:** tú and ustedes; never vos, usted or vosotros. ¿ ¡. Gender-neutral about the user ("Te damos la
   bienvenida", not "Bienvenido"); no @, x or e endings.
 - **Plurals:** one, many, other (many = other).
