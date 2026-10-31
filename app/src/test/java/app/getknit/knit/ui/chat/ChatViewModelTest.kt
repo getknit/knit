@@ -3981,9 +3981,12 @@ class ChatViewModelTest {
             vm.onChatBackground()
         }
 
-    /** With "Prefer mesh calls" on, a DM offers only the kinds its peer carries the bits for (C-3.11-3). */
+    /**
+     * A DM offers only the call kinds its peer carries the bits for (C-3.11-3), whether or not the person prefers mesh
+     * calls: a peer on a build without calls shows no call button to press for a refusal.
+     */
     @Test
-    fun preferringMeshCallsOffersOnlyTheKindsThePeerTakes() =
+    fun aDmOffersOnlyTheCallKindsThePeerTakes() =
         runTest {
             val calls = mockk<CallManager>(relaxed = true).also { calls = it }
             every { calls.liveEnabled } returns true
@@ -4009,11 +4012,16 @@ class ChatViewModelTest {
             assertFalse(vm.state.value.canCall)
             assertFalse(vm.state.value.canMeshCall)
 
-            // Switched off, both are offered again and a tap explains what the peer lacks.
+            // The preference only orders the buttons; switched off, a peer with neither bit still gets none.
             preferred.value = false
             advanceUntilIdle()
+            assertFalse(vm.state.value.canCall)
+            assertFalse(vm.state.value.canMeshCall)
+
+            peersFlow.value = listOf(peer(PEER_CALL, capabilities = Protocol.CAP_CALL))
+            advanceUntilIdle()
             assertTrue(vm.state.value.canCall)
-            assertTrue(vm.state.value.canMeshCall)
+            assertFalse("a peer without the walkie", vm.state.value.canMeshCall)
         }
 
     @Test
@@ -4073,10 +4081,15 @@ class ChatViewModelTest {
             coVerify(exactly = 0) { calls.start(PEER_CALL, CallKind.LIVE) }
             assertEquals(listOf(R.string.chat_call_peer_too_old), events)
 
-            // The same thread in a build that takes live calls offers one.
+            // The same thread in a build that takes live calls offers one only once the peer carries CAP_CALL.
             every { calls.liveEnabled } returns true
             val live = vm(PEER_CALL)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { live.state.collect {} }
+            advanceUntilIdle()
+            assertFalse("a walkie-only peer", live.state.value.canCall)
+            assertTrue(live.state.value.canMeshCall)
+
+            peersFlow.value = listOf(peer(PEER_CALL, capabilities = Protocol.CAP_CALL or Protocol.CAP_WALKIE))
             advanceUntilIdle()
             assertTrue(live.state.value.canCall)
             assertTrue(live.state.value.canMeshCall)

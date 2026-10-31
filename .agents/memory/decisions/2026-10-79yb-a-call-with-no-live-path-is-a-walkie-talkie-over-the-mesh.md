@@ -614,3 +614,14 @@ cue on the speaker's phone alone (`TalkCue`, carried on `Talk.Sending`):
 The call screen fires the haptic only on the step from `Recording` to `Sending`, so a screen drawn again mid-send does
 not buzz twice (`WalkieTalkCueTest`). Owed: a device check that the beep is heard on the loudspeaker and on a headset,
 and not on the peer.
+
+## Amendment 2026-10-31 (15): the chat offers a call only toward a peer that takes it
+
+The chat's call buttons were not gated on the peer's bits, for the file button's reason: a bit only arrives in a fresh
+profile, and hiding the button until then made the feature invisible. In use that put a Call button on every contact
+on a build without calls, and each press only answered "they can't take calls". A build that gains a bit now re-mints
+its profile at once (`MeshManager`'s `custodyPresentsOtherThan`), so the bit is rarely stale.
+
+`ChatUiState.canCall` and `canMeshCall` now ask for `CAP_CALL` and `CAP_WALKIE`, as the profile screen does, whether or
+not the person prefers mesh calls; that preference only orders the buttons. `refusalForCall` stays as the backstop for a
+press that races a profile. Guard: `ChatViewModelTest.aDmOffersOnlyTheCallKindsThePeerTakes`.

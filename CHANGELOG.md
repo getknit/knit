@@ -62,6 +62,8 @@ document:
   buzzes harder with two short beeps if a burst hits the limit while you're still holding the button.
 - Walkie-talkie calls now record your voice the way regular calls do, with your phone's own noise reduction
   and volume leveling. Background noise drops, and voices sound about as loud from one phone to the next.
+- A chat now shows the Call and Mesh call buttons only when the contact's version of Knit can take that kind
+  of call. You no longer get a button that can only tell you they can't answer.
 - Typing indicators, link previews, content filtering and the large Bluetooth download limit have moved to a
   new Chats screen in Settings.
 - Your LoRa board now sends only messages you write, and the Bridge distant groups switch is gone. Friends

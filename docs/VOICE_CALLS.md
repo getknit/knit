@@ -818,11 +818,11 @@ its media (`REASON_MEDIA`).
   The profile offers each kind as its own button beside Message, Call and Mesh call, toward a peer carrying that
   kind's bit (`CAP_CALL`, `CAP_WALKIE`); with both offered they share a row under Message.
 
-  The chat offers both kinds by the same rule: the call it prefers in its top bar, the other in its overflow.
-  The Calls screen's "Prefer mesh calls" (`CallPreferenceStore`, off by default, shown only where both kinds are
-  wired) puts the mesh call in the top bar whatever the route, toward a peer carrying `CAP_WALKIE`. With it on, a DM
-  offers only the kinds its peer carries the bits for: toward a peer without the walkie the live call takes the bar,
-  and toward one with neither bit there is no call button.
+  The chat offers both kinds by the same rule, each only toward a peer carrying its bit: the call it prefers in its
+  top bar, the other in its overflow. Toward a peer with neither bit there is no call button; a press that races a
+  profile still gets the refusal. The Calls screen's "Prefer mesh calls" (`CallPreferenceStore`, off by default,
+  shown only where both kinds are wired) puts the mesh call in the top bar whatever the route, toward a peer carrying
+  `CAP_WALKIE`; toward a peer without the walkie the live call takes the bar.
   A mesh call placed on purpose is a walkie session whatever the route.
 - **C-3.11-4** A live OFFER carries `m = 1 | 4` when the caller can drop to a walkie. The callee echoes `4` on its
   ANSWER when it can too. With both bits, each of C-3.3-3's `no_route` endings drops the call to a connected walkie
