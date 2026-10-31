@@ -43,12 +43,12 @@ fun ConversationListItemDmLargeText() = ConversationListItemDmPreview()
 @PreviewTest
 @ComponentShots
 @Composable
-fun ConversationListItemDelivered() = ConversationListItemDeliveredPreview()
+fun ConversationListItemTranslated() = ConversationListItemTranslatedPreview()
 
 @PreviewTest
 @ComponentShots
 @Composable
-fun ConversationListItemTranslated() = ConversationListItemTranslatedPreview()
+fun ConversationListItemDelivered() = ConversationListItemDeliveredPreview()
 
 @PreviewTest
 @ComponentShots
