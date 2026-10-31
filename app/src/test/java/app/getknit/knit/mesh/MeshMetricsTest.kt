@@ -192,8 +192,7 @@ class MeshMetricsTest {
         BlobExchange.BlobEvent.entries.forEachIndexed { i, e -> repeat(i + 1) { metrics.onBlobEvent(e) } }
 
         val files = metrics.files()
-        assertEquals(
-            listOf(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 19L, 20L, 21L, 22L, 23L),
+        val fields =
             listOf(
                 files.blobQueriesSent,
                 files.blobQueriesAnswered,
@@ -217,9 +216,14 @@ class MeshMetricsTest {
                 files.blobProofQueriesSent,
                 files.blobProofAnswersTaken,
                 files.blobProofsHeld,
+                files.blobHoldersOverCeiling,
+                files.blobOverCeiling,
                 files.blobLinkRefused,
-            ),
-        )
+            )
+        // One field per event, in the enum's order: an event added with no field of its own fails here, wherever it lands.
+        val events = BlobExchange.BlobEvent.entries.size
+        assertEquals("every blob event has a files field listed here", events, fields.size)
+        assertEquals((1L..events.toLong()).toList(), fields)
         assertEquals(files, metrics.snapshot().files)
     }
 

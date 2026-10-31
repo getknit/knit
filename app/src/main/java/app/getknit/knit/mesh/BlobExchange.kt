@@ -3003,6 +3003,7 @@ class BlobExchange(
         // ceiling, and a want ended because a held copy of it was over the ceiling (#234).
         HolderOverCeiling,
         OverCeiling,
+
         // An ask over a contact's direct link for a blob that link does not carry, neither served nor echoed (ADR
         // 2026-10.a5yj).
         LinkRefused,

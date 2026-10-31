@@ -707,9 +707,12 @@ Status: draft (2026-10-30), for the maintainer's call. Built and checked on the 
 (`DirectLinksTest.aMoveToAnotherNetworkClosesTheLinkLeftOnTheOldOneAndAFileItCutIsOfferedForAtOnce`,
 `aLinkThatGoesSilentMidFileIsOfferedForAgainAfterABackoffThatGrowsWhileLinksKeepDyingSo`,
 `InternetLinkLabTest.aPhotoCutByTheReceiversMoveToAnotherNetworkResumesOverTheLinkHisWantRaises` and
-`aPhotoCutByTheSendersMoveToAnotherNetworkIsOfferedAgainAtOnce`, each of which fails without its half). The device
-trial is owed. Amends the spool-first amendment and the file's-whole-day amendment; `docs/DIRECT_LINKS.md` L-4-2, L-7-7
-and L-7-9.
+`aPhotoCutByTheSendersMoveToAnotherNetworkIsOfferedAgainAtOnce`, each of which fails without its half). Device trial
+passed 2026-10-31 (P7 on home Wi-Fi sending the P9 a 7.5 MB file no relay took, the P9's Wi-Fi turned off by hand
+mid-file): the P9's link ended `ROUTE` mid-file at the switch with 1,060,864 B kept, its want offered again from cellular
+41 s later (`why` WANT, up via `V4_REFLEXIVE` in 694 ms), the P7's answer replaced the link it still held, and the rest
+crossed from that offset in 39 s. Amends the spool-first amendment and the file's-whole-day amendment;
+`docs/DIRECT_LINKS.md` L-4-2, L-7-7 and L-7-9.
 
 The gap: a link's socket is bound to the network that was the default when it was punched, and stays on it. When the
 phone moves (Wi-Fi to cellular, or back), the link's sends fail or go nowhere, and only the silence bound found it: 65 s
@@ -746,3 +749,6 @@ minutes, and it would need a wire change.
   10 s and starts a backoff that the move cleared a moment before.
 - A VPN keeps one network across the change underneath it, so no route change is seen, and its link lives or dies as
   the tunnel does.
+- The receiving end's offer waits out its want's minute from the message's arrival (L-7-9), whenever the cut came: in
+  the trial the cut was 21 s after arrival, so the new link came 41 s after it. The other end, which never saw the
+  change, holds its dead link until that offer replaces it, or for its silence.
