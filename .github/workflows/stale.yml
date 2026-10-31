@@ -68,7 +68,7 @@ jobs:
           stale-issue-label: 'stale'
           close-issue-reason: 'not_planned'
           stale-issue-message: |
-            No activity here for 90 days. Knit is a best-effort hobby project shipped as-is, so an
+            No activity here for 90 days. Knit is a best-effort project shipped as-is, so an
             issue sitting untouched usually means nobody got to it — not that it was rejected.
 
             This will close in 14 days. If it still matters, say so and it stays open; a fresh

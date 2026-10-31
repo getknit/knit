@@ -17,4 +17,4 @@ contact_links:
       Discussions live at the getknit organization, shared by every Knit project.
   - name: 📖 Contributing guide & support expectations
     url: https://github.com/getknit/knit/blob/main/CONTRIBUTING.md
-    about: Knit is a best-effort hobby project shipped as-is. Please read this before filing.
+    about: Knit is a best-effort project shipped as-is. Please read this before filing.

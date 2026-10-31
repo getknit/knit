@@ -79,7 +79,7 @@ wontfix:
   issues:
     comment: |
       Thanks for raising it, @{issue-author}. This isn't something that'll be taken on. Knit is a
-      best-effort hobby project shipped as-is, and part of keeping it maintainable is declining
+      best-effort project shipped as-is, and part of keeping it maintainable is declining
       scope — see the support expectations in
       [`CONTRIBUTING.md`](https://github.com/getknit/knit/blob/main/CONTRIBUTING.md).
 

@@ -286,7 +286,7 @@ jobs:
                 '---',
                 '',
                 'Reply here with whatever you can get — this check re-runs on your comment and clears itself, and',
-                'partial answers still help. Knit is a best-effort hobby project shipped as-is, so a report that',
+                'partial answers still help. Knit is a best-effort project shipped as-is, so a report that',
                 'cannot be reproduced generally cannot be fixed.',
                 '',
                 `Tagged \`${LABEL}\`: with no reply it goes stale in 10 days and closes 4 days after that. That is not a`,

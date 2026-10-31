@@ -12,7 +12,7 @@ body:
       value: |
         Thanks for taking the time to file a bug. **Please search existing issues before opening a new one.**
 
-        - Knit is a **best-effort hobby project shipped as-is** — issues are welcome but may not be
+        - Knit is a **best-effort project shipped as-is** — issues are welcome but may not be
           triaged, answered, or fixed on any timeline (see `CONTRIBUTING.md`).
         - **Do not report security vulnerabilities here.** See `SECURITY.md` for private disclosure —
           public disclosure before a fix exists puts users at risk.
@@ -99,5 +99,5 @@ body:
           required: true
         - label: This is not a security vulnerability (those go to SECURITY.md privately).
           required: true
-        - label: I understand Knit is a best-effort hobby project with no support guarantee.
+        - label: I understand Knit is a best-effort project with no support guarantee.
           required: true

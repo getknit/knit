@@ -1,6 +1,6 @@
 <!--
 Feature or enhancement proposal for Knit. Please search existing issues first.
-Note: Knit is a best-effort hobby project — proposals are welcome but may not be accepted, and some
+Note: Knit is a best-effort project — proposals are welcome but may not be accepted, and some
 scope is deliberately deferred (see the Roadmap in README.md and CONTRIBUTING.md).
 -->
 

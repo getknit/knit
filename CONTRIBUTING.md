@@ -6,7 +6,7 @@ Android. Contributions are welcome, within the expectations below.
 ## Support expectations (read this first)
 
 Knit is released **as-is** under the [GNU GPL v3.0-or-later](COPYING). It is developed on a
-**best-effort, hobby basis**, with **no support, warranty, or response-time guarantee** of any kind —
+**best-effort basis**, with **no support, warranty, or response-time guarantee** of any kind —
 this is the "NO WARRANTY" clause of the GPL, stated plainly:
 
 - Issues and pull requests are welcome, but may not be triaged, answered, or accepted.

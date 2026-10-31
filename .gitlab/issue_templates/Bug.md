@@ -1,6 +1,6 @@
 <!--
 Bug report for Knit. Please search existing issues first.
-Note: Knit is a best-effort hobby project shipped as-is — issues are welcome but may not be
+Note: Knit is a best-effort project shipped as-is — issues are welcome but may not be
 triaged, answered, or fixed on any timeline (see CONTRIBUTING.md).
 Do NOT report security vulnerabilities here — see SECURITY.md for private disclosure.
 -->

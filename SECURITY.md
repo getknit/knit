@@ -10,14 +10,14 @@ before a fix exists puts users at risk.
 
 Instead, report privately through GitHub's [**private vulnerability reporting**][report] — the
 "Report a vulnerability" button on the repository's *Security* tab — which opens a private draft
-advisory visible only to the maintainers. If you'd prefer email, write to **jeff.mixon@gmail.com**.
+advisory visible only to the maintainers. If you'd prefer email, write to **jeff@getknit.app**.
 Please include:
 
 - a description of the issue and its impact,
 - steps to reproduce (or a proof of concept), and
 - the affected version / commit.
 
-Please allow reasonable time for a fix before any public disclosure. As a best-effort hobby project,
+Please allow reasonable time for a fix before any public disclosure. As a best-effort project,
 there is no guaranteed acknowledgement or remediation timeline, but genuine reports will be reviewed.
 
 [report]: https://github.com/getknit/knit/security/advisories/new
