@@ -79,6 +79,13 @@ interface MeshController {
      */
     val arrivals: Flow<Map<String, ArrivingFile>> get() = flowOf(emptyMap())
 
+    /**
+     * Our DMs whose compact LoRa copy their recipient's board acked, by row id ([LoraRadioReached], ADR 040's 2026-10-31
+     * amendment): the chat's "reached their LoRa radio" between ✓ and ✓✓. In memory only and bounded; an entry outlives
+     * its ✓✓ on purpose — every reader lets `received` win. Defaulted for the fakes.
+     */
+    val loraRadioReached: Flow<Map<String, LoraRadioReached>> get() = flowOf(emptyMap())
+
     /** Starts the mesh engine (called by the foreground [MeshService]). */
     fun start()
 

@@ -85,6 +85,7 @@ import app.getknit.knit.location.LocationPrecision
 import app.getknit.knit.location.LocationSource
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.BluetoothFetchGate
+import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
@@ -273,6 +274,9 @@ data class ChatRow(
     // recorded ackers, which is what makes the tick fall back to a bare "Delivered" (see [deliveryLabel]).
     val deliveredCount: Int = 0,
     val recipientTotal: Int = 0,
+    // Our DM's compact LoRa copy was acked by their own board and no receipt is back yet (ADR 040's 2026-10-31
+    // amendment): the tick's middle state. Always false once [received], and outside a DM of ours.
+    val radioReached: Boolean = false,
     // True when content filtering hides this message — the on-device text moderator flagged its body, or the
     // words it quotes (`MessageEntity.hiddenByFilter`); the bubble collapses it behind a tap-to-reveal instead
     // of showing the text outright.
@@ -1233,6 +1237,8 @@ class ChatViewModel(
         val group: GroupEntity?,
         // messageId -> how many current roster members have acked it. Empty outside a group.
         val deliveredCounts: Map<String, Int>,
+        // messageId -> their LoRa radio acked our DM (MeshController.loraRadioReached). Empty outside a DM thread.
+        val radioReached: Map<String, LoraRadioReached>,
     )
 
     // What the blob table and the moderation cache say about every attachment, folded into one arm of the
@@ -1264,13 +1270,19 @@ class ChatViewModel(
                 }
             }
 
-    // The window paired with this thread's full sender list, folded first so the bundle below stays at the
-    // typed 5-flow combine overload.
+    // Which of our DMs here their LoRa radio has acked, in memory (ADR 040's 2026-10-31 amendment). A DM thread only: a
+    // group, a room or a commons never takes a compact copy, so they never subscribe.
+    private val radioReached: Flow<Map<String, LoraRadioReached>> =
+        if (Conversations.kindFor(conversationId) == ConversationKind.DM) meshManager.loraRadioReached else flowOf(emptyMap())
+
+    // The window paired with this thread's full sender list and the radio-reached evidence, folded first so the bundle
+    // below stays at the typed 5-flow combine overload.
     private val windowWithSenders =
         combine(
             windowed.filterNotNull(),
             messages.observeSendersIn(conversationId),
-        ) { window, senders -> window to senders }
+            radioReached,
+        ) { window, senders, reached -> Triple(window, senders, reached) }
 
     private val messagesWithReactions =
         combine(
@@ -1279,7 +1291,7 @@ class ChatViewModel(
             settings.blockedNodeIds,
             blobState,
             groupDelivery,
-        ) { (window, senders), reacts, blocked, blob, (group, delivered) ->
+        ) { (window, senders, reached), reacts, blocked, blob, (group, delivered) ->
             MessagesBundle(
                 window.messages.filter { it.senderId !in blocked },
                 senders.filter { it !in blocked },
@@ -1295,6 +1307,7 @@ class ChatViewModel(
                 blob.retrySources,
                 group,
                 delivered,
+                reached,
             )
         }
 
@@ -1521,6 +1534,8 @@ class ChatViewModel(
                         // since we never ack ourselves (the details screen's rule, kept identical here).
                         deliveredCount = if (mine && isGroup) deliveredCounts[m.id] ?: 0 else 0,
                         recipientTotal = if (mine && isGroup) members.count { it != me } else 0,
+                        // The shared fold: a receipt wins, and only a DM of ours lifts.
+                        radioReached = mine && DeliveryStatus.of(m, bundle.radioReached[m.id]) == DeliveryStatus.RadioReached,
                         moderationFlagged = m.hiddenByFilter(hideSensitive),
                         attachmentHash = m.attachmentHash,
                         attachmentMime = m.attachmentMime,

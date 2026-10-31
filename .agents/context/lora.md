@@ -225,6 +225,16 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   composer hint says a post past its one-packet budget, or one with a reply or an attachment, is not carried
   (`loraHintFor`, ADR 2026-10.rp3s); a DM's still hedges.
 
+- **When touching the chat's "reached their LoRa radio" — `LoraMeshTransport.onRadioReached`, `radioReached`,
+  `MeshManager.onLoraRadioReached`, `MeshController.loraRadioReached`, `LoraRadioReached`, `DeliveryStatus.RadioReached`
+  / `ofTick`, `tickGlyph` / `tickGlyphTag`, `AckProof` / `PacketOutcome.Acked.proof` (`ack_proof_status`), or
+  `LoraDirectPolicy.launch`'s eviction:** READ ADR 040's 2026-10-31 amendment and ADR 2026-10.x9fa, then "UI surfaces" in
+  `lora-bridge.md`. Only a destination's ACK of a `DirectKind.MESSAGE`, on time or late, reports its row id; never an
+  implicit ACK, a receipt or a reaction, and never an ack our board found `AckProof.INVALID` (`ABSENT` still counts:
+  an unauthenticated routing header). The lambda runs on the plane's one outcome collector: the manager does one
+  lock-free update, no database, no launch, no call back into the plane. In memory, bounded, first ack wins, never
+  persisted or pruned; `received` always wins in every reader. A flight evicted from the full table is remembered, so
+  its late ack still moves the marks.
 - **Before adding a second board kind (MeshCore) or making `MeshtasticLink` board-neutral:** READ ADR 2026-10.jend.
   On a MeshCore board only people's room posts and reactions flood, plus our own profile right before our first
   flooded post. Floods are scoped to the board's region when one is set, and booked as every repeater's airtime under

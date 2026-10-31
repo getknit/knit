@@ -540,6 +540,7 @@
     <string name="chat_status_arrived_nearby">Llegó desde cerca</string>
     <string name="chat_status_delivered_lora">Entregado por LoRa</string>
     <string name="chat_status_arrived_lora">Llegó por LoRa</string>
+    <string name="chat_status_lora_radio_reached">Llegó a su radio LoRa</string>
     <string name="chat_status_pending_key">Aún no enviado: esperando su clave</string>
     <string name="chat_time_just_now">Ahora mismo</string>
     <string name="chat_action_copy">Copiar texto</string>
@@ -1688,6 +1689,8 @@
     <string name="message_details_sent_by">Enviado por %1$s</string>
     <string name="message_details_arrived_at">Llegó: %1$s</string>
     <string name="message_details_delivered_at">Entregado: %1$s</string>
+    <string name="message_details_lora_radio_reached_at">Llegó a su radio LoRa: %1$s</string>
+    <string name="message_details_lora_waiting_for_phone">Esperando que su teléfono lo confirme</string>
     <string name="message_details_hidden_body">Mensaje oculto por el filtro de contenido</string>
     <string name="message_details_no_reactions">Nadie ha reaccionado a este mensaje todavía</string>
     <string name="message_details_filter_all">Todas %1$d</string>

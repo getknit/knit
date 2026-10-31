@@ -103,6 +103,8 @@ class LoraDirectTransportTest {
         val boards: MutableStateFlow<Map<String, LoraBoardHolder>?>,
         val config: MutableStateFlow<LoraConfig?>,
         val pace: LoraPacePolicy,
+        /** Every `onRadioReached` the plane made: the frame id, and whether the ack came late. */
+        val reached: MutableList<Pair<String, Boolean>>,
     )
 
     private val wallBase = 1_700_000_000_000L
@@ -140,6 +142,7 @@ class LoraDirectTransportTest {
         val delivered = mutableListOf<OpenedDirect>()
         val config = MutableStateFlow<LoraConfig?>(LoraConfig("AA:$nodeNum", knitIndex))
         val pace = LoraPacePolicy(minGapMs = 0)
+        val reached = mutableListOf<Pair<String, Boolean>>()
         val transport =
             LoraMeshTransport(
                 selfId = { id },
@@ -156,6 +159,7 @@ class LoraDirectTransportTest {
                 },
                 source = source,
                 boardMap = boardFlow.filterNotNull(),
+                onRadioReached = { frameId, late -> reached += frameId to late },
                 scope = scope,
                 metrics = metrics,
                 state = state,
@@ -164,7 +168,7 @@ class LoraDirectTransportTest {
                 pace = pace,
                 log = log,
             )
-        return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace)
+        return Node(id, transport, link, metrics, seal, source, delivered, boardFlow, config, pace, reached)
     }
 
     private fun TestScope.up(vararg nodes: Node) {
@@ -1035,6 +1039,87 @@ class LoraDirectTransportTest {
             settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
             assertEquals(1L, a.lora.loraDirectNoOutcome)
             assertEquals(1, a.transport.status.value.direct.unreachable)
+        }
+
+    // --- their radio has it: the chat's middle state (ADR 040's 2026-10-31 amendment) ---
+
+    @Test
+    fun theDestinationsAckOfOurDmTellsTheChatItsRadioHasItButAReceiptsOrAReactionsNever() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT)
+            a.dm("bob", "x1", kind = DirectKind.REACTION)
+            settle(10_000)
+            assertEquals("every one of them acked by bob's board", 3L, a.lora.loraDirectAcked)
+            assertEquals("only the DM, once, on time", listOf("f1" to false), a.reached)
+        }
+
+    @Test
+    fun anImplicitAckNeverSaysTheirRadioHasIt() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { implicitAcks = true }
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)))
+            up(a) // bob's board is off; a relay repeats alice's packet
+            a.dm("bob", "f1")
+            settle(air.untilGiveUp())
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertTrue(a.lora.loraDirectImplicitAck >= 1)
+            assertTrue("a relay's repeat is nobody's radio having it", a.reached.isEmpty())
+        }
+
+    @Test
+    fun aDestinationsAckAfterTheSendEndedSaysTheirRadioHasItAsLate() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle(1_000)
+            val handle = a.link.sentIds.single()
+            settle(LoraDirectPolicy.deadlineMs(priced(hiPacket), LoraAirtime().slotTimeMs()))
+            assertEquals(1L, a.lora.loraDirectNoOutcome)
+            assertTrue(a.reached.isEmpty())
+            // The board's to-phone queue, replayed after a BLE drop, hands the destination's ack over at last.
+            a.link.emitOutcome(PacketOutcome.Acked(handle, byDestination = true))
+            settle(1_000)
+            assertEquals("late: its time is not when their board took it", listOf("f1" to true), a.reached)
+        }
+
+    @Test
+    fun aReprobesAckReportsTheSameDm() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            a.dm("bob", "f1")
+            settle()
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            assertEquals(1L, a.lora.loraReprobed)
+            assertEquals("the re-airing carries the row id: the same DM, twice", listOf("f1" to false, "f1" to false), a.reached)
+        }
+
+    /**
+     * `byDestination` is only the ack's `from`, a cleartext header anyone holding the channel key can write. Our board
+     * says when the proof failed: that ack still ends the send and moves the marks as before (a follow-up), but the chat
+     * never hears of it. An absent proof (2.7, ham mode) still counts.
+     */
+    @Test
+    fun anAckWhoseProofOurBoardFoundForgedNeverReachesTheChat() =
+        runTest {
+            val air = FakeMeshtasticAir().apply { silent = { _, _ -> true } }
+            val logs = mutableListOf<String>()
+            val a = node(air, 1u, "alice", mapOf("bob" to holder(2u), "carol" to holder(3u)), log = { logs += it })
+            up(a)
+            a.dm("bob", "f1")
+            a.dm("carol", "f2")
+            settle(1_000)
+            val (forged, absent) = a.link.sentIds
+            a.link.emitOutcome(PacketOutcome.Acked(forged, byDestination = true, proof = AckProof.INVALID))
+            a.link.emitOutcome(PacketOutcome.Acked(absent, byDestination = true, proof = AckProof.ABSENT))
+            settle(1_000)
+            assertEquals(2L, a.lora.loraDirectAcked)
+            assertEquals(listOf("f2" to false), a.reached)
+            assertTrue(logs.any { it == "lora direct ack proof invalid f1 -> bob" })
         }
 
     // --- PKI: firmware 2.8 encrypts every compact DM to the destination board's key (ADR 2026-10.aajj) ---

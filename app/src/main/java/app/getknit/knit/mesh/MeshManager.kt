@@ -161,6 +161,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -173,6 +174,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -1054,6 +1056,30 @@ class MeshManager(
 
     /** The links' incoming files and how far each has got, sampled while a chat waits on one (#115). */
     override val arrivals: Flow<Map<String, ArrivingFile>> = arrivalTicker(transport::arrivingFiles)
+
+    private val loraReached = MutableStateFlow<Map<String, LoraRadioReached>>(emptyMap())
+
+    /**
+     * Our DMs whose recipient's board acked their compact copy (ADR 040's 2026-10-31 amendment). Never persisted and
+     * never pruned on a ✓✓ — pruning would need a database read on the plane's outcome collector, and every reader lets
+     * `received` win — only bounded ([LoraRadioReached.MAX_HELD]). Sign-out and a restore both end the process, which
+     * takes it with them.
+     */
+    override val loraRadioReached: StateFlow<Map<String, LoraRadioReached>> = loraReached.asStateFlow()
+
+    /**
+     * The LoRa plane's word that our DM [frameId] reached its recipient's radio (`LoraMeshTransport.onRadioReached`,
+     * wired in `di/MeshModule`); [late] when the ack came after the send ended. Runs on the plane's one outcome
+     * collector, so it does exactly one lock-free thing: no database read, no launch, nothing that calls the plane back.
+     * Stamped on [clock], the wall clock a row's `sentAt` uses; the first ack wins.
+     */
+    internal fun onLoraRadioReached(
+        frameId: String,
+        late: Boolean,
+    ) {
+        val reach = LoraRadioReached(atMs = clock(), late = late)
+        loraReached.update { held -> LoraRadioReached.record(held, frameId, reach) }
+    }
 
     // Demo-screenshot only (DemoSeeder.seedRelays): a pinned spool status that [spoolStatus] answers with
     // instead of the live one. Null in every build that is not `-PseedDemo=true`.

@@ -207,7 +207,9 @@ val uiModule =
             )
         }
         // MessageDetailsViewModel takes the long-pressed message's id as a runtime param.
-        viewModel { params -> MessageDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get()) }
+        viewModel { params ->
+            MessageDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), get<MeshController>().loraRadioReached)
+        }
         // GroupDetailsViewModel takes the group id as a runtime param; the rest are resolved by type.
         viewModel { params ->
             GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), androidContext())

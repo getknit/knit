@@ -23,6 +23,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
@@ -802,6 +803,27 @@ class ChatListViewModelTest {
             assertEquals(DeliveryStatus.Sent, rows.getValue("a").lastStatus)
             assertEquals(DeliveryPlane.Unknown, rows.getValue("a").lastDeliveredVia)
             assertEquals(DeliveryStatus.Pending, rows.getValue("b").lastStatus)
+        }
+
+    /** A DM head their LoRa radio acked reads so until its receipt (ADR 040's 2026-10-31 amendment). */
+    @Test
+    fun lastStatusSaysTheirLoraRadioHasItUntilTheReceipt() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            store.set(
+                msg(senderId = "me", sentAt = 100, conversationId = "a", recipientId = "a", id = "da"),
+                msg(senderId = "me", sentAt = 100, conversationId = "b", recipientId = "b", id = "db", received = true),
+            )
+            acceptedFlow.value = setOf("a", "b")
+            mesh.loraRadioReached.value = listOf("da", "db").associateWith { LoraRadioReached(atMs = 1L, late = false) }
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.conversations
+                    .associateBy { it.id }
+            assertEquals(DeliveryStatus.RadioReached, rows.getValue("a").lastStatus)
+            assertEquals("the ✓✓ wins", DeliveryStatus.Delivered, rows.getValue("b").lastStatus)
         }
 
     @Test

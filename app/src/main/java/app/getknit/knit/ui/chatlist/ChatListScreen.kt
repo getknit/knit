@@ -719,16 +719,19 @@ internal fun ConversationListItem(
                     // Kept inside the `let` rather than given a nullable targetState: an AnimatedContent
                     // always emits a child, and a zero-width one still earns its 3.dp from spacedBy above.
                     // A row whose newest message is not ours has no tick and must have no gap either.
+                    //
+                    // Keyed on the glyph, not the status: "reached their LoRa radio" keeps the one check here (its
+                    // words ride the row's description), and a pop that swaps a check for the same check is a twitch.
                     row.lastStatus?.let { status ->
                         val tickEnter = KnitMotion.enterPop()
                         val tickExit = KnitMotion.exitPop()
                         AnimatedContent(
-                            targetState = status,
+                            targetState = deliveryIcon(status),
                             transitionSpec = { tickEnter togetherWith tickExit },
                             label = "chatListTick",
-                        ) { current ->
+                        ) { icon ->
                             Icon(
-                                imageVector = deliveryIcon(current),
+                                imageVector = icon,
                                 // Decorative here: the row folds the spoken label into its own description.
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,

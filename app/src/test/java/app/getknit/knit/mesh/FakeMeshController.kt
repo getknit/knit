@@ -41,6 +41,9 @@ class FakeMeshController : MeshController {
     /** What the links report streaming in; a state flow, so `advanceUntilIdle()` idles where a real poll would not. */
     override val arrivals = MutableStateFlow<Map<String, ArrivingFile>>(emptyMap())
 
+    /** Which of our DMs their LoRa radio acked (ADR 040's 2026-10-31 amendment); a test puts a row id in it. */
+    override val loraRadioReached = MutableStateFlow<Map<String, LoraRadioReached>>(emptyMap())
+
     var startCount = 0
     var stopCount = 0
     var healCount = 0

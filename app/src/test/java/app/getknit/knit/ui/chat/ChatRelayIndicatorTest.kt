@@ -40,6 +40,7 @@ class ChatRelayIndicatorTest {
         deliveredVia: DeliveryPlane = DeliveryPlane.Unknown,
         attachmentReady: Boolean = true,
         attachmentWait: AttachmentWait = AttachmentWait.Nearby,
+        radioReached: Boolean = false,
     ) = ChatRow(
         id = "m1",
         body = "look at this",
@@ -54,6 +55,7 @@ class ChatRelayIndicatorTest {
         attachmentReady = attachmentReady,
         attachmentRelay = attachmentRelay,
         attachmentWait = attachmentWait,
+        radioReached = radioReached,
     )
 
     private fun render(
@@ -336,6 +338,23 @@ class ChatRelayIndicatorTest {
         render(rows = listOf(row(received = false, deliveredVia = DeliveryPlane.LoRa)))
         compose.onNodeWithTag("chat_tick_lora", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithContentDescription("Sent").assertIsDisplayed()
+    }
+
+    @Test
+    fun aDmTheirLoraRadioAckedShowsTheRadioMarkAheadOfOneCheckAndSaysOnlyThat() {
+        render(rows = listOf(row(radioReached = true)))
+        compose.onNodeWithTag("chat_tick_lora_reached", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("chat_tick_lora", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Reached their LoRa radio").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sent").assertDoesNotExist()
+    }
+
+    @Test
+    fun theReceiptWinsOverTheirRadio() {
+        render(rows = listOf(row(radioReached = true, received = true, deliveredVia = DeliveryPlane.Nearby)))
+        compose.onNodeWithTag("chat_tick_lora_reached", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Delivered").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Reached their LoRa radio").assertDoesNotExist()
     }
 
     @Test

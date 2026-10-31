@@ -670,6 +670,20 @@ false are two encodings — both read as messagable); `Channel{ index=1, setting
   (`chat_tick_lora`) or on an arrival (`chat_arrived_lora`) with "Delivered over LoRa" / "Arrived over LoRa";
   the message-details screen swaps the icon the same way. Inbound rows are first-write-wins
   (`MessageDao.insertIfAbsent`), so a room post keeps the plane it first arrived on across re-serves.
+  Between ✓ and ✓✓ (ADR 040's 2026-10-31 amendment), one of our DMs whose compact copy the destination's own board acked
+  is `DeliveryStatus.RadioReached`: the LoRa mark ahead of one ✓ (`chat_tick_lora_reached`), "Reached their LoRa
+  radio" on the bubble, the chat-list row and the details screen, which adds the ack's time (none for a late one) and
+  "Waiting for their phone to confirm". It says their **radio** took the packet, never their phone. The source is
+  `LoraMeshTransport.onRadioReached(frameId, late)`, called for a `DirectKind.MESSAGE` on a destination's ACK in `settle`
+  or, late, in `onUnawaited` (an implicit ACK, a receipt's or a reaction's never), bound in `di/MeshModule` to
+  `MeshManager.onLoraRadioReached` → `MeshController.loraRadioReached` (`LoraRadioReached`, row id → wall-clock stamp,
+  first ack wins, 256 held, in memory only, never pruned: `received` always wins). The ack's proof gates it: firmware
+  2.8.1's `ack_proof_status` (`MeshPacket` field 23, `AckProof` on `PacketOutcome.Acked.proof`) `INVALID` is never shown
+  (`lora direct ack proof invalid <rowId> -> <peer>`); `ABSENT` — 2.7.x, ham mode, or a proof a relay's echo left the
+  firmware unable to check — still counts, so the residual trust is an unauthenticated routing header anyone with the
+  channel key can forge. Trial: P9 → P7 short DM with P7's board in range and P7's phone unable to take it (Bluetooth
+  off, or LoRa off in Knit) and P9's spool off; the middle state shows within ~5 s of `lora direct acked <rowId> -> <P7>`
+  (`…debug.LORA` `loraDirectAcked` +1) and holds; P7 Bluetooth back on → ✓✓ with its own glyph.
 - **Header.** `LoraPlane { Off, Down, Live }` (`mesh/lora/LoraPlane.kt`) from `LoraStatusRepository.facts`
   (pushed) → `ConnectionStatusRow(lora = …)`: `Icons.Outlined.Sensors` (Live, tertiary) / `SensorsOff` (Down)
   after the cloud, spoken as "LoRa radio connected / not connected"; 45 s grace on the Down edge.

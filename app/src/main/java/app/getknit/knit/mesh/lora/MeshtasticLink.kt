@@ -455,10 +455,15 @@ internal sealed interface PacketOutcome {
      * An acknowledgement for a direct send. [byDestination] true is the destination's own board answering: the packet
      * reached its radio, which says nothing about its phone. False is an implicit ack — a relay, or our own board,
      * heard it repeated — which a caller may count and must never take as delivery or as the end of the wait.
+     *
+     * [proof] is our board's verdict on the ack's `Routing.ack_proof` ([AckProof]): [byDestination] is only the ack's
+     * `from`, which anyone holding the channel key can write, so a caller that shows the ack to a person refuses an
+     * [AckProof.INVALID] one. A board that reports nothing reads [AckProof.ABSENT].
      */
     data class Acked(
         override val id: UInt,
         val byDestination: Boolean,
+        val proof: AckProof = AckProof.ABSENT,
     ) : PacketOutcome
 
     /** The firmware retried a direct send and gave up (`MAX_RETRANSMIT`, `NO_RESPONSE`): nothing answered. */

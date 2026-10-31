@@ -87,8 +87,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -3200,16 +3198,13 @@ private fun MessageBubble(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            // Our own messages show a delivery tick: one check sent, two checks acked.
+                            // Our own messages show a delivery tick: one check sent, two checks acked — and, on a
+                            // DM their LoRa radio has acked, the LoRa mark ahead of the one check until the receipt.
                             if (row.mine) {
+                                val tickStatus = DeliveryStatus.ofTick(received = row.received, radioReached = row.radioReached)
                                 val tickDescription =
                                     deliveryLabel(
-                                        status =
-                                            if (row.received) {
-                                                DeliveryStatus.Delivered
-                                            } else {
-                                                DeliveryStatus.Sent
-                                            },
+                                        status = tickStatus,
                                         plane = row.deliveredVia,
                                         mine = true,
                                         // On a group send the glyph alone says only "at least one
@@ -3220,7 +3215,8 @@ private fun MessageBubble(
                                 // A receipt landing is the one moment a mesh messenger actually earns its
                                 // keep, and until now it passed silently. The glyph and the tick cross
                                 // together as one unit, so the pair reads as a single event rather than as
-                                // two icons independently changing their minds.
+                                // two icons independently changing their minds. Keyed on the status, so each
+                                // step (✓, their radio, ✓✓) animates as one.
                                 //
                                 // The description sits on the AnimatedContent rather than on the Icons so
                                 // there is exactly one labelled node at every instant: mid-transition both
@@ -3233,11 +3229,11 @@ private fun MessageBubble(
                                 val tickEnter = KnitMotion.enterPop()
                                 val tickExit = KnitMotion.exitPop()
                                 AnimatedContent(
-                                    targetState = row.received,
+                                    targetState = tickStatus,
                                     transitionSpec = { tickEnter togetherWith tickExit },
                                     label = "deliveryTick",
                                     modifier = Modifier.semantics { contentDescription = tickDescription },
-                                ) { received ->
+                                ) { status ->
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -3246,8 +3242,10 @@ private fun MessageBubble(
                                         // radio-waves mark for LoRa) says the receipt came back over that
                                         // plane rather than a nearby radio. It sits before the tick so the
                                         // tick keeps the same trailing position on every row, and only once
-                                        // acked: an un-acked send has no plane to show.
-                                        val glyph = if (received) planeGlyph(row.deliveredVia) else null
+                                        // acked: an un-acked send has no plane to show — except the LoRa mark
+                                        // ahead of one check, which says their radio, not their phone, has it.
+                                        val glyph = tickGlyph(status, row.deliveredVia)
+                                        val glyphTag = tickGlyphTag(status, row.deliveredVia)
                                         if (glyph != null) {
                                             Icon(
                                                 imageVector = glyph,
@@ -3258,11 +3256,11 @@ private fun MessageBubble(
                                                 modifier =
                                                     Modifier
                                                         .size(12.dp)
-                                                        .testTag("chat_tick_${planeTag(row.deliveredVia)}"),
+                                                        .then(glyphTag?.let { Modifier.testTag(it) } ?: Modifier),
                                             )
                                         }
                                         Icon(
-                                            imageVector = if (received) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                            imageVector = deliveryIcon(status),
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.size(14.dp),
@@ -5845,6 +5843,38 @@ fun MessageBubbleMineViaInternetPreview() =
                     sentAt = PREVIEW_NOW - 2 * 60_000L,
                     received = true,
                     deliveredVia = DeliveryPlane.Internet,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = false,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
+
+/**
+ * A DM that rode LoRa: their board acked it, their phone has not — the LoRa mark ahead of one check, until the ✓✓
+ * (ADR 040's 2026-10-31 amendment).
+ */
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleMineLoraReachedPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m5",
+                    body = "At the ridge hut. Meet you at the lake at 3?",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "node-self",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 60_000L,
+                    received = false,
+                    radioReached = true,
                 ),
             now = PREVIEW_NOW,
             showSenderName = false,

@@ -83,8 +83,9 @@ internal class LoraDirectPolicy(
     private val flights = LinkedHashMap<UInt, Flight>()
 
     /**
-     * Flights that ended with no answer, by handle, so a destination's ack arriving after all — the board's to-phone
-     * queue replayed after a BLE drop — still marks the board reachable. Bounded at [MAX_FLIGHTS], oldest dropped.
+     * Flights that ended with no answer — past their deadline, with the board gone, or pushed out of a full table — by
+     * handle, so a destination's ack arriving after all (the board's to-phone queue replayed after a BLE drop) still marks
+     * the board reachable. Bounded at [MAX_FLIGHTS], oldest dropped.
      */
     private val ended = LinkedHashMap<UInt, DirectSend>()
 
@@ -285,13 +286,17 @@ internal class LoraDirectPolicy(
 
     // --- the in-flight table ---
 
-    /** Records a send the board took. Returns the oldest flight it had to end to stay under [MAX_FLIGHTS], if any. */
+    /**
+     * Records a send the board took. Returns the oldest flight it had to end to stay under [MAX_FLIGHTS], if any —
+     * remembered like one that ran out its deadline, so the destination's ack that may still come for it moves the marks
+     * as a late answer rather than being dropped.
+     */
     @Synchronized
     fun launch(flight: Flight): Flight? {
         flights[flight.handle] = flight
         if (flights.size <= MAX_FLIGHTS) return null
         val oldest = flights.keys.first()
-        return flights.remove(oldest)
+        return flights.remove(oldest)?.also(::remember)
     }
 
     /** The flight [handle] names, ended: the caller settles it. Null for a handle this table is not waiting on. */

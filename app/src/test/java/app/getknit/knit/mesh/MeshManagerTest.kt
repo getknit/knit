@@ -750,6 +750,33 @@ class MeshManagerTest {
                 .distinctBy { it.id }
     }
 
+    // --- their LoRa radio has it (ADR 040's 2026-10-31 amendment) ---
+
+    @Test
+    fun theLoraPlanesRadioReachedEdgeIsStampedOnTheWallClockAnOnTimeAckWinsAndEmits() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val seen = mutableListOf<Map<String, LoraRadioReached>>()
+            backgroundScope.launch { rig.manager.loraRadioReached.collect { seen += it } }
+
+            rig.clockNow = 1_000L
+            rig.manager.onLoraRadioReached("f1", late = false)
+            rig.clockNow = 2_000L
+            rig.manager.onLoraRadioReached("f1", late = true) // the re-probe's ack, or the same ack replayed
+            rig.manager.onLoraRadioReached("f2", late = true)
+            rig.clockNow = 3_000L
+            rig.manager.onLoraRadioReached("f2", late = false) // a re-probe acked on time replaces the late replay
+
+            val expected = mapOf("f1" to LoraRadioReached(1_000L, late = false), "f2" to LoraRadioReached(3_000L, late = false))
+            val lateF2 = expected + ("f2" to LoraRadioReached(2_000L, late = true))
+            assertEquals(expected, rig.manager.loraRadioReached.value)
+            assertEquals(
+                "emitted on each change: a repeat changes nothing, an on-time ack replaces a late one",
+                listOf(emptyMap(), expected - "f2", lateF2, expected),
+                seen,
+            )
+        }
+
     // --- moderation gate ---
 
     @Test

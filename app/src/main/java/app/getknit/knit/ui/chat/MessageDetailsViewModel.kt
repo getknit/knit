@@ -19,6 +19,7 @@ import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.LoraRadioReached
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -104,6 +105,9 @@ data class MessageDetailsUiState(
     // and never set for a group or room post, whose "who has it" question the roster below answers instead.
     val deliveredAt: Long? = null,
     val delivery: DeliveryStatus = DeliveryStatus.Sent,
+    // Our clock when their LoRa radio acked a DM we sent, while [delivery] is [DeliveryStatus.RadioReached] — null for
+    // an ack that came late (replayed from our board's queue, its time unknown) and in every other state.
+    val radioReachedAt: Long? = null,
     val plane: DeliveryPlane = DeliveryPlane.Unknown,
     val reactors: List<ReactorRow> = emptyList(),
     val filters: List<ReactionFilter> = emptyList(),
@@ -142,6 +146,8 @@ data class MessageDetailsUiState(
  *   there is nobody to be waiting on. Hidden until at least one ack lands.
  * - **DM** — never: the single ✓✓ already names the only recipient there is. The screen still reads that
  *   recipient's receipt for its `notedAt`, so a DM says *when* it was delivered without listing *who* to.
+ *   Before that receipt, a DM whose compact LoRa copy their board acked says so ([radioReached], ADR 040's 2026-10-31
+ *   amendment): their radio has it, with the time when the ack came on time, and their phone has not confirmed.
  */
 class MessageDetailsViewModel(
     private val messageId: String,
@@ -152,6 +158,8 @@ class MessageDetailsViewModel(
     peers: PeerRepository,
     settings: SettingsStore,
     identity: Identity,
+    /** `MeshController.loraRadioReached`: which of our DMs their LoRa radio acked, in memory. */
+    radioReached: Flow<Map<String, LoraRadioReached>>,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -241,9 +249,11 @@ class MessageDetailsViewModel(
             // Every group, not a flatMapLatest on this message's conversation: the roster caps at 8 and a
             // device holds a handful of groups, so the whole table is cheaper than re-subscribing per row.
             groups.observeGroups(),
-        ) { base, acks, groupList ->
+            radioReached,
+        ) { base, acks, groupList, reached ->
             val message = base.row ?: return@combine base.state
             withRecipients(base, message, acks, groupList.firstOrNull { it.groupId == message.conversationId })
+                .withRadioReached(message, reached[messageId])
         }.stateIn(
             viewModelScope,
             SharingStarted.WhileSubscribed(5_000),
@@ -304,6 +314,17 @@ class MessageDetailsViewModel(
                 base.state
             }
         }
+    }
+
+    /** Lifts our own DM's [DeliveryStatus.Sent] to [DeliveryStatus.RadioReached] on its board's ack; a receipt wins. */
+    private fun MessageDetailsUiState.withRadioReached(
+        message: MessageEntity,
+        reach: LoraRadioReached?,
+    ): MessageDetailsUiState {
+        if (!mine) return this
+        val status = DeliveryStatus.of(message, reach)
+        if (status != DeliveryStatus.RadioReached) return this
+        return copy(delivery = status, radioReachedAt = reach?.takeUnless { it.late }?.atMs)
     }
 
     private fun row(

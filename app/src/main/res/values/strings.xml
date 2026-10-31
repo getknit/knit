@@ -656,6 +656,9 @@
     <!-- LoRa plane (ADR 040): the frame, or the receipt that flipped the tick, crossed a Meshtastic board -->
     <string name="chat_status_delivered_lora">Delivered over LoRa</string>
     <string name="chat_status_arrived_lora">Arrived over LoRa</string>
+    <!-- Between ✓ and ✓✓ on a DM that rode LoRa: the recipient's own board acked it. It proves their RADIO has the
+         packet, never their phone, so it must not read as delivered (ADR 040's 2026-10-31 amendment) -->
+    <string name="chat_status_lora_radio_reached">Reached their LoRa radio</string>
     <string name="chat_status_pending_key">Not sent yet — waiting for their key</string>
     <string name="chat_time_just_now">Just now</string>
     <string name="chat_action_copy">Copy text</string>
@@ -2008,6 +2011,10 @@
          when a DM we sent reached them. Labelled in words because the line above them is a bare timestamp. -->
     <string name="message_details_arrived_at">Arrived %1$s</string>
     <string name="message_details_delivered_at">Delivered %1$s</string>
+    <!-- The same middle state on the details screen: when their LoRa radio acked it (our clock), then that their phone
+         has not confirmed it yet. Shown only until the delivery receipt lands -->
+    <string name="message_details_lora_radio_reached_at">Reached their LoRa radio at %1$s</string>
+    <string name="message_details_lora_waiting_for_phone">Waiting for their phone to confirm</string>
     <string name="message_details_hidden_body">Message hidden by content filtering</string>
     <string name="message_details_no_reactions">No one has reacted to this message yet</string>
     <string name="message_details_filter_all">All %1$d</string>

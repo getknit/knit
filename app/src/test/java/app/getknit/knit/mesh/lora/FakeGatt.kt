@@ -298,6 +298,8 @@ internal object BoardBytes {
         hopLimit: Int? = null,
         wantAck: Boolean = false,
         nextHop: Int? = null,
+        // MeshPacket.ack_proof_status (23): the board's verdict on an ack's proof, set on its way to the phone.
+        ackProofStatus: Int? = null,
     ): ByteArray =
         ProtoWriter()
             .message(2) {
@@ -321,6 +323,7 @@ internal object BoardBytes {
                 if (rxRssi != null) varint(12, rxRssi)
                 if (nextHop != null) varint(18, nextHop)
                 if (xeddsaSigned) bool(22, true)
+                if (ackProofStatus != null) varint(23, ackProofStatus)
             }.toByteArray()
 
     /** A ROUTING_APP NAK packet for our packet [requestId] with [reason]. */
@@ -332,13 +335,25 @@ internal object BoardBytes {
 
     /**
      * A ROUTING_APP ACK (`error_reason` NONE, so an empty `Routing`) for our packet [requestId], from [from]: the
-     * destination's board for a real one, a relay or our own board for an implicit one. Heard off the air, with an RSSI.
+     * destination's board for a real one, a relay or our own board for an implicit one. Heard off the air, with an RSSI,
+     * and with our board's [ackProofStatus] verdict when one is given (absent otherwise, as from a 2.7 board).
      */
     fun ack(
         from: UInt,
         requestId: UInt,
         to: UInt = 0xABCDu,
-    ): ByteArray = packet(from, 0, MeshtasticProto.PORT_ROUTING, ByteArray(0), requestId = requestId, to = to, rxRssi = -90)
+        ackProofStatus: Int? = null,
+    ): ByteArray =
+        packet(
+            from,
+            0,
+            MeshtasticProto.PORT_ROUTING,
+            ByteArray(0),
+            requestId = requestId,
+            to = to,
+            rxRssi = -90,
+            ackProofStatus = ackProofStatus,
+        )
 
     /** Whether a ToRadio{packet} asks for `want_ack` (MeshPacket field 10). */
     fun wantsAck(toRadio: ByteArray): Boolean {

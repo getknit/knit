@@ -54,6 +54,7 @@ import app.getknit.knit.location.LocationFixPolicy
 import app.getknit.knit.location.LocationPrecision
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
@@ -1324,6 +1325,38 @@ class ChatViewModelTest {
                     .first { it.id == "g1" }
             assertEquals(0, theirs.deliveredCount)
             assertEquals(0, theirs.recipientTotal)
+        }
+
+    /** Our DM their LoRa radio acked, until its ✓✓ (ADR 040's 2026-10-31 amendment); theirs and a received one never. */
+    @Test
+    fun aDmRowCarriesItsRadioReachedUntilTheReceipt() =
+        runTest {
+            stubDm("bob")
+            val vm = vm("bob")
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "me", recipientId = "bob", body = "on air", id = "d0", sentAt = 100, conversationId = "bob"),
+                    msg(
+                        senderId = "me",
+                        recipientId = "bob",
+                        body = "acked",
+                        id = "d1",
+                        sentAt = 150,
+                        conversationId = "bob",
+                        received = true,
+                    ),
+                    msg(senderId = "bob", recipientId = "me", body = "theirs", id = "d2", sentAt = 200, conversationId = "bob"),
+                )
+            mesh.loraRadioReached.value = listOf("d0", "d1", "d2").associateWith { LoraRadioReached(atMs = 1L, late = false) }
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertTrue(rows.getValue("d0").radioReached)
+            assertFalse("the ✓✓ wins", rows.getValue("d1").radioReached)
+            assertFalse("never on theirs", rows.getValue("d2").radioReached)
         }
 
     @Test

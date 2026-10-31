@@ -111,6 +111,19 @@ internal class LoraMeshTransport(
      * different board changes it.
      */
     private val onBoardBound: suspend (BoardBinding) -> Unit = {},
+    /**
+     * One of our compact DMs ([DirectKind.MESSAGE], by its row id) reached its recipient's **radio**: the destination's
+     * own board acked it — its phone may be away, and the board's to-phone queue can still drop it — so the chat shows
+     * "reached their LoRa radio" until the ✓✓ (ADR 040's 2026-10-31 amendment). [late] is an ack that came after the send
+     * ended, replayed from our board's to-phone queue, which may be minutes old: the caller shows no time for it. An ack
+     * whose proof our board found forged ([AckProof.INVALID]) never comes here; an implicit ack, a receipt's or a
+     * reaction's never does either.
+     *
+     * Called on the one `link.outcomes` collector, between moving the marks and releasing what was parked behind the
+     * send: it must return at once, take no lock that waits, launch nothing and never call back into this plane — a
+     * stall there drops the answers queued behind it, and a re-entry would reorder the parked offers.
+     */
+    private val onRadioReached: (frameId: String, late: Boolean) -> Unit = { _, _ -> },
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     /**
@@ -1151,7 +1164,10 @@ internal class LoraMeshTransport(
                 val send = direct.ended(outcome.id) ?: return
                 direct.onAcked(send.peerId, now)
                 ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
-                if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(send.peerId, now, fresh = !send.resend)
+                if (send.kind == DirectKind.MESSAGE) {
+                    reprobe.onAcked(send.peerId, now, fresh = !send.resend)
+                    radioReached(send, outcome, late = true)
+                }
                 stateWake.trySend(Unit)
                 publishStatus()
                 log("lora direct late ack ${send.frameId} -> ${send.peerId}")
@@ -1200,6 +1216,24 @@ internal class LoraMeshTransport(
         }
     }
 
+    /**
+     * Tells the chat our DM [send] reached its recipient's radio ([onRadioReached]), unless our board found the ack's
+     * proof forged: the ack's `from` is a cleartext header anyone with the channel key can write, and a claim shown to
+     * the user needs more than that. An absent proof (an older firmware, ham mode) still counts — the residual trust ADR
+     * 040's 2026-10-31 amendment records. A resend or a re-probe carries the same frame id, so its ack counts the same.
+     */
+    private fun radioReached(
+        send: DirectSend,
+        ack: PacketOutcome.Acked,
+        late: Boolean,
+    ) {
+        if (ack.proof == AckProof.INVALID) {
+            log("lora direct ack proof invalid ${send.frameId} -> ${send.peerId}")
+            return
+        }
+        runCatching { onRadioReached(send.frameId, late) }.onFailure { log("lora direct radio reached failed: $it") }
+    }
+
     private fun onLateNak(outcome: PacketOutcome.Refused) {
         metrics.onLoraNak(outcome.reason.name)
         log("lora nak id=${outcome.id} reason=${outcome.reason} (late)")
@@ -1226,7 +1260,10 @@ internal class LoraMeshTransport(
                 direct.onAcked(peer, now)
                 // Their board took a PKI packet under the key ours holds: should ours lose it again, it may be taught once more.
                 ownBoard()?.let { contacts.onDelivered(it, send.addr.node) }
-                if (send.kind == DirectKind.MESSAGE) reprobe.onAcked(peer, now, fresh = !send.resend)
+                if (send.kind == DirectKind.MESSAGE) {
+                    reprobe.onAcked(peer, now, fresh = !send.resend)
+                    radioReached(send, outcome, late = false)
+                }
                 log("lora direct acked ${send.frameId} -> $peer")
                 direct.unpark(peer).forEach { offer(peer, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
                 if (send.flushAfter.isNotEmpty()) scope.launch { flush(peer, send.flushAfter) }

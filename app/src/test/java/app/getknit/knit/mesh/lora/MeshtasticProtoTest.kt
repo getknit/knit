@@ -154,6 +154,22 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun aPacketsAckProofStatusDecodesAndAbsentOrUnknownIsNeverInvalid() {
+        // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, ack_proof_status (23, varint) = n }: the
+        // board's verdict on a Routing ack's proof (firmware v2.8.1, mesh.proto AckProofStatus).
+        fun status(n: String) =
+            (MeshtasticProto.decodeFromRadio(hex("12 0F 0D 34 12 00 00 22 05 08 01 12 01 41 B8 01 $n")) as FromRadio.Packet)
+                .packet.ackProof
+        assertEquals(AckProof.ABSENT, status("00"))
+        assertEquals(AckProof.VALID, status("01"))
+        assertEquals(AckProof.INVALID, status("02"))
+        assertEquals(AckProof.NO_KEY, status("03"))
+        assertEquals("a value this build does not know is unproven, never a forgery", AckProof.UNKNOWN, status("09"))
+        val absent = MeshtasticProto.decodeFromRadio(hex("12 0C 0D 34 12 00 00 22 05 08 01 12 01 41")) as FromRadio.Packet
+        assertEquals(AckProof.ABSENT, absent.packet.ackProof)
+    }
+
+    @Test
     fun aPacketsNextHopDecodesBesideItsHopLimitAndAbsentIsZero() {
         // FromRadio.packet { from = 0x1234, decoded { portnum 1, payload "A" }, hop_limit (9) = 3, next_hop (18, varint) = 0xCD }
         val named =

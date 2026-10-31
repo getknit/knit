@@ -40,6 +40,8 @@ document:
 - Stable releases on GitHub now include a slim APK, about 49 MB smaller, that leaves out internet relays,
   calls, transcription and Knit Anywhere. You can switch between it and the full app without losing your
   messages.
+- A message you send a contact over LoRa now shows the LoRa mark beside its single tick once their LoRa radio
+  has it. The second tick still means it reached their phone.
 
 ### Changed
 

@@ -23,6 +23,7 @@ import app.getknit.knit.ui.chat.LoraNoticePreview
 import app.getknit.knit.ui.chat.MessageBubbleEmojiPreview
 import app.getknit.knit.ui.chat.MessageBubbleFormattingPreview
 import app.getknit.knit.ui.chat.MessageBubbleLinkPreview
+import app.getknit.knit.ui.chat.MessageBubbleMineLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageBubbleMinePreview
 import app.getknit.knit.ui.chat.MessageBubbleMineViaInternetPreview
 import app.getknit.knit.ui.chat.MessageBubbleNearbyOnlyLockedPreview
@@ -34,6 +35,7 @@ import app.getknit.knit.ui.chat.MessageBubbleTranslationHiddenPreview
 import app.getknit.knit.ui.chat.MessageBubbleVoiceTapToDownloadPreview
 import app.getknit.knit.ui.chat.MessageBubbleWithMentionPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenEmptyPreview
+import app.getknit.knit.ui.chat.MessageDetailsScreenLoraReachedPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenPreview
 import app.getknit.knit.ui.chat.MessageInputPreview
 import app.getknit.knit.ui.chat.MessageInputStagedLockedPreview
@@ -91,6 +93,11 @@ fun MessageBubbleTheirsViaInternet() = MessageBubbleTheirsViaInternetPreview()
 @ComponentShots
 @Composable
 fun MessageBubbleMineViaInternet() = MessageBubbleMineViaInternetPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleMineLoraReached() = MessageBubbleMineLoraReachedPreview()
 
 @PreviewTest
 @ComponentShots
@@ -244,6 +251,11 @@ fun StagedLocationTileFailed() = StagedLocationTileFailedPreview()
 @ScreenShots
 @Composable
 fun MessageDetailsScreen() = MessageDetailsScreenPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun MessageDetailsScreenLoraReached() = MessageDetailsScreenLoraReachedPreview()
 
 @PreviewTest
 @ScreenShots

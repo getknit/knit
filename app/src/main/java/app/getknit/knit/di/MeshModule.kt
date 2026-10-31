@@ -423,6 +423,9 @@ val meshModule =
                 // The bound board's node number and its CRC-bound key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
                 onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.key) },
+                // The destination's board acked one of our compact DMs: the chat's "reached their LoRa radio" (ADR 040's
+                // 2026-10-31 amendment). Runs on the plane's outcome collector; the manager's side is one lock-free update.
+                onRadioReached = { frameId, late -> get<MeshManager>().onLoraRadioReached(frameId, late) },
                 scope = get(),
                 metrics = get(),
                 // The re-probe's backoff and the auto-reply's memory, kept across process death: without them every launch

@@ -168,6 +168,21 @@ class LoraDirectPolicyTest {
         assertNull("bounded: the oldest is forgotten", p.ended(100u))
     }
 
+    /**
+     * A flight pushed out of a full table ended unanswered as surely as one past its deadline: the destination's ack
+     * that may still come for it is read as a late answer — the marks move, and the chat hears their radio has it.
+     */
+    @Test
+    fun aFlightPushedOutOfAFullTableIsRememberedForALateAnswer() {
+        val p = policy()
+        repeat(LoraDirectPolicy.MAX_FLIGHTS) { p.launch(flight((it + 10).toUInt(), peer = "p$it")) }
+        val evicted = p.launch(flight(999u, peer = "late"))
+        assertEquals(10u, evicted?.handle)
+        assertFalse(p.isWaiting(10u))
+        assertEquals("p0", p.ended(10u)?.peerId)
+        assertNull("read once", p.ended(10u))
+    }
+
     @Test
     fun theCountsSayWhatEachBoardSaid() {
         val p = policy()

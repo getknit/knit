@@ -1,11 +1,15 @@
 package app.getknit.knit.ui.chat
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Sensors
 import app.getknit.knit.R
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.LoraRadioReached
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -142,11 +146,55 @@ class DeliveryStatusTest {
         }
     }
 
+    // --- their LoRa radio has it (ADR 040's 2026-10-31 amendment) ---
+
+    private val reached = LoraRadioReached(atMs = 5L, late = false)
+
+    @Test
+    fun `their radio's ack lifts only a sent DM, and a receipt or a missing key outranks it`() {
+        val dm = "bobnode"
+        assertEquals(DeliveryStatus.RadioReached, DeliveryStatus.of(message(conversationId = dm), reached))
+        assertEquals(DeliveryStatus.Sent, DeliveryStatus.of(message(conversationId = dm), null))
+        assertEquals("the ✓✓ wins", DeliveryStatus.Delivered, DeliveryStatus.of(message(received = true, conversationId = dm), reached))
+        assertEquals(DeliveryStatus.Pending, DeliveryStatus.of(message(pendingKey = true, conversationId = dm), reached))
+        // Never a room post's, a group's or a commons post's: none takes a compact copy.
+        for (thread in listOf(Conversations.NEARBY, Conversations.MESHTASTIC, "g-trailhead", Conversations.COMMONS_PREFIX + "ridge")) {
+            assertEquals(thread, DeliveryStatus.Sent, DeliveryStatus.of(message(conversationId = thread), reached))
+        }
+    }
+
+    @Test
+    fun `the bubble lets the receipt win over their radio`() {
+        assertEquals(DeliveryStatus.Delivered, DeliveryStatus.ofTick(received = true, radioReached = true))
+        assertEquals(DeliveryStatus.RadioReached, DeliveryStatus.ofTick(received = false, radioReached = true))
+        assertEquals(DeliveryStatus.Sent, DeliveryStatus.ofTick(received = false, radioReached = false))
+    }
+
+    @Test
+    fun `their radio reads as their radio, one check behind the LoRa mark, never as delivered`() {
+        assertEquals(
+            DeliveryText(R.string.chat_status_lora_radio_reached),
+            deliveryLabel(DeliveryStatus.RadioReached, DeliveryPlane.Unknown, mine = true),
+        )
+        assertEquals(Icons.Filled.Done, deliveryIcon(DeliveryStatus.RadioReached))
+        assertEquals(Icons.Filled.Sensors, tickGlyph(DeliveryStatus.RadioReached, DeliveryPlane.Unknown))
+        assertEquals("chat_tick_lora_reached", tickGlyphTag(DeliveryStatus.RadioReached, DeliveryPlane.Unknown))
+        // A delivery keeps its own plane's glyph and tag; a sent one has none.
+        assertEquals(Icons.Filled.DoneAll, deliveryIcon(DeliveryStatus.Delivered))
+        assertEquals("chat_tick_lora", tickGlyphTag(DeliveryStatus.Delivered, DeliveryPlane.LoRa))
+        assertEquals(Icons.Filled.Public, tickGlyph(DeliveryStatus.Delivered, DeliveryPlane.Internet))
+        assertNull(tickGlyph(DeliveryStatus.Delivered, DeliveryPlane.Nearby))
+        assertNull(tickGlyph(DeliveryStatus.Sent, DeliveryPlane.LoRa))
+        assertNull(tickGlyphTag(DeliveryStatus.Sent, DeliveryPlane.LoRa))
+    }
+
     private fun message(
         received: Boolean = false,
         pendingKey: Boolean = false,
+        conversationId: String = Conversations.NEARBY,
     ) = MessageEntity(
         id = "m1",
+        conversationId = conversationId,
         senderId = "me",
         body = "hi",
         sentAt = 0L,

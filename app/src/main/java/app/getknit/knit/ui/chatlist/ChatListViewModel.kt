@@ -26,6 +26,7 @@ import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.TransportHealth
@@ -204,6 +205,8 @@ class ChatListViewModel(
         val reactions: Map<String, ReactionHead> = emptyMap(),
         /** Translation is on, so a newest message the reader translated previews as its translation (ADR 2026-10.t2h6). */
         val showTranslations: Boolean = false,
+        /** Our DMs whose LoRa copy their radio acked (`MeshController.loraRadioReached`, ADR 040's 2026-10-31 amendment). */
+        val radioReached: Map<String, LoraRadioReached> = emptyMap(),
     )
 
     // Neighbor count + radio health + the (already-dismissal-aware) banner + Internet-plane state, folded
@@ -237,8 +240,18 @@ class ChatListViewModel(
 
     // Paired before the combine below rather than added to it: that combine sits on the typed five-flow
     // overload on purpose, and a sixth argument would drop it onto the untyped vararg one.
+    // The LoRa radio-reached map rides here too: a row's tick reads it only for its own DM head.
     private val draftsAndTransfers =
-        combine(drafts.all, transfers.states, reactionHeads) { draftRows, live, heads -> Triple(draftRows, live, heads) }
+        combine(drafts.all, transfers.states, reactionHeads, meshManager.loraRadioReached) { draftRows, live, heads, reached ->
+            DraftsAndTransfers(draftRows, live, heads, reached)
+        }
+
+    private data class DraftsAndTransfers(
+        val drafts: Map<String, DraftEntity>,
+        val transfers: Map<String, TransferState>,
+        val reactions: Map<String, ReactionHead>,
+        val radioReached: Map<String, LoraRadioReached>,
+    )
 
     // Grouped for the same reason: the joined commons, whether content filtering hides a flagged preview, and
     // whether Translation is on.
@@ -262,8 +275,19 @@ class ChatListViewModel(
             draftsAndTransfers,
             messages.observeNewestOriginChannel(Conversations.MESHTASTIC).distinctUntilChanged(),
             roomsAndFilters,
-        ) { accepted, groupList, (draftRows, live, heads), channel, (rooms, hideFlagged, translated) ->
-            ListInputs(accepted, groupList, draftRows, live, channel, rooms, hideFlagged, heads, showTranslations = translated)
+        ) { accepted, groupList, threads, channel, (rooms, hideFlagged, translated) ->
+            ListInputs(
+                accepted,
+                groupList,
+                threads.drafts,
+                threads.transfers,
+                channel,
+                rooms,
+                hideFlagged,
+                threads.reactions,
+                showTranslations = translated,
+                radioReached = threads.radioReached,
+            )
         }
 
     // Radio-off banner: which warning the per-radio statuses imply, and whether the user has dismissed it.

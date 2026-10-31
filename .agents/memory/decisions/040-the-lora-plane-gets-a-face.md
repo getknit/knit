@@ -79,3 +79,46 @@ then record `Bluetooth` (3) and `WifiAware` (4), the codes reserved for them, be
 2026-10.s7wg) and the field log's latency lines have something to say about the difference. The chat still reads
 both as "arrived nearby", with no glyph. The rest of §1 is unchanged: carry, relay and convergence never read the
 kind.
+
+## Amendment 2026-10-31 — "reached their LoRa radio" between ✓ and ✓✓ (Proposed)
+
+**Why.** Over LoRa our own DM shows ✓ the moment it is sealed and its ✓✓ normally ~45 s later (the reader's
+`DmAckCoalescer` holds the receipt, far longer when their phone is away from its board). The destination board's
+routing ACK is back in about 2 s (field trial 2026-10-30: 1.6–2.6 s) and was invisible. It is the one piece of evidence
+in between, and it says the LoRa plane is working.
+
+**What changed.**
+
+1. **A middle state, `DeliveryStatus.RadioReached`.** One of our DMs whose compact copy (ADR 2026-10.x9fa) the
+   destination's own board acked shows the LoRa mark (`Icons.Filled.Sensors`) ahead of a single ✓, tagged
+   `chat_tick_lora_reached` (apart from `chat_tick_lora`, which says the ✓✓ came back over LoRa), and reads "Reached
+   their LoRa radio" on the bubble's description, the chat-list row and the details screen. The words say what the ACK
+   proves — their **radio** took the packet — never their phone: it may be away from its board, and the board's to-phone
+   queue drops a packet when full after acking it. The details screen adds the time and "Waiting for their phone to
+   confirm". `received` always wins: once the ✓✓ lands the Delivered rendering is unchanged. Never for a group, a room
+   post, a reaction, a receipt, or a DM a link or the spool covered (it never aired). The one fold is
+   `DeliveryStatus.of(message, reached)` (only a DM's `Sent` lifts), shared by the bubble's row mapping, the chat list
+   and the details screen; `tickGlyph` / `tickGlyphTag` are the one glyph rule.
+2. **The truth source is the transport's settle edge.** `LoraMeshTransport.onRadioReached(frameId, late)` is a
+   constructor lambda (beside `onBoardBound`), bound only in `di/MeshModule` to `MeshManager.onLoraRadioReached`. It is
+   called for a `DirectKind.MESSAGE` send on a destination's ACK (`PacketOutcome.Acked(byDestination = true)`), on time
+   (`settle`) or late (`onUnawaited`: an ack replayed from our board's to-phone queue after the send ended). An implicit
+   ACK never calls it. A resend or a re-probe carries the row id, so its ack counts for the same DM. It runs on the
+   plane's single outcome collector, so the manager's side is one lock-free `MutableStateFlow.update` and nothing else.
+   A flight pushed out of the full in-flight table is now remembered like one past its deadline, so its late ack is read.
+3. **The ack's proof gates the claim.** `byDestination` is only `packet.from` on a channel-keyed `ROUTING_APP` packet
+   whose packet id rides in cleartext, so anyone holding the channel key can forge one. Firmware 2.8.1 reports its check
+   of `Routing.ack_proof` as `MeshPacket.ack_proof_status` (field 23); `MeshtasticProto` decodes it onto
+   `PacketOutcome.Acked.proof` (`AckProof`). An `INVALID` proof is never shown (`lora direct ack proof invalid` in the
+   log). `ABSENT` — every 2.7.x board, ham mode, and a proof the firmware could no longer check because a relay's echo
+   cleared its pending entry first — still counts: that residual trust is an unauthenticated routing header, the same one
+   the reach marks have always read. A `VALID` proof is the only cryptographic "their board took it".
+4. **In memory only.** `MeshController.loraRadioReached` is a map of row id to `LoraRadioReached(atMs, late)` on
+   `MeshManager`'s wall clock, first ack wins, bounded at 256 (oldest dropped), never persisted (no column, no
+   migration) and never pruned on a ✓✓ — pruning would need a database read on the outcome collector, and every reader
+   lets `received` win. After a restart a DM still without its ✓✓ falls back to a plain ✓, which is honest; sign-out
+   and a restore end the process and take it with them. A late ack shows no time: it can be minutes old.
+
+Not a wire change: nothing new airs and no frame changes. Out of scope: a negative state (their board never answered),
+persistence, iOS (compact DMs are Android-only), and whether an `INVALID` proof should also stop the reach mark and the
+refund (a follow-up). Device trial: `lora-bridge.md`'s "UI surfaces".

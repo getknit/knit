@@ -268,6 +268,34 @@ class MeshtasticSessionTest {
             session.stop()
         }
 
+    /** The board's verdict on the ack's proof rides on the outcome as it came; the session judges nothing by it. */
+    @Test
+    fun theDestinationsAckCarriesTheBoardsVerdictOnItsProof() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            session.start("AA")
+            runCurrent()
+            val valid = sendDirect(session, to = 0x1234u)
+            val forged = sendDirect(session, to = 0x5678u)
+            val absent = sendDirect(session, to = 0x9abcu)
+
+            board(ch, BoardBytes.ack(from = 0x1234u, requestId = valid, ackProofStatus = AckProof.VALID.code))
+            board(ch, BoardBytes.ack(from = 0x5678u, requestId = forged, ackProofStatus = AckProof.INVALID.code))
+            board(ch, BoardBytes.ack(from = 0x9abcu, requestId = absent))
+            assertEquals(
+                listOf(
+                    PacketOutcome.Acked(valid, byDestination = true, proof = AckProof.VALID),
+                    PacketOutcome.Acked(forged, byDestination = true, proof = AckProof.INVALID),
+                    PacketOutcome.Acked(absent, byDestination = true, proof = AckProof.ABSENT),
+                ),
+                outcomes,
+            )
+            session.stop()
+        }
+
     @Test
     fun theFirmwareGivingUpIsUnreachableAndTheDestinationsRefusalIsItsOwn() =
         runTest {

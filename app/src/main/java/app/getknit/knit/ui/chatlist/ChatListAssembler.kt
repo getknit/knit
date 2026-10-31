@@ -124,7 +124,8 @@ internal class ChatListAssembler(
                 lastMessageAt = newestAt,
                 draft = draft,
                 unreadCount = 0, // filled in by the ViewModel from a per-thread count, once our own id is known
-                lastStatus = mineLast?.let { DeliveryStatus.of(it) },
+                // A DM head their LoRa radio acked reads "reached their LoRa radio" until its receipt (the shared fold).
+                lastStatus = mineLast?.let { DeliveryStatus.of(it, s.inputs.radioReached[it.id]) },
                 lastDeliveredVia = mineLast?.receivedPlane ?: DeliveryPlane.Unknown,
                 discriminator = thread.discriminator,
                 isBridged = thread.kind == ConversationKind.MESHTASTIC,

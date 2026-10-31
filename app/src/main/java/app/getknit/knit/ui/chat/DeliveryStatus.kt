@@ -11,13 +11,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import app.getknit.knit.R
+import app.getknit.knit.data.message.ConversationKind
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.LoraRadioReached
 
 /**
  * How far one of *our* messages has got, folded out of the three independent columns that record it:
  * [MessageEntity.pendingKey] (saved locally, never sealed — we don't hold the recipient's key yet),
- * [MessageEntity.received] (a delivery receipt came back), and nothing at all in between.
+ * [MessageEntity.received] (a delivery receipt came back), and nothing at all in between — except, for a DM
+ * whose compact LoRa copy their board acked, the in-memory [LoraRadioReached] the second [of] folds in.
  *
  * A received message has no status of its own — delivery isn't ours to report — so [deliveryLabel]
  * takes `mine` and describes *arrival* instead for the other direction.
@@ -28,6 +32,12 @@ enum class DeliveryStatus {
 
     /** Flooded, no receipt back yet (or a broadcast/group send, which never gets one). */
     Sent,
+
+    /**
+     * A DM whose compact LoRa copy their own board acked, with no receipt back yet (ADR 040's 2026-10-31 amendment):
+     * their **radio** has it, their phone has not said so. Never a group's, a room post's or a reaction's.
+     */
+    RadioReached,
 
     /** A delivery receipt came back. */
     Delivered,
@@ -40,6 +50,34 @@ enum class DeliveryStatus {
             when {
                 message.pendingKey -> Pending
                 message.received -> Delivered
+                else -> Sent
+            }
+
+        /**
+         * [of], with the LoRa plane's word that their board acked the DM ([reached], `MeshController.loraRadioReached`)
+         * folded in: it lifts only a DM's [Sent] to [RadioReached]. A receipt always wins, so an entry that outlived its
+         * ✓✓ changes nothing, and a group or room row never reads it.
+         */
+        fun of(
+            message: MessageEntity,
+            reached: LoraRadioReached?,
+        ): DeliveryStatus {
+            val stored = of(message)
+            val dm = Conversations.kindFor(message.conversationId) == ConversationKind.DM
+            return if (stored == Sent && reached != null && dm) RadioReached else stored
+        }
+
+        /**
+         * The bubble's status, which reads booleans off its row rather than a [MessageEntity]: [received] first, then
+         * [radioReached]. The bubble never shows [Pending].
+         */
+        fun ofTick(
+            received: Boolean,
+            radioReached: Boolean,
+        ): DeliveryStatus =
+            when {
+                received -> Delivered
+                radioReached -> RadioReached
                 else -> Sent
             }
     }
@@ -109,6 +147,11 @@ fun deliveryLabel(
             deliveredText(plane)
         }
 
+        // Their radio, never their phone: what the board's ack proves and all it proves.
+        status == DeliveryStatus.RadioReached -> {
+            DeliveryText(R.string.chat_status_lora_radio_reached)
+        }
+
         else -> {
             DeliveryText(R.string.chat_status_sent)
         }
@@ -147,6 +190,35 @@ fun planeGlyph(plane: DeliveryPlane): ImageVector? =
         else -> null
     }
 
+/**
+ * The glyph ahead of the tick on one of *our* messages at [status]: the plane its receipt crossed once
+ * [DeliveryStatus.Delivered], the LoRa mark while it has only [DeliveryStatus.RadioReached] their board, and nothing
+ * otherwise. The single definition the bubble and the message-details screen share; [tickGlyphTag] names its tag.
+ */
+fun tickGlyph(
+    status: DeliveryStatus,
+    plane: DeliveryPlane,
+): ImageVector? =
+    when (status) {
+        DeliveryStatus.Delivered -> planeGlyph(plane)
+        DeliveryStatus.RadioReached -> planeGlyph(DeliveryPlane.LoRa)
+        else -> null
+    }
+
+/**
+ * The test tag of [tickGlyph]: `chat_tick_<plane>` on a delivery, `chat_tick_lora_reached` on the middle state — apart
+ * from `chat_tick_lora`, which says the ✓✓ came back over LoRa.
+ */
+fun tickGlyphTag(
+    status: DeliveryStatus,
+    plane: DeliveryPlane,
+): String? =
+    when (status) {
+        DeliveryStatus.Delivered -> planeTag(plane)?.let { "chat_tick_$it" }
+        DeliveryStatus.RadioReached -> "chat_tick_lora_reached"
+        else -> null
+    }
+
 /** The test-tag suffix of [plane]'s glyph (`chat_tick_<tag>` / `chat_arrived_<tag>`); null when it paints none. */
 fun planeTag(plane: DeliveryPlane): String? =
     when (plane) {
@@ -157,13 +229,13 @@ fun planeTag(plane: DeliveryPlane): String? =
 
 /**
  * The tick glyph for one of *our* messages at [status]: a clock while it can't be sent yet, one check once
- * it's flooded, two once a receipt is back. The single definition shared by the chat-list row and the
- * message-details screen, so the two can't drift apart. Pair it with [deliveryLabel] for the words —
- * the glyph alone never carries the meaning.
+ * it's flooded — still one while only their radio has it, with [tickGlyph] ahead of it — and two once a receipt
+ * is back. The single definition shared by the bubble, the chat-list row and the message-details screen, so they
+ * can't drift apart. Pair it with [deliveryLabel] for the words — the glyph alone never carries the meaning.
  */
 fun deliveryIcon(status: DeliveryStatus): ImageVector =
     when (status) {
         DeliveryStatus.Pending -> Icons.Filled.Schedule
-        DeliveryStatus.Sent -> Icons.Filled.Done
+        DeliveryStatus.Sent, DeliveryStatus.RadioReached -> Icons.Filled.Done
         DeliveryStatus.Delivered -> Icons.Filled.DoneAll
     }

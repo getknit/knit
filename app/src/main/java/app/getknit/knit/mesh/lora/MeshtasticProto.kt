@@ -539,6 +539,7 @@ internal object MeshtasticProto {
         var wantAck = false
         var nextHop = 0
         var pkiEncrypted = false
+        var ackProof = AckProof.ABSENT
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -607,6 +608,10 @@ internal object MeshtasticProto {
                     pkiEncrypted = reader.readVarint32() != 0
                 }
 
+                MP_ACK_PROOF_STATUS -> {
+                    ackProof = AckProof.fromCode(reader.readVarint32())
+                }
+
                 else -> {
                     reader.skip(tag and WireType.MASK)
                 }
@@ -629,6 +634,7 @@ internal object MeshtasticProto {
             wantAck = wantAck,
             nextHop = nextHop,
             pkiEncrypted = pkiEncrypted,
+            ackProof = ackProof,
         )
     }
 
@@ -959,6 +965,12 @@ internal object MeshtasticProto {
     /** `MeshPacket.pki_encrypted` — the board PKI-decrypted it (field 17). */
     private const val MP_PKI_ENCRYPTED = 17
 
+    /**
+     * `MeshPacket.ack_proof_status` (enum, field 23): the board's verdict on the `Routing.ack_proof` an ack or a NAK
+     * carried, set on its way to the phone and never off the air ([AckProof]).
+     */
+    private const val MP_ACK_PROOF_STATUS = 23
+
     // Data field numbers.
     private const val DATA_PORTNUM = 1
     private const val DATA_PAYLOAD = 2
@@ -1199,6 +1211,12 @@ internal class MeshPacket(
      * (ADR 2026-10.x9fa's PKI amendment).
      */
     val pkiEncrypted: Boolean = false,
+    /**
+     * `MeshPacket.ack_proof_status` — for a `Routing` packet, whether the board could prove the ack came from the node
+     * the acknowledged packet was addressed to ([AckProof]). [AckProof.ABSENT] on everything else, and on every ack from
+     * a firmware that predates the field.
+     */
+    val ackProof: AckProof = AckProof.ABSENT,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null
@@ -1564,6 +1582,32 @@ private const val DUTY_LIMITED_PERCENT = 10.0
 
 /** EU_866's own limit (2.5 %), the tightest the firmware enforces anywhere. */
 private const val EU_866_DUTY_PERCENT = 2.5
+
+/**
+ * `MeshPacket.AckProofStatus`: what our board made of the `Routing.ack_proof` an ack carried, the pairwise MAC a 2.8.1
+ * board attaches to the ack of a PKI unicast (`ReliableRouter::ackProofStatusFor`, firmware v2.8.1). Reported, never
+ * enforced by the firmware: an unproven ack ends its retries as before. Only [VALID] says the destination's own board
+ * acked; [ABSENT] is every ack from an older firmware, a ham-mode board, or one whose proof the board could no longer
+ * check (a relay's echo cleared the pending entry first), so it is an unauthenticated routing header, and [INVALID] is
+ * a proof that failed — a forgery by someone holding the channel key, since the packet id rides in cleartext.
+ */
+@Suppress("MagicNumber") // the numbers ARE meshtastic's AckProofStatus wire values
+internal enum class AckProof(
+    val code: Int,
+) {
+    ABSENT(0),
+    VALID(1),
+    INVALID(2),
+    NO_KEY(3),
+
+    /** A value this build does not know: read as unproven, like [ABSENT], never as [INVALID]. */
+    UNKNOWN(-1),
+    ;
+
+    companion object {
+        fun fromCode(code: Int): AckProof = entries.firstOrNull { it.code == code } ?: UNKNOWN
+    }
+}
 
 /**
  * `Routing.Error` values (`meshtastic/mesh.proto`), pinned by number. [UNKNOWN] catches a future code so a

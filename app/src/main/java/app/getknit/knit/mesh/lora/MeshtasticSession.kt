@@ -614,7 +614,8 @@ internal class MeshtasticSession(
      * (a relay, our own board hearing it repeated) an implicit ack; the firmware giving up is
      * [PacketOutcome.Unreachable]; any other error is a refusal, the destination's or ours. For a broadcast an error
      * is today's NAK — folded into the send while it still waits, a late [PacketOutcome.Refused] after — and a `NONE`
-     * says nothing, since a broadcast never asks for an ack.
+     * says nothing, since a broadcast never asks for an ack. The board's verdict on the ack's proof
+     * (`ack_proof_status`) rides on the ack as it came: the session judges nothing by it.
      */
     private fun routeNak(
         packet: MeshPacket,
@@ -624,7 +625,7 @@ internal class MeshtasticSession(
         val reason = MeshtasticProto.decodeRouting(data.payload) ?: RoutingError.UNKNOWN
         val destination = directTo[id]
         if (destination != null) {
-            routeDirect(id, packet.from == destination, reason)
+            routeDirect(id, packet.from == destination, reason, packet.ackProof)
             return
         }
         if (reason == RoutingError.NONE) return
@@ -640,11 +641,12 @@ internal class MeshtasticSession(
         id: UInt,
         fromDestination: Boolean,
         reason: RoutingError,
+        proof: AckProof,
     ) {
         val outcome =
             when {
                 reason == RoutingError.NONE -> {
-                    PacketOutcome.Acked(id, byDestination = fromDestination)
+                    PacketOutcome.Acked(id, byDestination = fromDestination, proof = proof)
                 }
 
                 reason == RoutingError.MAX_RETRANSMIT || reason == RoutingError.NO_RESPONSE -> {

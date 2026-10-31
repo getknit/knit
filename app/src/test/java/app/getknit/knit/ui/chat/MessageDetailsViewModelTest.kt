@@ -19,6 +19,7 @@ import app.getknit.knit.data.receipt.MessageReceiptEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.LoraRadioReached
 import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
@@ -69,6 +70,7 @@ class MessageDetailsViewModelTest {
     private val receiptsFlow = MutableStateFlow(emptyList<MessageReceiptEntity>())
     private val groupsFlow = MutableStateFlow(emptyList<GroupEntity>())
     private val filteringFlow = MutableStateFlow(true)
+    private val reachedFlow = MutableStateFlow(emptyMap<String, LoraRadioReached>())
 
     @Before
     fun setUp() {
@@ -85,7 +87,7 @@ class MessageDetailsViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = MessageDetailsViewModel(MSG, messages, reactions, receipts, groups, peers, settings, identity)
+    private fun viewModel() = MessageDetailsViewModel(MSG, messages, reactions, receipts, groups, peers, settings, identity, reachedFlow)
 
     /** Seeds a group we're in, and points the message at it. */
     private fun inGroup(vararg members: String) {
@@ -362,6 +364,57 @@ class MessageDetailsViewModelTest {
             assertEquals(listOf("sam"), state.deliveredTo.map { it.nodeId })
             assertTrue(state.waitingOn.isEmpty())
             assertEquals(1, state.recipientTotal)
+        }
+
+    // --- their LoRa radio acked it (ADR 040's 2026-10-31 amendment) ---
+
+    @Test
+    fun `a DM their LoRa radio acked says so with the time, and the receipt then wins`() =
+        runTest {
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", id = MSG)
+            reachedFlow.value = mapOf(MSG to LoraRadioReached(atMs = 42L, late = false))
+            val vm = viewModel()
+
+            val reached = collect(vm)
+            assertEquals(DeliveryStatus.RadioReached, reached.delivery)
+            assertEquals(42L, reached.radioReachedAt)
+            assertNull("their phone has not confirmed: no delivery time", reached.deliveredAt)
+
+            // Their ✓✓ lands; the in-memory entry stays, and is ignored.
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", id = MSG, received = true)
+            receiptsFlow.value = listOf(ack("bob", notedAt = 50L))
+            val delivered = collect(vm)
+            assertEquals(DeliveryStatus.Delivered, delivered.delivery)
+            assertNull(delivered.radioReachedAt)
+            assertEquals(50L, delivered.deliveredAt)
+        }
+
+    @Test
+    fun `a late ack still reads as their radio but shows no time`() =
+        runTest {
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", id = MSG)
+            reachedFlow.value = mapOf(MSG to LoraRadioReached(atMs = 42L, late = true))
+
+            val state = collect(viewModel())
+
+            assertEquals(DeliveryStatus.RadioReached, state.delivery)
+            assertNull("a replayed ack's time says nothing", state.radioReachedAt)
+        }
+
+    @Test
+    fun `a group post, a received DM and another DM never read the radio's ack`() =
+        runTest {
+            reachedFlow.value = mapOf(MSG to LoraRadioReached(atMs = 42L, late = false))
+            messageFlow.value = msg(senderId = "me", conversationId = GROUP, id = MSG)
+            inGroup("me", "sam")
+            assertEquals(DeliveryStatus.Sent, collect(viewModel()).delivery)
+
+            messageFlow.value = msg(senderId = "bob", recipientId = "me", conversationId = "bob", id = MSG)
+            assertEquals(DeliveryStatus.Sent, collect(viewModel()).delivery)
+
+            messageFlow.value = msg(senderId = "me", recipientId = "bob", conversationId = "bob", id = MSG)
+            reachedFlow.value = mapOf("another" to LoraRadioReached(atMs = 42L, late = false))
+            assertEquals(DeliveryStatus.Sent, collect(viewModel()).delivery)
         }
 
     /** Subscribes (the state is `WhileSubscribed`) and lets the combine settle. */

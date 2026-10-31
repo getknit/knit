@@ -548,6 +548,7 @@
     <string name="chat_status_arrived_nearby">Отримано від пристроїв поруч</string>
     <string name="chat_status_delivered_lora">Доставлено через LoRa</string>
     <string name="chat_status_arrived_lora">Отримано через LoRa</string>
+    <string name="chat_status_lora_radio_reached">Дійшло до радіо LoRa співрозмовника</string>
     <string name="chat_status_pending_key">Ще не надіслано — очікуємо на ключ співрозмовника</string>
     <string name="chat_time_just_now">Щойно</string>
     <string name="chat_action_copy">Копіювати текст</string>
@@ -1716,6 +1717,8 @@
     <string name="message_details_sent_by">Відправник: %1$s</string>
     <string name="message_details_arrived_at">Надійшло %1$s</string>
     <string name="message_details_delivered_at">Доставлено %1$s</string>
+    <string name="message_details_lora_radio_reached_at">Дійшло до радіо LoRa співрозмовника %1$s</string>
+    <string name="message_details_lora_waiting_for_phone">Чекаємо підтвердження від телефона співрозмовника</string>
     <string name="message_details_hidden_body">Повідомлення приховано фільтром вмісту</string>
     <string name="message_details_no_reactions">На це повідомлення ще ніхто не відреагував</string>
     <string name="message_details_filter_all">Усі %1$d</string>

@@ -60,6 +60,8 @@ import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
+import java.time.Instant
+import java.time.ZoneId
 
 /** A long body is a preview here, not the whole message — the bubble is where you read it. */
 private const val MAX_BODY_LINES = 4
@@ -259,6 +261,18 @@ private fun MessageSummary(state: MessageDetailsUiState) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.testTag("message_details_delivery"),
         ) {
+            // Their radio, not their phone: the LoRa mark ahead of the one check, as on the bubble. A delivered message
+            // keeps its plain ✓✓ here.
+            if (state.mine && state.delivery == DeliveryStatus.RadioReached) {
+                tickGlyph(state.delivery, state.plane)?.let { glyph ->
+                    Icon(
+                        imageVector = glyph,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp).testTag("message_details_lora_reached"),
+                    )
+                }
+            }
             Icon(
                 imageVector =
                     when {
@@ -270,19 +284,35 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
             )
+            // Before the receipt, a DM their LoRa radio acked says when on this one line: the ack's time on our clock,
+            // and only for an ack that came on time — one replayed late from our board's queue has no time worth
+            // showing, so it keeps the bare label (ADR 040's 2026-10-31 amendment).
+            val radioReachedAt = state.radioReachedAt?.takeIf { state.mine && state.delivery == DeliveryStatus.RadioReached }
             Text(
                 text =
-                    deliveryLabel(
-                        state.delivery,
-                        state.plane,
-                        state.mine,
-                        // The ratio lives here, on the tick line, rather than being repeated in the
-                        // section header below — which is why that header is a plain label.
-                        delivered = state.deliveredTo.size,
-                        total = state.recipientTotal,
-                    ).resolve(),
+                    if (radioReachedAt != null) {
+                        stringResource(R.string.message_details_lora_radio_reached_at, reachedTime(context, radioReachedAt, state.sentAt))
+                    } else {
+                        deliveryLabel(
+                            state.delivery,
+                            state.plane,
+                            state.mine,
+                            // The ratio lives here, on the tick line, rather than being repeated in the
+                            // section header below — which is why that header is a plain label.
+                            delivered = state.deliveredTo.size,
+                            total = state.recipientTotal,
+                        ).resolve()
+                    },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (state.mine && state.delivery == DeliveryStatus.RadioReached) {
+            Text(
+                text = stringResource(R.string.message_details_lora_waiting_for_phone),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("message_details_waiting_for_phone"),
             )
         }
     }
@@ -362,6 +392,24 @@ private fun absoluteTime(
         DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or
             (if (showYear) DateUtils.FORMAT_SHOW_YEAR else 0),
     )
+
+/**
+ * When their LoRa radio acked our DM, for the tick line: the time alone when it fell on the day the message was sent
+ * (the line above shows that date), else the date and time.
+ */
+private fun reachedTime(
+    context: Context,
+    millis: Long,
+    sentAt: Long,
+): String {
+    val zone = ZoneId.systemDefault()
+    val sameDay = Instant.ofEpochMilli(millis).atZone(zone).toLocalDate() == Instant.ofEpochMilli(sentAt).atZone(zone).toLocalDate()
+    return if (sameDay) {
+        DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_TIME)
+    } else {
+        absoluteTime(context, millis, showYear = false)
+    }
+}
 
 /** A list-section label. Its own composable so the two delivery headers can't drift apart. */
 @Composable
@@ -534,6 +582,26 @@ fun MessageDetailsScreenPreview() =
                             ReactorRow("me00", "You", null, "❤️", PREVIEW_NOW - 6 * 60_000L, true),
                         ),
                     filters = listOf(ReactionFilter("👍", 3), ReactionFilter("❤️", 1)),
+                ),
+        )
+    }
+
+/** A DM their LoRa radio acked and their phone has not confirmed (ADR 040's 2026-10-31 amendment). */
+@Preview(name = "Message details — reached their LoRa radio")
+@Composable
+fun MessageDetailsScreenLoraReachedPreview() =
+    KnitPreview {
+        MessageDetailsScreenContent(
+            state =
+                MessageDetailsUiState(
+                    messageId = "demo-dm-lora",
+                    body = "At the ridge hut. Meet you at the lake at 3?",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "me00",
+                    sentAt = PREVIEW_NOW - 2 * 60_000L,
+                    delivery = DeliveryStatus.RadioReached,
+                    radioReachedAt = PREVIEW_NOW - 2 * 60_000L + 2_000L,
                 ),
         )
     }
