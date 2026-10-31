@@ -1,0 +1,11 @@
+Calls that closed Knit on mobile data, and a double Back that left a blank screen.
+
+Knit no longer closes during a live call on mobile data. Knit told the calling library which network to
+prefer by its exact mobile generation, such as 4G or 5G, but the library only accepts plain mobile data there
+and shut Knit down whenever a call met one. That happened when a call started on mobile data, and mid-call
+when the phone moved from Wi-Fi onto mobile data. Calls on Wi-Fi, calls to someone nearby over a direct Wi-Fi
+link, and mesh calls were not affected.
+
+Also fixed: tapping Back twice quickly now goes back one screen, where from a chat or Settings it could leave
+Knit on a blank screen. Tapping a quote or a search result while someone is typing now lands on that message
+instead of stopping one short. The keyboard also stays up now when you open the menu at the top of a chat.

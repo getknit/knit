@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-10-25T01:20:20Z
+  updated: 2026-10-30T23:39:43Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
+
+> Calls that closed Knit on mobile data, and a double Back that left a blank screen.
 
 ### Fixed
 
@@ -28,6 +30,8 @@ document:
   which from a chat or Settings left Knit on a blank screen.
 - Tapping a quote or a search result now lands on that message while someone is typing. It used to stop one
   message short, so after a photo or a long message the one you wanted sat off screen.
+- The keyboard now stays up when you open the menu at the top of a chat. It used to drop as the menu opened
+  and pop back up when it closed.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 
