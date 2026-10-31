@@ -702,6 +702,22 @@ class ChatListViewModelTest {
             assertEquals(1, vm.state.value.requestCount)
         }
 
+    // The inbox has no row for a group without a roster row, so the badge must not count its messages.
+    @Test
+    fun aStrangersGroupMessagesWithNoGroupRowAreNotCounted() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            store.set(msg(senderId = "x", sentAt = 100, conversationId = "g-1"))
+            advanceUntilIdle()
+
+            assertTrue(
+                vm.state.value.conversations
+                    .none { it.id == "g-1" },
+            )
+            assertEquals(0, vm.state.value.requestCount)
+        }
+
     @Test
     fun anAcceptedDmStaysInTheListAndIsNotCounted() =
         runTest {

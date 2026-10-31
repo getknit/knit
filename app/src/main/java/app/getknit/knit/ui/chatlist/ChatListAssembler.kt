@@ -39,12 +39,6 @@ internal class ChatListAssembler(
     private val directory: PeerDirectory = s.directory
     private val activeGroups = s.inputs.groups.filter { !it.left }
 
-    // Left groups too, to hide stray rows.
-    private val groupIds =
-        s.inputs.groups
-            .map { it.groupId }
-            .toSet()
-
     fun build(): ChatListUiState {
         // Which threads exist and what they are called is `visibleConversations`'s rule, shared with search:
         // the Nearby room always, the Meshtastic room by the radio's state, active non-request groups, and
@@ -154,10 +148,17 @@ internal class ChatListAssembler(
             ?.takeIf { it.text.isNotBlank() && it.updatedAt > (newestAt ?: 0L) }
             ?.text
 
-    /** Count of threads moved to the requests inbox (mirrors exactly what `visibleConversations` drops). */
+    /**
+     * Count of threads moved to the requests inbox (mirrors exactly what `visibleConversations` drops). Groups
+     * are counted from the groups table alone: a group's messages with no roster row behind them (a group we
+     * were never seeded into) show nowhere, so they are no request either.
+     */
     private fun requestCount(): Int =
         table.conversations.count {
-            it != Conversations.NEARBY && it != Conversations.MESHTASTIC && it !in groupIds && isPending(it)
+            it != Conversations.NEARBY &&
+                it != Conversations.MESHTASTIC &&
+                Conversations.kindFor(it) != ConversationKind.GROUP &&
+                isPending(it)
         } + activeGroups.count { isPending(it.groupId) }
 
     /**

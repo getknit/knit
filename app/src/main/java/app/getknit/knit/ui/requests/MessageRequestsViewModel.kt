@@ -111,7 +111,10 @@ class MessageRequestsViewModel(
                     id !in t.blocked &&
                     !Conversations.isAccepted(id, accepted, verified, t.authored, t.groupSenders[id].orEmpty())
 
-            t.conversations
+            // Every active group too, not only the threads with a message: a stranger's group can arrive (or be
+            // left) with no row in it yet, and the chat list's badge counts it, so the inbox must offer it.
+            val activeGroupIds = groupList.filter { !it.left }.map { it.groupId }
+            (t.conversations + activeGroupIds)
                 .filter(::isRequest)
                 .mapNotNull { id -> requestRowFor(id, t.heads[id], groupsById[id], directory, me, hideFlagged) }
                 .sortedByDescending { it.lastMessageAt ?: 0L }
@@ -147,7 +150,8 @@ class MessageRequestsViewModel(
             avatarHash = if (isGroup) group?.photoShownHash else directory.byNode[conversationId]?.avatarHash,
             isGroup = isGroup,
             lastPreview = last?.let { previewFor(it, directory, isGroup, hideFlagged) },
-            lastMessageAt = last?.sentAt,
+            // An empty group sorts by its creation time, as its chat-list row does.
+            lastMessageAt = last?.sentAt ?: group?.createdAt,
             discriminator = if (isGroup) null else directory.label(conversationId).discriminator,
             faces = if (isGroup) groupFaces(memberIds, me, directory) else emptyList(),
         )
