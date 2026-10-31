@@ -909,6 +909,109 @@ class ForwardRepositoryTest : RoomDbTest() {
             assertEquals("once the old rows are gone it finds nothing", 0, repo.sweepExpired(now))
         }
 
+    /** A `profile` frame whose `signed` is exactly [signedBytes] long (custody reads no profile payload, so a padded one serves). */
+    private fun paddedProfile(
+        id: String,
+        sender: String,
+        sentAt: Long,
+        signedBytes: Int,
+    ): CarriedFrame =
+        padded(signedBytes) { content ->
+            RelayEnvelope(type = FrameType.PROFILE, id = id, senderId = sender, sentAt = sentAt, payload = WireCodec.encodePayload(content))
+        }
+
+    @Test
+    fun `custody keeps a profile of exactly the profile cap and refuses one byte over, even from a full store`() =
+        runTest {
+            // #234: a function of the frame's type and length alone, on every origin. Nothing is written or evicted, the
+            // digest is unmoved, and the counter the door shares moves. A chat frame of the same length is kept.
+            val now = 1_000_000L
+            val metrics = MeshMetrics()
+            val digest = StoreDigest { now }
+            val dao = db.forwardDao()
+            val repo = ForwardRepository(dao, digest, db, maxRows = 3, maxProfileSignedBytes = PROFILE_CAP, metrics = metrics)
+            assertTrue(repo.store(dm("a", sender = "alice", sentAt = now - 3), ForwardStore.ORIGIN_RELAY, now))
+            assertTrue(
+                repo.store(
+                    paddedDm("chat", sender = "bob", sentAt = now - 2, signedBytes = PROFILE_CAP + 1),
+                    ForwardStore.ORIGIN_RELAY,
+                    now,
+                ),
+            )
+            val atCap = paddedProfile("cap", sender = "carol", sentAt = now - 1, signedBytes = PROFILE_CAP)
+            assertTrue("exactly the cap is kept", repo.store(atCap, ForwardStore.ORIGIN_RELAY, now))
+            val full = listOf("a", "cap", "chat")
+            assertEquals(full, dao.allIds().sorted())
+            val version = digest.version.value
+
+            val over = paddedProfile("over", sender = "dave", sentAt = now, signedBytes = PROFILE_CAP + 1)
+            assertFalse("one byte over is refused", repo.store(over, ForwardStore.ORIGIN_RELAY, now))
+            assertFalse("our own too", repo.store(paddedProfile("own", "me", now, PROFILE_CAP + 1), ForwardStore.ORIGIN_SELF, now))
+            assertEquals("nothing written, nothing evicted", full, dao.allIds().sorted())
+            assertEquals("a refused frame must not touch the digest", version, digest.version.value)
+            assertEquals(2L, metrics.frames().profileOversizeRefused)
+            assertEquals(0L, metrics.frames().custodyOversizeRefused)
+        }
+
+    @Test
+    fun `a profile over both caps counts only as custody oversize`() =
+        runTest {
+            val now = 1_000_000L
+            val metrics = MeshMetrics()
+            val repo =
+                ForwardRepository(
+                    db.forwardDao(),
+                    StoreDigest { now },
+                    db,
+                    maxSignedBytes = CAP,
+                    maxProfileSignedBytes = CAP / 2,
+                    metrics = metrics,
+                )
+            assertFalse(repo.store(paddedProfile("both", "mallory", now, CAP + 1), ForwardStore.ORIGIN_RELAY, now))
+            assertEquals(1L, metrics.frames().custodyOversizeRefused)
+            assertEquals(0L, metrics.frames().profileOversizeRefused)
+        }
+
+    @Test
+    fun `the sweep deletes a profile stored before the profile cap and keeps one at it`() =
+        runTest {
+            val now = 1_000_000L
+            val digest = StoreDigest { now }
+            val dao = db.forwardDao()
+            val repo = ForwardRepository(dao, digest, db, maxProfileSignedBytes = PROFILE_CAP)
+            assertTrue(repo.store(paddedProfile("cap", "carol", now, PROFILE_CAP), ForwardStore.ORIGIN_RELAY, now))
+            assertTrue(repo.store(paddedDm("chat", "bob", now, PROFILE_CAP + 1), ForwardStore.ORIGIN_RELAY, now))
+            val old = paddedProfile("old", "dave", now, PROFILE_CAP + 1)
+            dao.insert(
+                ForwardEntity(
+                    id = "old",
+                    recipientId = null,
+                    groupId = null,
+                    senderId = "dave",
+                    type = FrameType.PROFILE,
+                    origin = ForwardStore.ORIGIN_RELAY,
+                    signed = old.signed,
+                    sig = ByteArray(0),
+                    sentAt = now,
+                    receivedAt = now,
+                    expiresAt = now + ForwardRepository.DEFAULT_TTL_MS,
+                ),
+            )
+            // A build without the cap folded it into its digest when it stored it.
+            digest.add("old", now + ForwardRepository.DEFAULT_TTL_MS, now)
+
+            assertEquals("the oversize profile counts among what the sweep removed", 1, repo.sweepExpired(now))
+            assertEquals("a chat frame of that length stays", listOf("cap", "chat"), repo.liveIds(now).sorted())
+            assertEquals(StoreDigest.fingerprint(listOf("cap", "chat")), digest.version.value)
+            assertEquals(0, repo.sweepExpired(now))
+        }
+
+    @Test
+    fun `the profile cap is the value every port keeps`() {
+        // Convergence-critical (ADR 006, #234): knit-ios refuses the same profiles, or two stores never agree.
+        assertEquals(8_192, ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES)
+    }
+
     @Test
     fun `the byte cap is the value every port keeps`() {
         // Convergence-critical (ADR 006, #227): knit-ios refuses the same frames, or two stores never agree.
@@ -917,5 +1020,8 @@ class ForwardRepositoryTest : RoomDbTest() {
 
     private companion object {
         const val CAP = 1_024
+
+        // A profile cap small enough to pad to quickly, under the default byte cap.
+        const val PROFILE_CAP = 512
     }
 }

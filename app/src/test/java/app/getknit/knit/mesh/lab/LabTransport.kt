@@ -469,6 +469,20 @@ class LabTransport(
     @Volatile
     var corruptFiles = false
 
+    /**
+     * Every file this node sends crosses into the receiver's real `FileIntake`, as a phone's link does, rather than
+     * being staged whole: the receiver's ceilings (the photo ceiling a profile photo's want sets, #234) then apply.
+     */
+    @Volatile
+    var filesThroughIntake = false
+
+    /**
+     * A holder that misstates sizes: every `blobhas` item it answers as held carries this length instead of the real
+     * one, as a modified client's answer could (#234). Null answers truthfully.
+     */
+    @Volatile
+    var claimsHeldBytes: Long? = null
+
     /** Every frame this transport handed a peer, as `to type id` in send order — the diagnosis of "who served that". */
     val sent = CopyOnWriteArrayList<String>()
 
@@ -864,18 +878,19 @@ class LabTransport(
         // One lag before the pipes are read, none between them: a phone's `send` never suspends mid-flood, so a
         // cancelled caller cannot leave half the links served, and a pipe torn down during the lag is not written.
         chaos?.jitter()
+        val out = claimsHeldBytes?.let { misstated(wire, it) } ?: wire
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
-        val key = FrameKey.ofSigned(wire)
+        val key = FrameKey.ofSigned(out)
         targets.forEach { pipe ->
             when {
-                pipe.lossy(wire) -> lost += wire
+                pipe.lossy(out) -> lost += out
 
                 // A held frame is judged by the memo at [release], not here.
-                pipe.park(wire) -> Unit
+                pipe.park(out) -> Unit
 
                 !crosses(pipe, key, VIA_LINK) -> Unit
 
-                else -> pipe.target.deliver(wire, nodeId, VIA_LINK)
+                else -> pipe.target.deliver(out, nodeId, VIA_LINK)
             }
         }
         // The far end has the frame; the sender's own bookkeeping after `send` returns may come late.
@@ -971,7 +986,8 @@ class LabTransport(
         // older holder's whole file whatever the ask said (#116).
         val offset = if (ignoreOffsets) 0L else meta.offset.takeIf { it in 1..file.length() } ?: 0L
         val line = "${to.nodeId} ${meta.kind.wire} ${meta.key}" + if (offset > 0) " from $offset" else ""
-        if (offset > 0 || corruptFiles || streams(pipe)) return sendThroughIntake(pipe, file, meta, offset, line)
+        val viaIntake = corruptFiles || filesThroughIntake
+        if (offset > 0 || viaIntake || streams(pipe)) return sendThroughIntake(pipe, file, meta, offset, line)
         files += line
         // The receiver ingests and then deletes the staged copy; it must be the receiver's own copy.
         val staged = File(target.stagingDir.apply { mkdirs() }, "${meta.key}-${UUID.randomUUID()}")
@@ -981,6 +997,22 @@ class LabTransport(
         deliverFile(target, received)
         chaos?.jitter()
         return true
+    }
+
+    /** [wire] with every held item of a `blobhas` claiming [bytes] ([claimsHeldBytes]); any other frame as it is. */
+    private fun misstated(
+        wire: WireEnvelope,
+        bytes: Long,
+    ): WireEnvelope? {
+        val env = WireCodec.decodeEnvelope(wire.signed)?.takeIf { it.type == FrameType.BLOB_HAS } ?: return null
+        val answer = WireCodec.decodePayload<BlobHasContent>(env.payload) ?: return null
+        val items = answer.items.map { if (it.size != null) it.copy(size = bytes) else it }
+        val payload = WireCodec.encodePayload(answer.copy(items = items))
+        val signed =
+            WireCodec.encodeEnvelope(
+                RelayEnvelope(env.type, env.id, env.senderId, env.sentAt, env.recipientId, env.group, payload),
+            )
+        return WireEnvelope(relay = wire.relay, sig = wire.sig, signed = signed)
     }
 
     private fun streams(pipe: Pipe): Boolean = synchronized(pipe.heldFiles) { pipe.holdingFiles && pipe.streamUntil != null }

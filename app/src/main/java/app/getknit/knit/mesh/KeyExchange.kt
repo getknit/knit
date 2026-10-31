@@ -1,12 +1,12 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Demand-driven recovery of a peer's public key (i.e. its profile) over the mesh. The mesh floods a
@@ -40,6 +40,11 @@ import java.util.concurrent.ConcurrentHashMap
  * emptied the cache and custody has lost their profile to the quota or the TTL. [serveKey] is the other door
  * onto it — `ForwardSync.onDigest` hands a newcomer the key ahead of a backlog it could not otherwise read.
  *
+ * The cache is bounded too (#234): at most [maxCached] proofs, least recently used out first, and an entry goes when
+ * `PeerRepository.sweepCap` evicts its peer ([forget]). A miss costs one read of the pin store. A proof longer than the
+ * profile cap ([maxProfileSignedBytes]) is never cached or served, from a pin or from the store: the inbound door
+ * refuses such a frame, and a build before the cap may have stored one.
+ *
  * Pure (no Android/Room): the transport, identity, raw signer, clock and pin store are injected, so the
  * recursion is unit-tested with [FakeLoopTransport] (see `KeyExchangeTest`).
  */
@@ -62,16 +67,23 @@ class KeyExchange(
     // The signed profile frame a pinned peer's key came from, as the pin store keeps it (`PeerRepository`), or
     // null when none is held. Read on a cache miss only; the default holds nothing, as before the store.
     private val storedProfile: suspend (nodeId: String) -> WireEnvelope? = { null },
+    // The longest `signed` a profile may have (`ForwardStore.maxProfileSignedBytes`, #234): none longer is cached or served.
+    private val maxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
+    private val maxCached: Int = MAX_CACHED,
 ) {
-    // nodeId -> the peer's verbatim signed profile frame, so we can re-serve it on request. Populated for
-    // every profile we pin (onProfilePinned) and for every [storedProfile] read; in-memory, a hot layer over
-    // the pin store, which is what survives a restart. Not an attack surface (each entry required a
-    // self-certifying pin) → left unbounded/lock-free.
-    private val cache = ConcurrentHashMap<String, WireEnvelope>()
-
-    // Guards `missing` + `wanters` (both mutated across coroutines). A dedicated monitor, not `this`, and
+    // Guards `cache`, `missing` and `wanters` (all mutated across coroutines). A dedicated monitor, not `this`, and
     // held only for short map ops — never across a suspend send (see the send-outside-the-lock methods below).
     private val lock = Any()
+
+    // nodeId -> the peer's verbatim signed profile frame, so we can re-serve it on request. Populated for every profile
+    // we pin (onProfilePinned) and for every [storedProfile] read; in-memory, a hot layer over the pin store, which is
+    // what survives a restart. Each entry took a self-certifying pin, but a pin costs a stranger only a fresh key, so the
+    // layer is bounded like the rest of this class: [maxCached] entries, least recently used evicted first, a miss
+    // refilled from the store, and an entry dropped with its peer's pin ([forget]). Guarded by [lock].
+    private val cache =
+        object : LinkedHashMap<String, WireEnvelope>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, WireEnvelope>): Boolean = size > maxCached
+        }
 
     // nodeId -> last time we broadcast a request for it (so a burst of drops for one peer sends one request,
     // not one per dropped frame). Merges the old `missing` set + `lastAskedAt` map into one structure so the
@@ -99,7 +111,7 @@ class KeyExchange(
      */
     suspend fun want(nodeId: String) {
         val me = selfId()
-        if (nodeId == me || cache.containsKey(nodeId)) return
+        if (nodeId == me || cached(nodeId) != null) return
         val targets = transport.neighbors.value
         if (!recordWant(nodeId, now())) return // remembered-as-missing; cooldown says don't broadcast yet
         val req = keyRequest(me, listOf(nodeId))
@@ -155,9 +167,30 @@ class KeyExchange(
         return true
     }
 
-    /** [nodeId]'s signed profile: the cache, else the pin store (cached on the way out). */
+    /** [nodeId]'s signed profile: the cache, else the pin store (cached on the way out). One over the profile cap is neither. */
     private suspend fun profileFor(nodeId: String): WireEnvelope? =
-        cache[nodeId] ?: storedProfile(nodeId)?.also { cache.putIfAbsent(nodeId, it) }
+        cached(nodeId) ?: storedProfile(nodeId)?.takeIf { withinCap(it) }?.also { cache(nodeId, it) }
+
+    /**
+     * Drops what the cache keeps of [nodeIds]: `PeerRepository.sweepCap` evicted their pins and the proofs beside them,
+     * and a proof must not outlive its pin here. A peer pinned again is cached again by its next profile.
+     */
+    fun forget(nodeIds: Collection<String>) {
+        if (nodeIds.isEmpty()) return
+        synchronized(lock) { nodeIds.forEach { cache.remove(it) } }
+    }
+
+    /** How many proofs the cache holds now — for tests of its bound. */
+    internal fun cachedCount(): Int = synchronized(lock) { cache.size }
+
+    private fun withinCap(wire: WireEnvelope): Boolean = wire.signed.size <= maxProfileSignedBytes
+
+    private fun cached(nodeId: String): WireEnvelope? = synchronized(lock) { cache[nodeId] }
+
+    private fun cache(
+        nodeId: String,
+        wire: WireEnvelope,
+    ) = synchronized(lock) { cache[nodeId] = wire }
 
     /**
      * A profile for [nodeId] was pinned (delivered through [wire]): cache its verbatim signed frame for
@@ -168,7 +201,9 @@ class KeyExchange(
         nodeId: String,
         wire: WireEnvelope,
     ) {
-        cache[nodeId] = wire
+        // The door refuses a profile over the cap before it is pinned (#234); a caller that skipped it caches nothing.
+        if (!withinCap(wire)) return
+        cache(nodeId, wire)
         if (clearMissing(nodeId)) metrics.onKeyRecovered() // one removal covers the merged missing + lastAskedAt
         val waiting = removeWanters(nodeId) ?: return // detached set — safe to iterate outside the lock
         waiting.forEach { serve(wire, it) }
@@ -284,5 +319,8 @@ class KeyExchange(
         /** Max ids processed from one inbound request — aligned with [MAX_IDS_PER_REQ] so a well-behaved peer's
          *  full chunk is served, while a hostile oversized list is truncated (bounds recursion + wanters growth). */
         const val MAX_REQUEST_IDS = 128
+
+        /** Cap on cached proofs of key: the peers a busy carrier serves keys for, many times over; a miss reads the store. */
+        const val MAX_CACHED = 1_024
     }
 }

@@ -75,7 +75,8 @@ and the spool push (`ForwardStore.liveFrames`, `liveGroupChatFrames`, `liveFrame
   nothing is stranded.
 
 Not covered: a byte budget on the global cap or eviction by bytes, and reading the replays in pages (#227's other
-options). Revisit if 60 MiB is still too much. A door cap on profile frames is a separate, tighter change (#234).
+options). Revisit if 60 MiB is still too much. A door cap on profile frames is a separate, tighter change (#234):
+ADR 2026-10.jgeg, 8 KiB of `signed`, refused at the door and in custody.
 
 **What keeps it true.** `vectors/custody-v1.json` (`limits.maxSignedBytes`, each step's `signedBytes`, three byte-cap
 steps) pins the rule for every port; `ForwardRepositoryTest` pins the constant, the refusal, its counter and the sweep;

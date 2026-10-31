@@ -181,4 +181,27 @@ class PartialBlobsTest {
         assertNull(partials.open(a, 50))
         assertEquals(0L, partials.length(a))
     }
+
+    @Test
+    fun holderMarksAreBoundedPerHashAndEverythingGoesAtTheNextStart() {
+        // #234: a holder id is a neighbour's claim, so the marks one hash keeps are capped, oldest out first.
+        val partials = store()
+        partials.cap(a, 1_000)
+        assertTrue(partials.markHolder(a, "n0"))
+        assertFalse("a second mark of the same holder is not new", partials.markHolder(a, "n0"))
+        (1..20).forEach { partials.markHolder(a, "n$it") }
+        val marked = partials.markedHolders(a)
+        assertEquals(16, marked.size)
+        assertFalse("the oldest fell out", "n0" in marked)
+        assertTrue("n20" in marked)
+        partials.refuse(b)
+        assertTrue(partials.isRefused(b))
+        assertFalse(partials.isRefused(a))
+
+        partials.purge()
+
+        assertNull(partials.capFor(a))
+        assertTrue(partials.markedHolders(a).isEmpty())
+        assertFalse(partials.isRefused(b))
+    }
 }

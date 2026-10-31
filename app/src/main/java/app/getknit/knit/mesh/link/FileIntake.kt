@@ -21,8 +21,12 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * - **A header** starts a file. One that arrives mid-file drops the file it interrupts; one that does not decode
  *   leaves the chunks behind it unread.
- * - **A chunk** joins the file being kept; one that takes it past [MAX_INCOMING_FILE_BYTES] drops it, and its
- *   later chunks and its `FILE_END` do nothing.
+ * - **A chunk** joins the file being kept; one that takes it past the file's ceiling drops it, and its later chunks
+ *   and its `FILE_END` do nothing. The ceiling is read once, at the header: [MAX_AVATAR_BYTES] for a pushed avatar,
+ *   the per-hash one [PartialBlobs.capFor] names for an attachment fetched as a profile photo, else
+ *   [MAX_INCOMING_FILE_BYTES]. A header that declares more is skipped. Past a per-hash ceiling this link's peer is
+ *   also marked for the hash ([PartialBlobs.markHolder], #234), so the want that asked passes it over for the session
+ *   rather than wait out a grace and ask it again: the wire cannot stop the feed, and nothing else would tell the asker.
  * - **An end** finishes the file; [finalize] then moves it into the cache under a safe name for its owner to
  *   announce. The hash check over the bytes is the store's (`MeshBlobStore.saveIncoming`).
  * - **A cut** — the link closed mid-file — hands an attachment's bytes to [PartialBlobs] instead of deleting
@@ -64,6 +68,9 @@ internal class FileIntake(
         internal val meta: FileMeta,
         internal val size: Long?,
         private val prefix: PartialBlobs.Prefix,
+        // The ceiling its header was read under ([ceilingOf]), carried to [install] so it is never re-read.
+        internal val limitBytes: Long,
+        internal val limitMarks: Boolean,
     ) {
         internal val epoch: Long = prefix.epoch
         internal var out: OutputStream? = null
@@ -112,8 +119,16 @@ internal class FileIntake(
             // The blob's bytes in so far, a resumed prefix included, so the ceiling counts the whole file.
             var bytes: Long,
             val startedAt: Long,
+            // The ceiling read at the header ([ceilingOf]), and whether it is a per-hash one whose breach marks the peer.
+            val limit: Ceiling,
         ) : State
     }
+
+    /** The most a file may hold, and whether passing it marks this link's peer for the hash ([PartialBlobs.markHolder], #234). */
+    private class Ceiling(
+        val bytes: Long,
+        val marks: Boolean,
+    )
 
     private var state: State = State.Idle
 
@@ -137,11 +152,23 @@ internal class FileIntake(
         // No offset is a whole file, and so is an explicit 0: a stream from the first byte splices onto nothing.
         val offset = header.offset?.takeIf { it != 0L }
         val meta = FileMeta(FileKind.fromWire(header.kind), header.key, header.mime, offset ?: 0)
+        val limit = ceilingOf(meta)
+        if (overCeiling(meta, limit, header.size, offset ?: 0L)) return skip()
         if (offset == null) {
-            begin(meta, header.size)
+            begin(meta, header.size, limit)
             return null
         }
-        val valid = meta.kind == FileKind.ATTACHMENT && isValidBlobHash(meta.key) && offset in 1..MAX_INCOMING_FILE_BYTES
+        return resumeFrom(meta, header.size, offset, limit)
+    }
+
+    /** [header] for a stream from [offset] on: the kept prefix opened for the owner to copy, or null when refused. */
+    private fun resumeFrom(
+        meta: FileMeta,
+        size: Long?,
+        offset: Long,
+        limit: Ceiling,
+    ): Resume? {
+        val valid = meta.kind == FileKind.ATTACHMENT && isValidBlobHash(meta.key) && offset in 1..limit.bytes
         // Gated before the prefix opens, so a refused resume costs no read of it (#161).
         val recent = if (valid) resumedRecently(meta.key) else null
         val prefix = if (valid && recent == null) partials.open(meta.key, offset) else null
@@ -153,7 +180,7 @@ internal class FileIntake(
         resumedAt[meta.key] = now()
         // A temp file that will not open fails the link as it always has; the prefix it would have copied is closed.
         val temp = runCatching { File.createTempFile(RX_PREFIX, RX_SUFFIX, cacheDir) }.onFailure { prefix.close() }.getOrThrow()
-        val resume = Resume(temp, meta, header.size, prefix)
+        val resume = Resume(temp, meta, size, prefix, limit.bytes, limit.marks)
         state = State.Opening(resume)
         return resume
     }
@@ -174,13 +201,14 @@ internal class FileIntake(
             return false
         }
         val meta = resume.meta
-        state = State.Keeping(resume.temp, out, meta, resume.epoch, meta.offset, now())
+        val limit = Ceiling(resume.limitBytes, resume.limitMarks)
+        state = State.Keeping(resume.temp, out, meta, resume.epoch, meta.offset, now(), limit)
         // The size is the tail's (WIRE_COMPAT rule 2), so the whole is the offset plus it: the ring resumes where it was.
         val total =
             resume.size
                 ?.takeIf { it >= 0 }
                 ?.let { meta.offset + it }
-                ?.takeIf { it in 1..MAX_INCOMING_FILE_BYTES }
+                ?.takeIf { it in 1..limit.bytes }
         arriving.set(ArrivingFile(meta.key, meta.offset, total))
         // The resume's device oracle: the offset rides last, so every parse of the line before it holds.
         log("rx ${label(meta)} ${resume.size ?: "?"}B ← $peer from ${meta.offset}")
@@ -191,8 +219,9 @@ internal class FileIntake(
     fun chunk(bytes: ByteArray) {
         val keeping = state as? State.Keeping ?: return
         val next = keeping.bytes + bytes.size
-        if (next > MAX_INCOMING_FILE_BYTES) {
+        if (next > keeping.limit.bytes) {
             log("incoming file from $peer exceeds ceiling; aborting")
+            refuseOver(keeping.meta, keeping.limit)
             abort(keeping)
             return
         }
@@ -290,15 +319,83 @@ internal class FileIntake(
     private fun begin(
         meta: FileMeta,
         size: Long?,
+        limit: Ceiling,
     ) {
         val temp = File.createTempFile(RX_PREFIX, RX_SUFFIX, cacheDir)
-        state = State.Keeping(temp, BufferedOutputStream(FileOutputStream(temp)), meta, basedOn = null, bytes = 0L, startedAt = now())
-        // The declared size is the sender's label, never a bound: one past the ceiling describes a stream this
-        // link aborts anyway, so it is shown as no total at all (#115).
-        arriving.set(ArrivingFile(meta.key, 0L, size?.takeIf { it in 1..MAX_INCOMING_FILE_BYTES }))
+        state =
+            State.Keeping(
+                temp,
+                BufferedOutputStream(FileOutputStream(temp)),
+                meta,
+                basedOn = null,
+                bytes = 0L,
+                startedAt = now(),
+                limit = limit,
+            )
+        // The declared size is the sender's label, never a bound: the header refused one past the ceiling, and a 0 or
+        // a negative one is shown as no total at all (#115).
+        arriving.set(ArrivingFile(meta.key, 0L, size?.takeIf { it in 1..limit.bytes }))
         // The receive side's oracle that the total crossed. `rx`, not `file`: a bare `file <KIND>/<hash>` grep
         // counts the serves (ADR 2026-09.4tx5's device check), and the key is the peer's until finalize checks it.
         log("rx ${label(meta)} ${size ?: "?"}B ← $peer")
+    }
+
+    /**
+     * The ceiling a file of [meta] is kept under, read once at its header (#234): a pushed avatar's is
+     * [MAX_AVATAR_BYTES]; an attachment's is the per-hash one a profile photo's want set ([PartialBlobs.capFor]), whose
+     * breach marks this link's peer, or [MAX_INCOMING_FILE_BYTES].
+     */
+    private fun ceilingOf(meta: FileMeta): Ceiling =
+        when (meta.kind) {
+            FileKind.AVATAR -> {
+                Ceiling(MAX_AVATAR_BYTES, marks = false)
+            }
+
+            FileKind.ATTACHMENT -> {
+                val cap = if (isValidBlobHash(meta.key)) partials.capFor(meta.key) else null
+                if (cap != null &&
+                    cap < MAX_INCOMING_FILE_BYTES
+                ) {
+                    Ceiling(cap, marks = true)
+                } else {
+                    Ceiling(MAX_INCOMING_FILE_BYTES, marks = false)
+                }
+            }
+        }
+
+    /**
+     * Whether a header for [meta] declares more than a photo's ceiling [limit] (#234): [size] is the stream's, from
+     * byte [offset]. The declared size is the sender's label, but one over the ceiling describes a stream this link
+     * would abort anyway, so it is skipped now, and under a per-hash ceiling marked as a passed one is. A kept prefix
+     * already past a per-hash ceiling cannot become a file under it: it is dropped, so no later ask resumes onto it.
+     * The attachment ceiling keeps its own rule — counted chunk by chunk, the prefix included.
+     */
+    private fun overCeiling(
+        meta: FileMeta,
+        limit: Ceiling,
+        size: Long?,
+        offset: Long,
+    ): Boolean {
+        if (limit.bytes >= MAX_INCOMING_FILE_BYTES) return false
+        // Compared without adding the two, so no pair of the peer's numbers overflows past the check.
+        if (offset <= limit.bytes && (size ?: 0L) <= limit.bytes - offset) return false
+        log("rx ${label(meta)} ${size ?: "?"}B ← $peer${from(meta)} over its ceiling of ${limit.bytes}B; skipped")
+        if (offset > limit.bytes && limit.marks) partials.drop(meta.key)
+        refuseOver(meta, limit)
+        return true
+    }
+
+    /**
+     * A file of [meta] passed [limit]: when that is a per-hash ceiling, [peer] — the node id this link's handshake
+     * named — is marked for the hash (#234). Its bytes are the only evidence, and they speak for this link alone.
+     */
+    private fun refuseOver(
+        meta: FileMeta,
+        limit: Ceiling,
+    ) {
+        if (!limit.marks) return
+        partials.markHolder(meta.key, peer)
+        log("rx ${label(meta)} ← $peer passed over: its ceiling is ${limit.bytes}B")
     }
 
     /**
@@ -346,6 +443,11 @@ internal class FileIntake(
         // Receive-side ceiling on a file, matching the send cap (AttachmentStore.MAX_BYTES = 8 MiB) plus
         // headroom for E2E framing (GCM IV+tag) — refuses an unbounded malicious stream that exhausts disk.
         const val MAX_INCOMING_FILE_BYTES = 8L * 1024 * 1024 + 64 * 1024
+
+        // Receive-side ceiling on a profile photo (#234), pushed ([FileKind.AVATAR]) or fetched for a profile: exactly
+        // this many bytes are kept, one more is not. Our own encoder keeps a face well under it (`AvatarStore`), so it
+        // bounds only what a peer sends. Shared with knit-ios.
+        const val MAX_AVATAR_BYTES = 1_048_576L
 
         // The shortest gap between two resumes of one key on one link (#161, ADR 2026-10.wtyc's amendment). An honest
         // holder sends one at most once a round: the asker opens a round of asks per blob at most every ROUND_MS, the

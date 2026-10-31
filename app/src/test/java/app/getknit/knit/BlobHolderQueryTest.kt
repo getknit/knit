@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -2679,7 +2680,155 @@ class BlobHolderQueryTest {
             assertTrue(a.store.has(hash))
         }
 
+    // --- A profile photo's ceiling (#234): the signals speak for the holder that gave them, the author's for the photo ---
+
+    @Test
+    fun aHolderWhoseSizePassesThePhotoCeilingIsPassedOverAndAnHonestOneServes() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val liar = Node("b", backgroundScope)
+            val author = Node("c", backgroundScope)
+            a.transport.connect(liar.transport)
+            a.transport.connect(author.transport)
+            val photo = picture(PHOTO_BYTES)
+            val hash = author.store.seed(photo)
+            liar.store.lying[hash] = PHOTO_CEILING + 1 // an unsigned claim: it speaks for b alone
+
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+
+            assertEquals(setOf("b"), a.partials.markedHolders(hash))
+            assertTrue("the liar is never asked", liar.asksFrom(hash).isEmpty())
+            assertEquals("the honest holder is", listOf("a"), author.asksFrom(hash))
+            assertTrue(a.store.has(hash))
+            assertFalse("one holder's claim refuses no photo", a.exchange.refusedAsPhoto(hash))
+            assertEquals(1, a.events.count { it == BlobExchange.BlobEvent.HolderOverCeiling })
+        }
+
+    @Test
+    fun aHolderWhoseStreamPassedThePhotoCeilingIsPassedOverAndTheNextHolderAsked() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val liar = Node("b", backgroundScope)
+            val author = Node("c", backgroundScope)
+            a.transport.connect(liar.transport)
+            val hash = author.store.seed(picture(PHOTO_BYTES))
+            liar.store.lying[hash] = PHOTO_BYTES.toLong() // says HAVE, small; what it streams is another matter
+
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+            assertEquals(listOf("a"), liar.asksFrom(hash))
+            assertEquals("the photo want's ceiling rides to the links", PHOTO_CEILING, a.partials.capFor(hash))
+
+            // The link that took b's stream kept nothing past the ceiling and marked b (FileIntake); the author links.
+            a.partials.markHolder(hash, "b")
+            a.transport.connect(author.transport)
+            a.exchange.linked(listOf("c"))
+            a.exchange.reask()
+
+            assertEquals("b's ask is withdrawn", listOf("a"), liar.cancelsFrom(hash))
+            assertEquals("and the next holder asked at once", listOf("a"), author.asksFrom(hash))
+            assertTrue(a.store.has(hash))
+            assertEquals("asked once, never again", listOf("a"), liar.asksFrom(hash))
+            assertNull("the ceiling goes with the want", a.partials.capFor(hash))
+        }
+
+    @Test
+    fun theAuthorsOwnSizeOverThePhotoCeilingEndsTheWantForTheSession() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val author = Node("b", backgroundScope)
+            val holder = Node("c", backgroundScope)
+            a.transport.connect(author.transport)
+            val hash = holder.store.seed(picture(PHOTO_BYTES))
+            author.store.lying[hash] = PHOTO_CEILING + 1
+
+            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
+
+            assertTrue("the author speaks for its photo", a.exchange.refusedAsPhoto(hash))
+            assertTrue("the want ended", hash !in a.exchange.wantedHashes())
+            assertTrue(author.asksFrom(hash).isEmpty())
+            assertEquals(1, a.events.count { it == BlobExchange.BlobEvent.OverCeiling })
+
+            // Fetched at most once per session: a later profile's want, a holder linking and the re-ask ask nothing.
+            a.transport.connect(holder.transport)
+            a.exchange.linked(listOf("c"))
+            a.exchange.want(hash, author = "b", ceiling = PHOTO_CEILING)
+            a.exchange.reask()
+            assertTrue(hash !in a.exchange.wantedHashes())
+            assertTrue(holder.asksFrom(hash).isEmpty())
+            assertTrue(holder.queriesFrom("a").none { hash in it })
+            assertTrue(author.asksFrom(hash).isEmpty())
+        }
+
+    @Test
+    fun aMarkedHolderIsNotAskedAgainByTheReaskRoundOrANewWantButAnAttachmentWantLiftsTheCeiling() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val marked = Node("b", backgroundScope)
+            a.transport.connect(marked.transport)
+            val hash = marked.store.seed(picture(PHOTO_BYTES))
+            a.partials.markHolder(hash, "b") // its stream passed the ceiling earlier this session
+
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+            a.now += BlobExchange.CYCLE_MS
+            a.exchange.reask()
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+            a.exchange.reask()
+            assertTrue("never queried", marked.queriesFrom("a").none { hash in it })
+            assertTrue("never asked", marked.asksFrom(hash).isEmpty())
+            assertTrue("the want stands for an unmarked holder", hash in a.exchange.wantedHashes())
+
+            // The same hash wanted as an attachment keeps the attachment ceiling: the larger wins, marks and all.
+            a.exchange.want(hash, author = "c")
+            assertNull(a.partials.capFor(hash))
+            assertEquals(listOf("a"), marked.asksFrom(hash))
+            assertTrue(a.store.has(hash))
+        }
+
+    @Test
+    fun aHolderPassedOverStaysPassedOverWhenTheSessionsBoundedMarkIsDropped() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val marked = Node("b", backgroundScope)
+            a.transport.connect(marked.transport)
+            val hash = marked.store.seed(picture(PHOTO_BYTES))
+            a.partials.markHolder(hash, "b")
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+
+            // A flood of other marks pushes this hash's out of the session's bounded set; the live want remembers.
+            (0 until 300).forEach { a.partials.markHolder(sha256Hex(byteArrayOf(it.toByte(), (it shr 8).toByte())), "x") }
+            assertTrue(a.partials.markedHolders(hash).isEmpty())
+            a.now += BlobExchange.CYCLE_MS
+            a.exchange.reask()
+
+            assertTrue("never queried", marked.queriesFrom("a").none { hash in it })
+            assertTrue("never asked", marked.asksFrom(hash).isEmpty())
+        }
+
+    @Test
+    fun aPhotoWantOnAWantOnlyANeighboursAskMadeTakesThePhotoCeiling() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val asker = Node("b", backgroundScope)
+            a.transport.connect(asker.transport)
+            val hash = sha256Hex(picture(PHOTO_BYTES))
+
+            a.exchange.onRequest(hash, "b", pull = BlobExchange.PULL_BUDGET) // a pull-through opens the want, uncapped
+            assertTrue(hash in a.exchange.wantedHashes())
+            assertNull(a.partials.capFor(hash))
+
+            a.exchange.want(hash, author = "c", ceiling = PHOTO_CEILING)
+            assertEquals("our first want sets its own ceiling", PHOTO_CEILING, a.partials.capFor(hash))
+            a.exchange.onRequest(hash, "b", pull = BlobExchange.PULL_BUDGET)
+            assertEquals("a neighbour's ask still lifts nothing", PHOTO_CEILING, a.partials.capFor(hash))
+            a.exchange.want(hash, author = "c")
+            assertNull("an attachment want of ours does", a.partials.capFor(hash))
+        }
+
     private companion object {
+        // A photo ceiling and a picture under it, small enough to stream in a test (#234).
+        const val PHOTO_CEILING = 1_000L
+        const val PHOTO_BYTES = 500
+
         // Past the longest dead-cycle gap inside a day (6 min): every step opens one cycle.
         const val SEVEN_MINUTES_MS = 7 * 60_000L
 

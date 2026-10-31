@@ -103,6 +103,16 @@ interface ForwardDao {
     @Query("DELETE FROM forward_store WHERE length(signed) > :max")
     suspend fun deleteLongerThan(max: Int): Int
 
+    /**
+     * Deletes every row of [type] whose `signed` is longer than [max] bytes: the profiles a build before the profile cap
+     * stored (#234). [type] is `FrameType.PROFILE`'s wire string, the value the column holds.
+     */
+    @Query("DELETE FROM forward_store WHERE type = :type AND length(signed) > :max")
+    suspend fun deleteTypeLongerThan(
+        type: String,
+        max: Int,
+    ): Int
+
     /** Live carried frames — the global-cap count (an expired-unswept row must not push a live one out). */
     @Query("SELECT COUNT(*) FROM forward_store WHERE expiresAt >= :now")
     suspend fun count(now: Long): Int

@@ -104,6 +104,7 @@ class CustodyHeadroomLabTest {
                     .values
                     .max()
             sizes["cleartext profile"] = alice.custodySignedBytes(FrameType.PROFILE).values.max()
+            assertProfileHeadroom(sizes)
 
             val dmBody = "@${nameOf(1)} ".padEnd(TextLimits.MESSAGE, CJK)
             sizes["sealed DM"] =
@@ -134,6 +135,16 @@ class CustodyHeadroomLabTest {
             assertTrue(alice.sendDm(carol, "measured"))
             lab.assertConverged(listOf(alice, carol), atLeast = 3) { it.dmWith(if (it === alice) carol else alice) }
         }
+
+    /** The profile cap (#234) binds the cleartext profile alone; the sealed one rides as a ctl under the byte cap. */
+    private fun assertProfileHeadroom(sizes: Map<String, Int>) {
+        val cleartext = checkNotNull(sizes["cleartext profile"])
+        println(
+            "profile headroom (signed bytes, cap ${ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES}): " +
+                "cleartext $cleartext, sealed ${sizes["sealed profile, four badges"]}",
+        )
+        assertTrue("an honest profile over the profile cap: $sizes", cleartext <= ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES)
+    }
 
     /**
      * Sends [body] with every optional part at its clamp, as the composer would, and returns the `signed` length of the

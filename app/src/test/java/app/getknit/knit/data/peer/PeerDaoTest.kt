@@ -2,6 +2,7 @@ package app.getknit.knit.data.peer
 
 import androidx.room3.useReaderConnection
 import app.getknit.knit.data.RoomDbTest
+import app.getknit.knit.data.blob.BlobEntity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -72,6 +73,28 @@ class PeerDaoTest : RoomDbTest() {
             assertEquals(2, dao.countByAvatarHash("h1"))
             assertEquals(1, dao.countByAvatarHash("h2"))
             assertEquals(0, dao.countByAvatarHash("none"))
+        }
+
+    /** The face sweep (#234) finds a face whose held blob is over the limit, clears every peer showing it, and only those. */
+    @Test
+    fun `avatarsLongerThan finds faces over the limit and clearAvatars clears exactly those`() =
+        runTest {
+            db.blobDao().insert(BlobEntity("big", "image/jpeg", ByteArray(LIMIT + 1)))
+            db.blobDao().insert(BlobEntity("edge", "image/jpeg", ByteArray(LIMIT)))
+            dao.upsert(PeerEntity(nodeId = "a", avatarHash = "big"))
+            dao.upsert(PeerEntity(nodeId = "b", avatarHash = "big"))
+            dao.upsert(PeerEntity(nodeId = "c", avatarHash = "edge"))
+            dao.upsert(PeerEntity(nodeId = "d", avatarHash = "not-held"))
+
+            val over = dao.avatarsLongerThan(LIMIT.toLong())
+            assertEquals(listOf("big"), over)
+            assertEquals(2, dao.clearAvatars(over))
+
+            assertNull(dao.findByNodeId("a")!!.avatarHash)
+            assertNull(dao.findByNodeId("b")!!.avatarHash)
+            assertEquals("edge", dao.findByNodeId("c")!!.avatarHash)
+            assertEquals("not-held", dao.findByNodeId("d")!!.avatarHash)
+            assertNotNull("the pin stays", dao.findByNodeId("a"))
         }
 
     @Test
@@ -158,7 +181,7 @@ class PeerDaoTest : RoomDbTest() {
         }
 
     @Test
-    fun `countCappable and evictOldestCappable spare verified and protected peers`() =
+    fun `countCappable, oldestCappable and deleteCappable spare verified and protected peers`() =
         runTest {
             dao.upsert(PeerEntity(nodeId = "verified", verified = true, updatedAt = 1L))
             dao.upsert(PeerEntity(nodeId = "protected", verified = false, updatedAt = 2L))
@@ -168,10 +191,16 @@ class PeerDaoTest : RoomDbTest() {
             val protectedIds = listOf("protected")
             assertEquals(2, dao.countCappable(protectedIds)) // "old" + "new" (verified + protected excluded)
 
-            dao.evictOldestCappable(protectedIds, over = 1) // evict the single oldest cappable → "old"
+            val oldest = dao.oldestCappable(protectedIds, over = 1) // the single oldest cappable → "old"
+            assertEquals(listOf("old"), oldest)
+            assertEquals(1, dao.deleteCappable(oldest + "verified")) // a verified id among them stays
             assertNull(dao.findByNodeId("old"))
             assertNotNull(dao.findByNodeId("new"))
             assertNotNull(dao.findByNodeId("verified"))
             assertNotNull(dao.findByNodeId("protected"))
         }
+
+    private companion object {
+        const val LIMIT = 1_024
+    }
 }

@@ -26,9 +26,15 @@ class LabSybil(
 
     val nodeId: String = party.nodeId
 
-    /** The profile that pins this identity everywhere, published at [at]; no prekey, so nobody seals to it. */
-    fun profile(at: Long): WireEnvelope =
-        signed(
+    /**
+     * The profile that pins this identity everywhere, published at [at]; no prekey, so nobody seals to it. With
+     * [signedBytes], its status is padded so the frame's `signed` is exactly that long (the profile cap, #234).
+     */
+    fun profile(
+        at: Long,
+        signedBytes: Int? = null,
+    ): WireEnvelope {
+        fun frame(pad: Int) =
             RelayEnvelope(
                 type = FrameType.PROFILE,
                 id = FrameId.profileId(nodeId, at),
@@ -38,14 +44,21 @@ class LabSybil(
                     WireCodec.encodePayload(
                         ProfileContent(
                             name = name,
-                            status = "",
+                            status = "x".repeat(pad),
                             pubKey = party.bundle.encoded,
                             protoVersion = Protocol.VERSION,
                             version = at,
                         ),
                     ),
-            ),
-        )
+            )
+        if (signedBytes == null) return signed(frame(0))
+        // A text string's length prefix grows at 24 and 256, so a step can overshoot by its width: walk back to the size.
+        var pad = maxOf(0, signedBytes - WireCodec.encodeEnvelope(frame(0)).size)
+        while (pad > 0 && WireCodec.encodeEnvelope(frame(pad)).size > signedBytes) pad--
+        val env = frame(pad)
+        check(WireCodec.encodeEnvelope(env).size == signedBytes) { "no status length makes a $signedBytes-byte profile" }
+        return signed(env)
+    }
 
     /**
      * A DM to [to] stamped [sentAt], which the fork picks: a custodial frame every carrier holds for a day. With

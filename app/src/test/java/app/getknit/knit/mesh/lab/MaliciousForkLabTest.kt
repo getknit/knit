@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -231,6 +232,63 @@ class MaliciousForkLabTest : StrandedLabBase() {
         }
 
     /**
+     * The profile cap (#234): four free identities publish profiles, two exactly at the cap and two one and two bytes over
+     * it, while Bob sends Alice a picture. Every node pins the at-cap identities and keeps their proofs; none pins an
+     * over-cap one, keeps a proof or a custody row for it, or counts it a missing key. Bob still relays the over-cap
+     * profiles to Alice, whose own door counts them, and the picture lands. The cap is scaled down through [LabLimits],
+     * which the door reads through custody's own value; the honest profiles here are far below it.
+     */
+    @Suppress("LongMethod") // one scenario: the profiles and the picture, the refusals on each node, then the oracle
+    @Test
+    fun anOverCapProfileIsPinnedByNobodyAndStillRelayedWhileAPictureCrosses() =
+        runBlocking {
+            val limits = LabLimits(custodyMaxProfileSignedBytes = PROFILE_CAP)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits).apply { setDisplayName("Bob") }
+            val mallory = lab.node("mallory", limits).apply { setDisplayName("Mallory") }
+            lab.linkAll(alice to bob, mallory to bob)
+            lab.awaitAcquainted(alice, bob, mallory)
+
+            val sybils = (1..4).map { LabSybil(seed = 9_100 + it, name = "sybil $it") }
+            val sizes = listOf(PROFILE_CAP, PROFILE_CAP, PROFILE_CAP + 1, PROFILE_CAP + 2)
+            val atCap = sybils.take(2)
+            val overCap = sybils.drop(2)
+            val profiles = sybils.zip(sizes) { sybil, size -> sybil.profile(lab.clock.now(), signedBytes = size) }
+            val picture = Random(234).nextBytes(4_096)
+            profiles.forEach { mallory.flood(it) }
+            assertTrue(bob.sendImage(picture, "a picture", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "a picture")
+            val hash = checkNotNull(bob.attachmentHash(bob.dmWith(alice), id))
+            val overIds = profiles.drop(2).map { checkNotNull(WireCodec.decodeEnvelope(it.signed)).id }.toSet()
+
+            // Alice's count can only come from Bob's relay: she has no other link to Mallory.
+            for (node in listOf(bob, alice)) {
+                lab.await(overCap.size) {
+                    node.metrics
+                        .frames()
+                        .profileOversizeRefused
+                        .toInt()
+                }
+                // The proof is written after the pin, so the wait is on both.
+                lab.await(atCap.size) { atCap.count { node.pinned(it.nodeId) != null && node.storedProof(it.nodeId) != null } }
+            }
+            lab.await(1) { if (alice.blobs.exists(hash)) 1 else 0 }
+            lab.unlink(mallory, bob)
+
+            for (node in listOf(alice, bob)) {
+                for (sybil in overCap) {
+                    assertNull("${node.name} pinned an over-cap identity", node.pinned(sybil.nodeId))
+                    assertNull("${node.name} keeps an over-cap proof", node.storedProof(sybil.nodeId))
+                }
+                assertTrue("${node.name} holds no over-cap profile", overIds.none { it in node.custodyIds() })
+                assertEquals("${node.name} counted each once", overCap.size.toLong(), node.metrics.frames().profileOversizeRefused)
+                assertEquals("${node.name} counted no missing key", 0L, node.metrics.frames().dropsByReason[DropReason.NO_SENDER_KEY] ?: 0L)
+            }
+            assertTrue(picture.contentEquals(alice.attachmentPlain(alice.dmWith(bob), id)))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
      * A row over the byte cap that a build before it kept (#227): Bob holds it and Dave, who never did, cannot, so their
      * stores differ for as long as Bob keeps it. Bob's sweep deletes it, a function of the row alone, and the stores
      * converge.
@@ -385,5 +443,8 @@ class MaliciousForkLabTest : StrandedLabBase() {
         const val FLOOD_PER_SYBIL = 8
         const val BYTE_CAP = 4_096
         const val PER_SIZE = 3
+
+        // The profile cap, scaled down like BYTE_CAP: an honest lab profile is a few hundred bytes.
+        const val PROFILE_CAP = 2_048
     }
 }

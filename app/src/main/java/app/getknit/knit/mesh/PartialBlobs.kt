@@ -33,6 +33,20 @@ import java.io.InputStream
  *   [minBytes] is not worth a file. The key is the peer's claim, so only a well-formed content hash ever names a
  *   file here ([isValidBlobHash]), and the name is checked to stay inside [dir].
  *
+ * It also carries the two facts a fetch made for a profile photo shares with the links that receive it (#234),
+ * because this store is the one object every link's `FileIntake` and `BlobExchange` already hold:
+ *
+ * - **A per-hash ceiling** ([cap], [capFor]): a want only a profile photo makes is fetched under the photo ceiling
+ *   (`FileIntake.MAX_AVATAR_BYTES`), not the attachment one. `BlobExchange` writes it while such a want stands and
+ *   clears it when the want ends or an attachment want for the same hash lifts it (the larger ceiling wins); a link
+ *   reads it once, at a stream's header. No entry is the attachment ceiling.
+ * - **The holders passed over under it** ([markHolder], [markedHolders]): one whose stream passed the per-hash ceiling,
+ *   or whose size answer did. Neither claim can be checked against the hash before the whole file is in, so it speaks
+ *   for that holder alone: `BlobExchange` asks it for the hash no more this session and goes on to the others, and only
+ *   when the holder is the photo's author does it refuse the hash itself ([refuse], [isRefused]) and end the want. One
+ *   oversized photo costs at most one copy per holder per session, and one lying neighbour cannot end an honest peer's
+ *   photo. Both are purged with the prefixes at each mesh start.
+ *
  * Pure of Android, thread-safe, every disk touch under one short-held [lock] except the caller's copy.
  */
 class PartialBlobs(
@@ -70,6 +84,70 @@ class PartialBlobs(
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > MAX_EPOCHS
         }
     private var nextEpoch = 0L
+
+    // hash -> the ceiling a stream of it is kept under, below the attachment one (#234). Written and cleared by
+    // `BlobExchange` with the want it belongs to, so it holds at most its wants; capped all the same. Guarded by [lock].
+    private val caps =
+        object : LinkedHashMap<String, Long>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > MAX_CAPS
+        }
+
+    // hash -> the holders passed over under its per-hash ceiling this session ([markHolder]), oldest first. Only a hash a
+    // want of ours capped is ever marked, and a holder id is the link's own neighbour, but both are capped all the same:
+    // a mark that falls out costs that holder one more copy, never a want. Guarded by [lock].
+    private val marked =
+        object : LinkedHashMap<String, LinkedHashSet<String>>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkedHashSet<String>>): Boolean = size > MAX_REFUSED
+        }
+
+    // Hashes refused as a profile photo this session ([refuse]): their author sent or claimed more than the ceiling, or
+    // a held copy was found over it. Capped, oldest first. Guarded by [lock].
+    private val refused =
+        object : LinkedHashMap<String, Unit>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>): Boolean = size > MAX_REFUSED
+        }
+
+    /**
+     * Keeps a stream of [hash] to at most [bytes] (#234), or lifts the per-hash ceiling when null: the attachment
+     * ceiling applies. `BlobExchange` alone writes it, with the want it belongs to.
+     */
+    fun cap(
+        hash: String,
+        bytes: Long?,
+    ) = synchronized(lock) {
+        if (bytes == null) caps.remove(hash) else caps[hash] = bytes
+    }
+
+    /** The per-hash ceiling on a stream of [hash], or null for the attachment ceiling. A link reads it at the header. */
+    fun capFor(hash: String): Long? = synchronized(lock) { caps[hash] }
+
+    /**
+     * [holder]'s stream of [hash], or its size answer for it, passed the per-hash ceiling: it is not asked for [hash] under
+     * that ceiling again this session. True when the mark is new.
+     */
+    fun markHolder(
+        hash: String,
+        holder: String,
+    ): Boolean =
+        synchronized(lock) {
+            val holders = marked.getOrPut(hash) { LinkedHashSet() }
+            val added = holders.add(holder)
+            if (holders.size > MAX_MARKED_HOLDERS) holders.remove(holders.first())
+            if (added) log("partial ${hash.take(LOG_HASH)} holder $holder over its ceiling")
+            added
+        }
+
+    /** The holders passed over for [hash] under its per-hash ceiling this session ([markHolder]). */
+    fun markedHolders(hash: String): Set<String> = synchronized(lock) { marked[hash]?.toSet() ?: emptySet() }
+
+    /** [hash] is refused as a profile photo for the rest of the session: its author passed the ceiling, or a held copy did. */
+    fun refuse(hash: String) =
+        synchronized(lock) {
+            if (refused.put(hash, Unit) == null) log("partial ${hash.take(LOG_HASH)} refused over its ceiling")
+        }
+
+    /** Whether [hash] was refused as a profile photo this session ([refuse]). */
+    fun isRefused(hash: String): Boolean = synchronized(lock) { refused.containsKey(hash) }
 
     /** How many bytes of [hash] are kept: the offset to ask a holder for, or 0 when there is nothing to resume. */
     fun length(hash: String): Long = synchronized(lock) { entries[hash]?.length ?: 0L }
@@ -147,11 +225,17 @@ class PartialBlobs(
         return expired + held.size
     }
 
-    /** Deletes every prefix, including a dead session's leftovers on disk. Run at each mesh start. */
+    /**
+     * Deletes every prefix, including a dead session's leftovers on disk, and forgets the ceilings, marks and refusals.
+     * Run at each mesh start.
+     */
     fun purge() =
         synchronized(lock) {
             entries.clear()
             epochs.clear()
+            caps.clear()
+            marked.clear()
+            refused.clear()
             dir.listFiles()?.forEach { it.delete() }
         }
 
@@ -210,6 +294,17 @@ class PartialBlobs(
 
         // Epochs only need to outlive the copies in flight on them; a few per held prefix is plenty.
         private const val MAX_EPOCHS = 64
+
+        // Per-hash ceilings: one per want that only a profile photo made, and wants are capped at 256 (BlobExchange).
+        private const val MAX_CAPS = 256
+
+        // Refused or marked hashes: each cost a want and a stream or an answer to earn; past this many the oldest may be
+        // fetched once more.
+        private const val MAX_REFUSED = 256
+
+        // Holders marked for one hash: more than a phone has neighbours over a session's links; past it the oldest may be
+        // asked once more.
+        private const val MAX_MARKED_HOLDERS = 16
         private const val SUFFIX = ".part"
         private const val LOG_HASH = 12
     }

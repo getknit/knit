@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.protocol
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.identity.DeviceTag
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.StoreDigest
@@ -49,17 +50,20 @@ class KeyedVectorTest {
     private val fileKey = fixtureBytes(32, 23).toHex()
 
     /** Alice's profile, shaped like `MeshManager.currentProfileEnvelope` minus the v2 prekey. */
-    private fun profileFrame(): RelayEnvelope =
+    private fun profileFrame(
+        sentAt: Long = PUBLISHED_AT,
+        status: String = "Testing the wire",
+    ): RelayEnvelope =
         RelayEnvelope(
             type = FrameType.PROFILE,
-            id = profileId,
+            id = "profile-${alice.nodeId}-$sentAt",
             senderId = alice.nodeId,
-            sentAt = PUBLISHED_AT,
+            sentAt = sentAt,
             payload =
                 WireCodec.encodePayload(
                     ProfileContent(
                         name = "Alice",
-                        status = "Testing the wire",
+                        status = status,
                         pubKey = alice.bundle.encoded,
                         deviceTag = DeviceTag.derive("vector-device-alice"),
                         protoVersion = Protocol.VERSION,
@@ -68,6 +72,27 @@ class KeyedVectorTest {
                     ),
                 ),
         )
+
+    /**
+     * Alice's profile, published at [sentAt], with its `status` padded so the frame's `signed` is exactly [signedBytes]
+     * long: the profile cap's edge (#234). A text string's length prefix grows at 24, 256 and 65,536, so a step can
+     * overshoot by its width: walk back to the size, as `LabSybil.dm` does.
+     */
+    private fun cappedProfileFrame(
+        sentAt: Long,
+        signedBytes: Int,
+    ): RelayEnvelope {
+        fun frame(n: Int) = profileFrame(sentAt, PAD.repeat(n))
+        var n = maxOf(0, signedBytes - WireCodec.encodeEnvelope(frame(0)).size)
+        while (n > 0 && WireCodec.encodeEnvelope(frame(n)).size > signedBytes) n--
+        val env = frame(n)
+        check(WireCodec.encodeEnvelope(env).size == signedBytes) { "no status length makes a $signedBytes-byte profile" }
+        return env
+    }
+
+    private fun atCapFrame(): RelayEnvelope = cappedProfileFrame(AT_CAP_AT, PROFILE_CAP)
+
+    private fun overCapFrame(): RelayEnvelope = cappedProfileFrame(OVER_CAP_AT, PROFILE_CAP + 1)
 
     private fun roomPostFrame(): RelayEnvelope =
         RelayEnvelope(
@@ -201,13 +226,37 @@ class KeyedVectorTest {
     @Test
     fun `alice's signed frames rebuild byte for byte and verify`() {
         assumeFalse(VectorFiles.writing)
-        for ((name, frame) in listOf("aliceProfile" to profileFrame(), "aliceRoomPost" to roomPostFrame())) {
+        val frames =
+            listOf(
+                "aliceProfile" to profileFrame(),
+                "aliceRoomPost" to roomPostFrame(),
+                "aliceProfileAtCap" to atCapFrame(),
+                "aliceProfileOverCap" to overCapFrame(),
+            )
+        for ((name, frame) in frames) {
             val pinned = frameHex(name).fromHex()
             assertEquals("keyed vector '$name' drifted", pinned.toHex(), alice.signedWire(frame).toHex())
             val envelope = checkNotNull(WireCodec.decodeWire(pinned))
             assertTrue(MessageCrypto.verify(alice.bundle, envelope.sig, envelope.signed))
             assertArrayEquals(WireCodec.encodeEnvelope(frame), envelope.signed)
         }
+    }
+
+    /** The profile cap's two edge frames are exactly the cap and one byte over it, and say so (#234). */
+    @Test
+    fun `the profile cap frames sit on its edge`() {
+        assumeFalse(VectorFiles.writing)
+        for ((name, size) in listOf("aliceProfileAtCap" to PROFILE_CAP, "aliceProfileOverCap" to PROFILE_CAP + 1)) {
+            val entry =
+                file
+                    .getValue("frames")
+                    .jsonObject
+                    .getValue(name)
+                    .jsonObject
+            assertEquals(size.toLong(), entry.getValue("signedBytes").jsonPrimitive.long)
+            assertEquals(size, checkNotNull(WireCodec.decodeWire(frameHex(name).fromHex())).signed.size)
+        }
+        assertEquals(8_192, PROFILE_CAP)
     }
 
     @Test
@@ -280,6 +329,16 @@ class KeyedVectorTest {
                 put("body", ROOM_BODY)
                 put("wire", alice.signedWire(roomPostFrame()).toHex())
             }
+            putJsonObject("aliceProfileAtCap") {
+                put("sender", "alice")
+                put("signedBytes", PROFILE_CAP)
+                put("wire", alice.signedWire(atCapFrame()).toHex())
+            }
+            putJsonObject("aliceProfileOverCap") {
+                put("sender", "alice")
+                put("signedBytes", PROFILE_CAP + 1)
+                put("wire", alice.signedWire(overCapFrame()).toHex())
+            }
             putJsonObject("aliceDmToBob") {
                 put("sender", "alice")
                 put("recipient", "bob")
@@ -331,7 +390,9 @@ class KeyedVectorTest {
         const val FILE = "keyed-v1.json"
         const val ABOUT =
             "Keyed vectors: two fixed identities, the frames Alice signs, a v1 DM she seals to Bob, their safety number, " +
-                "the link records a peer reads, and the advert it reads first. KeyedVectorTest checks them. See vectors/README.md."
+                "the link records a peer reads, and the advert it reads first. aliceProfileAtCap and aliceProfileOverCap are " +
+                "her profile with its status padded so `signed` is exactly the profile cap (8,192 bytes) and one byte over: a " +
+                "receiver pins the first and refuses the second before decoding it. KeyedVectorTest checks them. See vectors/README.md."
 
         /** The publish stamp of Alice's profile, and the clock the other frames count from. */
         const val PUBLISHED_AT = 1_756_100_000_000L
@@ -346,5 +407,13 @@ class KeyedVectorTest {
         const val FILE_SIZE = 203_807L
         const val FILE_OFFSET = 81_920L
         const val DM_BODY = "Hi Bob"
+
+        /** The profile cap the two edge frames straddle (#234). */
+        const val PROFILE_CAP = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES
+        const val AT_CAP_AT = PUBLISHED_AT + 3_000L
+        const val OVER_CAP_AT = PUBLISHED_AT + 4_000L
+
+        /** The status padding: one byte of UTF-8 a unit, so its count is its byte length. */
+        const val PAD = "x"
     }
 }

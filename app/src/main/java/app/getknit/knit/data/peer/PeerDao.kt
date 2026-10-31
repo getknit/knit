@@ -50,6 +50,19 @@ interface PeerDao {
         verified: Boolean,
     )
 
+    /**
+     * The faces peers show whose held blob is longer than [max] bytes (#234): what a build before the photo ceiling
+     * adopted. One join on the hash; the length is read without the bytes.
+     */
+    @Query(
+        "SELECT DISTINCT p.avatarHash FROM peers p JOIN blobs b ON b.hash = p.avatarHash WHERE length(b.bytes) > :max",
+    )
+    suspend fun avatarsLongerThan(max: Long): List<String>
+
+    /** Clears the face of every peer showing one of [hashes]; returns how many rows changed. */
+    @Query("UPDATE peers SET avatarHash = NULL WHERE avatarHash IN (:hashes)")
+    suspend fun clearAvatars(hashes: List<String>): Int
+
     /** How many peers reference avatar blob [hash] — part of the orphaned-blob garbage-collection check. */
     @Query("SELECT COUNT(*) FROM peers WHERE avatarHash = :hash")
     suspend fun countByAvatarHash(hash: String): Int
@@ -62,15 +75,16 @@ interface PeerDao {
     @Query("SELECT COUNT(*) FROM peers WHERE verified = 0 AND nodeId NOT IN (:protected)")
     suspend fun countCappable(protected: Collection<String>): Int
 
-    /** Evicts the [over] oldest-by-`updatedAt` unverified peers not in [protected]. */
-    @Query(
-        "DELETE FROM peers WHERE nodeId IN " +
-            "(SELECT nodeId FROM peers WHERE verified = 0 AND nodeId NOT IN (:protected) ORDER BY updatedAt ASC LIMIT :over)",
-    )
-    suspend fun evictOldestCappable(
+    /** The [over] oldest-by-`updatedAt` unverified peers not in [protected]: what [deleteCappable] evicts. */
+    @Query("SELECT nodeId FROM peers WHERE verified = 0 AND nodeId NOT IN (:protected) ORDER BY updatedAt ASC LIMIT :over")
+    suspend fun oldestCappable(
         protected: Collection<String>,
         over: Int,
-    )
+    ): List<String>
+
+    /** Evicts the unverified peers among [nodeIds] (a peer verified since they were chosen stays); returns how many went. */
+    @Query("DELETE FROM peers WHERE verified = 0 AND nodeId IN (:nodeIds)")
+    suspend fun deleteCappable(nodeIds: Collection<String>): Int
 
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun delete(nodeId: String)
@@ -98,6 +112,10 @@ interface PeerDao {
     /** Drops every proof of key whose pin is gone — run after each deletion from `peers`. */
     @Query("DELETE FROM peer_profiles WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
     suspend fun deleteOrphanProfiles()
+
+    /** Drops every proof of key whose `signed` is longer than [max] bytes: what a build before the profile cap kept (#234). */
+    @Query("DELETE FROM peer_profiles WHERE length(signed) > :max")
+    suspend fun deleteProfilesLongerThan(max: Int): Int
 
     /** Drops every badge whose pin is gone — run beside [deleteOrphanProfiles]. */
     @Query("DELETE FROM peer_badges WHERE nodeId NOT IN (SELECT nodeId FROM peers)")

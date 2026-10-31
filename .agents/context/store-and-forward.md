@@ -127,6 +127,19 @@ sweep's one delete of live rows, a function of the row alone. Never filter the l
 that missed the filter would diverge for good. Like the group gate, a refusal is custody's alone; the frame is still
 delivered and relayed. The constant is shared with knit-ios through `vectors/custody-v1.json`.
 
+**The profile cap** (ADR 2026-10.jgeg, #234). A `profile` whose `signed` is longer than
+`DEFAULT_MAX_PROFILE_SIGNED_BYTES` (8,192) is refused at the door, the first statement of
+`InboundPipeline.verifyInbound`, before `verifierBundle` decodes it, so it is never custodied, pinned, cached or applied
+from any source (link, keyreq or key-ahead answer, spool); it is still relayed. Custody refuses the same frames right
+after the byte cap (`ForwardRepository.store`, every origin; a frame over both counts as the byte cap's), and
+`sweepExpired` deletes over-cap profile rows beside the byte-cap delete. The door reads custody's own value
+(`ForwardStore.maxProfileSignedBytes`), so a rig that lowers one lowers both. `sweepLocalStorage` deletes over-cap kept
+proofs (`peer_profiles`), which `KeyExchange` would otherwise serve; the pin stays. Both count
+`profileOversizeRefused`. Its photo half: a profile photo over `FileIntake.MAX_AVATAR_BYTES` (1 MiB) is never stored as
+a peer's face, pushed or fetched; a holder that signals over-ceiling is passed over for that hash for the session
+(the author's own signal refuses the hash), so each is fetched at most once per holder per session. Shared with knit-ios
+through `vectors/custody-v1.json` (`limits.maxProfileSignedBytes`) and `vectors/keyed-v1.json`.
+
 **The group gate** (same ADR). A frame naming a group (`RelayEnvelope.group`) is custodied only when its `members` and
 `departed` derive to the group's id (`Conversations.groupIdFor`, the founding roster) and its sender is one of the
 `members` (`ForwardRepository.carriesGroup`). Without it any pinned identity that knew a group's id filled that

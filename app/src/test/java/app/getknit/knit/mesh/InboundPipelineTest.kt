@@ -58,6 +58,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
 import app.getknit.knit.mesh.protocol.BlobHaveContent
@@ -2082,6 +2083,89 @@ class InboundPipelineTest {
             assertEquals("counted once, not again at the carry gate", 1L, rig.drops(DropReason.PAYLOAD_DECODE_FAILED))
             assertNull(rig.peerMap[alice.nodeId])
         }
+
+    /** One of `keyed-v1.json`'s profile cap frames, as Alice signed it (#234). */
+    private fun keyedCapFrame(
+        name: String,
+        relay: Boolean = true,
+    ): Pair<WireEnvelope, RelayEnvelope> {
+        val hex =
+            VectorFiles
+                .read("keyed-v1.json")
+                .getValue("frames")
+                .jsonObject
+                .getValue(name)
+                .jsonObject
+                .getValue("wire")
+                .jsonPrimitive.content
+        val pinned = checkNotNull(WireCodec.decodeWire(hex.fromHex()))
+        val wire = WireEnvelope(relay = relay, sig = pinned.sig, signed = pinned.signed)
+        return wire to checkNotNull(WireCodec.decodeEnvelope(wire.signed))
+    }
+
+    /**
+     * A profile whose `signed` is exactly the profile cap (#234) is an ordinary profile: it pins, keeps its proof, is
+     * custodied and cached for key requests, and its padded status is clamped for display.
+     */
+    @Test
+    fun aProfileAtTheCapPinsKeepsItsProofAndIsCached() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val (wire, env) = keyedCapFrame("aliceProfileAtCap")
+            assertEquals(ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES, wire.signed.size)
+
+            rig.pipeline.onDeliver(wire, env, "neighbour")
+
+            val peer = checkNotNull(rig.peerMap[env.senderId]) { "the at-cap profile pins its sender" }
+            assertEquals(TextLimits.STATUS, peer.status.length)
+            assertArrayEquals(wire.signed, rig.proofs[env.senderId]?.first)
+            assertTrue("custodied", rig.forwardStore.has(env.id))
+            assertTrue("cached for a key request", rig.keyExchange.serveKey(env.senderId, Peer("asker")))
+            assertEquals(0L, rig.metrics.frames().profileOversizeRefused)
+        }
+
+    /**
+     * One byte over the profile cap (#234), the frame is refused before anything reads its payload: no pin, no proof, no
+     * custody row, no cache entry, no key request or park, and it is not a missing key. The router relays it regardless
+     * (`MaliciousForkLabTest` shows that end to end); here only the refusal and its count are visible.
+     */
+    @Test
+    fun aProfileOneByteOverTheCapIsRefusedAtTheDoorAndCountedOnce() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val (wire, env) = keyedCapFrame("aliceProfileOverCap")
+            assertEquals(ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES + 1, wire.signed.size)
+
+            rig.pipeline.onDeliver(wire, env, "neighbour")
+
+            assertRefusedAtTheDoor(rig, env)
+        }
+
+    /** The same refusal for a key answer, which arrives point to point (`relay = false`) and is custodied when kept. */
+    @Test
+    fun anOverCapProfileAnsweringAKeyRequestIsRefusedTheSameWay() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val (wire, env) = keyedCapFrame("aliceProfileOverCap", relay = false)
+
+            rig.pipeline.onDeliver(wire, env, "holder")
+
+            assertRefusedAtTheDoor(rig, env)
+        }
+
+    private suspend fun assertRefusedAtTheDoor(
+        rig: Rig,
+        env: RelayEnvelope,
+    ) {
+        assertNull("no pin", rig.peerMap[env.senderId])
+        assertNull("no proof", rig.proofs[env.senderId])
+        assertFalse("no custody row", rig.forwardStore.has(env.id))
+        assertFalse("no cache entry", rig.keyExchange.serveKey(env.senderId, Peer("asker")))
+        assertEquals("not a missing key", 0L, rig.drops(DropReason.NO_SENDER_KEY))
+        assertEquals("not a decode failure: never decoded", 0L, rig.drops(DropReason.PAYLOAD_DECODE_FAILED))
+        assertEquals(0L, rig.metrics.keys().keyRequestsSent)
+        assertEquals(1L, rig.metrics.frames().profileOversizeRefused)
+    }
 
     @Test
     fun typingCueForAnUnknownGroupIsIgnored() =
@@ -5676,6 +5760,85 @@ class InboundPipelineTest {
         }
 
     @Test
+    fun aRelayedPeerAvatarIsFetchedUnderThePhotoCeiling() =
+        runTest {
+            // #234: the fetch made for a profile photo carries the photo ceiling down to the link that receives it.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1"))
+
+            coVerify(exactly = 1) {
+                rig.blobExchange.want(
+                    "av1",
+                    alice.nodeId,
+                    any(),
+                    any(),
+                    fastOnly = any(),
+                    approved = any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
+        }
+
+    @Test
+    fun aPulledAvatarOverThePhotoCeilingIsReleasedNotAdoptedAndNotFetchedAgain() =
+        runTest {
+            // #234's backstop: bytes that arrived by a fetch that was not the photo's (an attachment's, a neighbour's pull)
+            // are never a face. Released, refused for the session, and the next profile does not ask for them again.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av5", sentAt = 5L))
+            coEvery { rig.blobs.sizes(listOf("av5")) } returns mapOf("av5" to FileIntake.MAX_AVATAR_BYTES + 1)
+
+            rig.pipeline.onObtained("av5")
+
+            assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("av5") }
+            assertTrue(rig.blobExchange.refusedAsPhoto("av5"))
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av5", sentAt = 6L))
+            coVerify(exactly = 1) {
+                rig.blobExchange.want(
+                    "av5",
+                    any(),
+                    any(),
+                    any(),
+                    fastOnly = any(),
+                    approved = any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                    ceiling = any(),
+                )
+            }
+        }
+
+    @Test
+    fun aHeldAvatarOverThePhotoCeilingIsNotAdoptedByAProfileAndIsReleased() =
+        runTest {
+            // The profile writers' path (avatarAdoptable): the blob is already held, so nothing is pulled — and a copy
+            // over the ceiling is not adopted, it is released and refused.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            coEvery { rig.blobStore.has("av6") } returns true
+            coEvery { rig.blobs.sizes(listOf("av6")) } returns mapOf("av6" to FileIntake.MAX_AVATAR_BYTES + 1)
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av6"))
+
+            assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("av6") }
+            assertTrue(rig.blobExchange.refusedAsPhoto("av6"))
+
+            // Exactly the ceiling is a face.
+            coEvery { rig.blobStore.has("av7") } returns true
+            coEvery { rig.blobs.sizes(listOf("av7")) } returns mapOf("av7" to FileIntake.MAX_AVATAR_BYTES)
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av7", sentAt = 7L))
+            assertEquals("av7", rig.peerMap[alice.nodeId]?.avatarHash)
+        }
+
+    @Test
     fun anExplicitRelayedAvatarIsNotAdopted() =
         runTest {
             val rig = Rig(backgroundScope)
@@ -5714,6 +5877,7 @@ class InboundPipelineTest {
                     pull = any(),
                     until = any(),
                     untilKnown = any(),
+                    ceiling = any(),
                 )
             }
 

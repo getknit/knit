@@ -89,6 +89,7 @@ import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
@@ -564,8 +565,9 @@ class MeshLab {
     }
 
     /**
-     * Whether [a] presents [b] as [b] presents itself. The one difference allowed is an avatar [a]'s screening
-     * refused with content filtering on: [a] must not show it, and keeps whatever it showed before (#109).
+     * Whether [a] presents [b] as [b] presents itself. The differences allowed are an avatar [a]'s screening refused with
+     * content filtering on (#109) and one longer than a receiver takes as a face (`FileIntake.MAX_AVATAR_BYTES`, #234):
+     * [a] must not show it, and keeps whatever it showed before.
      */
     private suspend fun presentsAsItIs(
         a: LabNode,
@@ -574,7 +576,9 @@ class MeshLab {
         val held = a.presentationOf(b) ?: return false
         val own = b.ownPresentation()
         val avatar = own.avatarHash
-        val refused = avatar != null && a.settings.contentFilteringEnabled.first() && a.imageFlagged(avatar)
+        val flagged = avatar != null && a.settings.contentFilteringEnabled.first() && a.imageFlagged(avatar)
+        val overCeiling = avatar != null && (b.blobs.sizes(listOf(avatar))[avatar] ?: 0L) > FileIntake.MAX_AVATAR_BYTES
+        val refused = flagged || overCeiling
         return if (refused) held.avatarHash != avatar && held.copy(avatarHash = null) == own.copy(avatarHash = null) else held == own
     }
 
@@ -1017,6 +1021,8 @@ data class LabLimits(
     val custodyMaxPerGroup: Int = ForwardRepository.DEFAULT_MAX_PER_GROUP,
     val custodyMaxBroadcast: Int = ForwardRepository.DEFAULT_MAX_BROADCAST,
     val custodyMaxSignedBytes: Int = ForwardRepository.DEFAULT_MAX_SIGNED_BYTES,
+    /** The profile cap (#234): custody's, and the door's, which reads the same value. */
+    val custodyMaxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
     /**
      * The LoRa bridge's Trickle interval ([LoraGossipPolicy]; 5–15 min in the field). A scenario that waits
      * for an OFFER or the backfill it drives shortens it; the field numbers would never fire inside an await.
@@ -1309,6 +1315,7 @@ class LabNode internal constructor(
                 maxPerGroup = limits.custodyMaxPerGroup,
                 maxBroadcast = limits.custodyMaxBroadcast,
                 maxSignedBytes = limits.custodyMaxSignedBytes,
+                maxProfileSignedBytes = limits.custodyMaxProfileSignedBytes,
                 metrics = metrics,
             )
         // The leaves with a hardware or UI side. Text allowed unless [flaggedText], every picture unless [picturesExplicit],
@@ -2319,6 +2326,9 @@ class LabNode internal constructor(
 
     /** The peer row this node pinned for [nodeId] — for an id no [LabNode] stands behind (a forged profile's phantom). */
     suspend fun pinned(nodeId: String): PeerEntity? = peers.find(nodeId)
+
+    /** The proof of key this node keeps for [nodeId] (`peer_profiles`, ADR 2026-09.g64k), or null. */
+    suspend fun storedProof(nodeId: String): WireEnvelope? = peers.profileFrame(nodeId)
 
     /** How many distinct phones this node has been in range of — the met-peers table's count. */
     suspend fun peopleMet(): Int = db.metPeerDao().count()

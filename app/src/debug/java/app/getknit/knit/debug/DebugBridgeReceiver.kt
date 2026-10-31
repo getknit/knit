@@ -1630,6 +1630,11 @@ class DebugBridgeReceiver :
             .put("blobProofQueriesSent", snap.files.blobProofQueriesSent)
             .put("blobProofAnswersTaken", snap.files.blobProofAnswersTaken)
             .put("blobProofsHeld", snap.files.blobProofsHeld)
+            // A profile photo's holder passed over, and its want ended, over the photo ceiling (#234).
+            .put("blobHoldersOverCeiling", snap.files.blobHoldersOverCeiling)
+            .put("blobOverCeiling", snap.files.blobOverCeiling)
+            // Profile photos refused at the 1 MiB ceiling by any path (#234); knit-ios reports the same key.
+            .put("photosOverCeiling", snap.files.photosOverCeiling)
             .put("fastOnlyDropped", snap.files.fastOnlyDropped)
             .put("carrierPullsDeferred", snap.files.carrierPullsDeferred)
             .put("dmSealedV2", snap.seals.dmSealedV2)
@@ -1696,6 +1701,8 @@ class DebugBridgeReceiver :
             .put("digestsReplaced", snap.frames.digestsReplaced)
             // Frames custody refused for `signed` over the byte cap (ADR 2026-10.mqzv); knit-ios reports the same key.
             .put("custodyOversizeRefused", snap.frames.custodyOversizeRefused)
+            // Profiles refused at the door or by custody for `signed` over the profile cap (#234); knit-ios reports the same key.
+            .put("profileOversizeRefused", snap.frames.profileOversizeRefused)
             .put("spoolTablesDerived", snap.spool.spoolTablesDerived)
             .put("spoolPushed", snap.spool.spoolPushed)
             .put("spoolPulled", snap.spool.spoolPulled)

@@ -48,11 +48,16 @@ class KeyExchangeTest {
         // The pin store's signed profiles (ADR 2026-09.g64k); empty unless a test gives the node a pin it
         // survived a restart with.
         stored: Map<String, WireEnvelope> = emptyMap(),
+        maxCached: Int = 1_024,
+        maxProfileSignedBytes: Int = 8_192,
         val clock: () -> Long,
     ) {
         val transport = FakeLoopTransport(id)
         val pinned = ConcurrentHashMap<String, WireEnvelope>()
         val received = CopyOnWriteArrayList<InboundFrame>()
+
+        // Every node id a cache miss read from the pin store, in order.
+        val storeReads = CopyOnWriteArrayList<String>()
         val exchange =
             KeyExchange(
                 transport = transport,
@@ -64,7 +69,12 @@ class KeyExchangeTest {
                 maxIdsPerReq = maxIdsPerReq,
                 maxRequestIds = maxRequestIds,
                 missingTtlMs = missingTtlMs,
-                storedProfile = { stored[it] },
+                storedProfile = {
+                    storeReads += it
+                    stored[it]
+                },
+                maxProfileSignedBytes = maxProfileSignedBytes,
+                maxCached = maxCached,
             )
         private val router =
             MeshRouter(transport, scope) { wire, env, fromNodeId, _ ->
@@ -408,6 +418,67 @@ class KeyExchangeTest {
             assertFalse("k1's wanter was evicted → never served", servedProfile(peers.getValue("p1"), "k1"))
             assertTrue("k2 survived the cap → served to p2", servedProfile(peers.getValue("p2"), "k2"))
             assertTrue("k3 survived the cap → served to p3", servedProfile(peers.getValue("p3"), "k3"))
+        }
+
+    @Test
+    fun theCacheHoldsAtMostItsBoundAndAnEvictedProofRefillsFromThePinStore() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #234: least recently used out first; a miss costs one read of the pin store.
+            val k1 = profileWire("k1", "K1")
+            val k2 = profileWire("k2", "K2")
+            val b = Node("b", backgroundScope, stored = mapOf("k1" to k1, "k2" to k2), maxCached = 2) { 0L }
+            val c = Node("c", backgroundScope) { 0L }
+            b.transport.connect(c.transport)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
+            b.exchange.onProfilePinned("k1", k1)
+            b.exchange.onProfilePinned("k2", k2)
+            assertTrue("a hit, which makes k1 the most recently used", b.exchange.serveKey("k1", Peer("c")))
+            b.exchange.onProfilePinned("k3", profileWire("k3", "K3"))
+            assertEquals(2, b.exchange.cachedCount())
+            assertEquals("nothing read the store yet", emptyList<String>(), b.storeReads)
+
+            assertTrue("k1 stayed: it was used after k2", b.exchange.serveKey("k1", Peer("c")))
+            assertEquals(emptyList<String>(), b.storeReads)
+            assertTrue("k2 fell out, and its pin store still proves it", b.exchange.serveKey("k2", Peer("c")))
+            assertEquals(listOf("k2"), b.storeReads)
+            assertEquals(2, b.exchange.cachedCount())
+        }
+
+    @Test
+    fun aProofIsDroppedWithThePinTheSweepEvicted() =
+        runTest(UnconfinedTestDispatcher()) {
+            val b = Node("b", backgroundScope) { 0L }
+            b.start(backgroundScope)
+            b.exchange.onProfilePinned("k1", profileWire("k1", "K1"))
+            b.exchange.onProfilePinned("k2", profileWire("k2", "K2"))
+
+            b.exchange.forget(listOf("k1"))
+
+            assertEquals(1, b.exchange.cachedCount())
+            assertFalse("the store dropped it with its pin, and so does the cache", b.exchange.serveKey("k1", Peer("c")))
+            assertTrue(b.exchange.serveKey("k2", Peer("c")))
+        }
+
+    @Test
+    fun aProofOverTheProfileCapIsNeitherCachedNorServed() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A build before the cap may have stored one; and a pin of one is cached by nothing.
+            val long = profileWire(A, "KEY_A")
+            val b = Node("b", backgroundScope, stored = mapOf(A to long), maxProfileSignedBytes = long.signed.size - 1) { 0L }
+            val c = Node("c", backgroundScope) { 0L }
+            b.transport.connect(c.transport)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
+
+            assertFalse(b.exchange.serveKey(A, Peer("c")))
+            b.exchange.onRequest(listOf(A), "c")
+            b.exchange.onProfilePinned(A, long)
+            assertEquals(0, b.exchange.cachedCount())
+            assertTrue("nothing went to c", c.received.none { it.envelope.type == FrameType.PROFILE })
+
+            val atCap = Node("d", backgroundScope, stored = mapOf(A to long), maxProfileSignedBytes = long.signed.size) { 0L }
+            assertTrue("exactly the cap is served", atCap.exchange.serveKey(A, Peer("c")))
         }
 
     private fun pinnedKeyOf(

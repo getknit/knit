@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 
@@ -24,6 +25,12 @@ class CarriedFrame(
  * cleartext recipient to deliver toward, a group its roster, and a broadcast neither (offered to all).
  */
 interface ForwardStore {
+    /**
+     * The longest `signed` a `profile` frame may have (#234). Custody refuses a longer one, and the inbound door
+     * (`InboundPipeline.verifyInbound`) reads this same value, so a store configured lower lowers both.
+     */
+    val maxProfileSignedBytes: Int get() = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES
+
     /**
      * Persists [frame] seen at [now], tagged [origin] ([ORIGIN_SELF]/[ORIGIN_RELAY]). The implementation
      * stamps a frame-global TTL (`sentAt + ttl`) and enforces the storage caps; a frame whose id is already

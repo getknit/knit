@@ -177,6 +177,96 @@ class FileIntakeTest {
         assertTrue(rxFiles().isEmpty())
     }
 
+    /** Streams [total] bytes in chunks of up to 64 KiB through [intake] (a header already taken). */
+    private fun stream(
+        intake: FileIntake,
+        total: Long,
+    ) {
+        var left = total
+        while (left > 0) {
+            val n = minOf(left, 64L * 1024).toInt()
+            intake.chunk(ByteArray(n))
+            left -= n
+        }
+    }
+
+    @Test
+    fun aPushedAvatarOneByteOverThePhotoCeilingKeepsNothingAndOneAtItIsKept() {
+        // #234: exactly the ceiling is kept, one byte more is not, and the pushed avatar marks nobody (no want asked).
+        val ceiling = FileIntake.MAX_AVATAR_BYTES
+        val intake = intake()
+        assertNull(intake.header(header(kind = FileKind.AVATAR)))
+        stream(intake, ceiling + 1)
+        assertNull("past the ceiling the file is gone", intake.arrivingFile)
+        assertNull(intake.end())
+        assertTrue(rxFiles().isEmpty())
+        assertTrue(partials.markedHolders(key).isEmpty())
+
+        assertNull(intake.header(header(kind = FileKind.AVATAR, size = ceiling)))
+        stream(intake, ceiling)
+        val finished = checkNotNull(intake.end())
+        assertEquals(ceiling, finished.temp.length())
+        finished.temp.delete()
+    }
+
+    @Test
+    fun anAvatarHeaderDeclaringMoreThanThePhotoCeilingIsSkipped() {
+        val intake = intake()
+        assertNull(intake.header(header(kind = FileKind.AVATAR, size = FileIntake.MAX_AVATAR_BYTES + 1)))
+        assertNull("nothing is arriving", intake.arrivingFile)
+        intake.chunk(body)
+        assertNull("its chunks and its end come to nothing", intake.end())
+        assertTrue(rxFiles().isEmpty())
+    }
+
+    @Test
+    fun anAttachmentUnderAPhotoCeilingIsAbortedPastItAndItsHolderMarked() {
+        // #234: a fetch made for a profile photo caps the hash; this link's peer is the one marked, no other.
+        partials.cap(key, 600)
+        val intake = intake()
+        assertNull(intake.header(header())) // no size declared: the chunks are what pass it
+        intake.chunk(body.copyOf(600))
+        assertEquals("exactly the ceiling is still kept", ArrivingFile(key, 600, null), intake.arrivingFile)
+        intake.chunk(body.copyOfRange(600, 601))
+        assertNull("past the ceiling the file is gone", intake.arrivingFile)
+        intake.chunk(body.copyOfRange(601, 1000)) // the holder feeds on; nothing is kept
+        assertNull(intake.end())
+        assertTrue(rxFiles().isEmpty())
+        assertEquals(setOf("peer0001"), partials.markedHolders(key))
+        assertFalse("one holder's bytes refuse no hash", partials.isRefused(key))
+    }
+
+    @Test
+    fun anAttachmentHeaderDeclaringMoreThanItsPhotoCeilingIsSkippedAndItsHolderMarked() {
+        partials.cap(key, 600)
+        val intake = intake()
+        assertNull(intake.header(header(size = 601)))
+        assertNull(intake.arrivingFile)
+        assertEquals(setOf("peer0001"), partials.markedHolders(key))
+        // A kept prefix already past the ceiling cannot become a file under it: dropped, the holder marked.
+        val other = "b".repeat(64)
+        keepPrefix(800, key = other)
+        partials.cap(other, 600)
+        assertNull(intake.header(header(size = 200, offset = 800, key = other)))
+        assertEquals(0L, partials.length(other))
+        assertEquals(setOf("peer0001"), partials.markedHolders(other))
+    }
+
+    @Test
+    fun theAttachmentCeilingWinsWhenAPhotoCapIsLifted() {
+        // An attachment want of the same hash lifts the photo cap (BlobExchange: the larger wins): the stream is kept
+        // past the photo ceiling, and nobody is marked.
+        partials.cap(key, 600)
+        partials.cap(key, null)
+        val intake = intake()
+        assertNull(intake.header(header(size = 1000)))
+        intake.chunk(body)
+        val finished = checkNotNull(intake.end())
+        assertEquals(1000L, finished.temp.length())
+        assertTrue(partials.markedHolders(key).isEmpty())
+        finished.temp.delete()
+    }
+
     @Test
     fun anAttachmentCutMidStreamKeepsItsPrefixAndACutResumeKeepsTheLongerOne() {
         val intake = intake()

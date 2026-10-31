@@ -40,9 +40,10 @@ import org.junit.Test
  * (sender, group, room: newest-N), the global cap's largest-bucket-first with both tie-breaks, a frame evicted by its own
  * write, expired residue that counts toward nothing, the dead-on-arrival and future-window refusals, the group gate, and
  * the byte cap (#227): a frame of exactly `maxSignedBytes` kept, one byte over refused, and an oversize frame that also
- * fails the group gate refused. Each step records the length of the `signed` bytes the store is handed (`signedBytes`),
- * which a port reproduces before it replays the step, so a padded frame that encodes differently fails as that and not as
- * a custody disagreement.
+ * fails the group gate refused; and the profile cap after it (#234): a `profile` of exactly `maxProfileSignedBytes`
+ * kept, one byte over refused, and a chat frame of that same size kept. Each step records the length of the `signed`
+ * bytes the store is handed (`signedBytes`), which a port reproduces before it replays the step, so a padded frame that
+ * encodes differently fails as that and not as a custody disagreement.
  *
  * Written by the real [ForwardRepository] over Room only with `KNIT_WRITE_VECTORS=1`. Checked two ways: the file's steps
  * replayed through the store, as another port reads them, and the file compared byte for byte with a regeneration, so
@@ -119,6 +120,7 @@ class CustodyVectorTest : RoomDbTest() {
             broadcastTtlMs = limits.getValue("broadcastTtlMs").jsonPrimitive.long,
             maxRows = limits.getValue("maxRows").jsonPrimitive.int,
             maxSignedBytes = limits.getValue("maxSignedBytes").jsonPrimitive.int,
+            maxProfileSignedBytes = limits.getValue("maxProfileSignedBytes").jsonPrimitive.int,
             maxPerSender = limits.getValue("maxPerSender").jsonPrimitive.int,
             maxPerGroup = limits.getValue("maxPerGroup").jsonPrimitive.int,
             maxBroadcast = limits.getValue("maxBroadcast").jsonPrimitive.int,
@@ -154,6 +156,7 @@ class CustodyVectorTest : RoomDbTest() {
         buildJsonObject {
             put("maxRows", 8)
             put("maxSignedBytes", MAX_SIGNED_BYTES)
+            put("maxProfileSignedBytes", MAX_PROFILE_SIGNED_BYTES)
             put("maxPerSender", 4)
             put("maxPerGroup", 3)
             put("maxBroadcast", 3)
@@ -233,6 +236,14 @@ class CustodyVectorTest : RoomDbTest() {
         sentAt: Long,
     ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, payload = EMPTY)
 
+    /** A `profile` frame: custody never decodes its payload, so the padded chat payload stands in for one. */
+    private fun profile(
+        id: String,
+        sender: String,
+        sentAt: Long,
+        payload: ByteArray,
+    ) = RelayEnvelope(type = FrameType.PROFILE, id = id, senderId = sender, sentAt = sentAt, payload = payload)
+
     private fun group(
         id: String,
         sender: String,
@@ -309,6 +320,21 @@ class CustodyVectorTest : RoomDbTest() {
                 sized(MAX_SIGNED_BYTES + 1) { group("w3", "mallory", later - 300, smuggled, it) },
                 "byte cap: oversize and a roster that does not derive, refused, nothing evicted",
             ),
+            Step(
+                later,
+                sized(MAX_PROFILE_SIGNED_BYTES) { profile("p1", "pat", later - 200, it) },
+                "profile cap: a profile of exactly maxProfileSignedBytes is kept; the full store evicts for it as for any frame",
+            ),
+            Step(
+                later,
+                sized(MAX_PROFILE_SIGNED_BYTES + 1) { profile("p2", "pat", later - 100, it) },
+                "profile cap: a profile one byte over is refused, and nothing is evicted to make room",
+            ),
+            Step(
+                later,
+                sized(MAX_PROFILE_SIGNED_BYTES + 1) { dm("w4", "walt", later - 50, it) },
+                "profile cap: a chat frame of that same size is kept, since the cap is the profile type's alone",
+            ),
         )
     }
 
@@ -332,6 +358,9 @@ class CustodyVectorTest : RoomDbTest() {
         const val TTL_MS = 100_000L
         const val BROADCAST_TTL_MS = 60_000L
         const val MAX_SIGNED_BYTES = 2_048
+
+        // Below the byte cap, so a profile between the two shows the profile cap's own refusal (#234).
+        const val MAX_PROFILE_SIGNED_BYTES = 1_024
         val EMPTY: ByteArray = WireCodec.encodePayload(ChatContent(body = ""))
         const val ABOUT =
             "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, " +
@@ -341,8 +370,11 @@ class CustodyVectorTest : RoomDbTest() {
                 "and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, " +
                 "ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a " +
                 "group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, " +
-                "refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted). A frame's " +
-                "`bodyLength` (absent means 0) pads its chat body with that many \"x\"; `signedBytes` is the length of the " +
+                "refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted), and right after it a " +
+                "frame of type `profile` whose signed bytes are longer than maxProfileSignedBytes; a frame over both counts as " +
+                "the byte cap's. A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; a `profile` " +
+                "frame's payload is that same chat payload, since custody never decodes a profile's payload; " +
+                "`signedBytes` is the length of the " +
                 "encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether " +
                 "the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set " +
                 "after it. Ids and sender ids compare bytewise."

@@ -132,11 +132,29 @@ class PeerRepositoryTest : RoomDbTest() {
             listOf("me", "old", "new").forEach { repo.recordProfileFrame(it, frame(1), sentAt = 1L) }
 
             repo.forgetSelf("me")
-            repo.sweepCap(protected = emptySet())
+            assertEquals("the evicted ids are named, for the owner's caches", listOf("old"), repo.sweepCap(protected = emptySet()))
 
             assertNull(repo.profileFrame("me"))
             assertNull(repo.profileFrame("old"))
             assertNotNull(repo.profileFrame("new"))
+            assertEquals("under the cap nothing is evicted, and nothing named", emptyList<String>(), repo.sweepCap(protected = emptySet()))
+        }
+
+    @Test
+    fun `a stored proof of key over the profile cap is deleted and its pin stays`() =
+        runTest {
+            // #234: a build before the cap kept such proofs, and the key request path would go on serving them.
+            val dao = db.peerDao()
+            val repo = repo()
+            listOf("long", "atcap").forEach { dao.upsert(PeerEntity(nodeId = it, pubKey = "KEY-$it")) }
+            repo.recordProfileFrame("long", WireEnvelope(relay = false, sig = byteArrayOf(1), signed = ByteArray(8_193)), sentAt = 1L)
+            repo.recordProfileFrame("atcap", WireEnvelope(relay = false, sig = byteArrayOf(1), signed = ByteArray(8_192)), sentAt = 1L)
+
+            assertEquals(1, repo.deleteOversizeProfileFrames(8_192))
+
+            assertNull(repo.profileFrame("long"))
+            assertEquals("the pin it proved stays", "KEY-long", dao.findByNodeId("long")?.pubKey)
+            assertEquals(8_192, repo.profileFrame("atcap")?.signed?.size)
         }
 
     @Test

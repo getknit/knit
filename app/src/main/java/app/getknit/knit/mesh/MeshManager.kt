@@ -62,6 +62,7 @@ import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.crypto.sealedContent
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.LoraCtl
 import app.getknit.knit.mesh.lora.LoraFramePolicy
 import app.getknit.knit.mesh.lora.LoraSizeHint
@@ -448,6 +449,8 @@ class MeshManager(
             metrics = metrics,
             // The signed frame each pin came from, so a restart never leaves a carrier unable to prove a key.
             storedProfile = { peers.profileFrame(it) },
+            // The profile cap (#234): a stored proof longer than the door would take is never cached or served.
+            maxProfileSignedBytes = forwardStore.maxProfileSignedBytes,
         )
 
     // The same-identity clone watch (ADR 2026-09.ypcc): a `profile` under our own node id whose stamp this
@@ -641,6 +644,7 @@ class MeshManager(
             notifier = notifier,
             metrics = metrics,
             forwardSync = forwardSync,
+            maxProfileSignedBytes = forwardStore.maxProfileSignedBytes,
             blobExchange = blobExchange,
             keyExchange = keyExchange,
             ackSync = ackSync,
@@ -2795,12 +2799,15 @@ class MeshManager(
     /** On startup, sweep orphaned blobs/reactions/pins/receipts and re-request attachment blobs we're still missing. */
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
-            blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent (keeps carried ones)
             reactions.deleteOrphans(clock()) // reclaim reactions left by deleted messages
             pins.deleteOrphans(settings.blockedNodeIds.first()) // ...pins left by them, or on a since-blocked sender's
             receipts.deleteOrphans() // ...and per-recipient delivery rows left by a deleted thread or a retention trim
             sweepExpired() // carried DMs whose TTL elapsed while we were down (the in-memory sets are usually empty)
             sweepLocalStorage() // bound the local messages/peers tables against a Sybil flood (Message Requests hardening)
+            // Reclaim blobs left by attachments staged but never sent (keeps carried ones) — after the sweeps above, so a
+            // blob only an evicted peer's avatar, a swept message or an expired carried frame named goes in the same pass
+            // rather than at the next start (#234).
+            blobs.deleteOrphans()
             // The first value is the startup re-arm; every change of the user's Bluetooth download limit re-arms with
             // the new verdict at once, so choosing "Never" fetches what was waiting without the next tick (ADR
             // 2026-10.js2p). Distinct: every settings flow re-emits on a write to any key.
@@ -3049,7 +3056,23 @@ class MeshManager(
         // signals double as the set of people the user talks to — the rule [Conversations.isAccepted] applies
         // to a group's senders. Group and room ids in the set never match a sender and are harmless.
         messages.sweepRetention(now, protectedIds, knownSenders = accepted + verified + authored + me)
-        peers.sweepCap(protectedIds)
+        // A pin evicted takes its cached proof of key with it (#234), or the cache would serve what the store dropped.
+        keyExchange.forget(peers.sweepCap(protectedIds))
+        // A proof of key stored before the profile cap (#234) is still served to every key request; the door would refuse
+        // it, so it goes. The pin it proved stays.
+        val oversize = peers.deleteOversizeProfileFrames(forwardStore.maxProfileSignedBytes)
+        if (oversize > 0) Log.w(TAG, "dropped $oversize stored profiles over the cap of ${forwardStore.maxProfileSignedBytes} signed bytes")
+        // A face a build before the photo ceiling adopted (#234) is cleared and its blob released: a profile photo over
+        // the ceiling is never shown. Refused for the session too, so a profile still naming it wants nothing.
+        val faces = peers.clearAvatarsLongerThan(FileIntake.MAX_AVATAR_BYTES)
+        for (hash in faces) {
+            blobExchange.refuseAsPhoto(hash)
+            blobs.deleteIfUnreferenced(hash)
+        }
+        if (faces.isNotEmpty()) {
+            metrics.onPhotoOverCeiling(faces.size)
+            Log.w(TAG, "cleared ${faces.size} faces over the photo ceiling")
+        }
     }
 
     /**

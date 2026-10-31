@@ -346,6 +346,8 @@ class MeshMetrics {
     private val bleCodedAdvertDark = AtomicLong()
     private val digestsReplaced = AtomicLong()
     private val custodyOversizeRefused = AtomicLong()
+    private val profileOversizeRefused = AtomicLong()
+    private val photosOverCeiling = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
@@ -553,6 +555,18 @@ class MeshMetrics {
      */
     fun onBlobEvent(event: BlobExchange.BlobEvent) {
         blobEvents.getValue(event).incrementAndGet()
+        // A holder passed over for a profile photo past its ceiling is one photo refused at it, as knit-ios counts.
+        if (event == BlobExchange.BlobEvent.HolderOverCeiling) photosOverCeiling.incrementAndGet()
+    }
+
+    /**
+     * A profile photo refused at the photo ceiling (`FileIntake.MAX_AVATAR_BYTES`, #234), knit-ios's `photosOverCeiling`:
+     * a holder whose fetch or `blobhas` size passed it ([onBlobEvent]), a pushed avatar over it that reached the pipeline,
+     * a held copy found over it before adoption, and a face over it the local sweep cleared. A pushed avatar the link
+     * itself aborted mid-stream never reaches the pipeline and is not counted.
+     */
+    fun onPhotoOverCeiling(count: Int = 1) {
+        photosOverCeiling.addAndGet(count.toLong())
     }
 
     /**
@@ -726,6 +740,15 @@ class MeshMetrics {
      */
     fun onCustodyOversizeRefused() {
         custodyOversizeRefused.incrementAndGet()
+    }
+
+    /**
+     * A `profile` frame was refused because its `signed` bytes are longer than the profile cap
+     * (`ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES`, #234): at the door (`InboundPipeline.verifyInbound`, so it
+     * never reaches custody) or by custody itself. Counted once per refusal; the frame is still relayed.
+     */
+    fun onProfileOversizeRefused() {
+        profileOversizeRefused.incrementAndGet()
     }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
@@ -1327,6 +1350,7 @@ class MeshMetrics {
             dropsByReason = byReason.filterValues { it > 0 },
             digestsReplaced = digestsReplaced.get(),
             custodyOversizeRefused = custodyOversizeRefused.get(),
+            profileOversizeRefused = profileOversizeRefused.get(),
             healsCompleted = healsCompleted.get(),
             roundsFailedBy = roundsFailed.mapValues { it.value.get() }.filterValues { it > 0 },
         )
@@ -1415,6 +1439,9 @@ class MeshMetrics {
             blobProofQueriesSent = blob(BlobExchange.BlobEvent.ProofQuerySent),
             blobProofAnswersTaken = blob(BlobExchange.BlobEvent.ProofAnswerTaken),
             blobProofsHeld = blob(BlobExchange.BlobEvent.ProofHeld),
+            blobHoldersOverCeiling = blob(BlobExchange.BlobEvent.HolderOverCeiling),
+            blobOverCeiling = blob(BlobExchange.BlobEvent.OverCeiling),
+            photosOverCeiling = photosOverCeiling.get(),
             fastOnlyDropped = fastOnlyDropped.get(),
         )
 
@@ -1567,8 +1594,8 @@ class MeshMetrics {
     ) {
         /** What the router did with frames — authored, delivered, relayed, handed on, suppressed, deduped, dropped
          * (by [DropReason]) — the bytes it put on the wire, and the sync rounds around them: heal passes, digests a
-         * newer one replaced in a link's queue, frames custody refused for their size, and session-loop rounds that
-         * threw (by [MeshRound]). */
+         * newer one replaced in a link's queue, frames custody refused for their size, profiles refused for theirs, and
+         * session-loop rounds that threw (by [MeshRound]). */
         data class Frames(
             val framesOriginated: Long = 0,
             val framesDelivered: Long = 0,
@@ -1582,6 +1609,8 @@ class MeshMetrics {
             val digestsReplaced: Long = 0,
             // #227: a frame custody would not carry because its `signed` bytes are over the byte cap.
             val custodyOversizeRefused: Long = 0,
+            // #234: a profile refused at the door or by custody because its `signed` bytes are over the profile cap.
+            val profileOversizeRefused: Long = 0,
             val healsCompleted: Long = 0,
             val roundsFailedBy: Map<MeshRound, Long> = emptyMap(),
         )
@@ -1681,6 +1710,12 @@ class MeshMetrics {
             // an ask for a blob this phone lacks that made no want here, for the same two reasons.
             val blobPullsWithheld: Long = 0,
             val blobEchoesDeclined: Long = 0,
+            // #234: a want made only for a profile photo — a holder passed over because its stream or its size passed
+            // the photo ceiling, and a want ended because its author's did or a held copy did.
+            val blobHoldersOverCeiling: Long = 0,
+            val blobOverCeiling: Long = 0,
+            // #234: every profile photo refused at the photo ceiling, by any path ([onPhotoOverCeiling]); knit-ios's name.
+            val photosOverCeiling: Long = 0,
         )
 
         /**

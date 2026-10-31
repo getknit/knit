@@ -177,6 +177,21 @@ class PeerRepository(
         dao.profile(nodeId)?.let { WireEnvelope(relay = false, sig = it.sig, signed = it.signed) }
 
     /**
+     * Drops every kept proof of key whose `signed` is longer than [max] bytes (#234): a build before the profile cap
+     * stored them, and [profileFrame] would go on serving them to every key request. The pin stays, as a contact card's
+     * does without a proof. A function of the row alone; returns how many went.
+     */
+    suspend fun deleteOversizeProfileFrames(max: Int): Int = dao.deleteProfilesLongerThan(max)
+
+    /**
+     * Clears every face a peer shows from a held blob longer than [max] bytes (#234) and returns those hashes, for the
+     * caller to release: a build before the photo ceiling adopted them, and a profile photo over it is never shown. The
+     * peer keeps its pin and shows its monogram until it advertises another photo.
+     */
+    suspend fun clearAvatarsLongerThan(max: Long): List<String> =
+        dao.avatarsLongerThan(max).also { if (it.isNotEmpty()) dao.clearAvatars(it) }
+
+    /**
      * Drops the row a device pinned for *itself* — `nodeId` is our own — if one exists. A node never pins its
      * own key (`InboundPipeline.handleProfile` refuses its own profile), but builds before 2026-09-13 did when
      * their own profile looped back, and the row made every seal-to-a-pinned-peer path treat us as a peer.
@@ -205,16 +220,23 @@ class PeerRepository(
      * (verified, an accepted/known conversation id, or a peer the user has messaged — group ids / the Nearby id
      * in that set simply match no peer row, harmlessly). A dropped row only sheds a cached profile + pinned key,
      * which re-arrives / re-fetches (KeyExchange) on the peer's next frame — cheap, so keep [cap] high.
+     *
+     * Returns the node ids it evicted, so the owner drops what it keeps of them in memory too (`KeyExchange.forget`): a
+     * proof of key held past its pin is what this bound exists to shed. An id verified between the read and the delete
+     * stays and may still be named; dropping its cached proof costs one read of the pin store.
      */
     suspend fun sweepCap(
         protected: Set<String>,
         cap: Int = maxPeers,
-    ) {
+    ): List<String> {
         val over = dao.countCappable(protected) - cap
-        if (over <= 0) return
-        dao.evictOldestCappable(protected, over)
+        if (over <= 0) return emptyList()
+        val evicted = dao.oldestCappable(protected, over)
+        if (evicted.isEmpty()) return emptyList()
+        evicted.chunked(SQL_CHUNK).forEach { dao.deleteCappable(it) }
         dao.deleteOrphanProfiles() // the proof of key goes with the pin it proves
         dao.deleteOrphanBadges()
+        return evicted
     }
 
     /** One judgement of [observeDirectory]'s inputs; equal judgements build one index. */
@@ -230,5 +252,8 @@ class PeerRepository(
 
         /** Senders [noteSeen] holds between flushes; a minute's flood of fresh identities past it waits a tick. */
         const val SEEN_BUFFER_CAP = 1_024
+
+        /** Ids per `IN (…)` delete: under SQLite's bound-parameter limit, whatever a flood made the overshoot. */
+        const val SQL_CHUNK = 500
     }
 }

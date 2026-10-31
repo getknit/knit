@@ -34,7 +34,10 @@ import kotlinx.coroutines.sync.withLock
  *  - a **global cap** ([maxRows]) that evicts from the **largest sender bucket** first, one row at a time, so a
  *    flood of free identities displaces its own frames before anyone else's (ADR 2026-10.7mqm);
  *  - a **byte cap** ([maxSignedBytes]) on each frame's `signed` bytes, so the row cap bounds what custody holds on disk
- *    and re-serves too (#227): without it a thousand rows of any size were a few hundred megabytes on every carrier.
+ *    and re-serves too (#227): without it a thousand rows of any size were a few hundred megabytes on every carrier;
+ *  - a **profile cap** ([maxProfileSignedBytes]) on a `profile` frame's `signed` bytes, under the byte cap: the inbound
+ *    door refuses a longer one before it is decoded, and custody refuses it on every origin, so nothing re-serves a
+ *    profile no peer would read (#234).
  *
  * The sender, group and room quotas keep their newest-N by the frame-global `(sentAt, id)`. Origin plays no part in
  * any of them: our own sends are bounded exactly like relayed traffic (ADR 006). A frame naming a group is carried
@@ -55,6 +58,8 @@ class ForwardRepository(
     private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
     private val maxSignedBytes: Int = DEFAULT_MAX_SIGNED_BYTES,
+    // The profile cap (#234): read by the door in `InboundPipeline.verifyInbound` too, so a rig that lowers one lowers both.
+    override val maxProfileSignedBytes: Int = DEFAULT_MAX_PROFILE_SIGNED_BYTES,
     private val maxPerSender: Int = DEFAULT_MAX_PER_SENDER,
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
@@ -87,6 +92,19 @@ class ForwardRepository(
             Log.w(
                 TAG,
                 "custody refused ${env.id.take(ID_CHARS)} (${env.type}): ${frame.signed.size} signed bytes over the cap of $maxSignedBytes",
+            )
+            return false
+        }
+        // The profile cap (#234), after the byte cap so a frame over both counts once, as custody oversize. A function of
+        // the frame's type and length alone, refused on every origin like the byte cap: no write, no eviction, and the
+        // digest unmoved on every node. The door in `InboundPipeline.verifyInbound` refuses the same frames first.
+        if (env.type == FrameType.PROFILE && frame.signed.size > maxProfileSignedBytes) {
+            metrics?.onProfileOversizeRefused()
+            Log.w(
+                TAG,
+                "custody refused profile ${env.id.take(
+                    ID_CHARS,
+                )}: ${frame.signed.size} signed bytes over the cap of $maxProfileSignedBytes",
             )
             return false
         }
@@ -352,8 +370,12 @@ class ForwardRepository(
             // stranded. The live, quota, digest and replay reads stay unfiltered by length on purpose.
             val oversize = dao.deleteLongerThan(maxSignedBytes)
             if (oversize > 0) Log.w(TAG, "custody swept $oversize rows over the cap of $maxSignedBytes signed bytes")
+            // The profile cap's rows (#234) go the same way, for the same reasons: live, a function of the row alone, and
+            // found only until a node's first sweep after the upgrade.
+            val profiles = dao.deleteTypeLongerThan(FrameType.PROFILE, maxProfileSignedBytes)
+            if (profiles > 0) Log.w(TAG, "custody swept $profiles profiles over the cap of $maxProfileSignedBytes signed bytes")
             rebuildDigest(now)
-            expired + oversize
+            expired + oversize + profiles
         }
 
     /** Re-syncs the digest to the table's live `(id, expiresAt)` set — the only rebuild source. */
@@ -384,6 +406,15 @@ class ForwardRepository(
          * on every node and in knit-ios (`vectors/custody-v1.json`).
          */
         const val DEFAULT_MAX_SIGNED_BYTES = 61_440
+
+        /**
+         * Cap a `profile` frame's `signed` bytes (#234): the door refuses a longer one before it is decoded, and custody
+         * refuses it after the byte cap. The largest honest profile measures 1,017 bytes of `signed` (949 on knit-ios,
+         * `CustodyHeadroomLabTest`), so 8 KiB is about 8× headroom; it equals `FastFrameCodec.MAX_INFLATED_BYTES` and
+         * `FrameTranscoder.MAX_BYTES`, so a profile over it could not cross the fast or LoRa planes anyway. Identical on
+         * every node and in knit-ios (`vectors/custody-v1.json`, `limits.maxProfileSignedBytes`).
+         */
+        const val DEFAULT_MAX_PROFILE_SIGNED_BYTES = 8_192
 
         /** Cap carried frames per sender, so one identity can't monopolize the buffer. */
         const val DEFAULT_MAX_PER_SENDER = 200

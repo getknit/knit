@@ -1,8 +1,9 @@
 {
-  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted). A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; `signedBytes` is the length of the encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
+  "about": "Knit's custody rule (ADR 006, ADR 2026-10.7mqm). Replay `steps` in order through one store with `limits`, each frame stored at its step's `now`. A sender's, group's or room's bucket over its quota keeps its newest by (sentAt, id). Then, while the live rows exceed maxRows, evict one: the oldest (sentAt, id) frame of the sender holding the most live rows, a tie for most going to the sender whose oldest frame is oldest. Counts and evictions read live rows only (expiresAt >= now; expiresAt = sentAt + broadcastTtlMs for room chat, ttlMs otherwise). Refuse a frame with expiresAt < now, with sentAt > now + maxFutureSkewMs, or naming a group whose members + departed do not derive to its id or whose sender is not a member. Before all of those, refuse a frame whose signed bytes are longer than maxSignedBytes (the signature is not counted), and right after it a frame of type `profile` whose signed bytes are longer than maxProfileSignedBytes; a frame over both counts as the byte cap's. A frame's `bodyLength` (absent means 0) pads its chat body with that many \"x\"; a `profile` frame's payload is that same chat payload, since custody never decodes a profile's payload; `signedBytes` is the length of the encoded envelope the store is handed, which a port must reproduce before replaying the step. `kept` is whether the store holds the frame after its own write; `evicted` the live ids that write removed; `held` the live set after it. Ids and sender ids compare bytewise.",
   "limits": {
     "maxRows": 8,
     "maxSignedBytes": 2048,
+    "maxProfileSignedBytes": 1024,
     "maxPerSender": 4,
     "maxPerGroup": 3,
     "maxBroadcast": 3,
@@ -834,6 +835,89 @@
         "h1",
         "s3",
         "w1",
+        "z3"
+      ]
+    },
+    {
+      "note": "profile cap: a profile of exactly maxProfileSignedBytes is kept; the full store evicts for it as for any frame",
+      "now": 1800000045000,
+      "frame": {
+        "id": "p1",
+        "type": "profile",
+        "senderId": "pat",
+        "sentAt": 1800000044800,
+        "bodyLength": 955
+      },
+      "signedBytes": 1024,
+      "isRoomChat": false,
+      "expiresAt": 1800000144800,
+      "kept": true,
+      "evicted": [
+        "g3"
+      ],
+      "held": [
+        "e2",
+        "f1",
+        "g4",
+        "h1",
+        "p1",
+        "s3",
+        "w1",
+        "z3"
+      ]
+    },
+    {
+      "note": "profile cap: a profile one byte over is refused, and nothing is evicted to make room",
+      "now": 1800000045000,
+      "frame": {
+        "id": "p2",
+        "type": "profile",
+        "senderId": "pat",
+        "sentAt": 1800000044900,
+        "bodyLength": 956
+      },
+      "signedBytes": 1025,
+      "isRoomChat": false,
+      "expiresAt": 1800000144900,
+      "kept": false,
+      "evicted": [],
+      "held": [
+        "e2",
+        "f1",
+        "g4",
+        "h1",
+        "p1",
+        "s3",
+        "w1",
+        "z3"
+      ]
+    },
+    {
+      "note": "profile cap: a chat frame of that same size is kept, since the cap is the profile type's alone",
+      "now": 1800000045000,
+      "frame": {
+        "id": "w4",
+        "type": "chat",
+        "senderId": "walt",
+        "recipientId": "bob",
+        "sentAt": 1800000044950,
+        "bodyLength": 942
+      },
+      "signedBytes": 1025,
+      "isRoomChat": false,
+      "expiresAt": 1800000144950,
+      "kept": true,
+      "evicted": [
+        "w1"
+      ],
+      "held": [
+        "e2",
+        "f1",
+        "g4",
+        "h1",
+        "p1",
+        "s3",
+        "w4",
         "z3"
       ]
     }

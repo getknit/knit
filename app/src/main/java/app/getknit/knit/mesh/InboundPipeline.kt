@@ -63,6 +63,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.MeshtasticProto
 import app.getknit.knit.mesh.protocol.BadgeEntry
 import app.getknit.knit.mesh.protocol.BlobCancelContent
@@ -168,6 +169,9 @@ class InboundPipeline(
     private val notifier: Notifier,
     private val metrics: MeshMetrics,
     private val forwardSync: ForwardSync,
+    // The profile cap the door reads (#234): custody's own value (`ForwardStore.maxProfileSignedBytes`), so a rig that
+    // lowers one lowers both.
+    private val maxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
     private val blobExchange: BlobExchange,
     private val keyExchange: KeyExchange,
     private val ackSync: AckSync,
@@ -801,6 +805,18 @@ class InboundPipeline(
         kind: TransportKind,
     ): Boolean =
         runCatchingUnlessCancelled {
+            // The profile cap (#234), ahead of everything that reads the payload: a profile whose `signed` is longer than
+            // [maxProfileSignedBytes] is never decoded, verified, custodied, pinned, cached or applied, wherever it came
+            // from (a link, a key answer, the spool). No honest build comes near it, so it wants no key and parks
+            // nothing, and it is not a missing key. The router still relays it, as it does any frame refused here.
+            if (env.type == FrameType.PROFILE && wire.signed.size > maxProfileSignedBytes) {
+                metrics.onProfileOversizeRefused()
+                Log.w(
+                    TAG,
+                    "drop profile ${env.id.take(ID_CHARS)}: ${wire.signed.size} signed bytes over the cap of $maxProfileSignedBytes",
+                )
+                return false
+            }
             // The blob traffic is unsigned and point-to-point only: the ask, the holder query and its answer (ADR
             // 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). No build marks one
             // for relay, so a flooded copy is nobody's: an ask honoured at every hop it reached would have each holder
@@ -4063,17 +4079,19 @@ class InboundPipeline(
      * A direct neighbor pushes its avatar to us (sendAvatarIfNeeded); a peer we only reach through a
      * relay won't, so pull its [advertised] avatar hop-by-hop over the same content-addressed exchange
      * that carries attachments. Attributed back to this peer in [adoptAdvertisedAvatar] on arrival.
+     *
+     * The fetch carries the photo ceiling ([FileIntake.MAX_AVATAR_BYTES], #234): the link that receives it keeps no
+     * byte past it, and a hash refused over it this session is not asked for again, by this profile or the next.
      */
     private suspend fun pullRelayAvatarIfNeeded(
         senderId: String,
         advertised: String?,
         haveAvatar: Boolean,
     ) {
-        if (advertised != null && !haveAvatar &&
-            transport.neighbors.value.none { it.nodeId == senderId }
-        ) {
+        if (advertised == null || blobExchange.refusedAsPhoto(advertised)) return
+        if (!haveAvatar && transport.neighbors.value.none { it.nodeId == senderId }) {
             advertisedAvatars[senderId] = advertised
-            blobExchange.want(advertised, author = senderId)
+            blobExchange.want(advertised, author = senderId, ceiling = FileIntake.MAX_AVATAR_BYTES)
         }
     }
 
@@ -4107,7 +4125,24 @@ class InboundPipeline(
      * spool fetches from custody, so the bytes can land, screened, before any profile is applied and with no
      * owner for [adoptAdvertisedAvatar] to refuse. Either way the next profile carrying the hash finds it held.
      */
-    private suspend fun avatarAdoptable(hash: String?): Boolean = hash != null && blobStore.has(hash) && !refusedImage(hash)
+    private suspend fun avatarAdoptable(hash: String?): Boolean =
+        hash != null && blobStore.has(hash) && !refusedImage(hash) && !releasedOverCeiling(hash)
+
+    /**
+     * Whether the held blob [hash] is longer than a profile photo may be ([FileIntake.MAX_AVATAR_BYTES], #234) — and
+     * then it is released ([BlobRepository.deleteIfUnreferenced]; a message or a carried frame naming it keeps it) and
+     * refused as a photo for the session, so no profile re-wants it. The fetch made for a photo is capped already;
+     * this is the backstop for bytes that arrived any other way (an attachment's fetch, a neighbour's pull, the spool).
+     */
+    private suspend fun releasedOverCeiling(hash: String): Boolean {
+        val size = blobs.sizes(listOf(hash))[hash] ?: return false
+        if (size <= FileIntake.MAX_AVATAR_BYTES) return false
+        Log.w(TAG, "avatar ${hash.take(ID_CHARS)} held at ${size}B, over the photo ceiling; not adopted")
+        metrics.onPhotoOverCeiling()
+        blobExchange.refuseAsPhoto(hash)
+        blobs.deleteIfUnreferenced(hash)
+        return true
+    }
 
     /**
      * Whether screening refused [hash] while content filtering is on. The setting gates receive-side hiding
@@ -4139,6 +4174,11 @@ class InboundPipeline(
     private suspend fun adoptAdvertisedAvatar(hash: String) {
         val owners = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
         if (owners.isEmpty()) return
+        // Over the photo ceiling (#234): it came by a fetch that was not a photo's, or before the cap. Never a face.
+        if (releasedOverCeiling(hash)) {
+            owners.forEach { advertisedAvatars.remove(it) }
+            return
+        }
         // A pulled avatar is screened in MeshBlobStore.ingest, on either plane — it holds no message row, so
         // nothing local can claim it is audio and the screen always runs (knit/knit-next#30 closed the
         // header-mime skip that let a serving peer suppress it; #109 the spool's bare insert). With content
@@ -4187,6 +4227,13 @@ class InboundPipeline(
         mime: String,
         srcPath: String,
     ) {
+        // The link already kept no more than the photo ceiling (#234); checked again before the whole file is read.
+        if (File(srcPath).length() > FileIntake.MAX_AVATAR_BYTES) {
+            Log.w(TAG, "Dropping avatar from $nodeId: over the photo ceiling")
+            metrics.onPhotoOverCeiling()
+            File(srcPath).delete()
+            return
+        }
         val bytes = runCatching { File(srcPath).readBytes() }.getOrNull() ?: return
         // [hash] is the peer's claimed content address. Verify the bytes hash to it before storing, so a
         // neighbor can't push arbitrary bytes under another avatar's address (content-address spoofing).
@@ -4374,6 +4421,9 @@ class InboundPipeline(
 
         /** Longest message or node id a quote may name; every id this protocol mints is far shorter. */
         private const val MAX_QUOTED_ID = 64
+
+        // How much of a frame id a log line names: enough to find it in a dump, no more.
+        private const val ID_CHARS = 8
 
         /** Most acked ids applied from one sealed CTL_RECEIPT — 2× AckSync's send-side batch cap. */
         private const val MAX_RECEIPT_ACKS = 2 * AckSync.MAX_BATCH_ACKS

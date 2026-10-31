@@ -102,6 +102,17 @@ import kotlin.coroutines.cancellation.CancellationException
  * rest ([onRequest]), and a spliced file that fails its hash check drops the prefix and asks from byte 0
  * ([onReceived]). A holder that predates the field serves the whole file, which lands as before.
  *
+ * **A profile photo's ceiling (#234).** A want made only for a profile photo ([want] with a `ceiling`) is fetched under
+ * the photo ceiling: the per-hash cap rides on [PartialBlobs] to whichever link receives the stream, which keeps no byte
+ * past it. A holder whose stream passes it, or whose `blobhas` size does, is marked for the hash for the session
+ * ([PartialBlobs.markHolder]) and passed over ([passOver]): its ask withdrawn, never queried, asked or asked to pull it
+ * again by this want or a later one, while the others are asked as for any failed holder. Neither signal can be checked
+ * against the hash before the file is whole, so it speaks for that holder alone; only the photo's author ([Want.author])
+ * speaks for the photo, and its signal refuses the hash for the session ([PartialBlobs.refuse]): the want ends
+ * ([endRefused]), every ask is withdrawn, and a later photo want for it makes none. The wire cannot stop a feed already
+ * running, so each holder's one copy may still cross, and is discarded. Any other want of our own for the same hash — an
+ * attachment, a carried frame, a group photo — lifts the cap: the larger ceiling wins. A neighbour's ask moves no ceiling.
+ *
  * Pure (no Android/Room): the transport, blob storage, and identity are injected, so the recursion
  * can be unit-tested with [FakeLoopTransport] and a fake [BlobStore].
  */
@@ -167,7 +178,8 @@ class BlobExchange(
     // reclaimed. Guarded by [lock].
     private val fetching =
         object : LinkedHashMap<String, Want>(64, 0.75f, false) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Want>): Boolean = size > maxFetching
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Want>): Boolean =
+                (size > maxFetching).also { evicted -> if (evicted && eldest.value.ceiling != null) partials.cap(eldest.key, null) }
         }
 
     // "hash|nodeId" -> when we last enqueued that blob to that peer. The bound on an unsigned request flood
@@ -255,6 +267,10 @@ class BlobExchange(
      * row naming the hash, so a null there is "no deadline" — or when [until] names one; otherwise it keeps the one the
      * re-arm set ([wantAll]). An [asker]'s carries the budget its ask allows ([budgetOf] of [pull]) and the ask's [until]
      * (#195).
+     *
+     * [ceiling] is set by a want made only for a profile photo (#234): the most bytes its stream may bring. Such a want of
+     * a hash refused as a photo this session ([PartialBlobs.isRefused]) makes nothing, and one of a hash with holders
+     * marked over it asks only the others; a want of our own without one lifts it (see the class KDoc).
      */
     suspend fun want(
         hash: String,
@@ -266,7 +282,12 @@ class BlobExchange(
         pull: Int? = null,
         until: Long? = null,
         untilKnown: Boolean = false,
+        ceiling: Long? = null,
     ) {
+        if (ceiling != null && partials.isRefused(hash)) {
+            log("blob refuse ${hash.take(LOG_HASH_CHARS)}…: over its ceiling of ${ceiling}B this session, not wanted")
+            return
+        }
         // The tap sticks to a want whose bytes are on the way too: if that copy is cut, the next step asks plain.
         if (approved) synchronized(lock) { fetching[hash]?.let { setFastOnly(it.also { w -> w.approved = true }, false, now()) } }
         if (onTheWayOrHeld(hash)) return
@@ -279,7 +300,7 @@ class BlobExchange(
                 fieldless =
                     asker != null && pull == null,
             )
-        recordWant(hash, now(), author, via, asker, fastOnly, approved, reach)
+        recordWant(hash, now(), author, via, asker, fastOnly, approved, reach, ceiling)
         stepping { step(hash, linkedNow()) }
     }
 
@@ -438,6 +459,8 @@ class BlobExchange(
         hash: String,
         linked: List<Candidate>,
     ) {
+        val passed = passOver(hash)
+        if (endRefused(hash)) return
         if (onTheWay(hash)) return
         if (store.has(hash)) {
             clearFetching(hash)?.let { withdrawAsks(hash, it, from = null) }
@@ -445,7 +468,9 @@ class BlobExchange(
             return
         }
         val kept = partials.length(hash)
-        val plan = synchronized(lock) { fetching[hash]?.let { decideMarking(it, linked, kept) }?.also { queue(hash, it) } } ?: return
+        // A marked holder is not a holder for this want: gone, as far as it is concerned, so an ask on it fails over.
+        val pool = if (passed.isEmpty()) linked else linked.filterNot { it.id in passed }
+        val plan = synchronized(lock) { fetching[hash]?.let { decideMarking(it, pool, kept) }?.also { queue(hash, it) } } ?: return
         if (plan.asks.isNotEmpty()) {
             val req = blobRequest(selfId(), hash, plan.fastOnly, plan.pull, plan.until)
             for (ask in plan.asks) {
@@ -459,6 +484,60 @@ class BlobExchange(
         plan.cancels.forEach { withdrawAsk(hash, it) }
         plan.events.forEach(onEvent)
         plan.wake?.let { armTimer(hash, it) }
+    }
+
+    /**
+     * The holders [hash]'s want passes over (#234): when only a profile photo wants it, those marked for it this session
+     * ([PartialBlobs.markHolder]) — a link aborted or skipped their stream past the ceiling, or they answered a size past
+     * it ([recordAnswers]). A newly marked one with our ask on it gets a `blobcancel` (its queued copy is dropped; a feed
+     * already running ends on its own, discarded). When the want's author is among them the hash itself is refused, and
+     * [endRefused] ends the want. The want's own [Want.passedOver] is returned with them, so a mark the session's bounded
+     * set has since dropped never lets this want ask that holder again. Empty for every other want.
+     */
+    private suspend fun passOver(hash: String): Set<String> {
+        val (marked, fresh, withdrawn) =
+            synchronized(lock) {
+                val w = fetching[hash]?.takeIf { it.ceiling != null } ?: return emptySet()
+                val marked = partials.markedHolders(hash)
+                if (marked.isEmpty() && w.passedOver.isEmpty()) return emptySet()
+                if (w.author in marked) partials.refuse(hash)
+                val fresh = marked.filter { it !in w.passedOver && w.passedOver.size < MAX_PASSED_OVER && w.passedOver.add(it) }
+                // Withdrawn whatever it answered: unlike a holder that said HAVE after our ask, its copy is unwanted.
+                val withdrawn =
+                    fresh.filter { id ->
+                        val asked = w.askedAt[id] ?: return@filter false
+                        (w.withdrawnAt[id] != asked).also { w.withdrawnAt[id] = asked }
+                    }
+                Triple(marked + w.passedOver, fresh, withdrawn)
+            }
+        for (holder in fresh) {
+            onEvent(BlobEvent.HolderOverCeiling)
+            log("blob pass ${hash.take(LOG_HASH_CHARS)}… $holder: over its ceiling → next")
+        }
+        withdrawn.forEach { withdrawAsk(hash, it) }
+        return marked
+    }
+
+    /**
+     * Ends [hash]'s want when only a profile photo wants it and the hash was refused over its ceiling (#234): its author
+     * streamed or answered past it ([passOver]), or a held copy was found over it (`InboundPipeline`). Every neighbour
+     * still asked gets a `blobcancel`, and nobody else is asked; a feed already running ends on its own, its bytes
+     * discarded. True when it ended the want. Checked at every step, so the step that would widen to the next holder
+     * ends it instead.
+     */
+    private suspend fun endRefused(hash: String): Boolean {
+        val ended =
+            synchronized(lock) {
+                val w = fetching[hash]?.takeIf { it.ceiling != null && partials.isRefused(hash) } ?: return false
+                fetching.remove(hash)
+                partials.cap(hash, null)
+                w
+            }
+        partials.drop(hash) // a prefix of it is no use to anyone now
+        withdrawAsks(hash, ended, from = null)
+        onEvent(BlobEvent.OverCeiling)
+        log("blob refuse ${ended.hash8}… over its ceiling of ${ended.ceiling}B: want ended")
+        return true
     }
 
     /**
@@ -667,7 +746,7 @@ class BlobExchange(
         t: Long,
         p: Plan,
     ): Long? {
-        val c = linked.firstOrNull { it.id == f.peer } ?: return w.over(f, "link gone")
+        val c = linked.firstOrNull { it.id == f.peer } ?: return w.over(f, if (f.peer in w.passedOver) "passed over" else "link gone")
         if (c.streaming) return streamWait(w, f, c, linked, p)
         val quiet = f.quietSince ?: t.also { f.quietSince = it }
         (quiet + f.graceMs - t).takeIf { it > 0 }?.let { return it }
@@ -1536,9 +1615,23 @@ class BlobExchange(
                         receivedAt = t,
                     )
                 if (item.state in HELD || item.state == BlobHasItem.FETCHING) w.sawLead(t)
+                markOverCeiling(w, item, from)
                 true
             }
         return touched to sent?.let { t - it.at }
+    }
+
+    /**
+     * A holder's size over a photo want's ceiling (#234) passes it over before a byte is asked of it; its author's ends
+     * the want ([passOver]). The size is the holder's claim, so it speaks for [from] alone. Under [lock].
+     */
+    private fun markOverCeiling(
+        w: Want,
+        item: BlobHasItem,
+        from: String,
+    ) {
+        val ceiling = w.ceiling ?: return
+        if (item.state in HELD && (item.size ?: 0L) > ceiling) partials.markHolder(item.hash, from)
     }
 
     /** When a SENDING [item] answered at [t] says our copy should have landed, at most [HOLD_CAP_MS] on (ADR 2026-10.nsr7). */
@@ -2050,7 +2143,13 @@ class BlobExchange(
             // An existing want keeps its fast-only flag. A fresh one (the want was swept or evicted while its prefix was
             // kept) cannot know it, so it is fast-only until the tick's database re-arm re-derives it, within one round:
             // a gated file never starts over Bluetooth on a guess, and a plain one waits a tick at most (ADR 2026-10.js2p).
-            val w = fetching.getOrPut(hash) { Want(hash, t, null, null, null).also { it.fastOnly = true } }
+            val w =
+                fetching.getOrPut(hash) {
+                    Want(hash, t, null, null, null).also {
+                        it.fastOnly = true
+                        it.ownWant = true // the prefix was ours to resume: an attachment's ceiling, as before
+                    }
+                }
             w.wantedAt = t
             w.openCycle(t, natural = false)
             from?.let { w.failed += it }
@@ -2073,6 +2172,7 @@ class BlobExchange(
                 val (hash, want) = iterator.next()
                 if (want.wantedAt < cutoff) {
                     iterator.remove()
+                    if (want.ceiling != null) partials.cap(hash, null)
                     removed += hash
                 }
             }
@@ -2091,6 +2191,7 @@ class BlobExchange(
         fastOnly: Boolean,
         approved: Boolean = false,
         reach: Reach = Reach(PULL_BUDGET, null),
+        ceiling: Long? = null,
     ) = synchronized(lock) {
         val want = fetching[hash]
         if (want == null) {
@@ -2100,8 +2201,15 @@ class BlobExchange(
                     it.fastOnly = fastOnly && !approved
                     it.budget = reach.budget
                     it.until = reach.until
+                    it.ceiling = ceiling
+                    it.ownWant = asker == null
                 }
+            partials.cap(hash, ceiling)
         } else {
+            if (asker == null) {
+                mergeCeiling(want, hash, ceiling)
+                want.ownWant = true
+            }
             // Our own want says what we will take now (ADR 2026-10.js2p); a neighbour's ask leaves our fetch as it is.
             // The tap is sticky: a want that read its rows before the tap and lands after it never re-holds the fetch.
             if (approved) want.approved = true
@@ -2119,6 +2227,28 @@ class BlobExchange(
             if (want.via == null) want.via = via
             asker?.let { noteAsker(want, it, reach, nowMs) }
         }
+    }
+
+    /**
+     * The larger ceiling wins (#234): a want of our own without one — an attachment, a carried frame, a group photo —
+     * lifts a photo's for good, and two photo wants keep the larger. Only our own wants call it: a neighbour's ask is not
+     * a want of ours and moves no ceiling, or a holder passed over could lift it by asking us for the hash. For the same
+     * reason a want only neighbours' asks made so far has no ceiling of ours to keep: our first want sets its own. Under
+     * [lock].
+     */
+    private fun mergeCeiling(
+        w: Want,
+        hash: String,
+        ceiling: Long?,
+    ) {
+        val was = w.ceiling
+        w.ceiling =
+            when {
+                !w.ownWant -> ceiling
+                was == null || ceiling == null -> null
+                else -> maxOf(was, ceiling)
+            }
+        if (w.ceiling != was) partials.cap(hash, w.ceiling)
     }
 
     /**
@@ -2175,6 +2305,18 @@ class BlobExchange(
         if (w.fetch == null) w.openCycle(t, natural = false)
     }
 
+    /**
+     * Whether [hash] was refused as a profile photo this session (#234): its author's stream or size passed the photo
+     * ceiling, or a held copy was found over it ([refuseAsPhoto]). A photo want of it makes nothing.
+     */
+    fun refusedAsPhoto(hash: String): Boolean = partials.isRefused(hash)
+
+    /**
+     * Refuses [hash] as a profile photo for the rest of the session (#234): a held copy was found over the photo ceiling
+     * and released, and a photo want must not fetch it again. A want of it still standing ends at its next step.
+     */
+    fun refuseAsPhoto(hash: String) = partials.refuse(hash)
+
     /** The hashes wanted now, whoever wanted them — for `mesh/lab`, which asserts a want is gone (#195). */
     internal fun wantedHashes(): Set<String> = synchronized(lock) { fetching.keys.toSet() }
 
@@ -2189,7 +2331,8 @@ class BlobExchange(
     private fun snapshotFetching(): List<String> = synchronized(lock) { fetching.keys.toList() }
 
     /** Removes [hash] from the fetching set (its blob arrived). */
-    private fun clearFetching(hash: String): Want? = synchronized(lock) { fetching.remove(hash) }
+    private fun clearFetching(hash: String): Want? =
+        synchronized(lock) { fetching.remove(hash)?.also { if (it.ceiling != null) partials.cap(hash, null) } }
 
     /**
      * [hash] is held now: every other neighbour [w] asked for it gets a `blobcancel`, so a copy one queued or parked for
@@ -2360,6 +2503,16 @@ class BlobExchange(
         var budget = 0
         var until: Long? = null
         var pullWithheld = false
+
+        // The most bytes its stream may bring when only a profile photo wants it (#234), mirrored on [PartialBlobs.cap]
+        // for the link that receives it; null for every other want, which takes the attachment ceiling. And the marked
+        // holders this want has already passed over and logged ([passOver]): never more than [PartialBlobs]' cap per hash.
+        var ceiling: Long? = null
+        val passedOver = HashSet<String>()
+
+        // Whether a want of our own ([want] or [wantAll] without an asker) recorded on it: until one did, only neighbours'
+        // asks made it, and our first want's ceiling is the one it takes ([mergeCeiling]).
+        var ownWant = false
 
         // Neighbours that linked in this cycle and have not been pulled since: pulled once at once ([pullNewcomers]).
         val freshLinks = HashSet<String>()
@@ -2737,6 +2890,11 @@ class BlobExchange(
         ProofQuerySent,
         ProofAnswerTaken,
         ProofHeld,
+
+        // A want made only for a profile photo: a holder passed over because its stream or its size passed the photo
+        // ceiling, and a want ended because its author's did, or a held copy did (#234).
+        HolderOverCeiling,
+        OverCeiling,
     }
 
     companion object {
@@ -2837,6 +2995,10 @@ class BlobExchange(
 
         // Cap on distinct outstanding fetches — the memory bound on unsigned-blobreq-driven growth.
         private const val MAX_FETCHING = 256
+
+        // Holders one photo want remembers passing over (#234): far more than a phone links in a session; past it the
+        // session's own marks still filter them while they last.
+        private const val MAX_PASSED_OVER = 64
 
         // Size cap on the in-flight serve memo (on top of its 45 s TTL).
         private const val MAX_SERVE_MEMO = 512
