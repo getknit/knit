@@ -129,6 +129,21 @@ class MessageRequestsViewModelTest {
             assertTrue(row.faces.all { it.avatarHash == null && it.name.isNotBlank() })
         }
 
+    // The chat list's badge counts an active stranger's group with no messages, so the inbox must list it.
+    @Test
+    fun aStrangerGroupWithNoMessagesYetIsAPendingRequest() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.requests.collect {} }
+            groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x"), name = "Hikers", createdBy = "x", createdAt = 50))
+            advanceUntilIdle()
+
+            val row = vm.requests.value.single()
+            assertEquals("g-1", row.conversationId)
+            assertNull(row.lastPreview)
+            assertEquals(50L, row.lastMessageAt)
+        }
+
     @Test
     fun aGroupAKnownPeerHasPostedInIsNotARequest() =
         runTest {
