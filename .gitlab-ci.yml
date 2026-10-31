@@ -92,11 +92,13 @@ workflow:
     # 1664m: a clean :app:compileDebugKotlin peaks at ~1.26 GB live (GC log, 2026-10-18), so the old
     # 1280m OOMed both compiles in pipeline 1121 once the call code landed. Metaspace/native/launcher-JVM
     # spikes spill to swap instead of tripping the OOM killer. SerialGC because there is only one core
-    # to GC on. Self-contained.
+    # to GC on. Self-contained. preferIPv6Addresses: Maven Central's per-IP, per-file download limit
+    # (nativeruntime-dist-compat, 2026-10-31) blocked skuld's IPv4 address for a day while IPv6 still answered,
+    # and Java dials IPv4 first otherwise; where a container has no IPv6 route Gradle falls through to IPv4.
     - |
       mkdir -p "$GRADLE_USER_HOME"
       cat > "$GRADLE_USER_HOME/gradle.properties" <<'EOF'
-      org.gradle.jvmargs=-Xmx1664m -XX:+UseSerialGC -Dfile.encoding=UTF-8
+      org.gradle.jvmargs=-Xmx1664m -XX:+UseSerialGC -Dfile.encoding=UTF-8 -Djava.net.preferIPv6Addresses=true
       org.gradle.workers.max=1
       kotlin.compiler.execution.strategy=in-process
       org.gradle.daemon=false
