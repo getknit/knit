@@ -22,6 +22,7 @@ import app.getknit.knit.mesh.spool.FreeKeyJournal
 import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.TicketKeyJournal
 import app.getknit.knit.moderation.TextModerator
+import app.getknit.knit.ui.call.stt.SttModelFiles
 import com.google.crypto.tink.KeysetHandle
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
@@ -112,8 +113,10 @@ class KoinGraphVerifyTest {
                 // The caller's tones' player (C-3.13-14), a ToneGeneratorPlayer built in CallToneSync's definition.
                 TonePlayer::class,
                 // The walkie transcript's model (C-3.11-9): the store's default pins, the engine handed over as the seam it
-                // implements, and the one-lane dispatcher the module writes inline.
+                // implements, the model's files as `get<SttModelStore>()` hands them to MoonshineSpeech, and the one-lane
+                // dispatcher the module writes inline.
                 SttModel::class,
+                SttModelFiles::class,
                 SpeechToText::class,
                 CoroutineDispatcher::class,
             )
