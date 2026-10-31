@@ -22,8 +22,8 @@ object CallReachRule {
      * link can be raised on ([sighted]); or its own recent traffic reached a connected spool we share a scope on
      * ([spoolPresent], `spoolPresentPeers`, so a relay the peer is not on never counts).
      *
-     * A LoRa board's reach is not evidence: a live OFFER's SDP is far past the plane's three-packet ceiling, and a
-     * walkie chunk never rides it.
+     * A LoRa board's reach is not evidence: the plane carries one-packet room posts and compact DMs only, never a
+     * call's OFFER or a walkie chunk.
      */
     fun reachable(
         peerId: String,

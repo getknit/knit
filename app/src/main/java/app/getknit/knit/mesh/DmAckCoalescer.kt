@@ -185,9 +185,10 @@ class DmAckCoalescer(
         const val HOLD_MS = 45_000L
 
         /**
-         * Most ids one coalesced tick carries: 316 B for the single form plus 23 B an id keeps the frame inside
-         * the LoRa hop's real 3-packet ceiling (pinned by `CoordinationPlaneSizeBudgetTest`); a fuller batch
-         * flushes early. Well under the receiver's `MAX_RECEIPT_ACKS`.
+         * Most ids one coalesced batch holds before it flushes early, and the cap on the signed tick it originates, room
+         * riders included. The signed tick no longer airs (ADR 2026-10.x9fa): its compact copies carry the batch's DM ids
+         * alone, chunked at `LORA_DIRECT_TICK_ACKS` (nine) a packet, so a full batch costs two compact packets. The figure
+         * dates from when the signed tick itself rode a three-packet LoRa hop. Well under the receiver's `MAX_RECEIPT_ACKS`.
          */
         const val MAX_LORA_TICK_ACKS = 12
 

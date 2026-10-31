@@ -53,7 +53,8 @@ seam (`MeshTransport.longRangeFanout`):
 - **No room ✓✓ (ADR 2026-10.rp3s).** `fastSend` refuses everything, so AckSync's cleartext receipt and its sealed
   escalation never air. A room tick goes home over a link or the spool; `AckSync.escalateRide` reads
   `shortRangeReachable`, so an author the board alone can hear keeps the tick parked rather than sealing it into an
-  owed entry nothing can carry. Room ✓✓ ids still ride an own DM tick as riders (`MeshManager`'s `riderCap`).
+  owed entry nothing can carry. Room ✓✓ ids still ride the **signed** copy of an own DM tick as riders (`MeshManager`'s
+  `riderCap`), which goes by custody, the spool and the links; its compact copies carry the DM ids alone.
 
 Everything else (group-form chat, `groupupdate`/`groupleave`, `typing`, `blobreq`/`keyreq`) is refused.
 
@@ -63,7 +64,7 @@ originator's signature verifies unchanged. One packet may leave *larger* than th
 (ADR 2026-09.mhs5): a 2.8 board that signs on the bound slot signs anything at or under 165 B, so `LoraFrameCodec`
 grows the frame's **last** packet to 166 and the board sends it unsigned (on a board that does not sign there — pre-2.8,
 or 2.8.2 under `COMPATIBLE`, #243 — `padTo` finds no saving and pads nothing) — a few bytes of pad instead of 66 of signature, ~20 % off the
-tick and the room post. Two rules keep that safe. The pad is only legal where a receiver ignores trailing
+room post (the only frame of this form that still airs). Two rules keep that safe. The pad is only legal where a receiver ignores trailing
 bytes, which is a **deflated** body (`FastFrameCodec.deflated`; a stored `0x03` would swallow the pad into
 `signed` and corrupt silently, a stored `0x05` rejects it) — and the frames with most to gain *store*, because
 the ADR 060 transcoder already took the compressible keys out, so a stored one-packet frame is re-deflated
@@ -462,11 +463,17 @@ packet — all ride custody, the spool and the links. A board-less recipient beh
 over LoRa: a unicast reaches one board, and that board's phone is its own.
 
 **The ✓✓ is coalesced (ADR 054).** A DM that arrived over the board does not seal its receipt at once:
-`InboundPipeline.acknowledge` holds it in `mesh/DmAckCoalescer` for ≤ 45 s, then `MeshManager.flushDmAcks` originates
-one tick, offered compact as `DirectKind.RECEIPT` (`FrameClass.DIRECT` since ADR 2026-10.ug4a: shed before a DM, never
-held out of a window's last quarter).
+`InboundPipeline.acknowledge` holds it in `mesh/DmAckCoalescer` for ≤ 45 s from the batch's oldest id (12 ids flush
+early), then `MeshManager.flushDmAcks` originates one signed tick (sealed only as an answer, room riders included) for
+custody, the spool and the links, and offers its compact copies as `DirectKind.RECEIPT`: the DM ids alone, nine a packet
+(`LORA_DIRECT_TICK_ACKS`), the first under the signed tick's id (`FrameClass.DIRECT` since ADR 2026-10.ug4a: shed
+before a DM). With no session the author holds yet the compact copies still go, under a fresh id, and the signed tick
+is held until one is answered (`holdDeclinedTicks`) — never downgraded to cleartext.
 If we send the author a DM meanwhile, `sendChat` carries pending ids inline (`MessageContent.acks`), out of the
-composer's budget. `heal()` is the flush backstop.
+composer's budget; the compact copy sheds them if they would cost a second packet. `heal()` is the flush backstop.
+The reader never retries a compact ✓✓: the author's resend or re-probe of a DM still without one draws a re-ack
+(`deliverLoraDirect`'s exists-gate), and the signed tick arrives by any other path. The board's routing ACK is not a
+✓✓: it says only that their radio took the packet.
 
 **Metadata.** Content stays end-to-end sealed, but `from`/`to` node numbers, timing and size are cleartext at
 kilometre range, and the static per-direction pairTag links one pair's packets. `SettingsStore.loraDmEnabled`

@@ -2507,8 +2507,8 @@ class MeshManager(
     ): TickSent {
         // The best carrier there is (ADR 2026-09.aa27): this frame is already sealed to that author, already
         // originated and already custodied, so the room ticks waiting for a ride cost it a few bytes and no
-        // row of their own. [riderCap] is the hop's: a frame built for the 3-packet LoRa hop takes at most
-        // `DmAckCoalescer.MAX_LORA_TICK_ACKS` ids in all, riders included (ADR 2026-09.y5f3).
+        // row of their own. [riderCap] caps the signed tick at `DmAckCoalescer.MAX_LORA_TICK_ACKS` ids in all, riders
+        // included (ADR 2026-09.y5f3); it no longer airs, and the compact copies below chunk on their own cap.
         val riding = ackSync.takeRiding(authorId, riderCap - ackIds.size)
         val tick =
             when (val sealed = sealTick(authorId, ackIds + riding, answer = answer)) {
@@ -2579,8 +2579,9 @@ class MeshManager(
 
     /**
      * The LoRa-held receipts a DM to [recipientId] may carry inline (ADR 054): none for a group or a peer
-     * without [Protocol.CAP_INLINE_ACK], and only as many as the hop's body budget for this form leaves room
-     * for — acks that pushed the frame past the 3-packet ceiling would lose the message to save a tick.
+     * without [Protocol.CAP_INLINE_ACK], and only as many as the composer's one-packet LoRa budget
+     * (`LoraSizeHint.DM_BODY_BYTES`) leaves room for. The compact copy sheds them if it still will not fit one packet
+     * (`compactPlaintext`); the signed copy always keeps them.
      * Taken out of the coalescer here; [sendChat] gives them back if the seal falls short of v2.
      */
     private suspend fun inlineAcksFor(
