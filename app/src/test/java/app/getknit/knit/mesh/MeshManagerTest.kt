@@ -114,6 +114,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -660,6 +661,9 @@ class MeshManagerTest {
             coEvery { settings.spoolEnabled } returns MutableStateFlow(false)
             coEvery { settings.activeSpoolUrls } returns MutableStateFlow(emptySet())
             coEvery { settings.acceptedConversations } returns MutableStateFlow(emptySet())
+            // And the restore flag (`finishRestore`), read first: without it the seeding coroutine died there, and
+            // the watcher's own custody read used to seed the row in its place. That read no longer signs one.
+            coEvery { settings.restorePending } returns MutableStateFlow(false)
             // setProfilePublishedAt returns DataStore's Preferences; the test only cares about the write.
             coEvery { settings.setProfilePublishedAt(any()) } answers {
                 publishedAt.value = firstArg()
@@ -672,11 +676,9 @@ class MeshManagerTest {
         }
 
         /**
-         * What the start's seeding pass and [MeshManager.heal]'s basket read beyond [stubProfileState]: the
-         * restore flag (`finishRestore`, ahead of the start's sweeps — on a relaxed mock's empty flow `.first()`
-         * throws there, the seeding coroutine dies, and the profile watcher's `ownProfile()` seeds the row in its
-         * place, which is why the other rigs never noticed) and the intro driver's two settings sets, which the
-         * basket reads before its completion counter.
+         * What [MeshManager.heal]'s basket reads beyond [stubProfileState]: the restore flag (`finishRestore`, which
+         * [stubProfileState] stubs too, for the start's seeding pass) and the intro driver's two settings sets, which
+         * the basket reads before its completion counter.
          */
         fun stubHealState() {
             coEvery { settings.restorePending } returns MutableStateFlow(false)
@@ -735,10 +737,16 @@ class MeshManagerTest {
          * the custody seed as siblings on `Dispatchers.Default`, so awaiting the seed does not order the
          * watcher: an edit written before its `combine` subscribes arrives as that combine's *initial*
          * value, which the watcher takes as the state it starts from rather than an edit, and nothing
-         * floods for it. [SettingsStore.avatarUpdatedAt] has no other collector in the manager, so one
-         * subscriber is it.
+         * floods for it. The combine subscribes each input in its own coroutine, so one input subscribed says
+         * nothing of the others: this waits on [SettingsStore.avatarUpdatedAt], [SettingsStore.displayName] and
+         * [SettingsStore.loraDmEnabled] (the inner board combine's last input), none of which anything else in
+         * the manager collects, so one subscriber each is the watcher.
          */
-        suspend fun awaitProfileWatcher() = await(1) { avatarUpdatedAt.subscriptionCount.value }
+        suspend fun awaitProfileWatcher() {
+            await(1) { avatarUpdatedAt.subscriptionCount.value }
+            await(1) { displayName.subscriptionCount.value }
+            await(1) { loraDmEnabled.subscriptionCount.value }
+        }
 
         /** The distinct CHAT routing envelopes the manager originated (collapsing the flood + fast-fanout copies). */
         fun sentChatFrames(): List<RelayEnvelope> = sentFrames().filter { it.type == FrameType.CHAT }
@@ -4615,6 +4623,100 @@ class MeshManagerTest {
             val content = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!
             assertEquals(0xdeadbeefL, content.loraNode)
             assertNull("no key, no key field", content.loraKey)
+        }
+
+    /**
+     * Edits queued behind a busy watcher are judged as the settings stand when it reaches them, never as each was
+     * written. A status edit's publish is held at its version write while a board binds and a rename land behind it,
+     * which is how a boards-everywhere lab boot goes (the board binds, then the rename, while the watcher is still on
+     * an earlier value). The held publish signs the settings of its own moment, so its frame already carries all
+     * three; each queued value used to mint that frame again under a new version, one flood and one sealed update to
+     * every contact apiece.
+     */
+    @Test
+    fun editsQueuedBehindAPublishAreCarriedByItsFrameAndNotFloodedAgain() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val displayName = rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.awaitProfileWatcher()
+
+            // The first publish waits at its version write: an event the watcher reaches only once it is busy.
+            val publishing = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var held = false
+            coEvery { rig.settings.setProfileVersion(any()) } coAnswers {
+                if (!held) {
+                    held = true
+                    publishing.complete(Unit)
+                    release.await()
+                }
+                mockk(relaxed = true)
+            }
+            rig.clockNow = rig.now + 26_000
+            rig.status.emit("out walking")
+            withContext(Dispatchers.Default) { withTimeout(AWAIT_MS) { publishing.await() } }
+            rig.loraBoard.value = LoraBoard(0xdeadbeefL, key = null)
+            displayName.value = "Alex"
+            release.complete(Unit)
+
+            rig.await(1) { rig.floodedProfiles().size }
+            val first = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().first().payload)!!
+            assertEquals(
+                "the held publish signed the settings of its moment",
+                Triple("out walking", 0xdeadbeefL, "Alex"),
+                Triple(first.status, first.loraNode, first.name),
+            )
+            // An absence, so a bound: the time the values queued behind it get to flood if they are going to.
+            withContext(Dispatchers.Default) { delay(2_000) }
+            assertEquals("so nothing queued behind it floods again", 1, rig.floodedProfiles().size)
+        }
+
+    /**
+     * An edit and its revert, written while a publish signs the edit, are both published. DataStore hands a busy
+     * subscriber only its latest data, so the watcher can miss a bind the publish in flight read and signed, and see
+     * the unbind as a re-emission of the value it last had. A `distinctUntilChanged` dropped that re-emission as no
+     * change, and the profile kept naming a board the settings no longer held until the next edit. The rig's board
+     * flow is a StateFlow, which can't miss a value that way, so the miss is staged: the getter answers the bind only
+     * inside the status edit's own publish (armed by its version write, which comes ahead of the signing's reads and
+     * which no judgment makes), and the watcher's subscription, taken at start, never sees it.
+     */
+    @Test
+    fun aRevertWrittenWhileAPublishSignsTheEditIsPublishedToo() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            rig.awaitProfileWatcher()
+
+            // The bind, as the next publish's reads see it and the watcher's subscription never does. Scoped to that one
+            // publish, so a judgment still running (the watcher's first, behind the seed's tail) reads the board unbound.
+            val bound = MutableStateFlow(LoraBoard(0xdeadbeefL, key = null))
+            val armed = AtomicBoolean(true)
+            val signing = AtomicBoolean(false)
+            coEvery { rig.settings.setProfileVersion(any()) } coAnswers {
+                if (armed.compareAndSet(true, false)) signing.set(true)
+                mockk(relaxed = true)
+            }
+            every { rig.settings.loraBoard } answers { if (signing.get()) bound else rig.loraBoard }
+            rig.clockNow = rig.now + 26_000
+            rig.status.emit("out walking")
+            rig.await(1) { rig.floodedProfiles().size }
+
+            fun boards() = rig.floodedProfiles().map { WireCodec.decodePayload<ProfileContent>(it.payload)?.loraNode }
+            assertEquals("the status edit's publish signed the bind", listOf(0xdeadbeefL), boards())
+
+            // The unbind: the settings read the board gone again, and its write re-emits the value the watcher last had.
+            signing.set(false)
+            rig.status.emit("out walking")
+            val second =
+                withContext(Dispatchers.Default) {
+                    withTimeoutOrNull(AWAIT_MS) { while (rig.floodedProfiles().size < 2) delay(POLL_MS) }
+                }
+            assertNotNull("the revert was never published, flooded boards ${boards()}", second)
+            assertEquals("then its revert took the board off again", listOf(0xdeadbeefL, null), boards())
         }
 
     @Test

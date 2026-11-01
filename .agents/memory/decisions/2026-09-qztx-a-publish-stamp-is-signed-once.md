@@ -11,6 +11,18 @@ topics: [mesh, spool, profiles]
 Status: Accepted (2026-09-16; `MeshManager.profileLock`, `signOwnProfileLocked`, `nextPublishStamp` — amends
 ADR 2026-09.y5f3's "one id, one set of bytes". No wire change, no DB migration, no capability bit.)
 
+**Amended 2026-10-31:** the watcher judges every value, not only the first. It judges each one as the settings
+stand when it reaches it (`currentPresentation()`), not as the value was emitted, and its custody read no longer
+signs a missing row, which now counts as a change. Edits queued behind the seed or a publish had each minted the
+newest frame again, because `broadcastProfile` signs the settings of its own moment. A boards-everywhere lab boot
+binds a board just after start, then renames, and published four versions of every node's profile, two of them
+identical. It now publishes two. The watcher also drops `distinctUntilChanged()` for `conflate()`: distinct
+compared values as they were emitted, so a board bound while a publish signed it, then unbound, folded into one
+value equal to the last, was dropped, and the profile kept naming the board. Each settings write now costs one
+keyed custody read and a payload decode, and publishes nothing unless the settings differ from the frame. Pinned
+by `MeshManagerTest.editsQueuedBehindAPublishAreCarriedByItsFrameAndNotFloodedAgain` and
+`aRevertWrittenWhileAPublishSignsTheEditIsPublishedToo`.
+
 ## What was observed
 
 Three mesh-in-a-box failures in two days, on both CI runners, that read as three different flakes:

@@ -163,6 +163,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
@@ -3664,15 +3665,18 @@ class MeshManager(
             ) { name, status, avatarAt, openToChat, lora ->
                 OwnPresentation(name, status, avatarAt, openToChat, lora)
             }
-                // Distinct BEFORE the first value is set aside, never after: every one of the five flows is a
-                // projection of the one DataStore, which re-emits on a write to ANY key — so the seed's own
-                // stamp write, the ledger flush, a read-state stamp, each re-emits the unchanged presentation.
-                // With the drop first, the second of those identical values was the first thing distinct saw,
-                // and every launch published a "changed" profile on the first settings write after start —
-                // a fresh version, a fresh custody row, a sealed update to every contact, at a moment nothing
-                // chose (the lab saw it as a third stamp per node, stranded behind an unlink).
-                .distinctUntilChanged()
-                .collect { live ->
+                // No distinctUntilChanged: every value is judged against custody below, which is what tells a change
+                // from none. Every one of the five flows is a projection of the one DataStore, which re-emits on a
+                // write to ANY key (the seed's own stamp write, the ledger flush, a read-state stamp), and each of
+                // those costs one keyed custody read and publishes nothing. A distinct here compared values as they
+                // were emitted, not as anything was published: an edit and its revert, written while a publish was
+                // signing the edit, fold into one value equal to the last, which distinct dropped, leaving custody on
+                // the edit and the settings on the revert until the next edit (a bind then an unbind, MeshManagerTest
+                // under the throttled stress). Before that, a `drop(1)` ahead of distinct made every launch publish a
+                // "changed" profile on the first settings write after start (ADR 2026-09.qztx). Conflated, so the
+                // writes that land while a publish runs are judged once, as the settings stand after them.
+                .conflate()
+                .collect {
                     if (first) {
                         first = false
                         // The stored state, not an edit — unless custody presents something else: an edit made
@@ -3682,21 +3686,43 @@ class MeshManager(
                         // against the row the startup seed leaves, never ahead of it: before the seed has
                         // refreshed a stale stamp, the row for the current one is the stale frame or nothing.
                         seeded.join()
-                        if (!custodyPresentsOtherThan(live)) return@collect
                     }
+                    // Every value is judged as the settings stand now, never as it was emitted. A burst of edits
+                    // queued one value per write, and `broadcastProfile` signs the settings of its own moment, so
+                    // each queued value minted the newest frame again: a board bound at start, then a rename, cost
+                    // three versions of one profile, each a flood and a sealed update to every contact.
+                    if (!custodyPresentsOtherThan(currentPresentation())) return@collect
                     broadcastProfile()
                     broadcastSealedProfile()
                 }
         }
     }
 
+    /** The own-profile fields as the settings hold them now: what [watchProfileChanges] judges a change by. */
+    private suspend fun currentPresentation(): OwnPresentation =
+        OwnPresentation(
+            name = settings.displayName.first(),
+            status = settings.status.first(),
+            avatarUpdatedAt = settings.avatarUpdatedAt.first(),
+            openToChat = settings.openToChat.first(),
+            lora = currentLora(),
+        )
+
     /**
-     * Whether the profile frame custody holds for the current stamp ([ownProfile], seeded here if absent)
-     * presents anything other than [live] — the fields the frame carries, compared as the frame carries
-     * them (the avatar by its hash, the name and status normalized and capped).
+     * Whether the profile frame custody holds for the current stamp presents anything other than [live] — the
+     * fields the frame carries, compared as the frame carries them (the avatar by its hash, the name and status
+     * normalized and capped). No row is "other": the read never signs one, because a frame signed here from the
+     * edited settings would carry the current stamp's id, which peers already hold for the frame before the edit,
+     * and they would drop the edit as a duplicate.
      */
     private suspend fun custodyPresentsOtherThan(live: OwnPresentation): Boolean {
-        val held = WireCodec.decodePayload<ProfileContent>(ownProfile().second.payload) ?: return true
+        // Under the lock, so the stamp and its row are read as one publish left them, never between its two writes.
+        val row =
+            profileLock.withLock {
+                val stamp = settings.profilePublishedAt.first()
+                forwardStore.frame(FrameId.profileId(identity.nodeId(), stamp), clock())
+            } ?: return true
+        val held = WireCodec.decodePayload<ProfileContent>(row.envelope.payload) ?: return true
         return held.name != normalizeSingleLine(live.name).clampToUtf16(TextLimits.DISPLAY_NAME) ||
             held.status != normalizeSingleLine(live.status).clampToUtf16(TextLimits.STATUS) ||
             held.avatarHash != settings.ownAvatarHash.first() ||

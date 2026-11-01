@@ -200,11 +200,16 @@ free). Two invariants that are easy to break:
   caller that wants the bytes reads `ownProfile()`; one that wants a fresh stamp goes through
   `broadcastProfile()` / `republishProfile()`; nothing writes `profilePublishedAt` or `profileVersion`
   outside them, and the stamp is `nextPublishStamp()` — strictly past the last, so two edits in one tick
-  are two frames. The watcher that mints on an edit (`watchProfileChanges`) is `distinctUntilChanged` with
-  **no** `drop(1)`: every settings flow is a projection of one DataStore that re-emits on a write to any key,
-  and a drop ahead of distinct made the second identical emission look like an edit — a fresh stamp on every
-  launch. Its first value is compared against the custodied frame instead (`custodyPresentsOtherThan`, after
-  the seed), which is also what publishes an edit made while the mesh was stopped.
+  are two frames. The watcher that mints on an edit (`watchProfileChanges`) has **no** `drop(1)` and **no**
+  `distinctUntilChanged`, only `conflate()`: every settings flow is a projection of one DataStore that re-emits
+  on a write to any key, and a drop ahead of distinct made the second identical emission look like an edit (a
+  fresh stamp on every launch), while distinct itself compared values as emitted, so an edit and its revert
+  written during a publish folded into an equal value and were dropped, leaving the profile on the edit. Every
+  value, the first after the seed, is judged as the settings stand when the watcher reaches it
+  (`currentPresentation()`) against the custodied frame of the current stamp (`custodyPresentsOtherThan`), and
+  mints only when they differ. That publishes an edit made while the mesh was stopped, and a burst of edits queued
+  behind the seed or a publish mints one frame, not one per write. The read never signs a missing row: a frame
+  signed there from edited settings would reuse the id peers already hold, so a missing row counts as a change.
 - **A blob is served only to a fresh ask, and never asked for while it is arriving** (`BlobExchange`, ADR
   2026-09.4tx5, superseding 2026-09.ywzn). Nothing is pushed to a peer that did not just ask: a neighbour
   that asked while we lacked the bytes is served on its next ask (its own 60 s tick), because the serving
