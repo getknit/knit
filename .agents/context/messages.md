@@ -31,14 +31,17 @@ lines.
   pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnBodies`, `SettingsStore.translateTarget`,
   `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`, `SettingsStore.translationEnabled` or
   `scripts/translate-*`:** READ ADR 2026-10.t2h6
-  (Proposed; offline translation) and its 2026-10-23 and 2026-10-29 amendments. It is a build made with
+  (Proposed; offline translation) and its 2026-10-23, 2026-10-29 and 2026-11-01 amendments. It is a build made with
   `-Ptranslate=true` only (a debug, or a testers' alpha built here). The runtime, slimt and CLD2 behind `TranslateJni`,
   is the `app.getknit:translate-native` AAR that the separate knit-translate-native repository builds reproducibly and
   publishes to Maven Central: `:app` compiles against it everywhere and packages it only under the flag, so no build
   here compiles native code. Upstream pins and our patches to them live in that repository;
   `-Pknit.translateNative=<checkout>` builds it from source in place of the artifact. Languages are registry codes
-  (`TranslateLang`); the directions are generated (`scripts/translate-model.py --write`, never hand-edited), every one
-  to or from English with no pivot. A translation is the reader's, on tap, into the reader's language
+  (`TranslateLang`); the directions are generated (`scripts/translate-model.py --write`, never hand-edited, which
+  checks each model's decoder depth against its weights), every one to or from English with no pivot: en, es, fr, uk,
+  de, pt (one model for pt-BR and pt-PT; uk-en is "tiny", 2 decoder layers). `LanguagePolicy` treats a sure CLD2 read
+  the text's own letters contradict (English over ñ or ¿, Serbian over Ukrainian's і) as unsure, never as the language
+  the letters suggest. A translation is the reader's, on tap, into the reader's language
   (`TranslateTarget`, `ReaderLanguages`: Settings, then what they write, then the system list, never the app's
   language), kept on the row (DB v27, `setTranslation` only; the chat list previews it behind `PreviewMark.Translated`),
   never on the wire and never logged; it is screened by

@@ -4,7 +4,9 @@
 For each device: push the corpus (scripts/translate-corpus/), side-load the models if --stage is given (what
 `scripts/translate-model.py --out` wrote), run the debug bridge's `TRANSLATE bench` both ways, pull each direction's
 JSON lines, and print one row per device and direction: the cold load, p50/p95 by message length, the memory one
-loaded direction holds, and how many lines the identifier was unsure of, lost a protected span or came out looping.
+loaded direction holds, how many lines the identifier was unsure of, read as another language with a model (misread)
+or as one with none (no model: Translate is hidden), and how many lost a protected span or came out looping. The
+identifier reads each line without a hint, so its counts are the worst case.
 
 With --desktop, the same corpus also goes through the knit-translate-native repository's desktop bench (the same
 native core; its README says how to build it), found through --native (default: a knit-translate-native checkout
@@ -17,6 +19,7 @@ Obey .agents/rules/devices.md before pointing this at a physical phone. Stdlib o
 """
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
@@ -30,11 +33,22 @@ NATIVE = ROOT.parent / "knit-translate-native"
 BENCH = "translate-native/build/desktop/knit-translate-bench"
 REMOTE = "/data/local/tmp/translate"
 PACKAGE = "app.getknit.knit"
-# model id and file stem per direction, keyed "<from>-<to>": the pins' own (translate-model.py MODELS). Each runs the
-# corpus of its source language, scripts/translate-corpus/<from>.txt.
+
+
+def _pins():
+    """translate-model.py, loaded as a module: its MODELS and DECODER_LAYERS are the one list of directions."""
+    spec = importlib.util.spec_from_file_location("translate_model", ROOT / "scripts/translate-model.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_MODEL = _pins()
+# model id, file stem and decoder depth per direction, keyed "<from>-<to>", from translate-model.py's MODELS. Each runs
+# the corpus of its source language, scripts/translate-corpus/<from>.txt.
 DIRECTIONS = {
-    "es-en": ("mozilla-es-en-4aed7734", "esen"),
-    "en-es": ("mozilla-en-es-3b1c3995", "enes"),
+    pair: (model_id, pair.replace("-", ""), _MODEL.DECODER_LAYERS[architecture])
+    for pair, (model_id, _, architecture, _) in sorted(_MODEL.MODELS.items())
 }
 POLL_S = 2
 BENCH_TIMEOUT_S = 1800
@@ -86,23 +100,33 @@ def bench(serial, pair, runs):
 
 
 def desktop(bench, stage, pair):
-    model_id, stem = DIRECTIONS[pair]
+    model_id, stem, decoder_layers = DIRECTIONS[pair]
     source = pair.split("-")[0]
     d = Path(stage) / model_id
     out = subprocess.run(
         [str(bench), "translate", str(d / f"model.{stem}.intgemm.alphas.bin"), str(d / f"vocab.{stem}.spm"),
-         str(d / f"lex.50.50.{stem}.s2t.bin"), "4", str(CORPUS / f"{source}.txt")],
+         str(d / f"lex.50.50.{stem}.s2t.bin"), str(decoder_layers), str(CORPUS / f"{source}.txt")],
         capture_output=True, text=True, check=True,
     ).stdout
     return {int(n): text for n, _, text in (line.split("\t", 2) for line in out.splitlines())}
 
 
-def row(device, summary):
+def misreads(source, picks):
+    """How many lines the identifier read as another language a model translates from (a wrong translation follows),
+    and how many as a language with no model (Translate is then not offered); `pick` as TranslateBridge writes it."""
+    wrong = sum(1 for p in picks if p not in (source, "unsure") and not p.endswith(" (no model)"))
+    other = sum(1 for p in picks if p.endswith(" (no model)"))
+    return wrong, other
+
+
+def row(device, summary, picks):
     ms = summary["ms"]
     cell = lambda b: f"{ms[b]['p50']}/{ms[b]['p95']}" if b in ms else "-"
+    wrong, other = misreads(summary["direction"].split("-")[0], picks)
     return (f"| {device} | {summary['direction']} | {summary['loadMs']} | {cell('short')} | {cell('medium')} | "
             f"{cell('long')} | {summary['nativeHeapDeltaKb'] // 1024} | {summary['pssDeltaKb'] // 1024} | "
-            f"{summary['unsure']}/{summary['lines']} | {summary['spansLost']} | {summary['unusable']} |")
+            f"{summary['unsure']}/{summary['lines']} | {wrong} | {other} | {summary['spansLost']} | "
+            f"{summary['unusable']} |")
 
 
 def main():
@@ -127,9 +151,9 @@ def main():
     table = [
         (
             "| device | direction | load ms | short p50/p95 ms | medium p50/p95 ms | long p50/p95 ms | heap MB | PSS MB "
-            "| unsure | spans lost | looping |"
+            "| unsure | misread | no model | spans lost | looping |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     sheet = []
     for serial in args.serial:
@@ -144,10 +168,10 @@ def main():
             summary, remote_out = bench(serial, pair, args.runs)
             local = out / f"{model.replace(' ', '_')}-{pair}.jsonl"
             adb(serial, "pull", remote_out, str(local))
-            table.append(row(model, summary))
+            lines = [json.loads(line) for line in local.read_text().splitlines()]
+            table.append(row(model, summary, [r["pick"] for r in lines]))
             corpus = [line for line in (CORPUS / f"{source}.txt").read_text().splitlines() if line.strip()]
-            for line in local.read_text().splitlines():
-                r = json.loads(line)
+            for r in lines:
                 ref = reference.get(pair, {}).get(r["n"])
                 sheet.append({
                     "device": model, "from": source, "to": pair.split("-")[1], "n": r["n"], "ms": r["ms"], "source": corpus[r["n"] - 1],

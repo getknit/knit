@@ -28,6 +28,20 @@ class LanguageResolverTest {
     }
 
     @Test
+    fun aNeighboursReadTheLettersContradictFallsToThePriors() {
+        // CLD2 sure of Serbian over Ukrainian's і (ADR 2026-10.t2h6's 2026-11-01 amendment): not "Serbian, nothing to
+        // offer", which would hide Translate, but unsure, so the author's Ukrainian answers; with no prior the reader picks.
+        val uk = TranslateLang("uk")
+        val candidates = setOf(TranslateLang.EN, uk)
+        val line = "не можу зараз говорити, я на нараді"
+        assertEquals(
+            Resolution(LanguagePick.Picked(uk), LanguageSource.AUTHOR),
+            LanguageResolver.resolve(cld2("sr", 98), line, candidates, author = uk, chat = null),
+        )
+        assertEquals(Resolution(LanguagePick.Unsure, null), LanguageResolver.resolve(cld2("sr", 98), line, candidates, null, null))
+    }
+
+    @Test
     fun aLineTheWordsCannotTellTakesTheAuthorsLanguageThenTheChats() {
         assertEquals(
             Resolution(LanguagePick.Picked(TranslateLang("es")), LanguageSource.AUTHOR),

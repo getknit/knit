@@ -23,8 +23,16 @@ class ReaderLanguagesTest {
 
     @Test
     fun tooFewOwnMessagesFallBackToTheSystemList() {
-        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(en, en), listOf("fr-FR", "es-MX", "en-US")).target)
+        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(en, en), listOf("it-IT", "es-MX", "en-US")).target)
         assertEquals(TranslateLang.EN, ReaderLanguages.estimate(emptyList(), listOf("EN-gb")).target)
+    }
+
+    @Test
+    fun aPhoneInAShippedLanguageReadsItWithNothingWritten() {
+        val system = mapOf("pt-BR" to "pt", "uk-UA" to "uk", "de-DE" to "de", "fr-CA" to "fr", "es-MX" to "es")
+        for ((tag, code) in system) {
+            assertEquals(tag, TranslateLang(code), ReaderLanguages.estimate(emptyList(), listOf(tag, "en-US")).target)
+        }
     }
 
     @Test

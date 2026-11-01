@@ -6,6 +6,46 @@ import app.getknit.knit.call.SttFile
 
 /** Every direction a phone can download, each pinned by size and SHA-256 (generated; see [TranslateDirection]). */
 object TranslateDirections {
+    val DE_EN =
+        TranslateDirection(
+            from = TranslateLang("de"),
+            to = TranslateLang("en"),
+            id = "mozilla-de-en-3e6f7c2c",
+            baseUrl = "https://getknit.app/models/translate/mozilla-de-en-3e6f7c2c/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.deen.intgemm.alphas.bin",
+                        31_561_787,
+                        "3e6f7c2c2425d10824797270b382bee718ff34af2cab9308841c82ca46dc6f20",
+                    ),
+                    SttFile("lex.50.50.deen.s2t.bin", 4_945_796, "113b98460468360cca68c042e1cddf49c4e1931cbb975ed04349c9a3bd607010"),
+                    SttFile("vocab.deen.spm", 810_073, "69f730becafa48e3bb2c244eab66456877c08959a02f2bd5519b5a3088b62f9c"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val EN_DE =
+        TranslateDirection(
+            from = TranslateLang("en"),
+            to = TranslateLang("de"),
+            id = "mozilla-en-de-8df29d94",
+            baseUrl = "https://getknit.app/models/translate/mozilla-en-de-8df29d94/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.ende.intgemm.alphas.bin",
+                        31_561_787,
+                        "8df29d9494d19f47fd5d97c6a73474c6f657e9f81c1a607c431d02befdf3810f",
+                    ),
+                    SttFile("lex.50.50.ende.s2t.bin", 4_347_672, "7ed39f1cffbd68a27ddf05bbfe068de2060f1d7e69f1a20e27ae923551dd7393"),
+                    SttFile("vocab.ende.spm", 810_073, "69f730becafa48e3bb2c244eab66456877c08959a02f2bd5519b5a3088b62f9c"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
     val EN_ES =
         TranslateDirection(
             from = TranslateLang("en"),
@@ -21,6 +61,66 @@ object TranslateDirections {
                     ),
                     SttFile("lex.50.50.enes.s2t.bin", 4_198_436, "7d51237c0a07027dcd61643cfbbb0f8c48597d19907ef53d2cae9d6bec2cf25c"),
                     SttFile("vocab.enes.spm", 816_054, "5ae254fa9b15aa182e70fd2a6186b1333c63a29a48043a9224c6aa4fcac058ad"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val EN_FR =
+        TranslateDirection(
+            from = TranslateLang("en"),
+            to = TranslateLang("fr"),
+            id = "mozilla-en-fr-6322e296",
+            baseUrl = "https://getknit.app/models/translate/mozilla-en-fr-6322e296/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.enfr.intgemm.alphas.bin",
+                        31_561_787,
+                        "6322e296d4fecfe395a8d5723da4ec37ecbe6d7613bb1dfcf4b28e2a47498b68",
+                    ),
+                    SttFile("lex.50.50.enfr.s2t.bin", 4_372_936, "2585ed98d3af0bc949865aedeb390493d591f56870814376e73e4144c41ed059"),
+                    SttFile("vocab.enfr.spm", 814_404, "783abf3abe075afdf8d85d233994bef2c3a064e935ab1bed946820aff6ac002a"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val EN_PT =
+        TranslateDirection(
+            from = TranslateLang("en"),
+            to = TranslateLang("pt"),
+            id = "mozilla-en-pt-07892fd2",
+            baseUrl = "https://getknit.app/models/translate/mozilla-en-pt-07892fd2/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.enpt.intgemm.alphas.bin",
+                        31_561_787,
+                        "07892fd2544ee79dcb643615d8f2debb9793fae16842e87c328e27a3dd26a770",
+                    ),
+                    SttFile("lex.50.50.enpt.s2t.bin", 3_970_340, "ccb4c31c9e1899d77a200e71a86958e6ef6c8649627d0bbf3f873b57d9f236bd"),
+                    SttFile("vocab.enpt.spm", 816_726, "d9f46182823d5bbc84201252b2dfcac28f63e561f0ec827ed858f241864c9def"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val EN_UK =
+        TranslateDirection(
+            from = TranslateLang("en"),
+            to = TranslateLang("uk"),
+            id = "mozilla-en-uk-ed8bb4a8",
+            baseUrl = "https://getknit.app/models/translate/mozilla-en-uk-ed8bb4a8/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.enuk.intgemm.alphas.bin",
+                        31_561_787,
+                        "ed8bb4a811e1c45a259e91052080d25e5c8b4e2df0e59cb1521c04a57855ef97",
+                    ),
+                    SttFile("lex.50.50.enuk.s2t.bin", 3_054_364, "dbfd4f8dc95da9c575164f7fc95ef00a2fb5f7d9f51b656559f99eeebdb57c87"),
+                    SttFile("vocab.enuk.spm", 922_077, "4dd6a91feff71e745395dcc0d52f885848ca0d843d5f70628ca51b3be1b70b45"),
                     SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
                 ),
             decoderLayers = 4,
@@ -46,5 +146,65 @@ object TranslateDirections {
             decoderLayers = 4,
         )
 
-    val ALL: List<TranslateDirection> = listOf(EN_ES, ES_EN)
+    val FR_EN =
+        TranslateDirection(
+            from = TranslateLang("fr"),
+            to = TranslateLang("en"),
+            id = "mozilla-fr-en-15f997bc",
+            baseUrl = "https://getknit.app/models/translate/mozilla-fr-en-15f997bc/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.fren.intgemm.alphas.bin",
+                        31_561_787,
+                        "15f997bc0d13808b0b0fbd0786e684a3c8a52adcd8071844b76123fdacbf2b90",
+                    ),
+                    SttFile("lex.50.50.fren.s2t.bin", 4_824_120, "87c6752ea908f5f0347c10ac0cf7d80d9c2f4f20c81c90168f3e8230b56d4440"),
+                    SttFile("vocab.fren.spm", 814_404, "783abf3abe075afdf8d85d233994bef2c3a064e935ab1bed946820aff6ac002a"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val PT_EN =
+        TranslateDirection(
+            from = TranslateLang("pt"),
+            to = TranslateLang("en"),
+            id = "mozilla-pt-en-7b854f1e",
+            baseUrl = "https://getknit.app/models/translate/mozilla-pt-en-7b854f1e/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.pten.intgemm.alphas.bin",
+                        31_561_787,
+                        "7b854f1ec5a485dd33efd7c1bc01dd7d5a57f566957c5e47722af333f0ce9157",
+                    ),
+                    SttFile("lex.50.50.pten.s2t.bin", 4_634_492, "2685d8b6530be92a4db4cc61f15a097eb114552be15cb6c1699e9d2d99d24470"),
+                    SttFile("vocab.pten.spm", 816_726, "d9f46182823d5bbc84201252b2dfcac28f63e561f0ec827ed858f241864c9def"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 4,
+        )
+
+    val UK_EN =
+        TranslateDirection(
+            from = TranslateLang("uk"),
+            to = TranslateLang("en"),
+            id = "mozilla-uk-en-2e7b8bc9",
+            baseUrl = "https://getknit.app/models/translate/mozilla-uk-en-2e7b8bc9/",
+            files =
+                listOf(
+                    SttFile(
+                        "model.uken.intgemm.alphas.bin",
+                        17_141_051,
+                        "2e7b8bc9d2569d8b4ae244e964cdc343a0aa3735cc83ecb664be84a37cb45f48",
+                    ),
+                    SttFile("lex.50.50.uken.s2t.bin", 3_914_120, "32b5e0df493671a223cb5cb32430181cbb7fe6b5562c91dbc3d35410d37e5ff6"),
+                    SttFile("vocab.uken.spm", 886_410, "8b51480dfc4ca2d7a08d2bfdaa9e57353ca97e6cf3d5f9aba4c0179d3665bfc0"),
+                    SttFile("LICENSE", 16_725, "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"),
+                ),
+            decoderLayers = 2,
+        )
+
+    val ALL: List<TranslateDirection> = listOf(DE_EN, EN_DE, EN_ES, EN_FR, EN_PT, EN_UK, ES_EN, FR_EN, PT_EN, UK_EN)
 }

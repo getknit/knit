@@ -1,6 +1,7 @@
 package app.getknit.knit.translate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,8 +20,17 @@ class TranslateModelsTest {
             )
             assertEquals("https://getknit.app/models/translate/${direction.id}/", direction.baseUrl)
             assertTrue(direction.files.all { it.bytes > 0 && it.sha256.matches(Regex("[0-9a-f]{64}")) })
-            // base-memory: told two decoder layers, slimt loads and writes nonsense.
-            assertEquals(4, direction.decoderLayers)
+            // Told the wrong depth, slimt loads and writes nonsense: "base-memory" has four, "tiny" (uk-en only) two.
+            // translate-model.py checks each against the weights' own layer names before it writes the table.
+            assertEquals(if (direction == TranslateDirections.UK_EN) 2 else 4, direction.decoderLayers)
+        }
+    }
+
+    @Test
+    fun everyLanguageShipsBothDirections() {
+        for (lang in TranslateDirection.languages - TranslateLang.EN) {
+            assertNotNull("$lang->en", TranslateDirection.of(lang, TranslateLang.EN))
+            assertNotNull("en->$lang", TranslateDirection.of(TranslateLang.EN, lang))
         }
     }
 
@@ -36,9 +46,10 @@ class TranslateModelsTest {
         assertEquals(TranslateDirections.ES_EN, TranslateDirection.of(es, TranslateLang.EN))
         assertNull(TranslateDirection.of(TranslateLang.EN, TranslateLang.EN))
         // The one deliberate pin of the table's contents: it changes with each `translate-model.py --write`.
-        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.languages)
-        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.sources)
-        assertEquals(setOf(TranslateLang.EN, es), TranslateDirection.targets)
+        val every = listOf("en", "es", "fr", "uk", "de", "pt").map(::TranslateLang).toSet()
+        assertEquals(every, TranslateDirection.languages)
+        assertEquals(every, TranslateDirection.sources)
+        assertEquals(every, TranslateDirection.targets)
         assertEquals("model.esen.intgemm.alphas.bin", TranslateDirections.ES_EN.model)
     }
 
@@ -52,7 +63,14 @@ class TranslateModelsTest {
         assertEquals(es, TranslateLang.ofCode("es-Latn-MX"))
         assertEquals(TranslateLang.EN, TranslateLang.ofCode("EN_gb"))
         assertEquals(TranslateLang.EN, TranslateLang.ofCode(" en "))
-        // Not in the table: no model translates it, so nothing names it.
+        // One Portuguese model serves Brazil and Portugal; a region never splits a language the table names once.
+        for (tag in listOf("pt-BR", "pt_BR", "pt-PT")) assertEquals(TranslateLang("pt"), TranslateLang.ofCode(tag))
+        assertEquals(TranslateLang("uk"), TranslateLang.ofCode("uk-UA"))
+        assertEquals(TranslateLang("de"), TranslateLang.ofCode("de-AT"))
+        assertEquals(TranslateLang("de"), TranslateLang.ofCode("de-CH"))
+        assertEquals(TranslateLang("fr"), TranslateLang.ofCode("fr-CA"))
+        // Not in the table: no model translates it, so nothing names it, a neighbour of a shipped language included.
+        assertNull(TranslateLang.ofCode("ru"))
         assertNull(TranslateLang.ofCode("gl"))
         assertNull(TranslateLang.ofCode("un"))
         assertNull(TranslateLang.ofCode(""))

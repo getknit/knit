@@ -351,3 +351,55 @@ receiver. In a sealed chat only its members see it; in
 the Nearby room it is cleartext to every neighbour, as the body is. Knit for iOS ignores the keys until it reads them.
 The draft hint for a group says nothing while one member is silent.
 
+
+## Amendment 2026-11-01: French, Ukrainian, German and Portuguese
+
+**What changed.** Eight directions join en↔es, each the release in Mozilla's registry as of 2026-10-31: en↔fr, en↔uk,
+en↔de and en↔pt. All are "base-memory" except uk-en, whose only release is "tiny" (COMET22 0.846 against en-uk's
+0.879), with 2 decoder layers to base-memory's 4. A download is 34–36 MB per direction and 21 MB for uk-en.
+`LanguageRegistry` already had all four languages, so nothing moves on the wire, in the database or for Knit for iOS.
+
+- **Portuguese is one model.** The registry has `pt` and no `pt_BR`. `LanguageRegistry.codeOf` drops the region, so a
+  Brazilian reader, keyboard or system list resolves to it. Its English-to-Portuguese output is Brazilian: on the
+  English corpus it writes você 9 times, ônibus and trem, and one European slip ("O meu telemóvel está a 4%").
+- **Decoder depth comes from the weights.** `scripts/translate-model.py` counts each model's `encoder_l<N>_` and
+  `decoder_l<N>_` tensor names and refuses to write the table when they disagree with `DECODER_LAYERS` for its
+  architecture. That is the check slimt cannot do at load. `scripts/translate-bench.py` takes its directions and
+  depths from the same `MODELS` and no longer passes 4 to every one.
+- **A sure read the letters contradict is unsure.** On the new Ukrainian corpus, CLD2 called plain Ukrainian
+  Serbian, Bulgarian or Belarusian at 95–98%, "reliable", even with `uk` as its hint. That read is `LanguagePick.Other`,
+  which hides Translate. `LanguagePolicy` now treats a read of Russian, Serbian or Bulgarian over і, ї, є or ґ, or
+  Belarusian over ї, є or ґ, as unsure, as it already treated English over a letter English does not write. Then the
+  declared, author's or chat's language answers, or the reader picks. It is unsure, not Ukrainian: a letter rules a
+  language out, never in.
+
+**Results** (desktop bench, the same native core as the AAR; each corpus without its spans, read by CLD2 without a
+hint and with its own language as the hint, out of 91 lines, 88 for English):
+
+| corpus | right, no hint / hint | unsure | another model's language | no model (Translate hidden) |
+|---|---|---|---|---|
+| en | 66 / 66 | 22 / 22 | 0 / 0 | 0 / 0 |
+| es | 71 / 67 | 16 / 23 | 1 / 0 | 3 / 1 |
+| fr | 64 / 68 | 26 / 22 | 0 / 0 | 1 / 1 |
+| de | 67 / 69 | 24 / 22 | 0 / 0 | 0 / 0 |
+| pt | 68 / 64 | 22 / 27 | 0 / 0 | 1 / 0 |
+| uk, before the letter rule | 50 / 61 | 29 / 25 | 0 / 0 | 12 / 5 |
+| uk, with it | — | — | 0 / 0 | 6 / 1 |
+
+- **Portuguese makes one misread.** It is Spanish "de nada", read as Portuguese without a hint; it was `Other("pt")`
+  before. With the author's or the declared Spanish as the hint, no Spanish line is misread.
+- **What stays hidden.** The Ukrainian lines still hidden carry no letter that rules the neighbour out ("нема за що",
+  "так само хаха"). With the hint, one remains, as for Spanish.
+- **Translations.** Every direction kept every protected span on all but at most three lines, mostly `geo:`
+  coordinates, which `MessageTranslator`'s run-by-run fallback restores. No new direction loops; en-es's known line
+  still does.
+  uk-en at depth 2 reads as English with the tiny model's slips: "клас" as "class", and "о пів на п'яту" (4:30) as
+  "half past five".
+
+**Owed.**
+
+- The eight directions on getknit.app (`translate-model.py --out`, then upload under
+  `https://getknit.app/models/translate/<id>/`).
+- A phone bench and trial on the P9 and P7 for each direction's load time, latency and memory.
+- A French↔Ukrainian chat end to end, where each side gets English.
+- A native reader's look at uk-en.

@@ -56,13 +56,37 @@ sealed interface LanguagePick {
  * reads as a neighbour (Galician, Catalan, Portuguese). A neighbour is never mapped to a language it is not: that would
  * be a guess.
  *
- * One contradiction is caught: CLD2 read "qué fotos tan bonitas" as English, reliably. An English answer for text
- * carrying a letter English does not write (any letter outside ASCII, ¿ or ¡) is unsure.
+ * A sure answer the text's own letters contradict is unsure: a read of a language that never writes a letter the text
+ * carries ([contradicted]). CLD2 read "qué fotos tan bonitas" as English, reliably, and plain Ukrainian ("Думаю, нам
+ * треба піти, поки не стемніло.") as Serbian at 98%, even with Ukrainian as its hint (ADR 2026-10.t2h6's 2026-10-31
+ * amendment). Unsure, not the language the letters suggest: the resolver's priors and the reader settle it.
  */
 object LanguagePolicy {
     const val MIN_PERCENT = 80
 
     private val NOT_ENGLISH_MARKS = Regex("[¿¡]|[\\p{L}&&[^\\p{ASCII}]]")
+
+    // Ukrainian's own letters: і, ї, є and ґ, none of which Russian, Serbian or Bulgarian writes.
+    private val UKRAINIAN_LETTERS = Regex("[іїєґІЇЄҐ]")
+
+    // Belarusian writes і but never ї, є or ґ.
+    private val NOT_BELARUSIAN_LETTERS = Regex("[їєґЇЄҐ]")
+
+    /** Registry codes and letters a text in that language never carries: a read of one over them is contradicted. */
+    private val NEVER_WRITES: Map<String, Regex> =
+        mapOf(
+            TranslateLang.EN.code to NOT_ENGLISH_MARKS,
+            "ru" to UKRAINIAN_LETTERS,
+            "sr" to UKRAINIAN_LETTERS,
+            "bg" to UKRAINIAN_LETTERS,
+            "be" to NOT_BELARUSIAN_LETTERS,
+        )
+
+    /** True when [text] carries a letter the language [code] (a registry code) never writes. */
+    private fun contradicted(
+        code: String,
+        text: String,
+    ): Boolean = NEVER_WRITES[code]?.containsMatchIn(text) == true
 
     fun pick(
         detection: Detection?,
@@ -72,7 +96,7 @@ object LanguagePolicy {
         val (code, percent) = detection.top.firstOrNull() ?: return LanguagePick.Unsure
         val lang = TranslateLang.ofCode(code) ?: return LanguagePick.Unsure
         if (percent < MIN_PERCENT) return LanguagePick.Unsure
-        if (lang == TranslateLang.EN && NOT_ENGLISH_MARKS.containsMatchIn(text)) return LanguagePick.Unsure
+        if (contradicted(lang.code, text)) return LanguagePick.Unsure
         return LanguagePick.Picked(lang)
     }
 
@@ -89,7 +113,7 @@ object LanguagePolicy {
         val (code, percent) = detection.top.firstOrNull() ?: return null
         val lang = LanguageRegistry.codeOf(code) ?: return null
         if (percent < MIN_PERCENT) return null
-        if (lang == TranslateLang.EN.code && NOT_ENGLISH_MARKS.containsMatchIn(text)) return null
+        if (contradicted(lang, text)) return null
         return lang
     }
 
