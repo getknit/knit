@@ -10,7 +10,8 @@ topics: [build, release, r8]
 
 Status: Accepted (2026-11-01). A sibling of ADR 050's `r8-platform-gate.sh` and ADR 051's `dex-bitmap-gate.sh`: a
 third check that reads R8's output, because lint and the tests read only the sources. 2.10.0 and 2.10.1 still carry
-the crash. Main and 2.11.0-alpha.2 do not.
+the crash. Main and 2.11.0-alpha.2 do not. Amended the same day: the release smoke test now sends a video and runs on
+API 29 as well, which reverses the third rejected alternative below.
 
 **What was observed.** Play reported a `NoClassDefFoundError: android.media.metrics.LogSessionId` on 2.10.1
 (versionCode 34), Android 11, on 2026-10-31. Retraced, it is `VideoTranscoder.export` → Media3 `Transformer.start` →
@@ -63,5 +64,27 @@ only reached on the newer API) still fails the gate. Before raising the budget, 
 site has to be written into the script's header, as `dex-bitmap-gate.sh` does. Retrace is approximate: R8 reuses short
 names across overloads and merges lambda classes, so a hit can name a `$$ExternalSyntheticLambda` frame with line 0.
 Read the dexdump to be sure (ADR 051). The gate scans the APK, not the Play bundle, which comes from the same R8 run
-(the `r8-mapping-sources` check, 2026-10-30). 2.10.x users on Android 10 and 11 keep the crash until 2.11.0 ships or a
+(compared on 2.10.0's build, 2026-10-30). 2.10.x users on Android 10 and 11 keep the crash until 2.11.0 ships or a
 2.10.2 hotfix pins the three classes.
+
+## Amendment 2026-11-01 — the smoke test sends a video on API 29 too
+
+The gate covers one shape across the whole dex. It cannot see the rest of what R8 can break, and that only shows on
+an old API: a class merged differently, an API-modelling miss, something nobody has seen yet. So
+`scripts/release-smoke.py` gains a seventh step, and the release skill's CI mirror runs the script twice. It runs once
+on the current AVD and once on `Knit_API29`, an x86_64 `android-29` AVD that `emulator-up.sh --avd` boots beside the
+current one and stops afterwards. `distribution.md` asks for both runs before an alpha's tag.
+
+The step pushes `scripts/fixtures/smoke-video.mp4` (3 s, 640×360 H.264 Baseline and AAC, 100 KB) to `Movies/`, finds
+it in MediaStore, and shares that `content://` item into Knit with `ACTION_SEND`. It picks Nearby, waits for the
+re-encode to stage, sends, and waits for the video bubble. Two harness traps shaped it. A `file://` stream in Knit's
+`Android/data` folder passed on API 29, but on API 30+ the folder the shell creates is the shell's, and Knit gets
+EACCES. `am start --grant-read-uri-permission` grants nothing for an `EXTRA_STREAM`, because `am` does not copy the
+stream into ClipData as an app's `startActivity` does, so the URI goes in as the intent's data too. The staged video
+is found by its Remove button, because `chat_staged_video` is newer than 2.10 and the mirror runs the script on a
+hotfix branch's build. Onboarding's radio grants follow `requiredRadioPermissions`' API tiers: location below 31.
+
+Checked 2026-11-01: 2.10.1 fails at step 7 on API 29 with Play's stack (`k94.m`, pc 72, `LogSessionId`), and
+2.11.0-alpha.2 passes on API 29 and API 37. The runs found a separate bug on main: a shared stream Knit cannot read
+crashes the app (`FileNotFoundException` from `decodeOrientedBounded`, or a `SecurityException`) instead of failing
+the attach as unreadable.
