@@ -47,6 +47,11 @@ class RatchetSessions(
     // A committed open that moved a session back to our own abandoned init (rule C, ADR 2026-10.4mjm): the DI counts it
     // (`MeshMetrics.onRatchetReclaimed`, the STATE dump's `ratchetSwappedBack`), the lab's oracle that the swap ran.
     private val onReclaimed: (String) -> Unit = {},
+    // The one-minute floor on a flagged reset ([RESET_REPLACEMENT_MIN_INTERVAL_MS]), both as we apply it to a peer's reset
+    // and as we model the peer's when we send ours: one number, so the two halves agree. Production takes the constant;
+    // `mesh/lab` shortens it for a scenario that must outwait it, since the open path stamps it on the wall clock. Read on
+    // every use, so a unit test can hold the full minute while a reset is refused and then open it without waiting.
+    private val resetFloorMs: () -> Long = { RESET_REPLACEMENT_MIN_INTERVAL_MS },
 ) {
     /**
      * One critical section, in the one global order: transaction OUTER, [mutex] INNER. Every locked
@@ -126,6 +131,42 @@ class RatchetSessions(
      */
     private val confirmedAt = HashMap<String, Long>()
 
+    /**
+     * When the peer took an init of ours **as a replacement** (per peer, in memory; amendment 2026-11-01 to ADR
+     * 2026-09.qerd, #251): stamped beside [confirmedAt] when the answered init was a reset or a marker, a rule-C reclaim,
+     * or the winner of a race whose losing init we had resolved. Each of those replaced a session the peer held, and its
+     * adoption started the peer's one-minute floor no later than it sealed the answer. [sealResetDm] declines every cause
+     * but [ResetCause.AFTER_WIPE] inside it, whatever our role is now. A first contact the peer *established* stamps
+     * nothing: that starts no floor (qerd's `ON_DEMAND` exemption). A restart forgets it, which costs only the floor we had
+     * before it existed; a reset that still lands inside the peer's floor is the receiver's to re-open (ADR 2026-11.sfms).
+     */
+    private val replacedAt = HashMap<String, Long>()
+
+    /**
+     * Per peer, a count of the root changes this facade committed (in memory): a replacement or race adopted, a rule-C
+     * reclaim, our own re-root, a forget. The pipeline stamps a floored reset it holds with the value it read before the
+     * open (ADR 2026-11.sfms) and drops the hold once it moves — an era changed under it, and the held init may name a
+     * root the peer has since left. A clock-free "has anything moved".
+     */
+    private val rootGenerations = HashMap<String, Long>()
+
+    private fun bumpRootGeneration(peerId: String) {
+        synchronized(rootGenerations) { rootGenerations[peerId] = (rootGenerations[peerId] ?: 0L) + 1 }
+    }
+
+    /** [rootGenerations] for [peerId]: 0 until its first root change in this process. Lock-free; never touches the store. */
+    fun rootGeneration(peerId: String): Long = synchronized(rootGenerations) { rootGenerations[peerId] ?: 0L }
+
+    /**
+     * Whether a `FLAG_RESET` init from [peerId] would be adopted at [now] as far as our floor goes — [now] on the clock the
+     * open path stamps it with ([commitOpen]'s, `InboundPipeline`'s wall clock), never another. The re-open of a floored
+     * reset asks this before it re-delivers the frame (ADR 2026-11.sfms).
+     */
+    fun resetFloorOpen(
+        peerId: String,
+        now: Long,
+    ): Boolean = synchronized(lastReplacementAt) { now - (lastReplacementAt[peerId] ?: 0L) >= resetFloorMs() }
+
     /** Maps the wire header DTO to the engine's wire-agnostic mirror. */
     private fun headerOf(r: RatchetHeader): RatchetEngine.FrameHeader =
         RatchetEngine.FrameHeader(
@@ -170,7 +211,7 @@ class RatchetSessions(
                 synchronized(lastReplacementAt) {
                     val floor =
                         if (header.flags and RatchetHeader.FLAG_RESET != 0) {
-                            RESET_REPLACEMENT_MIN_INTERVAL_MS
+                            resetFloorMs()
                         } else {
                             REPLACEMENT_MIN_INTERVAL_MS
                         }
@@ -238,11 +279,15 @@ class RatchetSessions(
                     // the session is fresh, old failures are moot.
                     synchronized(lastReplacementAt) { lastReplacementAt[peerId] = now }
                     synchronized(undecryptable) { undecryptable.remove(peerId) }
+                    bumpRootGeneration(peerId)
                 }
                 // A reclaim (rule C) is our init answered too: the peer adopted it, as a replacement of the root we lost
                 // to, no later than it sealed this frame, so its floor runs as after any answer.
                 if (answeredOurInit(ctx.session, outcome.delta.session) || outcome.delta.reclaimed) {
                     synchronized(confirmedAt) { confirmedAt[peerId] = now }
+                    if (outcome.delta.reclaimed || peerReplacedWith(checkNotNull(ctx.session))) {
+                        synchronized(replacedAt) { replacedAt[peerId] = now }
+                    }
                 }
                 if (outcome.delta.reclaimed) {
                     log("reclaimed our own init with $peerId: the peer sealed under it as responder (ADR 2026-10.4mjm)")
@@ -515,6 +560,11 @@ class RatchetSessions(
      *   init was a replacement and started its floor — no later than it sealed the answer. The heuristic fires
      *   again on the next failure. An on-demand reset has no such evidence (on first contact the peer
      *   *established*, which starts no floor) and goes out.
+     * - **our own init, answered under a minute ago, which the peer took as a replacement** ([replacedAt]: a reset, a
+     *   marker, a rule-C reclaim, or a race we won): declined for every cause but [ResetCause.AFTER_WIPE], whatever our
+     *   role is now (amendment 2026-11-01 to ADR 2026-09.qerd, #251). The peer replaced its session to take it, and that
+     *   started its floor: a second root now would drop there as `DUPLICATE` on the first one's consumed `se = 1 n = 0`
+     *   row, while we sat unconfirmed with every confirmed-only path shut.
      * - **[ResetCause.AFTER_WIPE]** (the first start after a backup restore, whose ratchet tables came back
      *   empty): any session present was made since the wipe, so it only needs the marker — declined when a
      *   reset already went on it, marked otherwise, re-rooted only past a pending init against a prekey the
@@ -568,6 +618,16 @@ class RatchetSessions(
         return result
     }
 
+    /**
+     * Whether the peer, answering our init [was] held, took it as a **replacement** of a session of its own — so its reset
+     * floor started (amendment to ADR 2026-09.qerd, #251). Judged on our own row as the answer lands, our clock and our
+     * session: the init was a reset or a marker (`resetPlan`'s own test: a stamp at or past `establishedAt`; a plain
+     * `sealDm` init leaves it 0), or we had resolved the peer's own init and won the race, which the peer resolves by
+     * adopting ours and purging. A first contact the peer established is neither.
+     */
+    private fun peerReplacedWith(was: RatchetEngine.SessionState): Boolean =
+        (was.lastResetSentAt > 0L && was.lastResetSentAt >= was.establishedAt) || was.peerInitEphPub != null
+
     /** Our own init answered — not a race lost to the peer's, which also confirms us but as responder. */
     private fun answeredOurInit(
         was: RatchetEngine.SessionState?,
@@ -592,18 +652,47 @@ class RatchetSessions(
         if (pendingInit) {
             // initiate() stamps establishedAt with the same `now` a reset stamps; a plain sealDm init leaves 0.
             if (old.lastResetSentAt < old.establishedAt) return ResetPlan.Mark
-            return if (now - old.lastResetSentAt < RESET_REPLACEMENT_MIN_INTERVAL_MS) {
+            return if (now - old.lastResetSentAt < resetFloorMs()) {
                 ResetPlan.Decline("our reset is still on its way")
             } else {
                 ResetPlan.ReRoot
             }
         }
-        val answeredAt = synchronized(confirmedAt) { confirmedAt[peerId] }
-        val insideFloor = answeredAt != null && now - answeredAt < RESET_REPLACEMENT_MIN_INTERVAL_MS
-        if (cause == ResetCause.UNREADABLE && old.weAreInitiator && insideFloor) {
-            return ResetPlan.Decline("the peer adopted our init under a minute ago")
+        return answeredPlan(peerId, old, now, cause)
+    }
+
+    /** [resetPlan] past our own pending init: the floors our init's answer started at the peer. Runs under the lock. */
+    private fun answeredPlan(
+        peerId: String,
+        old: RatchetEngine.SessionState,
+        now: Long,
+        cause: ResetCause,
+    ): ResetPlan =
+        when {
+            cause == ResetCause.UNREADABLE && old.weAreInitiator && insideFloorOf(confirmedAt, peerId, now) -> {
+                ResetPlan.Decline("the peer adopted our init under a minute ago")
+            }
+
+            // The peer replaced its session with an init of ours under a minute ago: its floor refuses any new root,
+            // whatever cause asks and whatever our role is now (#251); the on-demand exemption is a first contact's alone.
+            // After the rule above, so a case it already decides keeps its reason (the ratchet vectors pin it).
+            insideFloorOf(replacedAt, peerId, now) -> {
+                ResetPlan.Decline("the peer adopted our reset under a minute ago")
+            }
+
+            else -> {
+                ResetPlan.ReRoot
+            }
         }
-        return ResetPlan.ReRoot
+
+    /** Whether [stamps] (one of the in-memory answer stamps) holds one for [peerId] inside the reset floor at [now]. */
+    private fun insideFloorOf(
+        stamps: HashMap<String, Long>,
+        peerId: String,
+        now: Long,
+    ): Boolean {
+        val at = synchronized(stamps) { stamps[peerId] } ?: return false
+        return now - at < resetFloorMs()
     }
 
     /** The reset marker under [old], its root untouched: stamped like any reset, never purged. Runs under the lock. */
@@ -661,6 +750,7 @@ class RatchetSessions(
         synchronized(lastResetSentAt) { lastResetSentAt[peerId] = now }
         synchronized(undecryptable) { undecryptable.remove(peerId) }
         synchronized(confirmedAt) { confirmedAt.remove(peerId) }
+        bumpRootGeneration(peerId)
         return ResetSeal.Sealed(resetEnvelope(sealed, RatchetHeader.FLAG_RESET), reRooted = true)
     }
 
@@ -795,6 +885,8 @@ class RatchetSessions(
                 before = scopeView(state)
                 if (state != null) store.deletePeer(peerId)
                 synchronized(confirmedAt) { confirmedAt.remove(peerId) }
+                synchronized(replacedAt) { replacedAt.remove(peerId) }
+                bumpRootGeneration(peerId)
                 state != null
             }
         if (had) reportRootChange(peerId, before, after = null)
@@ -971,6 +1063,10 @@ class RatchetSessions(
          * re-establish, not an incidental init. Short enough that genuine recovery is never refused (the
          * sender's own 6 h floor already rate-limits it), long enough to bound the churn a peer ignoring
          * that floor can cost us.
+         *
+         * The sender models it before it mints a root ([sealResetDm], ADR 2026-09.qerd and its 2026-11-01 amendment), and a
+         * flagged init it refuses for an era we never held is held and re-opened once it ends, never dropped as a
+         * duplicate (`RatchetEngine.OpenOutcome.Failed.RESET_FLOORED`, ADR 2026-11.sfms). The floor itself is unchanged.
          */
         const val RESET_REPLACEMENT_MIN_INTERVAL_MS = 60_000L
 

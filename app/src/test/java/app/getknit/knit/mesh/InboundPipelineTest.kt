@@ -299,6 +299,13 @@ class InboundPipelineTest {
         // Whether the build takes direct links (ADR 2026-10.a5yj); only the `link` frames read it.
         linksWired: Boolean = true,
     ) {
+        /**
+         * The facade's one-minute reset floor, read on every use. The open path stamps the floor on the wall clock, so a
+         * test that needs it to end (the floored reset's re-open, ADR 2026-11.sfms) holds the full minute while a reset is
+         * refused and then sets this to 0, rather than racing a short floor against the scheduler.
+         */
+        @Volatile
+        var floorMs = RatchetSessions.RESET_REPLACEMENT_MIN_INTERVAL_MS
         val transport = FakeLoopTransport(self.nodeId)
         val metrics = MeshMetrics()
         val forwardStore = FakeForwardStore()
@@ -398,6 +405,7 @@ class InboundPipelineTest {
                 spkPrivFor = { id -> if (holdsSpk && id == SPK_ID) selfSpk.priv else null },
                 engine = ratchetEngine,
                 mutex = ratchetMutex,
+                resetFloorMs = { floorMs },
             ).let { if (spyRatchet) spyk(it) else it }
 
         /** `(sender, payload)` for every gossiped root the pipeline asked MeshManager to adopt, and what it answers. */
@@ -7445,6 +7453,140 @@ class InboundPipelineTest {
                         ?.init != null
                 },
             )
+        }
+
+    // --- #251: a peer's reset our replacement floor refuses is held and re-opened (ADR 2026-11.sfms) ---
+
+    /** The header of a peer's reset as `sealResetDm` writes it: the init it carries, flagged. */
+    private fun flagged(h: RatchetHeader): RatchetHeader =
+        RatchetHeader(se = h.se, ek = h.ek, pe = h.pe, n = h.n, init = h.init, flags = RatchetHeader.FLAG_RESET)
+
+    /**
+     * Alice and we share a session (her first contact), then she resets and we adopt it, which starts our one-minute
+     * floor. Returns her second reset's author, re-initiated at [secondAt] on her clock: its frames carry its init.
+     */
+    private suspend fun Rig.adoptedOneResetFrom(
+        alice: Party,
+        secondAt: Long = 2_000L,
+    ): V2Author {
+        pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+        deliver(alice, V2Author(alice, this).dm("first-contact", "hello"))
+        val first = V2Author(alice, this, at = 1_000L)
+        deliver(alice, first.dm("reset-1", "", ctl = MessageContent.CTL_SESSION_RESET, sentAt = 1_000L, mutateHeader = ::flagged))
+        assertEquals("the first reset is adopted", 1_000L, ratchetStore.session(alice.nodeId)?.establishedAt)
+        return V2Author(alice, this, at = secondAt)
+    }
+
+    /** Ends our reset floor for [peer] at once (the rig's [Rig.floorMs] to 0); true when the facade then reads it open. */
+    private fun Rig.endFloor(peer: Party): Boolean {
+        floorMs = 0L
+        return ratchet.resetFloorOpen(peer.nodeId, System.currentTimeMillis())
+    }
+
+    /**
+     * #251: Alice resets again a few seconds after we adopted her first. Her numbering restarted, so the second reset's
+     * `se = 1 n = 0` meets the row the first left, and inside our floor it used to drop as a duplicate that nothing ever
+     * re-ran. It is floored now, counted as such, and held; her follow-ups under it — her own unflagged init on each, which
+     * we cannot open until we adopt it — are explained by the hold and never walk our reset heuristic.
+     */
+    @Test
+    fun aResetInsideOurFloorIsHeldNeverADuplicateAndItsFollowUpsAreNoEvidence() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val second = rig.adoptedOneResetFrom(alice)
+            val duplicates = rig.drops(DropReason.RATCHET_DUPLICATE)
+
+            rig.deliver(alice, second.dm("reset-2", "", ctl = MessageContent.CTL_SESSION_RESET, sentAt = 2_000L, mutateHeader = ::flagged))
+            assertEquals(1L, rig.drops(DropReason.RATCHET_RESET_FLOORED))
+            assertEquals("never a duplicate", duplicates, rig.drops(DropReason.RATCHET_DUPLICATE))
+            assertEquals("refused: still on her first reset", 1_000L, rig.ratchetStore.session(alice.nodeId)?.establishedAt)
+            assertTrue("held, not due inside the floor", rig.pipeline.dueFlooredResets().isEmpty())
+
+            (1..RatchetSessions.RESET_DISTINCT_FRAMES).forEach {
+                rig.deliver(
+                    alice,
+                    second.dm("after-$it", "after the reset $it", sentAt = 3_000L),
+                )
+            }
+            assertEquals(RatchetSessions.RESET_DISTINCT_FRAMES.toLong(), rig.drops(DropReason.RATCHET_AEAD_FAIL))
+            assertEquals("her follow-ups ride the reset we hold: no reset of ours", 0, rig.resetsSent())
+        }
+
+    /**
+     * Once the floor ends the held reset is due, and re-delivered as `MeshManager.reopenFlooredResets` does it — whole,
+     * `relay = false` — it is adopted and runs the reset's recovery. Her follow-up then opens on replay.
+     */
+    @Test
+    fun aHeldResetIsDueOnceTheFloorEndsAndIsAdoptedWhenReDelivered() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val second = rig.adoptedOneResetFrom(alice)
+            val reset = second.dm("reset-2", "", ctl = MessageContent.CTL_SESSION_RESET, sentAt = 2_000L, mutateHeader = ::flagged)
+            rig.deliver(alice, reset)
+            val followUp = second.dm("after", "after the reset", sentAt = 3_000L)
+            rig.deliver(alice, followUp)
+            assertEquals(1L, rig.drops(DropReason.RATCHET_RESET_FLOORED))
+            assertFalse(rig.msgMap.containsKey("after"))
+            rig.resealed.clear()
+
+            assertTrue("the floor never ended", rig.endFloor(alice))
+            val due = rig.pipeline.dueFlooredResets().single()
+            assertEquals("reset-2", due.frame.env.id)
+            assertTrue("taken out of the hold", rig.pipeline.dueFlooredResets().isEmpty())
+
+            rig.pipeline.onDeliver(
+                WireEnvelope(relay = false, sig = due.frame.wire.sig, signed = due.frame.wire.signed),
+                due.frame.env,
+                due.frame.fromNodeId,
+            )
+            val session = checkNotNull(rig.ratchetStore.session(alice.nodeId))
+            assertEquals("adopted", 2_000L, session.establishedAt)
+            assertArrayEquals(due.initEph, session.peerInitEphPub)
+            assertEquals("the reset's recovery ran", listOf(alice.nodeId), rig.resealed)
+
+            rig.pipeline.onDeliver(alice.sign(followUp, relay = false), followUp, alice.nodeId)
+            assertEquals("after the reset", rig.msgMap["after"]?.body)
+        }
+
+    /** Any root change for the peer drops the hold: our own reset since, here, so the held init may name a root it left. */
+    @Test
+    fun aHeldResetIsDroppedOnceTheRootMoves() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val second = rig.adoptedOneResetFrom(alice)
+            rig.deliver(alice, second.dm("reset-2", "", ctl = MessageContent.CTL_SESSION_RESET, sentAt = 2_000L, mutateHeader = ::flagged))
+            assertEquals(1L, rig.drops(DropReason.RATCHET_RESET_FLOORED))
+
+            assertNull("our own reset went out", rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, System.currentTimeMillis()))
+            assertTrue("the floor never ended", rig.endFloor(alice))
+            assertTrue("dropped, never re-opened", rig.pipeline.dueFlooredResets().isEmpty())
+        }
+
+    /** The flag rides outside a v2 frame's AEAD: a frame no signature vouches for is counted and holds nothing. */
+    @Test
+    fun anUnsignedFlooredResetHoldsNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val second = rig.adoptedOneResetFrom(alice)
+            val env =
+                second.dm(
+                    "reset-2",
+                    "",
+                    ctl = MessageContent.CTL_RECEIPT,
+                    ack = FrameId.new(),
+                    sentAt = 2_000L,
+                    v3 = true,
+                    mutateHeader = ::flagged,
+                )
+            rig.pipeline.onDeliver(unsigned(env), env, alice.nodeId)
+            assertEquals(1L, rig.drops(DropReason.RATCHET_RESET_FLOORED))
+
+            assertTrue("the floor never ended", rig.endFloor(alice))
+            assertTrue("nothing was held", rig.pipeline.dueFlooredResets().isEmpty())
         }
 
     /**

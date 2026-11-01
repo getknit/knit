@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.relay.coveredLabelsOf
+import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -391,6 +392,81 @@ class ResetOverRelayLabTest {
             assertEquals(oldRoot, large.session(small)?.rootHash)
         }
 
+    /**
+     * #251's receiver half (ADR 2026-11.sfms): a reset that still lands inside the peer's floor is held and re-opened when
+     * the floor ends. Alice's first reset is held back (she is apart from Bob); her second re-roots once qerd's decline of
+     * a second root over her own unanswered one has passed. Both reach Bob in one batch, the first just ahead of the
+     * second, followed by three DMs she sealed under the second: Bob adopts the first, which starts his floor, and refuses the
+     * second inside it — before, as a duplicate on the first reset's `se = 1 n = 0` row, never re-run, and Alice sat
+     * unconfirmed. Now it is floored and held, the DMs — enough distinct ids to fire Bob's own reset if counted — are
+     * explained by the hold, and once the floor ends Bob re-opens the reset, adopts it, and replays them from his custody.
+     *
+     * Radio, not the relay: the first reset is no longer pending once the second re-roots, so it rides no scope
+     * (`ScopeFrames.mayRefill`), and only a held pipe lands the two in this order. No board, so no DM can reach Bob
+     * compact ahead of the reset that opens it. The floor is shortened ([LabLimits.resetFloorMs]): it runs on the wall
+     * clock, and the poll drives the re-open alone ([LabNode.reopenFlooredResets]), not the whole 60 s tick.
+     */
+    @Test
+    fun aResetBobsFloorRefusedIsReOpenedWhenTheFloorEndsAndItsDmLands() =
+        runBlocking {
+            val limits = LabLimits(resetFloorMs = RESET_FLOOR_MS)
+            val alice = lab.node("alice", limits, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits, board = false).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { dmThread(alice, bob)(it) }
+
+            lab.unlink(alice, bob)
+            val beforeFirst = alice.custodyIds()
+            assertEquals("the first reset went out", null, alice.resetSession(bob))
+            val first = (alice.custodyIds() - beforeFirst).single()
+            assertEquals("our reset is still on its way", alice.resetSession(bob))
+            lab.clock.advance(RESET_FLOOR_MS)
+            val beforeSecond = alice.custodyIds()
+            assertEquals("the second reset went out", null, alice.resetSession(bob))
+            val second = (alice.custodyIds() - beforeSecond).single()
+            val newRoot = checkNotNull(alice.session(bob)).rootHash
+            // Three, so that counted as reset evidence they would cross Bob's RESET_DISTINCT_FRAMES and fire his own reset:
+            // the held reset's follow-ups must be explained by the hold, never counted (FlooredResets.explains).
+            val underSecond = (1..RatchetSessions.RESET_DISTINCT_FRAMES).map { "sealed under the second reset $it" }
+            underSecond.forEach { assertTrue(alice.sendDm(bob, it)) }
+            val dms = underSecond.map { alice.ownMessageId(alice.dmWith(bob), it) }
+            val order = listOf(first, second) + dms
+
+            lab.link(alice, bob) { alice.transport.hold(bob.transport) }
+            lab.await(order.size) {
+                alice.transport
+                    .held(bob.transport)
+                    .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                    .filter { it in order }
+                    .distinct()
+                    .size
+            }
+            alice.transport.release(bob.transport) { batch ->
+                val (ours, rest) = batch.partition { WireCodec.decodeEnvelope(it.signed)?.id in order }
+                rest + ours.sortedBy { order.indexOf(WireCodec.decodeEnvelope(it.signed)?.id) }
+            }
+            lab.await(1) { bob.drops(DropReason.RATCHET_RESET_FLOORED).toInt() }
+            assertEquals("the second reset was refused, not adopted", false, bob.session(alice)?.rootHash == newRoot)
+
+            assertTrue(
+                "bob never re-opened the floored reset: bob on ${bob.session(alice)?.rootHash}, alice on $newRoot",
+                lab.tryAwait(1, timeoutMs = RESET_FLOOR_MS + MeshLab.AWAIT_MS) {
+                    bob.reopenFlooredResets()
+                    if (bob.session(alice)?.rootHash == newRoot) 1 else 0
+                },
+            )
+            // The lab's rows carry no arrival order a scenario can read apart from the lab clock, so the backlog replay's
+            // oldest-first walk is asserted by its outcome: every one of the three opens.
+            lab.await(underSecond.size) { bob.decrypted(bob.dmWith(alice)).count { it.second in underSecond } }
+            lab.assertConverged(listOf(alice, bob), atLeast = 2 + underSecond.size) { dmThread(alice, bob)(it) }
+            assertEquals("on the second reset's root", newRoot, bob.session(alice)?.rootHash)
+            assertEquals("bob never reset back", 0L, bob.session(alice)?.lastResetSentAt)
+        }
+
     /** Whether this node's thread with [peer] reads covered by the relays, by the rule the chat's notice reads. */
     private fun LabNode.relayCovers(peer: LabNode): Boolean = peer.nodeId in coveredLabelsOf(manager.spoolStatus().filter { it.connected })
 
@@ -409,5 +485,8 @@ class ResetOverRelayLabTest {
     private companion object {
         /** Past the mesh custody TTL (24 h), inside the spool's 48 h. */
         const val CUSTODY_PAST_MS = 25 * 60 * 60_000L
+
+        /** The reset floor the re-open scenario waits out on the wall clock, in place of the field's minute. */
+        const val RESET_FLOOR_MS = 10_000L
     }
 }

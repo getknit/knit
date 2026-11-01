@@ -45,3 +45,7 @@ KNIT_WRITE_VECTORS=1 ./gradlew :app:testDebugUnitTest --rerun \
 - Verify a signature; never compare one. CryptoKit randomizes Ed25519 signatures, so two valid signatures
   over the same bytes can differ.
 - The identities' private keys are here so every port can open the DMs. They are test keys and nothing else.
+- `ratchet-v1.json`'s `floorsBefore` (in `transcriptFormat`) lists the in-memory floors as of its last
+  regeneration, and is not exhaustive until the next: the 2026-11-01 amendment to ADR 2026-09.qerd added
+  `replacedAt` (an answer to an init the peer took as a replacement) and ADR 2026-11.sfms a held, floored peer
+  reset, and no transcript step exercises either. `docs/FORWARD_SECRECY_RATCHET.md` §7 is the full rule.

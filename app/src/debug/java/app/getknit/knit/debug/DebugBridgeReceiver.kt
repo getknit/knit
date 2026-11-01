@@ -276,6 +276,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   heuristic. Every gate in the recovery path returns silently, so a peer we hold no prekey for, one
  *   inside its 6 h floor, and one whose heuristic has not counted three distinct failures all look the
  *   same from outside; the dump says which, and the force unwedges a pair that broke before a fix shipped.
+ *   The force never passes the peer's one-minute replacement floor (ADR 2026-09.qerd and its 2026-11-01
+ *   amendment): inside it, after our own reset or an answer the peer took as a replacement, it is declined
+ *   and `declined` says why; force again after the minute.
  * - [ACTION_NANFAIL] — arms `--ei count N` Wi-Fi Aware attaches to take their failure path without ever
  *   reaching `mgr.attach` (0 disarms). The lab stand-in for a chipset that cannot produce a NAN interface;
  *   see `NanFaultInjector` for what it does and does not reproduce.
@@ -1965,7 +1968,8 @@ class DebugBridgeReceiver :
 
     /**
      * Dumps the DM ratchet's per-peer state and, with `--es reset <peerNodeId>`, forces a session reset
-     * past the heuristic that normally guards it.
+     * past the heuristic that normally guards it — never past the peer's one-minute replacement floor, which
+     * `declined` names (ADR 2026-09.qerd's 2026-11-01 amendment).
      *
      * Both halves exist because every gate in the recovery path returns **silently**. A peer we hold no
      * prekey for, a peer whose reset floor has not elapsed, and a peer whose heuristic simply has not

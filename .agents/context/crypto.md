@@ -47,14 +47,18 @@ LoRa plane (2026-09.ggq4).
   write that rolls back starts a replacement floor for a frame that still opens as new.
 - **When touching `RatchetEngine.touch`, `Ladder.openFresh`, `resolveSession` / `resolveRace` / `isRemnantOf` /
   `remnantCandidates`, `peerInitEphPub`, `allowReplacement`, `REPLACEMENT_MIN_INTERVAL_MS` /
-  `RESET_REPLACEMENT_MIN_INTERVAL_MS`, or `IntroSync.onPeerFrameOpened`:** READ ADR 2026-09.pz9g, ADR 023 and FSR §7.
+  `RESET_REPLACEMENT_MIN_INTERVAL_MS` / `RatchetSessions.resetFloorMs`, or `IntroSync.onPeerFrameOpened`:** READ ADR
+  2026-09.pz9g, ADR 023, ADR 2026-11.sfms (draft) and FSR §7.
   The race winner is the init whose initiator has the smaller node id, never the earlier stamp; a resolved init is
   remembered by its ephemeral, so a re-served copy is inert. A frame moves the era — DH-base adoption,
   `highestPeAcked`, an initiator's confirmation — only when it derives a fresh epoch under the active root (the ADR's
   `openNewEpoch` is today's `Ladder.openFresh`); a late race loser's root is a trailing read-only candidate that
   records nothing and is never anchored; `FLAG_RESET` is adopted or refused, never read without adoption. Whoever
   abandons a root era drops the receive state tied to it, at every site an era changes. An init is answered once
-  per init, not once per peer per hour. Regression: `RatchetEngineTest`'s pz9g cases, `IntroSyncTest`,
+  per init, not once per peer per hour. A flagged init the floor alone refuses (`allowReplacement` false) is
+  `RESET_FLOORED` only when nothing opens and its root is none we hold (sfms); the floor itself is unchanged, one
+  number for the floor we apply and the one we model before we send (`resetFloorMs`, the lab's `LabLimits` knob).
+  Regression: `RatchetEngineTest`'s pz9g cases, `IntroSyncTest`,
   `SessionLabTest`, `CustodyLabTest.bothSidesSendWhileApartAndMerge`.
 - **When touching `RatchetEngine.initiate` / `seal`'s new-epoch base, `RatchetEngine.prekeyBase`, `SessionState.peerBasePub`,
   or what `RatchetSessions.sealDm` / `sealResetDm` pass as the peer's prekey:** READ FSR §4 and §7, and ADR 2026-09.pz9g. Every
@@ -75,12 +79,15 @@ LoRa plane (2026-09.ggq4).
   ended the neighbour watcher; a whole-message refusal stranded every group the member was in.
 - **When touching `RESET_TRIGGERING_DROPS`, `InboundPipeline.onRatchetFailure` / `isLiveEvidence` /
   `maybeRequestReset`, `RatchetSessions.RESET_DISTINCT_FRAMES` / `RESET_MIN_INTERVAL_MS` / `STRANDED_TAIL_MS`,
-  `headerSane`, or a ratchet `DropReason`:** READ ADR 023, ADR 024, ADR 026 and ADR 053. The heuristic counts three
+  `headerSane`, or a ratchet `DropReason`:** READ ADR 023, ADR 024, ADR 026, ADR 053 and ADR 2026-11.sfms (draft). The heuristic counts three
   **distinct** frame ids of `NO_SESSION`, `EPOCH_GONE` or `AEAD_FAIL` from a pinned, signature-verified sender, each
   from the era it would abandon (exact when we responded; when we initiated, five minutes of skew, and past 48 h of
   session age the gate opens), and fires at most once per 6 h. `DUPLICATE` and `BAD_HEADER` never trigger:
   a consumed index proves the frame already opened, and a burst of duplicates is almost always a re-send cadence
-  bug (053's tick). A reset repairs the channel, never the backlog.
+  bug (053's tick). Nor does `RATCHET_RESET_FLOORED` (the peer asked to re-root inside our floor), and while its
+  frame is held a failing frame carrying the held init's ephemeral is the resetter's follow-up, gated ahead of
+  `noteUndecryptable` beside `isLiveEvidence` and `retiredBase` (sfms). A reset repairs the channel, never the
+  backlog.
 - **When touching `RatchetSessions.retiredBase` / `isRetiredBase`, `RatchetStore.lowestLocalEpoch`, or the
   `EPOCH_GONE` half of `maybeRequestReset`:** READ ADR 2026-10.9wvr, then ADR 027. An `EPOCH_GONE` whose `pe` is
   below the lowest local epoch number we hold **and** below `highestPeAcked` is doomed and never reaches
@@ -103,16 +110,30 @@ LoRa plane (2026-09.ggq4).
   chain and a skipped key carry the tag of the root that derived it, and each root candidate reads only its own: a
   reset restarts the resetter's numbering, and an old-era frame drained under `prevRoot` after the replacement's
   purge used to plant a chain the new era's frames of that number were judged against (#135). When nothing opens,
-  DUPLICATE outranks the rest but never stops the ladder early; a purging resolution still reads nothing stored.
+  DUPLICATE outranks the rest but never stops the ladder early, save `RESET_FLOORED`, which outranks it (ADR
+  2026-11.sfms: a flagged init is never read, so its frame's index proves nothing); a purging resolution still reads
+  nothing stored.
   Regression: `RatchetEngineTest`'s #135 cases, `RatchetSessionsResetTest`, `RatchetSoakTest`'s reset,
   `SessionLabTest.oldEraDmsReadAfterTheReset…`.
 - **When touching `RatchetSessions.sealResetDm`, `InboundPipeline.sendSessionReset` / `maybeRequestReset`,
-  `MeshManager.seedSendFloorOpen`, or anything else that sends a DM session reset:** READ ADR 2026-09.qerd and
-  `docs/FORWARD_SECRECY_RATCHET.md` §7. A reset the peer would refuse — a second root inside its one-minute
-  floor — is never sealed: over our own unanswered init it *marks* that init (the reset ctl under it, v2,
-  flagged) or declines, and on the heuristic's word over an init answered under a minute ago it declines.
+  `MeshManager.seedSendFloorOpen`, `RatchetSessions.replacedAt`, or anything else that sends a DM session reset:** READ
+  ADR 2026-09.qerd (with its 2026-11-01 amendment, draft) and `docs/FORWARD_SECRECY_RATCHET.md` §7. A reset the peer
+  would refuse — a second root inside its one-minute floor — is never sealed: over our own unanswered init it *marks*
+  that init (the reset ctl under it, v2, flagged) or declines, on the heuristic's word over an init answered under a
+  minute ago it declines, and inside a minute of an answer to an init the peer took as a *replacement* (`replacedAt`:
+  a reset or a marker, a rule-C reclaim, a race we won) it declines every cause but `AFTER_WIPE`, last, so the
+  vectors' wording for the heuristic's decline holds. A first contact the peer established stamps nothing.
   The group seed floor counts only sends under the pairwise root held now, never `force`. Regression:
   `RatchetSessionsResetTest`, and `RestoreLabTest` under `scripts/lab-chaos.sh`.
+- **When touching `FlooredResets`, `InboundPipeline.holdFlooredReset` / `dueFlooredResets`,
+  `MeshManager.reopenFlooredResets`, `RatchetSessions.rootGeneration` / `resetFloorOpen`, `OpenOutcome.Failed.RESET_FLOORED`
+  or `DropReason.RATCHET_RESET_FLOORED`:** READ ADR 2026-11.sfms (draft) and FSR §7. A peer reset our floor refused for
+  an era we never held is held whole (signed frames only), one per peer, the newest `sentAt` winning, and dropped on
+  any root change since the open (`rootGeneration`, read before the peek); the 60 s tick re-delivers it through
+  `onDeliver` (`relay = false`) once `resetFloorOpen` says so on the open path's wall clock, never `clock()`, and after
+  an adoption anchored on its ephemeral replays the resetter's rowless custodied DMs whose header carries that init,
+  oldest first. In memory: a restart loses it with the floor. Regression: `RatchetEngineTest`'s #251 cases,
+  `InboundPipelineTest`'s floored-reset cases, `ResetOverRelayLabTest.aResetBobsFloorRefusedIsReOpenedWhenTheFloorEndsAndItsDmLands`.
 - **When touching what a committed reset re-seals — `MeshManager.resealRecentDmsTo`, its second pass in
   `reofferToNeighbors`, `RESEAL_WINDOW_MS` / `ResetReseal.SECOND_PASS_MS`, or `SeenSet.reopen`:** READ ADR 2026-10.dmgw
   and FSR §7. The re-seal keeps the original id, so it reaches only what it meets live past each router's 10 min

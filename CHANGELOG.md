@@ -105,6 +105,9 @@ document:
   channel, setting the board up again in Knit turns it back off.
 - A portrait video waiting to be sent now shows its preview as a square, like a photo's. It used to be a
   narrow strip with its length broken over two lines and mostly covered by the remove button.
+- If a contact's phone reset your chat's encryption twice within a minute, Knit could miss the second reset,
+  and messages in that chat could stop getting through until the next reset. Knit now applies it a minute
+  later.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

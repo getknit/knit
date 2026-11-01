@@ -65,6 +65,15 @@ enum class DropReason {
      */
     RATCHET_AEAD_FAIL,
 
+    /**
+     * A v2 DM carrying a peer's `FLAG_RESET` init that our one-minute replacement floor refused, for a root we never held
+     * (`RatchetEngine.OpenOutcome.Failed.RESET_FLOORED`, ADR 2026-11.sfms, #251). Before it had its own reason it read as
+     * [RATCHET_DUPLICATE] — the reset restarts its sender's numbering, so its `se = 1 n = 0` met the previous reset's
+     * consumed row — and nothing ever re-ran it. Never reset-triggering: the peer is not diverged, it asked to re-root
+     * inside our floor; a signed one is held (`FlooredResets`) and re-opened when the floor ends.
+     */
+    RATCHET_RESET_FLOORED,
+
     /** A group frame CLAIMING US whose roster failed vetting (unverifiable founding set, smuggled
      *  member, non-founding sender, oversized roster) — see `InboundPipeline.vetRoster`. Frames for
      *  groups we simply aren't in are refused silently (that is every relayed foreign-group frame). */

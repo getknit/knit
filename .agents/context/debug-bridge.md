@@ -571,8 +571,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   "Not covered by relays yet" while looking otherwise healthy. The force is the escape hatch for a pair that
   wedged *before* a fix shipped — the recovery path only runs when the heuristic fires, and a stuck pair may
   not be able to produce countable failures at all (a re-served frame repeats one id and never advances the
-  distinct counter). Bypasses the floor, not the X3DH inputs: with no pinned prekey it still declines, and
-  says so in `declined`. `prevRootOwnInitAt` non-null means the peer's `prevRoot` is our own init lost to a race,
+  distinct counter). Bypasses the heuristic and its 6 h floor, never the peer's one-minute replacement floor nor
+  the X3DH inputs (ADR 2026-09.qerd): it declines, and says why in `declined`, with no pinned prekey, while our own
+  reset is unanswered and under a minute old (`our reset is still on its way`), and inside a minute of the peer
+  answering an init it took as a replacement — a reset of ours, a marker, a race we won (`the peer adopted our reset
+  under a minute ago`, the 2026-11-01 amendment, #251); force again after the minute. A peer reset this phone's floor
+  refused is counted as `RATCHET_RESET_FLOORED` in `STATE`'s drops and re-opened by the 60 s tick once the floor
+  ends (ADR 2026-11.sfms): the log lines `holding floored reset …` and `re-opening floored reset …` mark the two. `prevRootOwnInitAt` non-null means the peer's `prevRoot` is our own init lost to a race,
   which a fresh answer from the peer under it moves us back onto (rule C, ADR 2026-10.4mjm); `STATE`'s
   `ratchetSwappedBack` counts those moves, and the log line `reclaimed our own init with <peer>` marks each.
 - `…debug.MODEL` — dumps the on-device model **poison-pill** (ADR 037): the current build stamp, and per

@@ -208,6 +208,47 @@ class SessionLabTest {
         }
 
     /**
+     * #251 (amendment 2026-11-01 to ADR 2026-09.qerd): Alice forces a reset, Bob adopts it and answers, and Alice forces
+     * a second one at once. Bob *replaced* his session to take the first, which started his one-minute floor, so the
+     * second is declined and the pair stays on the first. Before, the second re-rooted, Bob refused it inside his floor
+     * and dropped it as a duplicate on the first reset's row, and Alice sat unconfirmed with nothing to re-run it. The
+     * lab clock is not moved: the open path stamps the floor on the wall clock, the reset path reads the lab's.
+     */
+    @Test
+    fun aSecondForcedResetRightAfterTheFirstWasAnsweredIsDeclined() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+
+            assertNull("alice's first reset went out", alice.resetSession(bob))
+            val firstRoot = checkNotNull(alice.session(bob)).rootHash
+            assertTrue(
+                "bob never adopted the first reset: bob on ${bob.session(alice)?.rootHash}, alice on $firstRoot",
+                lab.tryAwait(1) { if (bob.session(alice)?.rootHash == firstRoot) 1 else 0 },
+            )
+            assertTrue(
+                "alice never confirmed on bob's answer",
+                lab.tryAwait(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 },
+            )
+            val duplicates = bob.drops(DropReason.RATCHET_DUPLICATE)
+
+            assertEquals("the peer adopted our reset under a minute ago", alice.resetSession(bob))
+            assertEquals("still on the first reset's root", firstRoot, alice.session(bob)?.rootHash)
+
+            assertTrue(alice.sendDm(bob, "after the reset"))
+            assertTrue(bob.sendDm(alice, "heard it"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 4) { it.dmWith(if (it === alice) bob else alice) }
+            assertEquals("bob dropped no reset as a duplicate", duplicates, bob.drops(DropReason.RATCHET_DUPLICATE))
+            assertEquals("bob never reset back", 0L, bob.session(alice)?.lastResetSentAt)
+        }
+
+    /**
      * The previous scenario with the crossing it leaves to chance pinned (chaos seeds 2001/2003/2005): Alice reads
      * Bob's while-apart DMs under the root her reset retired, and her tick for them reaches Bob *before* her
      * custodied reset does. The open under the kept `prevRoot` must not confirm the replacement session (#87): a

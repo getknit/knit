@@ -86,6 +86,8 @@ class RatchetEngineTest {
             now: Long,
             resetRequested: Boolean = false,
             sentAt: Long? = null,
+            // The caller's replacement floor (`RatchetSessions.contextFor`): false while it runs.
+            allowReplacement: Boolean = true,
         ): OpenOutcome {
             val ctx =
                 RatchetEngine.OpenContext(
@@ -103,6 +105,7 @@ class RatchetEngineTest {
                             ?.let { if (it.pkid == spkId) spk.priv else retiredSpks[it.pkid]?.priv },
                     resetRequested = resetRequested,
                     sealedSinceLostRace = RatchetSessions.sealedSinceLostRace(session, sentAt),
+                    allowReplacement = allowReplacement,
                 )
             val outcome = engine.open(ctx, frame.header, frame.nonce, frame.ct, AAD, now)
             if (outcome is OpenOutcome.Opened) apply(outcome.delta, frame.header)
@@ -718,6 +721,95 @@ class RatchetEngineTest {
         // B, the adopter, replies. Its peerBaseEpoch is 0, so the frame carries pe=0 and no init.
         val back = a.open(b.seal("reply after adopting", NOW + 601_000), NOW + 601_000)
         assertEquals("reply after adopting", text(back))
+    }
+
+    // --- #251: a reset the replacement floor refuses (ADR 2026-11.sfms) ---
+
+    /** A confirmed pair where [resetter] reset once and the other side adopted it, starting its one-minute floor. */
+    private fun adoptedOneReset(): Pair<Side, Side> {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.open(a.seal("hello", NOW), NOW)
+        a.open(b.seal("hi", NOW), NOW)
+        assertEquals("reset", text(a.open(b.reset(NOW + 10_000), NOW + 10_000, resetRequested = true)))
+        return a to b
+    }
+
+    /**
+     * #251: the resetter resets again a few seconds after the first was adopted. Its numbering restarted, so the second
+     * reset's `se = 1 n = 0` meets the row the first reset's own `se = 1 n = 0` left, and inside the floor it used to read
+     * as DUPLICATE — the benign verdict, which nothing re-runs. Refused by the floor alone, for a root the receiver never
+     * held, it is its own verdict; once the floor ends the same frame is adopted.
+     */
+    @Test
+    fun aResetTheFloorRefusesForAnEraWeNeverHeldIsFlooredNeverDuplicate() {
+        val (a, b) = adoptedOneReset()
+        val root = checkNotNull(a.session).root
+
+        val second = b.reset(NOW + 13_000)
+        assertEquals("the restarted numbering meets the first reset's row", 1, second.header.se)
+        assertEquals(0, second.header.n)
+        val floored = a.open(second, NOW + 13_000, resetRequested = true, allowReplacement = false)
+        assertTrue("was $floored", floored === OpenOutcome.Failed.RESET_FLOORED)
+        assertArrayEquals("refused: nothing moved", root, checkNotNull(a.session).root)
+
+        assertEquals("reset", text(a.open(second, NOW + 71_000, resetRequested = true)))
+        assertArrayEquals(checkNotNull(b.session).root, checkNotNull(a.session).root)
+    }
+
+    /** Unflagged, the same init inside the hour-long incidental floor keeps its verdict: only a reset is held. */
+    @Test
+    fun anUnflaggedInitTheFloorRefusesKeepsItsVerdict() {
+        val (a, b) = adoptedOneReset()
+        val outcome = a.open(b.reset(NOW + 13_000), NOW + 13_000, allowReplacement = false)
+        assertTrue("was $outcome", outcome === OpenOutcome.Failed.DUPLICATE)
+    }
+
+    /** A re-serve of the reset we adopted is anchored by its ephemeral, inside the floor too: still a duplicate. */
+    @Test
+    fun anAdoptedResetsReServeInsideTheFloorStaysDuplicate() {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.open(a.seal("hello", NOW), NOW)
+        a.open(b.seal("hi", NOW), NOW)
+        val reset = b.reset(NOW + 10_000)
+        a.open(reset, NOW + 10_000, resetRequested = true)
+
+        val again = a.open(reset, NOW + 20_000, resetRequested = true, allowReplacement = false)
+        assertTrue("was $again", again === OpenOutcome.Failed.DUPLICATE)
+    }
+
+    /**
+     * The design pass's blocking case. Bob adopts Alice's reset, then re-roots inside the minute and Alice answers: Bob's
+     * own initiation dropped the anchor on Alice's reset and keeps its root as `prevRoot`. A re-entry of that reset (her
+     * clock ahead, so its `at` is past Bob's re-root), inside the floor, is an era Bob held and left — never floored, or
+     * its re-open would adopt a root Alice has left.
+     */
+    @Test
+    fun aReEntryOfAResetWeAdoptedAndLeftIsNeverFloored() {
+        val (bob, alice) = pair()
+        bob.initiate(NOW)
+        alice.open(bob.seal("hello", NOW), NOW)
+        bob.open(alice.seal("hi", NOW), NOW)
+        val aliceReset = alice.reset(NOW + 50_000) // her clock 40 s ahead of his
+        assertEquals("reset", text(bob.open(aliceReset, NOW + 10_000, resetRequested = true)))
+
+        assertEquals("reset", text(alice.open(bob.reset(NOW + 20_000), NOW + 20_000, resetRequested = true)))
+        assertEquals("answered", text(bob.open(alice.seal("answered", NOW + 21_000), NOW + 21_000)))
+        val bobs = checkNotNull(bob.session)
+        assertTrue(bobs.confirmed && bobs.weAreInitiator)
+        assertNull("bob's re-root dropped the anchor", bobs.peerInitEphPub)
+        assertTrue("precondition: her at is past his era", NOW + 50_000 > bobs.establishedAt)
+
+        // The first re-entry reads under the kept prevRoot (as before this change); the next meets the row that stored and
+        // nothing opens — the case the derivation check is for: the init derives that prevRoot, so a duplicate it stays.
+        val reEntry = bob.open(aliceReset, NOW + 30_000, resetRequested = true, allowReplacement = false)
+        assertTrue("never floored, was $reEntry", reEntry !== OpenOutcome.Failed.RESET_FLOORED)
+        assertEquals("read under the kept prevRoot", "reset", text(reEntry))
+        val again = bob.open(aliceReset, NOW + 31_000, resetRequested = true, allowReplacement = false)
+        assertTrue("was $again", again === OpenOutcome.Failed.DUPLICATE)
+        assertArrayEquals("still on his own root", bobs.root, checkNotNull(bob.session).root)
+        assertArrayEquals(checkNotNull(alice.session).root, checkNotNull(bob.session).root)
     }
 
     // --- #174: every pe = 0 epoch is based on the prekey its init names ---

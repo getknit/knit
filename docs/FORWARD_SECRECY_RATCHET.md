@@ -374,8 +374,8 @@ skipped-key path absorbs.
   own later reset counts as fresh and moves the loser onto a root the peer has since left — until the peer's flagged
   reset is adopted, minutes to an hour.
 - **A reset the peer would refuse is never sent** (ADR 2026-09.qerd). The receiver adopts a flagged init
-  only a minute after the last replacement it adopted from this peer, and drops a refused one as a
-  `DUPLICATE`; the sender has meanwhile purged the root the receiver is still on, and its own heuristic is
+  only a minute after the last replacement it adopted from this peer, and a build before ADR 2026-11.sfms
+  drops a refused one as a `DUPLICATE` (one since holds it and re-opens it, below); the sender has meanwhile purged the root the receiver is still on, and its own heuristic is
   floored for six hours. So the sender looks at the session it holds first. Over its **own init, still
   unconfirmed, against the peer's current prekey** it never mints a second root: a plain one (a first
   send's) is *marked* — the `CTL_SESSION_RESET` sealed under it, v2, `flags = RESET` on a header that still
@@ -391,6 +391,34 @@ skipped-key path absorbs.
   it answered the same init unmarked, since the marked frame may be the one the peer adopted. The group seed
   re-send floor counts only seeds sealed under the root held now, so the forced flush a reset triggers is
   never refused by a seed that went out under the root it replaced (`GROUP_FORWARD_SECRECY.md` §3).
+  **An init the peer took as a replacement starts its floor too** (2026-11-01 amendment to qerd, #251). When
+  the sender's own init is answered, it records `replacedAt` (in memory, its own clock) if the peer replaced a
+  session to take it: the init was a reset or a marker (`lastResetSentAt > 0` and `≥ establishedAt`), the
+  answer moved the sender back onto its own init (rule C, ADR 2026-10.4mjm), or the sender had resolved the
+  peer's own init and won that race (`peerInitEphPub` set). For a minute from `replacedAt` it declines every
+  reset but the restore's (`AFTER_WIPE`), whatever its role is by then; the heuristic's decline above keeps
+  its own wording where both apply. A first contact the peer *established* records nothing, so an on-demand
+  reset right after one still goes out. A restart forgets `replacedAt`.
+- **A reset the floor refuses is held and re-opened when the floor ends** (ADR 2026-11.sfms). The sender
+  cannot see the receiver's floor, which runs from the receiver's adoption: a reset delayed in custody or the
+  spool, a race the receiver lost unseen, a restart that forgot `replacedAt`, or an older build can still
+  land inside it. A `FLAG_RESET` init refused **by that floor alone** (newer `at`, an ephemeral never
+  resolved, the named signed prekey held) whose frame opens under nothing, and whose X3DH root
+  (`respond(init)`) is none the receiver holds — not the active root, not `prevRoot` (live or past its
+  drain), not a race's other root — is `RESET_FLOORED`: a verdict that outranks `DUPLICATE`, because a
+  flagged init is adopted or refused and never read, so its frame was never opened and its `se = 1 n = 0`
+  is no consumed index. An init that derives a root the receiver holds is an era it took and left (its own
+  re-root dropped the anchor) and keeps the ladder's verdict; re-opening it would adopt a root the peer has
+  left. `RESET_FLOORED` is never reset evidence. The receiver holds the signed frame whole, one per peer, the
+  newest by `sentAt` winning, with a count of the peer's root changes at the time; any root change since —
+  an adoption from that peer, a race, its own re-root — drops it. While held, a frame from that peer that
+  fails to open while carrying the held init's ephemeral (the resetter's follow-ups, sealed under the reset)
+  is not reset evidence. Once the floor is open, on the receiver's 60 s tick, the frame is re-delivered as
+  received (verified again, outside dedup and custody). Adopted — the session anchored on that ephemeral —
+  it runs the reset's recovery and the answer that confirms the resetter, and the receiver replays, oldest
+  first, the resetter's ratchet DMs to it still in its custody with no message row whose header carries that
+  init. A re-open that floors again holds again, so there is at most one re-open per floor. The hold is in
+  memory: a restart drops it, with the floor it waited on.
 
 ## 8. Export API (for the internet relay plane — consumer spec'd)
 

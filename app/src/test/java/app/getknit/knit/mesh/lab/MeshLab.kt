@@ -1162,6 +1162,14 @@ data class LabLimits(
      */
     val reofferIntervalMs: Long = MeshLab.REOFFER_INTERVAL_MS,
     /**
+     * The one-minute floor on a peer's flagged reset ([RatchetSessions.RESET_REPLACEMENT_MIN_INTERVAL_MS], ADR 023), as the
+     * node applies it and as it models its peer's before it sends a reset (ADR 2026-09.qerd). The field value by default.
+     * The open path stamps it on the wall clock, which a lab clock jump never moves, so a scenario that must outwait it
+     * (the re-open of a floored reset, ADR 2026-11.sfms) shortens it — on every node of the scenario, or the sender's model
+     * and the receiver's floor disagree.
+     */
+    val resetFloorMs: Long = RatchetSessions.RESET_REPLACEMENT_MIN_INTERVAL_MS,
+    /**
      * How long a held pipe's feed reads as live before it stalls ([MeshLab.FEED_STALL_MS]; ADR 2026-10.nsr7): a parked
      * ask waits that long behind it. Short by default: a held pipe is a feed that never ends, and only a scenario about
      * parking means to wait on one.
@@ -1804,6 +1812,7 @@ class LabNode internal constructor(
                         mutex = ratchetMutex,
                         transact = transactor,
                         onReclaimed = { metrics.onRatchetReclaimed() },
+                        resetFloorMs = { limits.resetFloorMs },
                     ),
                 groupRatchet = GroupRatchetSessions(store = groupRatchetStore, mutex = ratchetMutex, transact = transactor),
                 groupRoots = groupRoots,
@@ -2131,6 +2140,12 @@ class LabNode internal constructor(
 
     /** Runs one round of the 60 s re-offer to every linked neighbour (custody digest, blob and key re-asks), now. */
     suspend fun reoffer() = manager.reofferToNeighbors()
+
+    /**
+     * The 60 s tick's re-open of the peer resets our floor refused and held (ADR 2026-11.sfms), alone: a scenario that
+     * polls for the floor to end runs this, not the whole tick, whose digest exchange per poll would flood the pipes.
+     */
+    suspend fun reopenFlooredResets() = manager.reopenFlooredResets()
 
     /**
      * Sends one chunk of a walkie burst to [to], as `WalkieTalk` streams one (docs/VOICE_CALLS.md §3.11); [castToo] is

@@ -244,6 +244,9 @@ class InboundPipeline(
     // with the process is adopted from the copy custody kept. The second argument is the frame id to skip —
     // the seed whose own roster is creating the row (pinRosterFromSeed), already custodied and still mid-flight.
     private val replaySeedCustody: suspend (groupId: String, except: String?) -> Unit = { _, _ -> },
+    // Peer resets our replacement floor refused for an era we never held, held whole until it ends (ADR 2026-11.sfms):
+    // [onRatchetFailure] holds, MeshManager's 60 s tick re-opens ([dueFlooredResets]). The rigs' default holds for no one.
+    private val flooredResets: FlooredResets = FlooredResets(),
     // Adopts a gossiped shared group root (MeshManager.adoptGroupRoot, docs/SPOOL_PROTOCOL.md §3.2).
     // Called INSIDE the ctl commit so the root lands atomically with the DM chain advance that carried
     // it; returns whether anything was adopted. Lambda-mediated like redistributeGroupKey, so this
@@ -1618,12 +1621,12 @@ class InboundPipeline(
             metrics.onDropped(DropReason.NO_SENDER_KEY)
             return
         }
-        val thread = env.recipientId.orEmpty()
-        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, thread)
+        val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, env.recipientId.orEmpty())
         val now = System.currentTimeMillis()
+        val generation = ratchet.rootGeneration(env.senderId)
         val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt)
         if (peek !is RatchetEngine.OpenOutcome.Opened) {
-            onRatchetFailure(env, peek, me, now, authenticated = signed)
+            onRatchetFailure(env, peek, me, now, authenticated = signed, source = source, generation = generation)
             return
         }
         val plain = decodePlaintext(enc, peek.plaintext)
@@ -2491,6 +2494,11 @@ class InboundPipeline(
         now: Long,
         // False for a frame the unsigned door admitted (ADR 059): counted, never a reset trigger.
         authenticated: Boolean = true,
+        // The frame as it arrived, for the floored reset's hold; null on a path with nothing to hold.
+        source: InboundFrame? = null,
+        // The peer's [RatchetSessions.rootGeneration], read BEFORE the open that failed: a root change committed between
+        // the two can then only make a floored reset's hold stale, never let it outlive its era (ADR 2026-11.sfms).
+        generation: Long = ratchet.rootGeneration(env.senderId),
     ) {
         val reason =
             when (outcome) {
@@ -2499,6 +2507,7 @@ class InboundPipeline(
                 RatchetEngine.OpenOutcome.Failed.DUPLICATE -> DropReason.RATCHET_DUPLICATE
                 RatchetEngine.OpenOutcome.Failed.BAD_HEADER -> DropReason.RATCHET_BAD_HEADER
                 RatchetEngine.OpenOutcome.Failed.AEAD_FAIL -> DropReason.RATCHET_AEAD_FAIL
+                RatchetEngine.OpenOutcome.Failed.RESET_FLOORED -> DropReason.RATCHET_RESET_FLOORED
                 else -> DropReason.DECRYPT_FAILED
             }
         metrics.onDropped(reason)
@@ -2508,6 +2517,10 @@ class InboundPipeline(
         // already rate-limited by being drops.
         val r = WireCodec.decodeChecked<ChatContent>(env.payload)?.enc?.r
         Log.w(TAG, "drop v2 chat ${env.id}: $outcome se=${r?.se} pe=${r?.pe} n=${r?.n} init=${r?.init != null}")
+        if (reason == DropReason.RATCHET_RESET_FLOORED) {
+            holdFlooredReset(env, r?.init?.eph, source, generation, authenticated, now)
+            return
+        }
         // AEAD_FAIL joins the two missing-state cases as a reset trigger. It is the *split-brain* failure —
         // both sides hold a session and the roots disagree — and it is the only one that cannot resolve
         // itself: NO_SESSION and EPOCH_GONE each say "we lack something", and the peer's own traffic
@@ -2536,7 +2549,49 @@ class InboundPipeline(
             // a relay between us that saw the id in its window drops that seal, which is why the sender seals
             // it once more after the window (MeshManager.resealRecentDmsTo, ADR 2026-10.dmgw).
             reopenFrame(env.id)
-            maybeRequestReset(env, me, now, epochGoneBase = r?.pe?.takeIf { reason == DropReason.RATCHET_EPOCH_GONE })
+            maybeRequestReset(
+                env,
+                me,
+                now,
+                epochGoneBase = r?.pe?.takeIf { reason == DropReason.RATCHET_EPOCH_GONE },
+                initEph = r?.init?.eph,
+                generation = generation,
+            )
+        }
+    }
+
+    /**
+     * Holds a peer's reset our floor refused (`RESET_FLOORED`, ADR 2026-11.sfms) until [MeshManager]'s tick re-opens it.
+     * Synchronously, inside the failure that refused it, so a replayed reset that floors again holds before its follow-ups
+     * replay. Only a signed frame: the flag rides outside a v2 frame's AEAD, so the signature is what makes it the peer's.
+     */
+    @Suppress("LongParameterList") // the failure's own inputs, handed through
+    private fun holdFlooredReset(
+        env: RelayEnvelope,
+        initEph: ByteArray?,
+        source: InboundFrame?,
+        generation: Long,
+        authenticated: Boolean,
+        now: Long,
+    ) {
+        if (!authenticated || source == null || initEph == null) return
+        val held = FlooredResets.Held(HeldFrame(source.wire, env, source.fromNodeId, now, source.kind), initEph, generation)
+        if (flooredResets.hold(env.senderId, held)) {
+            Log.d(TAG, "holding floored reset ${env.id} from ${env.senderId} until our replacement floor ends")
+        }
+    }
+
+    /**
+     * The held floored resets whose peer's floor is open now, each taken out of the hold (ADR 2026-11.sfms). The floor is
+     * judged on the open path's own clock — the one [decryptAndDeliverV2] stamps the floor with — never the manager's. A
+     * hold whose era moved since is dropped, never returned. The caller re-delivers each; one that floors again holds
+     * again, after another adoption, so this runs at most once per floor.
+     */
+    fun dueFlooredResets(): List<FlooredResets.Held> {
+        val now = System.currentTimeMillis()
+        return flooredResets.peers().mapNotNull { peer ->
+            val held = flooredResets.valid(peer, ratchet.rootGeneration(peer)) ?: return@mapNotNull null
+            held.takeIf { ratchet.resetFloorOpen(peer, now) && flooredResets.take(peer, it) }
         }
     }
 
@@ -2559,6 +2614,8 @@ class InboundPipeline(
         me: String,
         now: Long,
         epochGoneBase: Int? = null,
+        initEph: ByteArray? = null,
+        generation: Long = ratchet.rootGeneration(env.senderId),
     ) {
         val session = ratchet.sessionFor(env.senderId)
         if (session != null && !isLiveEvidence(env, session, now)) {
@@ -2580,6 +2637,13 @@ class InboundPipeline(
                 "reset gate: ${env.id} from ${env.senderId} retired epoch " +
                     "pe=${retired.pe} lowestRetained=${retired.lowestRetained} highestPeAcked=${retired.highestPeAcked}",
             )
+            return
+        }
+        // The resetter's own follow-up, sealed under the reset we hold floored (ADR 2026-11.sfms): it carries that reset's
+        // init, unflagged, and fails only because we have not adopted it yet. The re-open replays it; counted, it would fire
+        // our own reset in the meantime.
+        if (flooredResets.explains(env.senderId, initEph, generation)) {
+            Log.d(TAG, "reset gate: ${env.id} from ${env.senderId} rides the reset we hold floored")
             return
         }
         if (!ratchet.noteUndecryptable(env.senderId, env.id, now)) return
@@ -5036,7 +5100,8 @@ class InboundPipeline(
          * of ADR 024: a consumed chain index is proof we *did* decrypt that index, so the frame is a
          * re-serve of our own delivered history, and a whole re-served backlog carries distinct ids that
          * walk straight past the distinct-frame rule. It was added as a proxy for the peer-restarted-its-
-         * chain desync, which the three purge sites now fix at the source.
+         * chain desync, which the three purge sites now fix at the source. RESET_FLOORED is out (ADR 2026-11.sfms): the peer
+         * asked to re-root inside our floor, which says nothing is diverged; the frame is held and re-opened instead.
          */
         @VisibleForTesting
         internal val RESET_TRIGGERING_DROPS =

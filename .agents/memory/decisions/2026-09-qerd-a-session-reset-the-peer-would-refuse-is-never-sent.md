@@ -93,3 +93,33 @@ over a plain init opened idempotently and by adoption, both declines and their r
 `aResetTheRatchetDeclines…`; `MeshManagerTest.aRestoreResetsEveryWipedPeerBeforeItsProfileBump` and
 `aSeedSentUnderARootTheMemberHasLeftDoesNotHoldBackTheNextOne`; `IntroSyncTest` (a marked init's one extra
 answer); and both `RestoreLabTest` scenarios under `scripts/lab-chaos.sh --seed 1000 --runs 20`.
+
+## Amendment (2026-11-01, #251): an init the peer took as a replacement starts its floor too
+
+Status: Draft. The on-demand exemption above rests on first contact, where the peer *established* the session and
+started no floor. It was applied to every on-demand reset. In the 2026-10-31 reset-mid-offer trial the Pixel 7 forced
+a reset about 3 s after the Pixel 9 had answered its previous forced reset. The Pixel 9 had *replaced* its session to
+take that one, so its floor was running, and it dropped the second as `DUPLICATE`. The Pixel 7 sat unconfirmed for over
+five minutes.
+
+`RatchetSessions.commitOpen` now stamps an in-memory `replacedAt` beside `confirmedAt` when the answered init was one
+the peer took as a replacement. Each case below is judged on our own row as the answer lands:
+
+- a reset or a marker (`lastResetSentAt > 0 && lastResetSentAt >= establishedAt`, the test `resetPlan` already uses);
+- a rule-C reclaim (ADR 2026-10.4mjm);
+- a race we won after resolving the peer's own init (`peerInitEphPub != null`), which the peer resolves by adopting
+  ours and purging.
+
+For a minute from `replacedAt`, `resetPlan` declines every cause but `AFTER_WIPE`, whatever our role is by then, with
+the reason "the peer adopted our reset under a minute ago". The rule runs after the heuristic's `confirmedAt` decline,
+so a case that rule already decides keeps its reason: `vectors/ratchet-v1.json`'s `confirmEra` step pins the wording.
+A plain first contact stamps nothing, so `anOnDemandResetRightAfterFirstContactGoesOut`, the four `SessionLabTest`
+cases and the `TimeLabTest` case stay as they were. The floor the sender models is one number with the floor the
+receiver applies (`RatchetSessions.resetFloorMs`, the constant in production).
+
+The sender cannot see the receiver's floor, which runs from the receiver's adoption, so a reset can still land inside
+it: one delayed in custody or the spool, a race the receiver lost unseen, a restart that forgot `replacedAt`, or an
+older build. The receiver half, ADR 2026-11.sfms, holds such a reset and re-opens it when the floor ends.
+
+Regression: `RatchetSessionsResetTest`'s #251 cases (answered reset, adopted peer reset, won race), and
+`SessionLabTest.aSecondForcedResetRightAfterTheFirstWasAnsweredIsDeclined`.

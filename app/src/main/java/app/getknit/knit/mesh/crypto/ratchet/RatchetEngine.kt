@@ -218,6 +218,19 @@ class RatchetEngine(
 
             /** Key material resolved but the AEAD refused — wrong root era, corrupt frame, or tamper. */
             AEAD_FAIL,
+
+            /**
+             * A `FLAG_RESET` init refused by the replacement floor alone ([OpenContext.allowReplacement] false; a newer
+             * `at`, an ephemeral we never resolved, our signed-prekey private held), whose frame nothing opened and whose
+             * root is none we hold — not the active root, not `prevRoot`, not a race's other root (ADR 2026-11.sfms). A
+             * flagged init is adopted or refused, never read (ADR 2026-09.pz9g), so a frame carrying one was never
+             * opened and cannot be a re-serve of a consumed index: it outranks [DUPLICATE], which its restarted `se = 1
+             * n = 0` would otherwise meet on the previous reset's row (#251). Not reset-triggering — the peer is not
+             * diverged, it asked to re-root and the floor said "not yet"; the caller holds the frame and re-opens it
+             * once the floor ends. An init that derives a root we hold is a re-entry of an era we already took (our own
+             * re-root dropped its anchor), never this: re-opening it would adopt a root the peer has left.
+             */
+            RESET_FLOORED,
         }
     }
 
@@ -415,6 +428,11 @@ class RatchetEngine(
         /** Roots to try for a NEW epoch derivation, in order, paired with the epoch sender's session role. */
         val rootCandidates: List<RootCandidate>,
         val purge: Boolean = false,
+        /**
+         * The flagged init the replacement floor alone refused, else null. Judged only when nothing opens ([Ladder.verdict]):
+         * [OpenOutcome.Failed.RESET_FLOORED] when it derives none of the roots we hold.
+         */
+        val flooredReset: InitPayload? = null,
     )
 
     /**
@@ -549,16 +567,31 @@ class RatchetEngine(
          * frame also fails under every other candidate (a fresh derivation under a root that never sealed it is an
          * AEAD failure by construction), which must not walk the reset heuristic. It must not stop the ladder,
          * though — a consumed index under one root is exactly what an old era's drained chain shows the new era's
-         * frame of the same number (#135). Below it, the order a single candidate always produced.
+         * frame of the same number (#135). Below it, the order a single candidate always produced. Above it, a flagged
+         * init the floor alone refused, for an era we never held ([floored], #251).
          */
         private fun verdict(): OpenOutcome.Failed =
             when {
+                floored() -> OpenOutcome.Failed.RESET_FLOORED
                 consumed -> OpenOutcome.Failed.DUPLICATE
                 aeadFailed -> OpenOutcome.Failed.AEAD_FAIL
                 badHeader -> OpenOutcome.Failed.BAD_HEADER
                 epochGone -> OpenOutcome.Failed.EPOCH_GONE
                 else -> OpenOutcome.Failed.AEAD_FAIL
             }
+
+        /**
+         * Whether the frame is a reset the floor refused for a root we never held. One X3DH, on the rare branch that
+         * reaches it, generalising [derivesPrevRoot]: an init that derives the active root, the `prevRoot` (live or not)
+         * or a race's other root is an era we took and left — our own re-root drops the anchor and keeps the peer's
+         * root in the slot — and keeps today's verdict, or its re-open would adopt a root the peer has left.
+         */
+        private fun floored(): Boolean {
+            val init = resolved.flooredReset ?: return false
+            val root = respond(ctx, init)
+            val held = resolved.rootCandidates.map { it.root } + listOfNotNull(resolved.session.root, resolved.session.prevRoot)
+            return held.none { it.contentEquals(root) }
+        }
     }
 
     private fun sessionFailure(
@@ -628,7 +661,9 @@ class RatchetEngine(
         // A genuinely stale init (older than the session we already share) changes nothing.
         if (init.at <= session.establishedAt) return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init))
         if (ctx.spkPrivForInit == null || !ctx.allowReplacement) {
-            return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init))
+            // A flagged init the floor alone refused is remembered for the verdict; the ladder still climbs (#251).
+            val floored = init.takeIf { ctx.resetRequested && ctx.spkPrivForInit != null }
+            return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init), flooredReset = floored)
         }
         // The confirmed-initiator race remnant: we won a both-initiate race WITHOUT ever processing the
         // loser's init (their pre-adoption frames were lost, or are still on their way), so no idempotence

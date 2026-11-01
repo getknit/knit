@@ -284,6 +284,67 @@ class RatchetSessionsResetTest {
             assertOpened(b.open(reset.envelope, T + 3_000))
         }
 
+    /**
+     * #251 (amendment 2026-11-01 to ADR 2026-09.qerd): our reset answered, then an on-demand one twenty seconds on. The
+     * peer *replaced* its session to take the first, which started its floor, so the second is declined for every cause
+     * but the restore's; past the floor it re-roots and the peer adopts it. Before, only the heuristic's cause was held
+     * back: the debug bridge's second reset met the peer's floor and dropped there as a duplicate.
+     */
+    @Test
+    fun aResetInsideTheFloorOurAnsweredResetStartedIsDeclinedAndReRootsAfterIt() =
+        runTest {
+            val (a, b) = established()
+            assertOpened(b.open(sealed(a.reset(T1)).envelope, T1 + 1_000))
+            assertOpened(a.open(b.seal("answer", T1 + 2_000), T1 + 2_000))
+            val answered = checkNotNull(a.session())
+            assertTrue(answered.confirmed)
+
+            assertEquals("the peer adopted our reset under a minute ago", declined(a.reset(T1 + 22_000)))
+            declined(a.reset(T1 + 22_000, ResetCause.UNREADABLE))
+            assertArrayEquals("nothing re-rooted", answered.root, checkNotNull(a.session()).root)
+
+            val second = sealed(a.reset(T1 + 2_000 + FLOOR))
+            assertTrue(second.reRooted)
+            assertOpened(b.open(second.envelope, T1 + 2_000 + FLOOR + 1))
+            assertArrayEquals("the peer adopted it", checkNotNull(a.session()).root, checkNotNull(b.session()).root)
+        }
+
+    /**
+     * Whatever our role is now: the peer answers our reset and then re-roots itself, and we adopt that as responder. Its
+     * floor still runs from its adoption of ours, so our on-demand reset inside it is declined all the same.
+     */
+    @Test
+    fun aResetInsideThatFloorIsDeclinedAfterWeAdoptedThePeersOwnResetToo() =
+        runTest {
+            val (a, b) = established()
+            assertOpened(b.open(sealed(a.reset(T1)).envelope, T1 + 1_000))
+            assertOpened(a.open(b.seal("answer", T1 + 2_000), T1 + 2_000))
+            assertOpened(a.open(sealed(b.reset(T1 + 3_000)).envelope, T1 + 3_000))
+            assertFalse("we adopted the peer's reset", checkNotNull(a.session()).weAreInitiator)
+
+            declined(a.reset(T1 + 20_000))
+        }
+
+    /**
+     * A race we won counts too: the peer's own init lost to ours, and the peer resolved the race by adopting ours and
+     * purging — a replacement, which started its floor.
+     */
+    @Test
+    fun aResetInsideTheFloorOfARaceThePeerLostIsDeclined() =
+        runTest {
+            val (a, b) = pair() // a holds the smaller id: a's init wins
+            val fromA = a.seal("a opens", T)
+            val fromB = b.seal("b opens", T + 1)
+            assertOpened(a.open(fromB, T + 2)) // a keeps its root, resolving b's init
+            assertNotNull(checkNotNull(a.session()).peerInitEphPub)
+            assertOpened(b.open(fromA, T + 3)) // b loses and adopts a's
+            assertOpened(a.open(b.seal("b answers", T + 4), T + 5))
+            assertTrue(checkNotNull(a.session()).confirmed)
+
+            declined(a.reset(T + 20_000))
+            assertTrue(sealed(a.reset(T + 5 + FLOOR)).reRooted)
+        }
+
     @Test
     fun afterAWipeAConfirmedSessionGetsTheMarkerWithNoInit() =
         runTest {

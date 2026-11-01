@@ -889,6 +889,7 @@ internal class Transcript(
                 OpenOutcome.Failed.DUPLICATE -> DropReason.RATCHET_DUPLICATE
                 OpenOutcome.Failed.BAD_HEADER -> DropReason.RATCHET_BAD_HEADER
                 OpenOutcome.Failed.AEAD_FAIL -> DropReason.RATCHET_AEAD_FAIL
+                OpenOutcome.Failed.RESET_FLOORED -> DropReason.RATCHET_RESET_FLOORED
             }
     }
 }

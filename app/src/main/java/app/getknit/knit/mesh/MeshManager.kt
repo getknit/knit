@@ -682,6 +682,10 @@ class MeshManager(
     // and replayed by InboundPipeline.reconcileGroup once the group lands. Swept beside pendingInbound.
     private val pendingGroupKeys = PendingGroupKeys(now = clock, metrics = metrics)
 
+    // A peer's reset our one-minute replacement floor refused, held by the pipeline and re-opened by the 60 s tick once
+    // the floor ends ([reopenFlooredResets], ADR 2026-11.sfms).
+    private val flooredResets = FlooredResets()
+
     // Receiver-side state for the best-effort "now typing" indicator: which senders are typing in which
     // conversation. Ephemeral and never custodied — a typing cue is fire-and-forget, so nothing is persisted
     // (a live typer re-cues within the TTL). Populated by handleTyping, cleared by deliverChat on a real message.
@@ -782,6 +786,7 @@ class MeshManager(
             flushGroupKeys = ::flushPendingGroupKeysFor,
             replayGroupCustody = ::replayCustodiedGroupFrames,
             replaySeedCustody = ::replayCustodiedSeedDms,
+            flooredResets = flooredResets,
             adoptGroupRoot = ::adoptGroupRoot,
             onGroupRootCtl = ::onGroupRootCtl,
             onProfilePinned = { introSync.onProfilePinned(it) },
@@ -3492,6 +3497,8 @@ class MeshManager(
         // First, and outside the link-set guards: a reset's second re-seal is due by the clock, not by a link, and a
         // pass due with nobody linked still takes its long-range and coordination-plane sends (ADR 2026-10.dmgw).
         resealSecondPass()
+        // Clock-driven too, and outside the link-set guards: a held reset re-opens from its own bytes (ADR 2026-11.sfms).
+        reopenFlooredResets()
         val neighbors = transport.neighbors.value
         // Before the blob re-ask below, so a want the 30-min sweep reclaimed is back in the memo it
         // reads from; skipped with nobody linked, where a want has nowhere to go anyway.
@@ -5237,6 +5244,81 @@ class MeshManager(
                 Log.w(TAG, "reset re-seal second pass to $peer failed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Re-opens every peer reset our replacement floor refused and held, now that the floor is open (ADR 2026-11.sfms,
+     * #251). The frame goes back through [InboundPipeline.onDeliver] whole, as [replayCustodiedSeedDms] re-enters a seed:
+     * `relay = false`, so it skips the router's seen set, custody and the flood, and is verified again. Adopted, it runs
+     * the reset path every adoption runs — the purge, the re-seal and forced seed flush, `IntroSync`'s answer, which is what
+     * confirms the resetter. A re-open that floors again (another adoption from that peer since) holds again inside the
+     * failure, so this is at most one re-open per floor. `internal` so `mesh/lab` can drive it without the whole tick.
+     *
+     * Adopted — the session anchored on the held init's ephemeral — it then replays the backlog: the resetter's DMs to us
+     * still in custody with no message row, sealed under the reset's root (their header carries its init), which failed
+     * while we held it and nobody re-serves, our digest folding them. Selected by that ephemeral, never by a `sentAt`
+     * window, which would compare two clocks; oldest first, so the chain walks forward. A frame that opened since stops at
+     * the exists-gate or drops as a duplicate.
+     */
+    internal suspend fun reopenFlooredResets() {
+        pipeline.dueFlooredResets().forEach { held ->
+            val peer = held.frame.env.senderId
+            // As [resealSecondPass]: taken out of the hold before it runs, and caught, so a failure never ends the 60 s loop.
+            try {
+                Log.d(TAG, "re-opening floored reset ${held.frame.env.id} from $peer: our replacement floor ended")
+                withContext(NonCancellable) {
+                    pipeline.onDeliver(
+                        WireEnvelope(relay = false, sig = held.frame.wire.sig, signed = held.frame.wire.signed),
+                        held.frame.env,
+                        held.frame.fromNodeId,
+                        held.frame.kind,
+                    )
+                }
+                if (ratchet.sessionFor(peer)?.peerInitEphPub?.contentEquals(held.initEph) == true) {
+                    replayFlooredResetBacklog(peer, held.initEph, except = held.frame.env.id)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception, // never ends the re-offer loop
+            ) {
+                Log.w(TAG, "re-opening floored reset from $peer failed: ${e.message}")
+            }
+        }
+    }
+
+    /** [reopenFlooredResets]'s backlog: [peer]'s ratchet DMs to us in custody, rowless, whose header carries [initEph]. */
+    private suspend fun replayFlooredResetBacklog(
+        peer: String,
+        initEph: ByteArray,
+        except: String,
+    ) {
+        val me = identity.nodeId()
+        forwardStore
+            .liveFrames(clock())
+            .filter { frame ->
+                val env = frame.envelope
+                env.id != except && env.type == FrameType.CHAT && env.recipientId == me && env.group == null && env.senderId == peer
+            }.filter { frame ->
+                WireCodec
+                    .decodePayload<ChatContent>(frame.envelope.payload)
+                    ?.enc
+                    ?.takeIf { EncEnvelope.isDmRatchetVersion(it.v) }
+                    ?.r
+                    ?.init
+                    ?.eph
+                    ?.contentEquals(initEph) == true
+            }.sortedBy { it.envelope.sentAt }
+            .forEach { frame ->
+                if (messages.exists(frame.envelope.id)) return@forEach
+                withContext(NonCancellable) {
+                    pipeline.onDeliver(
+                        WireEnvelope(relay = false, sig = frame.sig, signed = frame.signed),
+                        frame.envelope,
+                        frame.envelope.senderId,
+                    )
+                }
+            }
     }
 
     /** Our unacked DMs of the last [RESEAL_WINDOW_MS] to [recipientId]; none for a blocked peer. */
