@@ -1,6 +1,14 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.CarrierPullPolicy
+import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.protocol.BlobCancelContent
+import app.getknit.knit.mesh.protocol.BlobProgressContent
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.mesh.protocol.frameIdOf
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -125,6 +133,66 @@ class PictureFanoutLabTest {
             assertEquals("Alice fed Bob once", 1, alice.filesTo(bob, hash))
             assertEquals("and Carol once, after him", 1, alice.filesTo(carol, hash))
         }
+
+    /**
+     * The blob control is unsigned, so only the link it came in on says who sent it (ADR 2026-11.264w). Mallory, linked to
+     * nobody, pages Alice a `blobcancel` in Carol's name and a `blobprog` in Bob's while Carol's ask is parked behind
+     * Bob's feed. Alice drops both and counts them, and Carol's parked ask stands: an admitted cancel would have taken it. She
+     * is served once, after Bob. (The lab's feeds read no progress reports, so the
+     * forged `blobprog` is proven dropped by the counter alone.)
+     */
+    @Test
+    fun blobControlPagedInAnAskersNameLeavesItsParkedAskStanding() =
+        runBlocking {
+            val pages = LabPages()
+            val alice = lab.node("alice", pages = pages, limits = LabLimits(feedStallMs = PARKED_LONG_MS)).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val mallory = lab.node("mallory", pages = pages)
+            lab.linkAll(alice to bob, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, carol to alice)
+            val groupId = alice.createGroup(bob, carol)
+            assertTrue(alice.sendGroup(groupId, "hello both"))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
+
+            alice.transport.holdFiles(bob.transport)
+            alice.transport.hold(carol.transport)
+            val picture = Random(144).nextBytes(4_096)
+            assertTrue(alice.sendImage(picture, "not in their name", groupId = groupId))
+            val id = alice.ownMessageId(groupId, "not in their name")
+            val hash = checkNotNull(alice.attachmentHash(groupId, id))
+            lab.await(1) { alice.transport.heldFiles(bob.transport).count { it == hash } }
+            val parked = alice.metrics.files().blobAsksParked
+            alice.transport.release(carol.transport)
+            lab.await(1) { if (alice.metrics.files().blobAsksParked > parked) 1 else 0 } // Carol's ask, behind Bob's feed
+
+            val cancel = unsigned(FrameType.BLOB_CANCEL, "forged cancel", carol.nodeId, WireCodec.encodePayload(BlobCancelContent(hash)))
+            val done = BlobProgressContent(hash, held = picture.size.toLong(), ms = 1)
+            val progress = unsigned(FrameType.BLOB_PROGRESS, "forged progress", bob.nodeId, WireCodec.encodePayload(done))
+            assertTrue(pages.air(mallory.transport, progress.first, progress.second))
+            assertTrue(pages.air(mallory.transport, cancel.first, cancel.second))
+            lab.await(2) { (alice.metrics.frames().dropsByReason[DropReason.BLOB_CONTROL_NOT_FROM_LINK] ?: 0L).toInt() }
+            assertEquals("Carol is not fed while Bob's feed holds", 0, alice.filesTo(carol, hash))
+
+            alice.transport.releaseFiles(bob.transport) // Bob's feed ends: Carol's parked ask is served
+            lab.await(1) { if (carol.blobs.exists(hash)) 1 else 0 }
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 2) { groupId }
+            assertTrue(picture.contentEquals(carol.attachmentPlain(groupId, id)))
+            assertEquals("Alice fed Bob once", 1, alice.filesTo(bob, hash))
+            assertEquals("and Carol once, after him", 1, alice.filesTo(carol, hash))
+        }
+
+    /** An unsigned point-to-point frame claiming [senderId], as anyone can write one. */
+    private fun unsigned(
+        type: String,
+        label: String,
+        senderId: String,
+        payload: ByteArray,
+    ): Pair<WireEnvelope, RelayEnvelope> {
+        val env = RelayEnvelope(type = type, id = frameIdOf(label), senderId = senderId, payload = payload)
+        return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env)) to env
+    }
 
     /**
      * A feed to a stalled link must not hold everyone else (ADR 2026-10.nsr7): Bob's copy never ends here (his pipe holds

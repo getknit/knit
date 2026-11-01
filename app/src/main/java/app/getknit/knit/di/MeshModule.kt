@@ -61,11 +61,13 @@ import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.meshtastic.BondedBoardDirectory
 import app.getknit.knit.mesh.bluetooth.meshtastic.MeshtasticGatt
 import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
+import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.SessionTransactor
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.BoardDirectory
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.LoraConfig
@@ -138,6 +140,9 @@ val meshModule =
         // backstop for an uncaught throw in a top-level child (e.g. a FramedLink writer coroutine).
         single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default + meshExceptionHandler) }
         single { MeshMetrics() }
+        // Who must prove the node id its link HELLO claims (ADR 2026-11.264w): one per process, shared by every link plane
+        // and the inbound pipeline. Log.i: release keeps each refusal's line for a bugreport.
+        single { LinkClaims(get(), log = { msg -> Log.i("LinkClaims", msg) }) }
         // What this phone does for other people's messages (the Your mesh screen's lifetime numbers): credited
         // at the router's relay fan-out and the custody re-serve, persisted through SettingsStore's journal slice.
         single { ContributionLedger(journal = get<SettingsStore>(), selfId = { get<Identity>().nodeId() }) }
@@ -277,6 +282,8 @@ val meshModule =
                                     partials = get(),
                                     field = get<FieldLog>(),
                                     awareWontRun = awareWontRunHere,
+                                    claims = get(),
+                                    prover = get(),
                                 )
                             bluetooth = bt
                             add(bt)
@@ -319,6 +326,8 @@ val meshModule =
                                     // The 5 GHz ICM picks stay debug-only until a cross-band delivery trial passes.
                                     fiveGhzRules = BuildConfig.DEBUG,
                                     wontRunHere = awarePlaneWontRun,
+                                    claims = get(),
+                                    prover = get(),
                                 )
                             // The switch stops the plane live in every build. Log.i: release keeps it, so a bugreport
                             // shows the plane stopped for it.
@@ -342,6 +351,8 @@ val meshModule =
             val keys = get<IdentityKeyStore>().keys()
             MessageCrypto(keys.hybridPrivate, keys.sigPrivate)
         }
+        // This phone's half of a link proof (ADR 2026-11.264w): its identity bundle's raw keys and its identity signer.
+        single { LinkProver(get<IdentityKeyStore>().keys().publicBundle, get<MessageCrypto>()::signRaw) }
         // THE ratchet lock, shared by the DM and group session services: group seed adoption runs inside
         // a DM commit, so one instance makes the lock-order question vanish by construction.
         single(ratchetMutex) { Mutex() }

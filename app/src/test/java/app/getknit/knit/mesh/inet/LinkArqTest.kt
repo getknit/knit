@@ -543,12 +543,12 @@ class LinkArqTest {
                     withContext(Dispatchers.IO) {
                         val responder =
                             async {
-                                val hello = LinkHandshake.readHello(b.input)
-                                LinkHandshake.replyHello(b.output, bob)
+                                val hello = LinkHandshake.receiveHello(b.input)?.wire
+                                LinkHandshake.writeLaneHello(b.output, bob)
                                 hello to LinkFraming.read(b.input)
                             }
-                        LinkHandshake.writeHello(a.output, alice)
-                        val reply = LinkHandshake.readHello(a.input)
+                        LinkHandshake.writeLaneHello(a.output, alice)
+                        val reply = LinkHandshake.receiveHello(a.input)?.wire
                         LinkFraming.write(a.output, LinkFraming.Type.FRAME, record)
                         a.output.flush()
                         val (hello, message) = responder.await()

@@ -120,7 +120,9 @@ checks the switch.
 
 **Contacts at a distance (ADR 042, `docs/CONTACT_CARD.md`).** A **contact card** is the `knit-id:v1` QR
 payload as a signed link (`mesh/crypto/ContactCard`): body `{v, id, pk, name?, sp?, iat}`, Ed25519 over
-`"knit/card/v1" ‖ body`, never re-encoded to verify. Import pins + accepts, never verifies. The intro
+`"knit/card/v1" ‖ body`, never re-encoded to verify. The identity key's fourth signing input is the link proof,
+`"knit/link/v1/proof" ‖ role ‖ u32be(len) ‖ helloD ‖ u32be(len) ‖ helloR` (`mesh/crypto/LinkProof`, ADR 2026-11.264w),
+disjoint from the card's and the prekey's labels at byte 5 and from frame CBOR by its leading `k`. Import pins + accepts, never verifies. The intro
 handshake is the existing sealed `CTL_PROFILE` DM sent to a peer with no session (`MeshManager.sendIntroTo`
 → `sendCtlDm` → `ratchet.sealDm` initiates X3DH off the card-pinned prekey), driven by the pure
 `mesh/IntroSync` (send when sealable, re-send every 20 h while unconfirmed, answer an init-bearing peer

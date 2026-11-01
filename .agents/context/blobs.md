@@ -64,6 +64,17 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `PhotoProofLabTest.aPhotoItsRecipientHoldsNeverGoesUpEvenAfterThePeersPart`,
   `InternetLinkLabTest.aPhotoNoRelayWillTakeOpensALinkAtOnceAndCrossesIt`; unit: `BlobHolderQueryTest`'s proof cases,
   `LinkHolderProofTest`.
+- **Before touching who the unsigned blob control is taken from — `InboundPipeline.verifyInbound`'s
+  `isUnsignedPointToPoint` branch, `InboundPipeline.handleBlobFrame`, `InboundFrame.onLink`, the `onLink` that
+  `MeshRouter.handleInbound` hands `onDeliver`, or `DropReason.BLOB_CONTROL_NOT_FROM_LINK`:** READ ADR 2026-11.264w.
+  The five types (`blobreq`, `blobhave`, `blobhas`, `blobprog`, `blobcancel`) are unsigned, so only the link they came
+  in on names their sender: one is acted on only when it arrived on a link (only `FramedLink.handleFrame` sets
+  `onLink`: L2CAP, a Wi-Fi Aware NDP socket, a direct link) and its `senderId` is that link's id. The one gate sits in
+  `verifyInbound` after the flood refusal and before `noteVerified`; `handleBlobFrame` trusts `fromNodeId`, and
+  `MeshMetrics.onBlobAskHandled` counts only an accepted ask. The side channel, NAN's hop-less fast frames, LoRa, the
+  spool and every replay leave `onLink` false; so do the lab's `hearPage` and any test fake that is not a link. iOS
+  mirror: `isFromItsLink` and its drop reason `blobControlNotFromLink` (knit-ios #25). Unit: `InboundPipelineTest`'s
+  `blobControlHeardOffALink…`, `aBlobRequestNamingSomeoneElseOnALink…`.
 - **Before touching the holder query — `BlobExchange.onHaveQuery` / `onHaveAnswer` / `decide` / `wantAll`,
   `FrameType.BLOB_HAVE` / `BLOB_HAS` / `isUnsignedPointToPoint` (and its flood guard in `MeshRouter.scheduleRelay`),
   `BlobHaveContent` / `BlobHasContent`, `Protocol.CAP_BLOB_HAVE`, `BlobStore.servable`, `MeshTransport.feedingLoad` / `slowLinkTo`, or

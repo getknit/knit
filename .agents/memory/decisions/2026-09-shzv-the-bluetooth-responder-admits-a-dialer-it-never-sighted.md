@@ -180,3 +180,14 @@ lines are unchanged, and it ends ` doorbellTrusted=false` when this phone's evid
 A correction to the 2026-09-29 amendment: `FLAG_DIALS_GATT_PEERS` is no longer clear in a release build. It has been
 set in release since `713b29d6` (2026-10-08). The unsighted admit's other cases (an adapter that cannot read, an
 iPhone build that ignores the flag, a sighting from before it) still stand, and so does the backgrounded iPhone above.
+
+## Amendment 2026-11-01 — the claim risk now holds only for unproven peers
+
+The cost accepted above (a device claiming the id of a peer we are not sighting takes a slot under it and can replace
+its held link every 30 s) now holds only for a peer that cannot prove itself to us: one on a build before link proof
+(v2.10.1 and earlier), or one we hold no profile for and that has not proven itself this run. A HELLO claiming a
+proof-capable id without a proof is refused before any row here runs, a proven held link is replaced only by a dialer
+that proves the same id (under these rows), and a dialer that proves an id displaces an unproven link holding it
+whatever its age or sighting (ADR 2026-11.264w). The table above still decides between two unproven ends exactly as
+written. The "follow-up if an iPhone loses its keys across a redial" paragraph's gap is closed for a proof displacing
+an unproven link: `LinkClaims.onDisplaced` re-runs the peer's link-up work.

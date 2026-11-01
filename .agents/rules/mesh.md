@@ -246,7 +246,12 @@ free). Two invariants that are easy to break:
   Both types are unsigned and point-to-point: `FrameType.isUnsignedPointToPoint` keeps them out of presence
   evidence, the key path, custody and the flood (a copy marked for relay is refused by `verifyInbound`, counted as
   `POINT_TO_POINT_FLOODED`, and never relayed by `MeshRouter.scheduleRelay`); `DoorbellPolicy.UPKEEP` keeps them
-  from ringing an iPhone.
+  from ringing an iPhone. **Only the link says who sent one** (ADR 2026-11.264w): all five (`blobreq`, `blobhave`,
+  `blobhas`, `blobprog`, `blobcancel`) are acted on only when they arrived on a link (`InboundFrame.onLink`, set by
+  `FramedLink` alone) and their `senderId` is that link's id. A side-channel page, a hop-less fast frame, a LoRa
+  packet or a spool pull names its sender in bytes anyone can write, so `verifyInbound` drops it, counted as
+  `BLOB_CONTROL_NOT_FROM_LINK`, before anything reads it; the iOS port's `isFromItsLink` is the same gate. Never send
+  one off a link or under an id other than our own.
 - **A picture goes to its linked recipient first, one Bluetooth copy at a time** (ADR 2026-10.g24x). A carrier holds
   back the pull of a DM's attachment while the DM's recipient is a live neighbour, for at most
   `CarrierPullPolicy.DEFER_MS` from custody: a delay, never a veto. The tick's custody re-read ends it, and a

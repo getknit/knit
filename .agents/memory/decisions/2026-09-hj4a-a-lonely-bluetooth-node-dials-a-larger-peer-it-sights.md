@@ -118,3 +118,10 @@ first Android-to-Android trial measured first dials 58–84 s after a Bluetooth 
 `PromotionPolicy.msUntilDue`, the twin of `LonelyDialPolicy.msUntilDue`, to `nextConnectWaitMs`, and moves the
 discovery path's waits onto the elapsed clock (`ElapsedWait`), so the lonely window and its dwell wake also keep wall
 time on a phone that suspends.
+
+## Amendment 2026-11-01 — a lonely dial ends in a proof
+
+"The HELLO is still unauthenticated" above no longer holds between two builds with link proof (ADR 2026-11.264w): the
+lonely dial runs the same handshake as any dial, so the link it makes is registered only once the larger peer proved
+its id, and its failure backs off as a failed HELLO does. Nothing here widens what a responder admits; R1 makes it
+narrower, refusing an unproven claim to an id that can prove itself.

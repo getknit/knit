@@ -72,6 +72,87 @@ class BleAdmissionPolicyTest {
         assertEquals(Verdict.Replace, verdict(local = low, dialer = high, sighted = false, heldLinkAgeMs = REPLACE_MIN_HOLD_MS))
     }
 
+    // Link proofs (ADR 2026-11.264w): [offersProof] is the dialer's HELLO carrying CAP_LINK_PROOF, [heldProven] the held
+    // link's verdict, [proofCapable] whether this phone knows the id can prove itself (R1).
+    private fun proofVerdict(
+        local: String,
+        dialer: String,
+        sighted: Boolean,
+        heldLinkAgeMs: Long? = null,
+        heldProven: Boolean = false,
+        offersProof: Boolean = false,
+        proofCapable: Boolean = false,
+        atCap: Boolean = false,
+    ) = BleAdmissionPolicy.decide(
+        local,
+        dialer,
+        sighted,
+        heldLinkAgeMs,
+        atCap,
+        heldProven = heldProven,
+        offersProof = offersProof,
+        proofCapable = proofCapable,
+    )
+
+    @Test
+    fun anUnprovenDialerClaimingAProofCapableIdIsRefusedAheadOfEveryRow() {
+        // R1: refused even where the old rows admit (larger, unsighted, nothing held) or would refuse anyway (below us
+        // and sighted, already linked), so the claim is the refusal that counts.
+        val old = REPLACE_MIN_HOLD_MS * 10
+        assertEquals(Verdict.Refuse, proofVerdict(local = low, dialer = high, sighted = false, proofCapable = true))
+        assertEquals(Verdict.Refuse, proofVerdict(local = high, dialer = low, sighted = false, heldLinkAgeMs = old, proofCapable = true))
+        assertEquals(Verdict.Refuse, proofVerdict(local = high, dialer = low, sighted = true, proofCapable = true))
+        assertTrue(BleAdmissionPolicy.refusesClaim(offersProof = false, proofCapable = true))
+        // A dialer offering a proof is never an R1 refusal: its proof decides.
+        assertFalse(BleAdmissionPolicy.refusesClaim(offersProof = true, proofCapable = true))
+        assertFalse(BleAdmissionPolicy.refusesClaim(offersProof = false, proofCapable = false))
+        assertEquals(Verdict.Admit, proofVerdict(local = low, dialer = high, sighted = true, offersProof = true, proofCapable = true))
+    }
+
+    @Test
+    fun aProvenHeldLinkIsNeverReplacedByAnUnprovenDialer() {
+        // R2, even with R1 not asked (an id the LRU forgot): unsighted and old enough is the old table's Replace.
+        val old = REPLACE_MIN_HOLD_MS * 10
+        assertEquals(Verdict.Refuse, proofVerdict(local = high, dialer = low, sighted = false, heldLinkAgeMs = old, heldProven = true))
+        assertEquals(Verdict.Refuse, proofVerdict(local = low, dialer = high, sighted = false, heldLinkAgeMs = old, heldProven = true))
+    }
+
+    @Test
+    fun aDialerOfferingAProofReplacesAnUnprovenHeldLinkWhateverItsSightingAgeOrOrder() {
+        // R3: the old rows refuse each of these (sighted; younger than the floor; below us in the tie-break). The held
+        // link is a squatter's or a legacy claim, and only a verified proof closes it.
+        for (sighted in listOf(true, false)) {
+            for (age in listOf(0L, REPLACE_MIN_HOLD_MS - 1, REPLACE_MIN_HOLD_MS * 10)) {
+                for ((local, dialer) in listOf(high to low, low to high)) {
+                    assertEquals(
+                        "sighted=$sighted age=$age local=$local",
+                        Verdict.Replace,
+                        proofVerdict(local, dialer, sighted, heldLinkAgeMs = age, offersProof = true, atCap = true),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aDialerOfferingAProofAgainstAProvenHeldLinkFollowsTheOldRows() {
+        // R2: a proven link is replaced only by one that proves the same id, under the old rows.
+        val old = REPLACE_MIN_HOLD_MS
+        val young = REPLACE_MIN_HOLD_MS - 1
+
+        fun v(
+            local: String,
+            dialer: String,
+            sighted: Boolean,
+            age: Long,
+        ) = proofVerdict(local, dialer, sighted, heldLinkAgeMs = age, heldProven = true, offersProof = true, proofCapable = true)
+        assertEquals(Verdict.Refuse, v(high, low, sighted = true, age = old * 10)) // sighted, below us: we dial it
+        assertEquals(Verdict.Refuse, v(low, high, sighted = true, age = old * 10)) // sighted and linked
+        assertEquals(Verdict.Refuse, v(high, low, sighted = false, age = young)) // too young
+        assertEquals(Verdict.Replace, v(high, low, sighted = false, age = old))
+        assertEquals(Verdict.Replace, v(low, high, sighted = false, age = old))
+    }
+
     @Test
     fun aHeldLinkYoungerThanTheFloorIsNeverReplaced() {
         // Bounds how often a device claiming an unsighted peer's id can cut that peer's link.

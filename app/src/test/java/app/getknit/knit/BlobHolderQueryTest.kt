@@ -138,7 +138,7 @@ class BlobHolderQueryTest {
         val heard = CopyOnWriteArrayList<Triple<String, String, RelayEnvelope>>()
 
         private val router =
-            MeshRouter(transport, scope) { _, env, from, _ ->
+            MeshRouter(transport, scope) { _, env, from, _, _ ->
                 heard += Triple(env.type, from, env)
                 when (env.type) {
                     FrameType.BLOB_REQ -> {

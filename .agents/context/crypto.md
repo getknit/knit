@@ -266,6 +266,17 @@ LoRa plane (2026-09.ggq4).
   open is never reset evidence. Lane keys come from both sides' fresh `k`, salted by the link id and bound to both ids
   in role order — never the pairwise root. Regression: `LinkKeysTest`, `LinkSignalsTest`, `InboundPipelineTest`'s link
   cases, `MeshManagerTest.aLinkSignalIsSealedOnly…`, `KeyedVectorTest`'s `linkKeys`.
+- **When touching `mesh/crypto/LinkProof` / `LinkProver`, `LinkHandshake.dial` / `answer`, `mesh/link/LinkClaims`,
+  `Protocol.CAP_LINK_PROOF` / `Protocol.hello`, the capabilities line of `InboundPipeline.storeProfileRow`, or
+  `MeshManager.republishProfileIfCapabilitiesChanged`:** READ ADR 2026-11.264w (paired with knit-ios #25; the contract
+  is byte-exact law). A link proof signs `"knit/link/v1/proof" ‖ role ‖ u32be(len) ‖ helloD ‖ u32be(len) ‖ helloR` over
+  the HELLO bytes as received, dialer first whoever signs; verify rebuilds the bundle from the raw keys and requires its
+  `NodeId` to be the HELLO's. A PROOF is never written toward a HELLO without the bit, and a bit-carrying HELLO without a
+  valid nonce is a failed proof. Proof-capable means the stored profile carries the bit or a link proved the id this run;
+  a peer's stored capabilities follow the presentation version, never the prekey watermark, and a build republishes its
+  profile as an edit when its capabilities change, so an older frame never takes the bit back. Regression:
+  `LinkProofTest`, `LinkHandshakeTest`, `LinkClaimsTest`, `KeyedVectorTest`'s link proof and `proofRejects`,
+  `InboundPipelineTest`'s profile capability cases, `MeshManagerTest`'s capability republish.
 - **When touching the self branch of `InboundPipeline.handleProfile` / `handleChat`, `PeerRepository.forgetSelf`,
   `RatchetSessions.forget`, or `GroupRepository.forgetSelf`:** a node never pins its own key and never holds a session
   with itself — a re-served copy of our own profile once pinned `peers[me]` and sealed every group's seed to self in a

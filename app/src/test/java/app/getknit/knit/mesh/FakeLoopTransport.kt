@@ -256,7 +256,8 @@ class FakeLoopTransport(
     ) {
         // Mirror the real transport: decode the routing envelope on receipt (drop undecodable bytes).
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return
-        _inbound.emit(InboundFrame(wire, envelope, fromNodeId))
+        // A loop is a link: the frame's hop identity is the linked peer, as `FramedLink.handleFrame` says (ADR 2026-11.264w).
+        _inbound.emit(InboundFrame(wire, envelope, fromNodeId, onLink = true))
     }
 
     private fun refreshNeighbors() {

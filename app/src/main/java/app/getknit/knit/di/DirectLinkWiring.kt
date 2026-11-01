@@ -114,6 +114,8 @@ private fun directLinkGraph(): Module =
                 bulkMay = { peer -> getKoin().getOrNull<DirectLinks>()?.mayRaiseBulk(peer) ?: false },
                 bulkRaising = { peer -> getKoin().getOrNull<DirectLinks>()?.bulkUnderWay(peer) ?: false },
                 log = { Log.d(TAG, it) },
+                // Each link up is proven by its lane: the radios close an unproven link claiming the same peer (R3).
+                claims = get(),
             )
         }
         directLinks()

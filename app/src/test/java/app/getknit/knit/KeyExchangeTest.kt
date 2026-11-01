@@ -77,7 +77,7 @@ class KeyExchangeTest {
                 maxCached = maxCached,
             )
         private val router =
-            MeshRouter(transport, scope) { wire, env, fromNodeId, _ ->
+            MeshRouter(transport, scope) { wire, env, fromNodeId, _, _ ->
                 when (env.type) {
                     FrameType.KEY_REQ -> {
                         WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { exchange.onRequest(it.nodeIds, fromNodeId) }

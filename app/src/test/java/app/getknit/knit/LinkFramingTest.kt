@@ -101,6 +101,20 @@ class LinkFramingTest {
     }
 
     @Test
+    fun aProofRecordRoundTripsUnderTagEight() {
+        // ADR 2026-11.264w: written only toward a HELLO carrying CAP_LINK_PROOF, since every older build throws on it.
+        val payload = ByteArray(128) { it.toByte() }
+        val bytes = LinkFraming.encode(LinkFraming.Type.PROOF, payload)
+        assertEquals(8.toByte(), bytes[0])
+        assertEquals(LinkFraming.Message(LinkFraming.Type.PROOF, payload), LinkFraming.read(ByteArrayInputStream(bytes)))
+    }
+
+    @Test
+    fun theTagAfterProofIsStillUnknownAndThrows() {
+        assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(byteArrayOf(9, 0, 0, 0, 0))) }
+    }
+
+    @Test
     fun anUnknownRecordTypeThrows() {
         for (tag in listOf(0, 0x7F, 0xFF)) {
             val record = byteArrayOf(tag.toByte(), 0, 0, 0, 0)

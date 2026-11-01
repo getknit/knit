@@ -150,6 +150,24 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   and `onSessionDead` mirrors `onAwareSessionTerminated`'s cleanup. A location refusal on 29–32 is not a dead session
   (`NanSessionFault.classify`): hold it as `ForegroundOnly`, tear nothing down, retry on `heal()`. `reattach` is
   single-flight and never drops a live sync.
+- **When touching `connectAndRegister`, `handleAcceptedSocket` / `refuseAccept`, `registerConn`'s `proven` /
+  displacement, `ConnCallbacks`, `teardownPeer`'s `only`, `closeUnprovenClaim`, `claimHooks`, or
+  `NanClaimRefusalPolicy` (`claimRefusals`, folded into `digestSyncWanted` / `bulkSyncWanted`):** READ ADR 2026-11.264w
+  and `mesh/link/LinkClaims`. Both NDP roles run `LinkHandshake.dial` / `answer` under `soTimeout` until the other
+  side's PROOF is read; the "both carry the bit" decision reads the reply's caps, never the SSI's. R1 runs before the
+  tie-break and the held-link refusal; a held unproven link no longer refuses a dialer offering a proof (R3), a proven
+  one still does (R2, NAN's never-replace). Links have identity: a displaced link's late `onLinkDown` must never tear
+  down the newcomer, so every teardown that names a link goes through `teardownPeer(…, only = conn)`, and an unproven
+  link re-checks `isProofCapable` once it is in `peers` (a capable notice is told once). Every refused accept sets
+  `responderPinsNdi` (an NDP landed on the request); only when the dialer is known alive (refused on its HELLO, our
+  reply unwritable, a proof failure other than `WHY_UNREADABLE`) and it was the last inbound with an initiate owed is
+  the request recycled before the close. No HELLO within the soTimeout or an unreadable PROOF may mean the NDP is gone,
+  and an unregister there is the `state=104` ghost: the pin is left to the discovery loop's session cycle. A dial that
+  fails after its socket is up closes it and unregisters after `INITIATOR_RELEASE_GRACE_MS`, so the responder sees the
+  FIN. A dial of ours refused by an unproven reply or a non-transient failed proof (not `LinkHandshake.isTransient`) is
+  held out of the sync gates on a growing wait (2 → 30 min), lifted by a fresh discovery handle (strikes kept) and
+  forgotten on `LinkClaims`' capable/released edges — never the flat 10 s contention backoff, which drove the watchdog's
+  tiers; a transient proof failure, and a responder refusing us (read as `NoReply`), stay on that flat backoff. Tests: `NanClaimRefusalPolicyTest`.
 
 ## Adding an entry
 

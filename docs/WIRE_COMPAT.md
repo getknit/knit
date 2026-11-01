@@ -222,7 +222,8 @@ baseline; see `docs/ARCHITECTURE.md` §9 for the migrate-forward posture). The k
 public-key *encoding* changed). Golden
 vectors (`GoldenVectorTest`) pin the definite-length bytes of every wire type + the raw-key bundle so a
 future iOS codec has byte-exact fixtures. Also bundled: the two-way responder HELLO (`LinkHandshake`) so a
-link's peer identity is confirmed over the socket, not parsed from the (unauthenticated) discovery advert.
+link's peer identity is named over the socket, not parsed from the discovery advert. That HELLO was itself
+unauthenticated, a claim and not a proof, until the link proof (ADR 2026-11.264w, the precedent below).
 
 **Precedent — an additive crypto-scheme bump (`EncEnvelope.v` 1 → 2, the DM epoch ratchet).** The whole
 forward-secrecy scheme (`docs/FORWARD_SECRECY_RATCHET.md`) shipped without touching a discovery marker,
@@ -768,6 +769,33 @@ links only. No version bump, no discovery marker, no DB change. `vectors/wire-v1
 `blobHasContent` and `blobHasContentReserved`, and nothing moved. *Metadata cost:* an answer tells a linked
 neighbour which of the asked blobs this phone holds, exactly what serving its `blobreq` already told it. The `load`
 says how many files it is feeding, never to whom.
+
+**Precedent — a capability bit, a HELLO field and a link record tag it gates (`CAP_LINK_PROOF` 0x40000, the HELLO's
+`n<nonce>`, `PROOF` tag 8, ADR 2026-11.264w; knit-ios #25 is the paired change).** A link proves the node id its
+HELLO claims. Three additive pieces, each under the rules above:
+
+- *The bit* is a feature every build implements, so `LOCAL_CAPABILITIES` carries it (0x42FFF): it rides the HELLO, the
+  signed profile and the Wi-Fi Aware SSI, above the BLE advert's 8 bits. The profile's copy is the trust input (signed,
+  so only its author can drop it); the HELLO's is authenticated only on a link that proved itself, whose transcript
+  covers both HELLOs. A receiver writes a peer's stored capabilities only from a profile no older than its stored
+  presentation version, and a build republishes its profile as an edit when its capabilities change, so an older
+  frame can never take the bit back.
+- *The HELLO's fourth field*, `n` + 32 lowercase hex digits (16 CSPRNG bytes, fresh per connection attempt), present
+  exactly when the caps carry the bit. Every Android build since v2.0.0 reads fields 0-2 (`Protocol.parse`,
+  `ProtocolTest`), and the iOS port's `Hello` the same. Field 3 is a nonce only in that exact form; anything else is
+  no nonce, and a bit-carrying HELLO without one is a failed proof. `Protocol.advertise`, which is also the SSI whose
+  `|d<digest>` `NanCueCodec.parseSsiDigest` finds by its last `|d`, never carries it.
+- *The record*, tag 8, written **only** toward a peer whose HELLO carries the bit: every shipped build throws on an
+  unknown tag (`LinkFraming.read`) and drops the link, the `CAP_FILES` argument in record form. Its payload is fixed
+  at 128 bytes (`sigPub ‖ hpkePub ‖ Ed25519 signature`) over `"knit/link/v1/proof" ‖ role ‖ u32be(len) ‖ helloD ‖
+  u32be(len) ‖ helloR`, the HELLOs as the bytes that crossed the link. One on a live link is ignored like a stray HELLO.
+
+A link where either HELLO lacks the bit is legacy and links unproven exactly as before, so v2.10.1 and earlier keep
+linking. The direct-link plane carries the bit and a nonce in its HELLO but writes no record: its lane keys already
+bind both ids (ADR 2026-10.a5yj). No `type`, no version bump, no discovery marker, no DB change. `vectors/keyed-v1.json`
+→ `link` gained `helloProofDialer`, `helloProofReply`, both transcripts, `proofDialer`, `proofResponder` and
+`proofRejects`; `link.hello` (caps 0x9) and everything else did not move. *Metadata cost:* a proven link tells its peer
+our two public keys, which our signed profile already publishes to everyone; the nonces say nothing.
 
 **Precedent — a receiver's progress report (`blobprog`, under `CAP_BLOB_HAVE`, ADR 2026-10.nsr7).** A third type under
 the holder query's bit, with no bit of its own: none of 6e5t or this had been pushed when it was added. It is unsigned and

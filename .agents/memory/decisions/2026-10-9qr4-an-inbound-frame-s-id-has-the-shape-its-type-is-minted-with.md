@@ -99,3 +99,11 @@ id only through `NodeId(_:)`, the same round trip, and it has no Wi-Fi Aware pla
 
 Regression: `ProtocolTest` and `NanCueCodecTest` (marked, padded, uppercase, short and long ids refused) and
 `LinkHandshakeTest` (a HELLO naming a marked id reads as null).
+
+## Amendment 2026-11-01 — a link's node id is proven where the peer can prove it
+
+The last amendment's open case ("link identity is still unauthenticated, so a neighbour can claim `V`'s exact id while
+`V` is not linked to us") is closed for every `V` that can prove itself: a link proves the id its HELLO claims with the
+identity key, and an unproven HELLO claiming a proof-capable id is refused (ADR 2026-11.264w). The canonical-id check
+stays first: `LinkHandshake.receiveHello` refuses a non-canonical id before any proof is read. It remains open for a
+peer on a build before link proof, or one we hold no profile for and that has not proven itself this run.

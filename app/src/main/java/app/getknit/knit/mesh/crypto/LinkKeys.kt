@@ -40,7 +40,11 @@ object LinkKeys {
 
     private const val HKDF_MAC = "HMACSHA256"
 
-    /** Domain separation: disjoint from `knit/call/v1/…`, `knit/xfer/v2/…`, `knit/scope/v1/…`, `knit/dm/v2/…`. */
+    /**
+     * Domain separation: disjoint from `knit/call/v1/…`, `knit/xfer/v2/…`, `knit/scope/v1/…`, `knit/dm/v2/…`. The
+     * `knit/link/v1/` prefix is shared with `knit/link/v1/proof` ([LinkProof]), a signature context rather than KDF info,
+     * so the two never meet (ADR 2026-11.264w).
+     */
     private val OFFERER_TO_ANSWERER = "knit/link/v1/lane/o2a".toByteArray(Charsets.US_ASCII)
     private val ANSWERER_TO_OFFERER = "knit/link/v1/lane/a2o".toByteArray(Charsets.US_ASCII)
 

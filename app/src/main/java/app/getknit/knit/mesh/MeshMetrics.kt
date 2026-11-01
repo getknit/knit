@@ -145,6 +145,15 @@ enum class DropReason {
     POINT_TO_POINT_FLOODED,
 
     /**
+     * A blob control frame (`blobreq`, `blobhave`, `blobhas`, `blobprog`, `blobcancel`) that did not arrive on a link
+     * (an L2CAP channel, a Wi-Fi Aware data path or a direct link) or whose `senderId` is not that link's peer. They are
+     * unsigned, so only the link they came in on says who sent one; a side-channel page, a hop-less fast frame or a LoRa
+     * packet names its sender in bytes anyone can write. Every build sends them on links under its own id (ADR
+     * 2026-11.264w), so a count here is a crafted frame.
+     */
+    BLOB_CONTROL_NOT_FROM_LINK,
+
+    /**
      * A compact LoRa DM that opened under its pair key and was refused at delivery (`InboundPipeline.deliverLoraDirect`,
      * ADR 2026-10.x9fa): a plaintext that is not v3 compact content this build reads, or one that is anything but a
      * message, a `CTL_RECEIPT` or a `CTL_REACTION` — a reset, a seed, a profile, a scope config, a transfer or a call
@@ -382,6 +391,9 @@ class MeshMetrics {
     private val digestsReplaced = AtomicLong()
     private val custodyOversizeRefused = AtomicLong()
     private val profileOversizeRefused = AtomicLong()
+    private val linksProven = AtomicLong()
+    private val linkProofFailed = AtomicLong()
+    private val linkClaimRefused = AtomicLong()
     private val photosOverCeiling = AtomicLong()
     private val avatarsOverCeiling = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
@@ -827,6 +839,24 @@ class MeshMetrics {
      */
     fun onProfileOversizeRefused() {
         profileOversizeRefused.incrementAndGet()
+    }
+
+    /** A link was registered as proven: its peer proved the node id its HELLO claims (`LinkClaims.proven`). */
+    fun onLinkProven() {
+        linksProven.incrementAndGet()
+    }
+
+    /** A link's proof failed on this side: missing, malformed, another id's key, or a bad signature (`LinkClaims`). */
+    fun onLinkProofFailed() {
+        linkProofFailed.incrementAndGet()
+    }
+
+    /**
+     * An unproven link claiming a proof-capable node id was refused at its handshake, or closed once the id became
+     * proof-capable (`LinkClaims`).
+     */
+    fun onLinkClaimRefused() {
+        linkClaimRefused.incrementAndGet()
     }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
@@ -1501,6 +1531,9 @@ class MeshMetrics {
             digestsReplaced = digestsReplaced.get(),
             custodyOversizeRefused = custodyOversizeRefused.get(),
             profileOversizeRefused = profileOversizeRefused.get(),
+            linksProven = linksProven.get(),
+            linkProofFailed = linkProofFailed.get(),
+            linkClaimRefused = linkClaimRefused.get(),
             healsCompleted = healsCompleted.get(),
             roundsFailedBy = roundsFailed.mapValues { it.value.get() }.filterValues { it > 0 },
         )
@@ -1778,6 +1811,10 @@ class MeshMetrics {
             val custodyOversizeRefused: Long = 0,
             // #234: a profile refused at the door or by custody because its `signed` bytes are over the profile cap.
             val profileOversizeRefused: Long = 0,
+            // ADR 2026-11.264w: links registered as proven, failed proofs, and unproven claims refused or closed.
+            val linksProven: Long = 0,
+            val linkProofFailed: Long = 0,
+            val linkClaimRefused: Long = 0,
             val healsCompleted: Long = 0,
             val roundsFailedBy: Map<MeshRound, Long> = emptyMap(),
         )

@@ -7,8 +7,12 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.link.LinkClaims
+import app.getknit.knit.mesh.link.LinkFraming
+import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -78,6 +82,8 @@ class DirectLinkTransportTest {
                 .AtomicBoolean(false)
         val closed = CompletableDeferred<Unit>()
         lateinit var stream: LinkArq
+        val metrics = MeshMetrics()
+        val claims = LinkClaims(metrics)
         val transport: DirectLinkTransport =
             DirectLinkTransport(
                 selfId = { self },
@@ -85,7 +91,7 @@ class DirectLinkTransportTest {
                 scope = scope,
                 cacheDir = tmp.newFolder(),
                 partials = PartialBlobs(tmp.newFolder()),
-                metrics = MeshMetrics(),
+                metrics = metrics,
                 now = now,
                 onUse = { uses += it },
                 onLinkUp = {
@@ -94,6 +100,7 @@ class DirectLinkTransportTest {
                     if (transport.neighbors.value.any { n -> n.nodeId == it }) upLate.set(true)
                 },
                 handshakeMs = handshakeMs,
+                claims = claims,
             )
     }
 
@@ -176,6 +183,54 @@ class DirectLinkTransportTest {
             b.transport.neighbors.first { set -> set.any { it.nodeId == alice } }
         }
     }
+
+    /**
+     * A lane is proven before its HELLO is read (ADR 2026-11.264w, contract §6): its keys bind both ids. A peer already
+     * proof-capable here is never refused on it (R1 never runs on this plane), the link counts as proven, and the radios
+     * are told, so they close an unproven link claiming that peer (R3).
+     */
+    @Test
+    fun aLaneLinkCountsAsProvenAndIsNeverRefusedAsAnUnprovenClaim() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            a.claims.seed(listOf(bob))
+            val told = Collections.synchronizedList(ArrayList<String>())
+            a.claims.onCapable { told += it }
+
+            linked(a, b)
+
+            val frames = a.metrics.frames()
+            assertEquals(1L, frames.linksProven)
+            assertEquals(0L, frames.linkClaimRefused)
+            assertEquals(0L, frames.linkProofFailed)
+            assertEquals(listOf(bob), told.toList())
+            assertEquals(1L, b.metrics.frames().linksProven)
+            assertTrue(b.claims.isProofCapable(alice))
+        }
+
+    /**
+     * A lane peer on a build without link proof (its HELLO lacks the bit) links as ever, proven for this plane, but
+     * tells the radios nothing: made proof-capable by it, its honest unproven radio links would be refused (R1).
+     */
+    @Test
+    fun aLanePeerWhoseHelloLacksTheBitLinksButFeedsNoClaim() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            a.transport.start()
+            connect(a, b)
+            a.transport.adopt(bob, a.stream, offerer = false)
+            // Bob's end by hand, as a build without the bit writes its HELLO: three fields, caps 0x9.
+            LinkFraming.write(b.stream.output, LinkFraming.Type.HELLO, "$bob|${Protocol.VERSION}|9".encodeToByteArray())
+            b.stream.output.flush()
+            val reply = LinkHandshake.receiveHello(b.stream.input)
+            assertTrue("alice answered with the bit", reply?.offersProof == true)
+            withTimeout(WAIT_MS) { a.transport.neighbors.first { set -> set.any { it.nodeId == bob } } }
+
+            assertEquals(0L, a.metrics.frames().linksProven)
+            assertFalse(a.claims.isProofCapable(bob))
+        }
 
     @Test
     fun aLinksStreamIsFramedAndAFrameCrossingItIsUseAtBothEnds() =

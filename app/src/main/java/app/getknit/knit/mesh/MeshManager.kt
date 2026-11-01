@@ -68,6 +68,7 @@ import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.crypto.sealedContent
 import app.getknit.knit.mesh.inet.LinkHolderProof
 import app.getknit.knit.mesh.link.FileIntake
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.DirectKind
@@ -160,6 +161,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -396,6 +398,10 @@ class MeshManager(
     // comes from the copy the build ships.
     private val homes: HomeJournal? = null,
     directory: PublicSpoolSource? = null,
+    // Who must prove the node id its link HELLO claims (ADR 2026-11.264w): seeded from the stored profiles at each start,
+    // fed every stored profile by the pipeline, and read for the displacements the neighbour set cannot show. The DI
+    // hands the planes' shared one; a test that runs no link plane gets its own.
+    private val linkClaims: LinkClaims = LinkClaims(metrics),
 ) : MeshController,
     TransferSignals,
     CallSignals,
@@ -806,6 +812,7 @@ class MeshManager(
             commonsTitle = { commons?.find(it)?.name },
             noteVerified = ::noteVerified,
             scopeConfigs = scopeConfigs,
+            linkClaims = linkClaims,
             loraSeen = loraSeen,
         )
 
@@ -1194,6 +1201,7 @@ class MeshManager(
         if (started) return
         started = true
         startSweepsDone = false
+        profileSeedDone = false
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         partials.purge() // and the cut transfers' kept prefixes: a resume lives within one session (#116)
         // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
@@ -1211,6 +1219,13 @@ class MeshManager(
         session.launch {
             ratchet.rootChanges.collect { peer ->
                 runRound({ Log.w(TAG, "held reactions failed: ${it.message}") }) { flushHeldReactions(peer) }
+            }
+        }
+        // The profile half of who must prove a link (ADR 2026-11.264w), read once per start. A plane may admit an unproven
+        // claim before it lands; the seed's notifications close that link as a profile gaining the bit would (R4).
+        session.launch {
+            runRound({ Log.w(TAG, "link claims seed failed: ${it.message}") }) {
+                linkClaims.seed(peers.withCapabilities(Protocol.CAP_LINK_PROOF))
             }
         }
         transport.start()
@@ -3225,6 +3240,14 @@ class MeshManager(
     internal var startSweepsDone: Boolean = false
         private set
 
+    /**
+     * Whether this session's own-profile seeding ([seedOwnProfileCustody]) has run to its end, the capability republish
+     * and the stale stamp's refresh included: a test waits on it before it says a start published or bumped nothing.
+     */
+    @Volatile
+    internal var profileSeedDone: Boolean = false
+        private set
+
     /** The blob wants the last [sweepExpired] reclaimed: `mesh/lab` counts a want's generations by them (#195). */
     @Volatile
     internal var lastSweptBlobs: Set<String> = emptySet()
@@ -3555,7 +3578,26 @@ class MeshManager(
     @Volatile
     private var neighborsHanded: Set<Peer> = emptySet()
 
+    // Ids whose unproven link a proof displaced since the last pass ([LinkClaims.onDisplaced]): each one still linked is
+    // departed and welcomed again by the next pass, the squatter's per-link state going with the departure.
+    private val relinks: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private fun watchNeighbors(session: CoroutineScope) {
+        // A proof displaced an unproven link under the same id (R3, ADR 2026-11.264w): the link set keys on the id, so it
+        // never showed the swap. The next pass departs the id and re-welcomes it, so the real peer gets its own link-up.
+        val relinkDue = Channel<Unit>(Channel.CONFLATED)
+        val displaced =
+            linkClaims.onDisplaced { id ->
+                relinks.add(id)
+                relinkDue.trySend(Unit)
+            }
+        session.launch {
+            try {
+                for (due in relinkDue) neighborPassLock.withLock { neighborPass(neighborsHanded) }
+            } finally {
+                displaced.close()
+            }
+        }
         session.launch {
             neighborPassLock.withLock {
                 knownLinks = emptySet()
@@ -3563,6 +3605,7 @@ class MeshManager(
                 owedDepartures = emptySet()
                 neighborPassOwed = false
                 neighborsHanded = emptySet()
+                relinks.clear()
             }
             // A direct collector, on purpose: `neighbors` conflates, and `mesh/lab` reads this body's return as the
             // link set handled (`LabTransport.awaitNeighborsHandled`).
@@ -3584,6 +3627,9 @@ class MeshManager(
      */
     private suspend fun neighborPass(current: Set<Peer>) {
         val currentIds = current.map { it.nodeId }.toSet()
+        // A displaced id that is still linked is a departure and a newcomer at once; one no longer linked departs anyway.
+        val relinked = relinks.toSet().also { relinks.removeAll(it) } intersect currentIds
+        knownLinks = knownLinks - relinked
         val newcomers = current.filter { it.nodeId !in knownLinks }
         // No departure cleanup: under the cue-driven transport a data-path link is ephemeral and
         // reconnects on every sync, so we deliberately keep sentAvatarHashes across the flap —
@@ -3594,7 +3640,7 @@ class MeshManager(
         // link (Bluetooth) only joins once, so reofferToNeighborsPeriodically re-runs these hooks on a
         // timer for currently-linked neighbors — the anti-entropy a non-flapping link needs.)
         // An owed departure whose peer is back is moot: `linked` below starts that peer's asks over.
-        val departed = (lastLinks - currentIds) + (owedDepartures - currentIds)
+        val departed = (lastLinks - currentIds) + (owedDepartures - currentIds) + relinked
         lastLinks = currentIds
         owedDepartures = departed
         knownLinks = knownLinks intersect currentIds
@@ -3663,11 +3709,16 @@ class MeshManager(
             // At startup too, not only on the 15-min heartbeat: this is where a device that just enabled
             // the Internet plane (or just finished its mint grace while the app was closed) actually mints.
             mintGroupRootsIfDue()
+            // A start whose capabilities differ from the last profile we signed republishes it as an edit, ahead of the
+            // stale check, which keeps the version (ADR 2026-11.264w): the first profile carrying a new bit is then strictly
+            // newer than every one from before, which a peer's stored capabilities follow.
+            republishProfileIfCapabilitiesChanged()
             // Stamp a publish time before building the frame: a device whose profile was last edited days
             // ago would otherwise seed a frame custody refuses as dead on arrival, and this seeding exists
             // precisely so first contact has a frame to diverge on.
             republishProfileIfStale()
             ownProfile() // seeds the row when the stamp is new; reuses it when custody already holds it
+            profileSeedDone = true
         }
 
     /**
@@ -3951,7 +4002,7 @@ class MeshManager(
                 settings.setProfileVersion(maxOf(clock(), profileVersion() + 1))
                 // Ahead of building the envelope: the stamp IS the frame id (and the custody `sentAt`) it reads.
                 settings.setProfilePublishedAt(nextPublishStamp())
-                signOwnProfileLocked()
+                signOwnProfileLocked(edited = true)
             }
         originateWire(wire, env)
         transport.neighbors.value.forEach { sendAvatarIfNeeded(it) }
@@ -4641,6 +4692,21 @@ class MeshManager(
     private suspend fun republishProfileIfStale() = republishProfile(force = false)
 
     /**
+     * Republishes our profile as an edit — a version bump and a fresh stamp, [broadcastProfile]'s path — when the
+     * capabilities it would carry differ from those the last one we signed carried, or none are recorded (the first start
+     * of a build that records them). Capabilities change with the build or a plane's switch, never through an edit, and a
+     * peer writes a stored profile's capabilities only from one no older than its presentation version (ADR 2026-11.264w):
+     * at an equal version a custodied frame from before the change could take a bit such as [Protocol.CAP_LINK_PROOF]
+     * back. A downgraded build republishes past the version it persisted, without the bit, which peers take as newer.
+     */
+    private suspend fun republishProfileIfCapabilitiesChanged() {
+        val now = capabilitiesWith(currentLora().direct)
+        if (settings.ownProfileCapabilities.first() == now) return
+        Log.i(TAG, "profile capabilities changed to ${now.toString(HEX_RADIX)}: republishing")
+        broadcastProfile()
+    }
+
+    /**
      * [republishProfileIfStale]'s body, with [force] for the one caller that knows the current stamp is
      * already useless: a commons that count-evicted our profile tombstones its bytes for the room's TTL, so
      * only a fresh stamp — a fresh frame id — can put us back in front of its members (§7.4).
@@ -4726,12 +4792,26 @@ class MeshManager(
      */
     private suspend fun ownProfile(): Pair<WireEnvelope, RelayEnvelope> = profileLock.withLock { signOwnProfileLocked() }
 
-    /** [ownProfile]'s body — the one place a profile frame is signed. Caller holds [profileLock]. */
-    private suspend fun signOwnProfileLocked(): Pair<WireEnvelope, RelayEnvelope> {
-        val env = currentProfileEnvelope()
+    /**
+     * [ownProfile]'s body — the one place a profile frame is signed. Caller holds [profileLock]. [edited]: the caller
+     * has just bumped the version and the stamp ([broadcastProfile]), so a change of capabilities is already an edit's.
+     */
+    private suspend fun signOwnProfileLocked(edited: Boolean = false): Pair<WireEnvelope, RelayEnvelope> {
+        var env = currentProfileEnvelope()
         forwardStore.frame(env.id, clock())?.let { held -> return WireEnvelope(sig = held.sig, signed = held.signed) to held.envelope }
+        val caps = WireCodec.decodePayload<ProfileContent>(env.payload)?.capabilities
+        // Every fresh signing whose capabilities differ from the last one's is an edit, whoever asks for it first (ADR
+        // 2026-11.264w): a link-up's push or the stale republish can outrun the start-time check, and a profile carrying a
+        // new bit at the old version would let a pre-upgrade frame at that version take the bit back at a peer.
+        if (!edited && caps != settings.ownProfileCapabilities.first()) {
+            settings.setProfileVersion(maxOf(clock(), profileVersion() + 1))
+            settings.setProfilePublishedAt(nextPublishStamp())
+            env = currentProfileEnvelope()
+        }
         val wire = sign(env)
         forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
+        // What this signing carried, for the next comparison.
+        caps?.let { settings.setOwnProfileCapabilities(it) }
         return wire to env
     }
 
@@ -5411,6 +5491,9 @@ class MeshManager(
 
         /** How much of a file's key a log line names. */
         const val LOG_KEY_CHARS = 8
+
+        /** A capability bitfield's radix in a log line. */
+        const val HEX_RADIX = 16
 
         const val TAG = "MeshManager"
         const val TEXT_MODERATION_TAG = "TextModeration"

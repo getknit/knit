@@ -50,7 +50,19 @@ internal object BleAdmissionPolicy {
      * [atCap] is the debug link cap (`SettingsStore.debugBleLinkCap`) being full: a dialer that would add a
      * link is refused rather than admitted and shed by eviction twenty seconds later. A replacement does not
      * grow the set, so it stands. Always false in release, where the table is exactly the one above.
+     *
+     * Link proofs (ADR 2026-11.264w, knit-next #232) add three rows, and leave the table above exactly as it was for a
+     * dialer that offers no proof against a held link that is unproven or absent, the id not being [proofCapable]:
+     * - **R1** ([refusesClaim]) first, ahead of every other row: a dialer whose HELLO lacks `CAP_LINK_PROOF`
+     *   ([offersProof]) claiming a [proofCapable] id is refused, whatever else holds.
+     * - **R3**: a dialer that offers a proof, against a held link that is not [heldProven], is admitted as a
+     *   [Verdict.Replace] whatever its sighting, the held link's age or the id order. It is pending its proof: the held
+     *   link is closed only once the proof verifies, and stays if it fails. A squatter's link would otherwise keep the
+     *   real peer out for good, since this side never dials an id a link already claims.
+     * - **R2**: a [heldProven] link is never replaced by a dialer without the bit, and by one with it only under the
+     *   rows above (sighted: refused; younger than [REPLACE_MIN_HOLD_MS]: refused; else replaced).
      */
+    @Suppress("LongParameterList") // the table's inputs, each a row's
     fun decide(
         local: String,
         dialer: String,
@@ -59,17 +71,59 @@ internal object BleAdmissionPolicy {
         atCap: Boolean = false,
         doorbell: Boolean = false,
         heardAgoMs: Long? = null,
-    ): Verdict {
-        val seen = sightedForAdmission(sighted, doorbell, heardAgoMs)
-        return when {
+        heldProven: Boolean = false,
+        offersProof: Boolean = false,
+        proofCapable: Boolean = false,
+    ): Verdict =
+        when {
             dialer == local -> Verdict.Refuse
+            else -> proofRow(heldLinkAgeMs != null, heldProven, offersProof, proofCapable)
+        } ?: unprovenTable(local, dialer, sightedForAdmission(sighted, doorbell, heardAgoMs), heldLinkAgeMs, atCap)
+
+    /**
+     * The proof rows of [decide], or null where they leave the verdict to [unprovenTable]: R1 refuses an unproven claim
+     * on a proof-capable id; R3 replaces an unproven [held] link for a dialer offering a proof, pending it; R2 refuses a
+     * dialer without the bit against a proven one.
+     */
+    private fun proofRow(
+        held: Boolean,
+        heldProven: Boolean,
+        offersProof: Boolean,
+        proofCapable: Boolean,
+    ): Verdict? =
+        when {
+            refusesClaim(offersProof, proofCapable) -> Verdict.Refuse
+            held && !heldProven && offersProof -> Verdict.Replace
+            held && heldProven && !offersProof -> Verdict.Refuse
+            else -> null
+        }
+
+    /** The table every build had before link proofs ([decide]'s KDoc), [seen] already through [sightedForAdmission]. */
+    private fun unprovenTable(
+        local: String,
+        dialer: String,
+        seen: Boolean,
+        heldLinkAgeMs: Long?,
+        atCap: Boolean,
+    ): Verdict =
+        when {
             seen && local > dialer -> Verdict.Refuse
             heldLinkAgeMs == null -> if (atCap) Verdict.Refuse else Verdict.Admit
             seen -> Verdict.Refuse
             heldLinkAgeMs < REPLACE_MIN_HOLD_MS -> Verdict.Refuse
             else -> Verdict.Replace
         }
-    }
+
+    /**
+     * R1 (ADR 2026-11.264w): a HELLO that offers no proof ([offersProof] false) claiming an id this phone knows can prove
+     * itself ([proofCapable]: its stored profile carries `CAP_LINK_PROOF`, or a link proved it this run). The transport
+     * asks this before [decide] so the refusal is counted and logged as a claim (`LinkClaims.refused`); [decide] carries
+     * the same row first, so no caller can reach the old rows around it.
+     */
+    fun refusesClaim(
+        offersProof: Boolean,
+        proofCapable: Boolean,
+    ): Boolean = !offersProof && proofCapable
 
     /**
      * Whether [decide] judges a dialer as sighted: presence holds it ([sighted]) and, for a [doorbell] dialer, it was

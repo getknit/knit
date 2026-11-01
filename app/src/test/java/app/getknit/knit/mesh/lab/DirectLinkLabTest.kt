@@ -61,6 +61,9 @@ class DirectLinkLabTest {
             lab.unlink(bob, carol)
             val dave = lab.node("dave").apply { setDisplayName("Dave") }
             lab.link(bob, dave)
+            // Dave's key reaches Bob by his link-up profile push, on his own neighbour pass: wait for it, or Dave's post below
+            // can land first and park for the key, a round trip the convergence checks never wait on.
+            lab.await(1) { if (bob.knows(dave)) 1 else 0 }
             lab.directLink(alice, bob)
 
             assertTrue(alice.sendDm(bob, "over the link"))

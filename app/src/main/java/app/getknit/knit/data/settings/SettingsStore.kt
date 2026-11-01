@@ -56,6 +56,14 @@ class SettingsStore(
     override val profilePublishedAt: Flow<Long> = dataStore.data.map { it[KEY_PROFILE_PUBLISHED_AT] ?: 0L }
 
     /**
+     * The capabilities this phone's last freshly signed own profile carried, null until a build that keeps it signs one
+     * (ADR 2026-11.264w). A start whose capabilities differ, or find none, republishes the profile as an edit, so every
+     * profile from before an upgrade is strictly older than the first one with the new bits: a receiver gates a peer's
+     * stored capabilities on the profile version, and an equal version would let a custodied older frame take a bit back.
+     */
+    val ownProfileCapabilities: Flow<Long?> = dataStore.data.map { it[KEY_OWN_PROFILE_CAPABILITIES] }
+
+    /**
      * Content hash of the device's own avatar, or null if none is set. The avatar bytes live in the
      * encrypted `blobs` table keyed by this hash; the hash is what the profile frame advertises and
      * what the UI/notifications resolve against. (Pre-v6 this was derived from the avatar's filename.)
@@ -606,6 +614,8 @@ class SettingsStore(
 
     suspend fun setProfilePublishedAt(value: Long) = dataStore.edit { it[KEY_PROFILE_PUBLISHED_AT] = value }
 
+    suspend fun setOwnProfileCapabilities(value: Long) = dataStore.edit { it[KEY_OWN_PROFILE_CAPABILITIES] = value }
+
     suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 
     /** Removes the stored own-avatar hash so [ownAvatarHash] emits null again (the user cleared their photo). */
@@ -1072,6 +1082,7 @@ class SettingsStore(
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
         val KEY_PROFILE_VERSION = longPreferencesKey("profile_version")
         val KEY_PROFILE_PUBLISHED_AT = longPreferencesKey("profile_published_at")
+        val KEY_OWN_PROFILE_CAPABILITIES = longPreferencesKey("own_profile_capabilities")
         val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")

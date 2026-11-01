@@ -1,45 +1,340 @@
 package app.getknit.knit.mesh.link
 
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.LinkProof
+import app.getknit.knit.mesh.crypto.LinkProver
+import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.protocol.Protocol
+import com.google.crypto.tink.subtle.Ed25519Sign
+import com.google.crypto.tink.subtle.X25519
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
+import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
- * The two-way HELLO both radios open a link with ([LinkHandshake]): an accept-any responder learns who dialed from the
- * first record alone, the initiator confirms over the socket who it reached, and anything else in the first record —
- * a frame, a truncation, a closed socket, a tag no build knows — is a rejection, never a guess at the peer.
+ * The link handshake both radios open a link with ([LinkHandshake], ADR 2026-11.264w): the two-way HELLO, and on a link
+ * whose two HELLOs carry [Protocol.CAP_LINK_PROOF], a proof each way of the node id each HELLO claims. A legacy HELLO on
+ * either end links unproven, a PROOF is never written toward a HELLO without the bit, and a proof that is missing,
+ * malformed, another identity's or for the other role is a failure, never a guess. The canned-stream tests drive one
+ * side against exact bytes; [bothEndsProveOverAPipe] runs both sides at once.
  */
 class LinkHandshakeTest {
-    private fun helloFrom(nodeId: String): ByteArray = ByteArrayOutputStream().also { LinkHandshake.writeHello(it, nodeId) }.toByteArray()
+    @Before
+    fun tink() = TinkInit.ensure()
+
+    private class Id(
+        seed: Int,
+    ) {
+        private val signing = Ed25519Sign.KeyPair.newKeyPairFromSeed(ByteArray(32) { (seed + it).toByte() })
+        val bundle = PublicKeyBundle.fromRaw(signing.publicKey, X25519.publicFromPrivate(ByteArray(32) { (seed * 3 + it).toByte() }))!!
+        val prover = LinkProver(bundle, Ed25519Sign(signing.privateKey)::sign)
+        val nodeId = prover.nodeId
+    }
+
+    private val alice = Id(1)
+    private val bob = Id(40)
+    private val nonceA = ByteArray(Protocol.HELLO_NONCE_BYTES) { it.toByte() }
+    private val nonceB = ByteArray(Protocol.HELLO_NONCE_BYTES) { (0x10 + it).toByte() }
+
+    // Alice dials Bob: the two HELLO payloads exactly as they cross the link.
+    private val helloD = Protocol.hello(alice.nodeId, nonceA).encodeToByteArray()
+    private val helloR = Protocol.hello(bob.nodeId, nonceB).encodeToByteArray()
+
+    private fun record(
+        type: LinkFraming.Type,
+        payload: ByteArray,
+    ) = LinkFraming.encode(type, payload)
+
+    private fun legacyHello(nodeId: String) = "$nodeId|${Protocol.VERSION}|9".encodeToByteArray()
+
+    private fun records(bytes: ByteArray): List<LinkFraming.Message> {
+        val input = ByteArrayInputStream(bytes)
+        return generateSequence { LinkFraming.read(input) }.toList()
+    }
+
+    // --- the dialer, against a canned responder ---
 
     @Test
-    fun theResponderLearnsTheInitiatorsIdentityFromItsHello() {
-        val peer = LinkHandshake.readHello(ByteArrayInputStream(helloFrom(A)))
+    fun aDialerVerifiesTheRespondersProofAndThenProvesItself() {
+        val bobsProof = bob.prover.proof(LinkProof.Role.RESPONDER, helloD, helloR)
+        val out = ByteArrayOutputStream()
 
-        assertNotNull(peer)
-        assertEquals(A, peer!!.nodeId)
-        assertEquals(Protocol.VERSION, peer.protoVersion)
-        assertEquals(Protocol.LOCAL_CAPABILITIES, peer.capabilities)
+        val dialed =
+            LinkHandshake.dial(
+                ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + record(LinkFraming.Type.PROOF, bobsProof)),
+                out,
+                alice.prover,
+                bob.nodeId,
+                nonceA,
+            )
+
+        assertEquals(LinkHandshake.Dialed.Linked(Protocol.parse(helloR.decodeToString())!!, proven = true), dialed)
+        val written = records(out.toByteArray())
+        assertEquals(listOf(LinkFraming.Type.HELLO, LinkFraming.Type.PROOF), written.map { it.type })
+        assertArrayEquals(helloD, written[0].payload)
+        assertNull(LinkProof.verify(written[1].payload, alice.nodeId, LinkProof.Role.DIALER, helloD, helloR))
     }
 
     @Test
-    fun theHelloIsOneHelloRecordCarryingTheAdvert() {
-        val record = LinkFraming.read(ByteArrayInputStream(helloFrom(A)))
+    fun aLegacyReplyLinksUnprovenAndIsSentNoProof() {
+        val out = ByteArrayOutputStream()
 
-        assertEquals(LinkFraming.Type.HELLO, record?.type)
-        assertArrayEquals(Protocol.advertise(A).encodeToByteArray(), record!!.payload)
+        val dialed =
+            LinkHandshake.dial(ByteArrayInputStream(record(LinkFraming.Type.HELLO, legacyHello(bob.nodeId))), out, alice.prover, bob.nodeId)
+
+        assertTrue(dialed is LinkHandshake.Dialed.Linked && !dialed.proven)
+        assertEquals(listOf(LinkFraming.Type.HELLO), records(out.toByteArray()).map { it.type })
     }
 
     @Test
-    fun theHelloIsFlushedSoAResponderBlockedOnItsReadSeesIt() {
-        // A buffered socket stream that is never flushed would leave the responder waiting out its read bound.
+    fun theDialersHelloCarriesTheBitAndAFreshNonce() {
+        val out = ByteArrayOutputStream()
+        LinkHandshake.dial(ByteArrayInputStream(ByteArray(0)), out, alice.prover, bob.nodeId)
+        LinkHandshake.dial(ByteArrayInputStream(ByteArray(0)), out, alice.prover, bob.nodeId)
+
+        val hellos = records(out.toByteArray()).map { Protocol.parse(it.payload.decodeToString())!! }
+        assertTrue(hellos.all { it.offersProof && it.nonceHex != null })
+        assertTrue("a nonce per attempt", hellos[0].nonceHex != hellos[1].nonceHex)
+    }
+
+    @Test
+    fun noReplyAndAnotherPeersReplyAreRejected() {
+        assertEquals(
+            LinkHandshake.Dialed.NoReply,
+            LinkHandshake.dial(ByteArrayInputStream(ByteArray(0)), ByteArrayOutputStream(), alice.prover, bob.nodeId),
+        )
+        val other =
+            LinkHandshake.dial(
+                ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR)),
+                ByteArrayOutputStream(),
+                alice.prover,
+                NodeId.derive("x"),
+            )
+        assertTrue(other is LinkHandshake.Dialed.WrongPeer)
+    }
+
+    @Test
+    fun aReplyWithTheBitAndNoValidNonceIsAFailedProofAndIsSentNoProof() {
+        for (bad in listOf("", "|n00", "|N${"0".repeat(32)}", "|n${"0".repeat(31)}g", "|n${"0".repeat(33)}")) {
+            val reply = "${Protocol.advertise(bob.nodeId)}$bad".encodeToByteArray()
+            val out = ByteArrayOutputStream()
+
+            val dialed = LinkHandshake.dial(ByteArrayInputStream(record(LinkFraming.Type.HELLO, reply)), out, alice.prover, bob.nodeId)
+
+            assertTrue(bad, dialed is LinkHandshake.Dialed.ProofFailed)
+            assertEquals(bad, listOf(LinkFraming.Type.HELLO), records(out.toByteArray()).map { it.type })
+        }
+    }
+
+    @Test
+    fun aMissingOrMisplacedProofFailsAndOursIsNeverWritten() {
+        val cases =
+            mapOf(
+                "eof" to ByteArray(0),
+                "frame first" to record(LinkFraming.Type.FRAME, byteArrayOf(1)),
+                "keepalive first" to record(LinkFraming.Type.KEEPALIVE, ByteArray(0)),
+                "truncated" to record(LinkFraming.Type.PROOF, ByteArray(LinkProof.PAYLOAD_BYTES)).copyOf(20),
+            )
+        for ((name, after) in cases) {
+            val out = ByteArrayOutputStream()
+            val dialed =
+                LinkHandshake.dial(
+                    ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + after),
+                    out,
+                    alice.prover,
+                    bob.nodeId,
+                    nonceA,
+                )
+
+            assertTrue(name, dialed is LinkHandshake.Dialed.ProofFailed)
+            assertEquals(name, listOf(LinkFraming.Type.HELLO), records(out.toByteArray()).map { it.type })
+        }
+    }
+
+    @Test
+    fun everyProofTheVectorsRejectFailsTheDialer() {
+        // The keyed vectors' `proofRejects`, as the dialer meets them on Bob's side of the link: each must fail.
+        val ffNonce = Protocol.hello(bob.nodeId, ByteArray(Protocol.HELLO_NONCE_BYTES) { -1 }).encodeToByteArray()
+        val rejects =
+            mapOf(
+                "dialer role" to bob.prover.proof(LinkProof.Role.DIALER, helloD, helloR),
+                "another responder nonce" to bob.prover.proof(LinkProof.Role.RESPONDER, helloD, ffNonce),
+                "another identity" to alice.prover.proof(LinkProof.Role.RESPONDER, helloD, helloR),
+                "127 bytes" to bob.prover.proof(LinkProof.Role.RESPONDER, helloD, helloR).copyOf(LinkProof.PAYLOAD_BYTES - 1),
+            )
+        for ((name, proof) in rejects) {
+            val dialed =
+                LinkHandshake.dial(
+                    ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + record(LinkFraming.Type.PROOF, proof)),
+                    ByteArrayOutputStream(),
+                    alice.prover,
+                    bob.nodeId,
+                    nonceA,
+                )
+            assertTrue(name, dialed is LinkHandshake.Dialed.ProofFailed)
+        }
+    }
+
+    // --- the responder, against a canned dialer ---
+
+    @Test
+    fun aResponderRepliesWithItsProofInOneWriteAndVerifiesTheDialers() {
+        val alicesProof = alice.prover.proof(LinkProof.Role.DIALER, helloD, helloR)
+        val frame = record(LinkFraming.Type.FRAME, byteArrayOf(4, 5, 6))
+        val input = ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloD) + record(LinkFraming.Type.PROOF, alicesProof) + frame)
+        val hello = checkNotNull(LinkHandshake.receiveHello(input))
+        var writes = 0
+        val out =
+            object : ByteArrayOutputStream() {
+                override fun write(
+                    b: ByteArray,
+                    off: Int,
+                    len: Int,
+                ) {
+                    writes++
+                    super.write(b, off, len)
+                }
+            }
+
+        val answered = LinkHandshake.answer(input, out, bob.prover, hello, nonceB)
+
+        assertEquals(LinkHandshake.Answered.Linked(proven = true), answered)
+        assertEquals("reply and proof in one write", 1, writes)
+        val written = records(out.toByteArray())
+        assertEquals(listOf(LinkFraming.Type.HELLO, LinkFraming.Type.PROOF), written.map { it.type })
+        assertArrayEquals(helloR, written[0].payload)
+        assertNull(LinkProof.verify(written[1].payload, bob.nodeId, LinkProof.Role.RESPONDER, helloD, helloR))
+        // A record behind the proof is the link's: the handshake took exactly the PROOF.
+        assertEquals(LinkFraming.Message(LinkFraming.Type.FRAME, byteArrayOf(4, 5, 6)), LinkFraming.read(input))
+    }
+
+    @Test
+    fun aLegacyDialerGetsAReplyWithTheBitAndNoProofAndLinksUnproven() {
+        val input = ByteArrayInputStream(record(LinkFraming.Type.HELLO, legacyHello(alice.nodeId)))
+        val hello = checkNotNull(LinkHandshake.receiveHello(input))
+        val out = ByteArrayOutputStream()
+
+        assertFalse(hello.offersProof)
+        assertEquals(LinkHandshake.Answered.Linked(proven = false), LinkHandshake.answer(input, out, bob.prover, hello))
+        val written = records(out.toByteArray())
+        assertEquals(listOf(LinkFraming.Type.HELLO), written.map { it.type })
+        val reply = Protocol.parse(written[0].payload.decodeToString())!!
+        assertTrue(reply.offersProof && reply.nonceHex != null)
+    }
+
+    @Test
+    fun aDialerHelloWithTheBitAndNoValidNonceIsRefusedWithNoReply() {
+        val input = ByteArrayInputStream(record(LinkFraming.Type.HELLO, Protocol.advertise(alice.nodeId).encodeToByteArray()))
+        val hello = checkNotNull(LinkHandshake.receiveHello(input))
+        val out = ByteArrayOutputStream()
+
+        assertTrue(hello.malformedOffer)
+        assertTrue(LinkHandshake.answer(input, out, bob.prover, hello) is LinkHandshake.Answered.ProofFailed)
+        assertEquals(0, out.size())
+    }
+
+    @Test
+    fun aDialersMissingWrongOrMisplacedProofFailsTheResponder() {
+        val ffNonce = Protocol.hello(bob.nodeId, ByteArray(Protocol.HELLO_NONCE_BYTES) { -1 }).encodeToByteArray()
+        val after =
+            mapOf(
+                "eof" to ByteArray(0),
+                "frame first" to record(LinkFraming.Type.FRAME, byteArrayOf(1)),
+                "responder role" to record(LinkFraming.Type.PROOF, alice.prover.proof(LinkProof.Role.RESPONDER, helloD, helloR)),
+                "another responder nonce" to record(LinkFraming.Type.PROOF, alice.prover.proof(LinkProof.Role.DIALER, helloD, ffNonce)),
+                "another identity" to record(LinkFraming.Type.PROOF, bob.prover.proof(LinkProof.Role.DIALER, helloD, helloR)),
+                "127 bytes" to record(LinkFraming.Type.PROOF, alice.prover.proof(LinkProof.Role.DIALER, helloD, helloR).copyOf(127)),
+            )
+        for ((name, bytes) in after) {
+            val input = ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloD) + bytes)
+            val hello = checkNotNull(LinkHandshake.receiveHello(input))
+
+            val answered = LinkHandshake.answer(input, ByteArrayOutputStream(), bob.prover, hello, nonceB)
+
+            assertTrue(name, answered is LinkHandshake.Answered.ProofFailed)
+        }
+    }
+
+    // --- both ends at once ---
+
+    @Test
+    fun bothEndsProveOverAPipe() {
+        val toBob = PipedOutputStream()
+        val bobIn = BufferedInputStream(PipedInputStream(toBob, PIPE_BYTES))
+        val toAlice = PipedOutputStream()
+        val aliceIn = BufferedInputStream(PipedInputStream(toAlice, PIPE_BYTES))
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val dialer = pool.submit(Callable { LinkHandshake.dial(aliceIn, toBob, alice.prover, bob.nodeId) })
+            val responder =
+                pool.submit(
+                    Callable {
+                        val hello = checkNotNull(LinkHandshake.receiveHello(bobIn))
+                        hello.wire.nodeId to LinkHandshake.answer(bobIn, toAlice, bob.prover, hello)
+                    },
+                )
+
+            val dialed = dialer.get(JOIN_S, TimeUnit.SECONDS)
+            val (claimed, answered) = responder.get(JOIN_S, TimeUnit.SECONDS)
+
+            assertTrue(dialed is LinkHandshake.Dialed.Linked && dialed.proven && dialed.reply.nodeId == bob.nodeId)
+            assertEquals(alice.nodeId, claimed)
+            assertEquals(LinkHandshake.Answered.Linked(proven = true), answered)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    // --- the HELLO read ---
+
+    @Test
+    fun theHelloReadKeepsTheBytesAsReceived() {
+        val hello = checkNotNull(LinkHandshake.receiveHello(ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloD))))
+
+        assertArrayEquals(helloD, hello.payload)
+        assertEquals(alice.nodeId, hello.wire.nodeId)
+        assertTrue(hello.offersProof && !hello.malformedOffer)
+    }
+
+    @Test
+    fun aFirstRecordThatIsNotAHelloIsRejected() {
+        assertNull(LinkHandshake.receiveHello(ByteArrayInputStream(record(LinkFraming.Type.FRAME, helloD))))
+        assertNull(LinkHandshake.receiveHello(ByteArrayInputStream(record(LinkFraming.Type.PROOF, ByteArray(LinkProof.PAYLOAD_BYTES)))))
+    }
+
+    @Test
+    fun aHelloNamingANodeIdThatIsNotCanonicalIsRejected() {
+        // #199: SQLite drops a leading U+FEFF from a UTF-16 bind, so a BOM-led twin would pass the transports'
+        // duplicate-link checks and then read and write the real id's peers row.
+        val hello = record(LinkFraming.Type.HELLO, Protocol.advertise("\uFEFF${alice.nodeId}").encodeToByteArray())
+
+        assertNull(LinkHandshake.receiveHello(ByteArrayInputStream(hello)))
+    }
+
+    @Test
+    fun anEmptyTruncatedOrUnknownFirstRecordIsRejectedRatherThanThrown() {
+        val hello = record(LinkFraming.Type.HELLO, helloD)
+        for (bytes in listOf(ByteArray(0), hello.copyOf(hello.size - 1), byteArrayOf(0x7f, 0, 0, 0, 1, 0x41))) {
+            assertNull(LinkHandshake.receiveHello(ByteArrayInputStream(bytes)))
+        }
+    }
+
+    @Test
+    fun theLaneHelloCarriesTheBitAndANonceAndIsFlushed() {
         var flushed = false
         val out =
             object : ByteArrayOutputStream() {
@@ -48,67 +343,22 @@ class LinkHandshakeTest {
                 }
             }
 
-        LinkHandshake.writeHello(out, A)
+        LinkHandshake.writeLaneHello(out, alice.nodeId)
 
+        val written = records(out.toByteArray())
         assertTrue(flushed)
+        assertEquals(listOf(LinkFraming.Type.HELLO), written.map { it.type })
+        val hello = assertNotNullAndParse(written[0].payload)
+        assertTrue(hello.offersProof && hello.nonceHex != null)
     }
 
-    @Test
-    fun theInitiatorConfirmsThePeerItReachedFromTheReply() {
-        val reply = ByteArrayOutputStream().also { LinkHandshake.replyHello(it, B) }.toByteArray()
-
-        assertEquals(B, LinkHandshake.readHello(ByteArrayInputStream(reply))?.nodeId)
-    }
-
-    @Test
-    fun aFirstRecordThatIsNotAHelloIsRejected() {
-        val frame = LinkFraming.encode(LinkFraming.Type.FRAME, Protocol.advertise(A).encodeToByteArray())
-
-        assertNull(LinkHandshake.readHello(ByteArrayInputStream(frame)))
-    }
-
-    @Test
-    fun aHelloNamingANodeIdThatIsNotCanonicalIsRejected() {
-        // #199: SQLite drops a leading U+FEFF from a UTF-16 bind, so a BOM-led twin would pass the transports'
-        // duplicate-link checks and then read and write the real id's peers row.
-        val hello = LinkFraming.encode(LinkFraming.Type.HELLO, Protocol.advertise("\uFEFF$A").encodeToByteArray())
-
-        assertNull(LinkHandshake.readHello(ByteArrayInputStream(hello)))
-    }
-
-    @Test
-    fun aSocketClosedBeforeAnyRecordIsRejected() {
-        assertNull(LinkHandshake.readHello(ByteArrayInputStream(ByteArray(0))))
-    }
-
-    @Test
-    fun aTruncatedHelloIsRejectedRatherThanThrown() {
-        val hello = helloFrom(A)
-
-        assertNull(LinkHandshake.readHello(ByteArrayInputStream(hello.copyOf(hello.size - 1))))
-    }
-
-    @Test
-    fun aRecordTagNoBuildKnowsIsRejectedRatherThanThrown() {
-        val unknown = byteArrayOf(0x7f, 0, 0, 0, 1, 0x41)
-
-        assertNull(LinkHandshake.readHello(ByteArrayInputStream(unknown)))
-    }
-
-    @Test
-    fun readingTheHelloLeavesTheRecordsBehindItForTheLink() {
-        // The caller keeps reading the same stream for the link's frames, so the handshake must take one record only.
-        val frame = byteArrayOf(9, 8, 7)
-        val stream = ByteArrayInputStream(helloFrom(A) + LinkFraming.encode(LinkFraming.Type.FRAME, frame))
-
-        assertEquals(A, LinkHandshake.readHello(stream)?.nodeId)
-        val next = LinkFraming.read(stream)
-        assertEquals(LinkFraming.Type.FRAME, next?.type)
-        assertArrayEquals(frame, next!!.payload)
-    }
+    private fun assertNotNullAndParse(payload: ByteArray): Protocol.PeerWire =
+        Protocol.parse(payload.decodeToString()).also {
+            assertNotNull(it)
+        }!!
 
     private companion object {
-        val A = NodeId.derive("handshake-a")
-        val B = NodeId.derive("handshake-b")
+        const val PIPE_BYTES = 64 * 1024
+        const val JOIN_S = 20L
     }
 }

@@ -201,23 +201,63 @@ object Protocol {
      */
     const val CAP_INET_LINK = 0x20000L
 
+    /**
+     * Link proof (ADR 2026-11.264w, knit-next #232): this build proves the node id its link HELLO claims. Its HELLO
+     * carries a fresh nonce as a fourth field ([hello]), and to a peer whose HELLO carries this bit too it writes a
+     * `PROOF` link record ([app.getknit.knit.mesh.link.LinkFraming.Type.PROOF]): its two raw public keys and an
+     * identity-key signature over both HELLOs ([app.getknit.knit.mesh.crypto.LinkProof]). In [LOCAL_CAPABILITIES], so
+     * it also rides every signed profile this build publishes, and that copy is the one that counts: a phone whose
+     * stored profile for an id carries the bit refuses an unproven HELLO claiming that id
+     * ([app.getknit.knit.mesh.link.LinkClaims]). The profile is signed by its author, so nobody else can strip it. The
+     * HELLO copy is authenticated only on a link that proved itself (the transcript covers both HELLOs). It reaches the
+     * Wi-Fi Aware SSI too, where it means nothing, and is above the 8 bits a BLE advert carries.
+     */
+    const val CAP_LINK_PROOF = 0x40000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
             CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES or CAP_LINK_PREVIEW or
-            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE
+            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF
+
+    /** The bytes of a link HELLO's nonce ([hello]): 16, written as 32 lowercase hex digits after an `n`. */
+    const val HELLO_NONCE_BYTES = 16
 
     private const val SEP = '|'
+    private const val NONCE_PREFIX = 'n'
+    private const val NONCE_FIELD = 3
 
     /** The endpoint-info string a peer advertises: its [nodeId] plus this build's version + capabilities. */
     fun advertise(nodeId: String): String = "$nodeId$SEP$VERSION$SEP${LOCAL_CAPABILITIES.toString(RADIX)}"
 
-    /** A neighbor's advertised identity parsed from its endpoint name. */
+    /**
+     * A link HELLO's payload: the [advertise] string plus a fourth field `n<nonce>`, [nonce] being [HELLO_NONCE_BYTES]
+     * fresh random bytes in lowercase hex. HELLO-only: [advertise] is also the Wi-Fi Aware SSI, whose `|d<digest>`
+     * suffix `NanCueCodec.parseSsiDigest` finds by its last `|d`, so the nonce never goes there. Every shipped build
+     * reads fields 0-2 alone ([parse]), so the field costs an older peer nothing. Written only while
+     * [LOCAL_CAPABILITIES] carries [CAP_LINK_PROOF]: the field is present exactly when the caps carry the bit.
+     */
+    fun hello(
+        nodeId: String,
+        nonce: ByteArray,
+    ): String {
+        require(nonce.size == HELLO_NONCE_BYTES) { "a HELLO nonce is $HELLO_NONCE_BYTES bytes" }
+        return "${advertise(nodeId)}$SEP$NONCE_PREFIX${nonce.toHex()}"
+    }
+
+    /**
+     * A neighbor's advertised identity parsed from its endpoint name. [nonceHex] is a link HELLO's nonce, its 32 hex
+     * digits, only when field 3 has [hello]'s exact form (null otherwise, and always for an advert).
+     */
     data class PeerWire(
         val nodeId: String,
         val protoVersion: Int,
         val capabilities: Long,
-    )
+        val nonceHex: String? = null,
+    ) {
+        /** Its caps carry [CAP_LINK_PROOF]: the HELLO asks for, and promises, a proof. */
+        val offersProof: Boolean get() = capabilities and CAP_LINK_PROOF != 0L
+    }
 
     /**
      * Parses an endpoint name. The first segment is always the nodeId (robust to any future suffix); a
@@ -236,8 +276,18 @@ object Protocol {
             nodeId = parts[0],
             protoVersion = parts.getOrNull(1)?.toIntOrNull() ?: 0,
             capabilities = parts.getOrNull(2)?.toLongOrNull(RADIX) ?: 0L,
+            nonceHex = parts.getOrNull(NONCE_FIELD)?.let(::nonceOf),
         )
     }
+
+    // Field 3 is a nonce only as `n` + exactly 32 of [0-9a-f]; anything else is no nonce, never an error.
+    private fun nonceOf(field: String): String? {
+        if (field.length != 1 + 2 * HELLO_NONCE_BYTES || field[0] != NONCE_PREFIX) return null
+        val hex = field.substring(1)
+        return hex.takeIf { it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private const val RADIX = 16
 }

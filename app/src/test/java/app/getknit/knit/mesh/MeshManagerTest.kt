@@ -651,6 +651,9 @@ class MeshManagerTest {
             coEvery { peers.find(p.nodeId) } returns PeerEntity(nodeId = p.nodeId, pubKey = p.bundle.encoded, updatedAt = 1L)
         }
 
+        // The capabilities the last signed profile carried, as [stubProfileState] wires them (ADR 2026-11.264w).
+        val ownProfileCapabilities = MutableStateFlow<Long?>(Protocol.LOCAL_CAPABILITIES)
+
         /**
          * Wires the settings/identity reads [MeshManager.currentProfileEnvelope] and
          * [MeshManager.watchProfileChanges] make, with [displayName] and [publishedAt] as *live* state
@@ -672,6 +675,13 @@ class MeshManagerTest {
             // separate carrier with its own test surface, and this case is about the cleartext frame id.
             coEvery { settings.profileVersion } returns MutableStateFlow(0L)
             coEvery { settings.profilePublishedAt } returns publishedAt
+            // The capabilities the last signed profile carried (ADR 2026-11.264w): this build's, so a start republishes
+            // only when a build changes them. A test of the first start after the upgrade sets it to null.
+            coEvery { settings.ownProfileCapabilities } returns ownProfileCapabilities
+            coEvery { settings.setOwnProfileCapabilities(any()) } answers {
+                ownProfileCapabilities.value = firstArg()
+                mockk(relaxed = true)
+            }
             // start() also runs the group-root mint and the local-storage sweep before it seeds the
             // profile; both read a settings flow with .first(), which throws on a relaxed mock's empty flow
             // and would abort the seeding coroutine before it ever reached the profile.
@@ -4920,6 +4930,77 @@ class MeshManagerTest {
             assertEquals(Protocol.CAP_CALL, WireCodec.decodePayload<ProfileContent>(flooded.payload)!!.capabilities!! and Protocol.CAP_CALL)
             assertNotEquals("under a fresh stamp, never a second set of bytes under the old one", seeded.id, flooded.id)
             calling.stop()
+        }
+
+    /**
+     * The first start of a build that records its profile's capabilities finds none and republishes as an edit, one
+     * version bump past every profile from before (ADR 2026-11.264w): a peer's stored capabilities follow the profile
+     * version, so an older frame at the old version can never take the link-proof bit back. The next start finds them
+     * recorded and bumps nothing.
+     */
+    @Test
+    fun theFirstStartWithNoRecordedCapabilitiesBumpsTheVersionOnceAndTheNextDoesNot() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            val version = MutableStateFlow(41L)
+            coEvery { rig.settings.profileVersion } returns version
+            coEvery { rig.settings.setProfileVersion(any()) } answers {
+                version.value = firstArg()
+                mockk(relaxed = true)
+            }
+            rig.ownProfileCapabilities.value = null
+
+            rig.manager.start()
+            rig.await(1) { rig.floodedProfiles().size }
+            rig.awaitProfileWatcher()
+            val bumped = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!
+            assertTrue("past every profile from before", bumped.version!! > 41L)
+            assertEquals(Protocol.CAP_LINK_PROOF, bumped.capabilities!! and Protocol.CAP_LINK_PROOF)
+            assertEquals(bumped.capabilities, rig.ownProfileCapabilities.value)
+            val after = version.value
+            rig.manager.stop()
+
+            val next = rig.build()
+            rig.clockNow = rig.now + 26_000
+            next.start()
+            // The second seeding's end, past its capability check and its stale refresh: only then is "nothing" a reading.
+            rig.await(1) { if (next.profileSeedDone) 1 else 0 }
+            rig.awaitProfileWatcher()
+            assertEquals("the next start publishes nothing", 1, rig.floodedProfiles().size)
+            assertEquals("and bumps nothing", after, version.value)
+            next.stop()
+        }
+
+    /**
+     * A neighbour linked before the start's seeding runs gets our profile from its link-up push, which signs before the
+     * start-time capability check: that signing is the edit itself, never the new bits at the old version (ADR
+     * 2026-11.264w; the crypto-reviewer's race).
+     */
+    @Test
+    fun aProfileSignedAheadOfTheStartsCheckStillCarriesNewCapabilitiesOnlyPastTheOldVersion() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            val version = MutableStateFlow(41L)
+            coEvery { rig.settings.profileVersion } returns version
+            coEvery { rig.settings.setProfileVersion(any()) } answers {
+                version.value = firstArg()
+                mockk(relaxed = true)
+            }
+            rig.ownProfileCapabilities.value = null
+            rig.transport.nearby.value = setOf(Peer(NodeId.derive("linked-early")))
+
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            rig.awaitProfileWatcher()
+
+            val signed = (rig.custodiedProfiles() + rig.floodedProfiles()).map { WireCodec.decodePayload<ProfileContent>(it.payload)!! }
+            val proving = signed.filter { it.capabilities!! and Protocol.CAP_LINK_PROOF != 0L }
+            assertTrue("a profile carrying the bit was signed", proving.isNotEmpty())
+            for (p in proving) {
+                assertTrue("signed at ${p.version}, not past 41", p.version!! > 41L)
+            }
         }
 
     @Test

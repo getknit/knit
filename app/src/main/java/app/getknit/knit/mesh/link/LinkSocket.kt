@@ -13,7 +13,7 @@ import java.io.OutputStream
  * `BluetoothSocketLink` beside the BT transport) to this interface and hands it to [FramedLink].
  *
  * [input] MUST be a **single stable, buffered** stream: an accept-any responder reads the peer's
- * [LinkFraming.Type.HELLO] from it (via [LinkHandshake.readHello]) *before* handing the socket to
+ * [LinkFraming.Type.HELLO] from it (via [LinkHandshake.receiveHello]) *before* handing the socket to
  * [FramedLink], which then keeps reading the same stream — so any bytes the HELLO read buffered past the
  * record must not be stranded on a second wrapper. Implementations cache the buffered stream (see
  * [NetSocketLink]); [FramedLink] therefore does not wrap it again.

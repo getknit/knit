@@ -42,6 +42,14 @@ the router still relays unknown/unverifiable frames verbatim so an old build is 
 `Protocol.VERSION`/`capabilities` ride (unauthenticated) in the Wi-Fi Aware `serviceSpecificInfo`
 advert and (authenticated) on `ProfileContent`.
 
+**The link HELLO and its proof** (ADR 2026-11.264w, paired with knit-ios). A link's first record each way is a
+`HELLO`, `nodeId|version|capsHex|n<32 hex>` (`Protocol.hello`; the nonce field is present exactly when the caps carry
+`CAP_LINK_PROOF`, and every older reader takes fields 0-2 only). When both HELLOs carry the bit, a `PROOF` record (tag
+8, 128 bytes: `sigPub ‖ hpkePub ‖ Ed25519 signature`) follows each way over `"knit/link/v1/proof" ‖ role ‖ both HELLOs`
+(`mesh/crypto/LinkProof`), and it is never written toward a HELLO without the bit: older builds drop a link on an
+unknown tag. The SSI (`Protocol.advertise`) never carries the nonce. A stored peer's capabilities follow its profile's
+presentation version, not the prekey watermark, so an older profile cannot take a bit back.
+
 `WireCodec` exposes `encodeWire`/`decodeWire` (WireEnvelope), `encodeEnvelope`/`decodeEnvelope`
 (RelayEnvelope), and `encodePayload`/`decodePayload<T>` (content) — see `docs/WIRE_COMPAT.md`.
 

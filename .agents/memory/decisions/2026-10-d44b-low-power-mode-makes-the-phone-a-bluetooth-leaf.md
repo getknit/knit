@@ -156,7 +156,8 @@ link count crosses the cap.
 
 **A peer that honours it says so in its profile.** Whether a build dials leaves is a fact about the build, not the
 controller, so it is a profile capability (`Protocol` keeps the bits from 0x100 up for the authenticated profile,
-and 0x10000 is the next free one), not a third flag. A peer carrying it dials a leaf with a free slot whatever the
+and 0x10000 is the next free one — stale since: `CAP_LORA_DIRECT` took 0x10000, `CAP_INET_LINK` 0x20000 and
+`CAP_LINK_PROOF` 0x40000, ADR 2026-11.264w; take the next free bit when this ships), not a third flag. A peer carrying it dials a leaf with a free slot whatever the
 id order, never dials a full one, and re-offers to a leaf on change plus the backstop. A leaf waits to be dialled by
 a peer it knows carries the capability, and dials anyone else by the ordinary rule. This is
 `FLAG_DIALS_GATT_PEERS`'s shape: one side says it will dial, and the other then waits.

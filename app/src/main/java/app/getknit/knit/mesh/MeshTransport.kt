@@ -110,6 +110,10 @@ data class InboundFrame(
     val envelope: RelayEnvelope,
     val fromNodeId: String,
     val kind: TransportKind = TransportKind.Other,
+    // It came in on a link — an L2CAP channel, a Wi-Fi Aware data path or a direct link, all a [app.getknit.knit.mesh.link.FramedLink]
+    // — so [fromNodeId] is that link's peer, not a name the frame gave itself (ADR 2026-11.264w). False for a side-channel
+    // page, a hop-less fast frame, a LoRa packet and a spool pull. The unsigned blob control is acted on only when true.
+    val onLink: Boolean = false,
 )
 
 /** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */

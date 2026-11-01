@@ -71,6 +71,10 @@ interface PeerDao {
     @Query("SELECT nodeId FROM peers WHERE verified = 1")
     suspend fun verifiedNodeIds(): List<String>
 
+    /** The peers whose stored profile carries every bit of [bits] (the link-proof seed, ADR 2026-11.264w). */
+    @Query("SELECT nodeId FROM peers WHERE (capabilities & :bits) = :bits")
+    suspend fun withCapabilities(bits: Long): List<String>
+
     /** Count of unverified peers not in [protected] — the pool [evictOldestCappable] may trim. */
     @Query("SELECT COUNT(*) FROM peers WHERE verified = 0 AND nodeId NOT IN (:protected)")
     suspend fun countCappable(protected: Collection<String>): Int

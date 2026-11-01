@@ -6,6 +6,8 @@ import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
 import app.getknit.knit.mesh.crypto.LinkKeys
+import app.getknit.knit.mesh.crypto.LinkProof
+import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.SafetyNumber
@@ -13,6 +15,7 @@ import app.getknit.knit.mesh.link.DigestWire
 import app.getknit.knit.mesh.link.FileHeaderWire
 import app.getknit.knit.mesh.link.LinkFraming
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -155,6 +158,40 @@ class KeyedVectorTest {
             openDm(wire, bob)?.body == DM_BODY
     }
 
+    // The link proof (ADR 2026-11.264w): Alice dials Bob, nonces 00..0f and 10..1f, both HELLOs at caps 0x40009.
+    private val aliceProver = LinkProver(alice.bundle, alice::sign)
+    private val bobProver = LinkProver(bob.bundle, bob::sign)
+
+    private fun proofHello(
+        nodeId: String,
+        nonce: ByteArray,
+    ): ByteArray = "$nodeId|${Protocol.VERSION}|${PROOF_CAPABILITIES.toString(16)}|n${nonce.toHex()}".encodeToByteArray()
+
+    private val nonceD = ByteArray(Protocol.HELLO_NONCE_BYTES) { it.toByte() }
+    private val helloD = proofHello(alice.nodeId, nonceD)
+    private val helloR = proofHello(bob.nodeId, ByteArray(Protocol.HELLO_NONCE_BYTES) { (0x10 + it).toByte() })
+
+    private fun proofRecord(payload: ByteArray): ByteArray = LinkFraming.encode(LinkFraming.Type.PROOF, payload)
+
+    private fun proofDialer(): ByteArray = proofRecord(aliceProver.proof(LinkProof.Role.DIALER, helloD, helloR))
+
+    private fun proofResponder(): ByteArray = proofRecord(bobProver.proof(LinkProof.Role.RESPONDER, helloD, helloR))
+
+    /** Records that must fail against the dialer's transcript, each with why: name to (record, expected failure). */
+    private fun proofRejects(): List<Triple<String, LinkProof.Failure, ByteArray>> {
+        val ffReply = proofHello(bob.nodeId, ByteArray(Protocol.HELLO_NONCE_BYTES) { -1 })
+        return listOf(
+            Triple("wrongRole", LinkProof.Failure.SIGNATURE, aliceProver.proof(LinkProof.Role.RESPONDER, helloD, helloR)),
+            Triple("otherResponderNonce", LinkProof.Failure.SIGNATURE, aliceProver.proof(LinkProof.Role.DIALER, helloD, ffReply)),
+            Triple("idMismatch", LinkProof.Failure.ID_MISMATCH, bobProver.proof(LinkProof.Role.DIALER, helloD, helloR)),
+            Triple(
+                "short",
+                LinkProof.Failure.LENGTH,
+                aliceProver.proof(LinkProof.Role.DIALER, helloD, helloR).copyOf(LinkProof.PAYLOAD_BYTES - 1),
+            ),
+        ).map { (name, why, payload) -> Triple(name, why, proofRecord(payload)) }
+    }
+
     private fun helloPayload(): ByteArray = "${alice.nodeId}|${Protocol.VERSION}|${CAPABILITIES.toString(16)}".encodeToByteArray()
 
     private fun helloRecord(): ByteArray = LinkFraming.encode(LinkFraming.Type.HELLO, helloPayload())
@@ -277,6 +314,85 @@ class KeyedVectorTest {
         val relay = checkNotNull(WireCodec.decodeEnvelope(checkNotNull(WireCodec.decodeWire(wire)).signed))
         assertEquals(bob.nodeId, relay.recipientId)
         assertEquals("", WireCodec.decodePayload<ChatContent>(relay.payload)?.body)
+    }
+
+    @Test
+    fun `the link proof rebuilds byte for byte and verifies`() {
+        assumeFalse(VectorFiles.writing)
+        assertEquals(helloD.decodeToString(), link("helloProofDialer").getValue("payload").jsonPrimitive.content)
+        assertEquals(
+            LinkFraming.encode(LinkFraming.Type.HELLO, helloD).toHex(),
+            link("helloProofDialer").getValue("record").jsonPrimitive.content,
+        )
+        assertEquals(helloR.decodeToString(), link("helloProofReply").getValue("payload").jsonPrimitive.content)
+        assertEquals(
+            LinkFraming.encode(LinkFraming.Type.HELLO, helloR).toHex(),
+            link("helloProofReply").getValue("record").jsonPrimitive.content,
+        )
+        assertEquals(
+            LinkProof.transcript(LinkProof.Role.DIALER, helloD, helloR).toHex(),
+            link("proofTranscriptDialer").getValue("hex").jsonPrimitive.content,
+        )
+        assertEquals(
+            LinkProof.transcript(LinkProof.Role.RESPONDER, helloD, helloR).toHex(),
+            link("proofTranscriptResponder").getValue("hex").jsonPrimitive.content,
+        )
+        assertEquals(proofDialer().toHex(), link("proofDialer").getValue("record").jsonPrimitive.content)
+        assertEquals(proofResponder().toHex(), link("proofResponder").getValue("record").jsonPrimitive.content)
+
+        val dialer =
+            checkNotNull(
+                LinkFraming.read(
+                    link("proofDialer")
+                        .getValue("record")
+                        .jsonPrimitive.content
+                        .fromHex()
+                        .inputStream(),
+                ),
+            )
+        assertNull(LinkProof.verify(dialer.payload, alice.nodeId, LinkProof.Role.DIALER, helloD, helloR))
+        val responder =
+            checkNotNull(
+                LinkFraming.read(
+                    link("proofResponder")
+                        .getValue("record")
+                        .jsonPrimitive.content
+                        .fromHex()
+                        .inputStream(),
+                ),
+            )
+        assertNull(LinkProof.verify(responder.payload, bob.nodeId, LinkProof.Role.RESPONDER, helloD, helloR))
+
+        val parsed = checkNotNull(Protocol.parse(helloD.decodeToString()))
+        assertEquals(PROOF_CAPABILITIES, parsed.capabilities)
+        assertEquals("000102030405060708090a0b0c0d0e0f", parsed.nonceHex)
+        assertTrue(parsed.offersProof)
+    }
+
+    @Test
+    fun `every pinned proof reject fails against the dialer's transcript`() {
+        assumeFalse(VectorFiles.writing)
+        val pinned =
+            file
+                .getValue("link")
+                .jsonObject
+                .getValue("proofRejects")
+                .jsonObject
+        val rejects = proofRejects()
+        assertEquals(rejects.map { it.first }.toSet(), pinned.keys)
+        for ((name, why, record) in rejects) {
+            assertEquals(
+                name,
+                record.toHex(),
+                pinned
+                    .getValue(name)
+                    .jsonObject
+                    .getValue("record")
+                    .jsonPrimitive.content,
+            )
+            val payload = checkNotNull(LinkFraming.read(record.inputStream())).payload
+            assertEquals(name, why, LinkProof.verify(payload, alice.nodeId, LinkProof.Role.DIALER, helloD, helloR))
+        }
     }
 
     @Test
@@ -412,6 +528,7 @@ class KeyedVectorTest {
                 put("offset", FILE_OFFSET)
                 put("record", fileHeaderResumedRecord().toHex())
             }
+            putLinkProof()
             putJsonObject("advert") {
                 put("nodeId", alice.nodeId)
                 put("capabilities", CAPABILITIES)
@@ -421,6 +538,53 @@ class KeyedVectorTest {
                 put("serviceData", advert().toHex())
             }
         }
+
+    // The link proof's entries (ADR 2026-11.264w), beside the other link records.
+    private fun JsonObjectBuilder.putLinkProof() {
+        putJsonObject("helloProofDialer") {
+            put("payload", helloD.decodeToString())
+            put("record", LinkFraming.encode(LinkFraming.Type.HELLO, helloD).toHex())
+        }
+        putJsonObject("helloProofReply") {
+            put("payload", helloR.decodeToString())
+            put("record", LinkFraming.encode(LinkFraming.Type.HELLO, helloR).toHex())
+        }
+        putJsonObject("proofTranscriptDialer") {
+            put("signer", "alice")
+            put(
+                "role",
+                LinkProof.Role.DIALER.byte
+                    .toInt(),
+            )
+            put("hex", LinkProof.transcript(LinkProof.Role.DIALER, helloD, helloR).toHex())
+        }
+        putJsonObject("proofTranscriptResponder") {
+            put("signer", "bob")
+            put(
+                "role",
+                LinkProof.Role.RESPONDER.byte
+                    .toInt(),
+            )
+            put("hex", LinkProof.transcript(LinkProof.Role.RESPONDER, helloD, helloR).toHex())
+        }
+        putJsonObject("proofDialer") {
+            put("signer", "alice")
+            put("record", proofDialer().toHex())
+        }
+        putJsonObject("proofResponder") {
+            put("signer", "bob")
+            put("record", proofResponder().toHex())
+        }
+        putJsonObject("proofRejects") {
+            for ((name, why, record) in proofRejects()) {
+                putJsonObject(name) {
+                    put("checkedAs", "alice, dialer, proofTranscriptDialer")
+                    put("reason", REJECT_REASONS.getValue(why))
+                    put("record", record.toHex())
+                }
+            }
+        }
+    }
 
     private companion object {
         const val FILE = "keyed-v1.json"
@@ -435,6 +599,17 @@ class KeyedVectorTest {
 
         /** E2E and store-and-forward: what a peer that implements only v1 advertises. */
         const val CAPABILITIES = 0x9L
+
+        /** [CAPABILITIES] with the link-proof bit: both proof HELLOs carry it. */
+        const val PROOF_CAPABILITIES = CAPABILITIES or Protocol.CAP_LINK_PROOF
+
+        /** Why each `proofRejects` entry fails, in words both platforms read. */
+        val REJECT_REASONS =
+            mapOf(
+                LinkProof.Failure.SIGNATURE to "the signature does not cover this transcript",
+                LinkProof.Failure.ID_MISMATCH to "the keys hash to another node id than the dialer's HELLO claims",
+                LinkProof.Failure.LENGTH to "the payload is not 128 bytes",
+            )
 
         const val PSM = 0x81
         const val DM_SENT_AT = PUBLISHED_AT + 2_000L

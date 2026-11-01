@@ -908,7 +908,7 @@ class ForwardSyncTest {
         val notified = mutableListOf<String>()
         private val seenDelivered = mutableSetOf<String>()
         val sync = ForwardSync(transport, store, clock = { 0L }, onCarried = { env, _ -> onCarried(env) })
-        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, from, _ -> onDeliver(wire, env, from) }
+        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, from, _, _ -> onDeliver(wire, env, from) }
 
         // Custody a carried chat frame's image: eager-pull the blob so a late joiner can pull it from us
         // (mirrors MeshManager.onCarriedFrame; no budget cap in the test).

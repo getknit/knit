@@ -60,10 +60,13 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.link.FileIntake
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.OpenedDirect
+import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
 import app.getknit.knit.mesh.protocol.BlobHaveContent
+import app.getknit.knit.mesh.protocol.BlobProgressContent
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
@@ -310,6 +313,9 @@ class InboundPipelineTest {
         val metrics = MeshMetrics()
         val forwardStore = FakeForwardStore()
         val peerMap = ConcurrentHashMap<String, PeerEntity>()
+
+        /** Who must prove a link (ADR 2026-11.264w): fed each stored profile's capabilities after its commit. */
+        val linkClaims = LinkClaims(metrics)
 
         /** `nodeId -> (signed bytes, stamp)` of every proof of key the pipeline handed the pin store (ADR 2026-09.g64k). */
         val proofs = ConcurrentHashMap<String, Pair<ByteArray, Long>>()
@@ -632,6 +638,7 @@ class InboundPipelineTest {
                     linksWired = linksWired,
                     onLinkSignal = { sender, signal, at -> linkSignals += Triple(sender, signal, at) },
                     onSelfProfile = { selfProfileStamps += it },
+                    linkClaims = linkClaims,
                 )
         }
 
@@ -2053,6 +2060,7 @@ class InboundPipelineTest {
                 WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(bad)),
                 bad,
                 neighbour.nodeId,
+                onLink = true,
             )
             assertEquals(1L, rig.drops(DropReason.PAYLOAD_DECODE_FAILED))
         }
@@ -2363,7 +2371,7 @@ class InboundPipelineTest {
             val requester = party()
             val (wire, env) = rig.blobReqWire(requester.nodeId, hash = "bhash")
 
-            rig.pipeline.onDeliver(wire, env, requester.nodeId)
+            rig.pipeline.onDeliver(wire, env, requester.nodeId, onLink = true)
 
             // onRequest consults the store to decide whether to serve — proves the arm ran (blobreq is unsigned).
             coVerify { rig.blobStore.fileFor("bhash") }
@@ -2380,13 +2388,13 @@ class InboundPipelineTest {
             val requester = party()
             val (flooded, floodedEnv) = rig.blobReqWire(requester.nodeId, hash = "bhash", relay = true)
 
-            rig.pipeline.onDeliver(flooded, floodedEnv, requester.nodeId)
+            rig.pipeline.onDeliver(flooded, floodedEnv, requester.nodeId, onLink = true)
 
             coVerify(exactly = 0) { rig.blobExchange.onRequest(any(), any(), any(), any(), any(), any()) }
             coVerify(exactly = 0) { rig.blobStore.fileFor(any()) }
             assertEquals(1L, rig.drops(DropReason.POINT_TO_POINT_FLOODED))
             val (ask, askEnv) = rig.blobReqWire(requester.nodeId, hash = "bhash")
-            rig.pipeline.onDeliver(ask, askEnv, requester.nodeId)
+            rig.pipeline.onDeliver(ask, askEnv, requester.nodeId, onLink = true)
             coVerify(exactly = 1) { rig.blobExchange.onRequest("bhash", requester.nodeId, any(), any(), any(), any()) }
             assertEquals(1L, rig.drops(DropReason.POINT_TO_POINT_FLOODED))
         }
@@ -2400,7 +2408,7 @@ class InboundPipelineTest {
             val (wire, env) =
                 rig.blobHolderWire(requester.nodeId, FrameType.BLOB_HAVE, WireCodec.encodePayload(BlobHaveContent(listOf("bhash"))))
 
-            rig.pipeline.onDeliver(wire, env, requester.nodeId)
+            rig.pipeline.onDeliver(wire, env, requester.nodeId, onLink = true)
 
             coVerify { rig.blobExchange.onHaveQuery(listOf("bhash"), requester.nodeId, env.id) }
             assertEquals(0L, rig.metrics.keys().keyRequestsSent)
@@ -2415,15 +2423,88 @@ class InboundPipelineTest {
             val answer = WireCodec.encodePayload(BlobHasContent(listOf(BlobHasItem("bhash", BlobHasItem.HAVE, 10))))
 
             val (flooded, floodedEnv) = rig.blobHolderWire(requester.nodeId, FrameType.BLOB_HAVE, query, relay = true)
-            rig.pipeline.onDeliver(flooded, floodedEnv, requester.nodeId)
+            rig.pipeline.onDeliver(flooded, floodedEnv, requester.nodeId, onLink = true)
             val (stray, strayEnv) = rig.blobHolderWire(requester.nodeId, FrameType.BLOB_HAS, answer)
-            rig.pipeline.onDeliver(stray, strayEnv, "someone-else") // the link's peer is not the frame's sender
+            rig.pipeline.onDeliver(stray, strayEnv, "someone-else", onLink = true) // the link's peer is not the frame's sender
 
             coVerify(exactly = 0) { rig.blobExchange.onHaveQuery(any(), any(), any()) }
             coVerify(exactly = 0) { rig.blobExchange.onHaveAnswer(any(), any()) }
             val (ok, okEnv) = rig.blobHolderWire(requester.nodeId, FrameType.BLOB_HAS, answer)
-            rig.pipeline.onDeliver(ok, okEnv, requester.nodeId)
+            rig.pipeline.onDeliver(ok, okEnv, requester.nodeId, onLink = true)
             coVerify { rig.blobExchange.onHaveAnswer(any(), requester.nodeId) }
+        }
+
+    /**
+     * The blob control is unsigned, so only the link it came in on says who sent it (ADR 2026-11.264w). A third node's
+     * `blobcancel`, `blobprog` or `blobreq` naming a real asker, heard off a link — a side-channel page, a hop-less fast
+     * frame, a LoRa packet — is dropped and counted, and the asker's ask, parked ask and progress are never touched. The
+     * same frames on the asker's own link are acted on, which is the barrier the negatives are read behind.
+     */
+    @Test
+    fun blobControlHeardOffALinkIsDroppedAndCountedAndTouchesNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val asker = party()
+            val cancel = WireCodec.encodePayload(BlobCancelContent("bhash"))
+            val progress = WireCodec.encodePayload(BlobProgressContent("bhash", held = 10L, ms = 100L))
+            for (kind in listOf(TransportKind.Bluetooth, TransportKind.WifiAware, TransportKind.LoRa)) {
+                val (c, cEnv) = rig.blobHolderWire(asker.nodeId, FrameType.BLOB_CANCEL, cancel)
+                rig.pipeline.onDeliver(c, cEnv, asker.nodeId, kind)
+                val (p, pEnv) = rig.blobHolderWire(asker.nodeId, FrameType.BLOB_PROGRESS, progress)
+                rig.pipeline.onDeliver(p, pEnv, asker.nodeId, kind)
+                val (r, rEnv) = rig.blobReqWire(asker.nodeId, hash = "bhash")
+                rig.pipeline.onDeliver(r, rEnv, asker.nodeId, kind)
+            }
+            assertEquals(9L, rig.drops(DropReason.BLOB_CONTROL_NOT_FROM_LINK))
+            assertEquals(0L, rig.metrics.files().blobAsksHandled)
+
+            val (c, cEnv) = rig.blobHolderWire(asker.nodeId, FrameType.BLOB_CANCEL, cancel)
+            rig.pipeline.onDeliver(c, cEnv, asker.nodeId, TransportKind.Bluetooth, onLink = true)
+            val (p, pEnv) = rig.blobHolderWire(asker.nodeId, FrameType.BLOB_PROGRESS, progress)
+            rig.pipeline.onDeliver(p, pEnv, asker.nodeId, TransportKind.Bluetooth, onLink = true)
+            coVerify(exactly = 1) { rig.blobExchange.onCancel("bhash", asker.nodeId) }
+            coVerify(exactly = 1) { rig.blobExchange.onProgressReport(any(), asker.nodeId) }
+            coVerify(exactly = 0) { rig.blobExchange.onRequest(any(), any(), any(), any(), any(), any()) }
+            assertEquals(9L, rig.drops(DropReason.BLOB_CONTROL_NOT_FROM_LINK))
+        }
+
+    /**
+     * A `blobreq` on X's link naming Y as its sender is a crafted frame: dropped and counted, never served, never turned
+     * into a want, never counted as a handled ask. The same ask under X's own id on X's link is served.
+     */
+    @Test
+    fun aBlobRequestNamingSomeoneElseOnALinkIsDroppedAndNotServed() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val linkPeer = party()
+            val named = party()
+            val (forged, forgedEnv) = rig.blobReqWire(named.nodeId, hash = "bhash")
+
+            rig.pipeline.onDeliver(forged, forgedEnv, linkPeer.nodeId, TransportKind.Bluetooth, onLink = true)
+
+            assertEquals(1L, rig.drops(DropReason.BLOB_CONTROL_NOT_FROM_LINK))
+            assertEquals(0L, rig.metrics.files().blobAsksHandled)
+            val (ask, askEnv) = rig.blobReqWire(linkPeer.nodeId, hash = "bhash")
+            rig.pipeline.onDeliver(ask, askEnv, linkPeer.nodeId, TransportKind.Bluetooth, onLink = true)
+            coVerify(exactly = 1) { rig.blobExchange.onRequest(any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 1) { rig.blobExchange.onRequest("bhash", linkPeer.nodeId, any(), any(), any(), any()) }
+            assertEquals(1L, rig.metrics.files().blobAsksHandled)
+            assertEquals(1L, rig.drops(DropReason.BLOB_CONTROL_NOT_FROM_LINK))
+        }
+
+    /** An honest holder answer on its sender's own link still records under the plane it came in on (ADR 2026-10.a5yj). */
+    @Test
+    fun anHonestHolderAnswerOnItsLinkRecordsUnderItsPlane() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val holder = party()
+            val answer = WireCodec.encodePayload(BlobHasContent(listOf(BlobHasItem("bhash", BlobHasItem.HAVE, 10))))
+            val (wire, env) = rig.blobHolderWire(holder.nodeId, FrameType.BLOB_HAS, answer)
+
+            rig.pipeline.onDeliver(wire, env, holder.nodeId, TransportKind.DirectLink, onLink = true)
+
+            coVerify(exactly = 1) { rig.blobExchange.onHaveAnswer(any(), holder.nodeId, DeliveryPlane.DirectLink) }
+            assertEquals(0L, rig.drops(DropReason.BLOB_CONTROL_NOT_FROM_LINK))
         }
 
     @Test
@@ -8371,6 +8452,7 @@ class InboundPipelineTest {
         prekey: PrekeyInfo?,
         version: Long? = null,
         name: String = "Ann",
+        capabilities: Long? = null,
     ): RelayEnvelope =
         RelayEnvelope(
             type = FrameType.PROFILE,
@@ -8385,9 +8467,74 @@ class InboundPipelineTest {
                         pubKey = author.bundle.encoded,
                         prekey = prekey,
                         version = version,
+                        capabilities = capabilities,
                     ),
                 ),
         )
+
+    /**
+     * The claims follow the stored profile (ADR 2026-11.264w): a gain of the link-proof bit tells the planes once (R4), a
+     * profile from before the upgrade — older on both watermarks, so stale before it reaches the row — leaves the bit
+     * and the claim, and a newer profile without the bit (a downgraded build) clears both. The capabilities line's own
+     * gate is [aPresentationStalePrekeyFreshProfileLeavesTheCapabilitiesAlone].
+     */
+    @Test
+    fun theClaimsFollowTheStoredProfileThroughAStaleReplayAndADowngrade() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val told = mutableListOf<String>()
+            rig.linkClaims.onCapable { told += it }
+            val proving = Protocol.LOCAL_CAPABILITIES
+            val older = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_PROOF.inv()
+
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 100L, prekey = null, version = 100L, capabilities = proving))
+            assertEquals(proving, rig.peerMap[alice.nodeId]?.capabilities)
+            assertTrue(rig.linkClaims.isProofCapable(alice.nodeId))
+            assertEquals("the gain tells the planes (R4)", listOf(alice.nodeId), told)
+
+            // The same phone's profile from before its upgrade, re-served from custody after the bumped one.
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 50L, prekey = null, version = 50L, capabilities = older))
+            assertEquals(proving, rig.peerMap[alice.nodeId]?.capabilities)
+            assertTrue(rig.linkClaims.isProofCapable(alice.nodeId))
+
+            // A downgraded build republishes past the version it persisted, without the bit: taken as newer.
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 200L, prekey = null, version = 200L, capabilities = older))
+            assertEquals(older, rig.peerMap[alice.nodeId]?.capabilities)
+            assertFalse(rig.linkClaims.isProofCapable(alice.nodeId))
+        }
+
+    /**
+     * The prekey rides its own watermark, so a frame older than the row's presentation but newer than its prekey still
+     * reaches the row write (ADR 022's split). It moves the prekey watermark and never the capabilities, which follow
+     * the presentation version (ADR 2026-11.264w).
+     */
+    @Test
+    fun aPresentationStalePrekeyFreshProfileLeavesTheCapabilitiesAlone() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val proving = Protocol.LOCAL_CAPABILITIES
+            // A sealed CTL_PROFILE advanced the presentation to 100 past the last cleartext prekey at 40.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(
+                    nodeId = alice.nodeId,
+                    pubKey = alice.bundle.encoded,
+                    updatedAt = 100L,
+                    prekeyProfileAt = 40L,
+                    capabilities = proving,
+                )
+            val older = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_PROOF.inv()
+
+            rig.deliver(
+                alice,
+                rig.profileWithPrekey(alice, sentAt = 60L, prekey = signedPrekey(alice), version = 60L, capabilities = older),
+            )
+
+            assertEquals("the frame was applied, prekey half", 60L, rig.peerMap[alice.nodeId]?.prekeyProfileAt)
+            assertEquals(proving, rig.peerMap[alice.nodeId]?.capabilities)
+            assertTrue(rig.linkClaims.isProofCapable(alice.nodeId))
+        }
 
     private fun signedPrekey(
         author: Party,

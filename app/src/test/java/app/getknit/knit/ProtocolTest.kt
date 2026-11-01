@@ -2,6 +2,7 @@ package app.getknit.knit
 
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.wifiaware.NanCueCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -121,6 +122,68 @@ class ProtocolTest {
         assertNull("empty", Protocol.parse(""))
         assertNull("empty id with segments", Protocol.parse(advert))
         assertNull("legacy 8-char id", Protocol.parse("abcd1234"))
+    }
+
+    @Test
+    fun theLinkProofBitIsTheNextFreeOneAndEveryBuildCarriesIt() {
+        // ADR 2026-11.264w: the bit after CAP_INET_LINK, above the advert's 8 bits, in LOCAL_CAPABILITIES so it rides the
+        // HELLO and every signed profile.
+        assertEquals(0x40000L, Protocol.CAP_LINK_PROOF)
+        assertEquals(Protocol.CAP_INET_LINK shl 1, Protocol.CAP_LINK_PROOF)
+        assertEquals(0x42FFFL, Protocol.LOCAL_CAPABILITIES)
+    }
+
+    @Test
+    fun theHelloAddsTheNonceAsAFourthFieldTheAdvertNeverCarries() {
+        val nonce = ByteArray(Protocol.HELLO_NONCE_BYTES) { (0xA0 + it).toByte() }
+        val hello = Protocol.hello(ID, nonce)
+
+        assertEquals("${Protocol.advertise(ID)}|na0a1a2a3a4a5a6a7a8a9aaabacadaeaf", hello)
+        assertEquals(3, Protocol.advertise(ID).split('|').size)
+        val parsed = checkNotNull(Protocol.parse(hello))
+        assertEquals("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", parsed.nonceHex)
+        assertTrue(parsed.offersProof)
+        assertEquals(Protocol.LOCAL_CAPABILITIES, parsed.capabilities)
+    }
+
+    @Test
+    fun aHelloNonceOfAnyOtherShapeIsNoNonce() {
+        val digits = "0123456789abcdef0123456789abcdef"
+        assertEquals(digits, checkNotNull(Protocol.parse("$ID|1|42fff|n$digits")).nonceHex)
+        for (field in listOf(
+            "",
+            "n",
+            "n${digits.dropLast(1)}",
+            "n${digits}0",
+            "N$digits",
+            "n${digits.uppercase()}",
+            "x$digits",
+            "n${digits.dropLast(1)}g",
+        )) {
+            val parsed = checkNotNull(Protocol.parse("$ID|1|42fff|$field")) { field }
+            assertNull(field, parsed.nonceHex)
+            assertTrue("the rest still parses: $field", parsed.offersProof && parsed.protoVersion == 1)
+        }
+        assertNull("three fields", checkNotNull(Protocol.parse(Protocol.advertise(ID))).nonceHex)
+        // Fields past the nonce stay ignored, as every field past 2 was before it.
+        assertEquals(digits, checkNotNull(Protocol.parse("$ID|1|42fff|n$digits|future")).nonceHex)
+    }
+
+    @Test
+    fun aFourFieldHelloStillGivesAnOlderReaderItsFirstThree() {
+        // What a v2.10.1 build reads: segments 0-2, the fourth ignored (nodeIdIsAlwaysTheFirstSegment's rule).
+        val parsed = checkNotNull(Protocol.parse(Protocol.hello(ID, ByteArray(Protocol.HELLO_NONCE_BYTES))))
+        assertEquals(ID, parsed.nodeId)
+        assertEquals(Protocol.VERSION, parsed.protoVersion)
+        assertEquals(Protocol.LOCAL_CAPABILITIES, parsed.capabilities)
+    }
+
+    @Test
+    fun theWifiAwareSsiKeepsItsDigestBehindTheUnchangedAdvert() {
+        // The SSI is advertise() + "|d<digest>", found by its last "|d": the nonce never goes there.
+        val ssi = Protocol.advertise(ID) + NanCueCodec.encodeSsiDigest(1_617_346_507L)
+        assertEquals(1_617_346_507L, NanCueCodec.parseSsiDigest(ssi))
+        assertNull(checkNotNull(Protocol.parse(ssi)).nonceHex)
     }
 
     private companion object {

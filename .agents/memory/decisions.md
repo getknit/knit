@@ -306,6 +306,7 @@ carries; never renumber an old one.
 | [2026-10.y9qh](decisions/2026-10-y9qh-a-receiver-shows-how-far-an-incoming-attachment-has-got.md) | A receiver shows how far an incoming attachment has got | mesh, attachments, wire, ui |
 | [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |
 | [2026-10.zeja](decisions/2026-10-zeja-what-s-new.md) | What's New: a chat-list card, bundled announcements | ui, onboarding |
+| [2026-11.264w](decisions/2026-11-264w-a-link-proves-the-node-id-its-hello-claims.md) | A link proves the node id its HELLO claims | mesh, security |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |

@@ -18,6 +18,7 @@ import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LandingFiles
 import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkSocket
@@ -98,6 +99,11 @@ class DirectLinkTransport(
     private val bulkRaising: (peerId: String) -> Boolean = { false },
     private val handshakeMs: Long = HANDSHAKE_MS,
     private val log: (String) -> Unit = {},
+    // The planes' shared claims (ADR 2026-11.264w): every link here is proven by its lane. One whose peer's HELLO carries
+    // CAP_LINK_PROOF (a build that proves its radio links) tells the radios to close an unproven link claiming that peer
+    // (R3) and makes it proof-capable for the run; one from a build without the bit tells them nothing, or its own
+    // unproven radio links would be refused. Never asked to refuse a link: R1 never runs on this plane. Null in a test.
+    private val claims: LinkClaims? = null,
 ) : MeshTransport {
     override val kind = TransportKind.DirectLink
     override val shortRange = false
@@ -203,16 +209,18 @@ class DirectLinkTransport(
         }
     }
 
-    // The two-way HELLO, the offerer writing first: the peer's advert when it names [peerId], else null.
+    // The two-way HELLO, the offerer writing first: the peer's advert when it names [peerId], else null. No link proof: the
+    // stream runs inside the lane, whose keys only the pair can derive and which bind both ids (`LinkKeys.lane`, ADR
+    // 2026-10.a5yj), so the peer is proven before its HELLO is read. Its bit and nonce ride as on any HELLO; no PROOF follows.
     private suspend fun handshake(
         socket: LinkSocket,
         peerId: String,
         offerer: Boolean,
     ): Protocol.PeerWire? {
         val me = selfId().also { self = it }
-        if (offerer) LinkHandshake.writeHello(socket.output, me)
-        val hello = LinkHandshake.readHello(socket.input)?.takeIf { it.nodeId == peerId } ?: return null
-        if (!offerer) LinkHandshake.replyHello(socket.output, me)
+        if (offerer) LinkHandshake.writeLaneHello(socket.output, me)
+        val hello = LinkHandshake.receiveHello(socket.input)?.wire?.takeIf { it.nodeId == peerId } ?: return null
+        if (!offerer) LinkHandshake.writeLaneHello(socket.output, me)
         return hello
     }
 
@@ -275,6 +283,7 @@ class DirectLinkTransport(
                 pace = { LINK_PACE },
                 log = log,
                 landing = landing,
+                proven = true,
             )
         held[0] = link
         links.put(peer.nodeId, link)?.close()
@@ -283,6 +292,10 @@ class DirectLinkTransport(
         // is fresh and the composite can route the answer here (a push it dropped would still be remembered as made). What
         // is sent before the start waits on the link's queue. A hook never ends a link.
         runCatching { onLinkUp(peer.nodeId) }.onFailure { log("link ${peer.nodeId.take(SHORT)}: link-up hook failed: $it") }
+        // Proven by its lane: counted, and every radio closes an unproven link claiming this peer (R3), when the peer's build
+        // proves its radio links too. After the put, so a plane reading the claim finds this link proven, and ahead of the
+        // neighbour set, so a peer seen linked here is already proof-capable everywhere.
+        if (peer.capabilities and Protocol.CAP_LINK_PROOF != 0L) claims?.proven(peer.nodeId, PLANE)
         publish()
         link.start()
         log("link ${peer.nodeId.take(SHORT)}: framed")
@@ -512,6 +525,9 @@ class DirectLinkTransport(
     companion object {
         /** How long a link's two-way HELLO may take before the link is closed. */
         const val HANDSHAKE_MS = 15_000L
+
+        /** This plane's name in [LinkClaims]'s log lines. */
+        const val PLANE = "link"
 
         /** How many refused frames' ids [refusedIds] keeps. */
         const val REFUSED_KEPT = 64

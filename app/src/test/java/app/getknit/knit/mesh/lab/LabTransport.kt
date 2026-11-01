@@ -1171,7 +1171,9 @@ class LabTransport(
         pipes[fromNodeId]?.target?.sent?.add(
             "#${SEQ.incrementAndGet()} ${nodeId.take(NODE_ID_CHARS)} ${envelope.type} ${envelope.id} relay=${wire.relay} via=$via",
         )
-        return InboundFrame(wire, envelope, fromNodeId)
+        // Every pipe delivery is a link's, the fast path's copy too (the real one rides the same `FramedLink`): the frame's
+        // hop identity is the linked peer, as `FramedLink.handleFrame` says (ADR 2026-11.264w). [hearPage] is not a link.
+        return InboundFrame(wire, envelope, fromNodeId, onLink = true)
     }
 
     private fun emitNow(frame: InboundFrame) {

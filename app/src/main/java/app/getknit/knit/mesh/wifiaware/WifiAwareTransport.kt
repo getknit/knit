@@ -59,6 +59,7 @@ import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.canReclaimForegroundService
+import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.furthestByKey
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FastFramePick
@@ -66,6 +67,7 @@ import app.getknit.knit.mesh.link.FragReassembler
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LandingFiles
 import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.link.NetSocketLink
@@ -93,6 +95,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -166,6 +170,10 @@ class WifiAwareTransport(
     // (GitHub #44): the radio off by evidence, deep idle, or attaching given up ([NanDormancyPolicy.wontRun]). Never
     // dormancy.
     private val wontRunHere: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    // Who must prove the node id its HELLO claims (R1–R4, ADR 2026-11.264w), shared by every link plane, and this
+    // phone's half of a proof. Every NDP handshake runs [LinkHandshake.dial] / [LinkHandshake.answer] with them.
+    private val claims: LinkClaims,
+    private val prover: LinkProver,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
@@ -374,30 +382,45 @@ class WifiAwareTransport(
     // shared [FramedLink] (socket I/O) with the NAN-specific per-peer network callback + quiescence supervisor.
     private val peers = ConcurrentHashMap<String, NanLink>()
 
-    // Forwards a live [FramedLink]'s decoded records into our flows and its teardown into [teardownPeer].
-    // onLinkDown can fire twice (read + write loop end) but teardownPeer is idempotent.
-    private val linkCallbacks =
-        object : LinkCallbacks {
-            override fun onInbound(frame: InboundFrame) {
-                _inbound.tryEmit(frame)
-            }
+    /**
+     * Forwards one live [FramedLink]'s decoded records into our flows and its teardown into [teardownPeer]. One per
+     * link, holding the [NanLink] it belongs to: a proven link displacing an unproven one claiming the same id (R3, ADR
+     * 2026-11.264w) shares its node id, so an `onLinkDown` keyed on the id alone would tear down the newcomer when the
+     * displaced link's loops end. onLinkDown can fire twice (read + write loop end); the guarded teardown is idempotent.
+     */
+    private inner class ConnCallbacks : LinkCallbacks {
+        // Set by [registerConn] before the link's loops start, so it is never null when they call back.
+        @Volatile var conn: NanLink? = null
 
-            override fun onDigest(digest: ReceivedDigest) {
-                _incomingDigests.tryEmit(digest)
-            }
-
-            override fun onFile(file: ReceivedFile) {
-                // Dropped — a full buffer, or no collector yet (a value with no subscriber is discarded): nothing will take it.
-                if (_incomingFiles.subscriptionCount.value == 0 || !_incomingFiles.tryEmit(file)) landing.take(file.fromNodeId, file.key)
-            }
-
-            override fun onLinkDown(nodeId: String) {
-                // A read/write-loop end means packets flowed moments ago (EOF needs the peer's FIN, an error
-                // needs a reset — a dead NDP just goes silent and ends via quiescence instead), so the NDP was
-                // alive recently: the ghost-proof recycle window (see teardownPeer/recycleResponder).
-                teardownPeer(nodeId, eofDriven = true)
-            }
+        override fun onInbound(frame: InboundFrame) {
+            _inbound.tryEmit(frame)
         }
+
+        override fun onDigest(digest: ReceivedDigest) {
+            _incomingDigests.tryEmit(digest)
+        }
+
+        override fun onFile(file: ReceivedFile) {
+            // Dropped — a full buffer, or no collector yet (a value with no subscriber is discarded): nothing will take it.
+            if (_incomingFiles.subscriptionCount.value == 0 || !_incomingFiles.tryEmit(file)) landing.take(file.fromNodeId, file.key)
+        }
+
+        override fun onLinkDown(nodeId: String) {
+            // A read/write-loop end means packets flowed moments ago (EOF needs the peer's FIN, an error
+            // needs a reset — a dead NDP just goes silent and ends via quiescence instead), so the NDP was
+            // alive recently: the ghost-proof recycle window (see teardownPeer/recycleResponder).
+            conn?.let { teardownPeer(nodeId, eofDriven = true, only = it) }
+        }
+    }
+
+    // The claim-refused mark (ADR 2026-11.264w): a dial of ours that met a failed proof or an unproven reply for a
+    // proof-capable id holds that id out of the sync gates on a growing wait, so a downgraded peer or a squatter
+    // shadowing the real id can't drive the 10 s redial, the owed episode and the watchdog's tiers. Lifted by a fresh
+    // discovery handle, forgotten by [LinkClaims]' capable/released edges ([claimHooks]).
+    private val claimRefusals = NanClaimRefusalPolicy(SystemClock::elapsedRealtime)
+
+    // [LinkClaims]' R3/R4 and release listeners, registered in start() and closed in stop().
+    @Volatile private var claimHooks: List<AutoCloseable> = emptyList()
 
     // Connection bookkeeping guarded by [lock]: peers discovered via subscribe (with a subscribe-session
     // PeerHandle for NDP initiation), the single in-flight handshake, an in-flight accept, and per-peer
@@ -761,6 +784,10 @@ class WifiAwareTransport(
             return
         }
         started = true
+        // R3/R4 (ADR 2026-11.264w): an id that just proved itself or became proof-capable closes the unproven link this
+        // plane holds claiming it, and ends a refused claim's wait (what the next dial decides has changed); an id
+        // that stopped being proof-capable ends it too. Both arrive on the notifier's thread: schedule only.
+        registerClaimHooks()
         scope.launch {
             localNodeId = identity.nodeId()
             lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // grace window before the wedge watchdog can fire
@@ -921,6 +948,23 @@ class WifiAwareTransport(
         }
     }
 
+    private fun registerClaimHooks() {
+        closeClaimHooks()
+        claimHooks =
+            listOf(
+                claims.onCapable { id ->
+                    if (claimRefusals.forget(id)) healSignal.trySend(Unit)
+                    scope.launch { closeUnprovenClaim(id) }
+                },
+                claims.onReleased { id -> if (claimRefusals.forget(id)) healSignal.trySend(Unit) },
+            )
+    }
+
+    private fun closeClaimHooks() {
+        claimHooks.forEach { runCatching { it.close() } }
+        claimHooks = emptyList()
+    }
+
     /**
      * Bluetooth audio starting or stopping changes what the next config asks of ICM ([NanIcmPolicy]). Turning ICM off
      * needs no push — what was sent lapses within 30 s — and the first value only sets the verdict. Audio stopping
@@ -958,7 +1002,8 @@ class WifiAwareTransport(
                 "refused=$responderRefusals/$responderCycles disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
                 "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked " +
-                "init=${initiatorPolicy.snapshot()} msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms " +
+                "init=${initiatorPolicy.snapshot()} claimRefused=[${claimRefusals.debug()}] " +
+                "msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms " +
                 "icm=${icmVerdict(now).let { "${it.reason}/${it.band.takeIf { _ -> instantSupported && it.allowed } ?: "off"}" }} " +
                 "dormant=${_dormant.value} idle=${if (dormantIdleSince == 0L) 0L else now - dormantIdleSince}ms",
         )
@@ -1237,6 +1282,7 @@ class WifiAwareTransport(
     @Suppress("LongMethod") // one teardown in order; each half (ICM, dormancy) already has its own helper
     override fun stop() {
         started = false // before anything: no attach may begin from here on (see [started])
+        closeClaimHooks()
         loopJob?.cancel()
         powerJob?.cancel()
         audioJob?.cancel()
@@ -2914,8 +2960,9 @@ class WifiAwareTransport(
         localVersion: Long,
     ): Boolean = bulkSyncWanted(nodeId) || digestSyncWanted(nodeId, localVersion)
 
-    /** The bulk half of [syncWanted], under the same initiator hold as [digestSyncWanted]. */
-    private fun bulkSyncWanted(nodeId: String): Boolean = bulkWanted.isWanted(nodeId) && !initiatorHeld(nodeId)
+    /** The bulk half of [syncWanted], under the same initiator hold and claim-refused mark as [digestSyncWanted]. */
+    private fun bulkSyncWanted(nodeId: String): Boolean =
+        bulkWanted.isWanted(nodeId) && !initiatorHeld(nodeId) && !claimRefusals.isHeld(nodeId)
 
     /**
      * [syncWanted] with the initiator hold lifted — the daily probe's view ([NanInitiatorPolicy.probeDue]).
@@ -2925,7 +2972,9 @@ class WifiAwareTransport(
     private fun syncWantedForProbe(
         nodeId: String,
         localVersion: Long,
-    ): Boolean = bulkWanted.isWanted(nodeId) || (nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion))
+    ): Boolean =
+        !claimRefusals.isHeld(nodeId) && // the probe lifts the initiator hold only, never a refused claim's wait
+            (bulkWanted.isWanted(nodeId) || (nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)))
 
     /**
      * The digest-pure sync gate: [nodeId]'s advertised digest differs from ours
@@ -2946,11 +2995,17 @@ class WifiAwareTransport(
      * a peer we have stopped initiating to is not a sync we owe, so the watchdog never runs an owed episode
      * toward the Tier-2 kill for it, the loop never re-arms subscribe hunting a handle it will not dial, and
      * the tick relaxes. The tracker is consulted first so its convergence-observed reset still runs.
+     *
+     * The **claim-refused mark** ([NanClaimRefusalPolicy], ADR 2026-11.264w) is folded in the same way: a peer whose
+     * reply failed its proof, or came unproven for an id that must prove itself, is not owed while its wait holds, so
+     * neither the 10 s redial nor the watchdog's tiers run on a refusal that will repeat.
      */
     private fun digestSyncWanted(
         nodeId: String,
         localVersion: Long,
-    ): Boolean = nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion) && !initiatorHeld(nodeId)
+    ): Boolean =
+        nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion) && !initiatorHeld(nodeId) &&
+            !claimRefusals.isHeld(nodeId)
 
     /**
      * Brings up an NDP to the next peer we're the initiator for (`localNodeId > nodeId`, the tie-break), not
@@ -3180,7 +3235,11 @@ class WifiAwareTransport(
         if (peerNodeId == localNodeId) return
         val ssiText = ssi.decodeToString()
         Log.i(TAG, "discovered $peerNodeId ssi=$ssiText") // TEMP diag: one line per discovery indication
-        synchronized(lock) { discovered[peerNodeId] = DiscoveredPeer(advert, peerHandle) }
+        val freshHandle =
+            synchronized(lock) { discovered.put(peerNodeId, DiscoveredPeer(advert, peerHandle))?.peerHandle != peerHandle }
+        // A fresh handle (first sighting on this session, or the peer's NAN restarted — perhaps on a new build) ends a
+        // refused claim's wait for one more dial; an SSI re-fire on the same handle (a digest cue) does not.
+        if (freshHandle) claimRefusals.lift(peerNodeId)
         // Passive cue (P4): the publisher's SSI carries its digest as a trailing |d<version> segment, and a
         // changed SSI re-fires this callback — so a re-discovery IS a cue, with zero unicast messages. Same
         // deferred wake as onCueReceived (let a racing fast-fanout converge the digest before an NDP fires).
@@ -3590,7 +3649,9 @@ class WifiAwareTransport(
                 }
 
                 override fun onLost(network: Network) {
-                    teardownPeer(peerNodeId)
+                    // Only the link this request carries: never another link holding the same id.
+                    val self: ConnectivityManager.NetworkCallback = this
+                    peers[peerNodeId]?.takeIf { it.callback === self }?.let { teardownPeer(peerNodeId, only = it) }
                 }
             }
         val requested =
@@ -3620,6 +3681,17 @@ class WifiAwareTransport(
         }, HANDSHAKE_TIMEOUT_MS + WATCHDOG_MARGIN_MS)
     }
 
+    /**
+     * The NDP came up: open the socket and run the dialer's half of the handshake ([LinkHandshake.dial], ADR
+     * 2026-11.264w). Every outcome ends in [failConnect] or [registerConn], never a bare return, and nothing escapes
+     * as a throw (this runs on a bare IO launch). The reply read and, when the reply carries the bit, the responder's
+     * PROOF read are both under `soTimeout`, so a stalled responder can't pin the NDI; reads go back to blocking only
+     * after. Whether the link proves anything is decided by the reply's caps, never the SSI advert's (unauthenticated,
+     * and stale across an upgrade).
+     *
+     * The registered [Peer] carries the reply's version and caps when the link is proven (they are inside the signed
+     * transcript), the advert's otherwise — today's behaviour for a legacy link, whose reply is no more authentic.
+     */
     private fun connectAndRegister(
         peerNodeId: String,
         advert: Protocol.PeerWire,
@@ -3632,23 +3704,53 @@ class WifiAwareTransport(
             runCatching { network.socketFactory.createSocket(ip, port) }.getOrNull()
                 ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
         val link = NetSocketLink(socket)
-        // Two-way HELLO: send our identity first, then read the responder's reply and require it to match the
-        // peer we dialed — so the link's identity is confirmed by the peer over the socket, not taken from the
-        // (unauthenticated) discovery advert. Writes-then-reads while the responder reads-then-replies, so
-        // neither blocks. Bound the reply read with soTimeout so a stalled responder can't pin the NDI.
-        val sent = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.isSuccess
-        if (!sent) {
-            link.close()
-            return failConnect(peerNodeId, cb, staleHandle = false)
-        }
         runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS }
-        val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
+        val dialed =
+            runCatching { LinkHandshake.dial(link.input, link.output, prover, peerNodeId) }
+                .getOrDefault(LinkHandshake.Dialed.NoReply) // our HELLO or PROOF could not be written
         runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
-        if (reply == null || reply.nodeId != peerNodeId) {
+        val refusal: String? =
+            when (dialed) {
+                // No reply, a wrong peer, or a responder that refused us (R1, a failed proof of ours: it closes with
+                // no reply, so it reads as contention here). The flat contention backoff, as before.
+                LinkHandshake.Dialed.NoReply, is LinkHandshake.Dialed.WrongPeer -> {
+                    link.close()
+                    return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
+                }
+
+                is LinkHandshake.Dialed.ProofFailed -> {
+                    claims.proofFailed(peerNodeId, PLANE, dialed.why)
+                    if (LinkHandshake.isTransient(dialed.why)) {
+                        // The responder went quiet or away mid-handshake: contention, not an answer it will repeat.
+                        link.close()
+                        return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
+                    }
+                    "proof failed"
+                }
+
+                is LinkHandshake.Dialed.Linked -> {
+                    if (!dialed.proven && claims.isProofCapable(peerNodeId)) {
+                        claims.refused(peerNodeId, PLANE, "unproven reply")
+                        "unproven reply"
+                    } else {
+                        null
+                    }
+                }
+            }
+        if (refusal != null) {
+            // The same peer will answer the same way next time: hold it out of the sync gates on a growing wait
+            // ([NanClaimRefusalPolicy]) rather than the 10 s contention retry. The handle stays (258369aa).
+            val waitMs = claimRefusals.refused(peerNodeId)
+            Log.i(TAG, "claim refused by our dial to $peerNodeId ($refusal) — not owed for ${waitMs}ms")
             link.close()
-            return failConnect(peerNodeId, cb, staleHandle = false)
+            return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
         }
-        registerConn(peerNodeId, advert, link, cb)
+        val linked = dialed as LinkHandshake.Dialed.Linked
+        val displaced = registerConn(peerNodeId, if (linked.proven) linked.reply else advert, link, cb, proven = linked.proven)
+        if (linked.proven) {
+            claimRefusals.forget(peerNodeId)
+            claims.proven(peerNodeId, PLANE, displaced = displaced)
+        }
     }
 
     // --- Server side (persistent accept-any responder) ---
@@ -3807,7 +3909,16 @@ class WifiAwareTransport(
         }
     }
 
-    /** A client connected to our accept-any responder: read its identity (HELLO), then register the link. */
+    /**
+     * A client connected to our accept-any responder: read its HELLO, decide, answer, and register the link (ADR
+     * 2026-11.264w). In order: a bit without a nonce is a failed proof; an unproven claim to a proof-capable id is
+     * refused (R1, before every older refusal, so it is counted even when they would refuse it too); then the
+     * tie-break; then the held link to the same id, which no longer refuses a dialer offering a proof when the held
+     * link is unproven (R3) but still refuses everything else (a proven held link: R2 and NAN's never-replace). An
+     * admitted dialer gets our reply (and PROOF); a dialer offering a proof is registered only once its PROOF verifies,
+     * under `soTimeout` until then, and the unproven link it displaces is torn down by [registerConn] before
+     * [endAccept]. A failed proof leaves the held link standing. Every refusal goes through [refuseAccept].
+     */
     private fun handleAcceptedSocket(socket: Socket) {
         try {
             // The wildcard ServerSocket(0) is reachable from ANY network the device sits on (LAN, VPN), not
@@ -3822,30 +3933,136 @@ class WifiAwareTransport(
             }
             val link = NetSocketLink(socket)
             runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS } // bound the identity read so a stall can't pin the slot
-            // Reads the HELLO from the cached buffered stream that the FramedLink read loop then reuses.
-            val advert = LinkHandshake.readHello(link.input)
-            if (advert == null) {
-                link.close()
-                return
-            }
-            val clientNodeId = advert.nodeId
-            // Enforce the tie-break server side (we must be the smaller id) and don't double-link.
-            if (clientNodeId == localNodeId || localNodeId >= clientNodeId || clientNodeId in peers.keys) {
-                link.close()
-                return
-            }
-            // Reply with our identity so the initiator can confirm it reached the intended peer (two-way
-            // HELLO; the initiator validates this before registering). We read first, then reply — no block.
-            if (runCatching { LinkHandshake.replyHello(link.output, localNodeId) }.isFailure) {
-                link.close()
-                return
-            }
+            val (hello, proven) =
+                when (val outcome = admitAndAnswer(link)) {
+                    is AcceptOutcome.Admitted -> outcome.hello to outcome.proven
+                    is AcceptOutcome.Refused -> return refuseAccept(link, outcome.dialerAlive)
+                }
             runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
+            val clientNodeId = hello.wire.nodeId
+            val displaced = registerConn(clientNodeId, hello.wire, link, callback = null, proven = proven)
             Log.i(TAG, "accepted client $clientNodeId")
-            registerConn(clientNodeId, advert, link, callback = null) // shared responder: no per-peer callback
+            if (proven) claims.proven(clientNodeId, PLANE, displaced = displaced)
         } finally {
             endAccept()
         }
+    }
+
+    /**
+     * The responder's half of the handshake on an accepted [link]: the dialer's HELLO, the admission decision
+     * ([admits]), our reply and — when the dialer offered one — its PROOF, read under the caller's `soTimeout`. The
+     * HELLO and whether the link is proven, or a refusal (nothing registered; a held link stays) saying whether the
+     * dialer is known to be still there — which decides whether [refuseAccept] may recycle the request in place.
+     */
+    private fun admitAndAnswer(link: LinkSocket): AcceptOutcome {
+        // Reads the HELLO from the cached buffered stream that the FramedLink read loop then reuses. None within the
+        // soTimeout: the dialer may be gone and its NDP with it.
+        val hello = LinkHandshake.receiveHello(link.input) ?: return AcceptOutcome.Refused(dialerAlive = false)
+        // Refused on what it just sent: it is blocked on its reply read, so its NDP is alive.
+        if (!admits(hello)) return AcceptOutcome.Refused(dialerAlive = true)
+        // Reply (and prove) so the initiator can confirm it reached the intended peer; read its PROOF when it
+        // offered one. We read first, then reply — no block.
+        val answered =
+            runCatching { LinkHandshake.answer(link.input, link.output, prover, hello) }
+                .getOrDefault(LinkHandshake.Answered.WriteFailed)
+        return when (answered) {
+            LinkHandshake.Answered.WriteFailed -> {
+                AcceptOutcome.Refused(dialerAlive = true)
+            }
+
+            is LinkHandshake.Answered.ProofFailed -> {
+                claims.proofFailed(hello.wire.nodeId, PLANE, answered.why)
+                // A held link to the id stays: only a proof displaces it. An eof (the dialer's FIN, its release grace
+                // holding the NDP), a misplaced record or a failed verify say the dialer was there a moment ago; an
+                // unreadable PROOF (our soTimeout cut it, or a reset) does not — its NDP may already be gone.
+                AcceptOutcome.Refused(dialerAlive = answered.why != LinkHandshake.WHY_UNREADABLE)
+            }
+
+            is LinkHandshake.Answered.Linked -> {
+                AcceptOutcome.Admitted(hello, answered.proven)
+            }
+        }
+    }
+
+    /**
+     * Whether to answer [hello], in the contract's order (ADR 2026-11.264w): a bit without a nonce is a failed proof,
+     * refused with no reply; an unproven claim to a proof-capable id is refused (R1) before every older refusal; the
+     * tie-break (we must be the smaller id; a real smaller peer never dials us here); then the held link to the id,
+     * which refuses unless it is unproven and this dialer offers a proof (R3; a proven one keeps NAN's never-replace).
+     */
+    private fun admits(hello: LinkHandshake.ReceivedHello): Boolean {
+        val id = hello.wire.nodeId
+        return when {
+            hello.malformedOffer -> {
+                claims.proofFailed(id, PLANE, "no nonce")
+                false
+            }
+
+            !hello.offersProof && claims.isProofCapable(id) -> {
+                claims.refused(id, PLANE, "unproven hello")
+                false
+            }
+
+            id == localNodeId || localNodeId >= id -> {
+                false
+            }
+
+            else -> {
+                peers[id]?.let { held -> !held.link.proven && hello.offersProof } ?: true
+            }
+        }
+    }
+
+    /** How [admitAndAnswer] ended. */
+    private sealed interface AcceptOutcome {
+        class Admitted(
+            val hello: LinkHandshake.ReceivedHello,
+            val proven: Boolean,
+        ) : AcceptOutcome
+
+        /** Refused; [dialerAlive] when the dialer is known to hold its NDP up right now (see [refuseAccept]). */
+        class Refused(
+            val dialerAlive: Boolean,
+        ) : AcceptOutcome
+    }
+
+    /**
+     * Close an accepted socket we will not register. An NDP landed on the standing accept-any request to deliver it,
+     * so the request now pins the NDI exactly as after a serve (docs/NAN_CONCURRENCY_REAUDIT.md §2): record it, or the
+     * discovery loop's `responderPinsNdi && initiateOwedToReachable()` recovery never fires for a refused claim.
+     *
+     * When [dialerAlive] — refused on its HELLO (it is blocked on its reply read), our reply unwritable, or a proof
+     * failure that is not an unreadable read — and this was the last inbound with no other accept mid-HELLO and an
+     * initiate of ours is owed, recycle the request NOW, before the close, while the NDP is still alive: the same
+     * ghost-proof recycle [teardownPeer] runs after an EOF-driven serve. Never when the dialer may be gone (no HELLO
+     * within the soTimeout, an unreadable PROOF): its `failConnect` may have released the NDP already, and an
+     * unregister at zero NDPs is the `role=1 state=104` ghost (7e457907, 724a3fed) — worse, the re-file would clear
+     * the pin flag that names it. There the pin stays set for the discovery loop's session cycle (a NAN-down, safe at
+     * zero NDPs). Never under siblings either: recycling ends every connection on the shared request.
+     */
+    private fun refuseAccept(
+        link: LinkSocket,
+        dialerAlive: Boolean,
+    ) {
+        responderPinsNdi = true
+        val lastInbound = synchronized(lock) { peers.values.none { !it.isInitiator } && accepting <= 1 } // 1 = this accept
+        val recycleNow = dialerAlive && USE_GHOST_PROOF_RECYCLE && lastInbound
+        if (recycleNow && initiateOwed()) {
+            val recycled = CountDownLatch(1)
+            onHandler {
+                try {
+                    if (responderCallback != null) {
+                        Log.i(TAG, "recycling responder (unregister while the refused NDP is still alive)")
+                        stopResponder()
+                        startResponder()
+                    }
+                } finally {
+                    recycled.countDown()
+                }
+            }
+            recycled.await(REFUSAL_RECYCLE_WAIT_MS, TimeUnit.MILLISECONDS) // bounded: a busy handler never pins the accept
+        }
+        link.close()
     }
 
     private fun stopResponder() {
@@ -3861,12 +4078,19 @@ class WifiAwareTransport(
 
     // --- Link registration / teardown ---
 
+    /**
+     * Register a link whose handshake ended [proven] or legacy. Returns whether it displaced an unproven link claiming
+     * the same id (R3, ADR 2026-11.264w; the caller passes it to [LinkClaims.proven]). The displaced link is closed
+     * here, through its own guarded callbacks ([ConnCallbacks]), so its loops ending never touch the newcomer.
+     */
     private fun registerConn(
         peerNodeId: String,
         advert: Protocol.PeerWire,
         link: LinkSocket,
         callback: ConnectivityManager.NetworkCallback?,
-    ) {
+        proven: Boolean,
+    ): Boolean {
+        val callbacks = ConnCallbacks()
         val framed =
             FramedLink(
                 nodeId = peerNodeId,
@@ -3876,15 +4100,26 @@ class WifiAwareTransport(
                 cacheDir = appContext.cacheDir,
                 partials = partials,
                 metrics = metrics,
-                callbacks = linkCallbacks,
+                callbacks = callbacks,
                 now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
                 log = { msg -> Log.d(TAG, msg) },
                 landing = landing,
+                proven = proven,
             )
         val conn = NanLink(framed, callback)
+        callbacks.conn = conn // before framed.start(): the loops' callbacks always know their link
         lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // the data plane produced a link (either role) — clears the wedge watchdog
         val prev = peers.put(peerNodeId, conn)
-        prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
+        // A proven newcomer displacing an unproven link claiming its id (R3), or a stale link to the same peer (shouldn't
+        // happen otherwise, but never leak it). Closed after the newcomer is in [peers], so its teardown is a no-op there.
+        val displaced = prev != null && proven && !prev.link.proven
+        if (prev != null) {
+            prev.close()
+            prev.callback?.let { cb ->
+                handler.postDelayed({ runCatching { connectivity.unregisterNetworkCallback(cb) } }, INITIATOR_RELEASE_GRACE_MS)
+            }
+            if (displaced) Log.i(TAG, "link displaced: $peerNodeId (unproven, by a proven link)")
+        }
         if (callback == null) {
             // A serve landed on the standing responder request: it now pins the NDI even after its NDPs end
             // (docs/NAN_CONCURRENCY_REAUDIT.md §2) until recycled, and the concurrent-serve count feeds the
@@ -3911,6 +4146,10 @@ class WifiAwareTransport(
         refreshNeighbors()
         field.record(FieldEvent.NanUp(peerNodeId, initiator = callback != null, links = peers.size))
         Log.i(TAG, "link up: $peerNodeId")
+        // An unproven link passed its R1 check before it was in [peers]: a capable notice for the id that landed in
+        // between found nothing to close and is never repeated (LinkClaims tells once per id). Re-check now it is here.
+        if (!proven && claims.isProofCapable(peerNodeId)) scope.launch { closeUnprovenClaim(peerNodeId) }
+        return displaced
     }
 
     /**
@@ -3955,7 +4194,7 @@ class WifiAwareTransport(
                     TAG,
                     "sync with ${conn.nodeId} done (initiator=$isInitiator idle=${idle}ms held=${held}ms call=$callHeld) — disconnecting",
                 )
-                teardownPeer(conn.nodeId, backoffMs = 0) // clean sync: no anti-churn backoff needed
+                teardownPeer(conn.nodeId, backoffMs = 0, only = conn) // clean sync: no anti-churn backoff needed
                 break
             }
         }
@@ -3985,12 +4224,23 @@ class WifiAwareTransport(
             snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false),
         )
 
+    /**
+     * A handshake ended without a link. [releaseGrace] when it ended after our socket was up and we just closed it: the
+     * unregister waits [INITIATOR_RELEASE_GRACE_MS] so our FIN rides the still-alive NDP (P0: FIN 8/8 only with the
+     * grace) and the responder sees an EOF it can recycle on while the NDP lives, as [teardownPeer] does. The
+     * bookkeeping runs now; SETTLE_MS (> the grace) still gates our next requestNetwork.
+     */
     private fun failConnect(
         peerNodeId: String,
         callback: ConnectivityManager.NetworkCallback,
         staleHandle: Boolean,
+        releaseGrace: Boolean = false,
     ) {
-        runCatching { connectivity.unregisterNetworkCallback(callback) }
+        if (releaseGrace) {
+            handler.postDelayed({ runCatching { connectivity.unregisterNetworkCallback(callback) } }, INITIATOR_RELEASE_GRACE_MS)
+        } else {
+            runCatching { connectivity.unregisterNetworkCallback(callback) }
+        }
         val streak =
             synchronized(lock) {
                 inFlight.remove(peerNodeId)
@@ -4028,12 +4278,23 @@ class WifiAwareTransport(
         Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle streak=$streak)")
     }
 
+    /**
+     * Tear down the link to [peerNodeId]; with [only], that link alone and only while it is still the one registered
+     * (a displaced link's late callbacks must never take the newcomer down with it). Returns whether it removed one.
+     */
     private fun teardownPeer(
         peerNodeId: String,
         backoffMs: Long = REFUSED_BACKOFF_MS,
         eofDriven: Boolean = false,
-    ) {
-        val conn = peers.remove(peerNodeId) ?: return
+        only: NanLink? = null,
+    ): Boolean {
+        val conn =
+            if (only != null) {
+                if (!peers.remove(peerNodeId, only)) return false
+                only
+            } else {
+                peers.remove(peerNodeId) ?: return false
+            }
         conn.close()
         // Only client links own a per-peer network callback; server links share the responder — leave it.
         val wasServerLink = !conn.isInitiator
@@ -4093,6 +4354,17 @@ class WifiAwareTransport(
                 else -> Unit
             }
         }
+        return true
+    }
+
+    /**
+     * R3/R4 (ADR 2026-11.264w): [nodeId] proved itself somewhere or became proof-capable, so the live link this plane
+     * holds claiming it is closed if that link is unproven, and counted. A proven link stays (R2). Through the guarded
+     * [teardownPeer], so a proven link that replaced it meanwhile is never touched.
+     */
+    private fun closeUnprovenClaim(nodeId: String) {
+        val conn = peers[nodeId]?.takeIf { !it.link.proven } ?: return
+        if (teardownPeer(nodeId, only = conn)) claims.claimClosed(nodeId, PLANE)
     }
 
     /**
@@ -4620,6 +4892,14 @@ class WifiAwareTransport(
 
         // Bound the responder's initial identity (HELLO) read, so a stalled connector can't pin the slot.
         const val ACCEPT_HELLO_TIMEOUT_MS = 5_000
+
+        /** This plane's name in [LinkClaims]' log lines. */
+        const val PLANE = "nan"
+
+        // How long a refused accept waits for the handler to recycle the responder before closing its socket: the
+        // recycle is ~7 ms when the handler is free; past this the socket closes anyway and the pin is left to the
+        // discovery loop's recovery.
+        const val REFUSAL_RECYCLE_WAIT_MS = 1_000L
 
         // After a failed handshake, skip re-initiating to that peer for this long, so a different
         // sync-wanted peer gets a turn rather than storming the same failing one.

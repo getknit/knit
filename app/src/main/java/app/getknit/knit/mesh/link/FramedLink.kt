@@ -96,6 +96,14 @@ class FramedLink(
     // calls [sendKeepalive], so its links read and write exactly what they did.
     private val onKeepalive: () -> Unit = {},
     private val onKeepaliveWritten: () -> Unit = {},
+    // Whether the peer proved the node id its HELLO claims ([LinkHandshake], ADR 2026-11.264w): set at registration, never
+    // after. An unproven link is what [LinkClaims]'s R3 and R4 close for a peer that can prove itself. No default: a
+    // proven link registered as unproven would be closed by its own plane's claim listener, redialed and closed again.
+    val proven: Boolean,
+    // Called once, on the reader, when the link's first record comes in (any type), before it is handled. The Bluetooth
+    // dialer of a proven link resets its redial streak only here: the responder writes nothing before it has verified our
+    // PROOF, so any record from it says the proof held (ADR 2026-11.264w). Wi-Fi Aware and direct links pass nothing.
+    private val onFirstRecord: () -> Unit = {},
 ) {
     private val outbound = Channel<Outbound>(Channel.UNLIMITED)
 
@@ -550,10 +558,21 @@ class FramedLink(
 
     // --- Read side ---
 
+    // Whether a record has come in yet. The reader's alone.
+    private var recordIn = false
+
+    /** On the reader, before each record is handled: the first one calls [onFirstRecord]. */
+    private fun noteRecordIn() {
+        if (recordIn) return
+        recordIn = true
+        onFirstRecord()
+    }
+
     private suspend fun readLoop(input: java.io.InputStream) {
         try {
             while (scope.isActive && !closed) {
                 val msg = LinkFraming.read(input) ?: break
+                noteRecordIn()
                 when (msg.type) {
                     LinkFraming.Type.FRAME -> {
                         touch()
@@ -592,8 +611,8 @@ class FramedLink(
                         onKeepalive()
                     }
 
-                    LinkFraming.Type.HELLO -> {
-                        // Legacy record from an older peer. Identity was already consumed at accept, so
+                    LinkFraming.Type.HELLO, LinkFraming.Type.PROOF -> {
+                        // Identity (and its proof) was already consumed by the handshake, before this loop started, so
                         // ignore any stray.
                     }
                 }
@@ -616,7 +635,7 @@ class FramedLink(
             metrics.onDropped(DropReason.DECODE_FAILED)
             return
         }
-        callbacks.onInbound(InboundFrame(wire, envelope, nodeId))
+        callbacks.onInbound(InboundFrame(wire, envelope, nodeId, onLink = true))
     }
 
     private fun handleDigest(payload: ByteArray) {

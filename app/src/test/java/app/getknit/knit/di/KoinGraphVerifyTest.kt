@@ -18,6 +18,7 @@ import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.fieldlog.FieldTap
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.mesh.RadioSupport
+import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.spool.FreeKeyJournal
 import app.getknit.knit.mesh.spool.SpoolTicketJournal
 import app.getknit.knit.mesh.spool.TicketKeyJournal
@@ -82,6 +83,8 @@ class KoinGraphVerifyTest {
                 // IdentityKeyStore), ScopedTextModerator's per-scope screeners, Diagnostics' RadioSupport.probe.
                 KeystoreSecret::class,
                 KeysetHandle::class,
+                // LinkProver's public bundle, read off IdentityKeyStore in its definition (ADR 2026-11.264w).
+                PublicKeyBundle::class,
                 TextModerator::class,
                 RadioSupport::class,
                 // The field log's journal, built over its noBackupFilesDir directory in the FieldLog definition.

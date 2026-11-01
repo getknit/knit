@@ -139,6 +139,9 @@ class PeerRepository(
 
     suspend fun find(nodeId: String): PeerEntity? = dao.findByNodeId(nodeId)
 
+    /** The node ids whose stored profile carries every bit of [bits]: [app.getknit.knit.mesh.link.LinkClaims]'s seed. */
+    suspend fun withCapabilities(bits: Long): List<String> = dao.withCapabilities(bits)
+
     /** The contact whose latest profile names LoRa board [node], newest claim first; null for a stranger's radio. */
     suspend fun findByLoraNode(node: Long): PeerEntity? = dao.findByLoraNode(node)
 

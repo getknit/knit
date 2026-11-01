@@ -67,6 +67,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
 import app.getknit.knit.mesh.link.FileIntake
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.lora.MeshtasticProto
 import app.getknit.knit.mesh.lora.OpenedDirect
 import app.getknit.knit.mesh.protocol.BadgeEntry
@@ -306,6 +307,9 @@ class InboundPipeline(
     // The scope configs a sealed CTL_SCOPE_CONFIG writes (docs/SPOOL_PROTOCOL.md §5), inside the ratchet commit that
     // carried it. Over [db] by default, which is what MeshManager and every rig want.
     private val scopeConfigs: ScopeConfigRepository = ScopeConfigRepository(db),
+    // Who must prove the node id its link HELLO claims (ADR 2026-11.264w): told each stored profile's capabilities once
+    // its commit landed, so a gain of the bit closes every unproven link claiming the id (R4). Null in a rig.
+    private val linkClaims: LinkClaims? = null,
 ) {
     // The title and avatar a notification wears, resolved from the conversation alone — the resolver the
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
@@ -337,11 +341,14 @@ class InboundPipeline(
         env: RelayEnvelope,
         fromNodeId: String,
         kind: TransportKind = TransportKind.Other,
+        // It came in on a link, so [fromNodeId] is that link's peer ([InboundFrame.onLink]). Only the router's link
+        // deliveries say so; a replay, a spool pull and every off-link plane leave it false.
+        onLink: Boolean = false,
     ) {
         // Strict authentication gate: a flooded frame that isn't signed by the key its senderId binds
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
-        if (!verifyInbound(env, wire, fromNodeId, kind)) return
+        if (!verifyInbound(env, wire, fromNodeId, kind, onLink)) return
         noteVerified(wire, env, fromNodeId, kind)
         // Carry every floodable frame we see — store-and-forward, so we can re-offer it to a neighbor
         // that joins later. That includes a DM addressed to US: with sealed receipts nobody vaccine-
@@ -396,9 +403,9 @@ class InboundPipeline(
     }
 
     /**
-     * The unsigned blob traffic, all point-to-point on the link it came in on: a neighbour's ask, and the holder query
-     * and its answer (ADR 2026-10.6e5t). For the query and the answer the link's peer is the party, so one naming somebody
-     * else as its sender is a stray, and nobody acts on it.
+     * The unsigned blob traffic, all point-to-point on the link it came in on: a neighbour's ask, the holder query and its
+     * answer (ADR 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). [verifyInbound]
+     * let it through only from a link whose peer is its sender (ADR 2026-11.264w), so [fromNodeId] is the party.
      */
     private suspend fun handleBlobFrame(
         env: RelayEnvelope,
@@ -419,8 +426,6 @@ class InboundPipeline(
                 }
                 metrics.onBlobAskHandled()
             }
-
-            env.senderId != fromNodeId -> {}
 
             env.type == FrameType.BLOB_HAVE -> {
                 decodeCounted<BlobHaveContent>(env.payload)?.let { blobExchange.onHaveQuery(it.hashes, fromNodeId, env.id) }
@@ -916,6 +921,42 @@ class InboundPipeline(
     }
 
     /**
+     * [verifyInbound]'s door for the unsigned blob control ([FrameType.isUnsignedPointToPoint]): true when it may be acted
+     * on. Never throws (only counts, logs and compares).
+     */
+    private fun admitsBlobControl(
+        env: RelayEnvelope,
+        wire: WireEnvelope,
+        fromNodeId: String,
+        onLink: Boolean,
+    ): Boolean {
+        // The blob traffic is unsigned and point-to-point only: the ask, the holder query and its answer (ADR
+        // 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). No build marks one
+        // for relay, so a flooded copy is nobody's: an ask honoured at every hop it reached would have each holder
+        // serve the blob to the neighbour that handed it on, and each other node pull it through. Ahead of the key
+        // path, so none ever spends a key request; the router never floods one either (MeshRouter.scheduleRelay).
+        if (wire.relay) {
+            metrics.onDropped(DropReason.POINT_TO_POINT_FLOODED)
+            return false
+        }
+        // Nothing signs them, so only the link they came in on says who sent one (ADR 2026-11.264w). A side-channel
+        // page, a hop-less fast frame, a LoRa packet or a spool pull names its sender in bytes anyone can write: a
+        // stranger's `blobcancel` or `blobprog` claiming a real asker would withdraw its ask or end its feed, and a
+        // `blobreq` would have us serve or pull on its behalf. Every build sends them on links under its own id, so
+        // either miss is a crafted frame. The iOS port's `isFromItsLink` is the same gate.
+        if (!onLink || env.senderId != fromNodeId) {
+            metrics.onDropped(DropReason.BLOB_CONTROL_NOT_FROM_LINK)
+            Log.w(
+                TAG,
+                "drop ${env.type} ${env.id.take(ID_CHARS)} from ${env.senderId.take(ID_CHARS)}: " +
+                    if (onLink) "not the link's peer ${fromNodeId.take(ID_CHARS)}" else "not from a link",
+            )
+            return false
+        }
+        return true
+    }
+
+    /**
      * Authenticates a flooded frame: the frame [WireEnvelope.sig] must verify (byte-exact, over the
      * received [WireEnvelope.signed]) against a public-key bundle that derives back to the
      * [RelayEnvelope.senderId]. A profile carries that bundle in-band (first contact arrives before any
@@ -936,6 +977,7 @@ class InboundPipeline(
         wire: WireEnvelope,
         fromNodeId: String,
         kind: TransportKind,
+        onLink: Boolean,
     ): Boolean =
         runCatchingUnlessCancelled {
             // The profile cap (#234), ahead of everything that reads the payload: a profile whose `signed` is longer than
@@ -950,16 +992,7 @@ class InboundPipeline(
                 )
                 return false
             }
-            // The blob traffic is unsigned and point-to-point only: the ask, the holder query and its answer (ADR
-            // 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). No build marks one
-            // for relay, so a flooded copy is nobody's: an ask honoured at every hop it reached would have each holder
-            // serve the blob to the neighbour that handed it on, and each other node pull it through. Ahead of the key
-            // path, so none ever spends a key request; the router never floods one either (MeshRouter.scheduleRelay).
-            if (FrameType.isUnsignedPointToPoint(env.type)) {
-                if (!wire.relay) return true
-                metrics.onDropped(DropReason.POINT_TO_POINT_FLOODED)
-                return false
-            }
+            if (FrameType.isUnsignedPointToPoint(env.type)) return admitsBlobControl(env, wire, fromNodeId, onLink)
             // A self frame — one of OUR own frames looping back, after a neighbor carried it and (once our SeenSet
             // window lapsed) re-served it — is authenticated like any other via [verifierBundle], which resolves
             // our identity's own bundle for it. It USED to be dropped here as a silent no-op ("we already have
@@ -4354,6 +4387,9 @@ class InboundPipeline(
                     stored
                 }
             }
+        // After the commit, so a rolled-back write never reaches the in-memory set: a gain of the link-proof bit closes
+        // every unproven link claiming the sender on every plane (R4, ADR 2026-11.264w).
+        linkClaims?.profileCapabilities(env.senderId, applied.capabilities)
         val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
         applyPresentationFollowUps(
             env.senderId,
@@ -4405,6 +4441,8 @@ class InboundPipeline(
             val previous: PeerEntity?,
             val haveAvatar: Boolean,
             val presentationHeld: Boolean,
+            // The capabilities the row holds now: the link claims' profile half reads them after commit.
+            val capabilities: Long?,
         ) : StoredProfile
     }
 
@@ -4458,6 +4496,7 @@ class InboundPipeline(
         // The pinned key is guaranteed unchanged here (a differing key was refused above), so carrying
         // the prior [verified] state through the upsert is safe.
         val base = existing ?: PeerEntity(senderId)
+        val capabilities = if (stalePresentation) base.capabilities else content.capabilities ?: existing?.capabilities
         val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
         // A blocked person's presentation is held like a stale one (ADR 2026-11.nsbf): nothing of their advertised photo
         // is adopted, screened or released here, and a row this profile creates starts as any first row does.
@@ -4478,7 +4517,11 @@ class InboundPipeline(
                         resolveAvatarHash(advertised, avatarAdoptable(advertised), existing?.avatarHash)
                     },
                 protoVersion = content.protoVersion ?: existing?.protoVersion,
-                capabilities = content.capabilities ?: existing?.capabilities,
+                // Capabilities follow the presentation version, never the prekey watermark (ADR 2026-11.264w): they say
+                // what the build that signed this profile does, so a frame older than the row's presentation — a
+                // custodied or replayed profile from before an upgrade — must not take a bit back. The build republishes
+                // its profile as an edit when its capabilities change, so every profile from before is strictly older.
+                capabilities = capabilities,
                 // Never regress: a stale-presentation frame still reaches here for its prekey, and must not
                 // drag the presentation watermark backwards on its way through.
                 updatedAt = maxOf(base.updatedAt, version),
@@ -4505,7 +4548,7 @@ class InboundPipeline(
                 lastSeenAt = maxOf(base.lastSeenAt, seenAt),
             ),
         )
-        return StoredProfile.Applied(existing, haveAvatar, held)
+        return StoredProfile.Applied(existing, haveAvatar, held, capabilities)
     }
 
     /**

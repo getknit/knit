@@ -44,11 +44,13 @@ import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bleSupport
+import app.getknit.knit.mesh.crypto.LinkProver
 import app.getknit.knit.mesh.furthestByKey
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LandingFiles
 import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.PaceConfig
@@ -164,6 +166,10 @@ class BluetoothMeshTransport(
     // complement, through [AwareFlag]'s asymmetric debounce. True — the bit clear — for a phone without the plane, and by
     // default: a phone that cannot say it runs Aware never makes a peer wake its own for it.
     private val awareWontRun: StateFlow<Boolean> = MutableStateFlow(true),
+    // Who must prove the node id its HELLO claims (R1–R4), and this phone's half of a proof (ADR 2026-11.264w, #232):
+    // shared with the Wi-Fi Aware plane and the inbound pipeline, which keep the counters and the refusal lines.
+    private val claims: LinkClaims,
+    private val prover: LinkProver,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -303,6 +309,13 @@ class BluetoothMeshTransport(
     // Links this transport closed for silence: their reader's end is our close, not the peer's, so it bumps no streak and
     // logs no `(eof)` line (#203). Weak, as a reader or a blocked writer may outlive the link by any length of time.
     private val closedSilent: MutableSet<FramedLink> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+
+    // Unproven links this transport closed because their id can prove itself now (R3/R4, ADR 2026-11.264w): their end is
+    // our close too, so it bumps no streak — the id's streak is the real peer's, which just proved itself. Weak, as above.
+    private val closedForClaim: MutableSet<FramedLink> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+
+    // The R3/R4 hook on [claims], registered at start and closed at stop.
+    @Volatile private var claimsHook: AutoCloseable? = null
 
     // The addresses of links closed on this phone's own controller's word (#203), until [checkOrphans] reports their ACL:
     // kept with this phone holding more LE connections than links, the stack is suspect (`bt stack suspect`, for #204).
@@ -539,9 +552,20 @@ class BluetoothMeshTransport(
     // Forwards a live link's decoded records into our flows and its teardown into [teardownLink]. One per link:
     // a link replaced under the same node id still reports its own end, and that must release only its own slot,
     // never the replacement's (ADR 2026-09.shzv).
-    private inner class LinkEvents : LinkCallbacks {
+    private inner class LinkEvents(
+        // When this link's success may reset its peer's streak: a dialed proven link waits for the responder's first
+        // record (ADR 2026-11.264w); every other link settled at registration.
+        val dialStreak: ProvenDialStreak = ProvenDialStreak(pending = false),
+        // When our dial for a pending link began, for its failed handshake's `durMs=`.
+        private val dialStartedAt: Long = 0L,
+    ) : LinkCallbacks {
         lateinit var link: FramedLink
         private val down = LinkDownOnce() // both loops report the end; only the first may tear down and bump (#205)
+
+        /** On the reader, at the link's first record: a pending dialed proven link's responder kept our proof. */
+        fun onFirstRecord() {
+            if (dialStreak.confirm()) synchronized(lock) { backoffs.remove(link.nodeId) } // success resets the peer's streak
+        }
 
         override fun onInbound(frame: InboundFrame) {
             // In counts as a crossing too: nothing we later hand this link may be the frame it just gave us.
@@ -563,13 +587,22 @@ class BluetoothMeshTransport(
             // Only the first of the two loops' reports tears down (#205). Closed for silence (#203): the end its reader or
             // writer reports is our close, not a flap. Replaced by a fresh link from the same peer: that link holds the
             // slot, and the peer did not flap.
+            // Read before the teardown, so a first record racing this end counts once, one way or the other.
+            val ending = dialStreak.end(if (link.linkStartedAt > 0) elapsed() - link.linkStartedAt else 0L)
             val flapped =
                 down.flapped(
                     teardown = { teardownLink(nodeId, "eof", only = link) },
                     replaced = { links[nodeId] != null },
-                    ownClose = { link in closedSilent },
+                    ownClose = { link in closedSilent || link in closedForClaim },
                 )
+            if (ending == ProvenDialStreak.End.RESET_THEN_FLAP) synchronized(lock) { backoffs.remove(nodeId) }
             if (!flapped) return
+            if (ending == ProvenDialStreak.End.HANDSHAKE) {
+                // Our dialed proven link ended before the responder said a word: it refused our PROOF, or went. A failed
+                // dial on the streak the dial found, never a reset plus a flap (ADR 2026-11.264w).
+                val cause = IllegalStateException("link ended before the responder's first record: proof unconfirmed")
+                return failConnect(nodeId, ConnectFailReason.HANDSHAKE, dialStartedAt, cause, releaseSlot = false)
+            }
             // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
             // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
             val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
@@ -585,6 +618,9 @@ class BluetoothMeshTransport(
             Log.w(TAG, "Bluetooth LE unsupported on this device; BT plane disabled")
             return
         }
+        // R3/R4 (ADR 2026-11.264w): an id that can prove itself now closes the unproven link claiming it. On the
+        // notifier's thread, so it only schedules.
+        claimsHook = claims.onCapable { id -> scope.launch { closeClaimed(id) } }
         scope.launch {
             localNodeId = identity.nodeId()
             noLinkSince = elapsed()
@@ -659,6 +695,8 @@ class BluetoothMeshTransport(
 
     override fun stop() {
         newcomersOff("stop") // at once: a stopped plane watches for nobody, and a window ending late cannot undo it
+        claimsHook?.close()
+        claimsHook = null
         scanJob?.cancel()
         connectJob?.cancel()
         cueJob?.cancel()
@@ -2591,41 +2629,105 @@ class BluetoothMeshTransport(
                 return@launch armUnlinked(device, nodeId) // only if its ACL came up: a refused channel
             }
             val link = BluetoothSocketLink(socket)
-            // Two-way HELLO: send our identity first, then read the responder's reply and require it to match
-            // the peer we dialed — so the link's identity is confirmed by the peer over the socket, not taken
-            // from the (unauthenticated) scanned advert. Writes-then-reads while the responder reads-then-
-            // replies, so neither blocks. A BluetoothSocket has no soTimeout, so bound the reply read by
-            // closing the socket from a watchdog.
-            val helloErr = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.exceptionOrNull()
-            if (helloErr != null) {
+            // Two-way HELLO: send our identity first, then read the responder's reply and require it to match the peer
+            // we dialed, so the link's identity is confirmed by the peer over the socket, not taken from the
+            // (unauthenticated) scanned advert. When the reply carries CAP_LINK_PROOF the responder's PROOF follows it,
+            // and ours goes back once it verifies (ADR 2026-11.264w). Writes-then-reads while the responder reads-then-
+            // replies, so neither blocks. A BluetoothSocket has no soTimeout, so one 5 s watchdog bounds the whole
+            // exchange, the reply and the PROOF read alike, by closing the socket.
+            val replyCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+            val outcome = runCatching { LinkHandshake.dial(link.input, link.output, prover, nodeId) }
+            val inTime = replyCut.finish()
+            val dialed = outcome.getOrNull()?.takeIf { inTime } ?: LinkHandshake.Dialed.NoReply
+            val refusal = dialRefusal(nodeId, device, dialed, outcome.exceptionOrNull(), inTime)
+            if (refusal != null || dialed !is LinkHandshake.Dialed.Linked) {
                 link.close()
-                failConnect(nodeId, ConnectFailReason.HANDSHAKE, startedAt, helloErr)
-                return@launch armUnlinked(device, nodeId)
-            }
-            val replyWatchdog =
-                scope.launch {
-                    elapsedWait.sleep(ACCEPT_HELLO_TIMEOUT_MS)
-                    runCatching { socket.close() }
-                }
-            val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
-            replyWatchdog.cancel()
-            if (reply == null || reply.nodeId != nodeId) {
-                // A reply naming another node: a new node took the address our payload came from. No reply keeps it.
-                if (reply != null) forgetGattPayloadIfOther(device.address, reply.nodeId)
-                link.close()
-                failConnect(
-                    nodeId,
-                    ConnectFailReason.HANDSHAKE,
-                    startedAt,
-                    IllegalStateException("hello reply ${reply?.nodeId ?: "absent"} != expected $nodeId"),
-                )
-                return@launch armUnlinked(device, nodeId) // a refusal: the responder closed the channel (shzv, hj4a)
+                failConnect(nodeId, ConnectFailReason.HANDSHAKE, startedAt, refusal ?: IllegalStateException("handshake"))
+                return@launch armUnlinked(device, nodeId) // a channel that never became a link: a refusal, a failed proof (#142)
             }
             Log.i(TAG, "bt connect ok $nodeId durMs=${elapsed() - startedAt}")
             // The reply's full-width capabilities, as an accepted link takes the dialer's: the advert carries only
             // their low byte, which never holds CAP_DOORBELL, so a dialed iPhone would never be rung (A3, ADR 2026-09.dqvb).
-            registerLink(nodeId, reply, link, device = device, dialMs = elapsed() - startedAt)
+            registerLink(
+                nodeId,
+                dialed.reply,
+                link,
+                device = device,
+                dialMs = elapsed() - startedAt,
+                proven = dialed.proven,
+                dialStartedAt = startedAt,
+            )
         }
+    }
+
+    /**
+     * Why a dial to [nodeId] whose handshake ended as [dialed] is not a link, or null when it is one. [error] is what the
+     * handshake threw, and [inTime] false when the watchdog cut it. Counts and logs the proof cases through [claims].
+     */
+    private fun dialRefusal(
+        nodeId: String,
+        device: BluetoothDevice,
+        dialed: LinkHandshake.Dialed,
+        error: Throwable?,
+        inTime: Boolean,
+    ): Throwable? =
+        when (dialed) {
+            // Most often a refusal: the responder closed the channel (shzv, hj4a).
+            LinkHandshake.Dialed.NoReply -> {
+                error
+                    ?: if (inTime) {
+                        IllegalStateException("hello reply absent != expected $nodeId")
+                    } else {
+                        TimeoutException("hello watchdog ${ACCEPT_HELLO_TIMEOUT_MS}ms")
+                    }
+            }
+
+            is LinkHandshake.Dialed.WrongPeer -> {
+                // A reply naming another node: a new node took the address our payload came from. No reply keeps it.
+                forgetGattPayloadIfOther(device.address, dialed.reply.nodeId)
+                IllegalStateException("hello reply ${dialed.reply.nodeId} != expected $nodeId")
+            }
+
+            is LinkHandshake.Dialed.ProofFailed -> {
+                claims.proofFailed(nodeId, PLANE, dialed.why)
+                IllegalStateException("link proof failed: ${dialed.why}")
+            }
+
+            is LinkHandshake.Dialed.Linked -> {
+                // R1: a reply without the bit claiming an id that can prove itself is not that peer.
+                if (!dialed.proven && claims.isProofCapable(nodeId)) {
+                    claims.refused(nodeId, PLANE, "unproven reply")
+                    IllegalStateException("unproven reply claims a proof-capable id")
+                } else {
+                    null
+                }
+            }
+        }
+
+    /**
+     * A watchdog that closes [socket] after [ms] on the elapsed clock (a BluetoothSocket has no soTimeout, and a relink
+     * waits on this). [Cut.finish] cancels it and says whether the handshake beat it: exactly one of the two wins, so a
+     * handshake that returned as the watchdog fired is never registered on a socket the watchdog closed.
+     */
+    private fun cutAfter(
+        socket: BluetoothSocket,
+        ms: Long,
+    ): Cut {
+        val settled = AtomicBoolean(false)
+        val job =
+            scope.launch {
+                elapsedWait.sleep(ms)
+                if (settled.compareAndSet(false, true)) runCatching { socket.close() }
+            }
+        return Cut(settled, job)
+    }
+
+    private class Cut(
+        private val settled: AtomicBoolean,
+        private val job: Job,
+    ) {
+        /** Stops the watchdog; true when the handshake finished first (the socket is still ours). */
+        fun finish(): Boolean = settled.compareAndSet(false, true).also { job.cancel() }
     }
 
     private fun acceptLoop(ss: BluetoothServerSocket) {
@@ -2638,65 +2740,160 @@ class BluetoothMeshTransport(
     /**
      * A client connected to our L2CAP responder: read its identity (HELLO, watchdog-bounded), then keep it or
      * close it by [BleAdmissionPolicy] — which admits a dialer the scan never saw whatever the id order.
+     *
+     * Link proofs (ADR 2026-11.264w, #232): a HELLO with `CAP_LINK_PROOF` and no nonce, and an unproven HELLO claiming
+     * an id that can prove itself (R1), are closed with no reply before any other row. A kept dialer that offers a proof
+     * gets our reply and PROOF in one write, and is registered only once its own PROOF verifies, under a second 5 s
+     * watchdog; the link it displaces (R3) closes only then, and stays if the proof fails. Every close before
+     * registration hands the channel to [armUnlinked], as the old refusals did (#142).
      */
+    @Suppress("LongMethod", "ReturnCount") // read, refuse, answer, re-judge, register: one linear flow of early exits
     private suspend fun superviseAccepted(socket: BluetoothSocket) {
         val link = BluetoothSocketLink(socket)
         // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
-        val watchdog =
-            scope.launch {
-                elapsedWait.sleep(ACCEPT_HELLO_TIMEOUT_MS)
-                runCatching { socket.close() }
-            }
-        val advert = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
-        watchdog.cancel()
-        val clientNodeId = advert?.nodeId
-        if (advert == null || clientNodeId == null) {
+        val helloCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+        val read = runCatching { LinkHandshake.receiveHello(link.input) }.getOrNull()
+        val helloInTime = helloCut.finish()
+        val hello = read?.takeIf { helloInTime }
+        val device = socket.remoteDevice
+        if (hello == null) {
             link.close()
-            armUnlinked(socket.remoteDevice, null)
+            armUnlinked(device, null)
+            return
+        }
+        val clientNodeId = hello.wire.nodeId
+        if (hello.malformedOffer) {
+            // A HELLO that offers a proof with no nonce to sign over: a failed proof, closed with no reply, no backoff.
+            claims.proofFailed(clientNodeId, PLANE, "no nonce")
+            Log.i(TAG, "bt refused client $clientNodeId (proof=no-nonce)")
+            link.close()
+            armUnlinked(device, clientNodeId)
+            return
+        }
+        if (refusesClaim(hello)) {
+            Log.i(TAG, "bt refused client $clientNodeId (claim=unproven)")
+            link.close()
+            armUnlinked(device, clientNodeId)
             return
         }
         // A dialer at an address whose payload names another node took that address: forget the payload before the
         // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
-        forgetGattPayloadIfOther(socket.remoteDevice.address, clientNodeId)
+        forgetGattPayloadIfOther(device.address, clientNodeId)
+        val first = judge(hello)
+        if (first.verdict == BleAdmissionPolicy.Verdict.Refuse) {
+            Log.i(TAG, "bt refused client $clientNodeId (${first.fields})")
+            link.close()
+            armUnlinked(device, clientNodeId) // most often a sighted lonely dialer (hj4a)
+            return
+        }
+        // Reply with our identity so the initiator can confirm it reached us (two-way HELLO; the initiator validates this
+        // before registering), our PROOF behind it when the dialer offers one, then read the dialer's PROOF. We read
+        // first, then reply: no mutual block. Its own watchdog: the HELLO's was cancelled at the read.
+        val answerCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+        val outcome = runCatching { LinkHandshake.answer(link.input, link.output, prover, hello) }
+        val inTime = answerCut.finish()
+        val answered =
+            outcome.getOrNull()?.takeIf { inTime }
+                ?: LinkHandshake.Answered.ProofFailed(if (inTime) "unreadable" else "timeout")
+        when (answered) {
+            LinkHandshake.Answered.WriteFailed -> {
+                link.close()
+                armUnlinked(device, clientNodeId)
+                return
+            }
+
+            is LinkHandshake.Answered.ProofFailed -> {
+                // The held link (if any) is untouched: R3 displaces only on a verified proof.
+                claims.proofFailed(clientNodeId, PLANE, answered.why)
+                Log.i(TAG, "bt refused client $clientNodeId (proof=${answered.why.replace(' ', '-')})")
+                link.close()
+                armUnlinked(device, clientNodeId)
+                return
+            }
+
+            is LinkHandshake.Answered.Linked -> {}
+        }
+        val proven = answered.proven
+        // Up to 5 s went by: the held link may have gone, been replaced or proven, and the id may have become
+        // proof-capable. Judge again against what is held now; an unproven link re-checks R1.
+        if (!proven && refusesClaim(hello)) {
+            Log.i(TAG, "bt refused client $clientNodeId (claim=unproven late=true)")
+            link.close()
+            armUnlinked(device, clientNodeId)
+            return
+        }
+        val late = judge(hello)
+        if (late.verdict == BleAdmissionPolicy.Verdict.Refuse) {
+            Log.i(TAG, "bt refused client $clientNodeId (${late.fields} late=true)")
+            link.close()
+            armUnlinked(device, clientNodeId)
+            return
+        }
+        Log.i(TAG, "bt accepted client $clientNodeId (${late.verdict}, ${late.acceptFields})")
+        registerLink(clientNodeId, hello.wire, link, late.sighted, device, proven = proven)
+    }
+
+    /** R1 on a dialer's [hello]: it offers no proof for an id that can prove itself. Counted and logged by [claims]. */
+    private fun refusesClaim(hello: LinkHandshake.ReceivedHello): Boolean {
+        val id = hello.wire.nodeId
+        if (!BleAdmissionPolicy.refusesClaim(hello.offersProof, claims.isProofCapable(id))) return false
+        claims.refused(id, PLANE, "unproven hello")
+        return true
+    }
+
+    /** One admission verdict on a dialer, with the fields its `bt refused client` / `bt accepted client` line carries. */
+    private class Judgement(
+        val verdict: BleAdmissionPolicy.Verdict,
+        val sighted: Boolean,
+        // `sighted=… codedOnly=… heldAgeMs=… atCap=…[ doorbell=…]`: the refusal's fields, harness-read (interop.py).
+        val fields: String,
+        // `sighted=… codedOnly=…[ doorbell=…]`: the acceptance's, after its verdict token.
+        val acceptFields: String,
+    )
+
+    /** [BleAdmissionPolicy.decide] on [hello] against the link held to its id now and what presence holds now. */
+    private fun judge(hello: LinkHandshake.ReceivedHello): Judgement {
+        val advert = hello.wire
+        val clientNodeId = advert.nodeId
         val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == clientNodeId }
         val sighted = snap != null
         // A dialer heard on Coded alone is judged as unsighted while the experiment runs (ADR 2026-10.yvn6): its sparse
         // Coded hits hold it in presence but rarely promote it, so "we dial it" left a far pair each waiting.
         val admitSighted = CodedPhyPolicy.sightedForAdmission(snap, codedOn())
-        val heldAgeMs = links[clientNodeId]?.let { elapsed() - it.linkStartedAt }
+        val held = links[clientNodeId]
+        val heldAgeMs = held?.let { elapsed() - it.linkStartedAt }
         val atCap = debugCap?.let { links.size + inFlightSnapshot().size >= it } ?: false
         // A doorbell dialer (an iPhone) counts as sighted only if heard within 12 s: backgrounded, it is unheard while
         // the linger still holds it (interop audit AND-3). The HELLO's bit is taken only with our own evidence behind it,
         // so a claimed id can't pull a sighted Android peer into the unsighted rows. Logged for a claim alone.
         val claimed = DoorbellPolicy.serves(advert.capabilities)
-        val heldDoorbell = links[clientNodeId]?.let { DoorbellPolicy.serves(it.peer.capabilities) }
+        val heldDoorbell = held?.let { DoorbellPolicy.serves(it.peer.capabilities) }
         val doorbell = BleAdmissionPolicy.doorbellTrusted(claimed, heldDoorbell, sighted, clientNodeId in gattSighted)
         val heardAgoMs = snap?.lastSeenAgoMs
         val trust = if (doorbell) "" else " doorbellTrusted=false"
         val why = if (claimed) " doorbell=true heardAgoMs=$heardAgoMs inPresence=$sighted$trust" else ""
-        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, admitSighted, heldAgeMs, atCap, doorbell, heardAgoMs)
-        if (verdict == BleAdmissionPolicy.Verdict.Refuse) {
-            Log.i(
-                TAG,
-                "bt refused client $clientNodeId (sighted=$sighted codedOnly=${sighted && !admitSighted} " +
-                    "heldAgeMs=$heldAgeMs atCap=$atCap$why)",
+        // The proof rows (ADR 2026-11.264w): R1 was asked already; R3 and R2 read whether the held link is proven.
+        val verdict =
+            BleAdmissionPolicy.decide(
+                localNodeId,
+                clientNodeId,
+                admitSighted,
+                heldAgeMs,
+                atCap,
+                doorbell,
+                heardAgoMs,
+                heldProven = held?.proven == true,
+                offersProof = hello.offersProof,
+                proofCapable = claims.isProofCapable(clientNodeId),
             )
-            link.close()
-            armUnlinked(socket.remoteDevice, clientNodeId) // most often a sighted lonely dialer (hj4a)
-            return
-        }
-        // Reply with our identity so the initiator can confirm it reached us (two-way HELLO; the initiator
-        // validates this before registering). We read first, then reply — no mutual block.
-        if (runCatching { LinkHandshake.replyHello(link.output, localNodeId) }.isFailure) {
-            link.close()
-            armUnlinked(socket.remoteDevice, clientNodeId)
-            return
-        }
-        Log.i(TAG, "bt accepted client $clientNodeId ($verdict, sighted=$sighted codedOnly=${sighted && !admitSighted}$why)")
-        registerLink(clientNodeId, advert, link, sighted, socket.remoteDevice)
+        val coded = "sighted=$sighted codedOnly=${sighted && !admitSighted}"
+        val proof = if (held != null) " heldProven=${held.proven} offersProof=${hello.offersProof}" else ""
+        return Judgement(verdict, sighted, "$coded heldAgeMs=$heldAgeMs atCap=$atCap$why$proof", "$coded$why")
     }
 
-    @Suppress("LongMethod") // one registration: the link, its doorbell, its PHY control and the neighbor set, in order
+    // One registration: the link, its doorbell, its PHY control and the neighbor set, in order; the proof's verdict
+    // (ADR 2026-11.264w) adds its displacement, its deferred streak reset and the claim it reports.
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun registerLink(
         nodeId: String,
         advert: Protocol.PeerWire,
@@ -2707,8 +2904,13 @@ class BluetoothMeshTransport(
         device: BluetoothDevice? = null,
         // How long our dial took, for the field log; null for a link the peer dialed.
         dialMs: Long? = null,
+        // Whether the peer proved the id its HELLO claims (ADR 2026-11.264w): the handshake's verdict, never a default.
+        proven: Boolean,
+        // When our dial began, for a link we dialed: a proven one keeps the peer's streak until the responder's first
+        // record says it kept our proof ([ProvenDialStreak]). Null for a link the peer dialed.
+        dialStartedAt: Long? = null,
     ) {
-        val events = LinkEvents()
+        val events = LinkEvents(ProvenDialStreak(pending = proven && dialStartedAt != null), dialStartedAt ?: 0L)
         val framed =
             FramedLink(
                 nodeId = nodeId,
@@ -2730,6 +2932,8 @@ class BluetoothMeshTransport(
                 windowedReports = { LinkTuneDiag.feedWindow },
                 onKeepalive = { onKeepaliveIn(events.link) },
                 onKeepaliveWritten = { onKeepaliveWritten(events.link) },
+                proven = proven,
+                onFirstRecord = events::onFirstRecord,
             )
         events.link = framed
         // Before framed.start(), so the peer's announce finds it. An iPhone's is exempt from the whole check (#203).
@@ -2743,6 +2947,8 @@ class BluetoothMeshTransport(
             confirmGattPayload(it.address, nodeId)
         }
         val prev = links.put(nodeId, framed)
+        // R3 on this plane: a proven link took the place of an unproven one claiming the id (the prev close below).
+        val displaced = proven && prev != null && !prev.proven
         if (prev != null) {
             neverSighted.remove(prev)
             // Usually a different ACL from the replacement's (#142: handle 3 against 5), so its own may be left up.
@@ -2789,8 +2995,9 @@ class BluetoothMeshTransport(
         if (codedFast) schedulePace(AdvertReassertPolicy.SETTLE_MS) // its peer is back: slow again, after the settle
         synchronized(lock) {
             inFlight.remove(nodeId)
-            backoffs.remove(nodeId)
-        } // success resets the peer's streak
+            // Success resets the peer's streak; a dialed proven link's only at the responder's first record (264w).
+            if (!events.dialStreak.pending) backoffs.remove(nodeId)
+        }
         metrics.onBtLinkEstablished()
         framed.start()
         announce(framed, silence)
@@ -2800,6 +3007,27 @@ class BluetoothMeshTransport(
         advertEdge()
         field.record(FieldEvent.BtUp(nodeId, dialMs = dialMs, sighted = sighted, links = links.size))
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
+        // Once the link is in the table and up, so this plane's own R3/R4 hook finds it proven and leaves it.
+        if (proven) {
+            claims.proven(nodeId, PLANE, displaced)
+        } else if (claims.isProofCapable(nodeId)) {
+            // [LinkClaims] tells each id once: a seed or profile that made it proof-capable after this link's last R1
+            // check but before its `links.put` found nothing to close, and will not tell again (bluetooth-reviewer).
+            scope.launch { closeClaimed(nodeId) }
+        }
+    }
+
+    /**
+     * R3/R4 (ADR 2026-11.264w): [nodeId] can prove itself now — its profile gained `CAP_LINK_PROOF`, or it proved itself
+     * on a link — so the unproven link held claiming it is closed, through the ordinary teardown of that link only. Our
+     * own close: it bumps no streak ([closedForClaim]), as the id's streak is the real peer's. A proven link stays.
+     */
+    private fun closeClaimed(nodeId: String) {
+        val fl = links[nodeId]?.takeIf { !it.proven } ?: return
+        closedForClaim.add(fl)
+        if (!teardownLink(nodeId, "claim", only = fl)) return
+        claims.claimClosed(nodeId, PLANE)
+        wake() // the connect loop may dial the real peer now
     }
 
     /**
@@ -3020,6 +3248,9 @@ class BluetoothMeshTransport(
         startedAt: Long,
         cause: Throwable,
         device: BluetoothDevice? = null,
+        // False for a link's end counted as a failed dial (ADR 2026-11.264w): its reader or writer reports it after the
+        // teardown freed the id, so the in-flight slot may be a newer dial's by then, and only that dial may release it.
+        releaseSlot: Boolean = true,
     ) {
         // A dial that failed before its channel opened may have used a PSM the peer no longer listens on (an iPhone
         // that restarted), so its GATT payload is read again at the next advert. A HELLO refusal says nothing of the
@@ -3027,7 +3258,7 @@ class BluetoothMeshTransport(
         if (gattPeers && device != null && DialPlan.forgetsGattPayload(reason)) forgetGattPayload(device.address, "dial")
         val (streak, nextAt) =
             synchronized(lock) {
-                inFlight.remove(nodeId)
+                if (releaseSlot) inFlight.remove(nodeId)
                 // A dial the peer refused because its own dial to us linked first (a lonely dial crossing the
                 // ordinary one, ADR 2026-09.hj4a) is no failure to back off from: that link reset the streak already.
                 ConnectBackoffs.onDialFailed(backoffs, nodeId, linkedNow = nodeId in links.keys, now = elapsed(), config = backoffConfig)
@@ -3515,6 +3746,9 @@ class BluetoothMeshTransport(
 
         // Bound the responder's HELLO read (BluetoothSocket has no soTimeout) — close the socket if it stalls.
         private const val ACCEPT_HELLO_TIMEOUT_MS = 5_000L
+
+        // This plane's name on [LinkClaims]' counters' log lines (ADR 2026-11.264w).
+        private const val PLANE = "bt"
 
         // Backoff base after the first failed connect; escalates geometrically per peer (see ConnectBackoffPolicy),
         // capped at MAX_CONNECT_BACKOFF_MS. Replaces the old flat retry — a link-up resets the peer's streak.

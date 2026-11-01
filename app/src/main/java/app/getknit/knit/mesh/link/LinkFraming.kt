@@ -52,6 +52,15 @@ internal object LinkFraming {
          * replaces push-all (see `docs/DIGEST_PULL_REATTACH.md`).
          */
         DIGEST(7),
+
+        /**
+         * A link proof (ADR 2026-11.264w): the 128-byte `sigPub ‖ hpkePub ‖ signature` payload of
+         * [app.getknit.knit.mesh.crypto.LinkProof], read once right after the HELLOs by [LinkHandshake] and ignored on
+         * a live link, as a stray HELLO is. Written only to a peer whose HELLO carries
+         * [app.getknit.knit.mesh.protocol.Protocol.CAP_LINK_PROOF]: every build before it throws on an unknown tag
+         * ([read]) and drops the link.
+         */
+        PROOF(8),
         ;
 
         companion object {

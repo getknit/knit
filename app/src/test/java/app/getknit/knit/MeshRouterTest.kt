@@ -107,7 +107,7 @@ class MeshRouterTest {
             // drops any component past the ones named — every frame would have read as TransportKind.Other.
             val transport = RecordingTransport(setOf("b"))
             val kinds = mutableListOf<TransportKind>()
-            val router = MeshRouter(transport, backgroundScope, jitter = { 0L }) { _, _, _, kind -> kinds += kind }
+            val router = MeshRouter(transport, backgroundScope, jitter = { 0L }) { _, _, _, kind, _ -> kinds += kind }
             router.start()
             advanceUntilIdle()
 
@@ -122,7 +122,7 @@ class MeshRouterTest {
     fun handleInboundPassesTheKindToOnDeliverAndDefaultsToOther() =
         runTest {
             val kinds = mutableListOf<TransportKind>()
-            val router = MeshRouter(RecordingTransport(setOf("b")), this, jitter = { 0L }) { _, _, _, kind -> kinds += kind }
+            val router = MeshRouter(RecordingTransport(setOf("b")), this, jitter = { 0L }) { _, _, _, kind, _ -> kinds += kind }
             val (w1, e1) = frame("m1")
             val (w2, e2) = frame("m2")
 
@@ -139,7 +139,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
             val delivered = mutableListOf<String>()
-            val router = MeshRouter(transport, this) { _, env, _, _ -> delivered += env.id }
+            val router = MeshRouter(transport, this) { _, env, _, _, _ -> delivered += env.id }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, "b")
@@ -152,7 +152,7 @@ class MeshRouterTest {
     fun relaysToOtherNeighborsExcludingSourceAndIncrementsHop() =
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -170,7 +170,7 @@ class MeshRouterTest {
             // DMs have no routing table: an addressed frame must still flood like room traffic, or it could
             // never reach a recipient that isn't a direct neighbor. (Recipient-only delivery is in MeshManager.)
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("dm1", recipientId = "z")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -185,7 +185,7 @@ class MeshRouterTest {
     fun doesNotRelayOnceTtlReached() =
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1", ttl = 3, hops = 3)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -197,7 +197,7 @@ class MeshRouterTest {
     fun clampsForgedOversizedTtlOnRelay() =
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1", ttl = Int.MAX_VALUE, hops = 0)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -212,7 +212,7 @@ class MeshRouterTest {
     fun doesNotRelayForgedTtlOnceHopsReachLocalDefault() =
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1", ttl = Int.MAX_VALUE, hops = DEFAULT_TTL)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -226,7 +226,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
             val delivered = mutableListOf<String>()
-            val router = MeshRouter(transport, this) { _, env, _, _ -> delivered += env.id }
+            val router = MeshRouter(transport, this) { _, env, _, _, _ -> delivered += env.id }
 
             val (wire, env) = frame("req1", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -244,7 +244,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
             val delivered = mutableListOf<String>()
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _ -> delivered += env.type }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _, _ -> delivered += env.type }
             val blobTypes =
                 listOf(FrameType.BLOB_REQ, FrameType.BLOB_HAVE, FrameType.BLOB_HAS, FrameType.BLOB_PROGRESS, FrameType.BLOB_CANCEL)
 
@@ -271,7 +271,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "c", "z"))
             val delivered = mutableListOf<String>()
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _ -> delivered += env.id }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _, _ -> delivered += env.id }
 
             val (flooded, floodedEnv) = frame("link-flood", relay = true, type = FrameType.LINK)
             router.handleInbound(flooded, floodedEnv, fromNodeId = "b")
@@ -293,7 +293,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "z"))
             val metrics = MeshMetrics()
-            val router = MeshRouter(transport, this, metrics = metrics, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, metrics = metrics, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("tick1", recipientId = "z", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -311,7 +311,7 @@ class MeshRouterTest {
     fun neverHandsAPointToPointFrameBackToTheHopItCameFrom() =
         runTest {
             val transport = RecordingTransport(setOf("b"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("tick1", recipientId = "b", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -325,7 +325,7 @@ class MeshRouterTest {
     fun doesNotHandOnToAnAddresseeWeHoldNoLinkTo() =
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("tick1", recipientId = "z", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -342,7 +342,7 @@ class MeshRouterTest {
     fun doesNotHandOnAFrameThatIsNotDmFormChat() =
         runTest {
             val transport = RecordingTransport(setOf("b", "z"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val typing = frame("t1", recipientId = "z", relay = false, type = FrameType.TYPING)
             val keyReq = frame("k1", relay = false, type = FrameType.KEY_REQ)
@@ -364,7 +364,7 @@ class MeshRouterTest {
     fun doesNotHandOnOnceHopsReachLocalDefault() =
         runTest {
             val transport = RecordingTransport(setOf("b", "z"))
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("tick1", ttl = Int.MAX_VALUE, hops = DEFAULT_TTL, recipientId = "z", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -380,7 +380,7 @@ class MeshRouterTest {
             val transport = RecordingTransport(setOf("b", "z"))
             val relayed = mutableListOf<Pair<String, Set<String>>>()
             val router =
-                MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, to -> relayed += env.id to to }) { _, _, _, _ -> }
+                MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, to -> relayed += env.id to to }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("tick1", recipientId = "z", relay = false)
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -401,9 +401,9 @@ class MeshRouterTest {
             b.connect(c)
 
             val deliveredAtC = mutableListOf<String>()
-            val ra = MeshRouter(a, backgroundScope, jitter = { 0L }) { _, _, _, _ -> }
-            val rb = MeshRouter(b, backgroundScope, jitter = { 0L }) { _, _, _, _ -> }
-            val rc = MeshRouter(c, backgroundScope, jitter = { 0L }) { _, env, _, _ -> deliveredAtC += env.id }
+            val ra = MeshRouter(a, backgroundScope, jitter = { 0L }) { _, _, _, _, _ -> }
+            val rb = MeshRouter(b, backgroundScope, jitter = { 0L }) { _, _, _, _, _ -> }
+            val rc = MeshRouter(c, backgroundScope, jitter = { 0L }) { _, env, _, _, _ -> deliveredAtC += env.id }
             ra.start()
             rb.start()
             rc.start()
@@ -426,7 +426,7 @@ class MeshRouterTest {
             val transport = RecordingTransport(setOf("b", "c", "d"))
             val relayed = mutableListOf<Pair<String, Set<String>>>()
             val router =
-                MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, to -> relayed += env.id to to }) { _, _, _, _ -> }
+                MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, to -> relayed += env.id to to }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -440,7 +440,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b")) // the only neighbor is the one we heard it from
             val relayed = mutableListOf<String>()
-            val router = MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, _ -> relayed += env.id }) { _, _, _, _ -> }
+            val router = MeshRouter(transport, this, jitter = { 0L }, onRelayed = { env, _ -> relayed += env.id }) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -463,7 +463,7 @@ class MeshRouterTest {
                     suppressThreshold = 2,
                     jitter = { 100L },
                     onRelayed = { env, _ -> relayed += env.id },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -487,7 +487,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -517,7 +517,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -549,7 +549,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -581,7 +581,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example")
@@ -604,7 +604,7 @@ class MeshRouterTest {
         runTest {
             val transport = RecordingTransport(setOf("b", "c"))
             val delivered = mutableListOf<Pair<String, String>>()
-            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, from, _ -> delivered += env.id to from }
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, from, _, _ -> delivered += env.id to from }
             val spool = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example"
 
             val (radio, env) = frame("ty1", recipientId = "me", relay = false, type = FrameType.TYPING)
@@ -634,7 +634,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example")
@@ -662,7 +662,7 @@ class MeshRouterTest {
                     jitterWindowMs = 150L,
                     suppressThreshold = 2,
                     jitter = { 100L },
-                ) { _, _, _, _ -> }
+                ) { _, _, _, _, _ -> }
 
             val (wire, env) = frame("m1")
             router.handleInbound(wire, env, fromNodeId = "b")
@@ -683,7 +683,7 @@ class MeshRouterTest {
             var now = 0L
             val budget = IngressBudget(burst = 1, perMinute = 60, clock = { now })
             val router =
-                MeshRouter(transport, this, metrics = metrics, jitter = { 0L }, budget = budget) { _, env, _, _ ->
+                MeshRouter(transport, this, metrics = metrics, jitter = { 0L }, budget = budget) { _, env, _, _, _ ->
                     delivered +=
                         env.id
                 }
@@ -719,7 +719,7 @@ class MeshRouterTest {
                     metrics = metrics,
                     jitter = { 0L },
                     budget = IngressBudget(burst = 1, perMinute = 0),
-                ) { _, env, _, _ ->
+                ) { _, env, _, _, _ ->
                     delivered +=
                         env.id
                 }
@@ -748,7 +748,7 @@ class MeshRouterTest {
             val transport = RecordingTransport(setOf("b", "c"))
             val metrics = MeshMetrics()
             val delivered = mutableListOf<String>()
-            val router = MeshRouter(transport, this, metrics = metrics, jitter = { 0L }) { _, env, _, _ -> delivered += env.id }
+            val router = MeshRouter(transport, this, metrics = metrics, jitter = { 0L }) { _, env, _, _, _ -> delivered += env.id }
             val (wire, env) = frame("m1")
             val twin = RelayEnvelope(type = env.type, id = "\uFEFF" + env.id, senderId = "a", payload = ByteArray(0))
             val twinWire = WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(twin))
@@ -784,7 +784,7 @@ class MeshRouterTest {
             val finished = mutableListOf<String>()
             val transport = RecordingTransport(setOf("b"))
             val router =
-                MeshRouter(transport, backgroundScope, jitter = { 0L }) { _, env, _, _ ->
+                MeshRouter(transport, backgroundScope, jitter = { 0L }) { _, env, _, _, _ ->
                     parked.complete(Unit)
                     proceed.await()
                     finished += env.id

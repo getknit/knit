@@ -114,6 +114,7 @@ class FramedLinkTest {
         windowedReports: Boolean = false,
         onKeepalive: () -> Unit = {},
         onKeepaliveWritten: () -> Unit = {},
+        onFirstRecord: () -> Unit = {},
     ): Harness {
         val toLink = PipedOutputStream()
         val linkInput = PipedInputStream(toLink, 1 shl 18)
@@ -148,6 +149,8 @@ class FramedLinkTest {
                 windowedReports = { windowedReports },
                 onKeepalive = onKeepalive,
                 onKeepaliveWritten = onKeepaliveWritten,
+                proven = false,
+                onFirstRecord = onFirstRecord,
             )
         link.start()
         return Harness(link, toLink, fromLink, callbacks)
@@ -189,6 +192,8 @@ class FramedLinkTest {
         assertNotNull("a FRAME record should surface as onInbound", got)
         assertEquals("m1", got!!.envelope.id)
         assertEquals("sender01", got.fromNodeId)
+        // A link's frame says so: the unsigned blob control is acted on only off a link (ADR 2026-11.264w).
+        assertTrue(got.onLink)
     }
 
     @Test
@@ -233,6 +238,28 @@ class FramedLinkTest {
                 ?.id,
         )
         assertEquals(1L, metrics.frames().dropsByReason[DropReason.DECODE_FAILED])
+    }
+
+    @Test
+    fun theFirstRecordOfAnyTypeIsReportedOnceBeforeItIsHandled() {
+        // The Bluetooth dialer of a proven link resets its peer's streak here (ADR 2026-11.264w): a KEEPALIVE counts.
+        val firsts = AtomicInteger()
+        val keepalivesAtFirst = AtomicInteger(-1)
+        val keepalives = AtomicInteger()
+        val h =
+            harness(
+                nodeId = "sender01",
+                onKeepalive = { keepalives.incrementAndGet() },
+                onFirstRecord = {
+                    keepalivesAtFirst.set(keepalives.get())
+                    firsts.incrementAndGet()
+                },
+            )
+        writeRecord(h.toLink, LinkFraming.Type.KEEPALIVE)
+        writeRecord(h.toLink, LinkFraming.Type.FRAME, frameBytes(id = "m1", senderId = "sender01"))
+        assertNotNull(h.callbacks.inbound.poll(2, TimeUnit.SECONDS))
+        assertEquals(1, firsts.get())
+        assertEquals(0, keepalivesAtFirst.get()) // reported before the record it saw was handled
     }
 
     @Test
@@ -1268,6 +1295,7 @@ class FramedLinkTest {
                 metrics = MeshMetrics(),
                 callbacks = callbacks,
                 now = { 0L },
+                proven = false,
             )
         link.start()
         link.close()

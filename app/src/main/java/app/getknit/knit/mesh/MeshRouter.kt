@@ -47,7 +47,14 @@ class MeshRouter(
     // call. Not invoked for a relay that fired with no neighbor to send to. Defaulted to a no-op so the tests
     // that bind `onDeliver` as a trailing lambda are untouched; keep it before `onDeliver` for that reason.
     private val onRelayed: suspend (envelope: RelayEnvelope, to: Set<String>) -> Unit = { _, _ -> },
-    private val onDeliver: suspend (wire: WireEnvelope, envelope: RelayEnvelope, fromNodeId: String, kind: TransportKind) -> Unit,
+    // [onLink]: the frame came in on a link, so [fromNodeId] is that link's peer ([InboundFrame.onLink], ADR 2026-11.264w).
+    private val onDeliver: suspend (
+        wire: WireEnvelope,
+        envelope: RelayEnvelope,
+        fromNodeId: String,
+        kind: TransportKind,
+        onLink: Boolean,
+    ) -> Unit,
 ) {
     /**
      * A relay scheduled but not yet fired. [relayed] is the hop-incremented wrapper (its signed blob +
@@ -76,7 +83,7 @@ class MeshRouter(
             // Deliberately not destructured: a positional destructuring silently drops any component past
             // the ones named, and the frame's kind (the plane it arrived on) would read as Other for every frame.
             transport.inbound.collect { frame ->
-                handleInbound(frame.wire, frame.envelope, frame.fromNodeId, frame.kind)
+                handleInbound(frame.wire, frame.envelope, frame.fromNodeId, frame.kind, frame.onLink)
             }
         }
     }
@@ -85,13 +92,16 @@ class MeshRouter(
      * Processes one inbound frame: deliver+schedule if new, else count it toward overhear suppression.
      * [kind] is the radio the frame arrived over, handed to [onDeliver] for the delivery-plane record and the
      * indirect-reach tracker only — dedup, relay scheduling and split horizon never read it. Defaulted so a source with no radio (the
-     * Internet plane's `ScopeSync` bridge) calls the three-argument form.
+     * Internet plane's `ScopeSync` bridge) calls the three-argument form. [onLink] is [InboundFrame.onLink], handed on to
+     * [onDeliver] alone (the unsigned blob control is acted on only from its sender's own link, ADR 2026-11.264w); false
+     * for every source that is not a link.
      */
     suspend fun handleInbound(
         wire: WireEnvelope,
         envelope: RelayEnvelope,
         fromNodeId: String,
         kind: TransportKind = TransportKind.Other,
+        onLink: Boolean = false,
     ) {
         // Before the dedup, the meter and the verify: Android's database drops a leading U+FEFF from every id it binds,
         // so a twin under "\uFEFF" + X would pass the in-memory SeenSet and then take X's custody and message rows
@@ -130,7 +140,7 @@ class MeshRouter(
         // 2026-10.f82h). Nothing a delivery awaits blocks without bound: every send is an enqueue
         // (`FramedLink.send`) or a launch. Process death is outside this (#56).
         withContext(NonCancellable) {
-            onDeliver(wire, envelope, fromNodeId, kind)
+            onDeliver(wire, envelope, fromNodeId, kind, onLink)
             scheduleRelay(wire, envelope, fromNodeId)
         }
     }

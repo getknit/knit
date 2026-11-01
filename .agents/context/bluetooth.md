@@ -82,6 +82,24 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   scan's lonely cadence shares) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
   a responder that sighted the newcomer refuses it and dials it itself. Its oracle, `bt lonely dial <id> (…)`, is
   keyed by the iOS interop harness — don't reword it.
+- **When touching `BluetoothMeshTransport.initiateTo` / `superviseAccepted`'s handshake, `judge`, `refusesClaim`,
+  `closeClaimed` / `closedForClaim`, `cutAfter`, `registerLink`'s `proven` / `dialStartedAt`, `ProvenDialStreak`,
+  `FramedLink.onFirstRecord`, `BleAdmissionPolicy.decide`'s `heldProven` / `offersProof` / `proofCapable` rows or
+  `BtDownReason.CLAIM`:** READ ADR 2026-11.264w and `mesh/link/LinkClaims`. The dial runs `LinkHandshake.dial` under one
+  5 s `elapsedWait` watchdog (reply and PROOF read alike); the accept reads the HELLO under one and runs
+  `LinkHandshake.answer` under a second, and a watchdog and the handshake settle on one compare-and-set, so a socket the
+  watchdog closed is never registered. R1 (`refusesClaim`, counted by `LinkClaims`) and a bit-carrying HELLO with no
+  nonce close with no reply ahead of every admission row; R3 admits a bit-carrying dialer over an unproven held link
+  whatever its sighting, age or the tie-break, and the held link closes only at registration; R2 keeps a proven held
+  link from any dialer without the bit. After `answer` the verdict is judged again against the link held now (and R1
+  again for an unproven one). Every close before registration goes to `armUnlinked` (#142). A dialed proven link
+  resets its peer's streak only at the responder's first record (`ProvenDialStreak`, the responder writes nothing
+  before it verified our PROOF); an end before one, inside `CONFIRM_BY_AGE_MS`, is `bt connect <id> failed
+  reason=HANDSHAKE` on the streak the dial found. The R3/R4 hook (`claims.onCapable`, start to stop) closes the unproven
+  link claiming an id through `teardownLink(…, "claim", only = link)`, and that end bumps no streak. Refusals add
+  `bt refused client <id> (claim=unproven)` / `(proof=<why>)` and a late re-judge's `… late=true`, beside `LinkClaims`'
+  own lines; `bt connect ok` and `bt accepted client` come only after the proof. Tests: `BleAdmissionPolicyTest`,
+  `ProvenDialStreakTest`, `FramedLinkTest`.
 - **When touching a TX power in `BleAdvertiser` (`presenceParams` / `sideParams` / `codedParams`), an RSSI threshold
   on an advert reading, `PromotionPolicy.msUntilDue`, `nextConnectWaitMs`, `mesh/power/ElapsedWait`, or any wait in
   `BluetoothMeshTransport`'s scan loop, connect loop or dial/HELLO watchdogs or `BleGattPayloadReader`'s give-up:**

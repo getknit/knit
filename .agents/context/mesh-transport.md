@@ -16,7 +16,9 @@ handle** (`WifiAwareNetworkSpecifier.Builder(publishSession).setPort(port)`), wh
 from **any** initiator over a single `ServerSocket`; all clients share it. Because an accept-any
 responder doesn't know who connected, the **initiator sends its advert as the first
 `LinkFraming.Type.HELLO` record** over the socket (`mesh/link/LinkHandshake`, shared with BLE), and the
-responder reads it to identify the peer. Tie-break gives one link per pair (larger nodeId =
+responder reads it to identify the peer. When both HELLOs carry `CAP_LINK_PROOF` each side then proves that id with a
+`PROOF` record before either registers the link (ADR 2026-11.264w); who must prove, and what a proof displaces, is
+`mesh/link/LinkClaims` (R1-R4), one per process across every plane. Tie-break gives one link per pair (larger nodeId =
 client/initiator, smaller = server). The responder is anchored to the publish session, so **only
 *subscribe* is ever re-armed** (publish/responder stay up), respecting the "one data interface" rule
 below.

@@ -1123,6 +1123,9 @@ enum class BtDownReason {
 
     /** We closed it: it was shown dead by its silence, its own controller or a write that never returned (#203). */
     SILENT,
+
+    /** We closed it: its HELLO was unproven, and the id it claimed can prove itself now (ADR 2026-11.264w, R3/R4). */
+    CLAIM,
     OTHER,
     ;
 
@@ -1134,6 +1137,7 @@ enum class BtDownReason {
                 "evicted" -> EVICTED
                 "adapter off" -> ADAPTER_OFF
                 "silent" -> SILENT
+                "claim" -> CLAIM
                 else -> OTHER
             }
     }
