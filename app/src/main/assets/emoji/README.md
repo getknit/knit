@@ -6,20 +6,20 @@ Loaded locally at runtime by the reaction picker — the app has **no `INTERNET`
 ## `emoji_en.tsv`
 
 One fully-qualified RGI emoji per line, in Unicode's own order: `emoji`, `group id`, `skin-tone variant`
-(`0|1`), `CLDR short name` (English) and, on base entries, the CLDR search keywords (`|`-separated; the column
-is absent when there are none), tab-separated, under a `#` header. **Generated file — do not edit by
+(`0|1`), `CLDR short name` (English) and, on base entries, the search keywords (CLDR's, then emojilib's;
+`|`-separated; the column is absent when there are none), tab-separated, under a `#` header. **Generated file — do not edit by
 hand**; regenerate with `python3 scripts/gen-emoji-catalog.py`. Produced from Unicode's `emoji-test.txt`
 (Emoji 17.0, see [Attribution](#attribution) below): `fully-qualified` entries only (the one canonical form
 of each emoji, so identical reactions tally as one chip), the `Component` group skipped, and every entry
 carrying a skin-tone modifier flagged so the browse grid can hide it under its base while search still finds
-it. Search matches the name and the keywords, so "100" finds 💯; tone variants carry no keywords and are
+it. Search matches the name and the keywords, so "100" or "exam" finds 💯; tone variants carry no keywords and are
 found by name ("thumbs up medium"). The group id mirrors `app.getknit.knit.data.emoji.EmojiGroup` ordinal-for-ordinal.
 
 The loader (`EmojiCatalogLoader`) parses it once per process off the main thread and drops every emoji the
 device's fonts cannot draw (`Paint.hasGlyph`), so an older phone never offers a tofu box. If the file is
 **absent or fails to load, the picker degrades to an empty grid** (the quick-reaction row still works).
 
-The file is plain text and stays compressed in the APK (~52 KB); it is deliberately **not** on the
+The file is plain text and stays compressed in the APK (~74 KB); it is deliberately **not** on the
 `noCompress` list, which exists only so TFLite can mmap the moderation models.
 
 ## Attribution
@@ -80,4 +80,34 @@ Except as contained in this notice, the name of a copyright holder shall
 not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
+```
+
+### `emoji_en.tsv` keywords — emojilib (MIT)
+
+Source: <https://github.com/muan/emojilib>, npm `emojilib@4.0.3`, `dist/emoji-en-US.json`. The keyword column
+appends these after CLDR's (lower-cased, `_` read as a space, duplicates dropped); the pinned file, its
+`LICENSE`, `package.json` and provenance are vendored under `third_party/emojilib/` (not shipped in the APK).
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2014 Mu-An Chiou
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

@@ -20,6 +20,12 @@ class EmojiCatalogParserTest {
     }
 
     @Test
+    fun theKeycapHashRowIsDataNotAComment() {
+        val parsed = EmojiCatalogParser.parse(sequenceOf("# a comment", "#️⃣\t7\t0\tkeycap: #\tkeycap|hash"))
+        assertEquals(listOf("#️⃣"), parsed.map { it.emoji })
+    }
+
+    @Test
     fun namesKeepTheirColonsAndCommas() {
         val e = EmojiCatalogParser.parse(sequenceOf("👨‍❤️‍👨\t1\t0\tcouple with heart: man, man")).single()
         assertEquals("couple with heart: man, man", e.name)

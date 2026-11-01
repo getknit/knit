@@ -420,6 +420,14 @@ object ThirdPartyNotices {
                 license = License.UNICODE_3_0,
                 kind = NoticeKind.DATA,
             ),
+            ThirdPartyNotice(
+                key = "emojilib",
+                name = "More emoji search keywords",
+                project = "Mu-An Chiou — emojilib",
+                url = "https://github.com/muan/emojilib",
+                license = License.MIT,
+                kind = NoticeKind.DATA,
+            ),
         )
 
     /**

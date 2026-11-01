@@ -97,6 +97,7 @@ bundled as `GPL-2.0.txt`, `MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
 | Profanity word list (`profanity_en.txt`, `slurs_en.txt` — © 2021 David Sojevic) | [dsojevic/profanity-list](https://github.com/dsojevic/profanity-list) | MIT |
 | Emoji catalog (`emoji_en.tsv` — from `emoji-test.txt`, Emoji 17.0, © Unicode, Inc.) | [Unicode, Inc. — emoji-test.txt](https://www.unicode.org/reports/tr51) | Unicode-3.0 |
 | Emoji search keywords (`emoji_en.tsv` — from CLDR 48 English annotations, © Unicode, Inc.) | [unicode-org/cldr](https://github.com/unicode-org/cldr) | Unicode-3.0 |
+| More emoji search keywords (`emoji_en.tsv` — from emojilib 4.0.3, © 2014 Mu-An Chiou) | [muan/emojilib](https://github.com/muan/emojilib) | MIT |
 
 - **On-device moderation models** — the NSFW image classifier and the toxicity text classifier bundled
   under `app/src/main/assets/moderation/` are third-party works redistributed under their own licenses. The
@@ -112,8 +113,10 @@ bundled as `GPL-2.0.txt`, `MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
   work generated from Unicode's [`emoji-test.txt`](https://www.unicode.org/reports/tr51) (Unicode License
   v3, © Unicode, Inc.), pinned at Emoji 17.0, and its search keywords from the
   [CLDR](https://github.com/unicode-org/cldr) English emoji annotations (Unicode License v3, © Unicode, Inc.),
-  pinned at `release-48`, by `scripts/gen-emoji-catalog.py`. It is redistributed under
-  the Unicode License v3; the full license text, source URL, pinned version, and transform rules are in
+  pinned at `release-48`, and from [emojilib](https://github.com/muan/emojilib) (MIT, © 2014 Mu-An Chiou),
+  pinned at 4.0.3, by `scripts/gen-emoji-catalog.py`. It is redistributed under
+  the Unicode License v3 (emojilib's keywords under MIT); the full license texts, source URLs, pinned versions,
+  and transform rules are in
   [`app/src/main/assets/emoji/README.md`](app/src/main/assets/emoji/README.md).
 
 ## Build- and test-only dependencies (not distributed)

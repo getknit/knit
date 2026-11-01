@@ -27,7 +27,7 @@ class EmojiCatalogAssetTest {
 
     @Test
     fun everyDataLineParsesAndTheCatalogIsFullSized() {
-        val dataLines = file.readLines().count { it.isNotBlank() && !it.startsWith("#") }
+        val dataLines = file.readLines().count { '\t' in it }
         assertEquals("a dropped line means a malformed row or an unknown group", dataLines, entries.size)
         assertTrue("Emoji 17.0 ships 3,944 fully-qualified emoji; got ${entries.size}", entries.size >= 3_500)
         assertTrue("browse (no tone variants) should be ~1,900; got ${catalog.browse.size}", catalog.browse.size >= 1_500)
@@ -90,6 +90,7 @@ class EmojiCatalogAssetTest {
         assertEquals("💯", catalog.search("100").first().emoji)
         assertEquals("💯", catalog.search("perfect").first().emoji)
         assertEquals("👎", catalog.search("-1").first().emoji)
+        assertEquals("emojilib's keywords are merged in", "💯", catalog.search("exam").first().emoji)
         assertTrue("👍" in catalog.search("like").map { it.emoji })
     }
 
@@ -108,6 +109,7 @@ class EmojiCatalogAssetTest {
         assertEquals("every group has renderable base emoji", EmojiGroup.entries.toSet(), catalog.byGroup.keys)
         val scotland = "🏴󠁧󠁢󠁳󠁣󠁴󠁿"
         assertEquals(EmojiGroup.FLAGS, entries.first { it.emoji == scotland }.group)
+        assertTrue("the keycap #️⃣ row starts with '#' and must not read as a comment", entries.any { it.emoji == "#️⃣" })
         assertTrue("a bare skin-tone swatch is a component, not an emoji", entries.none { it.emoji == "🏻" })
         assertTrue("a bare hair component is not an emoji", entries.none { it.emoji == "🦰" })
     }

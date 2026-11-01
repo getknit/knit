@@ -99,3 +99,18 @@ reaches it. A token matches a name substring, or the **prefix** of a keyword or 
 would find every "phone" and "bone". Name matches rank above keyword matches. The generator hard-fails on a base
 emoji CLDR lacks, so CLDR moves in step with a Unicode bump (`--update-cldr`). The asset grows ~30 → ~52 KB
 compressed in the APK.
+
+## Amendment 2026-11-01 — emojilib after CLDR
+
+CLDR's keywords are formal ("hundred points" has "score", not "exam"); emojilib (`muan/emojilib`, MIT) is the
+community set most pickers outside Android search with, and the one people's habits come from. Its
+`dist/emoji-en-US.json` is vendored at npm 4.0.3 under `third_party/emojilib/` and appended after CLDR in the
+same keyword column: lower-cased, `_` read as a space (its first keyword is its snake_case name, which then
+drops as the name), duplicates dropped, keys compared with U+FE0F stripped. It covers every Emoji 17.0 base
+entry today, but it is community data that lags Unicode, so a missing emoji keeps CLDR's keywords rather than
+failing the build. CLDR alone stays the hard requirement. The asset grows to ~74 KB compressed.
+
+The same change fixed a parser bug the asset test shared: a line starting with `#` was a comment, so the
+keycap #️⃣ row never reached the picker. A comment is now a `#` line with no tab, and the generator refuses a
+tab in its header.
+

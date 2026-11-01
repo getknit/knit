@@ -61,6 +61,10 @@ CLDR_DERIVED = """<ldml><annotations>
 <annotation cp="🏴󠁧󠁢󠁥󠁮󠁧󠁿">flag</annotation>
 </annotations></ldml>"""
 CLDR = gen.Cldr("release-48", (CLDR_ANNOTATIONS, CLDR_DERIVED))
+# emojilib keys keep VS16 (☺️) where CLDR drops it; its first keyword is its own snake_case name.
+EMOJILIB_JSON = """{"😀": ["grinning_face", "smile", "grin", ":D"], "☺️": ["smiling_face", "blush"],
+"👍": ["thumbs_up", "thumbsup", "+1", "approve"], "🦕": ["sauropod"]}"""
+EMOJILIB = gen.Emojilib("4.0.3", EMOJILIB_JSON)
 
 
 class ParseTest(unittest.TestCase):
@@ -110,6 +114,14 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(by_name["couple with heart: man, man"].keywords, ("couple", "love", "man"))
         self.assertEqual(by_name["flag: England"].keywords, ("flag",))
 
+    def test_emojilib_keywords_follow_cldr_deduped_with_underscores_as_spaces(self) -> None:
+        lib = gen.emojilib_keywords(EMOJILIB_JSON)
+        by_name = {e.name: e for e in gen.attach_keywords(self.entries, gen.cldr_keywords(CLDR.texts), lib)}
+        self.assertEqual(by_name["grinning face"].keywords, ("face", "grin", "smile", ":d"))
+        self.assertEqual(by_name["smiling face"].keywords, ("face", "outlined", "relaxed", "smile", "blush"))  # VS16 key
+        self.assertEqual(by_name["thumbs up"].keywords, ("+1", "hand", "thumb", "up", "thumbsup", "approve"))
+        self.assertEqual(by_name["flag: England"].keywords, ("flag",))  # emojilib lacks it: CLDR's alone
+
     def test_tone_variants_carry_no_keywords(self) -> None:
         by_name = {e.name: e for e in gen.attach_keywords(self.entries, gen.cldr_keywords(CLDR.texts))}
         self.assertEqual(by_name["thumbs up: light skin tone"].keywords, ())
@@ -125,14 +137,16 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(len(src.sha256), 64)
 
     def test_render_emits_tab_separated_lines_under_a_comment_header(self) -> None:
-        text, entries, _ = gen.render(SNIPPET, CLDR)
+        text, entries, _ = gen.render(SNIPPET, CLDR, EMOJILIB)
         lines = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
         self.assertEqual(len(lines), len(entries))
-        self.assertEqual(lines[0], "😀\t0\t0\tgrinning face\tface|grin")
+        self.assertEqual(lines[0], "😀\t0\t0\tgrinning face\tface|grin|smile|:d")
         self.assertEqual(lines[3], "👍🏻\t1\t1\tthumbs up: light skin tone")  # no keyword column, no trailing tab
         self.assertIn("GENERATED FILE", text)
         self.assertIn("Emoji 17.0 (2025-08-04)", text)
         self.assertIn("CLDR release-48 annotations/en.xml sha256", text)
+        self.assertIn("emojilib 4.0.3 dist/emoji-en-US.json sha256", text)
+        self.assertFalse(any("\t" in ln for ln in text.splitlines() if ln.startswith("#")), "a tabbed '#' line is data")
 
 
 if __name__ == "__main__":
