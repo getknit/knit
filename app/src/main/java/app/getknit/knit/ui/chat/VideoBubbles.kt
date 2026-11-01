@@ -145,7 +145,12 @@ internal fun VideoEncodingTile(
     }
 }
 
-/** The staged video above the field: its poster and length, the way the bubble will draw them. */
+/**
+ * The staged video above the field: its poster and length, the way the bubble will draw them. 72dp tall like a staged
+ * photo, and never narrower than that photo's square: at its own 9:16 a portrait clip was 41dp wide, the ✕ covered most
+ * of it and its length wrapped onto two lines. A portrait poster is cropped to the square; a landscape clip keeps its
+ * width.
+ */
 @Composable
 internal fun StagedVideoTile(video: VideoInfo) {
     val poster = video.poster.takeIf { it.isNotEmpty() }
@@ -153,9 +158,10 @@ internal fun StagedVideoTile(video: VideoInfo) {
         modifier =
             Modifier
                 .height(72.dp)
-                .aspectRatio(videoAspect(video.width, video.height))
+                .aspectRatio(videoAspect(video.width, video.height).coerceAtLeast(1f))
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .testTag("chat_staged_video"),
         contentAlignment = Alignment.Center,
     ) {
         if (poster != null) {
@@ -317,10 +323,13 @@ private fun DurationBadge(
         color = Color.Black.copy(alpha = 0.6f),
         modifier = modifier.padding(6.dp),
     ) {
+        // A clock reads as one figure: never "1:" over "01".
         Text(
             formatVideoDuration(durationMs),
             style = MaterialTheme.typography.labelSmall,
             color = Color.White,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
         )
     }

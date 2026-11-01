@@ -2259,17 +2259,20 @@ class ChatViewModelTest {
             val uri = Uri.parse("content://media/video/9")
             val video = VideoInfo(61_000L, 480, 854, byteArrayOf(1))
             val ingested = AttachmentStore.Ingested(hash = "v9", mime = "video/mp4", name = "video.mp4", video = video)
+            val asFile = AttachmentStore.Ingested(hash = "f9", mime = "video/x-msvideo", name = "long.avi", sizeBytes = 10)
             coEvery { attachments.isVideo(uri) } returns true
             coEvery { attachments.videoDurationMs(uri) } returns 134_000L
             coEvery { attachments.ingestVideo(uri, any(), any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
-            val vm = vm() // Nearby room
+            coEvery { attachments.ingestFile(uri, any()) } returns AttachmentStore.IngestResult.Success(asFile, flagged = false)
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            stubDm("bob")
+            val vm = vm("bob")
             val events = mutableListOf<Int>()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
 
-            // The file button's pick asks too, and keeps the button it came from for the encode after a yes.
-            vm.attachFile(uri)
+            vm.attach(uri)
             advanceUntilIdle()
-            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = true), vm.longVideo.value)
+            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = false), vm.longVideo.value)
             assertNull("no encode tile while the question is up", vm.videoEncoding.value)
 
             // No: nothing encoded, nothing staged, nothing said.
@@ -2282,14 +2285,24 @@ class ChatViewModelTest {
             // Yes: that pick is encoded (the encode's own plan makes the cut) and staged, with no notice after it.
             vm.attach(uri)
             advanceUntilIdle()
-            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = false), vm.longVideo.value)
-            coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
             vm.sendLongVideo()
             advanceUntilIdle()
             assertNull(vm.longVideo.value)
             assertEquals(ingested, vm.pendingAttachment.value)
-            coVerify(exactly = 1) { attachments.ingestVideo(uri, true, any()) }
+            coVerify(exactly = 1) { attachments.ingestVideo(uri, false, any()) }
             assertTrue("nothing said: the sender already agreed to the cut", events.isEmpty())
+
+            // The file button's pick asks too, and its yes keeps the button: a video the encoder cannot read goes as a file.
+            vm.clearAttachment()
+            coEvery { attachments.ingestVideo(uri, any(), any()) } returns
+                AttachmentStore.IngestResult.Failed(AttachmentStore.IngestResult.Reason.Unreadable)
+            vm.attachFile(uri)
+            advanceUntilIdle()
+            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = true), vm.longVideo.value)
+            vm.sendLongVideo()
+            advanceUntilIdle()
+            assertEquals(asFile, vm.pendingAttachment.value)
+            coVerify(exactly = 1) { attachments.ingestFile(uri, any()) }
         }
 
     @Test

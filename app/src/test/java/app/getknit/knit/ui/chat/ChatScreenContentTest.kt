@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasImeAction
@@ -25,10 +27,12 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.test.withKeyDown
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -47,6 +51,7 @@ import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -263,6 +268,27 @@ class ChatScreenContentTest {
         assertEquals(1, longVideoSends)
         compose.onNodeWithText("Cancel").performClick()
         assertEquals(1, longVideoDismissals)
+    }
+
+    /**
+     * A staged portrait clip is no narrower than a staged photo's 72dp square, and its length fits on one line. At the
+     * clip's own 9:16 the tile was 40dp wide: the ✕ covered most of it and "1:01" wrapped onto two lines.
+     */
+    @Test
+    fun aStagedPortraitVideoIsWideEnoughForItsLengthOnOneLine() {
+        val video = VideoInfo(durationMs = 61_000L, width = 480, height = 854, poster = ByteArray(0))
+        val staged = AttachmentStore.Ingested(hash = "v1", mime = "video/mp4", name = "video.mp4", video = video)
+        compose.setContent(content(input = "", pendingAttachment = staged))
+
+        compose.onNodeWithTag("chat_staged_video").assertWidthIsAtLeast(72.dp)
+        val layouts = mutableListOf<TextLayoutResult>()
+        compose.onNodeWithText("1:01").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        // The clock's one-line width against the room the badge gives it: past it, "1:01" wraps or is cut off.
+        val clock = layouts.single()
+        assertTrue(
+            "1:01 needs ${clock.multiParagraph.intrinsics.maxIntrinsicWidth} px, has ${clock.layoutInput.constraints.maxWidth}",
+            clock.multiParagraph.intrinsics.maxIntrinsicWidth <= clock.layoutInput.constraints.maxWidth,
+        )
     }
 
     /** A thread of [count] rows, newest last, in the oldest-first shape the ViewModel emits. */

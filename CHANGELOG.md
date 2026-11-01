@@ -97,6 +97,8 @@ document:
 - On a Meshtastic board set not to sign its packets, Meshtastic room posts can be up to 200 bytes, and Knit
   stops budgeting airtime for signatures the board never sends. If another app turns on encryption for Knit's
   channel, setting the board up again in Knit turns it back off.
+- A portrait video waiting to be sent now shows its preview as a square, like a photo's. It used to be a
+  narrow strip with its length broken over two lines and mostly covered by the remove button.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 
