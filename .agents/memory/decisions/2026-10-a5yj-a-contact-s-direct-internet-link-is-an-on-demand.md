@@ -192,6 +192,20 @@ failed open is never reset evidence (`onRatchetFailure(authenticated = false)`):
 unreadable as a matter of course. Whether this person wrote to or verified the contact is the offerer's consent rule,
 asked by the link layer before it offers, never at receipt, so the rule cannot differ between the two ends.
 
+**Device trial passed 2026-10-31, 23:17 to 23:26** (the reset-mid-offer trial the crypto design pass named), on the P9
+offering and the P7 answering, both on the home Wi-Fi, the P7 with Bluetooth and Wi-Fi Aware off, both on spools with
+`sig`. A reset was forced with `…debug.RATCHET --es reset` four times. With the P9's own reset unanswered, its offer
+answered `NOT_QUALIFIED` and nothing was gathered or sent; the reset was answered in about 4 s and the next offer came up.
+With the P7 forcing a reset 0, 250 and 600 ms after the P9's offer, the 0 and 600 ms runs ended `NO_ANSWER` (the
+answer was never sealed) and the 250 ms run came up because the answer was sealed first. Every session was confirmed
+again before a later link came up. Each phone logged exactly one reset request per forced reset and none of its own,
+so no link frame fed the reset heuristic. A DM each way crossed afterwards and was ticked. The new `RATCHET_EPOCH_GONE`
+and `RATCHET_AEAD_FAIL` drops were custody re-serves from the eras the resets retired (`reset gate: … pre-era`).
+One finding is outside this ADR: in the 250 ms run the P9 dropped the P7's reset init, its first sight of it, as
+`DUPLICATE se=1 pe=0 n=0 init=true`, 20 s after adopting the P7's previous reset. The P7 stayed unconfirmed for more
+than 5 minutes, until the 600 ms run's reset was adopted. That is a ratchet issue, not a link one: the link only carried
+the frame.
+
 ## Amendment 2026-10-27 — no standing keepalive
 
 **A link sends no keepalive; it closes when idle, and only a held link keeps itself alive.** The text above sized the
@@ -622,8 +636,10 @@ The keepalive amendment's numbers set the rest:
 
 ## Amendment 2026-10-29 — a push the peer did not keep is not pushed again
 
-Status: draft (2026-10-29), for the maintainer's call; #235. Built and lab-checked (`DirectLinkPushLabTest`, which
-fails on the rule it replaces); the device trial is owed. Replaces the custody amendment's `LinkPushRounds` bullet.
+Status: Accepted (2026-10-31), the maintainer's call; #235. Built and lab-checked (`DirectLinkPushLabTest`, which
+fails on the rule it replaces). Device trial passed 2026-10-29, 01:27 to 01:37 (P9 on cellular, P7 on Wi-Fi with its
+radios off): each admitted gap frame crossed once at link-up, none was pushed again over six rounds, no DM doubled, and
+the link idled out 180 s after the last real frame. Replaces the custody amendment's `LinkPushRounds` bullet.
 
 The miss: on the 2026-10-28 device trial (P9 and P7, link only) the link never idled out. The P9's 200 own frames, its
 per-sender bucket's whole quota, spanned 0.3–2.3 h. The P7's bucket for the P9, filled only through the link's view,
@@ -659,7 +675,7 @@ the first round after each link-up and each lapse, and a far end on an older bui
 
 ## Amendment 2026-10-30 — the stream holds its queue to a second of what it delivers
 
-Status: draft (2026-10-30), for the maintainer's call. Built and JVM-checked
+Status: Accepted (2026-10-31), the maintainer's call. Built and JVM-checked
 (`LinkArqTest.aFrameWrittenBehindABulkOnADeepSlowPathWaitsAboutTheQueueBoundNotTheWindow`, which fails without it); the
 device trial is owed. Adds to the stream amendment; `docs/DIRECT_LINKS.md` L-6-5.
 
@@ -703,7 +719,7 @@ left for a later need.
 
 ## Amendment 2026-10-30 — a network change closes the link, and a file it cut is offered for again
 
-Status: draft (2026-10-30), for the maintainer's call. Built and checked on the JVM and in the lab
+Status: Accepted (2026-10-31), the maintainer's call. Built and checked on the JVM and in the lab
 (`DirectLinksTest.aMoveToAnotherNetworkClosesTheLinkLeftOnTheOldOneAndAFileItCutIsOfferedForAtOnce`,
 `aLinkThatGoesSilentMidFileIsOfferedForAgainAfterABackoffThatGrowsWhileLinksKeepDyingSo`,
 `InternetLinkLabTest.aPhotoCutByTheReceiversMoveToAnotherNetworkResumesOverTheLinkHisWantRaises` and
@@ -755,7 +771,7 @@ minutes, and it would need a wire change.
 
 ## Amendment 2026-10-31 — a link is a fast route for a large download, unless the network is metered
 
-Status: draft (2026-10-31), for the maintainer's call. Amends ADR 2026-10.js2p (a fast-only want) and this ADR's custody
+Status: Accepted (2026-10-31), the maintainer's call. Amends ADR 2026-10.js2p (a fast-only want) and this ADR's custody
 and blobs amendment, whose "Left as it was" line it replaces; `docs/DIRECT_LINKS.md` L-7-9 and L-7-10. Built and checked
 on the JVM and in the lab (`LinkDownloadLimitLabTest.aFileOverTheDownloadLimitCrossesAnUnmeteredLinkWithNoTap`,
 `aFileOverTheDownloadLimitWaitsForTheTapOnAMeteredNetworkThenCrossesTheLink`,
@@ -822,7 +838,7 @@ carried nothing for the file, and the link's having been up then kept a later ta
 
 ## Amendment 2026-10-31 — beside a radio, a link carries attachments only when neither end is metered
 
-Status: draft (2026-10-31), for the maintainer's call. GitLab #236. Amends `docs/DIRECT_LINKS.md` L-2-3, L-7-7, L-7-8 and
+Status: Accepted (2026-10-31), the maintainer's call. GitLab #236. Amends `docs/DIRECT_LINKS.md` L-2-3, L-7-7, L-7-8 and
 L-7-9 ("while no radio links them"), and adds L-2-7, L-4-3 and L-7-11. Built and checked on the JVM and in the lab
 (`LinkBesideRadioLabTest`'s five scenarios; `CompositeMeshTransportTest`'s free-link cases, among them
 `aLargeAttachmentBesideBluetoothRaisesAFreeLinkAndRidesItOnceItIsUp` and
