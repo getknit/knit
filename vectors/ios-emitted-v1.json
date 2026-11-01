@@ -1,5 +1,5 @@
 {
-  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction; ratchet says how to open them. Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
+  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction; ratchet says how to open them. Carol's link proofs as dialer and responder, under link, with every HELLO at caps 40009 (link-hello-proof). Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
   "frames" : {
     "carolDmToBob" : {
       "body" : "Hi Bob, from Swift",
@@ -315,6 +315,41 @@
       "bundle" : "omZzaWdQdWJYIB732sTQJYioIlVlseDvzv7dxPWfey5VST+bTzB+NHTyZ2hwa2VQdWJYIKWW0/5gVIi2ofXoj8aeuKFfydnnXnsVLGa6azU+NqJ5",
       "nodeId" : "7vo3pnlkcfbe3qhaw67fqboy34",
       "signingSeed" : "050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7de"
+    }
+  },
+  "link" : {
+    "about" : "Carol's link proofs (link-hello-proof). carolDialsAlice: Carol dials Alice, Carol's nonce 20..2f, Alice's 30..3f; Carol's dialer PROOF (role 1). aliceDialsCarol: Alice dials Carol with the same nonces, Alice's HELLO (30..3f) first; Carol's responder PROOF (role 2). Every HELLO carries caps 40009, as keyed-v1's link entries do. Each entry gives both HELLO payloads and records, the transcript Carol signed and her PROOF record. CryptoKit randomizes Ed25519: verify the signature, never compare it.",
+    "aliceDialsCarol" : {
+      "dialer" : "alice",
+      "helloDialer" : {
+        "payload" : "4cgq2pnhh6p3j3afwsue3chrpi|1|40009|n303132333435363738393a3b3c3d3e3f",
+        "record" : "06000000443463677132706e68683670336a336166777375653363687270697c317c34303030397c6e3330333133323333333433353336333733383339336133623363336433653366"
+      },
+      "helloResponder" : {
+        "payload" : "7vo3pnlkcfbe3qhaw67fqboy34|1|40009|n202122232425262728292a2b2c2d2e2f",
+        "record" : "060000004437766f33706e6c6b63666265337168617736376671626f7933347c317c34303030397c6e3230323132323233323432353236323732383239326132623263326432653266"
+      },
+      "proof" : "08000000801ef7dac4d02588a8225565b1e0efcefeddc4f59f7b2e55493f9b4f307e3474f2a596d3fe605488b6a1f5e88fc69eb8a15fc9d9e75e7b152c66ba6b353e36a279e84a63c8380dc62615c5bb67d6c1dc44114046648796a874193578a5eba27589ece5d9fc88fa2cfb46026e0176e3f6867d8fb3209a6ed124ddfe8276024dad0a",
+      "responder" : "carol",
+      "role" : 2,
+      "signer" : "carol",
+      "transcript" : "6b6e69742f6c696e6b2f76312f70726f6f6602000000443463677132706e68683670336a336166777375653363687270697c317c34303030397c6e33303331333233333334333533363337333833393361336233633364336533660000004437766f33706e6c6b63666265337168617736376671626f7933347c317c34303030397c6e3230323132323233323432353236323732383239326132623263326432653266"
+    },
+    "carolDialsAlice" : {
+      "dialer" : "carol",
+      "helloDialer" : {
+        "payload" : "7vo3pnlkcfbe3qhaw67fqboy34|1|40009|n202122232425262728292a2b2c2d2e2f",
+        "record" : "060000004437766f33706e6c6b63666265337168617736376671626f7933347c317c34303030397c6e3230323132323233323432353236323732383239326132623263326432653266"
+      },
+      "helloResponder" : {
+        "payload" : "4cgq2pnhh6p3j3afwsue3chrpi|1|40009|n303132333435363738393a3b3c3d3e3f",
+        "record" : "06000000443463677132706e68683670336a336166777375653363687270697c317c34303030397c6e3330333133323333333433353336333733383339336133623363336433653366"
+      },
+      "proof" : "08000000801ef7dac4d02588a8225565b1e0efcefeddc4f59f7b2e55493f9b4f307e3474f2a596d3fe605488b6a1f5e88fc69eb8a15fc9d9e75e7b152c66ba6b353e36a2791c5aa59d1dd4c5dd93309ccc239a47803f1509a33dc73ec02802d9bf2039c61f48140d314abab40e57652f8817bf1c91777506b38cff796bd52ab3bb6e200602",
+      "responder" : "alice",
+      "role" : 1,
+      "signer" : "carol",
+      "transcript" : "6b6e69742f6c696e6b2f76312f70726f6f66010000004437766f33706e6c6b63666265337168617736376671626f7933347c317c34303030397c6e3230323132323233323432353236323732383239326132623263326432653266000000443463677132706e68683670336a336166777375653363687270697c317c34303030397c6e3330333133323333333433353336333733383339336133623363336433653366"
     }
   },
   "ratchet" : {

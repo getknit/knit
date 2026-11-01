@@ -4,6 +4,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.identity.DeviceTag
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.AesGcm
+import app.getknit.knit.mesh.crypto.LinkProof
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -13,6 +14,7 @@ import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.link.LinkFraming
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -531,6 +533,47 @@ class IosEmittedVectorTest {
             group.photoUpdatedAt?.let { put("photoUpdatedAt", it) }
             group.departed?.let { departed -> putJsonArray("departed") { departed.forEach { add(name(it)) } } }
         }
+
+    /**
+     * Carol's link proofs as the iPhone signs them (ADR 2026-11.264w): each HELLO record is the frozen framing of its
+     * payload at caps 40009 with its nonce, the transcript is the one Android builds from those bytes, and Carol's PROOF
+     * carries her raw keys and verifies for the role she played — and under the other role it fails. CryptoKit
+     * randomizes Ed25519, so the signature is verified, never rebuilt.
+     */
+    @Test
+    fun `carol's link proofs verify for her role and fail under the other`() {
+        val link = file.getValue("link").jsonObject
+        val parties = mapOf("alice" to alice, "carol" to carol)
+        for ((case, role) in listOf("carolDialsAlice" to LinkProof.Role.DIALER, "aliceDialsCarol" to LinkProof.Role.RESPONDER)) {
+            val entry = link.getValue(case).jsonObject
+            assertEquals(case, role.byte.toInt(), entry.int("role"))
+            assertEquals(case, "carol", field(entry, "signer"))
+            val hellos =
+                listOf("helloDialer" to field(entry, "dialer"), "helloResponder" to field(entry, "responder")).map { (key, name) ->
+                    val hello = entry.getValue(key).jsonObject
+                    val payload = field(hello, "payload").encodeToByteArray()
+                    assertEquals("$case $key record", LinkFraming.encode(LinkFraming.Type.HELLO, payload).toHex(), field(hello, "record"))
+                    val wire = checkNotNull(Protocol.parse(payload.decodeToString())) { "$case $key" }
+                    assertEquals("$case $key id", parties.getValue(name).nodeId, wire.nodeId)
+                    assertEquals("$case $key caps", 0x40009L, wire.capabilities)
+                    val first = if (name == "carol") 0x20 else 0x30
+                    assertEquals("$case $key nonce", ByteArray(Protocol.HELLO_NONCE_BYTES) { (first + it).toByte() }.toHex(), wire.nonceHex)
+                    payload
+                }
+            val (helloD, helloR) = hellos
+            assertEquals("$case transcript", LinkProof.transcript(role, helloD, helloR).toHex(), field(entry, "transcript"))
+            val record = checkNotNull(LinkFraming.read(entry.hex("proof").inputStream())) { case }
+            assertEquals(case, LinkFraming.Type.PROOF, record.type)
+            assertArrayEquals(case, carol.bundle.sigPublicKey() + carol.bundle.dhPublicKey(), record.payload.copyOf(64))
+            assertNull("$case proof does not verify", LinkProof.verify(record.payload, carol.nodeId, role, helloD, helloR))
+            val other = if (role == LinkProof.Role.DIALER) LinkProof.Role.RESPONDER else LinkProof.Role.DIALER
+            assertEquals(
+                "$case proof must fail under the other role",
+                LinkProof.Failure.SIGNATURE,
+                LinkProof.verify(record.payload, carol.nodeId, other, helloD, helloR),
+            )
+        }
+    }
 
     private fun drawOf(entry: JsonObject): Draw =
         when (val kind = field(entry, "kind")) {
