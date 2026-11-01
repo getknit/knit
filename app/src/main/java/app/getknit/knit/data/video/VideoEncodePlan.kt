@@ -74,7 +74,7 @@ object VideoEncodePolicy {
     const val MIME_HEVC = "video/hevc"
     const val MIME_H264 = "video/avc"
 
-    /** The longest video sent; a longer one goes out as its first 61 s. */
+    /** The longest video sent; a longer one goes out as its first 61 s, once the sender has said yes to that. */
     const val MAX_DURATION_MS = 61_000L
 
     /** The output's short side, in pixels: portrait 480 × 854, landscape 854 × 480. */
@@ -104,6 +104,13 @@ object VideoEncodePolicy {
     /** The pixel count [HEVC_VIDEO_BITRATE] is set for: 480 × 854. */
     private const val REFERENCE_PIXELS = SHORT_SIDE * 854
 
+    /**
+     * Whether a source [durationMs] long is cut at [MAX_DURATION_MS]: the one rule the composer's "Send the first 61
+     * seconds?" and the encode's [VideoEncodePlan.clipEndMs] both read, so the question is asked exactly when the cut
+     * will be made.
+     */
+    fun cuts(durationMs: Long): Boolean = durationMs > MAX_DURATION_MS
+
     /** The first encode of [source], in HEVC when [hevcEncoder] says the phone has an HEVC encoder. */
     fun plan(
         source: VideoSource,
@@ -122,7 +129,7 @@ object VideoEncodePolicy {
             maxFrameRate = MAX_FRAME_RATE,
             videoBitrate = rate.coerceAtLeast(MIN_VIDEO_BITRATE),
             audioBitrate = AUDIO_BITRATE,
-            clipEndMs = MAX_DURATION_MS.takeIf { source.durationMs > it },
+            clipEndMs = MAX_DURATION_MS.takeIf { cuts(source.durationMs) },
             attempt = 0,
         )
     }

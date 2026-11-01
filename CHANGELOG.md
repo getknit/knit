@@ -77,6 +77,8 @@ document:
 - While your LoRa board reports a busy channel, your Nearby posts wait instead of going out over LoRa, and the
   Nearby room tells you so. Your DMs still go, and posts to the Meshtastic room and DM auto-replies can now
   use up to half of Knit's LoRa airtime.
+- When you pick a video longer than 61 seconds, Knit now asks whether to send its first 61 seconds before it
+  starts shrinking it. If you cancel, nothing is sent.
 
 ### Fixed
 

@@ -18,6 +18,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,7 +35,21 @@ class AttachmentStoreVideoTest {
     private val screening = mockk<ImageScreeningService>(relaxed = true)
     private val stored = HashMap<String, Pair<String, ByteArray>>()
     private var result: TranscodeResult = TranscodeResult.Unreadable
-    private val encoder = VideoEncoder { _, progress -> progress(1f).let { result } }
+    private var probed: VideoSource? = null
+    private var transcodes = 0
+    private val encoder =
+        object : VideoEncoder {
+            override fun probe(uri: Uri): VideoSource? = probed
+
+            override suspend fun transcode(
+                uri: Uri,
+                onProgress: (Float) -> Unit,
+            ): TranscodeResult {
+                transcodes++
+                onProgress(1f)
+                return result
+            }
+        }
     private val store = AttachmentStore(context, blobs, screening, mockk(relaxed = true), encoder)
     private val uri = Uri.parse("content://media/picked/video/1")
 
@@ -42,14 +57,11 @@ class AttachmentStoreVideoTest {
         coEvery { blobs.insert(any(), any(), any()) } answers { stored[firstArg()] = secondArg<String>() to thirdArg() }
     }
 
-    private fun encoded(
-        trimmed: Boolean = false,
-        poster: ByteArray = byteArrayOf(1, 2, 3),
-    ): TranscodeResult.Success {
-        val source = VideoSource(1080, 1920, 0, if (trimmed) 90_000 else 40_000, 30f, hasAudio = true)
+    private fun encoded(poster: ByteArray = byteArrayOf(1, 2, 3)): TranscodeResult.Success {
+        val source = VideoSource(1080, 1920, 0, 40_000, 30f, hasAudio = true)
         return TranscodeResult.Success(
             bytes = ByteArray(2_000_000) { (it % 251).toByte() },
-            meta = VideoMeta(durationMs = if (trimmed) 61_000 else 40_000, width = 480, height = 854),
+            meta = VideoMeta(durationMs = 40_000, width = 480, height = 854),
             poster = poster,
             plan = VideoEncodePolicy.plan(source, hevcEncoder = true),
             source = source,
@@ -67,19 +79,20 @@ class AttachmentStoreVideoTest {
             assertEquals("video.mp4", ingested.name)
             assertEquals(2_000_000, ingested.sizeBytes)
             assertEquals(VideoInfo(40_000, 480, 854, byteArrayOf(1, 2, 3)), ingested.video)
-            assertFalse(ingested.trimmed)
             assertEquals("video/mp4", stored.getValue(ingested.hash).first)
             assertFalse(success.flagged)
             coVerify(exactly = 0) { screening.isVideoExplicit(any(), any()) }
         }
 
     @Test
-    fun aLongPickSaysItWasTrimmed() =
+    fun aPicksLengthIsReadOffItsContainerWithoutAnEncode() =
         runTest {
-            result = encoded(trimmed = true)
-            val ingested = (store.ingestVideo(uri, screen = false) as IngestResult.Success).ingested
-            assertTrue(ingested.trimmed)
-            assertEquals(61_000L, ingested.video?.durationMs)
+            // What the composer asks "Send the first 61 seconds?" on, before it spends an encode on the pick.
+            probed = VideoSource(1080, 1920, 0, 90_000, 30f, hasAudio = true)
+            assertEquals(90_000L, store.videoDurationMs(uri))
+            probed = null
+            assertNull("a pick that does not read has no length; the encode says what it makes of it", store.videoDurationMs(uri))
+            assertEquals("nothing encoded", 0, transcodes)
         }
 
     @Test

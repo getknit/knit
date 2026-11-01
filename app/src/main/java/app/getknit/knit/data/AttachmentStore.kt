@@ -7,6 +7,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import app.getknit.knit.data.video.TranscodeResult
+import app.getknit.knit.data.video.VideoEncodePolicy
 import app.getknit.knit.data.video.VideoEncoder
 import app.getknit.knit.data.video.VideoTranscoder
 import app.getknit.knit.data.webp.AnimatedFrames
@@ -106,8 +107,6 @@ class AttachmentStore(
         val sourceHash: String? = null,
         val reuse: AttachmentIdentities.Held? = null,
         val video: VideoInfo? = null,
-        /** A video cut to its first 61 s on the way in: the composer says so, once. */
-        val trimmed: Boolean = false,
     )
 
     /**
@@ -316,6 +315,13 @@ class AttachmentStore(
         }
 
     /**
+     * How long a picked video plays, read off its container before any encode, or null when it does not read as a
+     * video (the encode then says so). The composer asks before sending only the first 61 s of a longer one
+     * ([VideoEncodePolicy.cuts]), so nobody waits through an encode to learn their clip was cut.
+     */
+    suspend fun videoDurationMs(uri: Uri): Long? = withContext(Dispatchers.IO) { videos.probe(uri)?.durationMs }
+
+    /**
      * Ingests a picked short video (ADR 2026-10.hmfe): re-encoded by [VideoEncoder] to about 480p HEVC, 30 fps and
      * 400 kbps, cut to its first 61 s, with the source's metadata dropped — never sent as picked, unlike a picture
      * that is already small (ADR 2026-10.unqn): no source video is. Stored under `video/mp4` with the name
@@ -352,7 +358,6 @@ class AttachmentStore(
                     name = VIDEO_NAME,
                     sizeBytes = bytes.size,
                     video = video,
-                    trimmed = encoded.plan.trimmed,
                 ),
                 flagged,
             )

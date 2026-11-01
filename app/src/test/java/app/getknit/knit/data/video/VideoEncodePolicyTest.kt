@@ -64,6 +64,17 @@ class VideoEncodePolicyTest {
     }
 
     @Test
+    fun theComposerAsksAboutExactlyTheClipsTheEncodeCuts() {
+        // The composer's "Send the first 61 seconds?" reads `cuts` before any encode; the plan reads it to cut.
+        for (durationMs in listOf(0L, 45_000L, 61_000L, 61_001L, 180_000L)) {
+            val plan = VideoEncodePolicy.plan(source(durationMs = durationMs), hevcEncoder = true)
+            assertEquals("at $durationMs ms", plan.trimmed, VideoEncodePolicy.cuts(durationMs))
+        }
+        assertFalse(VideoEncodePolicy.cuts(61_000L))
+        assertTrue(VideoEncodePolicy.cuts(61_001L))
+    }
+
+    @Test
     fun anOvershootIsEncodedOnceMoreLowerThenRefused() {
         val plan = VideoEncodePolicy.plan(source(), hevcEncoder = true)
         assertEquals(VideoEncodeVerdict.Accept, VideoEncodePolicy.next(plan, VideoEncodePolicy.CEILING_BYTES))

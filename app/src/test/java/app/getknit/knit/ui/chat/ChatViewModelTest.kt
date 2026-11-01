@@ -2251,6 +2251,48 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun aVideoPastSixtyOneSecondsAsksBeforeAnyEncodeAndOnlyAYesEncodesIt() =
+        runTest {
+            // ADR 2026-10.hmfe's 2026-10-31 amendment: the cut was a toast after the encode the user had waited through.
+            // The length is read off the container first, and nothing is encoded until "Send the first 61 seconds?"
+            // is answered yes.
+            val uri = Uri.parse("content://media/video/9")
+            val video = VideoInfo(61_000L, 480, 854, byteArrayOf(1))
+            val ingested = AttachmentStore.Ingested(hash = "v9", mime = "video/mp4", name = "video.mp4", video = video)
+            coEvery { attachments.isVideo(uri) } returns true
+            coEvery { attachments.videoDurationMs(uri) } returns 134_000L
+            coEvery { attachments.ingestVideo(uri, any(), any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm() // Nearby room
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            // The file button's pick asks too, and keeps the button it came from for the encode after a yes.
+            vm.attachFile(uri)
+            advanceUntilIdle()
+            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = true), vm.longVideo.value)
+            assertNull("no encode tile while the question is up", vm.videoEncoding.value)
+
+            // No: nothing encoded, nothing staged, nothing said.
+            vm.dismissLongVideo()
+            advanceUntilIdle()
+            assertNull(vm.longVideo.value)
+            assertNull(vm.pendingAttachment.value)
+            coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
+
+            // Yes: that pick is encoded (the encode's own plan makes the cut) and staged, with no notice after it.
+            vm.attach(uri)
+            advanceUntilIdle()
+            assertEquals(ChatViewModel.LongVideo(uri, 134_000L, orAsFile = false), vm.longVideo.value)
+            coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
+            vm.sendLongVideo()
+            advanceUntilIdle()
+            assertNull(vm.longVideo.value)
+            assertEquals(ingested, vm.pendingAttachment.value)
+            coVerify(exactly = 1) { attachments.ingestVideo(uri, true, any()) }
+            assertTrue("nothing said: the sender already agreed to the cut", events.isEmpty())
+        }
+
+    @Test
     fun attachingAnImageInADmNeverAsksForAScreenAndStagesIt() =
         runTest {
             // Only the Nearby room screens what is sent (ADR 2026-10.9rh6); a DM's receivers screen it.

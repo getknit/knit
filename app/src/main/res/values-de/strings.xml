@@ -205,7 +205,8 @@
     <string name="chat_attachment_download_action">Herunterladen</string>
     <string name="chat_video_encoding">Video wird verkleinert… %1$d %%</string>
     <string name="chat_video_cancel">Abbrechen</string>
-    <string name="chat_video_trimmed">Videos sind höchstens 61 Sekunden lang, deshalb werden die ersten 61 gesendet</string>
+    <string name="chat_video_long_title">Die ersten 61 Sekunden senden?</string>
+    <string name="chat_video_long_body">Dieses Video ist %1$s lang. Videos sind höchstens 61 Sekunden lang, deshalb wird der Rest nicht gesendet.</string>
     <string name="chat_video_too_large">Dieses Video ist auch verkleinert noch zu groß. „Datei direkt senden“ kann das Original übertragen.</string>
     <string name="chat_video_unreadable">Dieses Video konnte nicht gelesen werden</string>
     <string name="chat_video_text_only">Hier können keine Videos gesendet werden</string>

@@ -219,7 +219,8 @@
     <string name="chat_attachment_download_action">Завантажити</string>
     <string name="chat_video_encoding">Стискання відео… %1$d%%</string>
     <string name="chat_video_cancel">Скасувати</string>
-    <string name="chat_video_trimmed">Відео можуть тривати до 61 секунди, тому буде надіслано перші 61</string>
+    <string name="chat_video_long_title">Надіслати перші 61 секунду?</string>
+    <string name="chat_video_long_body">Це відео триває %1$s. Відео можуть тривати до 61 секунди, тому решту не буде надіслано.</string>
     <string name="chat_video_too_large">Відео завелике навіть після стискання. Прямим надсиланням файлу можна передати оригінал.</string>
     <string name="chat_video_unreadable">Не вдалося прочитати це відео</string>
     <string name="chat_video_text_only">Тут не можна надсилати відео</string>

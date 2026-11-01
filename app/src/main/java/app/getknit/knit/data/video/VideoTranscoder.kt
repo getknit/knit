@@ -32,7 +32,10 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 /** The seam `AttachmentStore` encodes a picked video through: [VideoTranscoder] on a phone, a fake in a JVM test. */
-fun interface VideoEncoder {
+interface VideoEncoder {
+    /** What [uri] is, read off its container without decoding a frame, or null if it has no readable video track. */
+    fun probe(uri: Uri): VideoSource?
+
     /** Re-encodes [uri], reporting progress in 0..1 through [onProgress]. */
     suspend fun transcode(
         uri: Uri,
@@ -84,8 +87,7 @@ sealed interface TranscodeResult {
 class VideoTranscoder(
     private val context: Context,
 ) : VideoEncoder {
-    /** The source's properties, or null if it has no readable video track. */
-    fun probe(uri: Uri): VideoSource? =
+    override fun probe(uri: Uri): VideoSource? =
         runCatching {
             MediaMetadataRetriever().useRetriever { retriever ->
                 retriever.setDataSource(context, uri)

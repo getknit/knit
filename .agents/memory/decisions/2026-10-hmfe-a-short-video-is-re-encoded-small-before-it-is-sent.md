@@ -8,7 +8,7 @@ topics: [attachments, wire, moderation]
 
 # ADR 2026-10.hmfe — A short video is re-encoded small before it is sent
 
-Status: Accepted (2026-10-16); amended 2026-10-17 (below: the file button, the receiver's re-label, the poster) and 2026-10-19 (below: the screen's frames). Amends ADR 2026-10.js2p (a room post now declares its size, so a large room
+Status: Accepted (2026-10-16); amended 2026-10-17 (below: the file button, the receiver's re-label, the poster), 2026-10-19 (below: the screen's frames) and 2026-10-31 (below: a long pick asks first). Amends ADR 2026-10.js2p (a room post now declares its size, so a large room
 attachment is held like a sealed one), ADR 2026-10.9rh6 (the room screens a video's frames on the way out) and ADR
 2026-10.unqn (a video is never passed through). Additive wire: `ChatContent.attachmentSize` and `.video`,
 `MessageContent.video` (`MessageContentV2` label 16), all null and omitted by default; three vectors added, none
@@ -154,3 +154,27 @@ segments, each through the send encode and the screen: all 57 flagged, 91% of th
 4% under 0.5, and the weakest segment still 3 of its 12. A send of the 36 s one to the room through the bridge
 (`SENDIMG --ez video true`) was blocked on its poster alone (0.9999). Owed: a larger licensed explicit set, the clean
 half's false-positive run, and the receiver-blur trial on phones.
+
+## Amendment 2026-10-31 — a pick past 61 s asks before it is encoded
+
+A pick longer than 61 s was encoded, cut and staged, and only then did a toast say so ("Videos are up to 61 seconds,
+so this sends the first 61"). The sender learned of the cut after waiting through the encode (18.5 s for a 61 s
+source on the Pixel 3, above), and a toast cannot be declined: the only way out was to clear the staged clip.
+
+1. **The length is read first** (`AttachmentStore.videoDurationMs`, through `VideoEncoder.probe`: `VideoTranscoder`'s
+   `MediaMetadataRetriever` read of the container, on the IO dispatcher). No frame is decoded and nothing is encoded.
+2. **One rule for the question and the cut** (`VideoEncodePolicy.cuts`). Past `MAX_DURATION_MS` the composer asks
+   "Send the first 61 seconds?", naming the clip's own length (`ChatViewModel.longVideo`), and encodes only on Send
+   (`sendLongVideo`). Cancel, Back or a tap outside stages nothing (`dismissLongVideo`). The plan's `clipEndMs` reads
+   the same rule, so the question is asked exactly when the encode would cut. A length the container does not give
+   falls to the encode as before, which reads the video itself and says what it makes of it.
+3. **The toast and `Ingested.trimmed` are gone**: the sender agreed to the cut before it was made.
+
+A pick from the file button asks the same question and keeps its button for the encode after a yes, so a video the
+encoder then cannot read still goes as a file. Still no trim UI: the choice is the first 61 s or nothing, and in a DM
+the original goes by Direct file send. Guards: `VideoEncodePolicyTest.theComposerAsksAboutExactlyTheClipsTheEncodeCuts`,
+`AttachmentStoreVideoTest.aPicksLengthIsReadOffItsContainerWithoutAnEncode`,
+`ChatViewModelTest.aVideoPastSixtyOneSecondsAsksBeforeAnyEncodeAndOnlyAYesEncodesIt` and
+`ChatScreenContentTest.aLongVideoAsksWithItsLengthAndBothAnswersReachTheViewModel`. Device trial owed: a two-minute
+pick from each button asks before the encode tile shows, Cancel leaves the composer empty, and Send stages the first
+61 s.

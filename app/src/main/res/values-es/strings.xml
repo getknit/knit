@@ -212,7 +212,8 @@
     <string name="chat_attachment_download_action">Descargar</string>
     <string name="chat_video_encoding">Reduciendo el video… %1$d%%</string>
     <string name="chat_video_cancel">Cancelar</string>
-    <string name="chat_video_trimmed">Los videos duran hasta 61 segundos, así que se envían los primeros 61</string>
+    <string name="chat_video_long_title">¿Enviar los primeros 61 segundos?</string>
+    <string name="chat_video_long_body">Este video dura %1$s. Los videos duran hasta 61 segundos, así que el resto no se enviará.</string>
     <string name="chat_video_too_large">Este video sigue siendo demasiado grande después de reducirlo. El envío directo de archivo admite el original.</string>
     <string name="chat_video_unreadable">No se pudo leer ese video</string>
     <string name="chat_video_text_only">Aquí no se pueden enviar videos</string>

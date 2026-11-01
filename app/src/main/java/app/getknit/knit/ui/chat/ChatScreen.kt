@@ -100,6 +100,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiCalling3
 import androidx.compose.material.icons.outlined.AddReaction
@@ -294,6 +295,7 @@ import app.getknit.knit.ui.voice.VoiceNotePreview
 import app.getknit.knit.ui.voice.VoicePlayer
 import app.getknit.knit.ui.voice.VoiceRecordingBar
 import app.getknit.knit.ui.voice.VoiceStopButton
+import app.getknit.knit.ui.voice.formatDuration
 import app.getknit.knit.ui.voice.rememberMicGate
 import app.getknit.knit.ui.voice.voiceTranscriptView
 import coil3.compose.AsyncImage
@@ -349,6 +351,7 @@ fun ChatScreen(
     val stagedAttachmentRelay by viewModel.stagedAttachmentRelay.collectAsStateWithLifecycle()
     val linkPreviewLoading by viewModel.linkPreviewLoading.collectAsStateWithLifecycle()
     val videoEncoding by viewModel.videoEncoding.collectAsStateWithLifecycle()
+    val longVideo by viewModel.longVideo.collectAsStateWithLifecycle()
     val showPublicConsent by viewModel.showPublicConsent.collectAsStateWithLifecycle()
     val stagedLocation by viewModel.stagedLocation.collectAsStateWithLifecycle()
     val meshCallFirst by viewModel.meshCallFirst.collectAsStateWithLifecycle()
@@ -744,6 +747,9 @@ fun ChatScreen(
         linkPreviewLoading = linkPreviewLoading,
         videoEncoding = videoEncoding,
         onCancelVideo = viewModel::cancelVideoEncoding,
+        longVideoMs = longVideo?.durationMs,
+        onSendLongVideo = viewModel::sendLongVideo,
+        onDismissLongVideo = viewModel::dismissLongVideo,
         mentions = pendingMentions,
         onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
         onMentionsAdded = { added -> pendingMentions.addAll(added.distinct().filter { it !in pendingMentions }) },
@@ -1023,6 +1029,10 @@ internal fun ChatScreenContent(
     // While a picked video is re-encoded, how far along (0..1), drawn as a tile with a Cancel (ADR 2026-10.hmfe).
     videoEncoding: Float? = null,
     onCancelVideo: () -> Unit = {},
+    // A picked video past 61 s, by its full length, waiting on "Send the first 61 seconds?" before any encode.
+    longVideoMs: Long? = null,
+    onSendLongVideo: () -> Unit = {},
+    onDismissLongVideo: () -> Unit = {},
     // The draft's autocompleted mentions, drawn and edited as chips in the field (see [MentionChips]).
     mentions: List<Mention> = emptyList(),
     onMentionAdded: (Mention) -> Unit,
@@ -2064,6 +2074,28 @@ internal fun ChatScreenContent(
                 onDecline = onDismissTransferConsent,
             )
         }
+    }
+
+    longVideoMs?.let { durationMs ->
+        // Asked before the encode, not said after it (ADR 2026-10.hmfe's 2026-10-31 amendment): a tap outside or
+        // Back is a no, and nothing is staged.
+        val length = formatDuration(durationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        AlertDialog(
+            onDismissRequest = onDismissLongVideo,
+            icon = { Icon(Icons.Filled.Videocam, contentDescription = null) },
+            title = { Text(stringResource(R.string.chat_video_long_title)) },
+            text = { Text(stringResource(R.string.chat_video_long_body, length)) },
+            confirmButton = {
+                TextButton(onClick = onSendLongVideo) {
+                    Text(stringResource(R.string.action_send))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissLongVideo) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 
     relayMarkerExplained?.let { cause ->

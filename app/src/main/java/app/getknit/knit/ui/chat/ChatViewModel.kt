@@ -70,6 +70,7 @@ import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.data.video.VideoEncodePolicy
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -2852,10 +2853,29 @@ class ChatViewModel(
     private var videoJob: Job? = null
 
     /**
+     * A picked video longer than 61 s, waiting on the sender's "Send the first 61 seconds?" before it is encoded
+     * ([durationMs] is its full length, for the question); [orAsFile] is the pick's button, as [attachVideo] takes it.
+     */
+    data class LongVideo(
+        val uri: Uri,
+        val durationMs: Long,
+        val orAsFile: Boolean,
+    )
+
+    private val _longVideo = MutableStateFlow<LongVideo?>(null)
+
+    /** The long video the composer is asking about, or null. ADR 2026-10.hmfe's 2026-10-31 amendment. */
+    val longVideo: StateFlow<LongVideo?> = _longVideo.asStateFlow()
+
+    /**
      * Re-encodes a picked video small (ADR 2026-10.hmfe) and stages it, the composer showing the encode's progress
      * meanwhile. Refused up front where a video can never go — the Meshtastic room, and a commons whose relay takes
      * text only — rather than after a half-minute encode. A new pick cancels one still encoding, as does [cancelVideoEncoding] and
      * leaving the chat (the job is the screen's). Every failure speaks: unlike a photo, the user waited for it.
+     *
+     * A video past 61 s is not encoded until the sender says yes to sending its first 61 ([longVideo], then
+     * [sendLongVideo]): its length is read off the container first, so the question comes before the wait rather
+     * than a notice after it.
      *
      * [orAsFile] is the file button's pick: a video the encoder cannot read or encode is still a file, so it goes out
      * as-is through [attachAsFile] rather than being refused. One that stays too big after shrinking does not: past
@@ -2870,32 +2890,57 @@ class ChatViewModel(
             return
         }
         videoJob?.cancel()
+        _longVideo.value = null
         videoJob =
             viewModelScope.launch {
-                _videoEncoding.value = 0f
-                try {
-                    val result = attachments.ingestVideo(uri, screen = isRoom) { _videoEncoding.value = it }
-                    when (result) {
-                        is AttachmentStore.IngestResult.Failed -> {
-                            val tooLarge = result.reason == AttachmentStore.IngestResult.Reason.TooLarge
-                            when {
-                                tooLarge -> _events.tryEmit(R.string.chat_video_too_large)
-                                orAsFile -> attachAsFile(uri)
-                                else -> _events.tryEmit(R.string.chat_video_unreadable)
-                            }
-                        }
-
-                        is AttachmentStore.IngestResult.Success -> {
-                            stage(result, notifyFailure = true)
-                            if (result.ingested.trimmed && _pendingAttachment.value == result.ingested) {
-                                _events.tryEmit(R.string.chat_video_trimmed)
-                            }
-                        }
-                    }
-                } finally {
-                    _videoEncoding.value = null
+                // A length the container does not give (null) falls to the encode, which reads the video itself and
+                // says what it makes of it.
+                val durationMs = attachments.videoDurationMs(uri)
+                if (durationMs != null && VideoEncodePolicy.cuts(durationMs)) {
+                    _longVideo.value = LongVideo(uri, durationMs, orAsFile)
+                } else {
+                    encodeVideo(uri, orAsFile)
                 }
             }
+    }
+
+    /** "Send the first 61 seconds?" answered yes: the video the question was about is encoded, cut, and staged. */
+    fun sendLongVideo() {
+        val ask = _longVideo.value ?: return
+        _longVideo.value = null
+        videoJob?.cancel()
+        videoJob = viewModelScope.launch { encodeVideo(ask.uri, ask.orAsFile) }
+    }
+
+    /** "Send the first 61 seconds?" answered no: nothing is encoded or staged. */
+    fun dismissLongVideo() {
+        _longVideo.value = null
+    }
+
+    /** [attachVideo]'s encode and stage, once the video is one Knit sends as it is or the sender agreed to the cut. */
+    private suspend fun encodeVideo(
+        uri: Uri,
+        orAsFile: Boolean,
+    ) {
+        _videoEncoding.value = 0f
+        try {
+            when (val result = attachments.ingestVideo(uri, screen = isRoom) { _videoEncoding.value = it }) {
+                is AttachmentStore.IngestResult.Failed -> {
+                    val tooLarge = result.reason == AttachmentStore.IngestResult.Reason.TooLarge
+                    when {
+                        tooLarge -> _events.tryEmit(R.string.chat_video_too_large)
+                        orAsFile -> attachAsFile(uri)
+                        else -> _events.tryEmit(R.string.chat_video_unreadable)
+                    }
+                }
+
+                is AttachmentStore.IngestResult.Success -> {
+                    stage(result, notifyFailure = true)
+                }
+            }
+        } finally {
+            _videoEncoding.value = null
+        }
     }
 
     /** Stops a video encode the composer is showing; nothing is staged. */

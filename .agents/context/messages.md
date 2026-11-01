@@ -122,6 +122,9 @@ lines.
   orientation. Its description and poster ride inside the message; a room post declares its size so js2p holds it.
   A video is its description on a video MIME, tested ahead of the name; a video picked with either button is
   re-encoded, and only an undescribed `.mp4` that arrives (an older build's) stays a file (the amendment).
+  A pick past 61 s asks "Send the first 61 seconds?" before any encode (`AttachmentStore.videoDurationMs`,
+  `VideoEncodePolicy.cuts`, `ChatViewModel.longVideo`; the 2026-10-31 amendment): the question and the cut read one
+  rule, and there is no notice after the encode.
   The NSFW screen reads the exact frame at a random instant in each twelfth and screens no clip longer than Knit sends
   (the 2026-10-19 amendment). Tests: `VideoEncodePolicyTest`, `MemoryMp4MuxerTest`, `AttachmentStoreVideoTest`; on
   hardware `VideoTranscoderInstrumentedTest` and `VideoScreeningInstrumentedTest` (which also screens a labelled

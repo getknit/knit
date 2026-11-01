@@ -78,6 +78,8 @@ class ChatScreenContentTest {
     private var searches = 0
     private var accepts = 0
     private var consentsAccepted = 0
+    private var longVideoSends = 0
+    private var longVideoDismissals = 0
     private val downloads = mutableListOf<String>()
 
     private fun content(
@@ -91,6 +93,7 @@ class ChatScreenContentTest {
         stagedLocation: ChatViewModel.StagedLocation? = null,
         onDraftChanged: (Draft) -> Unit = {},
         showTransferConsent: TransferConsent? = null,
+        longVideoMs: Long? = null,
         onLoadOlder: () -> Unit = {},
         // A search hit to open the thread on, and the reveal it asks for when the window has not reached it.
         jumpToMessageId: String? = null,
@@ -126,6 +129,9 @@ class ChatScreenContentTest {
                     onAcceptTransfer = { accepts++ },
                     showTransferConsent = showTransferConsent,
                     onAcceptTransferConsent = { consentsAccepted++ },
+                    longVideoMs = longVideoMs,
+                    onSendLongVideo = { longVideoSends++ },
+                    onDismissLongVideo = { longVideoDismissals++ },
                     onClearAttachment = {},
                     onReceiveImage = {},
                     onTyping = {},
@@ -240,6 +246,23 @@ class ChatScreenContentTest {
 
         compose.onNodeWithText("Continue").performScrollTo().performClick()
         assertEquals(1, consentsAccepted)
+    }
+
+    /**
+     * A picked video past 61 s asks before it is encoded (ADR 2026-10.hmfe's 2026-10-31 amendment): the question
+     * names the clip's own length, and each answer reaches the ViewModel. Matched by text, since a dialog composes in
+     * its own window.
+     */
+    @Test
+    fun aLongVideoAsksWithItsLengthAndBothAnswersReachTheViewModel() {
+        compose.setContent(content(input = "", longVideoMs = 134_400L))
+
+        compose.onNodeWithText("Send the first 61 seconds?").assertIsDisplayed()
+        compose.onNodeWithText("This video is 2:14 long", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Send").performClick()
+        assertEquals(1, longVideoSends)
+        compose.onNodeWithText("Cancel").performClick()
+        assertEquals(1, longVideoDismissals)
     }
 
     /** A thread of [count] rows, newest last, in the oldest-first shape the ViewModel emits. */

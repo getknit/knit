@@ -278,7 +278,8 @@
     <!-- Short videos (ADR 2026-10.hmfe): a picked video is re-encoded small before it is staged. -->
     <string name="chat_video_encoding">Shrinking video… %1$d%%</string>
     <string name="chat_video_cancel">Cancel</string>
-    <string name="chat_video_trimmed">Videos are up to 61 seconds, so this sends the first 61</string>
+    <string name="chat_video_long_title">Send the first 61 seconds?</string>
+    <string name="chat_video_long_body">This video is %1$s long. Videos are up to 61 seconds, so the rest won\'t be sent.</string>
     <string name="chat_video_too_large">This video is still too big after shrinking. Direct file send can take the original.</string>
     <string name="chat_video_unreadable">Couldn\'t read that video</string>
     <string name="chat_video_text_only">Videos can\'t be sent here</string>
