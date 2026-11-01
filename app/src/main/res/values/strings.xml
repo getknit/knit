@@ -1182,6 +1182,27 @@
         <item quantity="one">…and %1$d more</item>
         <item quantity="other">…and %1$d more</item>
     </plurals>
+    <!-- Diagnostics: a long-press on a row under "Known, not reachable" starts selecting rows to hide from that
+         list; the top bar then counts the selected rows. -->
+    <plurals name="diagnostics_hide_selected">
+        <item quantity="one">%1$d selected</item>
+        <item quantity="other">%1$d selected</item>
+    </plurals>
+    <!-- Diagnostics: the top-bar action that hides the selected rows from "Known, not reachable". Only this list changes. -->
+    <string name="diagnostics_hide_action">Hide</string>
+    <!-- Diagnostics: the accessibility action on a "Known, not reachable" row; it selects the row. -->
+    <string name="diagnostics_hide_select">Select</string>
+    <!-- Diagnostics: the close button that leaves the selection without hiding anything. -->
+    <string name="diagnostics_hide_clear_selection">Clear selection</string>
+    <!-- Diagnostics: a button under "Known, not reachable" that hides every row there, including the ones not listed. -->
+    <string name="diagnostics_hide_all">Hide all (%1$d)</string>
+    <!-- Diagnostics: a button under "Known, not reachable" that shows the hidden rows again. -->
+    <string name="diagnostics_show_hidden">Show hidden (%1$d)</string>
+    <!-- Diagnostics: the snackbar after hiding rows; a hidden node comes back on its own when it sends a new profile. -->
+    <plurals name="diagnostics_hidden">
+        <item quantity="one">%1$d node hidden</item>
+        <item quantity="other">%1$d nodes hidden</item>
+    </plurals>
     <string name="diagnostics_profile_age">Profile %1$s</string>
     <string name="diagnostics_metric_originated">Originated</string>
     <string name="diagnostics_metric_delivered">Delivered</string>
@@ -1571,6 +1592,8 @@
     <string name="action_close">Close</string>
     <string name="action_dismiss">Dismiss</string>
     <string name="action_cancel">Cancel</string>
+    <!-- Undoes the action a snackbar just reported. -->
+    <string name="action_undo">Undo</string>
     <string name="action_save">Save</string>
     <string name="action_copy">Copy</string>
     <string name="action_copied">Copied</string>

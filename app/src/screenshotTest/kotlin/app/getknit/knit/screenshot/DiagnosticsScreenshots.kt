@@ -9,8 +9,12 @@ import app.getknit.knit.ui.diagnostics.CrashRowPreview
 import app.getknit.knit.ui.diagnostics.DiagnosticsRowsPreview
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreenEmptyDegradedPreview
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreenPopulatedPreview
+import app.getknit.knit.ui.diagnostics.DiagnosticsScreenSelectingPreview
 import app.getknit.knit.ui.diagnostics.FieldLogScreenOffPreview
 import app.getknit.knit.ui.diagnostics.FieldLogScreenPreview
+import app.getknit.knit.ui.diagnostics.KnownActionsPreview
+import app.getknit.knit.ui.diagnostics.KnownRowSelectablePreview
+import app.getknit.knit.ui.diagnostics.KnownRowsSelectingPreview
 import app.getknit.knit.ui.diagnostics.MeshControlsSectionDegradedPreview
 import app.getknit.knit.ui.diagnostics.MeshControlsSectionHealthyPreview
 import app.getknit.knit.ui.diagnostics.MeshControlsSectionUnavailableBleOnlyPreview
@@ -102,6 +106,26 @@ fun NodeRowIndirect() = NodeRowIndirectPreview()
 @ComponentShots
 @Composable
 fun NodeRowRelay() = NodeRowRelayPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun KnownRowSelectable() = KnownRowSelectablePreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun KnownRowsSelecting() = KnownRowsSelectingPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun KnownActions() = KnownActionsPreview()
+
+@PreviewTest
+@ScreenShots
+@Composable
+fun DiagnosticsScreenSelecting() = DiagnosticsScreenSelectingPreview()
 
 @PreviewTest
 @ComponentShots

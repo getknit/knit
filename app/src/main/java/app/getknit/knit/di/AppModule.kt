@@ -54,6 +54,7 @@ import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
+import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.IncomingCallStore
 import app.getknit.knit.data.settings.OwnIceStore
@@ -243,6 +244,7 @@ val appModule =
         // The supporter badge (docs/SUPPORTER_BADGE.md, ADR 2026-10.r99s): the holder's toggle and held badges beside the
         // customer keys, and every peer's received badges verified at display time against this build's pinned keys.
         single { BadgeStore(get()) }
+        single { HiddenKnownStore(get()) }
         single { PeerBadges(get<PeerRepository>().observeBadges(), get<CoroutineScope>(), BadgeKeys.forBuild(BuildConfig.DEBUG)) }
         // A build without Knit Anywhere (release: ANYWHERE_WIRED off) hands the applier no key store, so an invite's
         // issuer and key are ignored without a word, as the room half is with the commons dark.

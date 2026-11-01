@@ -993,6 +993,23 @@
         <item quantity="many">…і ще %1$d</item>
         <item quantity="other">…і ще %1$d</item>
     </plurals>
+    <plurals name="diagnostics_hide_selected">
+        <item quantity="one">Вибрано: %1$d</item>
+        <item quantity="few">Вибрано: %1$d</item>
+        <item quantity="many">Вибрано: %1$d</item>
+        <item quantity="other">Вибрано: %1$d</item>
+    </plurals>
+    <string name="diagnostics_hide_action">Приховати</string>
+    <string name="diagnostics_hide_select">Вибрати</string>
+    <string name="diagnostics_hide_clear_selection">Скасувати вибір</string>
+    <string name="diagnostics_hide_all">Приховати всі (%1$d)</string>
+    <string name="diagnostics_show_hidden">Показати приховані (%1$d)</string>
+    <plurals name="diagnostics_hidden">
+        <item quantity="one">Приховано %1$d вузол</item>
+        <item quantity="few">Приховано %1$d вузли</item>
+        <item quantity="many">Приховано %1$d вузлів</item>
+        <item quantity="other">Приховано %1$d вузла</item>
+    </plurals>
     <string name="diagnostics_profile_age">Профіль: %1$s</string>
     <string name="diagnostics_metric_originated">Створено</string>
     <string name="diagnostics_metric_delivered">Доставлено</string>
@@ -1342,6 +1359,7 @@
     <string name="action_close">Закрити</string>
     <string name="action_dismiss">Закрити</string>
     <string name="action_cancel">Скасувати</string>
+    <string name="action_undo">Відмінити</string>
     <string name="action_save">Зберегти</string>
     <string name="action_copy">Копіювати</string>
     <string name="action_copied">Скопійовано</string>

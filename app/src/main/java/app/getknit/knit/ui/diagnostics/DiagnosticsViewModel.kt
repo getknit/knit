@@ -8,8 +8,10 @@ import app.getknit.knit.call.CaptureChoice
 import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.crash.CrashReportRef
 import app.getknit.knit.crash.CrashReports
+import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.data.settings.HiddenKnownRows
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.DEV_VIEW_WIRED
 import app.getknit.knit.di.LIVE_CALLS_WIRED
@@ -84,6 +86,15 @@ data class DiagnosticsUiState(
     val knownNodes: List<NodeInfo> = emptyList(),
     /** How many [Reach.Known] nodes there are in total, so the screen can say how many it left out. */
     val knownTotal: Int = 0,
+    // Whether Known rows can be hidden here (GitHub #54, ADR 2026-11.b37x): off where no hidden-row store is wired.
+    val hidingOffered: Boolean = false,
+    // Every shown Known row, newest profile first, by node id → the profile version it shows: the rows past [knownNodes]'
+    // cap included, for Hide all, and the version a hide is pinned to.
+    val hideableKnown: Map<String, Long> = emptyMap(),
+    // How many Known rows are hidden now, for Show hidden; a hidden node that is reachable shows in its section regardless.
+    val hiddenKnownCount: Int = 0,
+    // The hides still in force (the row exists and its profile is no newer than the hide); the rest are pruned on a write.
+    val hidesInForce: Set<String> = emptySet(),
     val metrics: MeshMetrics.Snapshot = MeshMetrics.Snapshot(),
     // One row per radio plane: the live ones the composite built, plus the phone radios it could not.
     val transports: List<TransportRow> = emptyList(),
@@ -142,6 +153,8 @@ class DiagnosticsViewModel(
     private val captureHealth: CaptureHealth? = null,
     // The person's Settings › Wi-Fi Aware switch (`AwareSwitch`, GitHub #44), so a plane it keeps off is named so.
     awareSwitchOn: Flow<Boolean> = flowOf(true),
+    // The Known rows hidden here (GitHub #54, ADR 2026-11.b37x). Null in a test that never hides: no row offers it.
+    private val hiddenKnown: HiddenKnownRows? = null,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -338,6 +351,41 @@ class DiagnosticsViewModel(
         _events.tryEmit(R.string.diagnostics_nan_hold_retry_done)
     }
 
+    // The node ids a hide just took, for the snackbar's count and its Undo; [events] carries a bare string id and cannot.
+    private val _hid = MutableSharedFlow<List<String>>(extraBufferCapacity = 1)
+    val hid = _hid.asSharedFlow()
+
+    /**
+     * Hides [nodeIds] from *Known, not reachable* on this phone (ADR 2026-11.b37x), each pinned to the profile version
+     * its row shows, so a node that publishes a newer profile comes back. Only rows [state] still shows as Known are
+     * taken. Presentation only: the peer row and everything the mesh holds stay as they are.
+     */
+    fun hideKnown(nodeIds: Collection<String>) {
+        val store = hiddenKnown ?: return
+        val current = state.value
+        val picked = nodeIds.mapNotNull { id -> current.hideableKnown[id]?.let { id to it } }.toMap()
+        if (picked.isEmpty()) return
+        viewModelScope.launch {
+            store.edit { hides -> hides.filterKeys { it in current.hidesInForce } + picked }
+        }
+        _hid.tryEmit(picked.keys.toList())
+    }
+
+    /** Hides every shown Known row, the ones past the shown five included. */
+    fun hideAllKnown() = hideKnown(state.value.hideableKnown.keys)
+
+    /** Shows [nodeIds] again: the snackbar's Undo. */
+    fun unhideKnown(nodeIds: Collection<String>) {
+        val store = hiddenKnown ?: return
+        viewModelScope.launch { store.edit { it - nodeIds.toSet() } }
+    }
+
+    /** Shows every hidden row again. */
+    fun showHiddenKnown() {
+        val store = hiddenKnown ?: return
+        viewModelScope.launch { store.edit { emptyMap() } }
+    }
+
     private val metricsTicker: Flow<MeshMetrics.Snapshot> =
         flow {
             while (true) {
@@ -372,14 +420,18 @@ class DiagnosticsViewModel(
             )
         }
 
+    // The peer table with the hidden rows, paired here because the main combine is at its five-source limit.
+    private val directory: Flow<Pair<PeerDirectory, Map<String, Long>>> =
+        combine(peers.observeDirectory(), hiddenKnown?.hidden ?: flowOf(emptyMap())) { d, h -> d to h }
+
     val state: StateFlow<DiagnosticsUiState> =
         combine(
-            peers.observeDirectory(),
+            directory,
             meshManager.neighbors,
             myNodeId,
             settings.displayName,
             extras,
-        ) { directory, neighbors, me, myName, extra ->
+        ) { (directory, hides), neighbors, me, myName, extra ->
             val nearby = neighbors.mapTo(mutableSetOf()) { it.nodeId }
             val byNode = directory.byNode
             // `nearby` is folded in as well as `reachable` even though it is a subset of it in the transport:
@@ -417,7 +469,13 @@ class DiagnosticsViewModel(
                         via = indirect[id]?.takeIf { reach == Reach.Indirect }?.let { directory.label(it).text },
                     )
                 }
-            val known = nodes.filter { it.reach == Reach.Known }.sortedWith(NEWEST_PROFILE_FIRST)
+            // A hide holds while the row's profile is no newer than the version hidden (ADR 2026-11.b37x).
+            val inForce = hides.filter { (id, version) -> byNode[id]?.let { it.updatedAt <= version } == true }.keys
+            val (hidden, known) =
+                nodes
+                    .filter { it.reach == Reach.Known }
+                    .sortedWith(NEWEST_PROFILE_FIRST)
+                    .partition { it.nodeId in inForce }
             DiagnosticsUiState(
                 myNodeId = me.orEmpty(),
                 myName = displayNameFor(myName, me.orEmpty()),
@@ -426,6 +484,10 @@ class DiagnosticsViewModel(
                 longRangeNodes = nodes.filter { it.reach == Reach.LongRange }.sortedBy { it.displayName.lowercase() },
                 knownNodes = known.take(KNOWN_LIMIT),
                 knownTotal = known.size,
+                hidingOffered = hiddenKnown != null,
+                hideableKnown = known.associate { it.nodeId to (byNode[it.nodeId]?.updatedAt ?: 0L) },
+                hiddenKnownCount = hidden.size,
+                hidesInForce = inForce,
                 metrics = extra.metrics,
                 transports = transportRows(extra.statuses, radios, extra.loraPlane),
                 radios = radios,

@@ -20,6 +20,7 @@ import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
+import app.getknit.knit.data.settings.HiddenKnownStore
 import app.getknit.knit.data.settings.IncomingCallStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.SettingsStore
@@ -149,6 +150,7 @@ val uiModule =
                 hostGuard = get(),
                 captureHealth = if (LIVE_CALLS_WIRED) get<CaptureHealth>() else null,
                 awareSwitchOn = get<AwareSwitch>().on,
+                hiddenKnown = get<HiddenKnownStore>(),
             )
         }
         viewModel { CrashLogViewModel(get()) }

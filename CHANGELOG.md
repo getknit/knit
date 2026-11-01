@@ -42,6 +42,8 @@ document:
   messages.
 - A message you send a contact over LoRa now shows the LoRa mark beside its single tick once their LoRa radio
   has it. The second tick still means it reached their phone.
+- In Diagnostics, long-press a node under Known, not reachable to hide it from that list, or hide them all at
+  once. A hidden node comes back when it next updates its profile, and Show hidden brings them all back.
 
 ### Changed
 

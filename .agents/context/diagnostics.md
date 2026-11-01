@@ -1,7 +1,7 @@
 # Diagnostics — which decision governs which symbol
 
-The symbol → ADR routing for the crash store, the field log and the developer view: everything that records how the
-phone behaved and leaves it only by the user's hand.
+The symbol → ADR routing for the crash store, the field log, the developer view and the node sections: everything
+that records how the phone behaved and leaves it only by the user's hand, and what the screen shows of the mesh.
 
 Each entry names the symbols that trigger it and the ADRs to read (`.agents/memory/decisions.md` maps an id to its
 file, amendments included). An entry is an index into its ADRs, not a substitute: where they disagree, the ADR wins
@@ -33,3 +33,9 @@ lines.
   never `== Nearby`. Its event console (the ADR's slice-2 amendment) is the field log's `FieldTap`, handed each event
   ahead of the field log's switch, in memory only: never written, and `FieldWriter` gains nothing for it. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
   deliberately English. It ships only where the flag is on, and shows only while the switch, off by default, is on.
+- **When touching the Diagnostics node sections (`DiagnosticsViewModel.state`, `NodeInfo`, `KNOWN_LIMIT`,
+  `hideableKnown`, the selection mode and Hide / Show hidden in `ui/diagnostics/DiagnosticsScreen.kt`, or
+  `HiddenKnownStore`):** READ ADR 2026-09.2ajk (the four reach tiers; *Known, not reachable* is the
+  peer table's remainder, newest profile first, five shown) and ADR 2026-11.b37x (a Known row can be hidden, pinned to
+  the profile version it showed; presentation only, so no mesh code reads the key and the peer row is never touched).
+  The tiers come from `reachOf`, shared with the profile line; never add a tier rule here.

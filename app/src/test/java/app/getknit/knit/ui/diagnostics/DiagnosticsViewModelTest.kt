@@ -9,6 +9,7 @@ import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.data.settings.HiddenKnownRows
 import app.getknit.knit.data.settings.ModelLoadJournal
 import app.getknit.knit.data.settings.ModelLoadState
 import app.getknit.knit.data.settings.SettingsStore
@@ -302,6 +303,8 @@ class DiagnosticsViewModelTest {
         clock: () -> Long = { NOW },
         radios: RadioSupport = RadioSupport.ALL,
         loraFacts: Flow<LoraFacts> = MutableStateFlow(LoraFacts()),
+        hidden: MutableStateFlow<Map<String, Long>>? = null,
+        directory: MutableStateFlow<PeerDirectory>? = null,
     ): DiagnosticsViewModel {
         val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.spoolEnabled } returns MutableStateFlow(false)
@@ -312,7 +315,7 @@ class DiagnosticsViewModelTest {
         // simply never produce a value — a stall that looks like a wrong assertion.
         val repo = mockk<PeerRepository>()
         val labels = PeerLabels.index(peers.map { it.nodeId to it.name }, SELF to "Walter")
-        every { repo.observeDirectory() } returns MutableStateFlow(PeerDirectory(peers, labels))
+        every { repo.observeDirectory() } returns (directory ?: MutableStateFlow(PeerDirectory(peers, labels)))
         val identity = mockk<Identity>(relaxed = true)
         coEvery { identity.nodeId() } returns SELF
         return DiagnosticsViewModel(
@@ -327,8 +330,21 @@ class DiagnosticsViewModelTest {
             radios = radios,
             loraFacts = loraFacts,
             clock = clock,
+            hiddenKnown = hidden?.let(::FakeHiddenKnown),
         )
     }
+
+    /** The hidden-row store as DataStore runs it: one transform applied to what is stored. */
+    private class FakeHiddenKnown(
+        override val hidden: MutableStateFlow<Map<String, Long>>,
+    ) : HiddenKnownRows {
+        override suspend fun edit(transform: (Map<String, Long>) -> Map<String, Long>) {
+            hidden.value = transform(hidden.value)
+        }
+    }
+
+    private fun directoryOf(peers: List<PeerEntity>) =
+        PeerDirectory(peers, PeerLabels.index(peers.map { it.nodeId to it.name }, SELF to "Walter"))
 
     /**
      * The field report this fixes: on a mesh with two boards, every peer whose frames a gateway put on air
@@ -492,6 +508,93 @@ class DiagnosticsViewModelTest {
             assertEquals(DiagnosticsViewModel.KNOWN_LIMIT, state.knownNodes.size)
             assertEquals(listOf("n8", "n7", "n6", "n5", "n4"), state.knownNodes.map { it.nodeId })
             assertFalse("a known row claims no plane", state.knownNodes.any { it.transports.isNotEmpty() })
+            job.cancel()
+        }
+
+    /**
+     * GitHub #54 (ADR 2026-11.b37x): a hidden row leaves *Known, not reachable* while its profile is the version it was
+     * hidden at, comes back when the node publishes a newer one, and a hidden node that is reachable shows regardless.
+     */
+    @Test
+    fun aHiddenRowLeavesKnownUntilItsProfileMovesOn() =
+        runTest {
+            val controller = FakeMeshController()
+            val rows = listOf(peer("n1", "One", 100L), peer("n2", "Two", 200L), peer("n3", "Three", 300L), peer("near", "Near", 50L))
+            val directory = MutableStateFlow(directoryOf(rows))
+            val hidden = MutableStateFlow(mapOf("n2" to 200L, "near" to 50L))
+            controller.neighbors.value = setOf(Peer("near"))
+            controller.reachable.value = setOf(Peer("near"))
+            val vm = reachVm(controller, rows, hidden = hidden, directory = directory)
+            val job = backgroundScope.launch { vm.state.collect { } }
+            runCurrent()
+
+            var state = vm.state.value
+            assertTrue(state.hidingOffered)
+            assertEquals(listOf("n3", "n1"), state.knownNodes.map { it.nodeId })
+            assertEquals(2, state.knownTotal)
+            assertEquals(1, state.hiddenKnownCount)
+            assertEquals("a reachable node shows whatever was hidden", listOf("near"), state.directNodes.map { it.nodeId })
+
+            directory.value = directoryOf(rows.map { if (it.nodeId == "n2") it.copy(updatedAt = 250L) else it })
+            runCurrent()
+
+            state = vm.state.value
+            assertEquals(listOf("n3", "n2", "n1"), state.knownNodes.map { it.nodeId })
+            assertEquals(0, state.hiddenKnownCount)
+            job.cancel()
+        }
+
+    @Test
+    fun hidingPinsEachShownRowToItsVersionAndPrunesHidesNoLongerInForce() =
+        runTest {
+            val controller = FakeMeshController()
+            val rows = listOf(peer("n1", "One", 100L), peer("n2", "Two", 200L), peer("n3", "Three", 300L), peer("near", "Near", 50L))
+            // n1's hide is older than its profile, and "gone" names no row: neither is in force any more.
+            val hidden = MutableStateFlow(mapOf("n1" to 50L, "gone" to 5L))
+            controller.neighbors.value = setOf(Peer("near"))
+            controller.reachable.value = setOf(Peer("near"))
+            val vm = reachVm(controller, rows, hidden = hidden)
+            val job = backgroundScope.launch { vm.state.collect { } }
+            val hid = mutableListOf<List<String>>()
+            val events = backgroundScope.launch { vm.hid.collect { hid += it } }
+            runCurrent()
+
+            // A reachable row and an unknown id are not Known rows: only n2 is taken.
+            vm.hideKnown(listOf("n2", "near", "zzz"))
+            runCurrent()
+            assertEquals(mapOf("n2" to 200L), hidden.value)
+            assertEquals(listOf(listOf("n2")), hid)
+
+            vm.unhideKnown(listOf("n2"))
+            runCurrent()
+            assertEquals(emptyMap<String, Long>(), hidden.value)
+
+            vm.hideAllKnown()
+            runCurrent()
+            assertEquals(mapOf("n1" to 100L, "n2" to 200L, "n3" to 300L), hidden.value)
+            assertEquals(0, vm.state.value.knownTotal)
+            assertEquals(3, vm.state.value.hiddenKnownCount)
+
+            vm.showHiddenKnown()
+            runCurrent()
+            assertEquals(emptyMap<String, Long>(), hidden.value)
+            assertEquals(3, vm.state.value.knownTotal)
+            events.cancel()
+            job.cancel()
+        }
+
+    @Test
+    fun withoutTheStoreNothingIsOfferedOrWritten() =
+        runTest {
+            val controller = FakeMeshController()
+            val vm = reachVm(controller, listOf(peer("n1", "One", 100L)))
+            val job = backgroundScope.launch { vm.state.collect { } }
+            runCurrent()
+
+            assertFalse(vm.state.value.hidingOffered)
+            vm.hideKnown(listOf("n1"))
+            runCurrent()
+            assertEquals(1, vm.state.value.knownTotal)
             job.cancel()
         }
 

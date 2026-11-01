@@ -1,11 +1,14 @@
 package app.getknit.knit.ui.diagnostics
 
 import android.text.format.Formatter
+import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,10 +29,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -37,26 +44,37 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -102,9 +120,10 @@ import org.koin.androidx.compose.koinViewModel
 import java.io.File
 
 /**
- * Read-only mesh diagnostics: this device's identity, the live mesh metrics, and the known nodes split by
- * how strong the evidence for reaching them is — directly connected, reachable through a relay, or merely
- * known (see [Reach]). Reached from the chat-list overflow menu.
+ * Mesh diagnostics: this device's identity, the live mesh metrics, and the known nodes split by how strong the
+ * evidence for reaching them is — directly connected, reachable through a relay, or merely known (see [Reach]).
+ * A merely known node can be selected with a long-press and hidden from this list (ADR 2026-11.b37x), which
+ * changes nothing but this screen; everything else here only reads. Reached from the chat-list overflow menu.
  */
 @Composable
 fun DiagnosticsScreen(
@@ -128,6 +147,14 @@ fun DiagnosticsScreen(
     val blePhyMode by viewModel.blePhyMode.collectAsStateWithLifecycle()
     val blePhys by viewModel.blePhys.collectAsStateWithLifecycle()
     var confirmingModerationReset by remember { mutableStateOf(false) }
+    // The Known rows picked for hiding, kept across a rotation. Read through [state]'s shown rows, so a node that became
+    // reachable since it was picked leaves the selection on its own (ADR 2026-11.b37x).
+    var picked by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    val selection =
+        state.hideableKnown.keys
+            .filter { it in picked }
+            .toSet()
+    BackHandler(enabled = selection.isNotEmpty()) { picked = emptyList() }
     // Inside a NavHost composable the lifecycle owner is this back-stack entry, so this fires again when
     // the crash screen pops — which is how deleting the report over there clears this row over here.
     LifecycleResumeEffect(Unit) {
@@ -141,6 +168,18 @@ fun DiagnosticsScreen(
     val supervision = rememberOnResume { deviceSupervision(context) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val resources = LocalResources.current
+    LaunchedEffect(resources) {
+        viewModel.hid.collect { ids ->
+            val result =
+                snackbarHostState.showSnackbar(
+                    message = resources.getQuantityString(R.plurals.diagnostics_hidden, ids.size, ids.size),
+                    actionLabel = resources.getString(R.string.action_undo),
+                    duration = SnackbarDuration.Short,
+                )
+            if (result == SnackbarResult.ActionPerformed) viewModel.unhideKnown(ids)
+        }
+    }
     // Resolve the action-feedback strings at composition (lint forbids LocalContext.getString here),
     // then map the emitted resource id to the matching message.
     val restartedMsg = stringResource(R.string.diagnostics_mesh_restarted)
@@ -202,6 +241,15 @@ fun DiagnosticsScreen(
         blePhyMode = blePhyMode,
         onSetBlePhyMode = viewModel::setBlePhyMode,
         blePhys = blePhys,
+        selected = selection,
+        onToggleSelected = { id -> picked = if (id in selection) (selection - id).toList() else (selection + id).toList() },
+        onClearSelection = { picked = emptyList() },
+        onHideSelected = {
+            viewModel.hideKnown(selection)
+            picked = emptyList()
+        },
+        onHideAll = viewModel::hideAllKnown,
+        onShowHidden = viewModel::showHiddenKnown,
     )
 
     if (confirmingModerationReset) {
@@ -274,21 +322,32 @@ internal fun DiagnosticsScreenContent(
     // The PHY each Bluetooth link with a PHY handle is on, by node id: a chip on its directly-connected row. Empty
     // (no chips) while the experiment is off or dark.
     blePhys: Map<String, LinkPhy> = emptyMap(),
+    // The Known rows picked for hiding (ADR 2026-11.b37x); non-empty, the top bar turns into the selection's.
+    selected: Set<String> = emptySet(),
+    onToggleSelected: (String) -> Unit = {},
+    onClearSelection: () -> Unit = {},
+    onHideSelected: () -> Unit = {},
+    onHideAll: () -> Unit = {},
+    onShowHidden: () -> Unit = {},
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_diagnostics"),
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.action_back),
-                        )
-                    }
-                },
-                title = { BarTitle(stringResource(R.string.diagnostics_title)) },
-            )
+            if (selected.isEmpty()) {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = stringResource(R.string.action_back),
+                            )
+                        }
+                    },
+                    title = { BarTitle(stringResource(R.string.diagnostics_title)) },
+                )
+            } else {
+                SelectionTopBar(count = selected.size, onClear = onClearSelection, onHide = onHideSelected)
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
@@ -438,14 +497,30 @@ internal fun DiagnosticsScreenContent(
 
             // Everyone else we hold a profile for. Capped: this is the peer table, and listing all of it was
             // exactly what made the old "reachable via relay" section meaningless.
-            if (state.knownTotal > 0) {
+            // Hidden rows still count here: with every row hidden, the section stays for its Show hidden button.
+            if (state.knownTotal > 0 || state.hiddenKnownCount > 0) {
                 item {
                     SectionHeader(stringResource(R.string.diagnostics_known_nodes, state.knownTotal))
                 }
-                items(state.knownNodes, key = { it.nodeId }) { NodeRow(it, now) }
-                val hidden = state.knownTotal - state.knownNodes.size
-                if (hidden > 0) {
-                    item { EmptyLine(pluralStringResource(R.plurals.diagnostics_known_more, hidden, hidden)) }
+                items(state.knownNodes, key = { it.nodeId }) { node ->
+                    if (state.hidingOffered) {
+                        SelectableNodeRow(
+                            node = node,
+                            now = now,
+                            selecting = selected.isNotEmpty(),
+                            selected = node.nodeId in selected,
+                            onToggle = { onToggleSelected(node.nodeId) },
+                        )
+                    } else {
+                        NodeRow(node, now)
+                    }
+                }
+                val more = state.knownTotal - state.knownNodes.size
+                if (more > 0) {
+                    item { EmptyLine(pluralStringResource(R.plurals.diagnostics_known_more, more, more)) }
+                }
+                if (state.hidingOffered && selected.isEmpty()) {
+                    item { KnownActions(state.hideableKnown.size, state.hiddenKnownCount, onHideAll, onShowHidden) }
                 }
             }
         }
@@ -1003,6 +1078,115 @@ private fun PhyTag(
                 .background(if (coded) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer)
                 .padding(horizontal = 6.dp, vertical = 2.dp),
     )
+}
+
+/** The top bar while Known rows are picked: how many, a way out, and Hide (ADR 2026-11.b37x). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionTopBar(
+    count: Int,
+    onClear: () -> Unit,
+    onHide: () -> Unit,
+) {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(
+                onClick = onClear,
+                modifier = Modifier.size(48.dp).testTag("diagnostics_clear_selection"),
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.diagnostics_hide_clear_selection))
+            }
+        },
+        title = { BarTitle(pluralStringResource(R.plurals.diagnostics_hide_selected, count, count)) },
+        actions = {
+            IconButton(
+                onClick = onHide,
+                modifier = Modifier.size(48.dp).testTag("diagnostics_hide_selected"),
+            ) {
+                Icon(Icons.Filled.VisibilityOff, contentDescription = stringResource(R.string.diagnostics_hide_action))
+            }
+        },
+    )
+}
+
+/**
+ * A Known row that can be picked for hiding: a long-press (or the accessibility action) picks it, and once anything is
+ * picked a tap toggles it like a checkbox. A tap outside a selection does nothing, as on any node row.
+ */
+@Composable
+private fun SelectableNodeRow(
+    node: NodeInfo,
+    now: Long,
+    selecting: Boolean,
+    selected: Boolean,
+    onToggle: () -> Unit,
+) {
+    val selectLabel = stringResource(R.string.diagnostics_hide_select)
+    val haptics = LocalHapticFeedback.current
+    val pick =
+        if (selecting) {
+            Modifier.toggleable(value = selected, role = Role.Checkbox, onValueChange = { onToggle() })
+        } else {
+            Modifier
+                .pointerInput(onToggle) {
+                    detectTapGestures(
+                        onLongPress = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggle()
+                        },
+                    )
+                }.semantics {
+                    onLongClick(label = selectLabel) {
+                        onToggle()
+                        true
+                    }
+                    customActions =
+                        listOf(
+                            CustomAccessibilityAction(selectLabel) {
+                                onToggle()
+                                true
+                            },
+                        )
+                }
+        }
+    Row(
+        modifier = Modifier.fillMaxWidth().then(pick).testTag("known_row_${node.nodeId}"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (selecting) {
+            // No description: the Checkbox role already says whether the row is picked.
+            Icon(
+                imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp).size(24.dp),
+            )
+        }
+        Box(modifier = Modifier.weight(1f)) { NodeRow(node, now) }
+    }
+}
+
+/** Under the Known rows: Hide all of them (the ones past the shown five too), and Show the hidden ones again. */
+@Composable
+private fun KnownActions(
+    shown: Int,
+    hidden: Int,
+    onHideAll: () -> Unit,
+    onShowHidden: () -> Unit,
+) {
+    // A flow, not a row: in a long language the two labels each keep a line rather than squeezing one another.
+    FlowRow(modifier = Modifier.padding(horizontal = 8.dp)) {
+        if (shown > 0) {
+            TextButton(onClick = onHideAll, modifier = Modifier.testTag("diagnostics_hide_all")) {
+                Text(stringResource(R.string.diagnostics_hide_all, shown))
+            }
+        }
+        if (hidden > 0) {
+            TextButton(onClick = onShowHidden, modifier = Modifier.testTag("diagnostics_show_hidden")) {
+                Text(stringResource(R.string.diagnostics_show_hidden, hidden))
+            }
+        }
+    }
 }
 
 @Composable
@@ -1723,6 +1907,76 @@ fun NodeRowRelayPreview() =
                     transports = setOf(TransportKind.LoRa),
                 ),
             now = PREVIEW_NOW,
+        )
+    }
+
+private val PREVIEW_KNOWN =
+    NodeInfo(
+        nodeId = "e5f6a1b2c3d4",
+        displayName = "Alan Turing",
+        reach = Reach.Known,
+        profileUpdatedAt = PREVIEW_NOW - 26 * 60 * 60_000L,
+    )
+
+/** A Known row outside a selection: it looks like any node row, and a long-press picks it. */
+@Preview(showBackground = true)
+@Composable
+fun KnownRowSelectablePreview() =
+    KnitPreview {
+        SelectableNodeRow(node = PREVIEW_KNOWN, now = PREVIEW_NOW, selecting = false, selected = false, onToggle = {})
+    }
+
+/** Known rows while picking: one picked, one not. */
+@Preview(showBackground = true)
+@Composable
+fun KnownRowsSelectingPreview() =
+    KnitPreview {
+        Column {
+            SelectableNodeRow(node = PREVIEW_KNOWN, now = PREVIEW_NOW, selecting = true, selected = true, onToggle = {})
+            SelectableNodeRow(
+                node = PREVIEW_KNOWN.copy(nodeId = "a6b1c2d3e4f5", displayName = "Ada Byron"),
+                now = PREVIEW_NOW,
+                selecting = true,
+                selected = false,
+                onToggle = {},
+            )
+        }
+    }
+
+/** The actions under the Known rows: Hide all, and Show hidden once something is hidden. */
+@Preview(showBackground = true)
+@Composable
+fun KnownActionsPreview() =
+    KnitPreview {
+        KnownActions(shown = 7, hidden = 2, onHideAll = {}, onShowHidden = {})
+    }
+
+/** The screen while picking Known rows: the selection's top bar. */
+@Preview(showBackground = true)
+@Composable
+fun DiagnosticsScreenSelectingPreview() =
+    KnitPreview {
+        DiagnosticsScreenContent(
+            state =
+                DiagnosticsUiState(
+                    myNodeId = "8f3a2b1c9d4e",
+                    myName = "Ada Lovelace",
+                    knownNodes = listOf(PREVIEW_KNOWN),
+                    knownTotal = 1,
+                    hidingOffered = true,
+                    hideableKnown = mapOf(PREVIEW_KNOWN.nodeId to PREVIEW_NOW),
+                ),
+            health = TransportHealth.Healthy,
+            lastCrash = null,
+            moderationLatched = false,
+            now = PREVIEW_NOW,
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onRestartMesh = {},
+            onScan = {},
+            onOpenCrashLog = {},
+            onResetModeration = {},
+            selected = setOf(PREVIEW_KNOWN.nodeId),
         )
     }
 

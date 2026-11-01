@@ -979,6 +979,21 @@
         <item quantity="many">…e mais %1$d</item>
         <item quantity="other">…e mais %1$d</item>
     </plurals>
+    <plurals name="diagnostics_hide_selected">
+        <item quantity="one">%1$d selecionado</item>
+        <item quantity="many">%1$d selecionados</item>
+        <item quantity="other">%1$d selecionados</item>
+    </plurals>
+    <string name="diagnostics_hide_action">Ocultar</string>
+    <string name="diagnostics_hide_select">Selecionar</string>
+    <string name="diagnostics_hide_clear_selection">Limpar seleção</string>
+    <string name="diagnostics_hide_all">Ocultar todos (%1$d)</string>
+    <string name="diagnostics_show_hidden">Mostrar ocultos (%1$d)</string>
+    <plurals name="diagnostics_hidden">
+        <item quantity="one">%1$d nó oculto</item>
+        <item quantity="many">%1$d nós ocultos</item>
+        <item quantity="other">%1$d nós ocultos</item>
+    </plurals>
     <string name="diagnostics_profile_age">Perfil %1$s</string>
     <string name="diagnostics_metric_originated">Originadas</string>
     <string name="diagnostics_metric_delivered">Entregues</string>
@@ -1320,6 +1335,7 @@
     <string name="action_close">Fechar</string>
     <string name="action_dismiss">Dispensar</string>
     <string name="action_cancel">Cancelar</string>
+    <string name="action_undo">Desfazer</string>
     <string name="action_save">Salvar</string>
     <string name="action_copy">Copiar</string>
     <string name="action_copied">Copiado</string>

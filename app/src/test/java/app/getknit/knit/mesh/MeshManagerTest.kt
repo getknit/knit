@@ -350,7 +350,10 @@ class MeshManagerTest {
             synchronized(frames) { frames.remove(id) }
         }
 
-        /** How often the TTL sweep — the heal basket's first step — ran; set [holdSweep] to park a basket there. */
+        /**
+         * How often the TTL sweep — the heal basket's first step — ran; set [holdSweep] to park a basket there. The
+         * start's own pass (`resumePendingFetches`) sweeps once too: await it before counting baskets.
+         */
         val sweeps = AtomicInteger()
         var holdSweep: CompletableDeferred<Unit>? = null
 
@@ -4364,6 +4367,10 @@ class MeshManagerTest {
             rig.stubHealState()
             rig.manager.start()
             rig.await(1) { rig.custodiedProfiles().size }
+            // The start sweeps once too, in `resumePendingFetches`, a sibling of the seed awaited above: counted
+            // before it lands, that sweep reads as a second basket (or parks on the hold below and passes for the
+            // first).
+            rig.await(1) { rig.forwardStore.sweeps.get() }
             val healsBefore =
                 rig.metrics
                     .frames()
