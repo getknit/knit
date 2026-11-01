@@ -516,12 +516,30 @@ class FrameTranscoderTest {
         repeat(2_000) { FrameTranscoder.transcode(rng.nextBytes(rng.nextInt(1, 300))) }
     }
 
+    /**
+     * A map count of 2^63 or more reads as a negative `Long`, which passed the old bound check, so `toInt()` sized a
+     * list of millions of entries before the input ran out. `runCatching` still made the answer null (an
+     * OutOfMemoryError on a fuller heap included), so only the allocation tells the guard is there.
+     */
+    @Test
+    fun aMapCountPastLongMaxIsRefusedWithoutAllocatingForIt() {
+        FrameTranscoder.transcode(MAP_COUNT_PAST_LONG_MAX) // loads the scope tables, so the measure is the call's alone
+        FrameTranscoder.rebuild(MAP_COUNT_PAST_LONG_MAX)
+        val allocated =
+            allocatedBy {
+                assertNull(FrameTranscoder.transcode(MAP_COUNT_PAST_LONG_MAX))
+                assertNull(FrameTranscoder.rebuild(MAP_COUNT_PAST_LONG_MAX))
+            }
+        assertTrue("allocated $allocated bytes refusing an 11-byte frame", allocated < ONE_MIB)
+    }
+
     private fun contains(
         haystack: ByteArray,
         needle: ByteArray,
     ): Boolean = (0..haystack.size - needle.size).any { at -> needle.indices.all { haystack[at + it] == needle[it] } }
 
     private companion object {
+        const val ONE_MIB = 1L shl 20
         const val SENT_AT = 1_755_700_000_000L
 
         /** The advertised capability bitfield when the 0x05 transcoder shipped — see the profile fixture. */

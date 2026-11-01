@@ -242,7 +242,7 @@ internal object IdElision {
 
             fun parse(src: ByteArray): Root {
                 val h = checkNotNull(CborItems.header(src, 0))
-                check(h.major == MAJOR_MAP && h.arg <= src.size)
+                check(h.major == MAJOR_MAP && h.arg in 0L..src.size) // a count of 2^63 or more reads negative
                 var p = h.contentStart
                 val entries =
                     List(h.arg.toInt()) {
