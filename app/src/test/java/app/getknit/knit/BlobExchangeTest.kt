@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -553,6 +554,274 @@ class BlobExchangeTest {
             now += BlobExchange.ROUND_MS
             exchange.reask()
             assertEquals("the next round opens with the author again", mapOf("a" to 1, "b" to 1, "c" to 2), counts())
+        }
+
+    @Test
+    fun aFaceIsAskedOfItsLinkedAuthorAloneUntilItsFloorAndNeverPastTheFirstAskGrace() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-11.4ckq, #258: the author pushes its photo itself, and the push may sit in its stack buffer where
+            // neither end sees it. Every other holder asked after the 5 s grace would serve a copy of its own (#79, #121).
+            val r = FakeLoopTransport("r")
+            val peers = listOf("a", "b", "c").map { FakeLoopTransport(it).also(r::connect) }
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                    partials = partials(),
+                )
+            val asked = peers.associate { it.nodeId to backgroundScope.asksArrivingAt(it) }
+
+            fun counts() = asked.mapValues { it.value.size }
+
+            exchange.wantFaces(listOf("H" to "c"), ceiling = 1_000L)
+            assertEquals("the author alone", mapOf("a" to 0, "b" to 0, "c" to 1), counts())
+
+            now += 3 * BlobExchange.FIRST_ASK_GRACE_MS
+            exchange.reask()
+            assertEquals("its grace widens nothing", mapOf("a" to 0, "b" to 0, "c" to 1), counts())
+
+            r.arrivingFrom += "c" // a file streams in from the author: the push may be queued behind it
+            now = BlobExchange.SERVE_MEMO_MS + 1
+            exchange.reask()
+            assertEquals("not while it streams to us, floor or not", mapOf("a" to 0, "b" to 0, "c" to 1), counts())
+
+            r.arrivingFrom.clear()
+            exchange.reask()
+            // Past the floor the round is the ordinary one: the author first again, its push's memo lapsed, so a lost push
+            // is served afresh; then, past that ask's grace, everyone else.
+            assertEquals("past the floor, a fresh round opens on the author", mapOf("a" to 0, "b" to 0, "c" to 2), counts())
+            now += BlobExchange.FIRST_ASK_GRACE_MS
+            exchange.reask()
+            assertEquals("and widens past its grace", mapOf("a" to 1, "b" to 1, "c" to 2), counts())
+        }
+
+    @Test
+    fun aFacesAuthorWhoseLinkGoesReleasesTheOthersAtOnceEvenWithNoFetchStandingOnIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val a = FakeLoopTransport("a").also(r::connect)
+            val c = FakeLoopTransport("c").also(r::connect)
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face-unlink").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                    partials = partials(),
+                )
+            val askedOfA = backgroundScope.asksArrivingAt(a)
+            val askedOfC = backgroundScope.asksArrivingAt(c)
+
+            exchange.want("H", author = "c", ceiling = 1_000L, pushedBy = "c")
+            assertEquals(1, askedOfC.size)
+            // The first ask's grace ends: its fetch is over, the hold stands, nobody else is asked.
+            now = BlobExchange.FIRST_ASK_GRACE_MS + 1
+            exchange.reask()
+            assertTrue(askedOfA.isEmpty())
+
+            r.disconnect(c)
+            exchange.unlinked(listOf("c"))
+            assertEquals("the author's link went: the others are asked at once", 1, askedOfA.size)
+        }
+
+    @Test
+    fun aFacesAuthorThatLinksAgainIsHeldOnAfreshPastAnEarlierFloor() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A new link, a new ask of the author: its old push may have died with the old link, so the hold starts over
+            // even though it ended on the last link.
+            val r = FakeLoopTransport("r")
+            val a = FakeLoopTransport("a").also(r::connect)
+            val c = FakeLoopTransport("c").also(r::connect)
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face-relink").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                    partials = partials(),
+                )
+            val askedOfA = backgroundScope.asksArrivingAt(a)
+            val askedOfC = backgroundScope.asksArrivingAt(c)
+
+            exchange.want("H", author = "c", ceiling = 1_000L, pushedBy = "c")
+            now = BlobExchange.SERVE_MEMO_MS + 1 // the floor: the hold on this link ends
+            exchange.reask()
+            now = 46_000L
+            r.disconnect(c)
+            exchange.unlinked(listOf("c")) // a round opens without the author: a is asked first
+            assertEquals(1, askedOfA.size)
+            now = 50_000L
+            exchange.reask()
+            now = 56_000L
+            exchange.reask() // a's grace ends: no fetch stands when the author links again
+
+            now = 60_000L
+            val asksOfC = askedOfC.size
+            r.connect(c)
+            exchange.linked(listOf("c"))
+            exchange.reask()
+            assertEquals("the new link asks the author", asksOfC + 1, askedOfC.size)
+            val asksOfA = askedOfA.size
+            // The next round opens on the author at 91 s, and that ask's grace ends at 96.5 s, before the new link's
+            // floor (105 s): nobody else is asked. Without the hold starting over, the round widens to a there.
+            now = 91_002L
+            exchange.reask()
+            now = 91_500L
+            exchange.reask()
+            now = 96_600L
+            exchange.reask()
+            assertEquals("nobody else asked inside the new link's floor", asksOfA, askedOfA.size)
+        }
+
+    @Test
+    fun aFaceFetchStandingOnACarrierIsNotDroppedWhenItsAuthorLinks() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The round-1 review's finding: the hold took the carrier out of the pool, the fetch read its link as gone and
+            // ended with no `blobcancel`, and the carrier's queued copy came beside the author's (#79's shape).
+            val r = FakeLoopTransport("r")
+            val c = FakeLoopTransport("c").also(r::connect)
+            val b = FakeLoopTransport("b")
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face-carrier").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                    partials = partials(),
+                )
+            val askedOfC = backgroundScope.asksArrivingAt(c)
+            val askedOfB = backgroundScope.asksArrivingAt(b)
+            exchange.want("H", author = "b", ceiling = 1_000L, pushedBy = "b")
+            assertEquals(1, askedOfC.size)
+
+            r.connect(b)
+            exchange.linked(listOf("b"))
+            exchange.reask()
+            assertTrue("the author is not asked past the carrier's standing fetch", askedOfB.isEmpty())
+            assertEquals("nor is the carrier asked twice", 1, askedOfC.size)
+        }
+
+    @Test
+    fun aReArmedFaceIsAFetchOnlyWantAndLeavesAProfilesOwnPullAsItIs() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The round-1 review's finding: 64 roots re-recorded every tick, each pulled through with budget 3, filled the
+            // neighbours' want tables with echoes (#195). A re-armed face asks with no pull; one a profile made keeps its own.
+            val r = FakeLoopTransport("r")
+            val n = FakeLoopTransport("n").also(r::connect)
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face-reach").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                    partials = partials(),
+                )
+            val pulls = CopyOnWriteArrayList<Pair<String, Int?>>()
+            backgroundScope.launch {
+                n.inbound.collect { f ->
+                    if (f.envelope.type == FrameType.BLOB_REQ) {
+                        WireCodec.decodePayload<BlobReqContent>(f.envelope.payload)?.let { pulls += it.hash to it.pull }
+                    }
+                }
+            }
+            exchange.wantFaces(listOf("F" to "p"), ceiling = 1_000L)
+            assertEquals(listOf("F" to 0), pulls)
+            // Each tick re-arms the face and steps it: still fetch only, its budget never lifted by the re-arm.
+            repeat(3) {
+                now += 60_000L
+                exchange.wantFaces(listOf("F" to "p"), ceiling = 1_000L)
+                exchange.reask()
+            }
+            val faceAsks = pulls.filter { it.first == "F" }
+            assertTrue("asked again: $faceAsks", faceAsks.size >= 2)
+            assertTrue("every ask fetch only: $faceAsks", faceAsks.all { it.second == 0 })
+
+            // An attachment held to Wi-Fi Aware over the user's limit (ADR 2026-10.js2p) stays so when a peer advertises its
+            // hash as a photo: the face re-arm lifts the flag only on a want photos alone make.
+            exchange.wantAll(listOf("A" to null), fastOnly = setOf("A"))
+            exchange.wantFaces(listOf("A" to "p"), ceiling = 1_000L)
+            exchange.reask()
+            assertTrue("an uncapped fast-only attachment asked over Bluetooth", pulls.none { it.first == "A" })
+
+            exchange.want("G", author = "p", ceiling = 1_000L, pushedBy = "p") // the profile's own pull
+            exchange.wantFaces(listOf("G" to "p"), ceiling = 1_000L)
+            exchange.reask()
+            assertEquals("the profile's pull keeps its budget", BlobExchange.PULL_BUDGET, pulls.last { it.first == "G" }.second)
+        }
+
+    @Test
+    fun aFaceTakesNoPlaceFromAnotherWantAndGivesUpItsOwnToOne() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-11.4ckq: a crowd of faces never evicts an attachment's want, which the re-arm would mint again every
+            // tick (#195). The table here holds 8: faces take at most 6 places, and give one up to any other want.
+            val r = FakeLoopTransport("r")
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-face-room").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    partials = partials(),
+                    maxFetching = 8,
+                )
+            // An attachment older than every face: the table's own eviction would take it first.
+            exchange.wantAll(listOf("A0" to null))
+            val skipped = exchange.wantFaces((1..10).map { "F$it" to "p$it" }, ceiling = 1_000L)
+            assertEquals("faces fill three quarters of the table, no more", 5, skipped)
+            assertEquals(setOf("A0") + (1..5).map { "F$it" }, exchange.wantedHashes())
+
+            exchange.wantAll((1..3).map { "A$it" to null })
+            assertEquals(
+                "every attachment stands, the eldest included",
+                (0..3).map { "A$it" }.toSet(),
+                exchange.wantedHashes().filter { it.startsWith("A") }.toSet(),
+            )
+            assertEquals(8, exchange.wantedHashes().size)
+            assertEquals(
+                "the eldest face gave its place up",
+                setOf("F2", "F3", "F4", "F5"),
+                exchange
+                    .wantedHashes()
+                    .filter {
+                        it.startsWith("F")
+                    }.toSet(),
+            )
+
+            assertEquals("a full table takes no new face", 1, exchange.wantFaces(listOf("F9" to "p9"), ceiling = 1_000L))
+        }
+
+    @Test
+    fun aPushStampsTheServeMemoSoAnAskThatCrossesItIsNotServedASecondCopy() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-11.4ckq: the push is a serve, and the asker's re-arm may ask while it is still on its way.
+            val server = FakeLoopTransport("a")
+            val requester = FakeLoopTransport("b")
+            server.connect(requester)
+            val store = FakeBlobStore(Files.createTempDirectory("blob-push").toFile())
+            store.seed("H", "image/jpeg", byteArrayOf(1, 2, 3))
+            val exchange = BlobExchange(server, store, selfId = { "a" }, onObtained = { _, _ -> }, partials = partials())
+
+            assertTrue(exchange.claimPush("H", "b"))
+            exchange.onRequest("H", "b")
+            assertEquals("the ask inside the push's memo ships nothing", 0, server.filesSent.size)
+            assertFalse("a second push is refused too", exchange.claimPush("H", "b"))
+
+            exchange.forgetPush("H", "b") // the push found no route
+            exchange.onRequest("H", "b")
+            assertEquals("the next ask is served at once", 1, server.filesSent.size)
+            assertFalse("and that serve keeps a push from following it", exchange.claimPush("H", "b"))
         }
 
     @Test

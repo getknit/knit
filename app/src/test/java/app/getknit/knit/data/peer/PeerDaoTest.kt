@@ -55,6 +55,89 @@ class PeerDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `the photo re-arm wants advertised photos not held, for the peers there is a reason to show, newest heard first`() =
+        runTest {
+            // ADR 2026-11.4ckq, #258: bounded to anchors, verified peers, conversations and the recently heard; never a
+            // blocked peer, a photo refused over its ceiling, or one screening flagged while filtering is on.
+            fun row(
+                id: String,
+                hash: String?,
+                seen: Long,
+                verified: Boolean = false,
+            ) = PeerEntity(nodeId = id, verified = verified, lastSeenAt = seen, advertisedAvatar = hash, advertisedKnown = true)
+            dao.upsert(row("contact", "h-contact", seen = 1L))
+            dao.upsert(row("verified", "h-verified", seen = 2L, verified = true))
+            dao.upsert(row("talker", "h-talker", seen = 3L))
+            dao.upsert(row("recent", "h-recent", seen = 100L))
+            dao.upsert(row("stranger", "h-stranger", seen = 4L))
+            dao.upsert(row("held", "h-held", seen = 100L))
+            dao.upsert(row("none", null, seen = 100L))
+            dao.upsert(row("blocked", "h-blocked", seen = 100L))
+            dao.upsert(row("over", "h-over", seen = 100L))
+            dao.upsert(row("flagged", "h-flagged", seen = 100L))
+            db.blobDao().insert(BlobEntity("h-held", "image/jpeg", byteArrayOf(1)))
+            db.photoRefusalDao().insert(
+                app.getknit.knit.data.blob
+                    .PhotoRefusalEntity("h-over", size = 2_000_000L),
+            )
+            // A holder passed over for a hash refuses nothing: the hash is still wanted from the others.
+            db.photoRefusalDao().insert(
+                app.getknit.knit.data.blob
+                    .PhotoRefusalEntity("h-recent", holder = "liar", size = 0L),
+            )
+            db.blobVerdictDao().upsert(
+                app.getknit.knit.data.blob
+                    .BlobVerdictEntity("h-flagged", flagged = true, score = 1f),
+            )
+            db.messageDao().insertIfAbsent(
+                app.getknit.knit.data.message.MessageEntity(
+                    id = "m",
+                    senderId = "talker",
+                    conversationId = "talker",
+                    body = "hi",
+                    sentAt = 1L,
+                ),
+            )
+
+            val wanted = dao.facesNeedingFetch(setOf("contact"), setOf("blocked"), filtering = true, heardSince = 50L, limit = 10)
+            // Every peer with a reason of its own ahead of one only heard lately, whatever the stamps say: a crowd of
+            // strangers heard today never takes a contact's place under the cap.
+            assertEquals(
+                listOf("talker", "verified", "contact", "recent"),
+                wanted.map { it.nodeId },
+            )
+            assertEquals("h-talker", wanted.first().hash)
+            assertEquals(
+                listOf("talker", "verified"),
+                dao.facesNeedingFetch(setOf("contact"), setOf("blocked"), filtering = true, heardSince = 50L, limit = 2).map { it.nodeId },
+            )
+            // Filtering off, a flagged photo is a photo like any other.
+            assertTrue(
+                dao.facesNeedingFetch(emptySet(), emptySet(), filtering = false, heardSince = 50L, limit = 10).any {
+                    it.nodeId ==
+                        "flagged"
+                },
+            )
+        }
+
+    @Test
+    fun `a landing photo settles the rows that advertise it and do not show it, and a dangling face is cleared`() =
+        runTest {
+            dao.upsert(PeerEntity(nodeId = "waits", avatarHash = "old", advertisedAvatar = "h", advertisedKnown = true))
+            dao.upsert(PeerEntity(nodeId = "shows", avatarHash = "h", advertisedAvatar = "h", advertisedKnown = true))
+            dao.upsert(PeerEntity(nodeId = "other", advertisedAvatar = "x", advertisedKnown = true))
+            assertEquals(listOf("waits"), dao.awaitingAvatar("h").map { it.nodeId })
+            assertEquals(2, dao.countByAdvertisedAvatar("h"))
+
+            db.blobDao().insert(BlobEntity("old", "image/jpeg", byteArrayOf(1)))
+            // #256: "shows" names bytes that are gone; "waits" names bytes that are held.
+            assertEquals(1, dao.clearDanglingFaces())
+            assertNull(dao.findByNodeId("shows")!!.avatarHash)
+            assertEquals("old", dao.findByNodeId("waits")!!.avatarHash)
+            assertEquals("the advertised photo stays: it is the want", "h", dao.findByNodeId("shows")!!.advertisedAvatar)
+        }
+
+    @Test
     fun `setVerified flips only the verified flag`() =
         runTest {
             dao.upsert(PeerEntity(nodeId = "a", pubKey = "KEY", verified = false))

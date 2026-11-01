@@ -1,6 +1,7 @@
 package app.getknit.knit.data.peer
 
 import androidx.room3.Entity
+import androidx.room3.Index
 import androidx.room3.PrimaryKey
 
 /**
@@ -35,7 +36,7 @@ import androidx.room3.PrimaryKey
  * (`ProfileContent.openToChat` / `ProfilePayload.openToChat`); false when their profile predates the flag.
  * A presentation field: it moves with name/status under the same last-writer-wins watermark ([updatedAt]).
  */
-@Entity(tableName = "peers")
+@Entity(tableName = "peers", indices = [Index("advertisedAvatar")])
 data class PeerEntity(
     @PrimaryKey val nodeId: String,
     val name: String = "",
@@ -76,4 +77,20 @@ data class PeerEntity(
      * presence tier (`ui/Reach.kt`), routing, custody or eviction. Writes merge with `MAX`, so it never moves back.
      */
     val lastSeenAt: Long = 0L,
+    /**
+     * The photo this peer's newest applied profile **advertises** — decided the moment the profile is heard, bytes or
+     * no bytes — beside [avatarHash], the photo that **renders** once its bytes are local and screened (ADR 2026-09.nxcq's
+     * split, applied to peers by ADR 2026-11.4ckq, #258). Null with [advertisedKnown] true: the profile advertises no
+     * photo. Written by every profile writer under the presentation watermark ([updatedAt]) whether or not the sender is
+     * blocked (the decided hash is not presentation; the want and adopt sites read the block). The durable want: the
+     * database re-arm asks for it while its bytes are not held, and a landing blob is adopted by the rows that advertise
+     * it (`PeerDao.awaitingAvatar`). **Never drawn**: a surface that reads it shows a hash whose bytes may not be here.
+     */
+    val advertisedAvatar: String? = null,
+    /**
+     * Whether [advertisedAvatar] is known: false on a row no profile has written it on yet — a row from before DB v30
+     * (until the start-up pass reads it from the held profile frame), or one a pushed photo created — where a push is
+     * adopted as it was before the column. True once any profile writer has recorded what it advertises.
+     */
+    val advertisedKnown: Boolean = false,
 )

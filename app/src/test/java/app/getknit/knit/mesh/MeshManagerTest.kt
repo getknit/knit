@@ -26,6 +26,7 @@ import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.MissingAttachment
 import app.getknit.knit.data.peer.MetPeerRepository
+import app.getknit.knit.data.peer.PeerAdvertised
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.pin.PinEntity
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
@@ -553,6 +554,8 @@ class MeshManagerTest {
             coEvery { settings.acceptedConversations } returns MutableStateFlow(emptySet())
             // Every database re-arm reads the owed faces, and the block-list watch its last-acted list, with `.first()`.
             coEvery { settings.blockList } returns blockState
+            // And the filter its peer-photo pass reads (ADR 2026-11.4ckq); a test that moves it stubs its own.
+            coEvery { settings.contentFilteringEnabled } returns MutableStateFlow(true)
             coEvery { textModeration.classify(any(), any()) } returns TextVerdict.ALLOWED
             coEvery { messages.save(any()) } answers { saved += firstArg<MessageEntity>() }
             // Nothing is held for the quote check (ADR 2026-10.gpa3): a relaxed mock would answer a made-up row.
@@ -4184,6 +4187,54 @@ class MeshManagerTest {
                 author to BlobReqContent("big", pull = BlobExchange.PULL_BUDGET),
                 rig.blobAsks().first { it.second.hash == "big" },
             )
+            rig.manager.stop()
+        }
+
+    @Test
+    fun theDatabaseReArmWantsTheAdvertisedFacesOfThePeersItHasAReasonToShow() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-11.4ckq, #258: the row is the durable want, bounded to contacts, co-members, conversations and the
+            // recently heard, at most 64, never a blocked peer.
+            val rig = Rig(backgroundScope)
+            val author = "author-node"
+            val member = "member-node"
+            coEvery { rig.messages.attachmentsNeedingFetch(any()) } returns listOf(missing("att", author, null))
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf("mallory"))
+            coEvery { rig.groups.active() } returns
+                listOf(
+                    GroupEntity(
+                        groupId = "g-1",
+                        name = "G",
+                        members = GroupMembersStore.encode(listOf(rig.me.nodeId, member)),
+                        createdBy = member,
+                        createdAt = 0L,
+                    ),
+                )
+            coEvery { rig.peers.facesNeedingFetch(any(), any(), any(), any(), any()) } returns
+                // The refused one first: broken seeding would ask it before the face, so the wait below cannot miss it.
+                listOf(PeerAdvertised(author, "refused"), PeerAdvertised(author, "face"))
+            // Refused over its ceiling in an earlier session: seeded at the start, never wanted (ADR 2026-11.4ckq).
+            coEvery { rig.blobs.photoRefusals() } returns listOf("refused")
+            coEvery { rig.blobs.holderMarks() } returns emptyList()
+            rig.transport.nearby.value = setOf(Peer(author))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(rig.bob.nodeId, "g-group"))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+
+            rig.manager.start()
+            rig.await(2) { rig.askedHashes().size }
+            assertEquals("the attachment and the face, never the refused one", setOf("att", "face"), rig.askedHashes())
+            assertTrue("each asked of its author", rig.blobAsks().all { it.first == author })
+            coVerify {
+                rig.peers.facesNeedingFetch(
+                    setOf(rig.bob.nodeId, member),
+                    setOf("mallory"),
+                    true,
+                    rig.clockNow - 24 * 60 * 60_000L,
+                    64,
+                )
+            }
+            coVerify { rig.peers.clearDanglingFaces() }
             rig.manager.stop()
         }
 

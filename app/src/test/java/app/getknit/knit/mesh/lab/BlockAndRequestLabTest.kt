@@ -139,6 +139,9 @@ class BlockAndRequestLabTest {
             val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
             lab.linkAll(alice to bob, bob to mallory)
             lab.awaitAcquainted(alice, bob, mallory)
+            // A push that outruns the profile naming it is kept unadopted (#253, ADR 2026-11.4ckq), so a start-up collection
+            // still pending would take it and leave the re-arm to ask again (#256's heal, the scenario below): not this one's.
+            lab.await(1) { if (bob.manager.startSweepsDone) 1 else 0 }
 
             // The face a block clears is the neighbour scenario's below; here Mallory has none yet.
             awaitBlockWatch(alice)
@@ -146,15 +149,14 @@ class BlockAndRequestLabTest {
             assertEquals("Mallory", alice.peer(mallory)?.name)
 
             mallory.setDisplayName("Mallory Two")
-            // Bob holds the rename before the photo goes: the rename's profile names no photo, and landing after the push
-            // it would clear the face it brought (a neighbour's push outrunning an older profile, outside this change).
-            lab.await(1) { if (bob.peer(mallory)?.name == "Mallory Two") 1 else 0 }
+            // No wait for Bob to hold the rename before the photo goes (#253, ADR 2026-11.4ckq): a push that outruns the
+            // rename's profile waits for the profile naming it, and one lost on the way is asked for again.
             val second = Random(12).nextBytes(2_048)
             val secondHash = sha256Hex(second)
             mallory.setAvatar(second)
             val version = mallory.ownPresentation().version
             assertTrue(mallory.sendRoom("after the rename"))
-            lab.assertConverged(listOf(mallory, bob), atLeast = 1, carriers = listOf(alice)) { Conversations.NEARBY }
+            convergedOnThePush(mallory, bob, alice, version, secondHash)
             lab.await(1) { if (bob.peer(mallory)?.avatarHash == secondHash) 1 else 0 }
             // The profile reached Alice — its version moved her row's watermark — and its presentation did not: the name and
             // face asserts share that commit and carry the claim. The two absence checks after them are secondary: the pull a
@@ -192,6 +194,10 @@ class BlockAndRequestLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            // Bob's push can land before the profile naming his photo, and is then kept unadopted until it does (#253, ADR
+            // 2026-11.4ckq): a start-up collection still pending on Alice would take it, for the tick's re-arm to fetch
+            // again, past this scenario's first oracle (the late face-null of the stage-2 sweep, seed 871921833).
+            lab.await(2) { listOf(alice, bob).count { it.manager.startSweepsDone } }
             val picture = Random(21).nextBytes(2_048)
             val hash = sha256Hex(picture)
             bob.setAvatar(picture)
@@ -227,14 +233,15 @@ class BlockAndRequestLabTest {
             // and the relink below is what has to bring it back either way.
             lab.clock.advance(BlobExchange.FETCH_TTL_MS + MINUTE_MS)
             alice.sweepExpired()
-            // The start's orphan collection has run: one still pending when the photo lands would take its bytes before the
-            // face names them (a start-up race outside this change).
+            // The start's orphan collection has run first. Without this wait, one still pending when the photo lands takes its
+            // bytes before the face names them (#256), and the re-arm heals that (ADR 2026-11.4ckq; the owed face counts as
+            // not shown while its bytes are gone, `InboundPipelineTest`'s dangling owed-face case, and
+            // `PeerFaceLabTest`'s restart scenario reaches the state on its own). Here it failed the full oracle 2 runs in
+            // 200 after the face had come back, a cause not pinned: the wait keeps this scenario to the owed face.
             lab.await(1) { if (alice.manager.startSweepsDone) 1 else 0 }
 
             lab.link(alice, bob)
-            assertTrue("the owed face never came back", lab.tryAwait(1) { if (alice.peer(bob)?.avatarHash == hash) 1 else 0 })
-            val held = alice.blobs.bytes(hash)
-            assertTrue("alice shows the face with bytes ${held?.size ?: "absent"} of ${picture.size}", picture.contentEquals(held))
+            awaitOwedFaceBack(alice, bob, hash, picture)
             // The entry settles on the next database re-arm, the 60 s tick here.
             alice.reoffer()
             assertTrue(
@@ -244,8 +251,102 @@ class BlockAndRequestLabTest {
                     .isEmpty(),
             )
             assertTrue(bob.sendRoom("back again"))
-            lab.assertConverged(listOf(alice, bob), atLeast = 2) { Conversations.NEARBY }
+            try {
+                lab.assertConverged(listOf(alice, bob), atLeast = 2) { Conversations.NEARBY }
+            } catch (e: AssertionError) {
+                val row = alice.peer(bob)
+                throw AssertionError(
+                    "${e.message}\n  alice: holds ${hash.take(8)} ${alice.holdsBlob(hash)}, face ${row?.avatarHash?.take(8)}, " +
+                        "advertised ${row?.advertisedAvatar?.take(8)}\n" +
+                        org.robolectric.shadows.ShadowLog
+                            .getLogs()
+                            .filter { hash.take(8) in it.msg }
+                            .joinToString("\n") { "  ${it.tag}: ${it.msg}" },
+                    e,
+                )
+            }
         }
+
+    /**
+     * Waits for [alice] to show [bob]'s owed face with its bytes, over her ticks if need be: a face whose bytes went (#256)
+     * heals in a tick that clears it and wants it again, once Bob's memo of the copy he just sent has lapsed. The lab's
+     * ticks and calendar are moved by hand.
+     */
+    private suspend fun awaitOwedFaceBack(
+        alice: LabNode,
+        bob: LabNode,
+        hash: String,
+        picture: ByteArray,
+    ) {
+        var back = false
+        repeat(HEAL_TICKS) {
+            back = back ||
+                lab.tryAwait(1, TICK_WAIT_MS) {
+                    if (alice.peer(bob)?.avatarHash == hash && picture.contentEquals(alice.blobs.bytes(hash))) 1 else 0
+                }
+            if (!back) {
+                lab.clock.advance(BlobExchange.SERVE_MEMO_MS + 1)
+                alice.reoffer()
+            }
+        }
+        val held = alice.blobs.bytes(hash)
+        assertTrue(
+            "the owed face never came back: face ${alice.peer(bob)?.avatarHash}, bytes ${held?.size ?: "absent"} of ${picture.size}, " +
+                "owed ${alice.settings.blockList.owedFaces.first()}, wanted ${hash in alice.manager.wantedBlobs()}, " +
+                "bob files ${bob.transport.files.filter { hash in it }}, alice files ${alice.transport.files.filter { hash in it }}, " +
+                "arriving ${alice.transport.arrivingFiles().keys.map {
+                    it.take(
+                        8,
+                    )
+                }}, linked ${alice.transport.neighbors.value.map { it.nodeId.take(6) }}\n" +
+                org.robolectric.shadows.ShadowLog
+                    .getLogs()
+                    .filter { hash.take(8) in it.msg }
+                    .joinToString("\n") { "  ${it.tag}: ${it.msg}" },
+            back,
+        )
+    }
+
+    /**
+     * The full oracle over [author] and [neighbour], [carrier] carrying, once [neighbour] holds [author]'s profile at
+     * [version], naming photo [hash]. A push that never reached [neighbour] is asked for by its tick's re-arm, of [author]
+     * alone, and served once [author]'s push memo lapses (ADR 2026-11.4ckq): one tick covers it, so a push lost on a loaded
+     * run fails nothing (seed 536960443: the neighbour held the new name with no face once in 200, not reproduced in 400
+     * more). A failure names what the neighbour holds of the photo.
+     */
+    private suspend fun convergedOnThePush(
+        author: LabNode,
+        neighbour: LabNode,
+        carrier: LabNode,
+        version: Long,
+        hash: String,
+    ) {
+        lab.await(1) { if ((neighbour.peer(author)?.updatedAt ?: 0L) >= version) 1 else 0 }
+        if (!lab.tryAwait(1, TICK_WAIT_MS) { if (neighbour.peer(author)?.avatarHash == hash) 1 else 0 }) {
+            lab.clock.advance(BlobExchange.SERVE_MEMO_MS + 1)
+            neighbour.reoffer()
+        }
+        try {
+            lab.assertConverged(listOf(author, neighbour), atLeast = 1, carriers = listOf(carrier)) { Conversations.NEARBY }
+        } catch (e: AssertionError) {
+            throw AssertionError("${e.message}\n${faceState(neighbour, author, hash)}", e)
+        }
+    }
+
+    /** What [node] holds of [peer]'s photo [hash], and every log line naming it: an oracle failure's context. */
+    private suspend fun faceState(
+        node: LabNode,
+        peer: LabNode,
+        hash: String,
+    ): String {
+        val row = node.peer(peer)
+        return "  ${node.name}: holds ${hash.take(8)} ${node.holdsBlob(hash)}, face ${row?.avatarHash?.take(8)}, " +
+            "advertised ${row?.advertisedAvatar?.take(8)}; ${peer.name} files ${peer.transport.files.filter { hash in it }}\n" +
+            org.robolectric.shadows.ShadowLog
+                .getLogs()
+                .filter { hash.take(8) in it.msg }
+                .joinToString("\n") { "  ${it.tag}: ${it.msg}" }
+    }
 
     /** Waits for [node]'s block-list watch to hold its first value, so a block made next is a diff it acts on. */
     private suspend fun awaitBlockWatch(node: LabNode) = lab.await(1) { if (node.manager.blockListWatch.ready.value) 1 else 0 }
@@ -260,5 +361,7 @@ class BlockAndRequestLabTest {
 
     private companion object {
         const val MINUTE_MS = 60_000L
+        const val HEAL_TICKS = 8
+        const val TICK_WAIT_MS = 10_000L
     }
 }

@@ -5,6 +5,8 @@ import app.getknit.knit.data.blob.AttachmentHolderDao
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
+import app.getknit.knit.data.blob.PhotoRefusalDao
+import app.getknit.knit.data.blob.PhotoRefusalEntity
 import app.getknit.knit.data.blob.SavedFileDao
 import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupDao
@@ -39,6 +41,8 @@ class BlobRepository(
     private val db: KnitDatabase,
     private val savedFiles: SavedFileDao,
     private val holders: AttachmentHolderDao,
+    // The photos refused over their ceiling (#234), kept beside the verdicts (ADR 2026-11.4ckq).
+    private val refusals: PhotoRefusalDao = db.photoRefusalDao(),
 ) {
     suspend fun insert(
         hash: String,
@@ -166,11 +170,63 @@ class BlobRepository(
             if (groups.countByPhotoHash(hash) > 0) return@withWriteTransaction
             if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
             blobs.delete(hash)
-            verdicts.delete(hash)
+            // A peer that still advertises the photo keeps its verdict and its refusal, never its bytes (ADR
+            // 2026-11.4ckq): the database re-arm wants an advertised photo whose bytes are gone, and a refused one must
+            // stay refused. The bytes go, so a block, a refusal and the ceiling's release still free them.
+            if (peers.countByAdvertisedAvatar(hash) == 0) {
+                verdicts.delete(hash)
+                refusals.delete(hash)
+            }
             savedFiles.delete(hash)
             holders.delete(hash)
         }
     }
+
+    /**
+     * Drops the bytes of a peer's photo screening refused while content filtering is on — unless a message, a face, a
+     * group photo, a carried frame or the own avatar still needs them — and **keeps its verdict**, as
+     * [dropRefusedGroupPhoto] does for a group's (ADR 2026-11.4ckq). The peer goes on advertising the photo, so its row
+     * still names [hash] ([deleteIfUnreferenced] keeps the verdict while it does), and the kept verdict is what tells
+     * the re-pull paths not to fetch it again: without it every database re-arm would fetch, refuse and delete it.
+     */
+    suspend fun dropRefusedFace(hash: String) {
+        if (hash == settings.ownAvatarHash.first()) return
+        db.withWriteTransaction {
+            if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
+            if (groups.countByPhotoHash(hash) > 0) return@withWriteTransaction
+            if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            blobs.delete(hash)
+        }
+    }
+
+    /**
+     * Records that a held copy of [hash], [size] bytes, was over the profile photo ceiling (#234), so the refusal outlives
+     * the session (ADR 2026-11.4ckq). Kept while a peer advertises the hash.
+     */
+    suspend fun refuseAsPhoto(
+        hash: String,
+        size: Long,
+    ) = refusals.insert(PhotoRefusalEntity(hash, size = size))
+
+    /** Every photo a held copy refused over its ceiling: what each mesh start seeds the session's refusals from. */
+    suspend fun photoRefusals(): List<String> = refusals.hashes()
+
+    /**
+     * Records that [holder]'s stream of [hash], or its size answer, passed the photo ceiling (#234, ADR 2026-11.4ckq): it
+     * is passed over for that hash past the session too. Evidence about that holder alone, never a refusal of the hash.
+     * At most [MAX_HOLDER_MARKS] holders a hash: one more is that holder's one more copy, never a want lost.
+     */
+    suspend fun markOverCeiling(
+        hash: String,
+        holder: String,
+    ) {
+        if (holder.isEmpty() || refusals.countMarks(hash) >= MAX_HOLDER_MARKS) return
+        refusals.insert(PhotoRefusalEntity(hash, holder, size = 0L))
+    }
+
+    /** `(hash, holder)` of every holder passed over past its session: what each mesh start seeds the session's marks from. */
+    suspend fun holderMarks(): List<Pair<String, String>> = refusals.holderMarks().map { it.hash to it.holder }
 
     /**
      * Drops the bytes of a group photo screening refused while content filtering is on — unless a message,
@@ -207,10 +263,18 @@ class BlobRepository(
         db.withWriteTransaction {
             blobs.orphanHashes().filter { it != own }.forEach {
                 blobs.delete(it)
-                verdicts.delete(it)
+                // A photo a peer still advertises keeps its verdict, as in [deleteIfUnreferenced] (ADR 2026-11.4ckq).
+                if (peers.countByAdvertisedAvatar(it) == 0) verdicts.delete(it)
                 savedFiles.delete(it)
                 holders.delete(it)
             }
+            // A refusal outlives the photo's bytes only while a peer still advertises it (ADR 2026-11.4ckq).
+            refusals.deleteUnadvertised()
         }
+    }
+
+    private companion object {
+        // As `PartialBlobs` keeps per hash in a session.
+        const val MAX_HOLDER_MARKS = 16
     }
 }

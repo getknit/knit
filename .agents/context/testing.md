@@ -305,7 +305,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   bytes, no total) and the sender in `fileInFlightTo` — the slow BLE transfer a scenario can hold a re-ask
   against. `stackFiles(to)` parks the next files fed but unseen — neither arriving nor in flight — the photo a
   holder that cannot see its own stack has fed behind the one streaming in (ADR 2026-10.nxfb); arm `holdFiles`
-  first. `fileArrivingFrom` reads whether a held, arriving file from that peer is parked. A delivered or released
+  first. `dropFiles(to)` loses what is parked with the link still up (a push the link took and never delivered, #258;
+  `PeerFaceLabTest`). `fileArrivingFrom` reads whether a held, arriving file from that peer is parked. A delivered or released
   file stays in `arrivingFiles()`, landing, until the receiver's consumer has stored it (`fileTaken`, #138), so
   await `blobs.exists(hash)` before asserting a hash has left it. `LabNode.reoffer()` runs
   one 60 s re-offer round now, the tick a lab clock jump never wakes. Every `sendFile`

@@ -285,6 +285,11 @@ free). Two invariants that are easy to break:
   tapped — Wi-Fi Aware only), so a swept or restarted want never asks over Bluetooth on a stale flag or stays held on one.
   It reads custody before the rows (js2p's 2026-10-19 amendment): custody's read loads a room post's declared size only
   while no row names the hash, so read after the rows it lost a row written between them, and the post went plain.
+  A peer's photo is re-wanted the same way (ADR 2026-11.4ckq): every profile writer records the advertised hash on the
+  row, and the re-arm wants each one not held, after the attachments, for a bounded set of peers and never in the last
+  quarter of the want table. Its own person is asked alone while a radio links them, until a NONE, their link going or
+  their push's serve-memo floor — never the 5 s grace, since their push may sit in the stack buffer — and the push stamps
+  that memo. A refused photo keeps its verdict while a row advertises it, or every re-arm would fetch it again.
 - **A contact's direct link is a link to send on, never a radio, for blobs and custody too** (ADR 2026-10.a5yj's
   custody-and-blobs amendment). Every blob and custody rule that means *near* — the carrier's pull deferral, a holder's
   rank and plane tier — reads the radio set (`MeshTransport.radioLinked`), never `neighbors`. Proof of a hold is not

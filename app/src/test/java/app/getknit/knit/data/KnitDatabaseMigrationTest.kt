@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v29) creates and opens from the exported JSON`() =
+    fun `the current schema (v30) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -1092,12 +1092,47 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 29 to 30 keeps every peer, leaves its advertised photo unknown and adds the empty refusals`() =
+        runTest {
+            helper.createDatabase(29).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, avatarHash, verified, updatedAt, openToChat, lastSeenAt) " +
+                        "VALUES ('peer-1','Ann','',  'face',0,7,0,9)",
+                )
+            }
+            helper.runMigrationsAndValidate(30, listOf(KnitMigrations.MIGRATION_29_30)).use { c ->
+                c.prepare("SELECT name, avatarHash, advertisedAvatar, advertisedKnown FROM peers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                    assertEquals("face", s.getText(1))
+                    // ADR 2026-11.4ckq: never backfilled from the shown face, which would mark a stranded face as settled.
+                    assertTrue(s.isNull(2))
+                    assertEquals(0L, s.getLong(3))
+                    assertFalse(s.step())
+                }
+                c.prepare("SELECT COUNT(*) FROM photo_refusals").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(0L, s.getLong(0))
+                }
+                // The writers' shape: the decided photo beside the shown one, and a refusal keyed by hash.
+                c.execSQL("UPDATE peers SET advertisedAvatar = 'next', advertisedKnown = 1 WHERE nodeId = 'peer-1'")
+                c.execSQL("INSERT INTO photo_refusals (hash, holder, size) VALUES ('big', '', 2000000)")
+                // A holder mark beside the hash's own refusal: one row per (hash, holder).
+                c.execSQL("INSERT INTO photo_refusals (hash, holder, size) VALUES ('big', 'liar', 0)")
+                c.prepare("SELECT nodeId FROM peers WHERE advertisedAvatar = 'next'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("peer-1", s.getText(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 29
+        const val CURRENT_VERSION = 30
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

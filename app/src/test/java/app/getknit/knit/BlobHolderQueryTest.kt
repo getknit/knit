@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.PartialBlobs
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
@@ -1073,6 +1074,35 @@ class BlobHolderQueryTest {
             a.exchange.reask()
             a.exchange.reask()
             assertEquals("c holds it: asked, rather than b's stream waited out", listOf("a"), c.asksFrom(hash))
+        }
+
+    /**
+     * A face's linked author is asked alone (ADR 2026-11.4ckq) until it says it lacks the photo: its NONE releases the
+     * hold inside the floor, and the holder beside it is queried and asked at the next step.
+     */
+    @Test
+    fun aFacesAuthorAnsweringNoneReleasesTheHoldInsideTheFloor() =
+        runTest(UnconfinedTestDispatcher()) {
+            val me = Node("a", backgroundScope)
+            val author = Node("b", backgroundScope).apply { mute = true } // its answer is the test's to deliver
+            val holder = Node("c", backgroundScope)
+            me.transport.connect(author.transport)
+            me.transport.connect(holder.transport)
+            val hash = holder.store.seed(picture())
+
+            me.exchange.want(hash, author = "b", ceiling = FileIntake.MAX_AVATAR_BYTES, pushedBy = "b")
+            assertTrue("the author is queried", author.queriesFrom("a").isNotEmpty())
+            assertTrue("the holder is not, while the author decides", holder.queriesFrom("a").isEmpty())
+
+            me.now = 1_000 // well inside the floor
+            val query =
+                author.heard
+                    .last { it.first == FrameType.BLOB_HAVE }
+                    .third.id
+            me.exchange.onHaveAnswer(BlobHasContent(listOf(BlobHasItem(hash, BlobHasItem.NONE)), 0, query), "b")
+            me.exchange.reask()
+            assertTrue("the holder is queried once the author lacks it", holder.queriesFrom("a").isNotEmpty())
+            assertEquals("and asked", listOf("a"), holder.asksFrom(hash))
         }
 
     /**

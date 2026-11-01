@@ -201,6 +201,77 @@ class BlobRepositoryTest : RoomDbTest() {
         }
 
     @Test
+    fun `a refused face loses its bytes and keeps its verdict while its peer advertises it`() =
+        runTest {
+            // ADR 2026-11.4ckq: without the verdict the database re-arm would fetch, refuse and delete it on every tick.
+            ownAvatar(null)
+            blob("h1")
+            db.blobVerdictDao().upsert(BlobVerdictEntity("h1", flagged = true, score = 0.9f))
+            db.peerDao().upsert(PeerEntity(nodeId = "p", advertisedAvatar = "h1", advertisedKnown = true))
+
+            repo().dropRefusedFace("h1")
+            assertFalse(db.blobDao().exists("h1"))
+            assertEquals(true, db.blobVerdictDao().find("h1")?.flagged)
+
+            // A later release of the hash by another path keeps the verdict too, for as long as the row advertises it.
+            repo().deleteIfUnreferenced("h1")
+            assertEquals(true, db.blobVerdictDao().find("h1")?.flagged)
+        }
+
+    @Test
+    fun `an advertised photo's bytes still go when nothing shows them, and its verdict and refusal go with its last advertiser`() =
+        runTest {
+            // A block or the ceiling's release must still free the bytes (ADR 2026-11.nsbf, #234): the advertised column
+            // keeps the verdict and the refusal, never the bytes.
+            ownAvatar(null)
+            blob("h1")
+            db.blobVerdictDao().upsert(BlobVerdictEntity("h1", flagged = false, score = 0.1f))
+            repo().refuseAsPhoto("h1", 2_000_000L)
+            db.peerDao().upsert(PeerEntity(nodeId = "p", advertisedAvatar = "h1", advertisedKnown = true))
+
+            repo().deleteIfUnreferenced("h1")
+            assertFalse(db.blobDao().exists("h1"))
+            assertTrue(db.blobVerdictDao().find("h1") != null)
+            assertEquals(listOf("h1"), repo().photoRefusals())
+
+            db.peerDao().upsert(PeerEntity(nodeId = "p", advertisedAvatar = "h2", advertisedKnown = true))
+            repo().deleteIfUnreferenced("h1")
+            assertNull(db.blobVerdictDao().find("h1"))
+            assertEquals(emptyList<String>(), repo().photoRefusals())
+        }
+
+    @Test
+    fun `the start-up collection keeps an advertised photo's verdict and drops a refusal nobody advertises`() =
+        runTest {
+            ownAvatar(null)
+            blob("h1")
+            db.blobVerdictDao().upsert(BlobVerdictEntity("h1", flagged = true, score = 0.9f))
+            db.peerDao().upsert(PeerEntity(nodeId = "p", advertisedAvatar = "h1", advertisedKnown = true))
+            repo().refuseAsPhoto("h1", 2_000_000L)
+            repo().refuseAsPhoto("gone", 2_000_000L)
+
+            repo().deleteOrphans()
+
+            assertFalse("the bytes are an orphan: nothing shows them", db.blobDao().exists("h1"))
+            assertEquals(true, db.blobVerdictDao().find("h1")?.flagged)
+            assertEquals(listOf("h1"), repo().photoRefusals())
+        }
+
+    @Test
+    fun `a holder passed over for a photo is kept past the session apart from the hash's own refusal, at most sixteen a hash`() =
+        runTest {
+            // ADR 2026-11.4ckq: a holder's stream or size answer speaks for that holder alone, so it never refuses the hash.
+            ownAvatar(null)
+            db.peerDao().upsert(PeerEntity(nodeId = "p", advertisedAvatar = "h1", advertisedKnown = true))
+            (1..20).forEach { repo().markOverCeiling("h1", "holder-$it") }
+            repo().markOverCeiling("h1", "")
+            assertEquals(16, repo().holderMarks().size)
+            assertEquals(emptyList<String>(), repo().photoRefusals())
+            repo().refuseAsPhoto("h1", 2_000_000L)
+            assertEquals(listOf("h1"), repo().photoRefusals())
+        }
+
+    @Test
     fun `keeps a blob referenced by a carried store-and-forward frame`() =
         runTest {
             ownAvatar(null)

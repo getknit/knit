@@ -20,6 +20,9 @@ object BackupTables {
         listOf(
             "blobs",
             "blob_verdicts",
+            // A photo refused over its ceiling (ADR 2026-11.4ckq): a fact about a hash, carried as its verdict is, so a
+            // restored phone does not fetch it again from every holder.
+            "photo_refusals",
             "attachment_holders",
             "peers",
             "peer_profiles",

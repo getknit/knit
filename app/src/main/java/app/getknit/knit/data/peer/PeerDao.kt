@@ -63,6 +63,65 @@ interface PeerDao {
     @Query("UPDATE peers SET avatarHash = NULL WHERE avatarHash IN (:hashes)")
     suspend fun clearAvatars(hashes: List<String>): Int
 
+    /**
+     * The peers whose newest profile advertises the photo [hash] and who do not show it yet: what a landing blob settles
+     * (ADR 2026-11.4ckq, as `GroupDao.awaitingPhoto` for a group). The want is the row; there is no in-memory owner map.
+     */
+    @Query(
+        "SELECT * FROM peers WHERE advertisedAvatar = :hash AND (avatarHash IS NULL OR avatarHash != advertisedAvatar)",
+    )
+    suspend fun awaitingAvatar(hash: String): List<PeerEntity>
+
+    /**
+     * The database half of a peer photo's pull (ADR 2026-11.4ckq, #258): each advertised photo whose bytes are not held,
+     * for the peers this phone has a reason to show — the [anchors] (contacts and group co-members), a verified peer, a
+     * peer with a conversation or a request (a DM's conversation id is its peer's node id), or one heard since
+     * [heardSince] — at most [limit], every peer with a reason of its own (an anchor, verified, a conversation) ahead of
+     * those only heard lately, newest heard first within each. A crowd of strangers in a busy room, or a cheap set of
+     * identities, can fill the cap only with what the contacts leave: ordered by `lastSeenAt` alone, 64 strangers heard
+     * today pushed out a contact heard two days ago, and #258's strand came back. Never a blocked peer ([blocked]), never a
+     * hash a held copy refused as a photo over its ceiling, and, while [filtering], never one screening flagged: those
+     * stay refused for good. "Not held", not "not shown": a face that names a hash whose bytes went (#256) is asked for
+     * again too.
+     */
+    @Query(
+        "SELECT nodeId, advertisedAvatar AS hash FROM peers WHERE advertisedAvatar IS NOT NULL " +
+            "AND advertisedAvatar NOT IN (SELECT hash FROM blobs) " +
+            "AND advertisedAvatar NOT IN (SELECT hash FROM photo_refusals WHERE holder = '') " +
+            "AND (:filtering = 0 OR advertisedAvatar NOT IN (SELECT hash FROM blob_verdicts WHERE flagged = 1)) " +
+            "AND nodeId NOT IN (:blocked) " +
+            "AND (nodeId IN (:anchors) OR verified = 1 OR lastSeenAt >= :heardSince " +
+            "OR nodeId IN (SELECT conversationId FROM messages)) " +
+            "ORDER BY (CASE WHEN nodeId IN (:anchors) OR verified = 1 OR nodeId IN (SELECT conversationId FROM messages) " +
+            "THEN 0 ELSE 1 END), lastSeenAt DESC, nodeId LIMIT :limit",
+    )
+    suspend fun facesNeedingFetch(
+        anchors: Collection<String>,
+        blocked: Collection<String>,
+        filtering: Boolean,
+        heardSince: Long,
+        limit: Int,
+    ): List<PeerAdvertised>
+
+    /**
+     * Clears every face that names a blob this phone no longer holds; returns how many rows changed. Such a face draws
+     * the monogram anyway (the load fails, and the avatar remembers the failure for its hash), so clearing it changes
+     * nothing on screen, and the photo's landing is then a row write that redraws it (#256, ADR 2026-11.4ckq).
+     */
+    @Query("UPDATE peers SET avatarHash = NULL WHERE avatarHash IS NOT NULL AND avatarHash NOT IN (SELECT hash FROM blobs)")
+    suspend fun clearDanglingFaces(): Int
+
+    /**
+     * The peers whose advertised photo is not known yet but whose profile frame this phone holds: what the start-up pass
+     * reads it from, once, after DB v30 (ADR 2026-11.4ckq).
+     */
+    @Query("SELECT nodeId FROM peers WHERE advertisedKnown = 0 AND nodeId IN (SELECT nodeId FROM peer_profiles)")
+    suspend fun advertisedUnknown(): List<String>
+
+    /** How many peers advertise the photo [hash]: what keeps its screening verdict and refusal while the bytes go. */
+    @Query("SELECT COUNT(*) FROM peers WHERE advertisedAvatar = :hash")
+    suspend fun countByAdvertisedAvatar(hash: String): Int
+
     /** How many peers reference avatar blob [hash] — part of the orphaned-blob garbage-collection check. */
     @Query("SELECT COUNT(*) FROM peers WHERE avatarHash = :hash")
     suspend fun countByAvatarHash(hash: String): Int
@@ -171,6 +230,8 @@ interface PeerDao {
             loraNode = peer.loraNode,
             loraKey = peer.loraKey,
             lastSeenAt = peer.lastSeenAt,
+            advertisedAvatar = peer.advertisedAvatar,
+            advertisedKnown = peer.advertisedKnown,
         )
 
     /** The statement [upsert] actually runs, flattened — see its doc comment for why. */
@@ -178,10 +239,10 @@ interface PeerDao {
     @Query(
         "INSERT INTO peers (nodeId, name, status, avatarHash, pubKey, verified, deviceTag, protoVersion, " +
             "capabilities, updatedAt, prekeyId, prekeyPub, prekeySig, prekeyProfileAt, openToChat, loraNode, loraKey, " +
-            "lastSeenAt) " +
+            "lastSeenAt, advertisedAvatar, advertisedKnown) " +
             "VALUES (:nodeId, :name, :status, :avatarHash, :pubKey, :verified, :deviceTag, :protoVersion, " +
             ":capabilities, :updatedAt, :prekeyId, :prekeyPub, :prekeySig, :prekeyProfileAt, :openToChat, " +
-            ":loraNode, :loraKey, :lastSeenAt) " +
+            ":loraNode, :loraKey, :lastSeenAt, :advertisedAvatar, :advertisedKnown) " +
             "ON CONFLICT(nodeId) DO UPDATE SET " +
             "name = excluded.name, status = excluded.status, avatarHash = excluded.avatarHash, " +
             "pubKey = excluded.pubKey, verified = excluded.verified, deviceTag = excluded.deviceTag, " +
@@ -189,7 +250,8 @@ interface PeerDao {
             "updatedAt = excluded.updatedAt, prekeyId = excluded.prekeyId, prekeyPub = excluded.prekeyPub, " +
             "prekeySig = excluded.prekeySig, prekeyProfileAt = excluded.prekeyProfileAt, " +
             "openToChat = excluded.openToChat, loraNode = excluded.loraNode, loraKey = excluded.loraKey, " +
-            "lastSeenAt = MAX(peers.lastSeenAt, excluded.lastSeenAt)",
+            "lastSeenAt = MAX(peers.lastSeenAt, excluded.lastSeenAt), " +
+            "advertisedAvatar = excluded.advertisedAvatar, advertisedKnown = excluded.advertisedKnown",
     )
     suspend fun upsertRow(
         nodeId: String,
@@ -210,5 +272,7 @@ interface PeerDao {
         loraNode: Long?,
         loraKey: String?,
         lastSeenAt: Long,
+        advertisedAvatar: String?,
+        advertisedKnown: Boolean,
     )
 }

@@ -131,6 +131,18 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   (`size` is the tail's; the whole is `offset + size`), and a spliced file that fails its hash drops the prefix and
   re-asks from 0. Receive-side changes go through `FileIntake` under the link's lock. A link takes one resumed header
   per key per `FileIntake.RESUME_WINDOW_MS` (the ask round), refused before its prefix opens (the amendment, #161).
+- **Before touching a profile photo's want — `BlobExchange.want`'s `pushedBy`, `pushedPool` (`Want.pushedBy` /
+  `pushedSince` / `pushedReleased`), `wantFaces` / `makeRoom`, `claimPush` / `forgetPush`, or the faces
+  `MeshManager.rewantMissingBlobs` steps (`rewantFaces`, `FACE_REWANT_CAP`):** READ ADR 2026-11.4ckq (with 4tx5, g24x
+  and ptv8). The database re-arm wants each advertised peer photo whose bytes are not held, after the attachments,
+  bounded (64, and never the last quarter of the want table; a face gives its place up to any other want, so a crowd of
+  faces never evicts an attachment's want, #195; contacts before strangers), each fetch only so it makes no echo want in
+  a neighbour's table. A fetch standing on another linked holder when the author links runs on; the hold starts after it. A face's own person is asked alone while a radio links them, since
+  their push may sit in their stack buffer (#121): the hold ends only on their NONE, their link going, or their push's
+  serve-memo window from the first step on this link, never while they stream to us, and never on the 5 s grace. The
+  push stamps the serve memo (`hash|peer`), so an ask that crosses it is answered SENDING and a lost push is served on the
+  next round. Lab: `PeerFaceLabTest`; unit: `BlobExchangeTest`'s face cases. The row side (the advertised column, the
+  push gate, the durable refusal) is `.agents/context/contacts.md`'s peer-photo entry.
 - **When touching `data/AttachmentIdentities`, `messages.attachmentPlainHash` / `attachmentSourceHash`,
   `AttachmentStore.ingestPicked` or its reuse check, `AttachmentStore.Ingested.reuse`, `MeshManager.sealAttachment`,
   `InboundPipeline.copyFromOwnStore`, or `MessageDao.sealedHolding`:** READ ADR 2026-10.mptm. A phone seals a

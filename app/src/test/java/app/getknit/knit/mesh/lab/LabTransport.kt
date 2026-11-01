@@ -696,6 +696,33 @@ class LabTransport(
         }
     }
 
+    /**
+     * Loses everything parked for [to] without landing it and stops holding files, the link staying up: bytes the link
+     * took and never delivered — a stack that lost them, a stream the receiver discarded (#258). Neither end reports the
+     * file afterwards, as with a torn-down link, but the pipe is not torn down. Only a whole or stacked park
+     * ([holdFiles], [stackFiles]); a streamed one is [disconnect]'s to cut.
+     */
+    fun dropFiles(to: LabTransport) {
+        val pipe = pipe(to)
+        val lost =
+            synchronized(pipe.heldFiles) {
+                pipe.heldFiles.toList().also {
+                    check(it.none { held -> held is HeldFile.Streaming }) { "dropFiles cuts no streamed park" }
+                    pipe.heldFiles.clear()
+                    pipe.holdingFiles = false
+                    pipe.streamUntil = null
+                    pipe.stacking = false
+                }
+            }
+        lost.forEach { held ->
+            when (held) {
+                is HeldFile.Whole -> File(held.file.path).delete()
+                is HeldFile.Stacked -> File(held.file.path).delete()
+                is HeldFile.Streaming -> Unit
+            }
+        }
+    }
+
     /** The keys of the files parked for [to] right now, in send order. */
     fun heldFiles(to: LabTransport): List<String> = pipe(to).let { synchronized(it.heldFiles) { it.heldFiles.map { f -> f.key } } }
 

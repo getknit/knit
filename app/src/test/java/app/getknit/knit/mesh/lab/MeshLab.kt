@@ -2802,6 +2802,9 @@ class LabNode internal constructor(
     /** The custody store's live id set, as the digest exchange advertises it. */
     suspend fun custodyIds(): Set<String> = forwardStore.liveIds(now()).toSet()
 
+    /** Whether a frame this node carries names the attachment [hash] and the store lacks its bytes (ADR 2026-11.4ckq). */
+    suspend fun carriesUnheld(hash: String): Boolean = forwardStore.attachmentsNeedingFetch(now()).containsKey(hash)
+
     /** Each live custody frame's `signed` length, by frame id, of [type] or every type: what the byte cap reads (#227). */
     suspend fun custodySignedBytes(type: String? = null): Map<String, Int> =
         forwardStore

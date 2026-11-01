@@ -1,5 +1,6 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.data.peer.PeerAdvertised
 import app.getknit.knit.data.peer.PeerBadgeEntity
 import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.peer.PeerEntity
@@ -193,6 +194,28 @@ class PeerRepository(
      */
     suspend fun clearAvatarsLongerThan(max: Long): List<String> =
         dao.avatarsLongerThan(max).also { if (it.isNotEmpty()) dao.clearAvatars(it) }
+
+    /** The peers advertising the photo [hash] who do not show it yet (ADR 2026-11.4ckq): what a landing blob settles. */
+    suspend fun awaitingAvatar(hash: String): List<PeerEntity> = dao.awaitingAvatar(hash)
+
+    /**
+     * The advertised photos the database re-arm asks for (ADR 2026-11.4ckq, #258): bytes not held, for [anchors], verified
+     * peers, peers with a conversation and peers heard since [heardSince], never [blocked] or refused; newest heard
+     * first, at most [limit]. See `PeerDao.facesNeedingFetch`.
+     */
+    suspend fun facesNeedingFetch(
+        anchors: Collection<String>,
+        blocked: Collection<String>,
+        filtering: Boolean,
+        heardSince: Long,
+        limit: Int,
+    ): List<PeerAdvertised> = dao.facesNeedingFetch(anchors, blocked, filtering, heardSince, limit)
+
+    /** Clears every face naming a blob no longer held (#256); returns how many rows changed. */
+    suspend fun clearDanglingFaces(): Int = dao.clearDanglingFaces()
+
+    /** The peers whose advertised photo is unknown and whose profile frame is held: the start-up pass's rows. */
+    suspend fun advertisedUnknown(): List<String> = dao.advertisedUnknown()
 
     /**
      * Drops the row a device pinned for *itself* — `nodeId` is our own — if one exists. A node never pins its

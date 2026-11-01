@@ -128,13 +128,34 @@ class PartialBlobs(
         hash: String,
         holder: String,
     ): Boolean =
+        seedMark(hash, holder).also { added ->
+            if (added) {
+                log("partial ${hash.take(LOG_HASH)} holder $holder over its ceiling")
+                onMarked(hash, holder) // outside the lock: the owner keeps it past the session
+            }
+        }
+
+    /**
+     * Marks [holder] for [hash] as [markHolder] does, without telling the owner: a mark an earlier session kept
+     * (`photo_refusals`, ADR 2026-11.4ckq), seeded at the mesh's start after [purge]. True when the mark is new.
+     */
+    fun seedMark(
+        hash: String,
+        holder: String,
+    ): Boolean =
         synchronized(lock) {
             val holders = marked.getOrPut(hash) { LinkedHashSet() }
             val added = holders.add(holder)
             if (holders.size > MAX_MARKED_HOLDERS) holders.remove(holders.first())
-            if (added) log("partial ${hash.take(LOG_HASH)} holder $holder over its ceiling")
             added
         }
+
+    /**
+     * Who is told of a new mark ([markHolder]): `MeshManager` keeps it in `photo_refusals`, so a restart does not stream
+     * an over-ceiling photo from the same holder again (ADR 2026-11.4ckq). Set once, before the mesh starts.
+     */
+    @Volatile
+    var onMarked: (hash: String, holder: String) -> Unit = { _, _ -> }
 
     /** The holders passed over for [hash] under its per-hash ceiling this session ([markHolder]). */
     fun markedHolders(hash: String): Set<String> = synchronized(lock) { marked[hash]?.toSet() ?: emptySet() }

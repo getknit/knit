@@ -115,6 +115,8 @@ document:
 - If a contact's phone reset your chat's encryption twice within a minute, Knit could miss the second reset,
   and messages in that chat could stop getting through until the next reset. Knit now applies it a minute
   later.
+- If a contact's new profile photo didn't reach you the first time, Knit now asks for it again. Before, you
+  could keep seeing their old photo or initials until one of you restarted Knit.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

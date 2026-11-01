@@ -10,6 +10,8 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
+import app.getknit.knit.data.blob.PhotoRefusalDao
+import app.getknit.knit.data.blob.PhotoRefusalEntity
 import app.getknit.knit.data.blob.SavedFileDao
 import app.getknit.knit.data.blob.SavedFileEntity
 import app.getknit.knit.data.commons.CommonsDao
@@ -63,7 +65,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 29
+internal const val KNIT_DB_SCHEMA_VERSION = 30
 
 @Database(
     entities = [
@@ -78,7 +80,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 29
         CommonsMemberEntity::class, MetPeerEntity::class, SavedFileEntity::class,
         PeerProfileEntity::class, GroupMemberClockEntity::class, PeerBadgeEntity::class,
         AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
-        PinEntity::class, LoraDirectSeenEntity::class,
+        PinEntity::class, LoraDirectSeenEntity::class, PhotoRefusalEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -259,6 +261,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 29
     // v29: `ratchet_sessions.prevRootOwnInitAt` — set while the session's `prevRoot` is our own init, abandoned unconfirmed
     //     on a lost race: that init's own `establishedAt` (rule C, ADR 2026-10.4mjm). Ratchet state, never in a backup;
     //     null on existing rows (no row before this recorded it). Migrated by KnitMigrations.MIGRATION_28_29.
+    // v30: `peers.advertisedAvatar` / `peers.advertisedKnown` — the photo a peer's newest profile advertises, beside the
+    //     shown `avatarHash`, and whether it is known (ADR 2026-11.4ckq, #258) — indexed, null / false on existing rows
+    //     (never backfilled from `avatarHash`, which would hide exactly the faces that stranded; the start-up pass reads
+    //     it from each row's held profile frame); and one `photo_refusals` table — a blob refused as a profile photo
+    //     over its ceiling, carried in a backup beside `blob_verdicts`. Migrated by KnitMigrations.MIGRATION_29_30.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -278,6 +285,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
 
     abstract fun blobVerdictDao(): BlobVerdictDao
+
+    abstract fun photoRefusalDao(): PhotoRefusalDao
 
     abstract fun forwardDao(): ForwardDao
 

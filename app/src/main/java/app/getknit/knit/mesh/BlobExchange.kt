@@ -307,6 +307,9 @@ class BlobExchange(
      * [ceiling] is set by a want made only for a profile photo (#234): the most bytes its stream may bring. Such a want of
      * a hash refused as a photo this session ([PartialBlobs.isRefused]) makes nothing, and one of a hash with holders
      * marked over it asks only the others; a want of our own without one lifts it (see the class KDoc).
+     *
+     * [pushedBy] is the neighbour that pushes this blob itself — a profile photo's own person (ADR 2026-11.4ckq): while a
+     * radio links it, it alone is asked ([pushedPool]).
      */
     suspend fun want(
         hash: String,
@@ -319,6 +322,7 @@ class BlobExchange(
         until: Long? = null,
         untilKnown: Boolean = false,
         ceiling: Long? = null,
+        pushedBy: String? = null,
     ) {
         if (ceiling != null && partials.isRefused(hash)) {
             log("blob refuse ${hash.take(LOG_HASH_CHARS)}…: over its ceiling of ${ceiling}B this session, not wanted")
@@ -336,9 +340,63 @@ class BlobExchange(
                 fieldless =
                     asker != null && pull == null,
             )
-        recordWant(hash, now(), author, via, asker, fastOnly, approved, reach, ceiling)
+        recordWant(hash, now(), author, via, asker, fastOnly, approved, reach, ceiling, pushedBy)
         stepping { step(hash, linkedNow()) }
     }
+
+    /**
+     * Wants each of [faces] (hash → the person whose photo it is) as a profile photo under [ceiling], stepped together so
+     * their queries share one frame per neighbour, as [wantAll] does for attachments: the database re-arm's faces (ADR
+     * 2026-11.4ckq, #258). The person is the author and the one who pushes it ([pushedPool]). A hash refused as a photo
+     * this session, held, or on its way makes nothing.
+     *
+     * Optional demand: a face never takes the last quarter of the want table ([MAX_FETCHING]) from anything else. One not
+     * wanted yet is skipped while the table is that full (the next re-arm tries again), and a face-only want gives its
+     * place up to any other want of ours ([makeRoom]), so a crowd of faces never evicts an attachment's want for the
+     * re-arm to mint again every tick (#195). Returns how many it skipped for room.
+     */
+    suspend fun wantFaces(
+        faces: List<Pair<String, String>>,
+        ceiling: Long,
+    ): Int {
+        if (faces.isEmpty()) return 0
+        val linked = linkedNow()
+        var skipped = 0
+        stepping {
+            for ((hash, person) in faces) {
+                if (partials.isRefused(hash) || onTheWayOrHeld(hash)) continue
+                if (!synchronized(lock) { fetching.containsKey(hash) || fetching.size < maxFetching - maxFetching / FACE_FREE_SHARE }) {
+                    skipped++
+                } else {
+                    // Fetch only (budget 0): it asks whoever is linked and never asks anyone to pull it through, so its
+                    // asks make no echo want in a neighbour's table (#195), and one nobody in reach holds backs off.
+                    val reach = Reach(0, null, faceRearm = true)
+                    recordWant(hash, now(), person, null, null, fastOnly = false, reach = reach, ceiling = ceiling, pushedBy = person)
+                    step(hash, linked)
+                }
+            }
+        }
+        if (skipped > 0) log("blob faces: $skipped not wanted this round, the want table is near full")
+        return skipped
+    }
+
+    /**
+     * Stamps the serve memo for a push of [hash] to [peer] — a profile photo the caller is about to send unasked
+     * (`MeshManager.sendAvatarIfNeeded`, ADR 2026-11.4ckq) — so a fresh ask inside the memo is refused and answered
+     * SENDING, as for a copy we served, and an ask after it is served again: a lost push is re-served on the next round.
+     * False, stamping nothing, when a serve of [hash] to [peer] is already inside the memo: it asked, and that copy is on
+     * its way, so the push would be a second.
+     */
+    fun claimPush(
+        hash: String,
+        peer: String,
+    ): Boolean = !servedRecently(hash, peer)
+
+    /** Forgets [claimPush]'s stamp: the push went nowhere, so the next ask is served at once. */
+    fun forgetPush(
+        hash: String,
+        peer: String,
+    ) = forgetServed(hash, peer)
 
     /**
      * [want] for each of [wanted] (hash → author), stepped together so their queries share one frame per neighbour;
@@ -441,6 +499,11 @@ class BlobExchange(
                     want.answers.remove(it)
                 }
                 if (want.fetch?.peer in ids) want.fetch = null
+                // An author that links again pushes nothing new, but its old ask may have died: held on afresh (ADR 2026-11.4ckq).
+                if (want.pushedBy in ids) {
+                    want.pushedSince = null
+                    want.pushedReleased = false
+                }
             }
         }
     }
@@ -456,7 +519,7 @@ class BlobExchange(
             synchronized(lock) {
                 // A link-up that went again pulls nobody later: the newcomer is one only while its link stands.
                 fetching.values.forEach { it.freshLinks.removeAll(ids) }
-                fetching.filterValues { it.fetch?.peer in ids }.keys.toList()
+                fetching.filterValues { it.fetch?.peer in ids || (it.pushedBy in ids && !it.pushedReleased) }.keys.toList()
             }
         if (affected.isEmpty()) return
         val linked = linkedNow()
@@ -535,9 +598,7 @@ class BlobExchange(
         // A marked holder is not a holder for this want: gone, as far as it is concerned, so an ask on it fails over.
         val pool = if (passed.isEmpty()) linked else linked.filterNot { it.id in passed }
         val reach = reachingFor(hash, pool, linked)
-        val plan =
-            synchronized(lock) { fetching[hash]?.let { decideMarking(it, reach, kept, linked.metered) }?.also { queue(hash, it) } }
-                ?: return
+        val plan = planStep(hash, reach, kept, linked.metered) ?: return
         if (plan.asks.isNotEmpty()) {
             val req = blobRequest(selfId(), hash, plan.fastOnly, plan.pull, plan.until)
             for (ask in plan.asks) {
@@ -552,6 +613,96 @@ class BlobExchange(
         plan.events.forEach(onEvent)
         plan.wake?.let { armTimer(hash, it) }
     }
+
+    /**
+     * [step]'s decision for [hash] against [reach]: the author's hold first ([pushedPool]), then [decide] at the clock's
+     * now, its queries queued — all under [lock]. Null when the hash is no longer wanted.
+     */
+    private fun planStep(
+        hash: String,
+        reach: List<Candidate>,
+        kept: Long,
+        metered: Boolean,
+    ): Plan? {
+        var released: String? = null
+        val plan =
+            synchronized(lock) {
+                val w = fetching[hash] ?: return null
+                val (asked, floor) = pushedPool(w, reach, now())
+                if (floor == null) released = w.pushedReleasedWhy.also { w.pushedReleasedWhy = null }
+                decideMarking(w, asked, kept, metered).also { p ->
+                    floor?.let { p.waitFor(it) }
+                    queue(hash, p)
+                }
+            }
+        released?.let { log("blob author ${hash.take(LOG_HASH_CHARS)}… released ($it): every holder may be asked") }
+        return plan
+    }
+
+    /**
+     * The neighbours [w]'s step may ask from [reach] at [t], and how long until the hold below ends (null when none
+     * holds). A blob its own author pushes unasked — a profile photo (ADR 2026-11.4ckq, #258) — is asked of that author
+     * alone while a radio links it ([Want.pushedBy]): its push may sit in the stack buffer, which is neither
+     * [MeshTransport.fileInFlightTo] on its side nor arriving on ours, and every other holder asked after the 5 s grace
+     * would serve a copy of its own (#79, #121's shape). The author refuses an ask inside its push's serve memo and
+     * answers SENDING ([claimPush]), so the hold ends only on what the wire can say: the author answers NONE (it no longer
+     * holds the photo), its link goes, or the floor — its serve memo's window ([SERVE_MEMO_MS]) from the first step on
+     * this link, never while it streams to us: a push queued behind another file waits as long as that file's measured
+     * ETA ([MeshTransport.fileArrivingEtaMs], the step's [Candidate.streaming] wait), and at the floor a lost push is
+     * one its author serves again. A linked author's HAVE decides, as for a picture (ADR 2026-10.g24x). Past the hold
+     * every holder may be asked, by the round's own rules, until the author links again. A fetch already standing on
+     * another linked holder when the author links is left to run, and the hold begins after it. A contact's direct link is not
+     * a radio and asks its peer last for the bytes (ADR 2026-10.a5yj), so it holds nothing here. Under [lock].
+     */
+    private fun pushedPool(
+        w: Want,
+        reach: List<Candidate>,
+        t: Long,
+    ): Pair<List<Candidate>, Long?> {
+        val by = w.pushedBy ?: return reach to null
+        val author = reach.firstOrNull { it.id == by && it.radio }
+        if (author == null) {
+            w.pushedSince = null
+            return reach to null
+        }
+        if (w.pushedReleased) return reach to null
+        // An ask of ours already standing on another linked holder keeps it: the author linking later must not drop it
+        // from the pool, which would read as its link gone and end the fetch with no `blobcancel`, so its queued or
+        // parked copy would still come beside the author's (#79's shape). The hold starts once that fetch has ended.
+        if (fetchesElsewhere(w, by, reach)) return reach to null
+        val since = w.pushedSince ?: t.also { w.pushedSince = it }
+        val why = pushedReleaseWhy(w, author, since, t)
+        if (why != null) {
+            w.pushedReleased = true
+            w.pushedReleasedWhy = why
+            return reach to null
+        }
+        val left = if (author.streaming) STREAM_POLL_MS else since + SERVE_MEMO_MS - t
+        return listOf(author) to left
+    }
+
+    /** Whether [w]'s fetch stands on a linked holder other than its author [by] ([pushedPool]'s exception). */
+    private fun fetchesElsewhere(
+        w: Want,
+        by: String,
+        reach: List<Candidate>,
+    ): Boolean {
+        val on = w.fetch?.peer ?: return false
+        return on != by && reach.any { it.id == on }
+    }
+
+    /** Why [pushedPool]'s hold on [author] ends at [t], begun at [since], or null while it stands. */
+    private fun pushedReleaseWhy(
+        w: Want,
+        author: Candidate,
+        since: Long,
+        t: Long,
+    ): String? =
+        when {
+            w.answers[author.id]?.state == BlobHasItem.NONE -> "author has none"
+            !author.streaming && t - since >= SERVE_MEMO_MS -> "floor"
+            else -> null
+        }
 
     /**
      * The holders [hash]'s want passes over (#234): when only a profile photo wants it, those marked for it this session
@@ -2490,26 +2641,17 @@ class BlobExchange(
         approved: Boolean = false,
         reach: Reach = Reach(PULL_BUDGET, null),
         ceiling: Long? = null,
+        pushedBy: String? = null,
     ) = synchronized(lock) {
         val want = fetching[hash]
         if (want == null) {
+            makeRoom(ceiling)
             fetching[hash] =
-                Want(hash, nowMs, author, via, asker).also {
-                    it.approved = approved
-                    it.budget = reach.budget
-                    it.until = reach.until
-                    it.ceiling = ceiling
-                    it.ownWant = asker == null
-                    // A plain want of ours is linkable from its record; a fast-only one waits for its first step's read
-                    // of the network ([noteLinkable]). A fresh want is plain, so this lifts nothing.
-                    setFastOnly(it, fastOnly && !approved, nowMs)
-                }
+                newWant(hash, nowMs, author, via, asker, fastOnly && !approved, approved, reach, ceiling).also { it.pushedBy = pushedBy }
             partials.cap(hash, ceiling)
         } else {
-            if (asker == null) {
-                mergeCeiling(want, hash, ceiling)
-                want.ownWant = true
-            }
+            // A face re-arm's merge ends here: it moves nothing else of a want (see [Reach.faceRearm]).
+            if (asker == null && mergeOwn(want, hash, ceiling, pushedBy, reach.faceRearm, nowMs)) return@synchronized
             // Our own want says what we will take now (ADR 2026-10.js2p); a neighbour's ask leaves our fetch as it is.
             // The tap is sticky: a want that read its rows before the tap and lands after it never re-holds the fetch.
             if (approved) want.approved = true
@@ -2527,6 +2669,67 @@ class BlobExchange(
             if (want.via == null) want.via = via
             asker?.let { noteAsker(want, it, reach, nowMs) }
         }
+    }
+
+    /** [recordWant]'s new [Want] for [hash]. Under [lock]. */
+    private fun newWant(
+        hash: String,
+        nowMs: Long,
+        author: String?,
+        via: String?,
+        asker: String?,
+        fastOnly: Boolean,
+        approved: Boolean,
+        reach: Reach,
+        ceiling: Long?,
+    ): Want =
+        Want(hash, nowMs, author, via, asker).also {
+            it.approved = approved
+            it.budget = reach.budget
+            it.until = reach.until
+            it.ceiling = ceiling
+            it.ownWant = asker == null
+            // A plain want of ours is linkable from its record; a fast-only one waits for its first step's read
+            // of the network ([noteLinkable]). A fresh want is plain, so this lifts nothing.
+            setFastOnly(it, fastOnly, nowMs)
+        }
+
+    /**
+     * [recordWant]'s bookkeeping for a want of our own on [w], already wanted: its ceiling merged, its pusher named. True
+     * for a face re-arm ([faceRearm]), whose merge ends here. A photo alone is under its ceiling, never over the user's
+     * Bluetooth limit, so it may lift a fast-only flag on a want only photos make — never on one an attachment or a
+     * carried frame shares (its ceiling lifted): a peer advertising the hash of an attachment held to Wi-Fi Aware (ADR
+     * 2026-10.js2p) would otherwise have it fetched over Bluetooth, uncapped. A sealed profile's own photo, which custody
+     * holds behind its unopened frame, is let go by the re-arm instead (`MeshManager.sendersOwnPhotos`). Under [lock].
+     */
+    private fun mergeOwn(
+        w: Want,
+        hash: String,
+        ceiling: Long?,
+        pushedBy: String?,
+        faceRearm: Boolean,
+        nowMs: Long,
+    ): Boolean {
+        mergeCeiling(w, hash, ceiling)
+        w.ownWant = true
+        if (pushedBy != null) w.pushedBy = pushedBy
+        if (faceRearm && w.ceiling != null) setFastOnly(w, false, nowMs)
+        return faceRearm
+    }
+
+    /**
+     * Before a want with no photo [ceiling] joins a full table, drops the eldest want only a profile photo made
+     * ([Want.ceiling] set), so it takes that place rather than evict the eldest want of all (ADR 2026-11.4ckq): a face is
+     * optional demand, and the eldest may be an attachment the database re-arm would mint again every tick (#195).
+     * Nothing when there is none: the table's own eviction runs. The face comes back with the next database re-arm that
+     * finds room ([wantFaces]). Under [lock].
+     */
+    private fun makeRoom(ceiling: Long?) {
+        if (ceiling != null || fetching.size < maxFetching) return
+        val (hash, w) = fetching.entries.firstOrNull { it.value.ceiling != null } ?: return
+        fetching.remove(hash)
+        partials.cap(hash, null)
+        log("blob yield ${w.hash8}…: a face want gives its place to another")
     }
 
     /**
@@ -2828,6 +3031,14 @@ class BlobExchange(
         // Neighbours that linked in this cycle and have not been pulled since: pulled once at once ([pullNewcomers]).
         val freshLinks = HashSet<String>()
 
+        // The neighbour that pushes this blob itself — a profile photo's own person (ADR 2026-11.4ckq) — asked alone while
+        // a radio links it ([pushedPool]); when that hold began on its current link, whether it ended there, and why
+        // (logged once by the step that saw it end).
+        var pushedBy: String? = null
+        var pushedSince: Long? = null
+        var pushedReleased = false
+        var pushedReleasedWhy: String? = null
+
         /**
          * Why this want asks nobody to pull its blob through at [t], or null when it may (#195). With [budgets] off (the
          * iOS port's rules, `mesh/lab` only) no budget holds a pull back.
@@ -3050,6 +3261,10 @@ class BlobExchange(
         val rederived: Boolean = false,
         // An ask with no `pull` field: it makes a want when none exists, and keeps none alive.
         val fieldless: Boolean = false,
+        // The database re-arm's face ([wantFaces], ADR 2026-11.4ckq): it makes a fetch-only want when none exists, and of
+        // one that does it moves only the fast-only flag (a face is plain) — its budget, deadline and age stay the want's
+        // own, so the profile's own pull runs its course and then lapses with the fetch TTL like any want.
+        val faceRearm: Boolean = false,
     )
 
     /** A query on its way: to whom, when, and which hashes it named. */
@@ -3324,6 +3539,10 @@ class BlobExchange(
         // Shorter than MeshManager's 60 s neighbor re-offer, so the periodic re-ask always passes the memo
         // and a serve whose bytes were lost (link died mid-stream) is retried on the next round.
         const val SERVE_MEMO_MS = 45_000L
+
+        // The share of the want table a profile photo re-wanted from the database never takes ([wantFaces], ADR 2026-11.4ckq):
+        // one quarter, left to attachments, carried frames and neighbours' asks.
+        private const val FACE_FREE_SHARE = 4
 
         // The shortest gap between two rounds of asks for one blob. The serve memo's length, so the next round's
         // fresh ask always passes it; the 60 s tick opens a round when one is due.

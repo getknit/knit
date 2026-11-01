@@ -146,6 +146,19 @@ class PartialBlobsTest {
     }
 
     @Test
+    fun aNewHolderMarkIsHandedToTheOwnerOnceAndASeededOneIsNot() {
+        // ADR 2026-11.4ckq: the owner keeps a mark past the session; one an earlier session kept is seeded silently.
+        val parts = store()
+        val told = mutableListOf<Pair<String, String>>()
+        parts.onMarked = { h, who -> told += h to who }
+        assertTrue(parts.markHolder(a, "liar"))
+        assertFalse(parts.markHolder(a, "liar"))
+        assertTrue(parts.seedMark(b, "old"))
+        assertEquals(listOf(a to "liar"), told)
+        assertEquals(setOf("old"), parts.markedHolders(b))
+    }
+
+    @Test
     fun aSweepDropsWhatAgedPastTheHourAndWhatArrivedSomeOtherWay() =
         runTest {
             val partials = store()

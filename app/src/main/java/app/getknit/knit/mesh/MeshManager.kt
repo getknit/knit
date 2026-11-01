@@ -1069,8 +1069,10 @@ class MeshManager(
     @Volatile
     private var started = false
 
-    // nodeId -> avatar hash we last sent that neighbor, so we don't re-push an unchanged avatar on
-    // every profile edit or reconnect. Cleared per-peer when they disconnect (see watchNeighbors).
+    // nodeId -> avatar hash we last pushed that neighbour, so an unchanged avatar is not pushed again on every profile
+    // edit, re-offer round or reconnect. Kept for the process, across link flaps on purpose ([neighborPass]): a push is
+    // never retried from here. A push that does not land is asked for by its receiver's database re-arm, which asks us
+    // alone while we are linked, and served once our push's serve memo lapses ([sendAvatarIfNeeded], ADR 2026-11.4ckq).
     private val sentAvatarHashes = ConcurrentHashMap<String, String>()
 
     /** Profile version last sealed to each peer — the per-(peer, version) dedupe of [broadcastSealedProfile]. */
@@ -1210,6 +1212,8 @@ class MeshManager(
         val session =
             CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + sessionDispatcher + meshExceptionHandler)
         sessionScope = session
+        // A holder passed over for a photo past its ceiling stays passed over past the session (ADR 2026-11.4ckq).
+        partials.onMarked = { hash, holder -> session.launch { blobs.markOverCeiling(hash, holder) } }
         relayedPresence.start()
         router = newRouter(session)
         router.start()
@@ -3192,6 +3196,12 @@ class MeshManager(
             receipts.deleteOrphans() // ...and per-recipient delivery rows left by a deleted thread or a retention trim
             sweepExpired() // carried DMs whose TTL elapsed while we were down (the in-memory sets are usually empty)
             sweepLocalStorage() // bound the local messages/peers tables against a Sybil flood (Message Requests hardening)
+            // The photos refused over their ceiling in earlier sessions stay refused in this one, and the holders passed over
+            // for one stay passed over (ADR 2026-11.4ckq); the rows from before DB v30 learn what photo they advertise from
+            // their held profile. All before the first face is re-wanted: [rewantFaces] waits for [startSweepsDone].
+            blobs.photoRefusals().forEach(blobExchange::refuseAsPhoto)
+            blobs.holderMarks().forEach { (hash, holder) -> partials.seedMark(hash, holder) }
+            pipeline.backfillAdvertisedAvatars()
             // Reclaim blobs left by attachments staged but never sent (keeps carried ones) — after the sweeps above, so a
             // blob only an evicted peer's avatar, a swept message or an expired carried frame named goes in the same pass
             // rather than at the next start (#234).
@@ -3302,19 +3312,19 @@ class MeshManager(
         // The carried ones skip those already re-requested above as our own/received attachments, and ones a DM's
         // linked recipient is fetching now ([CarrierPullPolicy], ADR 2026-10.g24x) — this tick re-reads them, so the
         // hold ends by itself when the recipient's link goes or the window passes.
+        // Carried photos their own senders advertise, wanted as photos under the photo ceiling (see [sendersOwnPhotos]).
+        val carriedPhotos = mutableListOf<Pair<String, String>>()
         if (carried.isNotEmpty()) {
             // The radio set: a recipient a contact's direct link reaches cannot fetch a carrier's copy over it (the link
             // carries an attachment addressed to both ends only), so it holds nobody's pull back (ADR 2026-10.a5yj).
             val linked = radioLinks().mapTo(HashSet()) { it.nodeId }
             val held = heldForLinkedRecipients(carried.keys, frames, linked)
             val carriedUntil = carrierDeadlines(frames)
-            carried.forEach { (hash, author) ->
-                if (hash !in ownHashes && hash !in held) {
-                    wanted += hash to author
-                    carriedUntil[hash]?.let { until[hash] = it }
-                }
-            }
-            if (limit != null) fastOnly += unopenedForUs(carried.keys - ownHashes, frames, me, limit)
+            val photos = sendersOwnPhotos(frames)
+            carried
+                .filterKeys { it !in ownHashes && it !in held }
+                .forEach { (hash, author) -> carriedWant(hash, author, photos[hash], carriedUntil[hash], wanted, until, carriedPhotos) }
+            if (limit != null) fastOnly += unopenedForUs(carried.keys - ownHashes - photos.keys, frames, me, limit)
         }
         // A group's decided photo not shown yet (ADR 2026-09.nxcq): the row is the durable want, so a pull lost
         // to a restart or the fetch TTL comes back here and not only on the group's next frame. A photo
@@ -3322,10 +3332,55 @@ class MeshManager(
         groups.photoHashesNeedingFetch().forEach { if (!refusedImage(it)) wanted += it to null }
         beforeRewantApplies?.invoke()
         blobExchange.wantAll(wanted, fastOnly, until)
+        // Not before the start's sweeps, as [rewantFaces]: an earlier session's refusals and holder marks are seeded then.
+        if (startSweepsDone) blobExchange.wantFaces(carriedPhotos, FileIntake.MAX_AVATAR_BYTES)
+        // Then the peers' photos, after every attachment's want (ADR 2026-11.4ckq, #258).
+        rewantFaces(me)
         // And the faces an unblock still owes (ADR 2026-11.nsbf): the durable want a linked neighbour's photo needs, since
         // it never pushes one twice. Each pass settles the ones whose face shows or whose want no longer stands.
         pipeline.rewantOwedFaces()
     }
+
+    /**
+     * Re-wants the photo each peer's newest profile advertises while its bytes are not held (ADR 2026-11.4ckq, #258): the
+     * row is the durable want, so a push that did not land, a pull that lapsed with the fetch TTL or a restart, and a face
+     * whose bytes the start-up collection took (#256) are asked for again here — at start, at every link-up and on the
+     * 60 s tick — and not only by the next profile. A face naming bytes that are gone is cleared first: it draws the
+     * monogram already, and the landing is then a row write that redraws it.
+     *
+     * Bounded, as the want table is (`BlobExchange`'s 256): only the peers this phone has a reason to show — contacts and
+     * group co-members ([faceAnchors]), verified peers, peers with a conversation or a request, and anyone heard within
+     * [FACE_HEARD_WINDOW_MS] — newest heard first, at most [FACE_REWANT_CAP], and never a blocked peer or a photo refused
+     * by screening (while filtering is on) or over its ceiling. A stranger outside that set keeps its once-per-profile
+     * pull. Wanted after the attachments, and a face never takes another want's place ([BlobExchange.wantFaces]). Each is
+     * asked of its own person alone while a radio links them, since they push it themselves (`BlobExchange.pushedPool`).
+     */
+    private suspend fun rewantFaces(me: String) {
+        // Not before the start's sweeps (ADR 2026-11.4ckq): a link-up re-arm can run ahead of them, and would want faces
+        // before the earlier sessions' refusals and holder marks are seeded or the advertised photos are backfilled. The
+        // start's own re-arm follows them, and every link-up and tick after.
+        if (!startSweepsDone) return
+        val cleared = peers.clearDanglingFaces()
+        if (cleared > 0) Log.i(TAG, "cleared $cleared faces whose photo is no longer held; asked for again")
+        val faces =
+            peers.facesNeedingFetch(
+                anchors = faceAnchors(me),
+                blocked = settings.blockedNodeIds.first(),
+                filtering = settings.contentFilteringEnabled.first(),
+                heardSince = clock() - FACE_HEARD_WINDOW_MS,
+                limit = FACE_REWANT_CAP,
+            )
+        if (faces.isEmpty()) return
+        blobExchange.wantFaces(faces.map { it.hash to it.nodeId }, FileIntake.MAX_AVATAR_BYTES)
+    }
+
+    /** The contacts whose photo [rewantFaces] wants whenever they were last heard: accepted DM peers and group co-members. */
+    private suspend fun faceAnchors(me: String): Set<String> =
+        buildSet {
+            settings.acceptedConversations.first().filterTo(this) { Conversations.kindFor(it) == ConversationKind.DM }
+            groups.active().flatMapTo(this) { GroupMembersStore.decode(it.members) }
+            remove(me)
+        }
 
     /**
      * Custody's carried frames naming an attachment we lack, each marked [CarriedAttachment.member] when it is a group's
@@ -3357,6 +3412,47 @@ class MeshManager(
                 } else {
                     hash to sent.maxOf { it!! } + ForwardRepository.DEFAULT_TTL_MS
                 }
+            }.toMap()
+
+    /**
+     * [rewantMissingBlobsLocked]'s want of one carried attachment [hash]: as the photo its frames' [sender] advertises
+     * ([sendersOwnPhotos]) into [photos], unless screening refused it, or as a carried attachment by [author] into
+     * [wanted], pulled through until [deadline].
+     */
+    @Suppress("LongParameterList") // the re-arm's three batches, filled in place
+    private suspend fun carriedWant(
+        hash: String,
+        author: String,
+        sender: String?,
+        deadline: Long?,
+        wanted: MutableList<Pair<String, String?>>,
+        until: MutableMap<String, Long>,
+        photos: MutableList<Pair<String, String>>,
+    ) {
+        if (sender != null) {
+            if (!refusedImage(hash)) photos += hash to sender
+            return
+        }
+        wanted += hash to author
+        deadline?.let { until[hash] = it }
+    }
+
+    /**
+     * The carried hashes every frame naming which is from a sender whose row advertises it as their own photo, with that
+     * sender (ADR 2026-11.4ckq): a sealed `CTL_PROFILE` names its photo, and it is a photo, not an attachment an unopened
+     * frame's delivery will size. So it is wanted as a photo ([BlobExchange.wantFaces]: under
+     * [FileIntake.MAX_AVATAR_BYTES], plain, asked of its sender alone while linked), never held to Wi-Fi Aware by
+     * [unopenedForUs] nor fetched uncapped as a carried attachment: held there, the photo of a contact whose cleartext
+     * profile never reached us stranded after a restart (the chaos sweep), and uncapped a sender could push a large file
+     * past the user's Bluetooth limit by advertising it as its photo. Only the frame's own sender moves its frame's hash
+     * this way: another peer advertising the hash moves nothing.
+     */
+    private suspend fun sendersOwnPhotos(frames: List<CarriedAttachment>): Map<String, String> =
+        frames
+            .groupBy { it.hash }
+            .mapNotNull { (hash, named) ->
+                val sender = named.firstOrNull()?.senderId ?: return@mapNotNull null
+                (hash to sender).takeIf { named.all { f -> f.senderId?.let { peers.find(it)?.advertisedAvatar } == hash } }
             }.toMap()
 
     /**
@@ -3475,8 +3571,11 @@ class MeshManager(
         // A face a build before the photo ceiling adopted (#234) is cleared and its blob released: a profile photo over
         // the ceiling is never shown. Refused for the session too, so a profile still naming it wants nothing.
         val faces = peers.clearAvatarsLongerThan(FileIntake.MAX_AVATAR_BYTES)
+        val sizes = blobs.sizes(faces)
         for (hash in faces) {
             blobExchange.refuseAsPhoto(hash)
+            // Refused past the session (ADR 2026-11.4ckq): the row still advertises it, and the re-arm would fetch it.
+            sizes[hash]?.let { blobs.refuseAsPhoto(hash, it) }
             blobs.deleteIfUnreferenced(hash)
         }
         if (faces.isNotEmpty()) {
@@ -4019,13 +4118,25 @@ class MeshManager(
      * Sends our avatar file to [peer] only if we haven't already sent them this exact avatar. Profile
      * edits that don't touch the avatar (e.g. a status change) re-broadcast the profile frame but no
      * longer re-ship the (unchanged) avatar JPEG to every neighbor.
+     *
+     * The push is recorded in the exchange's serve memo as a serve of [peer]'s ask would be ([BlobExchange.claimPush],
+     * ADR 2026-11.4ckq): the receiver's database re-arm asks us for a face it lacks, and an ask that crosses the push —
+     * still queued, or in the stack buffer where neither end sees it (#121) — is refused and answered SENDING rather than
+     * served a second copy, while one after the memo lapses is served: a lost push comes back on the next round. A copy
+     * of it already on its way to [peer] (its ask was served first, or our last push is still queued) is not pushed again.
+     * A push that found no route stamps nothing, so the next ask is served at once.
      */
     private suspend fun sendAvatarIfNeeded(peer: Peer) {
         val hash = settings.ownAvatarHash.first() ?: return
         if (sentAvatarHashes[peer.nodeId] == hash) return
-        val avatar = blobStore.fileFor(hash) ?: return
-        transport.sendFile(avatar, peer, avatarMeta(hash))
-        sentAvatarHashes[peer.nodeId] = hash
+        if (transport.fileInFlightTo(peer.nodeId, hash) || !blobExchange.claimPush(hash, peer.nodeId)) {
+            Log.i(TAG, "avatar ${hash.take(LOG_KEY_CHARS)}… to ${peer.nodeId}: a copy is already on its way, not pushed")
+            sentAvatarHashes[peer.nodeId] = hash
+            return
+        }
+        val avatar = blobStore.fileFor(hash)
+        if (avatar == null || !transport.sendFile(avatar, peer, avatarMeta(hash))) blobExchange.forgetPush(hash, peer.nodeId)
+        if (avatar != null) sentAvatarHashes[peer.nodeId] = hash
     }
 
     private fun avatarMeta(hash: String): FileMeta = FileMeta(FileKind.AVATAR, key = hash, mime = AVATAR_MIME)
@@ -5528,6 +5639,15 @@ class MeshManager(
 
         /** Avatars are always JPEG on this path (`AvatarStore` re-encodes every input). */
         const val AVATAR_MIME = "image/jpeg"
+
+        /**
+         * The most peer photos one database re-arm wants ([rewantFaces], ADR 2026-11.4ckq): a quarter of the want table,
+         * which a face never fills past three quarters anyway.
+         */
+        const val FACE_REWANT_CAP = 64
+
+        /** How recently a peer outside the contacts must have been heard for [rewantFaces] to want its photo: a day. */
+        const val FACE_HEARD_WINDOW_MS = 24 * 60 * 60_000L
 
         /** How far back the post-reset DM re-seal reaches — the custody TTL (older frames left the mesh). */
 

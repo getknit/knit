@@ -315,10 +315,6 @@ class InboundPipeline(
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
     private val conversationFaces = ConversationFaces(groups, peers, blobs, commonsTitle)
 
-    // nodeId -> avatar hash a non-direct peer advertised but whose bytes we're still pulling, so a blob
-    // arriving via the multi-hop BlobExchange can be attributed back to the peer that advertised it.
-    private val advertisedAvatars = ConcurrentHashMap<String, String>()
-
     /**
      * A pulled blob just landed (the [BlobExchange] `onObtained` hook): attribute it to whoever advertised
      * it — a peer's avatar, a group's photo — and, if a stored message names it, run [describeHeldAttachment]
@@ -1802,6 +1798,7 @@ class InboundPipeline(
             MessageContent.CTL_PROFILE -> {
                 // Post-commit: originating a pull is outbound work, and the peer row must already be
                 // written so the bytes have somewhere to be adopted into when they land.
+                outcome.released.forEach { blobs.deleteIfUnreferenced(it) }
                 outcome.avatarToPull?.let { pullRelayAvatarIfNeeded(env.senderId, it, haveAvatar = false) }
             }
 
@@ -1831,6 +1828,11 @@ class InboundPipeline(
         val adoptedRoot: Boolean = false,
         /** An avatar a sealed profile advertised whose bytes we still lack (`CTL_PROFILE` only). */
         val avatarToPull: String? = null,
+        /**
+         * The blobs a sealed profile let go of (`CTL_PROFILE` only): released after the commit, since the release reads
+         * DataStore and the commit holds the ratchet's lock (ADR 2026-11.4ckq).
+         */
+        val released: List<String> = emptyList(),
         /** A sealed reaction whose write changed what its reactor shows (`CTL_REACTION` only), else null. */
         val reaction: ReactionEntity? = null,
     )
@@ -1878,7 +1880,7 @@ class InboundPipeline(
             }
 
             MessageContent.CTL_PROFILE -> {
-                return CtlOutcome(avatarToPull = applySealedProfile(env, plain.pr))
+                return applySealedProfile(env, plain.pr)?.let { CtlOutcome(avatarToPull = it.pull, released = it.release) } ?: CtlOutcome()
             }
 
             MessageContent.CTL_SCOPE_CONFIG -> {
@@ -1975,9 +1977,31 @@ class InboundPipeline(
     ) {
         if (presentationHeld) return
         peerPresentationNotices(peerId, previous, newName, advertisedAvatar, version)
-        reclaimRemovedAvatarIfCleared(peerId, advertisedAvatar, previous?.avatarHash)
+        releasedByProfile(previous, advertisedAvatar).forEach { blobs.deleteIfUnreferenced(it) }
         pullRelayAvatarIfNeeded(peerId, advertisedAvatar, haveAvatar)
     }
+
+    /**
+     * The blobs a profile advertising [advertised] lets go of, against the row as it stood before ([previous]), for the
+     * caller to release ([BlobRepository.deleteIfUnreferenced]) once the row is written — after the commit, never inside
+     * it: the release reads DataStore (the own avatar), which no transaction may, and on the sealed path the ratchet's lock
+     * is held there too. Two kinds:
+     *  - the face a profile advertising no photo cleared: an explicit removal, so the old bytes go (a pull that lands later
+     *    adopts nothing, the row no longer advertising a photo);
+     *  - a photo the row advertised and never showed, which the profile moved off: its kept verdict or refusal, and any
+     *    bytes a push brought that no profile adopted, were kept only because the row advertised it (ADR 2026-11.4ckq).
+     * The replaced face of an adoption is the adopting writer's.
+     */
+    private fun releasedByProfile(
+        previous: PeerEntity?,
+        advertised: String?,
+    ): List<String> =
+        buildList {
+            val face = previous?.avatarHash
+            if (advertised == null && face != null) add(face)
+            val was = previous?.advertisedAvatar
+            if (was != null && was != advertised && was != face) add(was)
+        }
 
     /**
      * Writes the status notices a profile update earns: a rename (carrying both the previous name and the
@@ -2044,7 +2068,8 @@ class InboundPipeline(
     /**
      * Applies a sealed `CTL_PROFILE` — the presentation half of a profile update from a contact whose
      * key is already pinned, since a v2 session is the precondition for this frame existing at all.
-     * Returns the avatar hash still needing a fetch, for the post-commit pull.
+     * Returns the avatar hash still needing a fetch and the blobs the profile let go of, for the post-commit pull and
+     * release (null when nothing applied).
      *
      * Deliberately far narrower than [handleProfile]: it never touches the pinned key, the prekey, the
      * device tag, or the advertised capabilities. Identity moves only on the authenticated cleartext
@@ -2062,7 +2087,7 @@ class InboundPipeline(
     private suspend fun applySealedProfile(
         env: RelayEnvelope,
         pr: ProfilePayload?,
-    ): String? {
+    ): SealedProfile? {
         val payload = pr ?: return null
         // No pinned peer row means we have never seen their cleartext profile, which cannot happen for a
         // frame we just decrypted under their session — but a missing row is a no-op, never an insert:
@@ -2084,6 +2109,9 @@ class InboundPipeline(
                 name = name,
                 status = TextLimits.cleanReceived(payload.status, TextLimits.STATUS),
                 avatarHash = resolveAvatarHash(advertised, avatarAdoptable(advertised), existing.avatarHash),
+                // Decided at once, as the cleartext writer does (ADR 2026-11.4ckq): the durable want of a sealed photo.
+                advertisedAvatar = advertised,
+                advertisedKnown = true,
                 updatedAt = version,
                 // The whole presentation set moves together (see ProfilePayload): a field this path did not
                 // copy would be reverted by every sealed update after the cleartext frame that set it.
@@ -2109,9 +2137,15 @@ class InboundPipeline(
         // presentation exist at once — a moment nothing else in the profile paths preserves. Free of the
         // wire: the change is a pure function of two values both ends already hold.
         peerPresentationNotices(env.senderId, existing, name, advertised, version)
-        reclaimRemovedAvatarIfCleared(env.senderId, advertised, existing.avatarHash)
-        return advertised?.takeIf { !haveAvatar }
+        // Released after the commit, in [handleCtlDm]'s CTL_PROFILE branch: never from inside it (the ratchet lock is held).
+        return SealedProfile(pull = advertised?.takeIf { !haveAvatar }, release = releasedByProfile(existing, advertised))
     }
+
+    /** What a sealed `CTL_PROFILE`'s in-transaction half leaves for after the commit: the photo to pull and the blobs to release. */
+    private class SealedProfile(
+        val pull: String?,
+        val release: List<String>,
+    )
 
     /**
      * Applies a sealed `CTL_RECEIPT`: flip the tick with the cleartext path's forged-ack guard (null
@@ -4546,6 +4580,11 @@ class InboundPipeline(
                 // Heard from now, stale presentation or not: a row this profile pins is never born quiet, which
                 // would let the name-clash fade judge it before the metrics tick banks its stamp (ADR 2026-10.k8ge).
                 lastSeenAt = maxOf(base.lastSeenAt, seenAt),
+                // The photo this profile decided on, recorded at once under the presentation watermark, bytes or no bytes,
+                // and whether or not its sender is blocked: it is not presentation, and the want and adoption sites read
+                // the block (ADR 2026-11.4ckq). No photo advertised clears it.
+                advertisedAvatar = if (stalePresentation) base.advertisedAvatar else advertised,
+                advertisedKnown = if (stalePresentation) base.advertisedKnown else true,
             ),
         )
         return StoredProfile.Applied(existing, haveAvatar, held, capabilities)
@@ -4623,8 +4662,13 @@ class InboundPipeline(
      * that carries attachments. Attributed back to this peer in [adoptAdvertisedAvatar] on arrival.
      *
      * The fetch carries the photo ceiling ([FileIntake.MAX_AVATAR_BYTES], #234): the link that receives it keeps no
-     * byte past it, and a hash refused over it this session is not asked for again, by this profile or the next.
-     * A blocked person's photo is never wanted (ADR 2026-11.nsbf), whichever path asks.
+     * byte past it, and a hash refused over it is not asked for again, by this profile or the next.
+     * A blocked person's photo is never wanted (ADR 2026-11.nsbf), whichever path asks, nor one screening refused while
+     * filtering is on: its verdict is kept while the row advertises it (ADR 2026-11.4ckq).
+     *
+     * The owner is the row: [storeProfileRow] and [applySealedProfile] recorded the advertised hash before this runs, and
+     * [adoptAdvertisedAvatar] reads it when the bytes land. A neighbour is still left to its push here; the database
+     * re-arm asks it, alone, when the push did not land (`MeshManager.rewantMissingBlobs`).
      */
     private suspend fun pullRelayAvatarIfNeeded(
         senderId: String,
@@ -4633,9 +4677,8 @@ class InboundPipeline(
     ) {
         if (advertised == null || blobExchange.refusedAsPhoto(advertised)) return
         if (senderId in settings.blockedNodeIds.first()) return
-        if (!haveAvatar && transport.neighbors.value.none { it.nodeId == senderId }) {
-            advertisedAvatars[senderId] = advertised
-            blobExchange.want(advertised, author = senderId, ceiling = FileIntake.MAX_AVATAR_BYTES)
+        if (!haveAvatar && transport.neighbors.value.none { it.nodeId == senderId } && !refusedImage(advertised)) {
+            blobExchange.want(advertised, author = senderId, ceiling = FileIntake.MAX_AVATAR_BYTES, pushedBy = senderId)
         }
     }
 
@@ -4675,8 +4718,9 @@ class InboundPipeline(
     /**
      * Whether the held blob [hash] is longer than a profile photo may be ([FileIntake.MAX_AVATAR_BYTES], #234) — and
      * then it is released ([BlobRepository.deleteIfUnreferenced]; a message or a carried frame naming it keeps it) and
-     * refused as a photo for the session, so no profile re-wants it. The fetch made for a photo is capped already;
-     * this is the backstop for bytes that arrived any other way (an attachment's fetch, a neighbour's pull, the spool).
+     * refused as a photo, for the session and in the database, so no profile and no re-arm wants it again. The fetch
+     * made for a photo is capped already; this is the backstop for bytes that arrived any other way (an attachment's
+     * fetch, a neighbour's pull, the spool).
      */
     private suspend fun releasedOverCeiling(hash: String): Boolean {
         val size = blobs.sizes(listOf(hash))[hash] ?: return false
@@ -4684,6 +4728,9 @@ class InboundPipeline(
         Log.w(TAG, "avatar ${hash.take(ID_CHARS)} held at ${size}B, over the photo ceiling; not adopted")
         metrics.onAvatarOverCeiling()
         blobExchange.refuseAsPhoto(hash)
+        // Kept past the session too (ADR 2026-11.4ckq): the database re-arm asks for every advertised photo whose bytes
+        // are not held, and would fetch it again after every restart.
+        blobs.refuseAsPhoto(hash, size)
         blobs.deleteIfUnreferenced(hash)
         return true
     }
@@ -4696,86 +4743,96 @@ class InboundPipeline(
         settings.contentFilteringEnabled.first() && imageScreening.isImageFlagged(hash)
 
     /**
-     * When an inbound profile cleared a peer's avatar (null [advertised] over a non-null [previous] hash),
-     * cancel any in-flight pull and reclaim the now-orphaned blob. Must run *after* the peer row is upserted
-     * to null, so [BlobRepository.deleteIfUnreferenced] no longer sees the peer pointing at it.
-     */
-    private suspend fun reclaimRemovedAvatarIfCleared(
-        senderId: String,
-        advertised: String?,
-        previous: String?,
-    ) {
-        if (advertised != null || previous == null) return
-        advertisedAvatars.remove(senderId) // cancel any pending pull of the now-removed avatar
-        blobs.deleteIfUnreferenced(previous)
-    }
-
-    /**
-     * A pulled blob just landed: if any non-direct peer advertised it as their avatar (see
-     * [handleProfile]), point those peers at it now that the bytes are local and drop the previous one.
-     * A no-op for attachment blobs, which no peer advertises.
+     * A pulled blob just landed: point every peer whose newest profile advertises it, and who does not show it yet, at it
+     * now that the bytes are local, and drop the face it replaced. The want is the row (ADR 2026-11.4ckq, as ADR
+     * 2026-09.nxcq for a group): [PeerDao.awaitingAvatar] reads the advertised column, so a pull lost to a restart is
+     * attributed as surely as one made this session, and a late arrival of a photo the row moved on from points nobody
+     * back at it. A no-op for an attachment blob, which no peer advertises.
      *
      * A blocked owner is never pointed at it (ADR 2026-11.nsbf): a pull made before the block may land after it. When
-     * every owner is blocked the bytes go unless something else names them.
+     * every owner is blocked the bytes go unless something else names them. The block list is read here, outside the
+     * transaction; [pointPeerAtAvatar] checks the column again inside it (#98).
      */
     private suspend fun adoptAdvertisedAvatar(hash: String) {
-        val advertisedBy = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
+        val advertisedBy = peers.awaitingAvatar(hash).map { it.nodeId }
         if (advertisedBy.isEmpty()) return
         val blocked = settings.blockedNodeIds.first()
         val owners = advertisedBy.filter { it !in blocked }
-        if (owners.size < advertisedBy.size) {
-            advertisedBy.filter { it in blocked }.forEach { advertisedAvatars.remove(it) }
-            if (owners.isEmpty()) {
-                blobs.deleteIfUnreferenced(hash)
-                return
-            }
-        }
-        // Over the photo ceiling (#234): it came by a fetch that was not a photo's, or before the cap. Never a face.
-        if (releasedOverCeiling(hash)) {
-            owners.forEach { advertisedAvatars.remove(it) }
+        if (owners.isEmpty()) {
+            blobs.deleteIfUnreferenced(hash)
             return
         }
+        // Over the photo ceiling (#234): it came by a fetch that was not a photo's, or before the cap. Never a face.
+        if (releasedOverCeiling(hash)) return
         // A pulled avatar is screened in MeshBlobStore.ingest, on either plane — it holds no message row, so
         // nothing local can claim it is audio and the screen always runs (knit/knit-next#30 closed the
         // header-mime skip that let a serving peer suppress it; #109 the spool's bare insert). With content
         // filtering on, don't adopt it if flagged explicit (the setting gates receive-side hiding, so off →
-        // adopt anyway). The bytes may stay — the sealed profile that named them pins them in custody — which
-        // is why the profile writers ask [avatarAdoptable], not only whether the blob is held.
+        // adopt anyway). The bytes go and the verdict stays ([BlobRepository.dropRefusedFace]), so no re-arm fetches it
+        // again while the row advertises it; the bytes may stay if the sealed profile that named them pins them in
+        // custody, which is why the profile writers ask [avatarAdoptable], not only whether the blob is held.
         if (refusedImage(hash)) {
-            owners.forEach { advertisedAvatars.remove(it) }
-            blobs.deleteIfUnreferenced(hash)
+            blobs.dropRefusedFace(hash)
             return
         }
         owners.forEach { nodeId ->
-            advertisedAvatars.remove(nodeId)
-            pointPeerAtAvatar(nodeId, hash, createRow = false)?.let { blobs.deleteIfUnreferenced(it) }
+            pointPeerAtAvatar(nodeId, hash, FaceGate.Advertised)?.let { blobs.deleteIfUnreferenced(it) }
         }
+    }
+
+    /** Which rows [pointPeerAtAvatar] may point at a hash, read inside its transaction (ADR 2026-11.4ckq). */
+    private enum class FaceGate {
+        /** Only a row whose advertised photo is the hash: a pulled photo, adopted by the rows that decided on it. */
+        Advertised,
+
+        /**
+         * A neighbour's push: a missing row is created, and a row is pointed at the hash when it advertises it or its
+         * advertised photo is not known yet. A row that advertises another photo, or none, keeps its face, and the bytes
+         * stay for the profile naming them to find held (#253).
+         */
+        Pushed,
+
+        /** Whatever the row advertises: the owed face of an unblock (ADR 2026-11.nsbf), which the held frame decided. */
+        Any,
     }
 
     /**
      * Points [nodeId]'s row at the now-local avatar [hash] and returns the hash it replaced, for the caller to
-     * reclaim after the commit (null when nothing was replaced). A missing row is created only when
-     * [createRow] (a pushed avatar can outrun the profile that pins its sender).
+     * reclaim after the commit (null when nothing was replaced). [gate] says which rows may take it, checked against
+     * the row as it stands inside the transaction ([FaceGate]); only [FaceGate.Pushed] creates a missing row (a pushed
+     * avatar can outrun the profile that pins its sender).
      *
      * The read and the write share one write transaction (#98). The profile writers run on the router's
      * collector while these run on the files path, and a photo change sends both at once: a row read outside
-     * the lock and written back whole reverts a profile that landed in between — name, version, prekey pin.
+     * the lock and written back whole reverts a profile that landed in between — name, version, prekey pin — and a
+     * gate read outside it could point a face at a photo the row has just moved on from.
      */
     private suspend fun pointPeerAtAvatar(
         nodeId: String,
         hash: String,
-        createRow: Boolean,
+        gate: FaceGate,
     ): String? =
         db.withWriteTransaction {
-            val peer = peers.find(nodeId) ?: if (createRow) PeerEntity(nodeId) else return@withWriteTransaction null
-            if (peer.avatarHash == hash) return@withWriteTransaction null
+            val found = peers.find(nodeId)
+            val peer = found ?: if (gate == FaceGate.Pushed) PeerEntity(nodeId) else return@withWriteTransaction null
+            val takes =
+                when (gate) {
+                    FaceGate.Advertised -> peer.advertisedAvatar == hash
+                    FaceGate.Pushed -> found == null || !peer.advertisedKnown || peer.advertisedAvatar == hash
+                    FaceGate.Any -> true
+                }
+            if (!takes || peer.avatarHash == hash) return@withWriteTransaction null
             peers.upsert(peer.copy(avatarHash = hash))
             peer.avatarHash
         }
 
     /**
      * Ingests a direct neighbor's pushed avatar into the encrypted blob store, points the peer row at
-     * it by [hash], deletes the decrypted staging copy, and garbage-collects the peer's previous blob.
+     * it by [hash] when the row may take it ([FaceGate.Pushed]), deletes the decrypted staging copy, and
+     * garbage-collects the peer's previous blob. A push whose hash the row does not advertise keeps its bytes and moves
+     * no face: it is either older than the profile the row holds or newer than it, and in the second case the profile
+     * naming it finds it held ([avatarAdoptable]) — the #253 order (a push, then an older rename's profile that clears
+     * the face, then the photo's) settles without a second transfer.
      */
     suspend fun onAvatarReceived(
         nodeId: String,
@@ -4809,26 +4866,30 @@ class InboundPipeline(
         imageScreening.screenImage(hash, bytes)
         blobs.insert(hash, mime, bytes)
         File(srcPath).delete()
-        advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it
-        // With content filtering on, don't adopt an explicit avatar: leave the peer on its monogram
-        // fallback and drop the blob (the setting gates receive-side hiding, so off → adopt anyway).
+        // With content filtering on, don't adopt an explicit avatar: leave the peer on its monogram fallback and drop
+        // the bytes, keeping the verdict so the re-arm never fetches it again while the row advertises it (the setting
+        // gates receive-side hiding, so off → adopt anyway).
         if (refusedImage(hash)) {
-            blobs.deleteIfUnreferenced(hash)
+            blobs.dropRefusedFace(hash)
             return
         }
-        pointPeerAtAvatar(nodeId, hash, createRow = true)?.let { blobs.deleteIfUnreferenced(it) }
+        val replaced = pointPeerAtAvatar(nodeId, hash, FaceGate.Pushed)
+        replaced?.let { blobs.deleteIfUnreferenced(it) }
+        // Any other row that advertises this photo and lacks it — another peer showing the same picture — takes it too,
+        // as from a pull: the bytes are here either way.
+        adoptAdvertisedAvatar(hash)
     }
 
     /**
-     * [nodeId] is blocked (ADR 2026-11.nsbf): their face draws as the monogram from now on, the pull of their photo is
-     * forgotten so a landing transfer is never adopted, and the bytes go unless a message, a group photo, another row
-     * or a carried frame names them ([BlobRepository.deleteIfUnreferenced]; an outbound serve streams from its own
-     * temp copy, so one in flight is not cut). Idempotent: `MeshManager`'s block-list watch runs it on each block and
-     * its storage sweep on every blocked id still showing a face, whatever path made the block. BlobExchange has no
-     * unwant, so a want already made stays until it lands or expires; the adoption gate is what refuses it.
+     * [nodeId] is blocked (ADR 2026-11.nsbf): their face draws as the monogram from now on, a landing transfer of their
+     * photo is never adopted ([adoptAdvertisedAvatar] reads the block, the database re-arm skips them), and the bytes go
+     * unless a message, a group photo, another row or a carried frame names them ([BlobRepository.deleteIfUnreferenced];
+     * an outbound serve streams from its own temp copy, so one in flight is not cut). Idempotent: `MeshManager`'s
+     * block-list watch runs it on each block and its storage sweep on every blocked id still showing a face, whatever
+     * path made the block. BlobExchange has no unwant, so a want already made stays until it lands or expires; the
+     * adoption gate is what refuses it.
      */
     internal suspend fun onBlocked(nodeId: String) {
-        advertisedAvatars.remove(nodeId)
         val previous: String =
             db.withWriteTransaction<String?> {
                 val peer = peers.find(nodeId) ?: return@withWriteTransaction null
@@ -4866,21 +4927,23 @@ class InboundPipeline(
         blockList.oweFace(nodeId, advertised)
     }
 
-    /** Wants [hash] as [nodeId]'s face, from any holder — the person too when linked — under the photo ceiling. */
+    /**
+     * Wants [hash] as [nodeId]'s face, from any holder — the person alone while linked, since they push it ([BlobExchange.want]'s
+     * `pushedBy`) — under the photo ceiling.
+     */
     private suspend fun wantFace(
         nodeId: String,
         hash: String,
     ) {
-        advertisedAvatars[nodeId] = hash
-        blobExchange.want(hash, author = nodeId, ceiling = FileIntake.MAX_AVATAR_BYTES)
+        blobExchange.want(hash, author = nodeId, ceiling = FileIntake.MAX_AVATAR_BYTES, pushedBy = nodeId)
     }
 
     /**
      * Re-wants every face an unblock still owes ([BlockListState.owedFaces], ADR 2026-11.nsbf), and settles each that no
      * longer stands: the person is blocked again or gone, their face shows (this hash, or another a newer profile brought),
      * the profile they hold now advertises a different photo, or the hash is refused as a photo. Held bytes are adopted
-     * here (a landing that raced the owner map). Run on every database re-arm — the tick, a link-up, the start — so the
-     * restore outlives the fetch TTL, a restart and a mesh stopped at the unblock.
+     * here (a landing whose row's advertised photo was not this one, or not known yet). Run on every database re-arm —
+     * the tick, a link-up, the start — so the restore outlives the fetch TTL, a restart and a mesh stopped at the unblock.
      */
     internal suspend fun rewantOwedFaces() {
         val owed = blockList.owedFaces.first()
@@ -4890,8 +4953,12 @@ class InboundPipeline(
             val nodeId = entry.substringBefore(' ')
             val hash = entry.substringAfter(' ')
             val row = peers.find(nodeId)
+            // A face naming the owed hash whose bytes are gone is not shown either (#256: the start-up collection took them
+            // between the insert and the adoption, and the face draws the monogram): still owed. Any other face is a
+            // newer profile's, and settles it.
+            val shown = row?.avatarHash?.let { it != hash || blobStore.has(hash) } == true
             val stands =
-                nodeId !in blocked && row != null && row.avatarHash == null &&
+                nodeId !in blocked && row != null && !shown &&
                     heldProfile(nodeId)?.first?.avatarHash == hash && !blobExchange.refusedAsPhoto(hash)
             when {
                 !stands -> {
@@ -4899,7 +4966,7 @@ class InboundPipeline(
                 }
 
                 blobStore.has(hash) -> {
-                    if (avatarAdoptable(hash)) pointPeerAtAvatar(nodeId, hash, createRow = false)
+                    if (avatarAdoptable(hash)) pointPeerAtAvatar(nodeId, hash, FaceGate.Any)
                     blockList.settleFace(entry)
                 }
 
@@ -4908,6 +4975,29 @@ class InboundPipeline(
                 }
             }
         }
+    }
+
+    /**
+     * Fills the advertised photo of every row that does not know it yet from the profile frame held for it (ADR
+     * 2026-11.4ckq): the rows from before DB v30, once. A frame as new as the row's presentation is what the row applied,
+     * so its photo is the decided one; a row a newer sealed profile moved past keeps it unknown until its next profile.
+     * Never from the shown face, which would mark exactly the stranded faces as settled. Read before the transaction,
+     * checked again inside it. Run at each mesh start, before the database re-arm.
+     */
+    internal suspend fun backfillAdvertisedAvatars() {
+        var filled = 0
+        for (nodeId in peers.advertisedUnknown()) {
+            val (content, version) = heldProfile(nodeId) ?: continue
+            val wrote =
+                db.withWriteTransaction {
+                    val row = peers.find(nodeId) ?: return@withWriteTransaction false
+                    if (row.advertisedKnown || row.pubKey != content.pubKey || version < row.updatedAt) return@withWriteTransaction false
+                    peers.upsert(row.copy(advertisedAvatar = content.avatarHash, advertisedKnown = true))
+                    true
+                }
+            if (wrote) filled++
+        }
+        if (filled > 0) Log.i(TAG, "advertised photo read from the held profile for $filled peers")
     }
 
     /** The profile held for [nodeId] (`peer_profiles`) with its version, or null when none is held or it is not theirs. */
@@ -4921,8 +5011,8 @@ class InboundPipeline(
     }
 
     /**
-     * [reapplyHeldProfile]'s row write, inside its transaction: the presentation when [version] is not older than the
-     * row's, and the face from [content]'s photo either way. False when no row pins the frame's key.
+     * [reapplyHeldProfile]'s row write, inside its transaction: the presentation and the advertised photo when [version]
+     * is not older than the row's, and the face from [content]'s photo either way. False when no row pins the frame's key.
      */
     private suspend fun reapplyRow(
         nodeId: String,
@@ -4948,6 +5038,9 @@ class InboundPipeline(
                     avatarHash = face,
                     openToChat = content.openToChat,
                     updatedAt = maxOf(row.updatedAt, version),
+                    // The frame's decided photo, under the same watermark as the cleartext writer (ADR 2026-11.4ckq).
+                    advertisedAvatar = advertised,
+                    advertisedKnown = true,
                 )
             } else {
                 row.copy(avatarHash = face)

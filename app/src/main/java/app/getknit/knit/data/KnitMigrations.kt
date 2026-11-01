@@ -707,6 +707,25 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v29 → v30 (ADR 2026-11.4ckq, #258): the photo a peer advertises beside the one it shows, and whether it is known,
+     * indexed for the landing blob's lookup; and the photos refused over their ceiling. Existing rows read unknown — a
+     * backfill from `avatarHash` would mark every stranded face as settled — and the start-up pass fills each from the
+     * row's held profile frame (`InboundPipeline.backfillAdvertisedAvatars`). The table starts empty.
+     */
+    val MIGRATION_29_30 =
+        object : Migration(29, 30) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `peers` ADD COLUMN `advertisedAvatar` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `peers` ADD COLUMN `advertisedKnown` INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL("CREATE INDEX IF NOT EXISTS `index_peers_advertisedAvatar` ON `peers` (`advertisedAvatar`)")
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `photo_refusals` (`hash` TEXT NOT NULL, `holder` TEXT NOT NULL, `size` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`hash`, `holder`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -738,5 +757,6 @@ object KnitMigrations {
             MIGRATION_26_27,
             MIGRATION_27_28,
             MIGRATION_28_29,
+            MIGRATION_29_30,
         )
 }

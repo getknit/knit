@@ -487,6 +487,13 @@ class InboundPipelineTest {
                 if (held == null || thirdArg<Long>() > held.second) heldProfiles[firstArg()] = secondArg<WireEnvelope>() to thirdArg()
             }
             coEvery { peers.profileFrame(any()) } answers { heldProfiles[firstArg()]?.first }
+            // The rows that decided on a photo and do not show it yet (ADR 2026-11.4ckq), over the same fake map.
+            coEvery { peers.awaitingAvatar(any()) } answers {
+                peerMap.values.filter { it.advertisedAvatar == firstArg<String>() && it.avatarHash != it.advertisedAvatar }
+            }
+            coEvery { peers.advertisedUnknown() } answers {
+                peerMap.values.filter { !it.advertisedKnown && heldProfiles.containsKey(it.nodeId) }.map { it.nodeId }
+            }
             // The real query orders claimants by updatedAt DESC and takes the first; the fake does the same.
             coEvery { peers.findByLoraNode(any()) } answers {
                 val node = firstArg<Long>()
@@ -3304,6 +3311,7 @@ class InboundPipelineTest {
                     until = any(),
                     untilKnown = any(),
                     ceiling = FileIntake.MAX_AVATAR_BYTES,
+                    pushedBy = any(),
                 )
             }
             // Nothing of a delivery ran again: one flush, from the blocked profile itself.
@@ -3397,6 +3405,7 @@ class InboundPipelineTest {
                 until = any(),
                 untilKnown = any(),
                 ceiling = captureNullable(ceilings),
+                pushedBy = any(),
             )
         }
         return ceilings.count { it == FileIntake.MAX_AVATAR_BYTES }
@@ -3437,9 +3446,44 @@ class InboundPipelineTest {
             assertTrue("wanted again after the restart: ${after.blobExchange.wantedHashes()}", after.wants("newFace"))
             after.pipeline.onObtained("newFace")
             assertEquals("newFace", after.peerMap.getValue(alice.nodeId).avatarHash)
+            coEvery { after.blobStore.has("newFace") } returns true // the bytes the face names are held: shown
             after.pipeline.rewantOwedFaces()
 
             assertEquals(emptyList<String>(), after.owed(alice))
+        }
+
+    @Test
+    fun anOwedFaceWhoseBytesTheStartUpCollectionTookIsStillOwedAndWantedFromThePerson() =
+        runTest {
+            // #256's state: the face names the owed hash, its bytes gone. It draws the monogram, so it is not shown, and
+            // the entry stands: settled on it, the face was cleared by the re-arm and nothing wanted it again (the
+            // stage-2 review's finding, `BlockAndRequestLabTest`'s failing seeds).
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(avatarHash = "newFace")
+
+            rig.pipeline.rewantOwedFaces()
+
+            assertEquals(listOf("${alice.nodeId} newFace"), rig.owed(alice))
+            assertEquals(2, rig.faceWants("newFace"))
+            // Wanted from the person alone while linked: they push it themselves (ADR 2026-11.4ckq).
+            coVerify(atLeast = 2) {
+                rig.blobExchange.want(
+                    "newFace",
+                    alice.nodeId,
+                    any(),
+                    any(),
+                    fastOnly = any(),
+                    approved = any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                    pushedBy = alice.nodeId,
+                )
+            }
         }
 
     @Test
@@ -6324,6 +6368,229 @@ class InboundPipelineTest {
             assertEquals("av1", rig.peerMap[alice.nodeId]?.avatarHash)
         }
 
+    // --- A peer's advertised photo is the durable want (ADR 2026-11.4ckq, #258) ---
+
+    @Test
+    fun everyProfileWriterRecordsTheAdvertisedPhotoAtOnceUnderThePresentationWatermark() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1", sentAt = 6L))
+            val row = rig.peerMap.getValue(alice.nodeId)
+            assertEquals("decided before its bytes", "av1", row.advertisedAvatar)
+            assertTrue(row.advertisedKnown)
+            assertNull("and never drawn until they land", row.avatarHash)
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = "stale", sentAt = 5L))
+            assertEquals("an older profile moves nothing", "av1", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = null, sentAt = 7L))
+            assertNull("no photo advertised clears it", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+            assertTrue(rig.peerMap.getValue(alice.nodeId).advertisedKnown)
+
+            // Blocked: the presentation is held, the decided photo still moves (it is not presentation; nsbf's want and
+            // adoption sites read the block).
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av2", sentAt = 8L))
+            assertEquals("av2", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aSealedProfileRecordsItsAdvertisedPhotoInTheCtlCommit() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            val author = V2Author(alice, rig)
+            rig.deliver(
+                alice,
+                author.dm(
+                    "ctl-adv-1",
+                    "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "Ann", status = "", version = 20L, avatarHash = "sealed"),
+                ),
+            )
+            assertEquals("sealed", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+            assertTrue(rig.peerMap.getValue(alice.nodeId).advertisedKnown)
+        }
+
+    @Test
+    fun aPhotoTheRowMovedOnFromPointsNobodyBackAtItWhenItLandsLate() =
+        runTest {
+            // The owner is the row: a late arrival of an old photo, pulled before a newer profile, is no face of theirs.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "old", sentAt = 6L))
+            rig.deliver(alice, rig.profile(alice, avatarHash = "new", sentAt = 7L))
+
+            rig.pipeline.onObtained("old")
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+            rig.pipeline.onObtained("new")
+            assertEquals("new", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aPulledPhotoIsAdoptedByItsRowAfterARestartWithNoPullMadeThisSession() =
+        runTest {
+            // Before the column the owner map was memory: a pull lapsed to a restart was attributed to nobody.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(
+                    nodeId = alice.nodeId,
+                    pubKey = alice.bundle.encoded,
+                    updatedAt = 6L,
+                    advertisedAvatar = "av1",
+                    advertisedKnown = true,
+                )
+            rig.pipeline.onObtained("av1")
+            assertEquals("av1", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aPushTheRowDoesNotAdvertiseKeepsItsBytesAndTheProfileNamingItAdoptsThemTheRenameOrder() =
+        runTest {
+            // #253: the photo's push lands before the rename's profile (no photo), which lands before the photo's own. The
+            // push moves no face, the rename clears nothing of it, and the photo's profile finds it held: no refetch.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = null, sentAt = 5L, name = "Old"))
+            val bytes = byteArrayOf(9, 8, 7)
+            val hash = sha256Hex(bytes)
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
+            coVerify { rig.blobs.insert(hash, "image/jpeg", any()) }
+            assertNull("the row advertises no photo: the push is not its face yet", rig.peerMap.getValue(alice.nodeId).avatarHash)
+            coEvery { rig.blobStore.has(hash) } returns true
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = null, sentAt = 6L, name = "New"))
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+            coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced(hash) }
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = hash, sentAt = 7L, name = "New"))
+            assertEquals(hash, rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aPushIsAdoptedByARowThatAdvertisesItOrDoesNotKnowWhatItAdvertises() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            val bytes = byteArrayOf(4, 4, 4)
+            val hash = sha256Hex(bytes)
+            rig.deliver(alice, rig.profile(alice, avatarHash = hash, sentAt = 6L))
+            // A row from before the column, its advertised photo unknown: a push is adopted as it always was.
+            rig.peerMap[bob.nodeId] = PeerEntity(nodeId = bob.nodeId, pubKey = bob.bundle.encoded, updatedAt = 6L)
+
+            rig.pipeline.onAvatarReceived(
+                alice.nodeId,
+                hash,
+                "image/jpeg",
+                File
+                    .createTempFile("avatar-a", ".bin")
+                    .apply {
+                        writeBytes(bytes)
+                    }.absolutePath,
+            )
+            rig.pipeline.onAvatarReceived(
+                bob.nodeId,
+                hash,
+                "image/jpeg",
+                File
+                    .createTempFile("avatar-b", ".bin")
+                    .apply {
+                        writeBytes(bytes)
+                    }.absolutePath,
+            )
+
+            assertEquals(hash, rig.peerMap.getValue(alice.nodeId).avatarHash)
+            assertEquals(hash, rig.peerMap.getValue(bob.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aRefusedFaceKeepsItsVerdictAndIsNeverWantedAgainWhileFilteringIsOn() =
+        runTest {
+            // Blocking finding 1 of #258's design pass: deleting the verdict with the bytes made every re-arm fetch, refuse
+            // and delete it again.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "bad", sentAt = 6L))
+            coEvery { rig.imageScreening.isImageFlagged("bad") } returns true // screened as it landed
+            rig.pipeline.onObtained("bad")
+            coVerify { rig.blobs.dropRefusedFace("bad") }
+            coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced("bad") }
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+
+            // The next profile naming it asks for nothing.
+            rig.deliver(alice, rig.profile(alice, avatarHash = "bad", sentAt = 7L))
+            assertEquals(1, rig.faceWants("bad"))
+        }
+
+    @Test
+    fun theStartUpPassReadsTheAdvertisedPhotoFromTheHeldFrameUnlessTheRowMovedPastIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1", sentAt = 6L))
+            rig.deliver(bob, rig.profile(bob, avatarHash = "bv1", sentAt = 6L))
+            // As a row from before DB v30: unknown. Bob's row was moved past his frame by a newer sealed profile.
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(advertisedAvatar = null, advertisedKnown = false)
+            rig.peerMap[bob.nodeId] =
+                rig.peerMap.getValue(bob.nodeId).copy(advertisedAvatar = null, advertisedKnown = false, updatedAt = 9L)
+
+            rig.pipeline.backfillAdvertisedAvatars()
+
+            assertEquals("av1", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+            assertTrue(rig.peerMap.getValue(alice.nodeId).advertisedKnown)
+            assertNull(rig.peerMap.getValue(bob.nodeId).advertisedAvatar)
+            assertFalse("left to his next profile", rig.peerMap.getValue(bob.nodeId).advertisedKnown)
+        }
+
+    @Test
+    fun aPhotoTheRowAdvertisedAndNeverShowedIsReleasedWhenTheProfileMovesOffIt() =
+        runTest {
+            // releasedByProfile's second kind: its verdict, refusal and any unadopted pushed bytes were kept only because
+            // the row advertised it.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "was", sentAt = 6L))
+            rig.deliver(alice, rig.profile(alice, avatarHash = "next", sentAt = 7L))
+            coVerify(exactly = 1) { rig.blobs.deleteIfUnreferenced("was") }
+            coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced("next") }
+        }
+
+    @Test
+    fun aPushIsAdoptedByEveryOtherRowAdvertisingItToo() =
+        runTest {
+            // onAvatarReceived ends with the landing's own adoption: another peer showing the same picture takes it too.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            val bytes = byteArrayOf(6, 6, 6)
+            val hash = sha256Hex(bytes)
+            rig.deliver(alice, rig.profile(alice, avatarHash = hash, sentAt = 6L))
+            rig.deliver(bob, rig.profile(bob, avatarHash = hash, sentAt = 6L))
+
+            rig.pipeline.onAvatarReceived(
+                alice.nodeId,
+                hash,
+                "image/jpeg",
+                File
+                    .createTempFile("avatar-c", ".bin")
+                    .apply {
+                        writeBytes(bytes)
+                    }.absolutePath,
+            )
+
+            assertEquals(hash, rig.peerMap.getValue(alice.nodeId).avatarHash)
+            assertEquals(hash, rig.peerMap.getValue(bob.nodeId).avatarHash)
+        }
+
     @Test
     fun aRelayedPeerAvatarIsFetchedUnderThePhotoCeiling() =
         runTest {
@@ -6344,6 +6611,7 @@ class InboundPipelineTest {
                     until = any(),
                     untilKnown = any(),
                     ceiling = FileIntake.MAX_AVATAR_BYTES,
+                    pushedBy = alice.nodeId,
                 )
             }
         }
@@ -6363,6 +6631,8 @@ class InboundPipelineTest {
             assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
             coVerify { rig.blobs.deleteIfUnreferenced("av5") }
             assertTrue(rig.blobExchange.refusedAsPhoto("av5"))
+            // And past the session (ADR 2026-11.4ckq): the re-arm would fetch it again after every restart.
+            coVerify { rig.blobs.refuseAsPhoto("av5", FileIntake.MAX_AVATAR_BYTES + 1) }
             rig.deliver(alice, rig.profile(alice, avatarHash = "av5", sentAt = 6L))
             coVerify(exactly = 1) {
                 rig.blobExchange.want(
@@ -6376,6 +6646,7 @@ class InboundPipelineTest {
                     until = any(),
                     untilKnown = any(),
                     ceiling = any(),
+                    pushedBy = any(),
                 )
             }
         }
@@ -6414,7 +6685,8 @@ class InboundPipelineTest {
             rig.pipeline.onObtained("av2")
 
             assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
-            coVerify { rig.blobs.deleteIfUnreferenced("av2") }
+            // The verdict is kept with the row's advertised photo (ADR 2026-11.4ckq): only the bytes go.
+            coVerify { rig.blobs.dropRefusedFace("av2") }
         }
 
     @Test
@@ -6443,6 +6715,7 @@ class InboundPipelineTest {
                     until = any(),
                     untilKnown = any(),
                     ceiling = any(),
+                    pushedBy = any(),
                 )
             }
 
@@ -6697,7 +6970,8 @@ class InboundPipelineTest {
             rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
 
             assertNull("an explicit avatar is not adopted onto the peer", rig.peerMap[alice.nodeId]?.avatarHash)
-            coVerify { rig.blobs.deleteIfUnreferenced(hash) }
+            // Its bytes go and its verdict stays (ADR 2026-11.4ckq), so the database re-arm never fetches it again.
+            coVerify { rig.blobs.dropRefusedFace(hash) }
         }
 
     @Test
