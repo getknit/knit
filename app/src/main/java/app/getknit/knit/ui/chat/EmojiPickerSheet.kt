@@ -114,9 +114,10 @@ internal fun EmojiPickerSheet(
     loader: EmojiCatalogLoader = koinInject(),
 ) {
     val catalog by produceState<EmojiCatalog?>(initialValue = null, loader) { value = loader.load() }
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    // In the chat's window (InWindowSheet): a ModalBottomSheet is a window of its own, which closed the keyboard.
+    InWindowSheet(
+        paneTitle = stringResource(R.string.chat_react_more),
+        onDismiss = onDismiss,
         modifier = Modifier.testTag("emoji_sheet"),
     ) {
         EmojiPickerSheetContent(catalog = catalog, onPick = onPick)

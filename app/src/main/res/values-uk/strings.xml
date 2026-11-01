@@ -567,6 +567,7 @@
     <string name="chat_message_copied">Скопійовано в буфер обміну</string>
     <string name="chat_action_details">Про повідомлення</string>
     <string name="chat_action_delete">Видалити повідомлення</string>
+    <string name="chat_message_menu">Дії з повідомленням</string>
     <string name="chat_message_deleted">Повідомлення видалено</string>
     <string name="chat_action_pin">Закріпити повідомлення</string>
     <string name="chat_action_unpin">Відкріпити повідомлення</string>

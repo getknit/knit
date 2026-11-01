@@ -1,28 +1,38 @@
 package app.getknit.knit.ui.chat
 
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasImeAction
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
@@ -39,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.draft.Draft
+import app.getknit.knit.data.emoji.EmojiCatalogLoader
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
@@ -54,11 +65,15 @@ import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.compose.KoinIsolatedContext
+import org.koin.dsl.koinApplication
+import org.koin.dsl.module
 import org.robolectric.annotation.GraphicsMode
 
 /**
@@ -109,6 +124,7 @@ class ChatScreenContentTest {
         onHandedJumpConsumed: () -> Unit = {},
         // Read inside the composition, so a test can swap the state under a running screen (the rows landing).
         liveState: (() -> ChatUiState)? = null,
+        onOpenMessageDetails: (String) -> Unit = {},
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -127,6 +143,7 @@ class ChatScreenContentTest {
                     onBack = {},
                     onOpenProfile = {},
                     onOpenGroupDetails = {},
+                    onOpenMessageDetails = onOpenMessageDetails,
                     onSend = { sends++ },
                     onAttachClick = { attaches++ },
                     onCameraClick = { cameras++ },
@@ -305,6 +322,114 @@ class ChatScreenContentTest {
                 received = false,
             )
         }
+
+    // The keyboard closed because each of these opened a window of its own, which takes the focus: the claim these
+    // pin is one root while they are open (Robolectric moves no focus between windows, so a focus check alone would
+    // pass on the old code; it guards only against a layer that takes Compose focus itself).
+
+    @Test
+    fun theLongPressMenuDrawsInTheScreensOwnWindow() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(2))))
+        compose.onNodeWithTag("chat_input").requestFocus()
+
+        compose.onNodeWithText("message 2").performTouchInput { longClick() }
+
+        compose.onNodeWithTag("chat_message_menu").assertExists()
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+        // The thread behind the menu is hidden from TalkBack, which hears the menu's pane title instead.
+        compose.onNodeWithText("message 1").assertDoesNotExist()
+        compose.onNode(hasPaneTitle("Message options")).assertExists()
+
+        // A tap off the menu closes it: the top corner, shown first to be outside it.
+        val menu = compose.onNodeWithTag("chat_message_menu").getUnclippedBoundsInRoot()
+        assertFalse("the menu covers the tap point", menu.left <= 1.dp && menu.top <= 1.dp)
+        compose.onRoot().performTouchInput { click(Offset(1f, 1f)) }
+        compose.onNodeWithTag("chat_message_menu").assertDoesNotExist()
+        compose.onNodeWithText("message 1").assertExists()
+        compose.onNodeWithTag("chat_input").assertIsFocused()
+    }
+
+    @Test
+    fun aTapOnTheMenusOwnPaddingDoesNotCloseIt() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(1))))
+        compose.onNodeWithText("message 1").performTouchInput { longClick() }
+
+        // Just inside the menu's top edge, past the rounded corner, over no control: the gap above the emoji row.
+        compose.onNodeWithTag("chat_message_menu").performTouchInput { click(Offset(centerX, 1f)) }
+
+        compose.onNodeWithTag("chat_message_menu").assertExists()
+    }
+
+    @Test
+    fun aTapOnAMenuItemDoesWhatItSays() {
+        var details = 0
+        compose.setContent(
+            content(
+                input = "",
+                state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(1)),
+                onOpenMessageDetails = { details++ },
+            ),
+        )
+
+        compose.onNodeWithText("message 1").performTouchInput { longClick() }
+        compose.onNodeWithText("Message info").performClick()
+
+        assertEquals(1, details)
+        compose.onNodeWithTag("chat_message_menu").assertDoesNotExist()
+    }
+
+    @Test
+    fun theDeleteConfirmationDrawsInTheScreensOwnWindow() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(2))))
+        compose.onNodeWithTag("chat_input").requestFocus()
+
+        compose.onNodeWithText("message 2").performTouchInput { longClick() }
+        compose.onNodeWithText("Delete message").performClick()
+
+        compose.onNodeWithText("Delete message?").assertExists()
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+        compose.onNodeWithText("Cancel").performClick()
+        compose.onNodeWithText("Delete message?").assertDoesNotExist()
+        compose.onNodeWithTag("chat_input").assertIsFocused()
+    }
+
+    @Test
+    fun theMoreReactionsSheetDrawsInTheScreensOwnWindow() {
+        val loader = EmojiCatalogLoader(open = { "😀\t0\t0\tgrinning face\n".byteInputStream() }, canRender = { true })
+        val inner = content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(1)))
+        compose.setContent {
+            KoinIsolatedContext(context = koinApplication { modules(module { single { loader } }) }) { inner() }
+        }
+
+        compose.onNodeWithText("message 1").performTouchInput { longClick() }
+        compose.onNodeWithTag("chat_react_more").performClick()
+
+        compose.onNodeWithTag("emoji_sheet").assertExists()
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+    }
+
+    @Test
+    fun anInWindowSheetClosesOnATapAboveItButNotOnItsOwnBody() {
+        var open by mutableStateOf(true)
+        compose.setContent {
+            KnitTheme {
+                MessageMenuHost {
+                    if (open) {
+                        InWindowSheet(paneTitle = "sheet", onDismiss = { open = false }, modifier = Modifier.testTag("sheet")) {
+                            Text("sheet body", Modifier.padding(64.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("sheet").assertExists()
+        compose.onAllNodes(isRoot()).assertCountEquals(1)
+        compose.onNodeWithText("sheet body").performClick()
+        compose.onNodeWithTag("sheet").assertExists()
+        compose.onRoot().performTouchInput { click(Offset(1f, 1f)) }
+        compose.onNodeWithTag("sheet").assertDoesNotExist()
+    }
 
     @Test
     fun aThreadWithMoreHistorySaysSoAboveItsOldestMessage() {
@@ -1003,4 +1128,6 @@ class ChatScreenContentTest {
         compose.onNodeWithTag("chat_send_large_file").assertDoesNotExist()
         compose.onNodeWithText("Block").assertDoesNotExist()
     }
+
+    private fun hasPaneTitle(title: String) = SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, title)
 }

@@ -131,6 +131,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -147,12 +148,18 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
@@ -164,6 +171,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -1266,920 +1274,922 @@ internal fun ChatScreenContent(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.action_back),
-                        )
-                    }
-                },
-                title = {
-                    when {
-                        state.isRoom -> {
-                            // Nearby room: the Knit mesh mark (same glyph as the chat-list row) + title +
-                            // live connection status. The avatar is decorative — the visible title names it
-                            // and the room has nothing to open — so it carries no separate label or tap.
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                RoomAvatar(size = 36.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = stringResource(R.string.nearby_title),
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                    ConnectionStatusRow(
-                                        neighborCount = state.neighborCount,
-                                        health = state.transportHealth,
-                                        relay = state.relayPlane,
-                                        lora = state.loraPlane,
-                                    )
-                                }
-                            }
-                        }
-
-                        state.isBridged -> {
-                            // The Meshtastic room: the same room glyph, its channel name as the title, and a
-                            // subtitle saying whose channel it is. No ConnectionStatusRow — the composer's
-                            // gate carries the radio's state, and Knit's own radios say nothing about it.
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                RoomAvatar(size = 36.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f, fill = false)) {
-                                    Text(
-                                        text = state.title,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.chat_mesh_subtitle),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-
-                        state.isCommons -> {
-                            // A commons: the room glyph, the relay's name for it, and a subtitle saying what it
-                            // is. Its members are pinned peers, so every bubble below carries a real name and
-                            // avatar — but the header stays a room's: it is nobody's thread in particular. Tapping it
-                            // opens the room's details, as a group's avatar does.
-                            Row(
-                                modifier =
-                                    Modifier
-                                        .clickable(
-                                            onClickLabel = stringResource(R.string.commons_details_title),
-                                            role = Role.Button,
-                                        ) { onOpenCommonsDetails(conversationId) }
-                                        .testTag("chat_commons_header"),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                RoomAvatar(size = 36.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f, fill = false)) {
-                                    Text(
-                                        text = state.title,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.chat_commons_subtitle),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-
-                        state.isGroup -> {
-                            // Group: its photo (or its members' cluster when unset) + name + member count.
-                            // Tapping the avatar opens the group details / settings screen.
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                GroupAvatar(
-                                    photoHash = state.avatarHash,
-                                    groupId = conversationId,
-                                    faces = state.groupFaces,
-                                    size = 36.dp,
-                                    modifier = Modifier.testTag("chat_group_avatar"),
-                                    contentDescription = stringResource(R.string.chat_view_group_info),
-                                    onClick = { onOpenGroupDetails(conversationId) },
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                // Weight (fill = false) lets a long group name ellipsize while the
-                                // fixed-size badge — measured first as a non-weighted child — always
-                                // keeps its room. Short names stay snug against the icon.
-                                Column(modifier = Modifier.weight(1f, fill = false)) {
-                                    Text(
-                                        text = state.title,
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text =
-                                            countText(
-                                                R.plurals.chat_group_member_count,
-                                                R.string.chat_group_member_count_zero,
-                                                state.memberCount,
-                                            ),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                EncryptionBadge { showEncryptionInfo = true }
-                            }
-                        }
-
-                        else -> {
-                            // 1:1 DM: peer avatar + name, Signal-style.
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(
-                                    avatarHash = state.avatarHash,
-                                    name = state.title,
-                                    nodeId = conversationId,
-                                    size = 36.dp,
-                                    contentDescription = stringResource(R.string.chat_view_profile, state.title),
-                                    onClick = { onOpenProfile(conversationId) },
-                                    badge = peerBadge(conversationId),
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                PeerNameText(
-                                    text = state.title,
-                                    discriminator = state.titleDiscriminator,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    // Weight (fill = false) lets a long name ellipsize while the
-                                    // fixed-size badges — measured first as non-weighted children —
-                                    // always keep their room. Short names stay snug against the icons.
-                                    modifier = Modifier.weight(1f, fill = false),
-                                )
-                                EncryptionBadge { showEncryptionInfo = true }
-                                if (state.verified) {
-                                    Spacer(Modifier.width(6.dp))
-                                    Icon(
-                                        imageVector = Icons.Filled.VerifiedUser,
-                                        contentDescription = stringResource(R.string.verify_verified),
-                                        tint = MaterialTheme.knitColors.positive,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                actions = {
-                    // The overflow lives on every thread, and every one offers "Search" first: the search screen
-                    // scoped to this thread (ADR 2026-10.4cyt). Every thread but the bridged room then offers
-                    // "Send location" (ADR 2026-09.tss4) — from here rather than a pin in the message field, so
-                    // the field keeps to the mic and the paperclip and a position is a deliberate reach, not a
-                    // thumb-slip away from the keyboard. Then a DM offers Block/Unblock; a group offers Settings,
-                    // which opens the same group-details screen as tapping the group avatar (the avatar tap
-                    // stays too); a commons offers its room details the same way. The bridged room offers Search
-                    // alone: it carries no position (a text-only channel), and it has no peer to block — its authors
-                    // are not peers, and blocking the gateway would silence a contact over somebody else's post.
-                    // The call this chat puts first sits in the bar and the other in the overflow (§3.11): the live one
-                    // while a live path looks possible, the mesh one while none does — or always, while the person
-                    // prefers mesh calls or in a build that takes mesh calls only.
-                    val callGate = if (state.canCall || state.canMeshCall) rememberCallMicGate() else null
-                    val meshFirst = state.canMeshCall && (meshCallFirst || !state.canCall)
-                    if (callGate != null) {
-                        if (meshFirst) {
-                            CallButton(callGate, Icons.Filled.WifiCalling3, R.string.chat_mesh_call, "chat_mesh_call", onStartMeshCall)
-                        } else {
-                            CallButton(callGate, Icons.Filled.Call, R.string.chat_call, "chat_call", onStartCall)
-                        }
-                    }
-                    Box {
-                        IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
+    MessageMenuHost {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                             Icon(
-                                Icons.Filled.MoreVert,
-                                contentDescription = stringResource(R.string.chat_more_options),
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = stringResource(R.string.action_back),
                             )
                         }
-                        // Not focusable: a focusable popup takes focus from the message field, so the keyboard
-                        // drops while the menu is open and springs back when it closes. A non-focusable popup
-                        // gets no Back, so the screen closes the menu itself before Back leaves the chat.
-                        BackHandler(enabled = headerMenuOpen) { headerMenuOpen = false }
-                        DropdownMenu(
-                            expanded = headerMenuOpen,
-                            onDismissRequest = { headerMenuOpen = false },
-                            properties = PopupProperties(focusable = false),
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.search_title)) },
-                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                                modifier = Modifier.testTag("chat_search"),
-                                onClick = {
-                                    headerMenuOpen = false
-                                    onSearch()
-                                },
-                            )
-                            // Gone while a position is staged: the tile above the field already carries
-                            // Refresh, and a second entry that restarted the same fix would only look like
-                            // it did something else.
-                            if (stagedLocation == null && !state.commonsStale && !state.isBridged) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.chat_attach_location)) },
-                                    leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
-                                    modifier = Modifier.testTag("chat_send_location"),
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        onLocationClick()
-                                    },
+                    },
+                    title = {
+                        when {
+                            state.isRoom -> {
+                                // Nearby room: the Knit mesh mark (same glyph as the chat-list row) + title +
+                                // live connection status. The avatar is decorative — the visible title names it
+                                // and the room has nothing to open — so it carries no separate label or tap.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RoomAvatar(size = 36.dp)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = stringResource(R.string.nearby_title),
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        ConnectionStatusRow(
+                                            neighborCount = state.neighborCount,
+                                            health = state.transportHealth,
+                                            relay = state.relayPlane,
+                                            lora = state.loraPlane,
+                                        )
+                                    }
+                                }
+                            }
+
+                            state.isBridged -> {
+                                // The Meshtastic room: the same room glyph, its channel name as the title, and a
+                                // subtitle saying whose channel it is. No ConnectionStatusRow — the composer's
+                                // gate carries the radio's state, and Knit's own radios say nothing about it.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RoomAvatar(size = 36.dp)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                                        Text(
+                                            text = state.title,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.chat_mesh_subtitle),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+
+                            state.isCommons -> {
+                                // A commons: the room glyph, the relay's name for it, and a subtitle saying what it
+                                // is. Its members are pinned peers, so every bubble below carries a real name and
+                                // avatar — but the header stays a room's: it is nobody's thread in particular. Tapping it
+                                // opens the room's details, as a group's avatar does.
+                                Row(
+                                    modifier =
+                                        Modifier
+                                            .clickable(
+                                                onClickLabel = stringResource(R.string.commons_details_title),
+                                                role = Role.Button,
+                                            ) { onOpenCommonsDetails(conversationId) }
+                                            .testTag("chat_commons_header"),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RoomAvatar(size = 36.dp)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                                        Text(
+                                            text = state.title,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.chat_commons_subtitle),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+
+                            state.isGroup -> {
+                                // Group: its photo (or its members' cluster when unset) + name + member count.
+                                // Tapping the avatar opens the group details / settings screen.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    GroupAvatar(
+                                        photoHash = state.avatarHash,
+                                        groupId = conversationId,
+                                        faces = state.groupFaces,
+                                        size = 36.dp,
+                                        modifier = Modifier.testTag("chat_group_avatar"),
+                                        contentDescription = stringResource(R.string.chat_view_group_info),
+                                        onClick = { onOpenGroupDetails(conversationId) },
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    // Weight (fill = false) lets a long group name ellipsize while the
+                                    // fixed-size badge — measured first as a non-weighted child — always
+                                    // keeps its room. Short names stay snug against the icon.
+                                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                                        Text(
+                                            text = state.title,
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text =
+                                                countText(
+                                                    R.plurals.chat_group_member_count,
+                                                    R.string.chat_group_member_count_zero,
+                                                    state.memberCount,
+                                                ),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    EncryptionBadge { showEncryptionInfo = true }
+                                }
+                            }
+
+                            else -> {
+                                // 1:1 DM: peer avatar + name, Signal-style.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Avatar(
+                                        avatarHash = state.avatarHash,
+                                        name = state.title,
+                                        nodeId = conversationId,
+                                        size = 36.dp,
+                                        contentDescription = stringResource(R.string.chat_view_profile, state.title),
+                                        onClick = { onOpenProfile(conversationId) },
+                                        badge = peerBadge(conversationId),
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    PeerNameText(
+                                        text = state.title,
+                                        discriminator = state.titleDiscriminator,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        // Weight (fill = false) lets a long name ellipsize while the
+                                        // fixed-size badges — measured first as non-weighted children —
+                                        // always keep their room. Short names stay snug against the icons.
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    EncryptionBadge { showEncryptionInfo = true }
+                                    if (state.verified) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            imageVector = Icons.Filled.VerifiedUser,
+                                            contentDescription = stringResource(R.string.verify_verified),
+                                            tint = MaterialTheme.knitColors.positive,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    actions = {
+                        // The overflow lives on every thread, and every one offers "Search" first: the search screen
+                        // scoped to this thread (ADR 2026-10.4cyt). Every thread but the bridged room then offers
+                        // "Send location" (ADR 2026-09.tss4) — from here rather than a pin in the message field, so
+                        // the field keeps to the mic and the paperclip and a position is a deliberate reach, not a
+                        // thumb-slip away from the keyboard. Then a DM offers Block/Unblock; a group offers Settings,
+                        // which opens the same group-details screen as tapping the group avatar (the avatar tap
+                        // stays too); a commons offers its room details the same way. The bridged room offers Search
+                        // alone: it carries no position (a text-only channel), and it has no peer to block — its authors
+                        // are not peers, and blocking the gateway would silence a contact over somebody else's post.
+                        // The call this chat puts first sits in the bar and the other in the overflow (§3.11): the live one
+                        // while a live path looks possible, the mesh one while none does — or always, while the person
+                        // prefers mesh calls or in a build that takes mesh calls only.
+                        val callGate = if (state.canCall || state.canMeshCall) rememberCallMicGate() else null
+                        val meshFirst = state.canMeshCall && (meshCallFirst || !state.canCall)
+                        if (callGate != null) {
+                            if (meshFirst) {
+                                CallButton(callGate, Icons.Filled.WifiCalling3, R.string.chat_mesh_call, "chat_mesh_call", onStartMeshCall)
+                            } else {
+                                CallButton(callGate, Icons.Filled.Call, R.string.chat_call, "chat_call", onStartCall)
+                            }
+                        }
+                        Box {
+                            IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
+                                Icon(
+                                    Icons.Filled.MoreVert,
+                                    contentDescription = stringResource(R.string.chat_more_options),
                                 )
                             }
-                            // The room's menu ends there: nobody to block, nothing to configure.
-                            if (state.isCommons) {
+                            // Not focusable: a focusable popup takes focus from the message field, so the keyboard
+                            // drops while the menu is open and springs back when it closes. A non-focusable popup
+                            // gets no Back, so the screen closes the menu itself before Back leaves the chat.
+                            BackHandler(enabled = headerMenuOpen) { headerMenuOpen = false }
+                            DropdownMenu(
+                                expanded = headerMenuOpen,
+                                onDismissRequest = { headerMenuOpen = false },
+                                properties = PopupProperties(focusable = false),
+                            ) {
                                 DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.commons_details_title)) },
-                                    leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
-                                    modifier = Modifier.testTag("chat_commons_details"),
+                                    text = { Text(stringResource(R.string.search_title)) },
+                                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                    modifier = Modifier.testTag("chat_search"),
                                     onClick = {
                                         headerMenuOpen = false
-                                        onOpenCommonsDetails(conversationId)
+                                        onSearch()
                                     },
                                 )
-                            } else if (state.isGroup) {
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.chat_group_settings)) },
-                                    leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                                    modifier = Modifier.testTag("chat_group_settings"),
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        onOpenGroupDetails(conversationId)
-                                    },
-                                )
-                            } else if (!state.isRoom && !state.isBridged) {
-                                // The call the top bar does not show (§3.11), where the build offers both.
-                                if (callGate?.hasMicrophone == true && state.canCall && state.canMeshCall) {
+                                // Gone while a position is staged: the tile above the field already carries
+                                // Refresh, and a second entry that restarted the same fix would only look like
+                                // it did something else.
+                                if (stagedLocation == null && !state.commonsStale && !state.isBridged) {
                                     DropdownMenuItem(
-                                        text = { Text(stringResource(if (meshFirst) R.string.chat_call else R.string.chat_mesh_call)) },
-                                        leadingIcon = {
-                                            Icon(
-                                                if (meshFirst) Icons.Filled.Call else Icons.Filled.WifiCalling3,
-                                                contentDescription = null,
-                                            )
-                                        },
-                                        modifier = Modifier.testTag(if (meshFirst) "chat_call_menu" else "chat_mesh_call_menu"),
+                                        text = { Text(stringResource(R.string.chat_attach_location)) },
+                                        leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_send_location"),
                                         onClick = {
                                             headerMenuOpen = false
-                                            callGate.runOrRequestThen(if (meshFirst) onStartCall else onStartMeshCall)
+                                            onLocationClick()
                                         },
                                     )
                                 }
-                                // A direct transfer rides a one-shot Wi-Fi Direct link, not the mesh, so it is
-                                // a DM affair: one peer, in range, running a build that answers.
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.chat_send_large_file)) },
-                                    leadingIcon = { Icon(KnitIcons.DirectTransfer, contentDescription = null) },
-                                    modifier = Modifier.testTag("chat_send_large_file"),
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        onSendFileDirectly()
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            stringResource(
-                                                if (state.isBlocked) {
-                                                    R.string.chat_action_unblock
-                                                } else {
-                                                    R.string.chat_action_block
-                                                },
-                                            ),
+                                // The room's menu ends there: nobody to block, nothing to configure.
+                                if (state.isCommons) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.commons_details_title)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_commons_details"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onOpenCommonsDetails(conversationId)
+                                        },
+                                    )
+                                } else if (state.isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_group_settings)) },
+                                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_group_settings"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onOpenGroupDetails(conversationId)
+                                        },
+                                    )
+                                } else if (!state.isRoom && !state.isBridged) {
+                                    // The call the top bar does not show (§3.11), where the build offers both.
+                                    if (callGate?.hasMicrophone == true && state.canCall && state.canMeshCall) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(if (meshFirst) R.string.chat_call else R.string.chat_mesh_call)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (meshFirst) Icons.Filled.Call else Icons.Filled.WifiCalling3,
+                                                    contentDescription = null,
+                                                )
+                                            },
+                                            modifier = Modifier.testTag(if (meshFirst) "chat_call_menu" else "chat_mesh_call_menu"),
+                                            onClick = {
+                                                headerMenuOpen = false
+                                                callGate.runOrRequestThen(if (meshFirst) onStartCall else onStartMeshCall)
+                                            },
                                         )
-                                    },
-                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        if (state.isBlocked) {
-                                            onUnblock(conversationId)
-                                        } else {
-                                            onBlock(conversationId)
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            // The Meshtastic room posts through this phone's own radio, so with no radio there is nothing to
-            // type into: the composer gives way to a line saying so. A radio that is merely down keeps the
-            // composer — that state flaps on every Bluetooth reconnect, and unmounting the field would drop
-            // the keyboard mid-sentence — and only the hint changes.
-            // A commons its relay no longer runs takes nothing more (a rotated invite): its history stays readable,
-            // and the field gives way to a line saying so, as the Meshtastic room's does with no radio.
-            when {
-                state.commonsStale -> {
-                    ComposerFooter(stringResource(R.string.commons_stale_footer), tag = "chat_commons_stale_footer")
-                }
-
-                state.publicPostGate == PublicPostGate.NoRadio -> {
-                    ComposerFooter(stringResource(R.string.chat_mesh_no_radio))
-                }
-
-                state.publicPostGate == PublicPostGate.ChannelUnusable -> {
-                    ComposerFooter(stringResource(R.string.chat_mesh_channel_unusable))
-                }
-
-                else -> {
-                    MessageInput(
-                        state = inputState,
-                        isSending = isSending,
-                        pendingAttachment = pendingAttachment,
-                        stagedAttachmentRelay = stagedAttachmentRelay,
-                        relayIsCommons = state.isCommons,
-                        candidates = state.mentionCandidates,
-                        everyone = state.everyoneMentions,
-                        replyingTo = replyingTo,
-                        myNodeId = state.myNodeId,
-                        onCancelReply = onCancelReply,
-                        mentions = mentions,
-                        onMentionAdded = onMentionAdded,
-                        onMentionsAdded = onMentionsAdded,
-                        onAttachClick = onAttachClick,
-                        onCameraClick = onCameraClick,
-                        // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
-                        // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
-                        fileEnabled = state.canSendFile,
-                        // The staged position's tile. The offer itself lives in the top bar's overflow, which is
-                        // absent from the bridged room (a channel of one line of text), so no tile can be staged there.
-                        locationScopeIsRoom = state.isRoom,
-                        stagedLocation = stagedLocation,
-                        onClearLocation = onClearLocation,
-                        onRefreshLocation = onRefreshLocation,
-                        onOpenLocationSettings = onOpenLocationSettings,
-                        // Naming the author in the hint is the whole of the ADR 049 exception's visible surface:
-                        // everywhere else on the radio this user is "Knit abcd", and here they are themselves.
-                        hint =
-                            when {
-                                !state.isBridged -> {
-                                    null
-                                }
-
-                                // A link that flaps on every Bluetooth reconnect: keep the field (and the keyboard)
-                                // and let the hint say why a send would be refused.
-                                state.publicPostGate == PublicPostGate.RadioDown -> {
-                                    stringResource(R.string.chat_mesh_radio_down)
-                                }
-
-                                state.publicChannelKeyIsPublic -> {
-                                    stringResource(R.string.chat_mesh_hint)
-                                }
-
-                                else -> {
-                                    stringResource(R.string.chat_mesh_hint_keyed)
-                                }
-                            },
-                        onFileClick = onFileClick,
-                        onClearAttachment = onClearAttachment,
-                        onReceiveImage = onReceiveImage,
-                        onSend = onSend,
-                        onTyping = onTyping,
-                        onDraftChanged = onDraftChanged,
-                        formatting = !state.isBridged,
-                        draftTranslate = draftTranslate,
-                        onTranslateDraft = onTranslateDraft,
-                        onUndoDraftTranslation = onUndoDraftTranslation,
-                        onDraftNotThisLanguage = onDraftNotThisLanguage,
-                        linkPreviewLoading = linkPreviewLoading,
-                        videoEncoding = videoEncoding,
-                        onCancelVideo = onCancelVideo,
-                        loraBudget =
-                            loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null)
-                                // A staged position rides the body, so its bytes come off the same budget.
-                                ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
-                        loraHint = loraHintFor(state.loraCarry),
-                        maxBytes = state.publicPostBudget,
-                        // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
-                        // no on-device model can screen speech, so it is the one place unscreenable audio is not
-                        // offered. See docs/CONTENT_MODERATION.md.
-                        attachEnabled = !state.isBridged && !state.commonsTextOnly,
-                        voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
-                        voiceRecording = voiceRecording,
-                        voicePlayback = voicePlayback,
-                        onStartVoice = onStartVoice,
-                        onLockVoice = onLockVoice,
-                        onStopVoice = onStopVoice,
-                        onCancelVoice = onCancelVoice,
-                        onVoicePlay = onVoicePlay,
-                        onVoiceSeek = onVoiceSeek,
-                    )
-                }
-            }
-        },
-    ) { padding ->
-        // Column rather than a list item so the relay notice stays pinned: it states a standing fact
-        // about the whole thread, and one that scrolled away would be found only by accident.
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            // The two pinned notices come and go with the radios. animateContentSize on the band they share
-            // (rather than AnimatedVisibility on each) means the thread below slides down and back rather
-            // than jumping a notice's height in one frame — and it needs no retained copy of a notice's text
-            // to draw while it collapses, which is the whole reason each notice can keep its early return.
-            Column(modifier = Modifier.animateContentSize(KnitMotion.spatial())) {
-                PinnedBar(
-                    pinned = pinned,
-                    onJump = jumpTo,
-                    onUnpin = { id -> onSetPinned?.invoke(id, false) },
-                )
-                RelayNotice(
-                    reach = state.relayReach,
-                    onClick = { showRelayInfo = true },
-                    // Only the room's notice may be closed; a pending thread's clears itself.
-                    onDismiss = onDismissRelayNotice.takeIf { dismissable(state.relayReach) },
-                )
-                LoraNotice(reach = state.loraReach, onClick = { showLoraInfo = true })
-                if (state.isBridged) {
-                    MeshRoomNotice(
-                        keyIsPublic = state.publicChannelKeyIsPublic,
-                        onClick = { showMeshInfo = true },
-                    )
-                }
-                if (state.commonsStale) CommonsStaleNotice(onClick = { onOpenCommonsDetails(conversationId) })
-            }
-            // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
-            // every row before it first emits. On a conversation with a lot of history that gap is long
-            // enough to see — and the seed emission carries no rows, so what would show is the "no messages
-            // yet" copy on a thread that has hundreds. Show the shape of a thread instead, then cross-fade
-            // to the real rows, which land in the same geometry.
-            val threadEnter = KnitMotion.enterFade()
-            val threadExit = KnitMotion.exitFade()
-            // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the thread must
-            // take the space that is left rather than ask for the whole column.
-            AnimatedContent(
-                targetState = state.isLoading,
-                transitionSpec = { threadEnter togetherWith threadExit },
-                label = "chatLoading",
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            ) { loading ->
-                if (loading) {
-                    ChatSkeleton(
-                        // A DM draws no avatar column (see `showSenderName` below), so neither may its
-                        // skeleton, or every bubble shifts sideways as the real rows replace it.
-                        withAvatars = state.isRoom || state.isBridged || state.isCommons || state.isGroup,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else if (state.rows.isEmpty() && state.typingPeers.isEmpty()) {
-                    EmptyState(modifier = Modifier.fillMaxSize(), isBridged = state.isBridged)
-                } else {
-                    // A Box around the thread alone, not the AnimatedContent: the button belongs to the
-                    // loaded thread, cross-fades with it, and can never be composed over the skeleton or the
-                    // empty state — listState outlives the list, so its stale index would otherwise show it.
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier.fillMaxSize().testTag("chat_thread"),
-                            contentPadding = PaddingValues(12.dp),
-                            // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
-                            // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
-                            // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
-                            // than floating at the top with a gap beneath the newest bubble.
-                            verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
-                            reverseLayout = true,
-                        ) {
-                            // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
-                            // directly above the input and below the newest message (Signal-style, scrolls with content).
-                            // An item here shifts every row's index: listIndexOf above counts it.
-                            if (state.typingPeers.isNotEmpty()) {
-                                item(key = "typing_indicator") {
-                                    // Fades with the same spec as a message bubble: the indicator arriving and
-                                    // leaving is a state change like any other, and it used to blink.
-                                    TypingIndicatorRow(
-                                        peers = state.typingPeers,
-                                        modifier =
-                                            Modifier.animateItem(
-                                                placementSpec = null,
-                                                fadeInSpec = KnitMotion.fastEffects(),
-                                                fadeOutSpec = KnitMotion.fastEffects(),
-                                            ),
-                                    )
-                                }
-                            }
-                            items(
-                                state.rows.asReversed(),
-                                key = { it.id },
-                                // A centred status notice and a chat bubble are different enough shapes that
-                                // sharing one subcomposition slot costs more than it saves. Keyed on plain
-                                // data — statusNoticeText is @Composable and cannot be called from here.
-                                contentType = { row ->
-                                    when {
-                                        row.transfer != null -> "transfer"
-                                        row.call != null -> "call"
-                                        row.kind == MessageEntity.KIND_NORMAL -> "bubble"
-                                        else -> "notice"
                                     }
-                                },
-                            ) { row ->
-                                // Fade only, no placement animation (`placementSpec = null`): the three
-                                // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
-                                // typing peer arrives, and a placement animation would be sliding rows in one
-                                // direction while the scroll slides the viewport in the other. A new bubble
-                                // appears; nothing travels.
-                                val itemMotion =
-                                    Modifier.animateItem(
-                                        placementSpec = null,
-                                        fadeInSpec = KnitMotion.fastEffects(),
-                                        fadeOutSpec = KnitMotion.fastEffects(),
+                                    // A direct transfer rides a one-shot Wi-Fi Direct link, not the mesh, so it is
+                                    // a DM affair: one peer, in range, running a build that answers.
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_send_large_file)) },
+                                        leadingIcon = { Icon(KnitIcons.DirectTransfer, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_send_large_file"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onSendFileDirectly()
+                                        },
                                     )
-                                val notice = statusNoticeText(row, state.memberTitle)
-                                val transfer = row.transfer
-                                val call = row.call
-                                if (call != null) {
-                                    CallNotice(record = call, sentAt = row.sentAt, modifier = itemMotion)
-                                } else if (transfer != null) {
-                                    TransferCard(
-                                        view = transfer,
-                                        mine = row.mine,
-                                        onAccept = { onAcceptTransfer(transfer.id) },
-                                        onDecline = { onDeclineTransfer(transfer.id) },
-                                        onCancel = { onCancelTransfer(transfer.id) },
-                                        modifier = itemMotion,
-                                        onRetry = { onRetryTransfer(transfer.id) },
-                                    )
-                                } else if (notice != null) {
-                                    SystemNotice(text = notice, modifier = itemMotion)
-                                } else {
-                                    MessageBubble(
-                                        row,
-                                        modifier = itemMotion,
-                                        now = now,
-                                        // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
-                                        // received bubble; show it only where multiple people can speak.
-                                        // Every room and group names its authors; a DM does not (the header already
-                                        // does). The bridged room needs it most of all — its posts come from
-                                        // strangers, and an unattributed one would read as if Knit knew who sent it.
-                                        showSenderName = state.isRoom || state.isBridged || state.isCommons || state.isGroup,
-                                        imageRatios = imageRatios,
-                                        highlighted = row.id == highlightedMessageId,
-                                        onImageClick = { fullscreenImage = it },
-                                        onVideoClick = { fullscreenVideo = it },
-                                        onSaveFile = onSaveFile,
-                                        onDownloadAttachment = onDownloadAttachment,
-                                        onOpenProfile = onOpenProfile,
-                                        onReact = onReact,
-                                        // The Meshtastic room has no tapback form, so it offers no emoji row and a tap can
-                                        // never fall through to the radios' cleartext flood. A stale commons takes no
-                                        // reaction or reply either: nothing posted there reaches anyone.
-                                        canReact = !state.isBridged && !state.commonsStale,
-                                        canReply = !state.commonsStale,
-                                        relayIsCommons = state.isCommons,
-                                        quickReactions = quickReactions,
-                                        onMoreReactions = { emojiSheetFor = it },
-                                        onReply = { msg ->
-                                            onStartReply(
-                                                ReplyRef(
-                                                    messageId = msg.id,
-                                                    authorId = msg.senderNodeId,
-                                                    author = msg.senderPlainName,
-                                                    // The rule a recipient holding the original rebuilds it by.
-                                                    snippet =
-                                                        quoteSnippet(
-                                                            msg.body,
-                                                            msg.attachmentName,
-                                                            msg.attachmentMime,
-                                                            msg.attachmentAnimated,
-                                                            flagged = msg.moderationFlagged,
-                                                            labels = quoteLabels,
-                                                        ),
-                                                    hasAttachment = quoteHasAttachment(msg.attachmentHash, msg.attachmentMime),
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    if (state.isBlocked) {
+                                                        R.string.chat_action_unblock
+                                                    } else {
+                                                        R.string.chat_action_block
+                                                    },
                                                 ),
                                             )
                                         },
-                                        onQuoteClick = jumpTo,
-                                        pinned = pinned.any { it.messageId == row.id },
-                                        onSetPinned = onSetPinned,
-                                        onDelete = onDeleteMessage,
-                                        onBlock = onBlock,
-                                        onCopy = onCopy,
-                                        onOpenMessageDetails = onOpenMessageDetails,
-                                        onExplainRelay = { relayMarkerExplained = it },
-                                        onExplainHeardAuthor = { peerId, name ->
-                                            heardAuthorExplained = HeardAuthor(peerId, name)
-                                        },
-                                        voicePlayback = voicePlayback,
-                                        onVoicePlay = onVoicePlay,
-                                        onVoiceSeek = onVoiceSeek,
-                                        voiceSpeech = voiceSpeech,
-                                        onTranscribeVoice = onTranscribeVoice,
-                                        // Gated on the constant here, not in the bubble, whose previews show a translation.
-                                        translation =
-                                            if (TRANSLATE_WIRED) {
-                                                translateView?.let {
-                                                    translationShown(
-                                                        it.translations[row.id],
-                                                        row.translation,
-                                                        it.models,
-                                                        it.filterOn,
-                                                        it.reader,
-                                                    )
-                                                }
+                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            if (state.isBlocked) {
+                                                onUnblock(conversationId)
                                             } else {
-                                                null
-                                            },
-                                        onTranslate = if (TRANSLATE_WIRED && translateView != null) onTranslate else null,
-                                        onDownloadTranslateModel = onDownloadTranslateModel,
-                                        onDismissTranslation = onDismissTranslation,
-                                        onTranslateNotLanguage = onTranslateNotLanguage,
-                                        offersTranslate = offersTranslate,
-                                        arrival = row.attachmentHash?.let(arrivals::get),
+                                                onBlock(conversationId)
+                                            }
+                                        },
                                     )
                                 }
                             }
-                            if (state.hasOlder) {
-                                item(key = "older_loading", contentType = "older_loading") {
-                                    OlderHistoryRow()
-                                }
-                            }
                         }
-                        ScrollToNewestButton(
-                            visible = showScrollToNewest,
-                            onClick = {
-                                // The reader's newest intent wins over a quote still waiting for its rows.
-                                // A jump, not an animation: animateScrollToItem glides through the last few
-                                // screens of history, composing every bubble it passes, and on a thread of
-                                // hundreds that glide drops frames. Signal jumps for the same reason.
-                                pendingQuoteTarget = null
-                                scrollScope.launch { listState.scrollToItem(0) }
-                            },
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                    },
+                )
+            },
+            bottomBar = {
+                // The Meshtastic room posts through this phone's own radio, so with no radio there is nothing to
+                // type into: the composer gives way to a line saying so. A radio that is merely down keeps the
+                // composer — that state flaps on every Bluetooth reconnect, and unmounting the field would drop
+                // the keyboard mid-sentence — and only the hint changes.
+                // A commons its relay no longer runs takes nothing more (a rotated invite): its history stays readable,
+                // and the field gives way to a line saying so, as the Meshtastic room's does with no radio.
+                when {
+                    state.commonsStale -> {
+                        ComposerFooter(stringResource(R.string.commons_stale_footer), tag = "chat_commons_stale_footer")
+                    }
+
+                    state.publicPostGate == PublicPostGate.NoRadio -> {
+                        ComposerFooter(stringResource(R.string.chat_mesh_no_radio))
+                    }
+
+                    state.publicPostGate == PublicPostGate.ChannelUnusable -> {
+                        ComposerFooter(stringResource(R.string.chat_mesh_channel_unusable))
+                    }
+
+                    else -> {
+                        MessageInput(
+                            state = inputState,
+                            isSending = isSending,
+                            pendingAttachment = pendingAttachment,
+                            stagedAttachmentRelay = stagedAttachmentRelay,
+                            relayIsCommons = state.isCommons,
+                            candidates = state.mentionCandidates,
+                            everyone = state.everyoneMentions,
+                            replyingTo = replyingTo,
+                            myNodeId = state.myNodeId,
+                            onCancelReply = onCancelReply,
+                            mentions = mentions,
+                            onMentionAdded = onMentionAdded,
+                            onMentionsAdded = onMentionsAdded,
+                            onAttachClick = onAttachClick,
+                            onCameraClick = onCameraClick,
+                            // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
+                            // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
+                            fileEnabled = state.canSendFile,
+                            // The staged position's tile. The offer itself lives in the top bar's overflow, which is
+                            // absent from the bridged room (a channel of one line of text), so no tile can be staged there.
+                            locationScopeIsRoom = state.isRoom,
+                            stagedLocation = stagedLocation,
+                            onClearLocation = onClearLocation,
+                            onRefreshLocation = onRefreshLocation,
+                            onOpenLocationSettings = onOpenLocationSettings,
+                            // Naming the author in the hint is the whole of the ADR 049 exception's visible surface:
+                            // everywhere else on the radio this user is "Knit abcd", and here they are themselves.
+                            hint =
+                                when {
+                                    !state.isBridged -> {
+                                        null
+                                    }
+
+                                    // A link that flaps on every Bluetooth reconnect: keep the field (and the keyboard)
+                                    // and let the hint say why a send would be refused.
+                                    state.publicPostGate == PublicPostGate.RadioDown -> {
+                                        stringResource(R.string.chat_mesh_radio_down)
+                                    }
+
+                                    state.publicChannelKeyIsPublic -> {
+                                        stringResource(R.string.chat_mesh_hint)
+                                    }
+
+                                    else -> {
+                                        stringResource(R.string.chat_mesh_hint_keyed)
+                                    }
+                                },
+                            onFileClick = onFileClick,
+                            onClearAttachment = onClearAttachment,
+                            onReceiveImage = onReceiveImage,
+                            onSend = onSend,
+                            onTyping = onTyping,
+                            onDraftChanged = onDraftChanged,
+                            formatting = !state.isBridged,
+                            draftTranslate = draftTranslate,
+                            onTranslateDraft = onTranslateDraft,
+                            onUndoDraftTranslation = onUndoDraftTranslation,
+                            onDraftNotThisLanguage = onDraftNotThisLanguage,
+                            linkPreviewLoading = linkPreviewLoading,
+                            videoEncoding = videoEncoding,
+                            onCancelVideo = onCancelVideo,
+                            loraBudget =
+                                loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null)
+                                    // A staged position rides the body, so its bytes come off the same budget.
+                                    ?.let { if (stagedLocation != null) (it - GeoUri.RESERVE_BYTES).coerceAtLeast(0) else it },
+                            loraHint = loraHintFor(state.loraCarry),
+                            maxBytes = state.publicPostBudget,
+                            // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
+                            // no on-device model can screen speech, so it is the one place unscreenable audio is not
+                            // offered. See docs/CONTENT_MODERATION.md.
+                            attachEnabled = !state.isBridged && !state.commonsTextOnly,
+                            voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
+                            voiceRecording = voiceRecording,
+                            voicePlayback = voicePlayback,
+                            onStartVoice = onStartVoice,
+                            onLockVoice = onLockVoice,
+                            onStopVoice = onStopVoice,
+                            onCancelVoice = onCancelVoice,
+                            onVoicePlay = onVoicePlay,
+                            onVoiceSeek = onVoiceSeek,
                         )
                     }
                 }
+            },
+        ) { padding ->
+            // Column rather than a list item so the relay notice stays pinned: it states a standing fact
+            // about the whole thread, and one that scrolled away would be found only by accident.
+            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                // The two pinned notices come and go with the radios. animateContentSize on the band they share
+                // (rather than AnimatedVisibility on each) means the thread below slides down and back rather
+                // than jumping a notice's height in one frame — and it needs no retained copy of a notice's text
+                // to draw while it collapses, which is the whole reason each notice can keep its early return.
+                Column(modifier = Modifier.animateContentSize(KnitMotion.spatial())) {
+                    PinnedBar(
+                        pinned = pinned,
+                        onJump = jumpTo,
+                        onUnpin = { id -> onSetPinned?.invoke(id, false) },
+                    )
+                    RelayNotice(
+                        reach = state.relayReach,
+                        onClick = { showRelayInfo = true },
+                        // Only the room's notice may be closed; a pending thread's clears itself.
+                        onDismiss = onDismissRelayNotice.takeIf { dismissable(state.relayReach) },
+                    )
+                    LoraNotice(reach = state.loraReach, onClick = { showLoraInfo = true })
+                    if (state.isBridged) {
+                        MeshRoomNotice(
+                            keyIsPublic = state.publicChannelKeyIsPublic,
+                            onClick = { showMeshInfo = true },
+                        )
+                    }
+                    if (state.commonsStale) CommonsStaleNotice(onClick = { onOpenCommonsDetails(conversationId) })
+                }
+                // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
+                // every row before it first emits. On a conversation with a lot of history that gap is long
+                // enough to see — and the seed emission carries no rows, so what would show is the "no messages
+                // yet" copy on a thread that has hundreds. Show the shape of a thread instead, then cross-fade
+                // to the real rows, which land in the same geometry.
+                val threadEnter = KnitMotion.enterFade()
+                val threadExit = KnitMotion.exitFade()
+                // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the thread must
+                // take the space that is left rather than ask for the whole column.
+                AnimatedContent(
+                    targetState = state.isLoading,
+                    transitionSpec = { threadEnter togetherWith threadExit },
+                    label = "chatLoading",
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) { loading ->
+                    if (loading) {
+                        ChatSkeleton(
+                            // A DM draws no avatar column (see `showSenderName` below), so neither may its
+                            // skeleton, or every bubble shifts sideways as the real rows replace it.
+                            withAvatars = state.isRoom || state.isBridged || state.isCommons || state.isGroup,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else if (state.rows.isEmpty() && state.typingPeers.isEmpty()) {
+                        EmptyState(modifier = Modifier.fillMaxSize(), isBridged = state.isBridged)
+                    } else {
+                        // A Box around the thread alone, not the AnimatedContent: the button belongs to the
+                        // loaded thread, cross-fades with it, and can never be composed over the skeleton or the
+                        // empty state — listState outlives the list, so its stale index would otherwise show it.
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize().testTag("chat_thread"),
+                                contentPadding = PaddingValues(12.dp),
+                                // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
+                                // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
+                                // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
+                                // than floating at the top with a gap beneath the newest bubble.
+                                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+                                reverseLayout = true,
+                            ) {
+                                // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
+                                // directly above the input and below the newest message (Signal-style, scrolls with content).
+                                // An item here shifts every row's index: listIndexOf above counts it.
+                                if (state.typingPeers.isNotEmpty()) {
+                                    item(key = "typing_indicator") {
+                                        // Fades with the same spec as a message bubble: the indicator arriving and
+                                        // leaving is a state change like any other, and it used to blink.
+                                        TypingIndicatorRow(
+                                            peers = state.typingPeers,
+                                            modifier =
+                                                Modifier.animateItem(
+                                                    placementSpec = null,
+                                                    fadeInSpec = KnitMotion.fastEffects(),
+                                                    fadeOutSpec = KnitMotion.fastEffects(),
+                                                ),
+                                        )
+                                    }
+                                }
+                                items(
+                                    state.rows.asReversed(),
+                                    key = { it.id },
+                                    // A centred status notice and a chat bubble are different enough shapes that
+                                    // sharing one subcomposition slot costs more than it saves. Keyed on plain
+                                    // data — statusNoticeText is @Composable and cannot be called from here.
+                                    contentType = { row ->
+                                        when {
+                                            row.transfer != null -> "transfer"
+                                            row.call != null -> "call"
+                                            row.kind == MessageEntity.KIND_NORMAL -> "bubble"
+                                            else -> "notice"
+                                        }
+                                    },
+                                ) { row ->
+                                    // Fade only, no placement animation (`placementSpec = null`): the three
+                                    // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
+                                    // typing peer arrives, and a placement animation would be sliding rows in one
+                                    // direction while the scroll slides the viewport in the other. A new bubble
+                                    // appears; nothing travels.
+                                    val itemMotion =
+                                        Modifier.animateItem(
+                                            placementSpec = null,
+                                            fadeInSpec = KnitMotion.fastEffects(),
+                                            fadeOutSpec = KnitMotion.fastEffects(),
+                                        )
+                                    val notice = statusNoticeText(row, state.memberTitle)
+                                    val transfer = row.transfer
+                                    val call = row.call
+                                    if (call != null) {
+                                        CallNotice(record = call, sentAt = row.sentAt, modifier = itemMotion)
+                                    } else if (transfer != null) {
+                                        TransferCard(
+                                            view = transfer,
+                                            mine = row.mine,
+                                            onAccept = { onAcceptTransfer(transfer.id) },
+                                            onDecline = { onDeclineTransfer(transfer.id) },
+                                            onCancel = { onCancelTransfer(transfer.id) },
+                                            modifier = itemMotion,
+                                            onRetry = { onRetryTransfer(transfer.id) },
+                                        )
+                                    } else if (notice != null) {
+                                        SystemNotice(text = notice, modifier = itemMotion)
+                                    } else {
+                                        MessageBubble(
+                                            row,
+                                            modifier = itemMotion,
+                                            now = now,
+                                            // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
+                                            // received bubble; show it only where multiple people can speak.
+                                            // Every room and group names its authors; a DM does not (the header already
+                                            // does). The bridged room needs it most of all — its posts come from
+                                            // strangers, and an unattributed one would read as if Knit knew who sent it.
+                                            showSenderName = state.isRoom || state.isBridged || state.isCommons || state.isGroup,
+                                            imageRatios = imageRatios,
+                                            highlighted = row.id == highlightedMessageId,
+                                            onImageClick = { fullscreenImage = it },
+                                            onVideoClick = { fullscreenVideo = it },
+                                            onSaveFile = onSaveFile,
+                                            onDownloadAttachment = onDownloadAttachment,
+                                            onOpenProfile = onOpenProfile,
+                                            onReact = onReact,
+                                            // The Meshtastic room has no tapback form, so it offers no emoji row and a tap can
+                                            // never fall through to the radios' cleartext flood. A stale commons takes no
+                                            // reaction or reply either: nothing posted there reaches anyone.
+                                            canReact = !state.isBridged && !state.commonsStale,
+                                            canReply = !state.commonsStale,
+                                            relayIsCommons = state.isCommons,
+                                            quickReactions = quickReactions,
+                                            onMoreReactions = { emojiSheetFor = it },
+                                            onReply = { msg ->
+                                                onStartReply(
+                                                    ReplyRef(
+                                                        messageId = msg.id,
+                                                        authorId = msg.senderNodeId,
+                                                        author = msg.senderPlainName,
+                                                        // The rule a recipient holding the original rebuilds it by.
+                                                        snippet =
+                                                            quoteSnippet(
+                                                                msg.body,
+                                                                msg.attachmentName,
+                                                                msg.attachmentMime,
+                                                                msg.attachmentAnimated,
+                                                                flagged = msg.moderationFlagged,
+                                                                labels = quoteLabels,
+                                                            ),
+                                                        hasAttachment = quoteHasAttachment(msg.attachmentHash, msg.attachmentMime),
+                                                    ),
+                                                )
+                                            },
+                                            onQuoteClick = jumpTo,
+                                            pinned = pinned.any { it.messageId == row.id },
+                                            onSetPinned = onSetPinned,
+                                            onDelete = onDeleteMessage,
+                                            onBlock = onBlock,
+                                            onCopy = onCopy,
+                                            onOpenMessageDetails = onOpenMessageDetails,
+                                            onExplainRelay = { relayMarkerExplained = it },
+                                            onExplainHeardAuthor = { peerId, name ->
+                                                heardAuthorExplained = HeardAuthor(peerId, name)
+                                            },
+                                            voicePlayback = voicePlayback,
+                                            onVoicePlay = onVoicePlay,
+                                            onVoiceSeek = onVoiceSeek,
+                                            voiceSpeech = voiceSpeech,
+                                            onTranscribeVoice = onTranscribeVoice,
+                                            // Gated on the constant here, not in the bubble, whose previews show a translation.
+                                            translation =
+                                                if (TRANSLATE_WIRED) {
+                                                    translateView?.let {
+                                                        translationShown(
+                                                            it.translations[row.id],
+                                                            row.translation,
+                                                            it.models,
+                                                            it.filterOn,
+                                                            it.reader,
+                                                        )
+                                                    }
+                                                } else {
+                                                    null
+                                                },
+                                            onTranslate = if (TRANSLATE_WIRED && translateView != null) onTranslate else null,
+                                            onDownloadTranslateModel = onDownloadTranslateModel,
+                                            onDismissTranslation = onDismissTranslation,
+                                            onTranslateNotLanguage = onTranslateNotLanguage,
+                                            offersTranslate = offersTranslate,
+                                            arrival = row.attachmentHash?.let(arrivals::get),
+                                        )
+                                    }
+                                }
+                                if (state.hasOlder) {
+                                    item(key = "older_loading", contentType = "older_loading") {
+                                        OlderHistoryRow()
+                                    }
+                                }
+                            }
+                            ScrollToNewestButton(
+                                visible = showScrollToNewest,
+                                onClick = {
+                                    // The reader's newest intent wins over a quote still waiting for its rows.
+                                    // A jump, not an animation: animateScrollToItem glides through the last few
+                                    // screens of history, composing every bubble it passes, and on a thread of
+                                    // hundreds that glide drops frames. Signal jumps for the same reason.
+                                    pendingQuoteTarget = null
+                                    scrollScope.launch { listState.scrollToItem(0) }
+                                },
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
-    }
 
-    fullscreenVideo?.let { video ->
-        val hash = checkNotNull(video.attachmentHash)
-        FullscreenVideoPlayer(
-            load = { onLoadVideo(hash, video.attachmentKey) },
-            width = video.videoWidth,
-            height = video.videoHeight,
-            onDismiss = { fullscreenVideo = null },
-            onSave = { onSaveVideo(hash, video.attachmentKey, video.attachmentMime) },
-        )
-    }
-
-    fullscreenImage?.let { fs ->
-        FullscreenImageViewer(
-            fullscreen = fs,
-            now = now,
-            onDismiss = { fullscreenImage = null },
-            onSave = { onSaveAttachment(fs.image.hash, fs.image.key, fs.image.mime) },
-        )
-    }
-
-    emojiSheetFor?.let { messageId ->
-        EmojiPickerSheet(
-            onPick = { emoji ->
-                onReact(messageId, emoji)
-                emojiSheetFor = null
-            },
-            onDismiss = { emojiSheetFor = null },
-        )
-    }
-
-    if (showEncryptionInfo) {
-        AlertDialog(
-            onDismissRequest = { showEncryptionInfo = false },
-            icon = { Icon(Icons.Filled.Lock, contentDescription = null) },
-            title = { Text(stringResource(R.string.chat_encryption_info_title)) },
-            text = { Text(stringResource(R.string.chat_encryption_info_body)) },
-            confirmButton = {
-                TextButton(onClick = { showEncryptionInfo = false }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
-    }
-
-    if (showRelayInfo) {
-        val (relayTitle, relayBody) =
-            when (state.relayReach) {
-                RelayReach.Room -> {
-                    stringResource(R.string.chat_relay_room_title) to stringResource(R.string.chat_relay_room_body)
-                }
-
-                RelayReach.NoForwardSecrecy -> {
-                    stringResource(R.string.chat_relay_no_fs_title) to
-                        stringResource(R.string.chat_relay_no_fs_body, state.title)
-                }
-
-                RelayReach.Pending, RelayReach.Silent, RelayReach.Covered -> {
-                    stringResource(R.string.chat_relay_pending_title) to stringResource(R.string.chat_relay_pending_body)
-                }
-            }
-        AlertDialog(
-            onDismissRequest = { showRelayInfo = false },
-            icon = { Icon(Icons.Filled.CloudOff, contentDescription = null) },
-            title = { Text(relayTitle) },
-            text = { Text(relayBody) },
-            confirmButton = {
-                TextButton(onClick = { showRelayInfo = false }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
-    }
-
-    if (showLoraInfo) {
-        val (loraTitle, loraBody) =
-            when (state.loraReach) {
-                LoraReach.LoraOnlyDmsOff -> R.string.chat_lora_only_dms_off_title to R.string.chat_lora_only_dms_off_body
-                LoraReach.LoraOnlySaturated -> R.string.chat_lora_saturated_title to R.string.chat_lora_saturated_body
-                LoraReach.RoomSaturated -> R.string.chat_lora_room_saturated_title to R.string.chat_lora_room_saturated_body
-                LoraReach.RoomBandBusy -> R.string.chat_lora_room_band_busy_title to R.string.chat_lora_room_band_busy_body
-                LoraReach.GroupUnsupported -> R.string.chat_lora_group_title to R.string.chat_lora_group_body
-                LoraReach.LoraOnly, LoraReach.Silent -> R.string.chat_lora_only_title to R.string.chat_lora_only_body
-            }
-        // Every DM body names the peer; the room's and the group's are about a set of people and take no
-        // argument, so they are resolved without one rather than formatted against a placeholder they do
-        // not carry.
-        val loraNamesPeer =
-            state.loraReach != LoraReach.RoomSaturated &&
-                state.loraReach != LoraReach.RoomBandBusy &&
-                state.loraReach != LoraReach.GroupUnsupported
-        AlertDialog(
-            onDismissRequest = { showLoraInfo = false },
-            icon = { Icon(Icons.Outlined.Sensors, contentDescription = null) },
-            title = { Text(stringResource(loraTitle)) },
-            text = { Text(if (loraNamesPeer) stringResource(loraBody, state.title) else stringResource(loraBody)) },
-            confirmButton = {
-                TextButton(onClick = { showLoraInfo = false }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
-    }
-
-    if (showMeshInfo) {
-        AlertDialog(
-            onDismissRequest = { showMeshInfo = false },
-            icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
-            title = { Text(stringResource(R.string.chat_mesh_room_title)) },
-            text = { Text(stringResource(R.string.chat_mesh_room_body)) },
-            confirmButton = {
-                TextButton(onClick = { showMeshInfo = false }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
-    }
-
-    if (showPublicConsent) {
-        ModalBottomSheet(
-            onDismissRequest = onDismissPublicConsent,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        ) {
-            PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
-        }
-    }
-
-    if (showLocationConsent) {
-        ModalBottomSheet(
-            onDismissRequest = onDismissLocationConsent,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        ) {
-            LocationConsentBody(isRoom = state.isRoom, onAccept = onAcceptLocationConsent, onDecline = onDismissLocationConsent)
-        }
-    }
-
-    showTransferConsent?.let { request ->
-        ModalBottomSheet(
-            onDismissRequest = onDismissTransferConsent,
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        ) {
-            DirectTransferConsentBody(
-                incoming = request.incoming,
-                onAccept = onAcceptTransferConsent,
-                onDecline = onDismissTransferConsent,
+        fullscreenVideo?.let { video ->
+            val hash = checkNotNull(video.attachmentHash)
+            FullscreenVideoPlayer(
+                load = { onLoadVideo(hash, video.attachmentKey) },
+                width = video.videoWidth,
+                height = video.videoHeight,
+                onDismiss = { fullscreenVideo = null },
+                onSave = { onSaveVideo(hash, video.attachmentKey, video.attachmentMime) },
             )
         }
-    }
 
-    longVideoMs?.let { durationMs ->
-        // Asked before the encode, not said after it (ADR 2026-10.hmfe's 2026-10-31 amendment): a tap outside or
-        // Back is a no, and nothing is staged.
-        val length = formatDuration(durationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-        AlertDialog(
-            onDismissRequest = onDismissLongVideo,
-            icon = { Icon(Icons.Filled.Videocam, contentDescription = null) },
-            title = { Text(stringResource(R.string.chat_video_long_title)) },
-            text = { Text(stringResource(R.string.chat_video_long_body, length)) },
-            confirmButton = {
-                TextButton(onClick = onSendLongVideo) {
-                    Text(stringResource(R.string.action_send))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismissLongVideo) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
+        fullscreenImage?.let { fs ->
+            FullscreenImageViewer(
+                fullscreen = fs,
+                now = now,
+                onDismiss = { fullscreenImage = null },
+                onSave = { onSaveAttachment(fs.image.hash, fs.image.key, fs.image.mime) },
+            )
+        }
 
-    relayMarkerExplained?.let { cause ->
-        // The peer's name makes the fallback concrete ("arrives when you and Ana are in range") rather
-        // than abstract; in the room and in groups the title is already the collective noun.
-        val other = state.title
-        AlertDialog(
-            onDismissRequest = { relayMarkerExplained = null },
-            icon = { Icon(Icons.Filled.CloudOff, contentDescription = null) },
-            title = {
-                Text(
-                    stringResource(
-                        when {
-                            state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_title
-                            state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_title
-                            state.isCommons -> R.string.chat_relay_commons_too_large_title
-                            cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_title
-                            cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_title
-                            else -> R.string.chat_relay_too_large_title
-                        },
-                    ),
+        emojiSheetFor?.let { messageId ->
+            EmojiPickerSheet(
+                onPick = { emoji ->
+                    onReact(messageId, emoji)
+                    emojiSheetFor = null
+                },
+                onDismiss = { emojiSheetFor = null },
+            )
+        }
+
+        if (showEncryptionInfo) {
+            AlertDialog(
+                onDismissRequest = { showEncryptionInfo = false },
+                icon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+                title = { Text(stringResource(R.string.chat_encryption_info_title)) },
+                text = { Text(stringResource(R.string.chat_encryption_info_body)) },
+                confirmButton = {
+                    TextButton(onClick = { showEncryptionInfo = false }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
+
+        if (showRelayInfo) {
+            val (relayTitle, relayBody) =
+                when (state.relayReach) {
+                    RelayReach.Room -> {
+                        stringResource(R.string.chat_relay_room_title) to stringResource(R.string.chat_relay_room_body)
+                    }
+
+                    RelayReach.NoForwardSecrecy -> {
+                        stringResource(R.string.chat_relay_no_fs_title) to
+                            stringResource(R.string.chat_relay_no_fs_body, state.title)
+                    }
+
+                    RelayReach.Pending, RelayReach.Silent, RelayReach.Covered -> {
+                        stringResource(R.string.chat_relay_pending_title) to stringResource(R.string.chat_relay_pending_body)
+                    }
+                }
+            AlertDialog(
+                onDismissRequest = { showRelayInfo = false },
+                icon = { Icon(Icons.Filled.CloudOff, contentDescription = null) },
+                title = { Text(relayTitle) },
+                text = { Text(relayBody) },
+                confirmButton = {
+                    TextButton(onClick = { showRelayInfo = false }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
+
+        if (showLoraInfo) {
+            val (loraTitle, loraBody) =
+                when (state.loraReach) {
+                    LoraReach.LoraOnlyDmsOff -> R.string.chat_lora_only_dms_off_title to R.string.chat_lora_only_dms_off_body
+                    LoraReach.LoraOnlySaturated -> R.string.chat_lora_saturated_title to R.string.chat_lora_saturated_body
+                    LoraReach.RoomSaturated -> R.string.chat_lora_room_saturated_title to R.string.chat_lora_room_saturated_body
+                    LoraReach.RoomBandBusy -> R.string.chat_lora_room_band_busy_title to R.string.chat_lora_room_band_busy_body
+                    LoraReach.GroupUnsupported -> R.string.chat_lora_group_title to R.string.chat_lora_group_body
+                    LoraReach.LoraOnly, LoraReach.Silent -> R.string.chat_lora_only_title to R.string.chat_lora_only_body
+                }
+            // Every DM body names the peer; the room's and the group's are about a set of people and take no
+            // argument, so they are resolved without one rather than formatted against a placeholder they do
+            // not carry.
+            val loraNamesPeer =
+                state.loraReach != LoraReach.RoomSaturated &&
+                    state.loraReach != LoraReach.RoomBandBusy &&
+                    state.loraReach != LoraReach.GroupUnsupported
+            AlertDialog(
+                onDismissRequest = { showLoraInfo = false },
+                icon = { Icon(Icons.Outlined.Sensors, contentDescription = null) },
+                title = { Text(stringResource(loraTitle)) },
+                text = { Text(if (loraNamesPeer) stringResource(loraBody, state.title) else stringResource(loraBody)) },
+                confirmButton = {
+                    TextButton(onClick = { showLoraInfo = false }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
+
+        if (showMeshInfo) {
+            AlertDialog(
+                onDismissRequest = { showMeshInfo = false },
+                icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
+                title = { Text(stringResource(R.string.chat_mesh_room_title)) },
+                text = { Text(stringResource(R.string.chat_mesh_room_body)) },
+                confirmButton = {
+                    TextButton(onClick = { showMeshInfo = false }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
+
+        if (showPublicConsent) {
+            ModalBottomSheet(
+                onDismissRequest = onDismissPublicConsent,
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
+            }
+        }
+
+        if (showLocationConsent) {
+            ModalBottomSheet(
+                onDismissRequest = onDismissLocationConsent,
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                LocationConsentBody(isRoom = state.isRoom, onAccept = onAcceptLocationConsent, onDecline = onDismissLocationConsent)
+            }
+        }
+
+        showTransferConsent?.let { request ->
+            ModalBottomSheet(
+                onDismissRequest = onDismissTransferConsent,
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                DirectTransferConsentBody(
+                    incoming = request.incoming,
+                    onAccept = onAcceptTransferConsent,
+                    onDecline = onDismissTransferConsent,
                 )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            }
+        }
+
+        longVideoMs?.let { durationMs ->
+            // Asked before the encode, not said after it (ADR 2026-10.hmfe's 2026-10-31 amendment): a tap outside or
+            // Back is a no, and nothing is staged.
+            val length = formatDuration(durationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            AlertDialog(
+                onDismissRequest = onDismissLongVideo,
+                icon = { Icon(Icons.Filled.Videocam, contentDescription = null) },
+                title = { Text(stringResource(R.string.chat_video_long_title)) },
+                text = { Text(stringResource(R.string.chat_video_long_body, length)) },
+                confirmButton = {
+                    TextButton(onClick = onSendLongVideo) {
+                        Text(stringResource(R.string.action_send))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismissLongVideo) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                },
+            )
+        }
+
+        relayMarkerExplained?.let { cause ->
+            // The peer's name makes the fallback concrete ("arrives when you and Ana are in range") rather
+            // than abstract; in the room and in groups the title is already the collective noun.
+            val other = state.title
+            AlertDialog(
+                onDismissRequest = { relayMarkerExplained = null },
+                icon = { Icon(Icons.Filled.CloudOff, contentDescription = null) },
+                title = {
                     Text(
                         stringResource(
                             when {
-                                // No peer to name: in a commons nothing else carries it, so there is no "arrives when".
-                                state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_body
-
-                                state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_body
-
-                                state.isCommons -> R.string.chat_relay_commons_too_large_body
-
-                                cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
-
-                                cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_body
-
-                                else -> R.string.chat_relay_too_large_body
+                                state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_title
+                                state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_title
+                                state.isCommons -> R.string.chat_relay_commons_too_large_title
+                                cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_title
+                                cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_title
+                                else -> R.string.chat_relay_too_large_title
                             },
-                            other,
                         ),
                     )
-                    // A DM whose peer's build takes direct links, while ours is on: a link can carry what no relay takes.
-                    if (state.relayDirectLinkNote && !state.isCommons) {
-                        Text(stringResource(R.string.chat_relay_direct_link_note, other))
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { relayMarkerExplained = null }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
-    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            stringResource(
+                                when {
+                                    // No peer to name: in a commons nothing else carries it, so there is no "arrives when".
+                                    state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_body
 
-    heardAuthorExplained?.let { author ->
-        // Dismiss is the plain button and "Open profile" the confirm, because the point of the dialog is the
-        // caveat, not the errand: someone who taps a face on this channel should be able to read why the name
-        // is a guess and stop there. Following through opens the *contact's* profile by peer id — the row's
-        // sender is this phone on a heard post, so `senderNodeId` would open our own.
-        AlertDialog(
-            onDismissRequest = { heardAuthorExplained = null },
-            icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
-            title = { Text(stringResource(R.string.chat_mesh_match_title, author.name)) },
-            text = { Text(stringResource(R.string.chat_mesh_match_body, author.name)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        heardAuthorExplained = null
-                        onOpenProfile(author.peerId)
-                    },
-                ) {
-                    Text(stringResource(R.string.chat_mesh_match_open))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { heardAuthorExplained = null }) {
-                    Text(stringResource(R.string.action_close))
-                }
-            },
-        )
+                                    state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_body
+
+                                    state.isCommons -> R.string.chat_relay_commons_too_large_body
+
+                                    cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
+
+                                    cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_body
+
+                                    else -> R.string.chat_relay_too_large_body
+                                },
+                                other,
+                            ),
+                        )
+                        // A DM whose peer's build takes direct links, while ours is on: a link can carry what no relay takes.
+                        if (state.relayDirectLinkNote && !state.isCommons) {
+                            Text(stringResource(R.string.chat_relay_direct_link_note, other))
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { relayMarkerExplained = null }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
+
+        heardAuthorExplained?.let { author ->
+            // Dismiss is the plain button and "Open profile" the confirm, because the point of the dialog is the
+            // caveat, not the errand: someone who taps a face on this channel should be able to read why the name
+            // is a guess and stop there. Following through opens the *contact's* profile by peer id — the row's
+            // sender is this phone on a heard post, so `senderNodeId` would open our own.
+            AlertDialog(
+                onDismissRequest = { heardAuthorExplained = null },
+                icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
+                title = { Text(stringResource(R.string.chat_mesh_match_title, author.name)) },
+                text = { Text(stringResource(R.string.chat_mesh_match_body, author.name)) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            heardAuthorExplained = null
+                            onOpenProfile(author.peerId)
+                        },
+                    ) {
+                        Text(stringResource(R.string.chat_mesh_match_open))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { heardAuthorExplained = null }) {
+                        Text(stringResource(R.string.action_close))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -2794,6 +2804,11 @@ private fun MessageBubble(
             RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
         }
     var showPicker by remember { mutableStateOf(false) }
+    // Where the bubble is, for the long-press menu's anchor and cut-out (MessageMenuOverlay). Written on every
+    // layout; nothing reads it unless the menu is open.
+    val bubbleBounds = remember { mutableStateOf(Rect.Zero) }
+    // The bubble's drawing, recorded only while its menu is open, which the menu's layer draws lifted over the scrim.
+    val bubbleLayer = rememberGraphicsLayer()
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
     var revealed by remember(row.id) { mutableStateOf(false) }
@@ -2867,9 +2882,22 @@ private fun MessageBubble(
             Spacer(Modifier.width(8.dp))
         }
         // Bubble + its reaction chips stack vertically, aligned to the message's side. The Box anchors
-        // the long-press picker popup directly above the bubble.
+        // the long-press menu directly above the bubble.
         Column(horizontalAlignment = if (row.mine) Alignment.End else Alignment.Start) {
-            Box {
+            Box(
+                Modifier
+                    .onGloballyPositioned { bubbleBounds.value = it.anchorBounds() }
+                    .then(
+                        if (showPicker) {
+                            Modifier.drawWithContent {
+                                bubbleLayer.record { this@drawWithContent.drawContent() }
+                                drawLayer(bubbleLayer)
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
+            ) {
                 Surface(
                     color = bubbleColor,
                     contentColor =
@@ -3333,6 +3361,8 @@ private fun MessageBubble(
                     // Text the reader can see: a body the filter hides is translated only once revealed.
                     val translatable = BUBBLE_TRANSLATES && readableBody && translateOffered
                     ReactionPicker(
+                        anchor = bubbleBounds,
+                        bubble = bubbleLayer,
                         quickReactions = quickReactions,
                         canReact = canReact,
                         onPick = { emoji ->
@@ -3401,7 +3431,9 @@ private fun MessageBubble(
                     )
                 }
                 if (showDeleteConfirm) {
-                    AlertDialog(
+                    // In the chat's window, so the keyboard the long-press left up stays up (MessageMenuOverlay).
+                    InWindowAlertDialog(
+                        paneTitle = stringResource(R.string.chat_delete_confirm_title),
                         onDismissRequest = { showDeleteConfirm = false },
                         title = { Text(stringResource(R.string.chat_delete_confirm_title)) },
                         text = { Text(stringResource(R.string.chat_delete_confirm_body)) },
@@ -3541,6 +3573,10 @@ private fun QuotedMessage(
  */
 @Composable
 private fun ReactionPicker(
+    // The bubble's bounds and recorded drawing: the in-window menu is placed by them and draws the bubble over the scrim.
+    // Null (a preview) shows the menu in a Popup over its caller.
+    anchor: MutableState<Rect>?,
+    bubble: GraphicsLayer?,
     // The quick row: the user's most recent picks (RecentReactions.DEFAULTS until the first), newest first.
     quickReactions: List<String>,
     onPick: (String) -> Unit,
@@ -3584,12 +3620,9 @@ private fun ReactionPicker(
                 ): IntOffset = pickerPosition(anchorBounds, windowSize, popupContentSize, spacingPx)
             }
         }
-    Popup(
-        popupPositionProvider = positionProvider,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true),
-    ) {
+    val menu: @Composable () -> Unit = {
         Surface(
+            modifier = Modifier.testTag("chat_message_menu"),
             shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 3.dp,
@@ -3673,6 +3706,18 @@ private fun ReactionPicker(
                 )
             }
         }
+    }
+    // In the chat's own window when a MessageMenuHost is above (the screen): the keyboard stays up. A Popup is the
+    // fallback outside one (a preview), focusable so Back and a tap off it close it.
+    if (anchor != null && bubble != null && LocalMessageMenuHost.current != null) {
+        MessageMenu(anchor = anchor, bubble = bubble, onDismiss = onDismiss, content = menu)
+    } else {
+        Popup(
+            popupPositionProvider = positionProvider,
+            onDismissRequest = onDismiss,
+            properties = PopupProperties(focusable = true),
+            content = menu,
+        )
     }
 }
 
@@ -6072,6 +6117,8 @@ fun ReactionRowPreview() =
 fun ReactionPickerPreview() =
     KnitPreview {
         ReactionPicker(
+            anchor = null,
+            bubble = null,
             quickReactions = RecentReactions.DEFAULTS,
             onPick = {},
             onMore = {},

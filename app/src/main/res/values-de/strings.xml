@@ -551,6 +551,7 @@
     <string name="chat_message_copied">In die Zwischenablage kopiert</string>
     <string name="chat_action_details">Nachrichteninfo</string>
     <string name="chat_action_delete">Nachricht löschen</string>
+    <string name="chat_message_menu">Nachrichtenoptionen</string>
     <string name="chat_message_deleted">Nachricht gelöscht</string>
     <string name="chat_action_pin">Nachricht anheften</string>
     <string name="chat_action_unpin">Nachricht loslösen</string>

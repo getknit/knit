@@ -682,6 +682,8 @@
     <string name="chat_message_copied">Copied to clipboard</string>
     <string name="chat_action_details">Message info</string>
     <string name="chat_action_delete">Delete message</string>
+    <!-- TalkBack names the long-press menu with this as it opens (a pane title). -->
+    <string name="chat_message_menu">Message options</string>
     <string name="chat_message_deleted">Message deleted</string>
     <string name="chat_action_pin">Pin message</string>
     <string name="chat_action_unpin">Unpin message</string>

@@ -559,6 +559,7 @@
     <string name="chat_message_copied">Copié dans le presse-papiers</string>
     <string name="chat_action_details">Infos du message</string>
     <string name="chat_action_delete">Supprimer le message</string>
+    <string name="chat_message_menu">Options du message</string>
     <string name="chat_message_deleted">Message supprimé</string>
     <string name="chat_action_pin">Épingler le message</string>
     <string name="chat_action_unpin">Désépingler le message</string>

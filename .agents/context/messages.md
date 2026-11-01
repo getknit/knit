@@ -82,6 +82,12 @@ lines.
   once, in `deliverChat`, against the clamped body, and takes a sealed message's styles only from its plaintext.
   Only the bubble draws them; every other surface reads the plain body. Markdown-lite (deferred) is a composer input
   method, so receivers never parse markdown. There is no capability bit; a spoiler (code 4, reserved) would need one.
+- **When touching the bubble long-press menu (`ReactionPicker`, `pickerPosition`), the "+" emoji sheet
+  (`EmojiPickerSheet`), the Delete confirmation or anything else a long-press opens, or `ui/chat/MessageMenuOverlay`
+  (`MessageMenuHost`, `MessageMenu`, `InWindowSheet`, `InWindowAlertDialog`):** READ ADR 2026-11.pk9u. They draw in the
+  chat's own window so the soft keyboard stays up and the chat does not reflow; a `Popup`, `ModalBottomSheet` or
+  `AlertDialog` there is a window of its own and closes the keyboard. Tests: `ChatScreenContentTest` (one root,
+  composer still focused).
 - **When touching `data/pin/` (`PinEntity`, `PinDao`), `PinRepository`, `ChatViewModel.pinned` / `setPinned`,
   `senderName` or `ChatScreen`'s `PinnedBar`:** READ ADR 2026-10.2r7e. Pins are local to this phone: nothing is
   framed or enters custody, and the bar jumps through the quote-jump path. A row exists only while its message is

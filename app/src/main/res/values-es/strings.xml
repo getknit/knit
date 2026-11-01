@@ -559,6 +559,7 @@
     <string name="chat_message_copied">Copiado al portapapeles</string>
     <string name="chat_action_details">Información del mensaje</string>
     <string name="chat_action_delete">Eliminar mensaje</string>
+    <string name="chat_message_menu">Opciones del mensaje</string>
     <string name="chat_message_deleted">Mensaje eliminado</string>
     <string name="chat_action_pin">Fijar mensaje</string>
     <string name="chat_action_unpin">Dejar de fijar mensaje</string>

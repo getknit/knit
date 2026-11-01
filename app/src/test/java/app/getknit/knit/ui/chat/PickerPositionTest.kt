@@ -59,4 +59,34 @@ class PickerPositionTest {
         assertEquals(200, pickerPosition(IntRect(200, 800, 400, 900), window, narrow, spacing).x)
         assertEquals(720 - 200, pickerPosition(IntRect(650, 800, 720, 900), window, narrow, spacing).x)
     }
+
+    // menuPlacement: the in-window menu, which lifts the bubble rather than covering it (ADR 2026-11.pk9u).
+
+    @Test
+    fun theInWindowMenuLeavesTheBubbleWhereItIsWhenItFitsAboveOrBelow() {
+        val high = IntRect(left = 100, top = 1_000, right = 500, bottom = 1_100)
+        assertEquals(MenuPlacement(IntOffset(0, 1_000 - 900 - spacing), 0), menuPlacement(high, window, menu, spacing))
+        val low = IntRect(left = 100, top = 100, right = 500, bottom = 200)
+        assertEquals(MenuPlacement(IntOffset(0, 200 + spacing), 0), menuPlacement(low, window, menu, spacing))
+    }
+
+    @Test
+    fun withNoRoomOnEitherSideTheBubbleIsLiftedTheShorterWay() {
+        // A keyboard-height area: 900 + 16 + 100 fits in 1,100, but not beside the bubble where it sits.
+        val area = IntSize(width = 720, height = 1_100)
+        val upper = IntRect(left = 100, top = 400, right = 500, bottom = 500)
+        // Down: bubble top to 916 = +516. Up: bubble bottom to 1,100 - 916 = 184, so -316.
+        assertEquals(MenuPlacement(IntOffset(0, 1_100 - 900), 184 - 500), menuPlacement(upper, area, menu, spacing))
+        val lower = IntRect(left = 100, top = 820, right = 500, bottom = 920)
+        // Down: 916 - 820 = +96. Up: 184 - 920 = -736.
+        assertEquals(MenuPlacement(IntOffset(0, 0), 916 - 820), menuPlacement(lower, area, menu, spacing))
+    }
+
+    @Test
+    fun aBubbleAndMenuTallerThanTheAreaTogetherStayPutAndTheMenuIsClampedOnScreen() {
+        val area = IntSize(width = 720, height = 1_000)
+        val tall = IntRect(left = 100, top = 300, right = 500, bottom = 700)
+
+        assertEquals(MenuPlacement(pickerPosition(tall, area, menu, spacing), 0), menuPlacement(tall, area, menu, spacing))
+    }
 }

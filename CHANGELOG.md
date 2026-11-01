@@ -90,6 +90,8 @@ document:
 
 ### Fixed
 
+- Long-pressing a message while you type no longer closes the keyboard and shuffles the chat. The menu, the
+  full emoji picker and the delete confirmation now open over the chat as it is, with the keyboard still up.
 - Emoji search now also matches the words people use for an emoji, so "100" or "exam" finds the hundred
   points emoji and "like" finds thumbs up.
 - The keycap # emoji now shows up in the emoji picker. It was missing from the grid and from search.
