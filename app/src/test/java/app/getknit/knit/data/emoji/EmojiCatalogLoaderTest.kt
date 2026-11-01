@@ -54,6 +54,88 @@ class EmojiCatalogLoaderTest {
         }
 
     @Test
+    fun theAppLanguageOverlayIsLaidOverAndRebuiltWhenTheLanguageChanges() =
+        runTest {
+            var tag: String? = "pt"
+            var opens = 0
+            var overlayOpens = 0
+            val loader =
+                EmojiCatalogLoader(
+                    open = {
+                        opens++
+                        asset.byteInputStream()
+                    },
+                    canRender = { true },
+                    openOverlay = { t ->
+                        overlayOpens++
+                        check(t == "pt") { "unexpected overlay $t" }
+                        "# c\n😀\trosto risonho\tsorriso\n".byteInputStream()
+                    },
+                    overlayTag = { tag },
+                    io = UnconfinedTestDispatcher(testScheduler),
+                )
+
+            val pt = loader.load()
+            assertEquals("rosto risonho", pt.entries.first().name)
+            assertEquals("unicorn", pt.entries[1].name)
+            assertSame(pt, loader.load())
+            assertEquals(1, overlayOpens)
+
+            tag = null
+            assertEquals(
+                "grinning face",
+                loader
+                    .load()
+                    .entries
+                    .first()
+                    .name,
+            )
+            tag = "pt"
+            assertEquals(
+                "rosto risonho",
+                loader
+                    .load()
+                    .entries
+                    .first()
+                    .name,
+            )
+            assertEquals(2, overlayOpens)
+            assertEquals("the English base is read once, whatever the language", 1, opens)
+        }
+
+    @Test
+    fun anUnreadableOverlayFallsBackToEnglishAndIsRetriedNextTime() =
+        runTest {
+            var fail = true
+            val loader =
+                EmojiCatalogLoader(
+                    open = { asset.byteInputStream() },
+                    canRender = { true },
+                    openOverlay = { if (fail) throw IOException("no overlay") else "😀\trosto risonho\n".byteInputStream() },
+                    overlayTag = { "pt" },
+                    io = UnconfinedTestDispatcher(testScheduler),
+                )
+
+            assertEquals(
+                "grinning face",
+                loader
+                    .load()
+                    .entries
+                    .first()
+                    .name,
+            )
+            fail = false
+            assertEquals(
+                "rosto risonho",
+                loader
+                    .load()
+                    .entries
+                    .first()
+                    .name,
+            )
+        }
+
+    @Test
     fun anUnreadableAssetDegradesToEmptyAndIsRetriedNextTime() =
         runTest {
             var fail = true

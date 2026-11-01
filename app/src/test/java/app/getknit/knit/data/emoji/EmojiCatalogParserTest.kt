@@ -26,6 +26,29 @@ class EmojiCatalogParserTest {
     }
 
     @Test
+    fun anOverlayRowIsEmojiNameAndOptionalKeywords() {
+        val overlay =
+            EmojiCatalogParser.parseOverlay(
+                sequenceOf(
+                    "# comment",
+                    "💯\tcem pontos\t100|cem\r",
+                    "👍🏽\tpolegar para cima: pele morena",
+                    "#️⃣\ttecla: #\ttecla",
+                    "🦄", // no name
+                    "\tsem emoji",
+                ),
+            )
+        assertEquals(
+            mapOf(
+                "💯" to LocalizedEmoji("cem pontos", listOf("100", "cem")),
+                "👍🏽" to LocalizedEmoji("polegar para cima: pele morena"),
+                "#️⃣" to LocalizedEmoji("tecla: #", listOf("tecla")),
+            ),
+            overlay,
+        )
+    }
+
+    @Test
     fun namesKeepTheirColonsAndCommas() {
         val e = EmojiCatalogParser.parse(sequenceOf("👨‍❤️‍👨\t1\t0\tcouple with heart: man, man")).single()
         assertEquals("couple with heart: man, man", e.name)

@@ -222,6 +222,22 @@ These are not oversights; leave them unless the plan changes.
 - The watch faces (`:watchface`, `:watchface-monogram`): their one string is the face's name, and they are
   sideloaded prototypes, never shipped.
 
+## Emoji names and keywords
+
+The reaction picker's emoji names (its TalkBack labels) and search keywords come from CLDR, not from Weblate:
+`scripts/gen-emoji-catalog.py` writes one `assets/emoji/emoji_<tag>.tsv` overlay per entry of its `LOCALES`
+table, from the vendored `third_party/unicode-cldr/annotations*-<locale>.xml`, and `EmojiCatalogLoader` lays the
+app language's over the English catalog (`EmojiLocales.overlayFor`, matched the way Android matches `values-`).
+
+- **A new language adds a `LOCALES` row.** Its tag and CLDR chain, child first; a Latin American Spanish or another
+  region CLDR parents elsewhere names its parent (`"es-419": ["es_419", "es"]`). `--update-cldr <release>` fetches
+  every chain's files. `EmojiOverlayAssetTest.everyAppLanguageHasAnOverlay` fails until each `values-<locale>/`
+  lands on one; a region with no CLDR file of its own (es-AR) lands on its parent's.
+- **Search answers both languages.** A localized entry keeps its English name and keywords beside its own, and
+  accents fold on both sides ("corazon" finds "corazón"). emojilib stays English.
+- **A wrong emoji name is a CLDR bug**, reported upstream (<https://cldr.unicode.org>), not fixed in the overlay:
+  the overlay is generated and `--check` refuses a hand edit.
+
 ## Not covered by translating the UI
 
 - Content filtering's word lists and toxicity model are English (`docs/CONTENT_MODERATION.md`): a room post in

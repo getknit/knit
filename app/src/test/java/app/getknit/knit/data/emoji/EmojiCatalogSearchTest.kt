@@ -88,6 +88,53 @@ class EmojiCatalogSearchTest {
     }
 
     @Test
+    fun accentsAndCaseAreFoldedOnBothSides() {
+        val heart = entry("❤️", EmojiGroup.SMILEYS, "corazón rojo", keywords = listOf("emoción"))
+        val folded = EmojiCatalog(listOf(heart))
+        assertEquals(listOf(heart), folded.search("corazon"))
+        assertEquals(listOf(heart), folded.search("CORAZÓN"))
+        assertEquals(listOf(heart), folded.search("emocion"))
+    }
+
+    @Test
+    fun aLocalizedCatalogShowsTheOverlayNameAndStillAnswersEnglish() {
+        val pt =
+            withKeywords.localized(
+                mapOf(
+                    "💯" to LocalizedEmoji("cem pontos", listOf("cem", "certeza")),
+                    "👍🏻" to LocalizedEmoji("polegar para cima: pele clara"),
+                ),
+            )
+        val cem = pt.entries.first { it.emoji == "💯" }
+        assertEquals("cem pontos", cem.name)
+        assertEquals("hundred points", cem.englishName)
+        assertEquals(listOf("cem", "certeza", "100", "full", "hundred", "score"), cem.keywords)
+        // Localized name, localized keyword, English name, English keyword.
+        assertEquals(listOf(cem), pt.search("pontos"))
+        assertEquals(listOf(cem), pt.search("certeza"))
+        assertEquals(listOf(cem), pt.search("hundred points"))
+        assertEquals(listOf(cem), pt.search("score"))
+        // An entry the overlay lacks stays English; order and tone flags are kept.
+        assertEquals(withKeywords.entries.map { it.emoji }, pt.entries.map { it.emoji })
+        assertEquals("thumbs up", pt.entries.first { it.emoji == "👍" }.name)
+        assertEquals(listOf("👍🏻"), pt.search("pele clara").map { it.emoji })
+        assertEquals(withKeywords.browse.map { it.emoji }, pt.browse.map { it.emoji })
+    }
+
+    @Test
+    fun anEnglishNameMatchRanksLikeALocalizedOne() {
+        // "thumb" is a name prefix only in English; the keyword-only trophy is listed first.
+        val trophy = entry("🏆", EmojiGroup.ACTIVITIES, "troféu", keywords = listOf("thumb"))
+        val pt = EmojiCatalog(listOf(trophy, thumbsUp)).localized(mapOf("👍" to LocalizedEmoji("polegar para cima")))
+        assertEquals(listOf("👍", "🏆"), pt.search("thumb").map { it.emoji })
+    }
+
+    @Test
+    fun anEmptyOverlayIsTheSameCatalog() {
+        assertTrue(withKeywords.localized(emptyMap()) === withKeywords)
+    }
+
+    @Test
     fun aPastedEmojiComesFirst() {
         assertEquals(listOf(thumbsUp), catalog.search(" 👍 "))
     }

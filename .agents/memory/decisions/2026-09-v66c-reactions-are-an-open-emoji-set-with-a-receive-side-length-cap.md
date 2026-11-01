@@ -114,3 +114,26 @@ The same change fixed a parser bug the asset test shared: a line starting with `
 keycap #️⃣ row never reached the picker. A comment is now a `#` line with no tab, and the generator refuses a
 tab in its header.
 
+## Amendment 2026-11-01 — the app language's names and keywords
+
+The picker read English names to TalkBack and searched English words only, in an app shipped in six other
+languages. The generator now writes one overlay per app language, `emoji_<tag>.tsv` (`de`, `es`, `es-419`, `fr`,
+`pt`, `uk`): each emoji's CLDR name there and, on base entries, its CLDR keywords, from the locale's vendored
+`annotations` + `annotationsDerived`, resolved down a child-first chain so es-419 inherits from es where it says
+nothing or `↑↑↑`. `EmojiCatalogLoader` lays the app language's overlay over the English catalog
+(`EmojiCatalog.localized`) and caches it per tag, so a per-app language change rebuilds it on the next open.
+`EmojiLocales.overlayFor` matches the way `values-` strings resolve: the first language in the list with an
+overlay (`lang-REGION`, es-419 for Latin American Spanish, `lang`), English stopping at the base, which is why
+es-AR (no CLDR file of its own) reads es-419.
+
+Search answers both languages: a localized entry keeps its English name (`EmojiEntry.englishName`) and English
+keywords after its own, because people type the English shortcode words they learned elsewhere, and emojilib has
+no other language. Names and keywords fold case and accents on both sides (`EmojiFold`), so "corazon" finds
+"corazón"; that folding also conflates letters such as Ukrainian й and и, which only widens a match.
+
+One file per language rather than one wide asset keeps every other language off the read path. The cost is
+~330 KB compressed in the APK (45–66 KB each), about five times the English catalog. es-419 repeats most of es;
+a delta against its parent would save ~40 KB and is not worth a second resolution rule in the app.
+`EmojiOverlayAssetTest` fails when a `values-<locale>/` lands on no overlay, so a new language cannot ship English
+emoji by accident.
+

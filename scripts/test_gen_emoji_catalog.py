@@ -130,6 +130,43 @@ class ParseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen.attach_keywords(self.entries, gen.cldr_keywords([CLDR_DERIVED]))
 
+    def test_a_child_locale_inherits_what_it_leaves_out_or_marks_up_arrows(self) -> None:
+        es = gen.cldr_annotations([
+            """<ldml><annotations>
+            <annotation cp="😀">cara | sonrisa</annotation><annotation cp="😀" type="tts">cara sonriente</annotation>
+            <annotation cp="👍">pulgar</annotation><annotation cp="👍" type="tts">pulgar hacia arriba</annotation>
+            </annotations></ldml>""",
+            """<ldml><annotations><annotation cp="👍🏻" type="tts">pulgar hacia arriba: tono claro</annotation>
+            <annotation cp="👍🏻">pulgar | tono claro</annotation></annotations></ldml>""",
+        ])
+        es_419 = gen.cldr_annotations([
+            """<ldml><annotations>
+            <annotation cp="😀">↑↑↑</annotation><annotation cp="😀" type="tts">carita sonriente</annotation>
+            <annotation cp="👍">me gusta | Pulgar</annotation><annotation cp="👍" type="tts">↑↑↑</annotation>
+            </annotations></ldml>""",
+        ])
+        rows = {e: (n, k) for e, n, k in gen.localize(self.entries, [es_419, es])}
+        self.assertEqual(rows["😀"], ("carita sonriente", ("cara", "sonrisa")))  # own name, keywords inherited
+        self.assertEqual(rows["👍"], ("pulgar hacia arriba", ("me gusta", "pulgar")))  # name inherited, lower-cased
+        self.assertEqual(rows["👍🏻"], ("pulgar hacia arriba: tono claro", ()))  # derived name, tone: no keywords
+        self.assertNotIn("☺️", rows)  # no name anywhere in the chain: stays English
+
+    def test_an_overlay_renders_tabbed_rows_in_catalog_order_under_a_tabless_header(self) -> None:
+        de = """<ldml><annotations><annotation cp="👍">Daumen | Daumen hoch | gut</annotation>
+        <annotation cp="👍" type="tts">Daumen hoch</annotation><annotation cp="😀" type="tts">grinsendes Gesicht</annotation>
+        </annotations></ldml>"""
+        texts = {"de": (de, "<ldml><annotations/></ldml>")}
+        text = gen.render_overlay("de", self.entries, "release-48", texts, gen.source_info(SNIPPET))
+        rows = [ln for ln in text.splitlines() if "\t" in ln]
+        self.assertEqual(rows, ["😀\tgrinsendes Gesicht", "👍\tDaumen hoch\tdaumen|gut"])
+        self.assertFalse(any("\t" in ln for ln in text.splitlines() if ln.startswith("#")))
+        self.assertIn("locale chain de (child first)", text)
+
+    def test_every_locale_chain_ends_at_a_root_language(self) -> None:
+        for tag, chain in gen.LOCALES.items():
+            self.assertNotIn("_", chain[-1], tag)
+            self.assertEqual(tag.split("-")[0], chain[-1], tag)
+
     def test_source_info_reads_version_date_and_hash(self) -> None:
         src = gen.source_info(SNIPPET)
         self.assertEqual(src.version, "17.0")

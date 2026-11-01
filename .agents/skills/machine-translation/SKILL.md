@@ -48,6 +48,10 @@ scope is genuinely open: which variant a bare code means (`zh`), or a neutral ba
      and refuses a bare `es`, `fr` or `de`: check the code (`gpc listings push --dir <a folder holding only this
      locale> --dry-run` reads, never writes) and, if refused, give the folder Play's codes in `play_codes` in the
      release skill's `play.sh` (the maintainer's `.private/`; tell the user if it is not there).
+   - **Emoji names:** add the locale's tag and CLDR chain to `LOCALES` in `scripts/gen-emoji-catalog.py`, then
+     `python3 scripts/gen-emoji-catalog.py --update-cldr <its pinned release>` and commit the new
+     `emoji_<tag>.tsv` ("Emoji names and keywords" in `.agents/context/translations.md`; `EmojiOverlayAssetTest`
+     fails until a `values-<locale>/` has one).
    - **Docs:** the locale's sentence in the opening paragraph of `.agents/context/translations.md` (and the plural
      line if its categories are new); the language name in the translations bullet of `CHANGELOG.md`'s
      `## Unreleased`, obeying `.agents/rules/changelog.md` (humanizer before the commit).

@@ -4,8 +4,9 @@ package app.getknit.knit.data.emoji
  * The emoji the picker can offer: [entries] in Unicode order (already filtered to what this device can
  * render by [EmojiCatalogLoader]), the [browse] subset the grid shows (skin-tone variants collapsed away),
  * that subset [byGroup] in group order, and a name-and-keyword [search] over **all** entries so a tone
- * variant is one query away ("thumbs up: medium skin tone") without cluttering the grid. Pure Kotlin; the Android half
- * is [AndroidGlyphCheck].
+ * variant is one query away ("thumbs up: medium skin tone") without cluttering the grid. [localized] lays an
+ * app language's names and keywords over the English catalog. Pure Kotlin; the Android half is
+ * [AndroidGlyphCheck].
  */
 class EmojiCatalog(
     val entries: List<EmojiEntry>,
@@ -16,9 +17,27 @@ class EmojiCatalog(
     val byGroup: Map<EmojiGroup, List<EmojiEntry>> = browse.groupBy { it.group }
 
     /**
-     * Case-insensitive search over the name and the CLDR keywords: every whitespace-separated token of
-     * [query] must occur in the name or begin a keyword or one of its words (so "red heart" finds "red heart" but not
-     * "heart", and "100" finds 💯 by its keyword). A keyword is prefix-matched, never substring-matched, or
+     * This catalog in another language: each entry [overlay] names takes that name and puts its English one
+     * in [EmojiEntry.englishName]; its keywords are the overlay's, then the English ones. An entry the overlay
+     * lacks stays English. Order, groups and tone flags are untouched.
+     */
+    fun localized(overlay: Map<String, LocalizedEmoji>): EmojiCatalog =
+        if (overlay.isEmpty()) {
+            this
+        } else {
+            EmojiCatalog(
+                entries.map { e ->
+                    val l = overlay[e.emoji] ?: return@map e
+                    e.copy(name = l.name, englishName = e.name, keywords = (l.keywords + e.keywords).distinct())
+                },
+            )
+        }
+
+    /**
+     * Search over the names (the app language's and, when localized, the English one) and the keywords,
+     * case- and accent-insensitive ([EmojiFold]): every whitespace-separated token of [query] must occur in
+     * a name or begin a keyword or one of its words (so "red heart" finds "red heart" but not "heart",
+     * "100" finds 💯 by its keyword, and "corazon" finds "corazón"). A keyword is prefix-matched, never substring-matched, or
      * "one" would find every "phone" and "bone". Ranked exact name < name prefix < name word prefix <
      * exact keyword < keyword prefix < the rest (a name substring, or tokens matched across name and
      * keywords), ties in Unicode order (a base emoji lands before its tone variants). A query that *is* an
@@ -31,7 +50,7 @@ class EmojiCatalog(
         val trimmed = query.trim()
         if (trimmed.isEmpty()) return emptyList()
         val pasted = entries.firstOrNull { it.emoji == trimmed }
-        val q = trimmed.lowercase()
+        val q = EmojiFold.fold(trimmed)
         val tokens = q.split(WHITESPACE).filter { it.isNotEmpty() }
         val ranked =
             entries
@@ -52,23 +71,37 @@ class EmojiCatalog(
     private fun matches(
         e: EmojiEntry,
         t: String,
-    ): Boolean = e.searchKey.contains(t) || e.keywords.any { it.startsWith(t) } || e.keywordWords.any { it.startsWith(t) }
+    ): Boolean =
+        e.searchKey.contains(t) ||
+            e.englishKey?.contains(t) == true ||
+            e.keywordKeys.any { it.startsWith(t) } ||
+            e.keywordWords.any { it.startsWith(t) }
 
     private fun rank(
         e: EmojiEntry,
         q: String,
         firstToken: String,
-    ): Int {
-        val key = e.searchKey
-        return when {
+    ): Int =
+        minOf(nameRank(e.searchKey, q, firstToken), e.englishKey?.let { nameRank(it, q, firstToken) } ?: RANK_REST).let { byName ->
+            when {
+                byName < RANK_REST -> byName
+                e.keywordKeys.any { it == q } -> RANK_KEYWORD
+                e.keywordKeys.any { it.startsWith(q) } -> RANK_KEYWORD_PREFIX
+                else -> RANK_REST
+            }
+        }
+
+    private fun nameRank(
+        key: String,
+        q: String,
+        firstToken: String,
+    ): Int =
+        when {
             key == q -> RANK_EXACT
             key.startsWith(q) -> RANK_PREFIX
             key.split(WORD_BREAK).any { it.startsWith(firstToken) } -> RANK_WORD
-            e.keywords.any { it == q } -> RANK_KEYWORD
-            e.keywords.any { it.startsWith(q) } -> RANK_KEYWORD_PREFIX
             else -> RANK_REST
         }
-    }
 
     companion object {
         val EMPTY = EmojiCatalog(emptyList())

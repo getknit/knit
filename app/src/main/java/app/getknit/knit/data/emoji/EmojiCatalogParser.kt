@@ -33,4 +33,25 @@ object EmojiCatalogParser {
                         .orEmpty()
                 EmojiEntry(emoji = emoji, group = group, name = name, toneVariant = parts[2] == "1", keywords = keywords)
             }.toList()
+
+    /**
+     * Parses an `emoji/emoji_<tag>.tsv` overlay: `emoji ⇥ name`, optionally `⇥ kw|kw|…`, comments as in
+     * [parse]. A malformed line is dropped (that emoji stays English). Emoji → its localized row.
+     */
+    fun parseOverlay(lines: Sequence<String>): Map<String, LocalizedEmoji> =
+        lines
+            .mapNotNull { line ->
+                if (line.isBlank() || isComment(line)) return@mapNotNull null
+                val parts = line.trimEnd('\r').split('\t', limit = OVERLAY_COLUMNS)
+                if (parts.size < 2 || parts[0].isEmpty() || parts[1].isEmpty()) return@mapNotNull null
+                val keywords =
+                    parts
+                        .getOrNull(2)
+                        ?.split('|')
+                        ?.filter { it.isNotEmpty() }
+                        .orEmpty()
+                parts[0] to LocalizedEmoji(name = parts[1], keywords = keywords)
+            }.toMap()
+
+    private const val OVERLAY_COLUMNS = 3
 }

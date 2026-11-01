@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate app/src/main/assets/emoji/emoji_en.tsv -- the reaction picker's emoji catalog -- from the
-vendored Unicode `emoji-test.txt`, the vendored CLDR English emoji annotations and emojilib (search keywords).
+vendored Unicode `emoji-test.txt`, the vendored CLDR English emoji annotations and emojilib (search keywords),
+plus one emoji_<tag>.tsv overlay per app language (localized names and keywords from CLDR, see LOCALES).
 
-The output is a committed, GENERATED file. Regenerate it with:
+The outputs are committed, GENERATED files. Regenerate them with:
 
     python3 scripts/gen-emoji-catalog.py            # rewrite the asset from the vendored source
     python3 scripts/gen-emoji-catalog.py --check    # exit 1 if the committed asset is stale (CI)
@@ -48,6 +49,16 @@ Output line format (tab-separated; tabs never occur in an emoji or a CLDR name, 
     <emoji>\\t<group 0-8>\\t<tone 0|1>\\t<CLDR short name>[\\t<keyword>|<keyword>|...]
 
 (the keyword column is omitted, not left empty, when an entry has none -- no trailing tab to strip).
+
+Locale overlays (emoji_<tag>.tsv, one per LOCALES key): the same emoji in the same order, each with its CLDR
+name in that language (the `type="tts"` annotation) and, on base entries, its CLDR keywords there:
+
+    <emoji>\\t<localized name>[\\t<keyword>|<keyword>|...]
+
+A locale is resolved the CLDR way: its own `annotations` over its own `annotationsDerived`, then its parent's
+for what it leaves out or marks `↑↑↑` (es-419 inherits from es). An emoji the chain has no name for is left
+out, and the app shows it in English. Keywords are lower-cased, de-duplicated, and one equal to the localized
+name is dropped. emojilib is English-only, so no overlay carries it; the app also searches the English base.
 """
 
 from __future__ import annotations
@@ -72,8 +83,26 @@ SOURCE_TXT = VENDOR_DIR / "emoji-test.txt"
 SOURCE_LICENSE = VENDOR_DIR / "LICENSE"
 CLDR_DIR = REPO_ROOT / "third_party" / "unicode-cldr"
 CLDR_RELEASE = CLDR_DIR / "RELEASE"
-# Local name -> path under CLDR's `common/`. Order matters: the hand-curated file wins over the derived one.
-CLDR_FILES = {"annotations-en.xml": "annotations/en.xml", "annotationsDerived-en.xml": "annotationsDerived/en.xml"}
+
+
+def cldr_files(locale: str) -> dict[str, str]:
+    """Local name -> path under CLDR's `common/`. Order matters: the hand-curated file wins over the derived one."""
+    return {f"annotations-{locale}.xml": f"annotations/{locale}.xml", f"annotationsDerived-{locale}.xml": f"annotationsDerived/{locale}.xml"}
+
+
+CLDR_FILES = cldr_files("en")
+# Overlay tag (BCP 47, the asset's file suffix and what the app matches its language against) -> CLDR locale
+# chain, child first. One entry per app language under app/src/main/res/values-<locale>/: pt is CLDR's Brazilian
+# Portuguese, and es-AR (values-es-rAR) resolves through es-419 as CLDR's parentLocales says.
+LOCALES: dict[str, list[str]] = {
+    "de": ["de"],
+    "es": ["es"],
+    "es-419": ["es_419", "es"],
+    "fr": ["fr"],
+    "pt": ["pt"],
+    "uk": ["uk"],
+}
+CLDR_INHERIT = "↑↑↑"
 CLDR_URL_TEMPLATE = "https://raw.githubusercontent.com/unicode-org/cldr/{release}/{path}"
 EMOJILIB_DIR = REPO_ROOT / "third_party" / "emojilib"
 EMOJILIB_JSON = EMOJILIB_DIR / "emoji-en-US.json"
@@ -81,7 +110,12 @@ EMOJILIB_PACKAGE = EMOJILIB_DIR / "package.json"
 EMOJILIB_TARBALL = "https://registry.npmjs.org/emojilib/-/emojilib-{version}.tgz"
 # Tarball member -> vendored file name.
 EMOJILIB_FILES = {"package/dist/emoji-en-US.json": "emoji-en-US.json", "package/LICENSE": "LICENSE", "package/package.json": "package.json"}
-OUTPUT_TSV = REPO_ROOT / "app" / "src" / "main" / "assets" / "emoji" / "emoji_en.tsv"
+ASSET_DIR = REPO_ROOT / "app" / "src" / "main" / "assets" / "emoji"
+OUTPUT_TSV = ASSET_DIR / "emoji_en.tsv"
+
+
+def overlay_path(tag: str) -> Path:
+    return ASSET_DIR / f"emoji_{tag}.tsv"
 
 # From Emoji 17.0 the data files live under the UCD version directory (the old /Public/emoji/<ver>/ path 404s).
 SOURCE_URL_TEMPLATE = "https://www.unicode.org/Public/{version}.0/emoji/emoji-test.txt"
@@ -190,6 +224,61 @@ def cldr_keywords(texts: Iterable[str]) -> dict[str, list[str]]:
     return out
 
 
+class Annotations(NamedTuple):
+    names: dict[str, str]
+    keywords: dict[str, list[str]]
+
+
+def cldr_annotations(texts: Iterable[str]) -> Annotations:
+    """One CLDR locale's `annotations` + `annotationsDerived` -> its names and keywords, keyed by cp. The first
+    file to give a cp wins; a `↑↑↑` (inherit from the parent) counts as not given."""
+    names: dict[str, str] = {}
+    keywords: dict[str, list[str]] = {}
+    for text in texts:
+        for a in ET.fromstring(text.encode("utf-8")).iter("annotation"):
+            cp, value = a.get("cp"), (a.text or "").strip()
+            if not cp or not value or value == CLDR_INHERIT:
+                continue
+            if a.get("type") == "tts":
+                names.setdefault(cp, value)
+            else:
+                keywords.setdefault(cp, [k.strip() for k in value.split("|") if k.strip()])
+    return Annotations(names, keywords)
+
+
+def resolve(chain: list[Annotations], field: str, emoji: str) -> object | None:
+    """The first locale in [chain] (child first) that gives [emoji] -- as is, or minus U+FE0F -- a [field]."""
+    for ann in chain:
+        table = getattr(ann, field)
+        value = table.get(emoji) or table.get(emoji.replace("\ufe0f", ""))
+        if value:
+            return value
+    return None
+
+
+def clean_keywords(raw: Iterable[str], name: str) -> tuple[str, ...]:
+    kept: list[str] = []
+    for k in (k.strip().lower() for k in raw):
+        if k and k != name.lower() and k not in kept and not any(c in k for c in "\t\n\r|\x1f"):
+            kept.append(k)
+    return tuple(kept)
+
+
+def localize(entries: list[Entry], chain: list[Annotations]) -> list[tuple[str, str, tuple[str, ...]]]:
+    """(emoji, localized name, keywords) for every entry the chain names, in catalog order; keywords on base
+    entries only, as in the English catalog."""
+    out: list[tuple[str, str, tuple[str, ...]]] = []
+    for e in entries:
+        name = resolve(chain, "names", e.emoji)
+        if not isinstance(name, str):
+            continue
+        if any(c in name for c in "\t\n\r\x1f"):
+            raise ValueError(f"CLDR name {name!r} for {e.emoji} holds a separator")
+        raw = resolve(chain, "keywords", e.emoji) if not e.tone else None
+        out.append((e.emoji, name, clean_keywords(raw if isinstance(raw, list) else [], name)))
+    return out
+
+
 def emojilib_keywords(text: str) -> dict[str, list[str]]:
     """emojilib's `{"💯": ["hundred_points", "score", ...]}` -> VS16-stripped emoji -> keywords, `_` read as a space."""
     out: dict[str, list[str]] = {}
@@ -214,12 +303,7 @@ def attach_keywords(
         if raw is None:
             raise ValueError(f"CLDR has no keywords for {e.emoji} {e.name!r}: re-vendor CLDR (--update-cldr) in step with Unicode")
         raw = raw + (extra or {}).get(e.emoji.replace("\ufe0f", ""), [])
-        name = e.name.lower()
-        kept: list[str] = []
-        for k in (k.strip().lower() for k in raw):
-            if k and k != name and k not in kept and not any(c in k for c in "\t\n\r|\x1f"):
-                kept.append(k)
-        out.append(e._replace(keywords=tuple(kept)))
+        out.append(e._replace(keywords=clean_keywords(raw, e.name)))
     return out
 
 
@@ -229,6 +313,14 @@ def read_cldr() -> Cldr:
         raise FileNotFoundError(f"missing {', '.join(missing)} under {CLDR_DIR} (see its PROVENANCE.md)")
     texts = tuple((CLDR_DIR / n).read_text(encoding="utf-8") for n in CLDR_FILES)
     return Cldr(CLDR_RELEASE.read_text(encoding="utf-8").strip(), texts)
+
+
+def read_cldr_locale(locale: str) -> tuple[str, ...]:
+    files = cldr_files(locale)
+    missing = [n for n in files if not (CLDR_DIR / n).exists()]
+    if missing:
+        raise FileNotFoundError(f"missing {', '.join(missing)} under {CLDR_DIR} (run --update-cldr, see its PROVENANCE.md)")
+    return tuple((CLDR_DIR / n).read_text(encoding="utf-8") for n in files)
 
 
 def read_emojilib() -> Emojilib:
@@ -271,6 +363,43 @@ def header(src: Source, cldr: Cldr, emojilib: Emojilib) -> str:
 # give base entries their lower-cased CLDR then emojilib keywords (tone variants none); preserve file order.
 # Full detail: scripts/gen-emoji-catalog.py.
 """
+
+
+def overlay_header(tag: str, chain: list[str], release: str, texts: dict[str, tuple[str, ...]], src: Source) -> str:
+    sums = "\n".join(
+        f"#   {name} sha256 {hashlib.sha256(t.encode('utf-8')).hexdigest()}"
+        for loc in chain
+        for name, t in zip(cldr_files(loc), texts[loc])
+    )
+    return f"""\
+# Emoji catalog overlay for the app language '{tag}' -- the localized CLDR name and, on base entries, the
+# localized CLDR search keywords of the emoji in emoji_en.tsv, same order. Laid over that catalog at load.
+# Columns (tab-separated): emoji, name, and the keywords '|'-separated (absent when there are none). An emoji
+# with no name in this language is left out and stays English. '#' lines with no tab are comments.
+#
+# GENERATED FILE -- DO NOT EDIT BY HAND. Regenerate with:  python3 scripts/gen-emoji-catalog.py
+#
+# Catalog: Emoji {src.version} ({src.date})
+# Source:  CLDR {release}, locale chain {' -> '.join(chain)} (child first):
+{sums}
+# License: Unicode License v3 (c) Unicode, Inc. -- full text: app/src/main/assets/emoji/README.md
+"""
+
+
+def render_overlay(
+    tag: str,
+    entries: list[Entry],
+    release: str,
+    texts: dict[str, tuple[str, ...]],
+    src: Source,
+) -> str:
+    chain = LOCALES[tag]
+    rows = localize(entries, [cldr_annotations(texts[loc]) for loc in chain])
+    head = overlay_header(tag, chain, release, texts, src)
+    if "\t" in head:
+        raise ValueError("a tab in the overlay header would read as a data row")
+    body = "\n".join(f"{e}\t{n}\t{'|'.join(k)}" if k else f"{e}\t{n}" for e, n, k in rows)
+    return head + "\n" + body + "\n"
 
 
 def line(e: Entry) -> str:
@@ -317,7 +446,12 @@ def update(version: str) -> None:
 
 def update_cldr(release: str) -> None:
     CLDR_DIR.mkdir(parents=True, exist_ok=True)
-    fetches = [(CLDR_URL_TEMPLATE.format(release=release, path=f"common/{p}"), CLDR_DIR / n) for n, p in CLDR_FILES.items()]
+    locales = ["en", *sorted({loc for chain in LOCALES.values() for loc in chain})]
+    fetches = [
+        (CLDR_URL_TEMPLATE.format(release=release, path=f"common/{p}"), CLDR_DIR / n)
+        for loc in locales
+        for n, p in cldr_files(loc).items()
+    ]
     fetches.append((CLDR_URL_TEMPLATE.format(release=release, path="LICENSE"), CLDR_DIR / "LICENSE"))
     for url, dest in fetches:
         print(f"fetching {url}", file=sys.stderr)
@@ -346,7 +480,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--check", action="store_true", help="verify the committed asset matches the vendored source; exit 1 on drift")
     ap.add_argument("--update", metavar="VERSION", help="download emoji-test.txt for this Unicode emoji version (e.g. 18.0) and regenerate")
-    ap.add_argument("--update-cldr", metavar="RELEASE", help="download CLDR's English annotations at this release tag (e.g. release-49) and regenerate")
+    ap.add_argument("--update-cldr", metavar="RELEASE", help="download CLDR's annotations (English and every LOCALES chain) at this release tag (e.g. release-49) and regenerate")
     ap.add_argument("--update-emojilib", metavar="VERSION", help="download emojilib at this npm version (e.g. 4.0.4) and regenerate")
     args = ap.parse_args()
     if args.update:
@@ -361,21 +495,37 @@ def main() -> int:
     try:
         cldr = read_cldr()
         emojilib = read_emojilib()
+        locale_texts = {loc: read_cldr_locale(loc) for chain in LOCALES.values() for loc in chain}
     except FileNotFoundError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    rendered, entries, stats = render(SOURCE_TXT.read_text(encoding="utf-8"), cldr, emojilib)
+    text = SOURCE_TXT.read_text(encoding="utf-8")
+    rendered, entries, stats = render(text, cldr, emojilib)
+    outputs = {OUTPUT_TSV: rendered}
+    for tag in LOCALES:
+        outputs[overlay_path(tag)] = render_overlay(tag, entries, cldr.release, locale_texts, source_info(text))
+    strays = sorted(set(ASSET_DIR.glob("emoji_*.tsv")) - set(outputs))
     if args.check:
-        current = OUTPUT_TSV.read_text(encoding="utf-8") if OUTPUT_TSV.exists() else ""
-        if current != rendered:
-            print(f"error: {OUTPUT_TSV.relative_to(REPO_ROOT)} is stale -- run: python3 scripts/gen-emoji-catalog.py", file=sys.stderr)
+        stale = [p for p, body in outputs.items() if not p.exists() or p.read_text(encoding="utf-8") != body]
+        for p in stale:
+            print(f"error: {p.relative_to(REPO_ROOT)} is stale -- run: python3 scripts/gen-emoji-catalog.py", file=sys.stderr)
+        for p in strays:
+            print(f"error: {p.relative_to(REPO_ROOT)} is no generated output -- delete it or add its tag to LOCALES", file=sys.stderr)
+        if stale or strays:
             return 1
-        print(f"ok: {OUTPUT_TSV.relative_to(REPO_ROOT)} matches the vendored source ({len(entries)} emoji)", file=sys.stderr)
+        print(f"ok: emoji_en.tsv + {len(LOCALES)} overlays match the vendored sources ({len(entries)} emoji)", file=sys.stderr)
         return 0
-    OUTPUT_TSV.parent.mkdir(parents=True, exist_ok=True)
-    with OUTPUT_TSV.open("w", encoding="utf-8", newline="\n") as f:
-        f.write(rendered)
+    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    for p, body in outputs.items():
+        with p.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+    for p in strays:
+        p.unlink()
+        print(f"removed stray {p.relative_to(REPO_ROOT)}", file=sys.stderr)
     report(entries, stats)
+    for tag in LOCALES:
+        rows = [ln for ln in outputs[overlay_path(tag)].splitlines() if "\t" in ln]
+        print(f"  overlay {tag}: {len(rows)} named, {sum(ln.count(chr(9)) == 2 for ln in rows)} with keywords", file=sys.stderr)
     return 0
 
 

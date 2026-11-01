@@ -414,7 +414,7 @@ object ThirdPartyNotices {
             ),
             ThirdPartyNotice(
                 key = "emoji-keywords",
-                name = "Emoji search keywords",
+                name = "Emoji names and search keywords",
                 project = "Unicode, Inc. — CLDR emoji annotations",
                 url = "https://github.com/unicode-org/cldr",
                 license = License.UNICODE_3_0,

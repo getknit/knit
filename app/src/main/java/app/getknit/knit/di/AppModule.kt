@@ -46,6 +46,7 @@ import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.AndroidGlyphCheck
 import app.getknit.knit.data.emoji.EmojiCatalogLoader
+import app.getknit.knit.data.emoji.EmojiLocales
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
@@ -135,8 +136,28 @@ val appModule =
             )
         }
         // Emoji catalog for the reaction picker: parsed once per process, off the main thread, the first time the
-        // sheet opens; emoji this device's fonts cannot draw are dropped at load (Paint.hasGlyph).
-        single { EmojiCatalogLoader(open = { androidContext().assets.open(EmojiCatalogLoader.ASSET) }, canRender = AndroidGlyphCheck()) }
+        // sheet opens; emoji this device's fonts cannot draw are dropped at load (Paint.hasGlyph). The overlay is the
+        // app's own language (the configuration its strings resolve against, per-app choice included).
+        single {
+            val context = androidContext()
+            val overlays by lazy {
+                EmojiLocales.tagsIn(
+                    context.assets
+                        .list("emoji")
+                        .orEmpty()
+                        .toList(),
+                )
+            }
+            EmojiCatalogLoader(
+                open = { context.assets.open(EmojiCatalogLoader.ASSET) },
+                canRender = AndroidGlyphCheck(),
+                openOverlay = { tag -> context.assets.open(EmojiLocales.asset(tag)) },
+                overlayTag = {
+                    val locales = context.resources.configuration.locales
+                    EmojiLocales.overlayFor((0 until locales.size()).map { locales[it].toLanguageTag() }, overlays)
+                },
+            )
+        }
         // Stable per-device id (ANDROID_ID) — seeds the soft block-continuity DeviceTag, not the nodeId.
         single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
         // The AndroidKeyStore, behind the seam KeystoreSecret's verdicts are tested through; the debug variant can
