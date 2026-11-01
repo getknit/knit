@@ -113,15 +113,21 @@ class CallLabTest {
             lab.await(before + 2) { alice.dmsHeldFor(bob).size }
             // Held in send order: the OFFER is the first DM after the ones already parked, the CANCEL the next.
             val offer = alice.dmsHeldFor(bob)[before]
+            // The air keeps losing the OFFER until Bob's process dies. On a composite node (a board beside the radio)
+            // `CompositeMeshTransport.fastSend` launches a second copy, which can reach the pipe after the release: it
+            // would reach the dying process, and the relaunched one, its custody already holding the OFFER, would never
+            // be handed it. The restart drops the link, and the relink's pipe is clean.
+            alice.transport.lossy(bob.transport) { it.signed.contentEquals(offer.signed) }
             alice.transport.release(bob.transport) { frames -> frames.filterNot { it.signed.contentEquals(offer.signed) } }
             lab.await(1) { if (id in bob.savedCallTombs()) 1 else 0 }
+            val dying = bob.callLog.toList()
 
             bob.restart()
             lab.link(alice, bob)
-            // The relaunched process's own log (each boot starts one): alice's 60 s re-offer may have handed the OFFER to
-            // the dying process too, whose in-memory tombstone would have judged it the same way.
+            // The relaunched process's own log (each boot starts one).
             val judged = "call $id from ${alice.nodeId}: offer after its end"
-            lab.await(1) { bob.callLog.count { it == judged } }
+            val heard = lab.tryAwait(1) { bob.callLog.count { it == judged } }
+            assertTrue("the relaunched process never judged the offer: ${bob.callLog}, before the restart $dying", heard)
             assertTrue("the verdict came from the journal: ${bob.callLog}", bob.callLog.any { it.endsWith("kept from before") })
             assertNull("the late offer rang", bob.calls.state.value)
 

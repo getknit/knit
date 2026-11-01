@@ -33,12 +33,21 @@ class ContributionLabTest {
         lab.close()
     }
 
+    /**
+     * Alice, Bob and Carol, the line the credit is read off. Board-less in a boards sweep too: the one shared air reaches
+     * Carol from Alice, so her DM would ride it straight to Carol, and Bob, never asked to serve it, is credited nothing.
+     */
+    private suspend fun line(): Triple<LabNode, LabNode, LabNode> =
+        Triple(
+            lab.node("alice", board = false).apply { setDisplayName("Alice") },
+            lab.node("bob", board = false).apply { setDisplayName("Bob") },
+            lab.node("carol", board = false).apply { setDisplayName("Carol") },
+        )
+
     @Test
     fun theCarrierIsCreditedForTheDmItHandedOnAndThePartiesAreNot() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
-            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val (alice, bob, carol) = line()
             lab.linkAll(alice to bob, bob to carol)
             lab.awaitAcquainted(alice, bob, carol)
 
@@ -74,9 +83,7 @@ class ContributionLabTest {
     @Test
     fun theNumbersSurviveARestart() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
-            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val (alice, bob, carol) = line()
             lab.linkAll(alice to bob, bob to carol)
             lab.awaitAcquainted(alice, bob, carol)
             lab.unlink(bob, carol)
