@@ -204,7 +204,8 @@ and `RATCHET_AEAD_FAIL` drops were custody re-serves from the eras the resets re
 One finding is outside this ADR: in the 250 ms run the P9 dropped the P7's reset init, its first sight of it, as
 `DUPLICATE se=1 pe=0 n=0 init=true`, 20 s after adopting the P7's previous reset. The P7 stayed unconfirmed for more
 than 5 minutes, until the 600 ms run's reset was adopted. That is a ratchet issue, not a link one: the link only carried
-the frame.
+the frame. It was filed as #251 and fixed in ADR 2026-11.sfms. The trial ran again on 2026-11-01 with the fix and passed
+every case above, with each forced reset spaced a minute apart and no session left unconfirmed.
 
 ## Amendment 2026-10-27 — no standing keepalive
 

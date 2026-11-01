@@ -81,3 +81,12 @@ kept, and `aReEntryOfAResetWeAdoptedAndLeftIsNeverFloored`, the blocking case); 
 gate, re-open, root-change drop and unsigned cases; and
 `ResetOverRelayLabTest.aResetBobsFloorRefusedIsReOpenedWhenTheFloorEndsAndItsDmLands`, whose floor is shortened
 through `LabLimits.resetFloorMs`.
+
+Device trial passed 2026-11-01, 01:49 to 01:56, on `exp/dht-links` `c0d7f6d93` (the P9 and the P7, the reset-mid-offer
+trial of 2026-10-31 run again, the P7 with Bluetooth and Wi-Fi Aware off). #251's sequence: the P7 forced a reset and
+the P9 adopted it in about 4 s; a second force 20 s later was declined (`the peer adopted our reset under a minute
+ago`), with both ends still confirmed; a third 65 s after the first was adopted and confirmed in about 4 s. Five more
+forced resets spaced past the minute were each adopted within about 5 s. No init was dropped as `DUPLICATE`, no reset
+was held (`holding floored reset` never logged), and each phone logged one reset request per force that was not
+declined. So the sender half kept every forced reset out of the peer's floor, and the receiver's hold and re-open is
+checked only in the lab. A DM each way crossed afterwards and was ticked.
