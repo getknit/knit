@@ -132,7 +132,9 @@ Run the changed scenario classes under seeded chaos (the lab's slow-runner simul
 scripts/lab-chaos.sh --reuse --runs 10 --tests 'app.getknit.knit.mesh.lab.<Class>' [--tests …]
 ```
 
-Use `--tests '<Class>.<method>'` for the changed methods only when a class is large. `--reuse` answers from the
+Use `--tests '<Class>.<method>'` for the changed methods only when a class is large. Add `--boards` for a second
+sweep with a LoRa board on every node when the change or the flake is a boards one (the CI `mesh-lab-boards` job);
+a boards sweep and a plain one are stamped apart, so `--reuse` matches the mode as well. `--reuse` answers from the
 sweep your caller already ran when the tree has not moved since and it covered these patterns with at least as
 many runs (it says so in its first line); otherwise it sweeps, the seeds split across parallel JVMs. It prints
 each failing scenario with its seed, and names as `slow` any scenario that spends more than a few seconds a run:

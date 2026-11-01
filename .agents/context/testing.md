@@ -488,10 +488,11 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   stay board-less in that sweep (one whose subject is a signed-only path, or a carrier) says `lab.node(name,
   board = false)`. CI runs it three times (GitHub `mesh-lab-boards`, GitLab `test:mesh-lab-boards`) through
   `-Pknit.labBoards=true`, which sets the variable on the Test task as a declared input and leaves out the classes
-  `app/build.gradle.kts` lists as not board-ready yet; take a class off that list once it passes. By hand, after a
-  change to the crypto or LoRa planes: `KNIT_LAB_BOARDS=1 scripts/lab-chaos.sh --tests SessionLabTest --tests
-  RestoreLabTest --tests LoraDirectLabTest --runs 10` (the bare env var is not a Gradle input, so a plain re-run
-  needs `--rerun`). A LoRa scenario's own air is
+  `app/build.gradle.kts` lists as not board-ready yet (`labClassesNotBoardReady`); take a class off that list once it
+  passes. By hand, after a change to the crypto or LoRa planes: `scripts/lab-chaos.sh --boards --tests SessionLabTest
+  --tests RestoreLabTest --tests LoraDirectLabTest --runs 10`. `--boards` passes the property to the chaos shards, so
+  they leave out the same classes, and its stamp records the mode, so `--reuse` never answers a boards request from a
+  plain sweep or the reverse. `KNIT_LAB_BOARDS=1` in the environment counts as `--boards`. A LoRa scenario's own air is
   `MeshLab.quickAir()` — the destination board acks in 50 ms and an unanswered unicast retries every 300 ms, the
   firmware's minute compressed — and its boards come up provisioned on `MeshLab.KNIT_SLOT`, since a compact DM is never
   sent from slot 0. `FakeMeshtasticAir` runs a want_ack unicast on its link's scope and only once `send` returned, so a
@@ -609,10 +610,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   mostly asleep in its own stalls: `SessionLabTest` at 5 runs went from 115 s to 49 s on five. It stamps each
   sweep with a fingerprint of the tree it compiled (HEAD plus every uncommitted byte under `app/`, `gradle/` and
   the root build files, kept in the git dir), and `--reuse` answers from that stamp when the tree has not moved
-  and it covered the asked-for patterns with at least as many runs — the reviewer's second sweep of the same
-  tree. It also names as `slow` every scenario that spends more than 6 s a run past its node boots per node it
-  built (the rule prints a `MESHLAB-RUN … ms= bootMs= nodes=` line per passing run; boots are timed in
-  `MeshLab.node` and `LabNode.restart`): work grows with the nodes and a timer sat out does not, so the
+  and it covered the asked-for patterns with at least as many runs (and the same `--boards` mode) — the reviewer's
+  second sweep of the same tree. It also names as `slow` every scenario that spends more than 6 s a run past its node
+  boots per node it built (the rule prints a `MESHLAB-RUN … ms= bootMs= nodes=` line per passing run; boots are timed
+  in `MeshLab.node` and `LabNode.restart`): work grows with the nodes and a timer sat out does not, so the
   eight-node flood's 28 s a run is 3.5 s a node while a two-node scenario sitting out a 15 s timer is past 7. That
   one is waiting out a field timer (the bullet on the calendar above). Boots are about a tenth of a chaos sweep's
   time (measured 2026-10-04), so shortening them would buy little. A failing sweep's failing-class XMLs (each

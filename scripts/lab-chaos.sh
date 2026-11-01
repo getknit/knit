@@ -21,17 +21,19 @@
 #
 # ONE SWEEP PER TREE. Each sweep is stamped (in the git dir, so per worktree) with a fingerprint of the tree
 # it compiled. `--reuse` answers from that stamp instead of sweeping again when the tree has not moved and
-# the stamp covers the asked-for patterns with at least as many runs — how the mesh-lab-reviewer avoids
-# re-running the sweep its caller just ran.
+# the stamp covers the asked-for patterns with at least as many runs, in the same mode (boards or not) — how the
+# mesh-lab-reviewer avoids re-running the sweep its caller just ran.
 #
 # Usage: scripts/lab-chaos.sh [--tests <pattern>] [--runs <n>] [--seed <n>|random] [--shards <k>|auto]
-#                             [--quota <pct>] [--reuse]
+#                             [--quota <pct>] [--boards] [--reuse]
 #   --tests   Gradle --tests filter, repeatable (default: the whole app.getknit.knit.mesh.lab package)
 #   --runs    runs per scenario (default 20)
 #   --seed    first seed (default: random, printed)
 #   --shards  test JVMs to split the seeds across (default auto: a quarter of the cores, ~2.5 GB of free
 #             memory each, at most 8 and never more than --runs)
 #   --quota   also cap the run at <pct>% of one core (systemd-run), the slow-runner loop's throttle; one shard
+#   --boards  give every node a LoRa board (`-Pknit.labBoards=true`, MeshLab.BOARDS_ENV), leaving out the classes
+#             app/build.gradle.kts lists as not board-ready; KNIT_LAB_BOARDS=1 in the environment means the same
 #   --reuse   print the last sweep's result instead when it ran on this same tree and covers this request
 #   --no-lint skip scripts/lab-lint.py, which otherwise runs on the selected classes first and stops the sweep on a
 #             finding: a flaw the source shows is fixed in a second, not found by minutes of seeds
@@ -45,6 +47,7 @@ seed=""
 quota=""
 shards=auto
 reuse=""
+boards=""
 lint=1
 while (($#)); do
   case "$1" in
@@ -53,6 +56,7 @@ while (($#)); do
     --seed) seed="$2"; shift 2 ;;
     --shards) shards="$2"; shift 2 ;;
     --quota) quota="$2"; shift 2 ;;
+    --boards) boards=1; shift ;;
     --reuse) reuse=1; shift ;;
     --no-lint) lint=""; shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit 0 ;;
@@ -60,6 +64,9 @@ while (($#)); do
   esac
 done
 ((${#patterns[@]})) || patterns=("app.getknit.knit.mesh.lab.*")
+# The variable reaches the test JVMs through the daemon's environment whether or not the flag is given, so it is the
+# same request: one mode, passed to Gradle as the property (which also leaves out the not-board-ready classes) and stamped.
+[[ "${KNIT_LAB_BOARDS:-}" == 1 ]] && boards=1
 for i in "${!patterns[@]}"; do
   p=${patterns[i]}
   [[ "$p" != *,* ]] || { echo "lab-chaos: a --tests pattern cannot hold a comma: $p" >&2; exit 2; }
@@ -86,18 +93,22 @@ before=$(fingerprint)
 
 if [[ -n "$reuse" && -f "$stamp" ]]; then
   set +e
-  python3 - "$stamp" "$before" "$runs" "${patterns[@]}" <<'EOF'
+  python3 - "$stamp" "$before" "$runs" "${boards:-0}" "${patterns[@]}" <<'EOF'
 import json, sys
-stamp, tree, runs, asked = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
+stamp, tree, runs, boards, asked = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1", sys.argv[5:]
 try:
     last = json.load(open(stamp))
 except (OSError, ValueError):
     sys.exit(100)
 def covers(q, p):  # does the stamped pattern q select everything the asked-for pattern p does?
     return q == p or p.startswith(q + ".") or (q.endswith("*") and p.startswith(q[:-1]))
-if last["tree"] != tree or last["runs"] < runs or not all(any(covers(q, p) for q in last["patterns"]) for p in asked):
+# A stamp from before the mode was recorded has no "boards" and is never reused: it may have been either.
+if last["tree"] != tree or last.get("boards") != boards or last["runs"] < runs:
     sys.exit(100)
-print(f"lab-chaos: reusing the sweep already run on this tree ({' '.join(last['patterns'])}, {last['runs']} runs)")
+if not all(any(covers(q, p) for q in last["patterns"]) for p in asked):
+    sys.exit(100)
+mode = ", every node a board" if boards else ""
+print(f"lab-chaos: reusing the sweep already run on this tree ({' '.join(last['patterns'])}, {last['runs']} runs{mode})")
 print(last["report"], end="")
 sys.exit(last["status"])
 EOF
@@ -148,24 +159,27 @@ tasks=()
 for ((i = 0; i < shards; i++)); do tasks+=(":app:labChaosShard$i"); done
 cmd=(./gradlew "${tasks[@]}" --continue --console=plain "-Pknit.labChaos=$seed" "-Pknit.labChaosRuns=$runs"
   "-Pknit.labChaosShards=$shards" "-Pknit.labChaosTests=$(IFS=,; echo "${patterns[*]}")")
+[[ -n "$boards" ]] && cmd+=("-Pknit.labBoards=true")
 if [[ -n "$quota" ]]; then
   cmd=(systemd-run --user --scope -q -p "CPUQuota=${quota}%" taskset -c 0 "${cmd[@]}" --no-daemon)
 fi
 # Take turns with any other Gradle run in this worktree (a sibling reviewer's), see scripts/gradle-turn.sh.
 cmd=(scripts/gradle-turn.sh "${cmd[@]}")
 
-echo "lab-chaos: seeds $seed..$((seed + runs - 1)) over $shards shard(s), ${patterns[*]}${quota:+, CPUQuota=$quota%}"
+echo "lab-chaos: seeds $seed..$((seed + runs - 1)) over $shards shard(s), ${patterns[*]}${quota:+, CPUQuota=$quota%}${boards:+, every node a board}"
 set +e
 "${cmd[@]}" > "app/build/lab-chaos.log" 2>&1
 gradle_status=$?
 set -e
 
 mkdir -p "$state"
-python3 - "$results" "$seed" "$runs" "$gradle_status" "$stamp" "$before" "$(fingerprint)" "$state/kept" "${patterns[@]}" <<'EOF'
+python3 - "$results" "$seed" "$runs" "$gradle_status" "$stamp" "$before" "$(fingerprint)" "$state/kept" "${boards:-0}" \
+  "${patterns[@]}" <<'EOF'
 import glob, json, os, re, shutil, sys, time, xml.etree.ElementTree as ET
 results, seed, runs, gradle_status, stamp, before, after = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6], sys.argv[7]
 kept_root = sys.argv[8]
-patterns = sys.argv[9:]
+boards = sys.argv[9] == "1"
+patterns = sys.argv[10:]
 # How many failing sweeps' reports are kept; the oldest beyond this are dropped.
 KEPT_SWEEPS = 10
 # A scenario that spends longer than this a run past its node boots, per node it built (LabChaos's MESHLAB-RUN
@@ -175,7 +189,8 @@ KEPT_SWEEPS = 10
 SLOW_S_PER_NODE = 6.0
 files = glob.glob(f"{results}/labChaosShard*/*.xml")
 if not files:
-    print("lab-chaos: no test results written — see app/build/lab-chaos.log"); sys.exit(3)
+    hint = " (a boards sweep leaves out the classes app/build.gradle.kts lists as not board-ready)" if boards else ""
+    print(f"lab-chaos: no test results written — see app/build/lab-chaos.log{hint}"); sys.exit(3)
 scenarios = {}  # name -> {"time", "fails": [...], "skipped"}
 failing_files = set()  # the shard XMLs that hold a failure: its report, warnings and counters
 timed = {}  # name -> [runs, ms, boot ms, nodes], from the passing runs' MESHLAB-RUN lines
@@ -227,7 +242,7 @@ if failing_files:
         shutil.rmtree(old, ignore_errors=True)
     lines.append(f"lab-chaos: failing reports kept in {kept}")
 lines.append(f"lab-chaos: {len(ran) - len(failed)}/{len(ran)} scenarios survived {runs} seeded runs each (first seed {seed})"
-             + (f", {skipped} skipped" if skipped else ""))
+             + (", every node a board" if boards else "") + (f", {skipped} skipped" if skipped else ""))
 status = 1 if failed else 0
 broken = not failed and gradle_status != 0
 if broken:
@@ -238,6 +253,7 @@ print(report, end="")
 if before != after:
     print("lab-chaos: the tree moved during the sweep; not stamped for --reuse")
 elif not broken:
-    json.dump({"tree": before, "patterns": patterns, "runs": runs, "seed": seed, "status": status, "report": report}, open(stamp, "w"))
+    json.dump({"tree": before, "boards": boards, "patterns": patterns, "runs": runs, "seed": seed, "status": status,
+               "report": report}, open(stamp, "w"))
 sys.exit(status)
 EOF

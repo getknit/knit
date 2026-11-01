@@ -237,6 +237,20 @@ val debugAbis =
         .map { it.trim() }
         .filter { it.isNotEmpty() }
 
+// The mesh-lab classes not board-ready yet. A boards run (`-Pknit.labBoards=true`, MeshLab.BOARDS_ENV) leaves them out,
+// in the CI jobs and in the chaos shards alike. Each fails every boards run and passes every plain one (2026-10-29),
+// because it assumes no LoRa or hides a real interaction still to be told apart. Take a class off the list once it passes.
+val labClassesNotBoardReady =
+    listOf(
+        "CustodyQuotaLabTest",
+        "LargeAttachmentLabTest",
+        "LoraPocketLabTest",
+        "PullBudgetLabTest",
+        "RoomFloodLabTest",
+        "StrandedAttachmentLabTest",
+        "StrangerBacklogLabTest",
+    )
+
 android {
     namespace = "app.getknit.knit"
     // Turns on the `screenshotTest` source set for the Compose Preview Screenshot Testing plugin (the
@@ -641,21 +655,11 @@ android {
                 // `-Pknit.labBoards=true` gives every mesh-lab node a LoRa board (MeshLab.BOARDS_ENV, ADR
                 // 2026-10.x9fa), so each scenario also runs with compact DMs and ticks racing its signed copies.
                 // Passed as the env var MeshLab reads, and declared an input so a boards run is never answered
-                // from a plain run's up-to-date or cached result. The classes listed are not board-ready yet: they
-                // fail every boards run and pass every plain one (2026-10-29), each a scenario that assumes no
-                // LoRa or a real interaction still to be told apart. Take a class off the list once it passes.
+                // from a plain run's up-to-date or cached result. It leaves out [labClassesNotBoardReady].
                 if (labBoards) {
                     test.environment("KNIT_LAB_BOARDS", "1")
                     test.inputs.property("knitLabBoards", true)
-                    listOf(
-                        "CustodyQuotaLabTest",
-                        "LargeAttachmentLabTest",
-                        "LoraPocketLabTest",
-                        "PullBudgetLabTest",
-                        "RoomFloodLabTest",
-                        "StrandedAttachmentLabTest",
-                        "StrangerBacklogLabTest",
-                    ).forEach { test.filter.excludeTestsMatching("app.getknit.knit.mesh.lab.$it") }
+                    labClassesNotBoardReady.forEach { test.filter.excludeTestsMatching("app.getknit.knit.mesh.lab.$it") }
                 }
                 // `-Pknit.labChaos=<seed|random>` (+ `-Pknit.labChaosRuns=<n>`) turns on the mesh lab's seeded
                 // scheduling noise (mesh/lab/LabChaos.kt; scripts/lab-chaos.sh). A system property is a Test
@@ -1023,7 +1027,8 @@ tasks.withType<Test>().configureEach {
 // running every selected scenario on its own slice of the seeds `knit.labChaos .. + knit.labChaosRuns - 1`, filtered by
 // `knit.labChaosTests` (comma-separated `--tests` patterns: a task option binds to one task, a property to all k). With
 // the configuration cache on they run in parallel, each writing build/test-results/labChaosShard<i>/. Never up to date:
-// a sweep is a draw, not a build product. Off unless asked for, so nothing else sees these tasks.
+// a sweep is a draw, not a build product. Off unless asked for, so nothing else sees these tasks. `-Pknit.labBoards=true`
+// (lab-chaos.sh --boards) gives every node a board here as in testDebugUnitTest, and leaves out the same classes.
 val labChaosShards =
     providers
         .gradleProperty("knit.labChaosShards")
@@ -1046,6 +1051,12 @@ if (labChaosShards > 0) {
             .split(',')
             .map(String::trim)
             .filter(String::isNotEmpty)
+    val boards =
+        providers
+            .gradleProperty("knit.labBoards")
+            .map(String::toBoolean)
+            .orElse(false)
+            .get()
     var nextSeed = firstSeed
     for (i in 0 until minOf(labChaosShards, totalRuns)) {
         val runs = totalRuns / labChaosShards + if (i < totalRuns % labChaosShards) 1 else 0
@@ -1065,9 +1076,12 @@ if (labChaosShards > 0) {
             systemProperties(base.systemProperties)
             systemProperty("knit.labChaos", seed.toString())
             systemProperty("knit.labChaosRuns", runs.toString())
+            // The shard inherits the daemon's environment, not the base task's, so a boards sweep sets the variable here.
+            if (boards) environment("KNIT_LAB_BOARDS", "1")
             useJUnit()
             filter {
                 patterns.forEach(::includeTestsMatching)
+                if (boards) labClassesNotBoardReady.forEach { excludeTestsMatching("app.getknit.knit.mesh.lab.$it") }
                 // The recorder runs only under -Pknit.previewStrings (unitTests.all leaves it out of the variant tasks).
                 if (!providers.gradleProperty("knit.previewStrings").isPresent) {
                     excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
