@@ -50,6 +50,11 @@ class KeyExchangeLabTest {
      * relay — the answer, whenever Bob's jitter puts it — and passes only the point-to-point frames, which is
      * what the served key is. Otherwise the answer reaches Carol before the key does and parks beside the
      * post, and "one frame parked" reads two (a 1-in-8 flake on one core).
+     *
+     * In a boards run Alice's board airs her post (an own one-packet room post, ADR 2026-10.rp3s), so Carol can hear
+     * it and ask Bob for the key before the release. Bob's answer then parks in the hold with the relays, so the
+     * release lets it through as well. Without that, the release dropped the key and Carol's 30 s re-ask cooldown
+     * kept her from asking again (boards run 1 of CI run 41261854309).
      */
     @Test
     fun aFrameFromAStrangerIsParkedAndReplayedWhenTheKeyIsFetched() =
@@ -69,8 +74,11 @@ class KeyExchangeLabTest {
                 lab.tryAwait(1) { bob.transport.held(carol.transport).count { it.isRoomPostFrom(alice.nodeId) } },
             )
             bob.transport.lossy(carol.transport) { it.relay } // the flood relays from here on are the air's to lose
-            val released = bob.transport.release(carol.transport) { batch -> batch.filter { it.isRoomPostFrom(alice.nodeId) } }
-            assertEquals(1, released.size)
+            val released =
+                bob.transport.release(carol.transport) { batch ->
+                    batch.filter { it.isRoomPostFrom(alice.nodeId) || (!it.relay && it.isProfileFrom(alice.nodeId)) }
+                }
+            assertEquals(1, released.count { it.isRoomPostFrom(alice.nodeId) })
 
             assertTrue("carol never refused the stranger's frame", lab.tryAwait(1) { carol.drops(DropReason.NO_SENDER_KEY).toInt() })
             assertTrue(
