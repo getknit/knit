@@ -311,9 +311,12 @@ internal object FrameTranscoder {
             end: Int,
         ): String = String(src, h.contentStart, end - h.contentStart, Charsets.UTF_8)
 
-        /** The entries of the map headed by [h], in order; the map ends at the last entry's value end. */
+        /**
+         * The entries of the map headed by [h], in order; the map ends at the last entry's value end. A count of 2^63 or
+         * more reads negative, so it is refused here before `toInt()` can turn it into a huge list.
+         */
         protected fun entries(h: CborItems.Header): List<Entry> {
-            if (h.major != MAJOR_MAP || h.arg > src.size - h.contentStart) throw Refuse()
+            if (h.major != MAJOR_MAP || h.arg < 0 || h.arg > src.size - h.contentStart) throw Refuse()
             var p = h.contentStart
             return List(h.arg.toInt()) {
                 val keyEnd = end(p)
@@ -333,7 +336,7 @@ internal object FrameTranscoder {
             end: Int,
             each: (start: Int, end: Int) -> Unit,
         ) {
-            if (h.arg > src.size - h.contentStart) throw Refuse()
+            if (h.arg < 0 || h.arg > src.size - h.contentStart) throw Refuse()
             var p = h.contentStart
             repeat(h.arg.toInt()) {
                 val e = end(p)

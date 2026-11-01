@@ -215,6 +215,14 @@ class IdElisionTest {
         assertEquals(2 * (NodeId.BYTES - IdElision.PREFIX_BYTES), transcoded.size - frame.size)
     }
 
+    /** A body whose map count reads negative is refused before `toInt()` sizes a list from it (see FrameTranscoderTest). */
+    @Test
+    fun aBodyWithAMapCountPastLongMaxIsRefusedWithoutAllocatingForIt() {
+        IdElision.rebuild(MAP_COUNT_PAST_LONG_MAX, nobody) // loads the classes, so the measure is the call's alone
+        val allocated = allocatedBy { assertTrue(IdElision.rebuild(MAP_COUNT_PAST_LONG_MAX, nobody).isEmpty()) }
+        assertTrue("allocated $allocated bytes refusing an 11-byte body", allocated < ONE_MIB)
+    }
+
     @Test
     fun theUnsignedFormElidesToo() {
         val wire = WireEnvelope(relay = false, sig = ByteArray(0), signed = dm())
@@ -225,6 +233,7 @@ class IdElisionTest {
     }
 
     private companion object {
+        const val ONE_MIB = 1L shl 20
         const val SEED = 0x6E1D
         const val SENT_AT = 1_760_000_000_123L
         const val CT_BYTES = 40
