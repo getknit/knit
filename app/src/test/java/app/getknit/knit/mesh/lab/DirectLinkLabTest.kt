@@ -45,9 +45,11 @@ class DirectLinkLabTest {
     @Test
     fun twoIslandsConvergeThePairsOwnTrafficOverOneDirectLinkAndNothingElse() =
         runBlocking {
-            val alice = lab.node("alice", directLinks = true).apply { setDisplayName("Alice") }
-            val bob = lab.node("bob", directLinks = true).apply { setDisplayName("Bob") }
-            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            // Board-less in a boards sweep too: its one shared air reaches every board, so the two islands would be one,
+            // and Dave's room post, heard by Alice over it, parks for a key no island of hers can bring.
+            val alice = lab.node("alice", directLinks = true, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", directLinks = true, board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
             lab.link(alice, bob)
             lab.link(alice, carol)
             lab.link(bob, carol)
@@ -59,7 +61,7 @@ class DirectLinkLabTest {
             // Bob leaves for his own island, where only Dave is; Alice and Bob link over the Internet.
             lab.unlink(alice, bob)
             lab.unlink(bob, carol)
-            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            val dave = lab.node("dave", board = false).apply { setDisplayName("Dave") }
             lab.link(bob, dave)
             // Dave's key reaches Bob by his link-up profile push, on his own neighbour pass: wait for it, or Dave's post below
             // can land first and park for the key, a round trip the convergence checks never wait on.

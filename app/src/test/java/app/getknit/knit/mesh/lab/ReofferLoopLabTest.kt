@@ -65,18 +65,28 @@ class ReofferLoopLabTest {
                 alice.transport.awaitInboundDrained()
             }
 
-            // Lost on the air, with the link up throughout. The DM is in Bob's custody before it is sent (#141).
+            // Lost on the air, with the link up throughout. The DM is in Bob's custody before it is sent (#141). On a
+            // composite node (a board beside the radio) `CompositeMeshTransport.fastSend` launches a second copy that can
+            // reach the pipe after `sendDm` returns, so the air keeps losing Bob's chat frames until Alice's reads heal; the
+            // DM then crosses only as a serve. The await below proves the flood copy was lost, so the predicate matched.
             bob.transport.lossy(alice.transport) { it.isChatFrom(bob) }
             assertTrue(bob.sendDm(alice, "lost on the link"))
-            bob.transport.lossy(alice.transport)
             val dm = bob.ownMessageId(bob.dmWith(alice), "lost on the link")
+            lab.await(1) { bob.transport.lost.count { it.isChatFrom(bob) } }
             // A round that runs after the loss also fails. That pins the loop as still alive, and Alice still lacks
             // the DM, so nothing but her round's digest was going to bring it.
             val failed = alice.failedReoffers()
             lab.await(failed + 1) { alice.failedReoffers() }
             assertTrue("bob carries his DM", dm in bob.custodyIds())
-            assertFalse("and alice has not been handed it", dm in alice.custodyIds())
+            val handed = dm in alice.custodyIds()
+            assertFalse(
+                "and alice has not been handed it (via ${runCatching { alice.receivedVia(alice.dmWith(bob), dm) }.getOrNull()}, " +
+                    "lost ${bob.transport.lost.mapNotNull { WireCodec.decodeEnvelope(it.signed)?.let { e -> "${e.type} ${e.id}" } }})\n" +
+                    lab.report(listOf(alice, bob)),
+                handed,
+            )
 
+            bob.transport.lossy(alice.transport)
             alice.custodyGate.healLiveIds()
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
         }

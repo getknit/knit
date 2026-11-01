@@ -40,6 +40,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+args=("$@")
 
 patterns=()
 runs=20
@@ -115,6 +116,13 @@ EOF
   status=$?
   set -e
   ((status == 100)) || exit "$status"
+fi
+
+# The shard results and app/build/lab-chaos.log are this worktree's alone, and a sweep wipes and rewrites both: hold the
+# worktree's Gradle turn (scripts/gradle-turn.sh, re-entrant) from here to the tally, so a second sweep queued behind a
+# running one never deletes the XMLs that one is still writing, nor truncates its log.
+if [[ -z "${KNIT_GRADLE_TURN:-}" ]] && command -v flock >/dev/null 2>&1; then
+  exec scripts/gradle-turn.sh "$PWD/scripts/lab-chaos.sh" "${args[@]}"
 fi
 
 if [[ -n "$lint" ]]; then

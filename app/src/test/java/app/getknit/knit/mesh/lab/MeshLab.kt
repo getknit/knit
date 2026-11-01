@@ -273,9 +273,10 @@ class MeshLab {
         val started = System.nanoTime()
         val board = air ?: boardsAir?.takeIf { board }
         // A boards-everywhere run holds a DM's tick a second, not the field's 45 s: the scenarios' own waits are the lab's.
+        // Only on a node it gives a board (`board` is the shared air here): one built `board = false` is a plain node.
         val held =
             if (air == null &&
-                boardsAir != null
+                board != null
             ) {
                 limits.copy(dmAckHoldMs = minOf(limits.dmAckHoldMs, BOARDS_ACK_HOLD_MS))
             } else {

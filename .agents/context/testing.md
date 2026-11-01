@@ -419,7 +419,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   commit share one transaction (`commitOpen` inside `withWriteTransaction`), so "the row is readable" does
   mean "the session is confirmed" and `await decrypted → reply` is a reply, not a both-initiate; the block
   list is a fresh `first()` per frame; every user-level send hands its frames — group seeds included,
-  `distributeGroupSeed` is inline — to the transport before returning; the fake air decides loss inside the
+  `distributeGroupSeed` is inline — to the transport before returning (but see the composite caveat below); the fake air decides loss inside the
   board's `send`, before the `lora tx` line a scenario polls; `skipCovered` runs at enqueue, so `loraSkipped*`
   moves before `sendChat` returns; `onFrameReplayed` and `onKeyRecovered` precede the replayed delivery; a
   `groupleave` envelope carries no `group`, so `sortedBy { isGroupFrame() }` does put the leave first. And
@@ -430,6 +430,18 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   past the 12 h republish, boot's wait passes on the old row before the seed runs, and an edit made next can
   be folded into the seed's republish with no version bump, so `published` would time out; no scenario edits
   there today.
+- **On a composite node a send has a second, launched copy.** A node with a board or a link plane beside its radio
+  runs its manager on `CompositeMeshTransport`, whose `hasFastPlane` is true, so `MeshManager.originateWire` also calls
+  `fastSend` (a DM-form chat) or `fastFanout` (room posts, custodial ctl). For a child with no fast plane of its own (the
+  radio `LabTransport` without `pages`) the composite *launches* a second `child.send`, which can reach the pipe after
+  the user-level send returned. A lost frame records no crossing, so that copy goes through once the loss is cleared:
+  `ReofferLoopLabTest` cleared `lossy` right after `sendDm` and failed 4 of 4 boards shards (2026-11-01). On a phone the
+  two copies are one write on a live link and a harmless retry otherwise. Keep a loss or a hold on until past the
+  assertion it protects; never clear it straight after the send.
+- **A boards sweep's one air joins every island.** `KNIT_LAB_BOARDS=1` puts every board on one shared air, so a
+  scenario whose subject is two islands no radio reaches (`DirectLinkLabTest`, `InternetLinkLabTest`,
+  `LinkDownloadLimitLabTest`) builds those nodes `board = false`: otherwise a DM rides the air beside the link the
+  scenario is about, and a stranger's room post heard over it parks for a key no island can bring (ADR 2026-10.rp3s).
 - **Two legitimate orderings are not a state to await.** `AttachmentLabTest`'s #79 scenario awaited Carol's
   copy of the blob and then asserted she never served Bob — but Bob then asked every neighbour at once, and whether
   Carol holds the bytes when his ask reaches her is a race the mesh does not decide (her pull is two hops and

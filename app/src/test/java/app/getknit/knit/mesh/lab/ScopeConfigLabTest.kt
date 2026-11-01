@@ -55,7 +55,13 @@ class ScopeConfigLabTest {
         version = version,
     )
 
-    /** A DM both sides have answered under, so each holds a confirmed session — what a config is sealed under. */
+    /**
+     * A DM both sides have answered under, so each holds a confirmed session — what a config is sealed under — and both
+     * ✓✓ home. A tick is sealed after its DM's row lands, so it can still be on its way when the session already reads
+     * confirmed, and one a reset overtakes never opens: the reset re-mints the epoch it was sealed against (ADR 027),
+     * and its re-seal covers the peer's unacked DMs, never its ticks (ADR 2026-10.dmgw). That loss is #260, not a
+     * config scenario's subject.
+     */
     private suspend fun confirmed(
         a: LabNode,
         b: LabNode,
@@ -65,6 +71,8 @@ class ScopeConfigLabTest {
         assertTrue(b.sendDm(a, "hello ${a.name}"))
         lab.await(1) { a.decrypted(a.dmWith(b)).count { it.second == "hello ${a.name}" } }
         lab.await(1) { if (a.session(b)?.confirmed == true && b.session(a)?.confirmed == true) 1 else 0 }
+        lab.awaitReceipt(a, a.ownMessageId(a.dmWith(b), "hello ${b.name}"), b)
+        lab.awaitReceipt(b, b.ownMessageId(b.dmWith(a), "hello ${a.name}"), a)
     }
 
     /** 1 once [node] holds [expected] for [conversationId], else 0. */

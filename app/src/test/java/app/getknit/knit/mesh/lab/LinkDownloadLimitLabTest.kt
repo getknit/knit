@@ -56,8 +56,9 @@ class LinkDownloadLimitLabTest {
     // Alice and Bob on [spool] and the lab's Internet behind port-restricted NATs, contacts with a confirmed session each
     // way and a DM scope converged at the relay: what a link's offer needs (`InternetLinkLabTest.contacts`).
     private suspend fun contacts(spool: FakeSpool): Pair<LabNode, LabNode> {
-        val alice = lab.node("alice", spool = spool, internet = Nat.PORT_RESTRICTED).apply { setDisplayName("Alice") }
-        val bob = lab.node("bob", spool = spool, internet = Nat.PORT_RESTRICTED).apply { setDisplayName("Bob") }
+        // Board-less in a boards sweep too, as in `InternetLinkLabTest.contacts`: the shared air would join the two islands.
+        val alice = lab.node("alice", spool = spool, internet = Nat.PORT_RESTRICTED, board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", spool = spool, internet = Nat.PORT_RESTRICTED, board = false).apply { setDisplayName("Bob") }
         lab.meetOnTheRelay(alice, bob)
         return alice to bob
     }
@@ -220,7 +221,11 @@ class LinkDownloadLimitLabTest {
         )
         if (!bothDown()) {
             lab.clock.advance(LinkSession.IDLE_MS)
-            assertTrue("the link never idled out\n${a.linkLog}\n${b.linkLog}", lab.tryAwait(1) { if (bothDown()) 1 else 0 })
+            assertTrue(
+                "the link never idled out\n${a.linkLog}\n${b.linkLog}\n${a.name} link frames: ${a.linkFrames.takeLast(20)}\n" +
+                    "${b.name} link frames: ${b.linkFrames.takeLast(20)}\n${lab.report(listOf(a, b))}",
+                lab.tryAwait(1) { if (bothDown()) 1 else 0 },
+            )
         }
         lab.await(1) { if (!a.linkPlaneHolds(b) && !b.linkPlaneHolds(a)) 1 else 0 }
         a.awaitLinksActedOn()

@@ -62,8 +62,10 @@ class InternetLinkLabTest {
         spool: FakeSpool,
         nat: Nat,
     ): Pair<LabNode, LabNode> {
-        val alice = lab.node("alice", spool = spool, internet = nat).apply { setDisplayName("Alice") }
-        val bob = lab.node("bob", spool = spool, internet = nat).apply { setDisplayName("Bob") }
+        // Board-less in a boards sweep too: its one shared air would reach both islands, and a DM would ride it beside the
+        // link a scenario is about.
+        val alice = lab.node("alice", spool = spool, internet = nat, board = false).apply { setDisplayName("Alice") }
+        val bob = lab.node("bob", spool = spool, internet = nat, board = false).apply { setDisplayName("Bob") }
         lab.meetOnTheRelay(alice, bob)
         return alice to bob
     }
@@ -79,15 +81,25 @@ class InternetLinkLabTest {
     // Whether this node's mesh counts [peer] nearby: `MeshController.neighbors`, the short-range set.
     private fun LabNode.seesNearby(peer: LabNode): Boolean = manager.neighbors.value.any { it.nodeId == peer.nodeId }
 
+    // What [a]'s link plane remembers of [b] when a link never came: the demand's own inputs (a round that offers nothing
+    // logs nothing, and an offer answered BACKOFF logs nothing either).
+    private fun linkState(
+        a: LabNode,
+        b: LabNode,
+    ): String {
+        val links = checkNotNull(a.links)
+        val tried = links.lastTries()[b.nodeId]?.let { "${it.outcome} why=${it.why} at=${it.at}" }
+        return "${a.name}: now=${lab.clock.now()} lastUpAt=${links.lastUpAt(b.nodeId)} declinedAt=${links.declinedAt(b.nodeId)} " +
+            "lastTry=$tried"
+    }
+
     // Both ends' link planes hold the link, and both managers have acted on it: what a send next may rely on.
     private suspend fun awaitLinked(
         a: LabNode,
         b: LabNode,
     ) {
-        assertTrue(
-            "the link never reached both planes\n${a.linkLog}\n${b.linkLog}",
-            lab.tryAwait(1) { if (a.linkPlaneHolds(b) && b.linkPlaneHolds(a)) 1 else 0 },
-        )
+        val linked = lab.tryAwait(1) { if (a.linkPlaneHolds(b) && b.linkPlaneHolds(a)) 1 else 0 }
+        assertTrue("the link never reached both planes\n${a.linkLog}\n${b.linkLog}\n${linkState(a, b)}\n${linkState(b, a)}", linked)
         a.awaitLinksActedOn()
         b.awaitLinksActedOn()
     }
@@ -101,8 +113,9 @@ class InternetLinkLabTest {
     fun anOfferPunchedThroughTwoNatsCarriesTheDmAndTheGroupAcrossIt() =
         runBlocking {
             val spool = relay()
-            val alice = lab.node("alice", spool = spool, internet = Nat.PORT_RESTRICTED).apply { setDisplayName("Alice") }
-            val bob = lab.node("bob", spool = spool, internet = Nat.PORT_RESTRICTED).apply { setDisplayName("Bob") }
+            // Board-less in a boards sweep too, as in [contacts]: the link alone is the subject.
+            val alice = lab.node("alice", spool = spool, internet = Nat.PORT_RESTRICTED, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", spool = spool, internet = Nat.PORT_RESTRICTED, board = false).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             assertTrue(alice.sendDm(bob, "hello"))
@@ -266,11 +279,19 @@ class InternetLinkLabTest {
                 lab.clock.advance(LinkSession.IDLE_MS)
                 assertTrue("the link never idled out\n${alice.linkLog}\n${bob.linkLog}", lab.tryAwait(1) { if (bothDown()) 1 else 0 })
             }
-            assertTrue("no idle close was logged: ${alice.linkLog + bob.linkLog}", (alice.linkLog + bob.linkLog).any { "IDLE" in it })
+            // Awaited, not read: `DirectLinks.holdUntilClosed` takes the link out of `links` before it logs its end.
+            val idled = lab.tryAwait(1) { if ((alice.linkLog + bob.linkLog).any { "IDLE" in it }) 1 else 0 }
+            assertTrue("no idle close was logged: ${alice.linkLog + bob.linkLog}", idled)
             lab.await(1) { if (!alice.linkPlaneHolds(bob) && !bob.linkPlaneHolds(alice)) 1 else 0 }
             alice.awaitLinksActedOn()
             bob.awaitLinksActedOn()
 
+            // Dated after the link's end: `DirectLinks.ended` stamps it, and the demand reads a row dated in that very
+            // millisecond as one the link had its chance at (`LinkDemandPolicy.offers`, `p.at > lastUpAt`). The wall
+            // clock moves on by itself, but a send this close behind the end can land in that millisecond: the chaos
+            // failure that showed the demand's inputs (seed 519910471) had sent within 13 ms of the end and offered
+            // nothing. `LinkDownloadLimitLabTest`'s unmetered step steps past the same boundary.
+            lab.clock.advance(1)
             assertTrue(alice.sendDm(bob, "second"))
             lab.clock.advance(LinkDemandPolicy.TICK_WAIT_MS)
             demand.round()
