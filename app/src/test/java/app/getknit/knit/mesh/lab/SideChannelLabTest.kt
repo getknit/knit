@@ -57,15 +57,17 @@ class SideChannelLabTest {
      * to the pages, has the post anyway, off the fast path's link copy Carol sends the moment she delivers it.
      * The jitter is real time the lab cannot pin, so the race is not asserted; the copy is — it must have
      * crossed Carol's pipe to Dave as the fast path's (`via=fast`), whether or not the relay fired too —
-     * and the oracle closes over whichever way the race went.
+     * and the oracle closes over whichever way the race went. No node has a board, even in a boards run: the
+     * post off the LoRa air reaches Dave first, his relay crosses Carol's pipe toward her, and `LinkCrossings`
+     * then skips her copy, the one this scenario pins (boards run 3 of CI run 41250619065).
      */
     @Test
     fun aLineHearsTheAuthorOffAPageAndTheLinkCopyStillReachesTheDeafEnd() =
         runBlocking {
-            val alice = lab.node("alice", pages = pages).apply { setDisplayName("Alice") }
-            val bob = lab.node("bob", pages = pages).apply { setDisplayName("Bob") }
-            val carol = lab.node("carol", pages = pages).apply { setDisplayName("Carol") }
-            val dave = lab.node("dave", pages = pages).apply { setDisplayName("Dave") }
+            val alice = lab.node("alice", pages = pages, board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", pages = pages, board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", pages = pages, board = false).apply { setDisplayName("Carol") }
+            val dave = lab.node("dave", pages = pages, board = false).apply { setDisplayName("Dave") }
             lab.linkAll(alice to bob, bob to carol, carol to dave)
             lab.awaitAcquainted(alice, bob, carol, dave)
             pages.lossy = { to, _ -> to == dave.nodeId }
