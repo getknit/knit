@@ -18,6 +18,7 @@ import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallSignals
 import app.getknit.knit.call.TurnServer
 import app.getknit.knit.call.TurnSource
+import app.getknit.knit.clampToUtf16
 import app.getknit.knit.contacts.ContactCards
 import app.getknit.knit.contacts.ContactImporter
 import app.getknit.knit.contacts.ContactRemover
@@ -106,6 +107,7 @@ import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.MemoryRatchetStore
 import app.getknit.knit.mesh.protocol.PrekeyInfo
@@ -1667,10 +1669,10 @@ class LabNode internal constructor(
     }
 
     /**
-     * Runs one profile edit and returns once the manager has published it: the version moved and custody holds
-     * the frame under the current publish stamp, past the one before the edit. `broadcastProfile` writes the
-     * three under `profileLock` before it originates the frame, so a link brought up next finds the frame in
-     * the digest, and a parity wait next waits for the flood. The settings write returns before the profile
+     * Runs one profile edit and returns once the manager has published it: custody holds
+     * the frame under the current publish stamp, presenting the edit. `broadcastProfile` writes the version, the
+     * stamp and the signed row under `profileLock` before it originates the frame, so a link brought up next finds
+     * the frame in the digest, and a parity wait next waits for the flood. The settings write returns before the profile
      * watcher runs; a scenario that linked or unlinked in that gap found the edit's frame originated to nobody
      * and stranded in this node's custody (`RoomTickPlanesLabTest` under the throttled loop, 2026-09-16). The
      * version alone is not the event — it moves before the frame is signed — and neither is `framesOriginated`,
@@ -1679,29 +1681,49 @@ class LabNode internal constructor(
      * record on [LabTransport] would miss a board node, whose composite never hands its child a null-target
      * send. The caller has already checked the edit is a real change — a no-op write publishes nothing and this
      * would wait on it forever.
+     *
+     * Nor is anything read before the edit: the event is custody holding, under the current stamp, a frame that
+     * presents the settings as they stand after the edit. Since the edit is a real change, such a frame was signed
+     * after it landed. A publish already under way when the edit lands (a raw write just before, as
+     * `CustodyHeadroomLabTest` writes the board) bumps the version, then the stamp, then signs the settings of
+     * that moment, so a baseline read before the edit can take its new version or its new stamp; if it then signs
+     * the edit too, the watcher finds custody presenting the settings and publishes nothing more (one publish per
+     * burst), and a wait for either to pass the baseline never returns (CI, 2026-11-01). If it signed before the
+     * edit, its frame lacks the edit and the wait runs on to the watcher's next one. The stamp is written before
+     * the row and the row before the frame is originated, so a poll between them finds no row and waits.
      */
     private suspend fun published(edit: suspend () -> Unit) {
-        val version = settings.profileVersion.first()
-        val stamp = settings.profilePublishedAt.first()
         edit()
         val done =
             withContext(Dispatchers.Default) {
                 withTimeoutOrNull(MeshLab.AWAIT_MS) {
                     while (true) {
-                        val now = settings.profilePublishedAt.first()
-                        if (settings.profileVersion.first() > version && now > stamp && "profile-$nodeId-$now" in custodyIds()) break
+                        if (custodyPresentsSettings(settings.profilePublishedAt.first())) break
                         delay(MeshLab.POLL_MS)
                     }
                 }
             } != null
         val held = custodyIds().filter { it.startsWith("profile-$nodeId-") }
         check(done) {
-            "$name's profile edit was never published: version ${settings.profileVersion.first()} (was $version), " +
-                "stamp ${settings.profilePublishedAt.first()} (was $stamp), custody $held\n  warnings:\n" +
+            "$name's profile edit was never published: version ${settings.profileVersion.first()}, " +
+                "stamp ${settings.profilePublishedAt.first()}, custody $held\n  warnings:\n" +
                 ShadowLog.getLogs().filter { it.type >= Log.WARN }.takeLast(MeshLab.WARNINGS_KEPT).joinToString("\n") {
                     "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" } ?: ""}"
                 }
         }
+    }
+
+    /**
+     * Whether custody holds this node's profile frame under [stamp] and it presents the profile settings as they
+     * stand: the fields an edit here writes, compared as the frame carries them (`MeshManager.custodyPresentsOtherThan`).
+     */
+    private suspend fun custodyPresentsSettings(stamp: Long): Boolean {
+        val row = forwardStore.frame(FrameId.profileId(nodeId, stamp), now()) ?: return false
+        val held = WireCodec.decodePayload<ProfileContent>(row.envelope.payload) ?: return false
+        return held.name == normalizeSingleLine(settings.displayName.first()).clampToUtf16(TextLimits.DISPLAY_NAME) &&
+            held.status == normalizeSingleLine(settings.status.first()).clampToUtf16(TextLimits.STATUS) &&
+            held.avatarHash == settings.ownAvatarHash.first() &&
+            held.openToChat == settings.openToChat.first()
     }
 
     /**
