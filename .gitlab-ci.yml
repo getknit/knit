@@ -247,6 +247,9 @@ build:debug:
 #                                 risk arrives through a dependency, and only the dex shows that.
 #   * scripts/r8-platform-gate.sh — fails when the mapping renames a class android.jar defines: a bundled
 #                                 platform copy R8 renamed breaks the first vector drawable (GitHub #59).
+#   * scripts/dex-api-cast-gate.sh — fails on a cast R8 added to a platform class newer than minSdk, read from a
+#                                 field it widened to Object: it throws NoClassDefFoundError on older phones even
+#                                 when the field is null (2.10.x crashed every video send on API 29–30).
 # Builds UNSIGNED (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. Archives mapping/ so
 # mapping.txt (deobfuscation), usage.txt (removed code) and configuration.txt (merged rules) are
 # auditable/retained per pipeline.
@@ -267,6 +270,8 @@ build:release:
     - scripts/r8-dex-gate.sh app/build/outputs/apk/release/app-release-unsigned.apk
     - scripts/dex-bitmap-gate.sh app/build/outputs/apk/release/app-release-unsigned.apk
     - scripts/r8-platform-gate.sh app/build/outputs/mapping/release/mapping.txt
+    - scripts/dex-api-cast-gate.sh app/build/outputs/apk/release/app-release-unsigned.apk
+      app/build/outputs/mapping/release/mapping.txt
   artifacts:
     name: "knit-release-r8-$CI_COMMIT_SHORT_SHA"
     when: always
