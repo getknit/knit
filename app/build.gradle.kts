@@ -686,6 +686,15 @@ android {
                 // hour. Kept modest on purpose: the CI runners include a workstation that is also in daily use,
                 // and this fork's RSS is the heap plus ~0.75 GB of uncapped Metaspace (Robolectric's android-all).
                 test.maxHeapSize = "1g"
+                // A fresh fork every 100 classes (the suite is ~700), because a fork never gives MockK's memory back.
+                // MockK 1.14.11 keeps every mock it makes, and every scratch mock an `every`/`verify` block records:
+                // the stub its weak-keyed handler map holds as the value keeps the proxy's cancel lambda
+                // (`disposeRoutine`), which holds the key, the mock itself. `clearAllStubsFromMemory()` frees none of
+                // them (it drops a WeakRef that is not Disposable, and scratch mocks are never registered), so no test
+                // can clean up after itself. One fork for the whole suite reached 102k live stubs and died of an
+                // OutOfMemoryError in its last classes (CI run 41250619065); at 150 the fork holding the mesh lab
+                // still peaked at 876 MB live.
+                test.forkEvery = 100
             }
         }
 

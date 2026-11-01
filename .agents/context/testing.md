@@ -28,7 +28,7 @@
 > turns off, and hands what it caught to the *next* `runTest` — so a Robolectric test whose service or fake
 > throws inside an unhandled `launch` (a Koin definition its module never provided, resumed on the
 > `Dispatchers.Unconfined` scope) fails whichever `runTest` class the fork runs after it, and only when a
-> `runTest` ran *before* it. A single-class run is green; CI's one fork is not. Read the failure's
+> `runTest` ran *before* it. A single-class run is green; CI's shared fork is not. Read the failure's
 > **Suppressed:** cause for the real origin (the HTML report keeps it; the console line does not), and
 > reproduce with three classes: any `runTest` class, the suspect, the victim (the `ImageScreeningServiceTest`
 > case of 2026-09-19 was `MeshServiceForegroundReclaimTest` raising `neighborCount` without an
@@ -38,8 +38,10 @@
 
 Every JVM test outside `mesh/lab/` (`app/src/test`, `wear/src/test`) is reviewed by the `unit-test-reviewer` persona
 against this catalogue, and a Stop hook asks for it. CI's GitLab runner is one vCPU and 2 GB (two
-`Dispatchers.Default` threads), GitHub's four vCPU, and both run the suite in one fork: an ordering a workstation
-always wins is lost there one run in thirty. The watch's tests run in their own job (GitHub `wear-tests`, GitLab
+`Dispatchers.Default` threads), GitHub's four vCPU, and both run the suite one fork at a time, a fresh one every 100
+classes (`forkEvery` in `app/build.gradle.kts`: MockK keeps every mock a fork makes, so one fork for all ~700 classes
+ran out of heap): an ordering a workstation always wins is lost there one run in thirty. The watch's tests run in
+their own job (GitHub `wear-tests`, GitLab
 `test:wear`, `-Pknit.wear=true :wear:testDebugUnitTest`). Most of the incidents below never reproduced locally (`cd16429a`: 25
 green runs; `5626c3e5`: green for almost every draw), so a test is judged by reading it, and
 `scripts/unit-stress.sh --tests '<Class>'` (copies side by side in separate JVMs, `--quota` for one throttled core)
