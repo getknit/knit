@@ -6,18 +6,20 @@ Loaded locally at runtime by the reaction picker — the app has **no `INTERNET`
 ## `emoji_en.tsv`
 
 One fully-qualified RGI emoji per line, in Unicode's own order: `emoji`, `group id`, `skin-tone variant`
-(`0|1`), `CLDR short name` (English), tab-separated, under a `#` header. **Generated file — do not edit by
+(`0|1`), `CLDR short name` (English) and, on base entries, the CLDR search keywords (`|`-separated; the column
+is absent when there are none), tab-separated, under a `#` header. **Generated file — do not edit by
 hand**; regenerate with `python3 scripts/gen-emoji-catalog.py`. Produced from Unicode's `emoji-test.txt`
 (Emoji 17.0, see [Attribution](#attribution) below): `fully-qualified` entries only (the one canonical form
 of each emoji, so identical reactions tally as one chip), the `Component` group skipped, and every entry
 carrying a skin-tone modifier flagged so the browse grid can hide it under its base while search still finds
-it. The group id mirrors `app.getknit.knit.data.emoji.EmojiGroup` ordinal-for-ordinal.
+it. Search matches the name and the keywords, so "100" finds 💯; tone variants carry no keywords and are
+found by name ("thumbs up medium"). The group id mirrors `app.getknit.knit.data.emoji.EmojiGroup` ordinal-for-ordinal.
 
 The loader (`EmojiCatalogLoader`) parses it once per process off the main thread and drops every emoji the
 device's fonts cannot draw (`Paint.hasGlyph`), so an older phone never offers a tofu box. If the file is
 **absent or fails to load, the picker degrades to an empty grid** (the quick-reaction row still works).
 
-The file is plain text and stays compressed in the APK (~30 KB); it is deliberately **not** on the
+The file is plain text and stays compressed in the APK (~52 KB); it is deliberately **not** on the
 `noCompress` list, which exists only so TFLite can mmap the moderation models.
 
 ## Attribution
@@ -30,6 +32,13 @@ notice when shipping.
 Source: <https://www.unicode.org/Public/17.0.0/emoji/emoji-test.txt> (Emoji 17.0, 2025-08-04). The shipped
 catalog is a derived work produced by `scripts/gen-emoji-catalog.py`; the pinned source, its `LICENSE`, and
 provenance are vendored under `third_party/unicode-emoji/` (not shipped in the APK).
+
+### `emoji_en.tsv` keywords — Unicode CLDR annotations (Unicode License v3)
+
+Source: <https://github.com/unicode-org/cldr> release `release-48`, `common/annotations/en.xml` and
+`common/annotationsDerived/en.xml`. The keyword column is a derived work of these files, produced by the same
+generator; the pinned files, their `LICENSE` and provenance are vendored under `third_party/unicode-cldr/`
+(not shipped in the APK). CLDR is published under the same Unicode License v3 as below.
 
 ```
 UNICODE LICENSE V3

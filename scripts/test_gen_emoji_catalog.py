@@ -1,4 +1,4 @@
-"""Unit tests for scripts/gen-emoji-catalog.py's parse rules. Run: python3 -m unittest scripts/test_gen_emoji_catalog.py"""
+"""Unit tests for scripts/gen-emoji-catalog.py's parse and keyword rules. Run: python3 -m unittest scripts/test_gen_emoji_catalog.py"""
 
 from __future__ import annotations
 
@@ -47,6 +47,22 @@ SNIPPET = """\
 """
 
 
+# CLDR keys drop U+FE0F (smiling face is cp="☺"); the derived file carries the ZWJ and flag sequences.
+CLDR_ANNOTATIONS = """<ldml><annotations>
+<annotation cp="😀">face | Grin | grinning face</annotation>
+<annotation cp="😀" type="tts">grinning face</annotation>
+<annotation cp="☺">face | outlined | relaxed | smile</annotation>
+<annotation cp="👍">+1 | hand | thumb | up | +1</annotation>
+</annotations></ldml>"""
+CLDR_DERIVED = """<ldml><annotations>
+<annotation cp="😀">derived loses to the hand-curated file</annotation>
+<annotation cp="👍🏻">+1 | hand | light skin tone | thumb | up</annotation>
+<annotation cp="👨‍❤‍👨">couple | love | man</annotation>
+<annotation cp="🏴󠁧󠁢󠁥󠁮󠁧󠁿">flag</annotation>
+</annotations></ldml>"""
+CLDR = gen.Cldr("release-48", (CLDR_ANNOTATIONS, CLDR_DERIVED))
+
+
 class ParseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.entries, self.stats = gen.parse(SNIPPET.splitlines())
@@ -86,6 +102,22 @@ class ParseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen.parse(["# group: Holograms", "1F600 ; fully-qualified # 😀 E1.0 grinning face"])
 
+    def test_base_entries_get_lowercased_deduped_cldr_keywords(self) -> None:
+        by_name = {e.name: e for e in gen.attach_keywords(self.entries, gen.cldr_keywords(CLDR.texts))}
+        self.assertEqual(by_name["grinning face"].keywords, ("face", "grin"))  # name dropped, annotations win
+        self.assertEqual(by_name["smiling face"].keywords, ("face", "outlined", "relaxed", "smile"))  # FE0F stripped
+        self.assertEqual(by_name["thumbs up"].keywords, ("+1", "hand", "thumb", "up"))
+        self.assertEqual(by_name["couple with heart: man, man"].keywords, ("couple", "love", "man"))
+        self.assertEqual(by_name["flag: England"].keywords, ("flag",))
+
+    def test_tone_variants_carry_no_keywords(self) -> None:
+        by_name = {e.name: e for e in gen.attach_keywords(self.entries, gen.cldr_keywords(CLDR.texts))}
+        self.assertEqual(by_name["thumbs up: light skin tone"].keywords, ())
+
+    def test_a_base_entry_cldr_lacks_is_a_hard_error(self) -> None:
+        with self.assertRaises(ValueError):
+            gen.attach_keywords(self.entries, gen.cldr_keywords([CLDR_DERIVED]))
+
     def test_source_info_reads_version_date_and_hash(self) -> None:
         src = gen.source_info(SNIPPET)
         self.assertEqual(src.version, "17.0")
@@ -93,13 +125,14 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(len(src.sha256), 64)
 
     def test_render_emits_tab_separated_lines_under_a_comment_header(self) -> None:
-        text, entries, _ = gen.render(SNIPPET)
+        text, entries, _ = gen.render(SNIPPET, CLDR)
         lines = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
         self.assertEqual(len(lines), len(entries))
-        self.assertEqual(lines[0], "😀\t0\t0\tgrinning face")
-        self.assertEqual(lines[3], "👍🏻\t1\t1\tthumbs up: light skin tone")
+        self.assertEqual(lines[0], "😀\t0\t0\tgrinning face\tface|grin")
+        self.assertEqual(lines[3], "👍🏻\t1\t1\tthumbs up: light skin tone")  # no keyword column, no trailing tab
         self.assertIn("GENERATED FILE", text)
         self.assertIn("Emoji 17.0 (2025-08-04)", text)
+        self.assertIn("CLDR release-48 annotations/en.xml sha256", text)
 
 
 if __name__ == "__main__":

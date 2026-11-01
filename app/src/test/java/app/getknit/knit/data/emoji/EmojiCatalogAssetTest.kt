@@ -48,6 +48,13 @@ class EmojiCatalogAssetTest {
         entries.forEach { e ->
             assertFalse("'${e.name}' contains a tab/newline/unit separator", e.emoji.any { it in SEPARATORS })
             assertFalse("'${e.name}' name contains a separator", e.name.any { it in SEPARATORS })
+            assertTrue(
+                "'${e.name}' has a blank or separator-bearing keyword",
+                e.keywords.all { k ->
+                    k.isNotBlank() &&
+                        k.none { it in SEPARATORS }
+                },
+            )
             assertTrue(e.emoji.isNotBlank() && e.name.isNotBlank())
         }
     }
@@ -65,6 +72,25 @@ class EmojiCatalogAssetTest {
         // The jumbomoji detector must agree, or a message that is just this emoji renders at body size.
         val notEmoji = entries.filter { emojiOnlyCount(it.emoji) != 1 }
         assertTrue("emojiOnlyCount rejects ${notEmoji.size}: ${notEmoji.take(15).map { it.name }}", notEmoji.isEmpty())
+    }
+
+    @Test
+    fun baseEntriesCarryKeywordsAndToneVariantsDoNot() {
+        assertTrue("tone variants are reached by name", entries.filter { it.toneVariant }.all { it.keywords.isEmpty() })
+        // A base entry is bare only when CLDR's sole keyword was its own name ("hole", "pencil"); the generator
+        // hard-fails on one CLDR lacks, so more than a handful means the dedupe or the parse went wrong.
+        val bare = entries.filter { !it.toneVariant && it.keywords.isEmpty() }
+        assertTrue("base entries without keywords: ${bare.take(20).map { it.name }}", bare.size <= 20)
+        assertTrue("every bare base entry is a one-word name", bare.all { ' ' !in it.name })
+        assertTrue("keywords are lower-cased", entries.all { e -> e.keywords.all { it == it.lowercase() } })
+    }
+
+    @Test
+    fun keywordSearchFindsWhatTheNameAlone() {
+        assertEquals("💯", catalog.search("100").first().emoji)
+        assertEquals("💯", catalog.search("perfect").first().emoji)
+        assertEquals("👎", catalog.search("-1").first().emoji)
+        assertTrue("👍" in catalog.search("like").map { it.emoji })
     }
 
     @Test
@@ -88,6 +114,6 @@ class EmojiCatalogAssetTest {
 
     private companion object {
         val SKIN_TONES = 0x1F3FB..0x1F3FF
-        val SEPARATORS = setOf('\t', '\n', RecentReactions.SEPARATOR)
+        val SEPARATORS = setOf('\t', '\n', '|', RecentReactions.SEPARATOR)
     }
 }

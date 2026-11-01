@@ -412,6 +412,14 @@ object ThirdPartyNotices {
                 license = License.UNICODE_3_0,
                 kind = NoticeKind.DATA,
             ),
+            ThirdPartyNotice(
+                key = "emoji-keywords",
+                name = "Emoji search keywords",
+                project = "Unicode, Inc. — CLDR emoji annotations",
+                url = "https://github.com/unicode-org/cldr",
+                license = License.UNICODE_3_0,
+                kind = NoticeKind.DATA,
+            ),
         )
 
     /**

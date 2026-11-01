@@ -88,6 +88,8 @@ document:
 
 ### Fixed
 
+- Emoji search now also matches the words people use for an emoji, so "100" finds the hundred points emoji
+  and "like" finds thumbs up.
 - Voice notes and files no longer show up in the Nearby room. Knit never offered them there, but a modified
   app could post one, and Knit can't screen either for nearby strangers.
 - A phone outside a busy group no longer sends its members the same old messages over and over, and a message

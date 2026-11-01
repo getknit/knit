@@ -86,3 +86,16 @@ the zodiac, the subdivision flags), which the catalog contract test (`emojiOnlyC
 entry) now pins — a Unicode bump that lands outside its ranges fails that test rather than rendering a lone
 new emoji at body size. And the generator hard-fails on an emoji *group* it does not know, so a new Unicode
 group must grow `EmojiGroup` in the same change.
+
+## Amendment 2026-11-01 — search reads CLDR keywords
+
+Name-only search missed the obvious queries: "100" or "score" never found 💯 ("hundred points"), "like"
+never found 👍. The catalog now carries CLDR's English emoji keywords as an optional fifth column, generated
+from `annotations/en.xml` + `annotationsDerived/en.xml` vendored at `release-48` under `third_party/unicode-cldr/`
+(Unicode License v3, a second in-app notice). Base entries only: a tone variant's derived keywords are the
+base's plus the tone, which would put six (or twenty-six) hits on every keyword query, and its name already
+reaches it. A token matches a name substring, or the **prefix** of a keyword or of one of its words ("-1", "serve" in
+"soft-serve") — never a keyword substring, or "one"
+would find every "phone" and "bone". Name matches rank above keyword matches. The generator hard-fails on a base
+emoji CLDR lacks, so CLDR moves in step with a Unicode bump (`--update-cldr`). The asset grows ~30 → ~52 KB
+compressed in the APK.

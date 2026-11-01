@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Generate app/src/main/assets/emoji/emoji_en.tsv -- the reaction picker's emoji catalog -- from the
-vendored Unicode `emoji-test.txt`.
+vendored Unicode `emoji-test.txt` and the vendored CLDR English emoji annotations (search keywords).
 
 The output is a committed, GENERATED file. Regenerate it with:
 
     python3 scripts/gen-emoji-catalog.py            # rewrite the asset from the vendored source
     python3 scripts/gen-emoji-catalog.py --check    # exit 1 if the committed asset is stale (CI)
     python3 scripts/gen-emoji-catalog.py --update 18.0   # re-vendor a newer Unicode emoji version, then regenerate
+    python3 scripts/gen-emoji-catalog.py --update-cldr release-49   # re-vendor CLDR's annotations, then regenerate
 
 Source: third_party/unicode-emoji/emoji-test.txt (Unicode License v3, (c) Unicode, Inc.), pinned at the
-version/date recorded in the file's own header and in third_party/unicode-emoji/PROVENANCE.md. This is a
+version/date recorded in the file's own header and in third_party/unicode-emoji/PROVENANCE.md; keywords from
+third_party/unicode-cldr/annotations-en.xml + annotationsDerived-en.xml (Unicode License v3), pinned at the
+CLDR release tag in third_party/unicode-cldr/RELEASE and third_party/unicode-cldr/PROVENANCE.md. This is a
 developer tool run on a workstation; it never runs in the app, so the app's no-INTERNET-permission design is
 unaffected. Nothing here is hard-coded to a Unicode version: the version, date and sha256 stamped into the
 asset header are read off the vendored file at run time, so a bump touches no constants.
@@ -25,12 +28,20 @@ Transform (one emoji-test line -> zero or one catalog line):
   * the emoji string is rebuilt from the code-point column and asserted equal to the glyph column;
   * an entry carrying a skin-tone modifier (U+1F3FB..U+1F3FF) is flagged `tone = 1`: the browse grid hides
     those ~1,900 variants under their base, while search still reaches them by name;
+  * a base (non-tone) entry carries its CLDR keywords: the `annotations` file first, then `annotationsDerived`
+    (ZWJ sequences, keycaps, flags), looked up by the emoji and then by the emoji minus U+FE0F (CLDR strips
+    VS16 from its keys). Keywords are lower-cased, de-duplicated, and a keyword equal to the name is dropped.
+    A base entry CLDR has no keywords for is a hard error -- re-vendor CLDR in step with a Unicode bump. Tone
+    variants carry none: their derived keywords are the base's plus the tone, so carrying them would put six
+    or twenty-six hits on every keyword query; the name ("thumbs up: medium skin tone") still reaches them;
   * file order is preserved (Unicode's curated order is what every picker shows); the emoji version column
     is NOT emitted -- nothing consumes it, `Paint.hasGlyph` is the real capability check on the device.
 
 Output line format (tab-separated; tabs never occur in an emoji or a CLDR name, colons and commas do):
 
-    <emoji>\\t<group 0-8>\\t<tone 0|1>\\t<CLDR short name>
+    <emoji>\\t<group 0-8>\\t<tone 0|1>\\t<CLDR short name>[\\t<keyword>|<keyword>|...]
+
+(the keyword column is omitted, not left empty, when an entry has none -- no trailing tab to strip).
 """
 
 from __future__ import annotations
@@ -40,6 +51,7 @@ import hashlib
 import re
 import sys
 import urllib.request
+import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -49,6 +61,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_DIR = REPO_ROOT / "third_party" / "unicode-emoji"
 SOURCE_TXT = VENDOR_DIR / "emoji-test.txt"
 SOURCE_LICENSE = VENDOR_DIR / "LICENSE"
+CLDR_DIR = REPO_ROOT / "third_party" / "unicode-cldr"
+CLDR_RELEASE = CLDR_DIR / "RELEASE"
+# Local name -> path under CLDR's `common/`. Order matters: the hand-curated file wins over the derived one.
+CLDR_FILES = {"annotations-en.xml": "annotations/en.xml", "annotationsDerived-en.xml": "annotationsDerived/en.xml"}
+CLDR_URL_TEMPLATE = "https://raw.githubusercontent.com/unicode-org/cldr/{release}/{path}"
 OUTPUT_TSV = REPO_ROOT / "app" / "src" / "main" / "assets" / "emoji" / "emoji_en.tsv"
 
 # From Emoji 17.0 the data files live under the UCD version directory (the old /Public/emoji/<ver>/ path 404s).
@@ -81,6 +98,16 @@ class Entry(NamedTuple):
     group: int
     tone: int
     name: str
+    keywords: tuple[str, ...] = ()
+
+
+class Cldr(NamedTuple):
+    release: str
+    texts: tuple[str, ...]  # in CLDR_FILES order
+
+    @property
+    def sha256(self) -> list[str]:
+        return [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in self.texts]
 
 
 class Source(NamedTuple):
@@ -126,6 +153,46 @@ def parse(lines: Iterable[str]) -> tuple[list[Entry], Counter]:
     return entries, stats
 
 
+def cldr_keywords(texts: Iterable[str]) -> dict[str, list[str]]:
+    """CLDR `<annotation cp=...>a | b | c</annotation>` lines (not the `type="tts"` names) -> cp -> keywords.
+    The first file to name a cp wins, so `annotations` overrides `annotationsDerived`."""
+    out: dict[str, list[str]] = {}
+    for text in texts:
+        for a in ET.fromstring(text.encode("utf-8")).iter("annotation"):
+            cp = a.get("cp")
+            if a.get("type") == "tts" or not cp or not a.text:
+                continue
+            out.setdefault(cp, [k.strip() for k in a.text.split("|") if k.strip()])
+    return out
+
+
+def attach_keywords(entries: list[Entry], keywords: dict[str, list[str]]) -> list[Entry]:
+    """Give every base entry its CLDR keywords (see the module docstring); tone variants get none."""
+    out: list[Entry] = []
+    for e in entries:
+        if e.tone:
+            out.append(e)
+            continue
+        raw = keywords.get(e.emoji) or keywords.get(e.emoji.replace("\ufe0f", ""))
+        if raw is None:
+            raise ValueError(f"CLDR has no keywords for {e.emoji} {e.name!r}: re-vendor CLDR (--update-cldr) in step with Unicode")
+        name = e.name.lower()
+        kept: list[str] = []
+        for k in (k.lower() for k in raw):
+            if k != name and k not in kept and not any(c in k for c in "\t\n\r|\x1f"):
+                kept.append(k)
+        out.append(e._replace(keywords=tuple(kept)))
+    return out
+
+
+def read_cldr() -> Cldr:
+    missing = [n for n in CLDR_FILES if not (CLDR_DIR / n).exists()] + ([] if CLDR_RELEASE.exists() else ["RELEASE"])
+    if missing:
+        raise FileNotFoundError(f"missing {', '.join(missing)} under {CLDR_DIR} (see its PROVENANCE.md)")
+    texts = tuple((CLDR_DIR / n).read_text(encoding="utf-8") for n in CLDR_FILES)
+    return Cldr(CLDR_RELEASE.read_text(encoding="utf-8").strip(), texts)
+
+
 def source_info(text: str) -> Source:
     version = next((m.group(1) for m in map(VERSION.match, text.splitlines()) if m), None)
     date = next((m.group(1) for m in map(DATE.match, text.splitlines()) if m), None)
@@ -134,11 +201,12 @@ def source_info(text: str) -> Source:
     return Source(version, date, hashlib.sha256(text.encode("utf-8")).hexdigest())
 
 
-def header(src: Source) -> str:
+def header(src: Source, cldr: Cldr) -> str:
     groups = ", ".join(f"{i} {g}" for i, g in enumerate(GROUPS))
     return f"""\
 # Emoji catalog for the reaction picker -- one fully-qualified RGI emoji per line, in Unicode's own order.
-# Columns (tab-separated): emoji, group id, skin-tone variant (0|1), CLDR short name (English).
+# Columns (tab-separated): emoji, group id, skin-tone variant (0|1), CLDR short name (English), and -- on base
+# entries only -- the CLDR search keywords, '|'-separated (the column is absent when there are none).
 # Group ids: {groups}
 # (mirrors app.getknit.knit.data.emoji.EmojiGroup ordinal-for-ordinal). Blank lines and '#' lines are ignored.
 #
@@ -146,18 +214,27 @@ def header(src: Source) -> str:
 #
 # Source:  Unicode emoji-test.txt -- {SOURCE_URL_TEMPLATE.format(version=src.version)}
 # Version: Emoji {src.version} ({src.date})  sha256 {src.sha256}
+# Keywords: CLDR {cldr.release} annotations/en.xml sha256 {cldr.sha256[0]}
+#           CLDR {cldr.release} annotationsDerived/en.xml sha256 {cldr.sha256[1]}
 # License: Unicode License v3 (c) Unicode, Inc. -- full text: app/src/main/assets/emoji/README.md
 #
 # Transform: keep only `fully-qualified` lines (drops minimally-/unqualified forms and `component`
 # swatches); skip the Component group; flag entries carrying a skin-tone modifier (U+1F3FB..U+1F3FF);
-# preserve file order. Full detail: scripts/gen-emoji-catalog.py.
+# give base entries their lower-cased CLDR keywords (tone variants none); preserve file order.
+# Full detail: scripts/gen-emoji-catalog.py.
 """
 
 
-def render(text: str) -> tuple[str, list[Entry], Counter]:
+def line(e: Entry) -> str:
+    base = f"{e.emoji}\t{e.group}\t{e.tone}\t{e.name}"
+    return base + "\t" + "|".join(e.keywords) if e.keywords else base
+
+
+def render(text: str, cldr: Cldr) -> tuple[str, list[Entry], Counter]:
     entries, stats = parse(text.splitlines())
-    body = "\n".join(f"{e.emoji}\t{e.group}\t{e.tone}\t{e.name}" for e in entries)
-    return header(source_info(text)) + "\n" + body + "\n", entries, stats
+    entries = attach_keywords(entries, cldr_keywords(cldr.texts))
+    body = "\n".join(line(e) for e in entries)
+    return header(source_info(text), cldr) + "\n" + body + "\n", entries, stats
 
 
 def report(entries: list[Entry], stats: Counter) -> None:
@@ -168,6 +245,7 @@ def report(entries: list[Entry], stats: Counter) -> None:
         "  statuses: " + "  ".join(f"{k}={v}" for k, v in sorted(stats.items())) + f"  |  tone variants kept: {tones}",
         file=sys.stderr,
     )
+    print(f"  keywords: {sum(len(e.keywords) for e in entries)} on {sum(1 for e in entries if e.keywords)} base entries", file=sys.stderr)
     print("  per group: " + "  ".join(f"{g}={per_group[g]}" for g in GROUPS), file=sys.stderr)
 
 
@@ -186,17 +264,37 @@ def update(version: str) -> None:
     )
 
 
+def update_cldr(release: str) -> None:
+    CLDR_DIR.mkdir(parents=True, exist_ok=True)
+    fetches = [(CLDR_URL_TEMPLATE.format(release=release, path=f"common/{p}"), CLDR_DIR / n) for n, p in CLDR_FILES.items()]
+    fetches.append((CLDR_URL_TEMPLATE.format(release=release, path="LICENSE"), CLDR_DIR / "LICENSE"))
+    for url, dest in fetches:
+        print(f"fetching {url}", file=sys.stderr)
+        with urllib.request.urlopen(url) as resp:
+            dest.write_bytes(resp.read())
+    CLDR_RELEASE.write_text(release + "\n", encoding="utf-8")
+    print(f"vendored CLDR {release}: now update third_party/unicode-cldr/PROVENANCE.md (release, sha256, retrieved)", file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--check", action="store_true", help="verify the committed asset matches the vendored source; exit 1 on drift")
     ap.add_argument("--update", metavar="VERSION", help="download emoji-test.txt for this Unicode emoji version (e.g. 18.0) and regenerate")
+    ap.add_argument("--update-cldr", metavar="RELEASE", help="download CLDR's English annotations at this release tag (e.g. release-49) and regenerate")
     args = ap.parse_args()
     if args.update:
         update(args.update)
+    if args.update_cldr:
+        update_cldr(args.update_cldr)
     if not SOURCE_TXT.exists():
         print(f"error: missing {SOURCE_TXT} (see third_party/unicode-emoji/PROVENANCE.md)", file=sys.stderr)
         return 1
-    rendered, entries, stats = render(SOURCE_TXT.read_text(encoding="utf-8"))
+    try:
+        cldr = read_cldr()
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    rendered, entries, stats = render(SOURCE_TXT.read_text(encoding="utf-8"), cldr)
     if args.check:
         current = OUTPUT_TSV.read_text(encoding="utf-8") if OUTPUT_TSV.exists() else ""
         if current != rendered:

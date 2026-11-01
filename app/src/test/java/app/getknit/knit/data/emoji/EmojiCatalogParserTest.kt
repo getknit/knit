@@ -27,6 +27,13 @@ class EmojiCatalogParserTest {
     }
 
     @Test
+    fun theOptionalFifthColumnCarriesPipeSeparatedKeywords() {
+        val parsed = EmojiCatalogParser.parse(sequenceOf("💯\t0\t0\thundred points\t100|full|score\r", "😀\t0\t0\tgrinning face"))
+        assertEquals(listOf("100", "full", "score"), parsed[0].keywords)
+        assertEquals(emptyList<String>(), parsed[1].keywords)
+    }
+
+    @Test
     fun malformedOrUnknownGroupLinesAreDroppedNotThrown() {
         val parsed =
             EmojiCatalogParser.parse(
