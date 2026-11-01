@@ -184,6 +184,8 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   custody:** READ ADR 2026-09.bts9 (amending ADR 010). The carry gate is a pinned sender and a frame signature that
   verifies — authenticated, never decrypted — and nothing per-node: the block list is a delivery-path input, so a
   blocker carries, re-serves and accounts a blocked sender's frames and drops them only on delivery (e7528cb7). A
+  blocked person's photo is never their face (ADR 2026-11.nsbf: no pull, no adoption, no acceptance of their push), but
+  custody still carries and may fetch it as a carried attachment. A
   message sent during a block stays unseen after the unblock, by design. The group gate (ADR 2026-10.7mqm) is custody's,
   in `ForwardRepository.store`, not this gate's: `canCarry` is also `ScopeSync.acceptClaimed`'s delivery gate, and our
   own frames skip it.

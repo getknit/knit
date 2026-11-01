@@ -82,7 +82,10 @@ class SettingsStore(
 
     /**
      * Node ids the local user has blocked. Their messages/reactions are never stored, shown, or
-     * notified, and they're hidden from the new-DM picker. Blocking is local-only and keyed by the
+     * notified, and they're hidden from the new-DM picker. Their profile presentation is held too: the
+     * name and status they had at the block stay, their face is the monogram, and their photo is never
+     * fetched (`InboundPipeline.handleProfile`, `mesh/BlockListWatch`, ADR 2026-11.nsbf); an unblock
+     * applies their held profile again. Never a custody input (ADR 2026-09.bts9). Blocking is local-only and keyed by the
      * peer's node id; since a node id is now the hash of the peer's keypair, a blocked peer that
      * regenerates its identity key (e.g. a reinstall that drops `identity.key`) gets a fresh id and is
      * no longer matched — the cost of binding identity to the key rather than the device.
@@ -92,8 +95,9 @@ class SettingsStore(
     /**
      * Device tags (see [app.getknit.knit.identity.DeviceTag]) the user has blocked. Because a nodeId is
      * the hash of a keypair, a blocked peer that regenerates its key returns under a new nodeId; the
-     * device tag is key-independent, so `MeshManager.handleProfile` re-blocks the new id when the tag
-     * matches. Maintained alongside [blockedNodeIds] by [block]/[unblock].
+     * device tag is key-independent, so `InboundPipeline.handleProfile` re-blocks the new id when the tag
+     * matches, and holds that profile's presentation as a blocked one (ADR 2026-11.nsbf). Maintained alongside
+     * [blockedNodeIds] by [block]/[unblock].
      */
     override val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
 
@@ -629,6 +633,9 @@ class SettingsStore(
             }
         }
     }
+
+    /** The block list's own state outside Room: the faces an unblock owes, the list last acted on (ADR 2026-11.nsbf). */
+    val blockList: BlockListState by lazy { BlockListStore(dataStore) }
 
     /** Unblocks [nodeId]; also clears its [deviceTag] (when known) so the device is no longer re-blocked. */
     suspend fun unblock(

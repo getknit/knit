@@ -306,3 +306,4 @@ carries; never renumber an old one.
 | [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |
 | [2026-10.zeja](decisions/2026-10-zeja-what-s-new.md) | What's New: a chat-list card, bundled announcements | ui, onboarding |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
+| [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |

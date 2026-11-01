@@ -40,6 +40,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
+import app.getknit.knit.data.settings.BlockListState
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.data.video.VideoFrames
@@ -169,6 +170,8 @@ class InboundPipeline(
     private val db: KnitDatabase,
     private val identity: IdentitySource,
     private val settings: InboundSettings,
+    // The faces an unblock still owes, kept outside Room (ADR 2026-11.nsbf): `SettingsStore.blockList` in the app.
+    private val blockList: BlockListState,
     private val messageCrypto: MessageCrypto,
     private val notifier: Notifier,
     private val metrics: MeshMetrics,
@@ -1800,18 +1803,18 @@ class InboundPipeline(
      * The presentation half's follow-ups to a stored profile: the status notices it earns, the orphan
      * avatar blob it may free, and the fetch of an avatar it advertised but whose bytes we lack.
      *
-     * All three are gated on [stalePresentation] together, and that is the point of grouping them. A
+     * All three are gated on [presentationHeld] together, and that is the point of grouping them. A
      * profile frame is admitted for two independent reasons on two independent watermarks — its
      * presentation and its ratchet prekey — so a frame that lost the presentation race still reaches here
      * for its prekey, carrying a name and an avatar hash *older* than the ones already on screen. Acting
      * on those would announce a change that never happened, reclaim a live avatar, or re-fetch a
      * superseded one. Only the prekey columns may move on such a frame.
      *
-     * Grouping these moved the avatar pull ahead of [applyDeviceTagBlockContinuity], which it used to
-     * follow. That is immaterial rather than merely untested: [pullRelayAvatarIfNeeded] never consults
-     * the blocked set, so a peer blocked by device-tag continuity had its avatar pulled under the old
-     * order too. If that ever becomes undesirable, the fix is a block check inside the pull, not a
-     * re-ordering here — an ordering that only accidentally suppressed it was never the guard.
+     * A blocked person's profile is held the same way (ADR 2026-11.nsbf): [handleProfile] decides the block —
+     * the sender's node id, or a device tag continuity catches — before the row is written, so a re-keyed phone
+     * continuity catches earns no notice, no reclaim and no pull, not even on its first profile. That decision is
+     * the guard, not the order these run in. [pullRelayAvatarIfNeeded] checks the block again itself, for a block
+     * made between the decision and the pull.
      */
     private suspend fun applyPresentationFollowUps(
         peerId: String,
@@ -1820,9 +1823,9 @@ class InboundPipeline(
         advertisedAvatar: String?,
         haveAvatar: Boolean,
         version: Long,
-        stalePresentation: Boolean,
+        presentationHeld: Boolean,
     ) {
-        if (stalePresentation) return
+        if (presentationHeld) return
         peerPresentationNotices(peerId, previous, newName, advertisedAvatar, version)
         reclaimRemovedAvatarIfCleared(peerId, advertisedAvatar, previous?.avatarHash)
         pullRelayAvatarIfNeeded(peerId, advertisedAvatar, haveAvatar)
@@ -4132,12 +4135,24 @@ class InboundPipeline(
         // far-future one would outrank every later profile of theirs, on both paths, for good.
         val version = clampFuture(content.version ?: env.sentAt)
         val prekey = verifiedPrekey(content, pubKey, env.senderId)
+        // Whether this profile is a blocked person's, decided before any presentation field is written (ADR
+        // 2026-11.nsbf): a re-keyed phone that device-tag continuity catches presents nothing, not even on its first
+        // profile. Read here, outside the row's transaction, which may not read DataStore.
+        val blockedIds = settings.blockedNodeIds.first()
+        val caughtByTag = caughtByDeviceTag(env.senderId, content.deviceTag, blockedIds)
+        val blocked = env.senderId in blockedIds || caughtByTag
         // The read, the blob check and the write share one write transaction (#98): the avatar writers run on
         // another collector and copy the same row, so without it either write can put back the row the other
         // one read — reverting this profile, or the pushed avatar that landed while we checked for its blob.
+        // The verbatim signed profile is kept beside the pin in the same commit, newest publish stamp winning (clamped:
+        // the peer picks it), so this phone can prove their key to a newcomer for as long as it carries their frames —
+        // after a restart, and after custody has lost the profile to the quota or the TTL (ADR 2026-09.g64k). In the
+        // same commit because an unblock re-applies that frame against this row (ADR 2026-11.nsbf): a row moved past
+        // the frame it holds would make the unblock apply an older one.
         val stored =
             db.withWriteTransaction {
-                storeProfileRow(env.senderId, content, pubKey, version, prekey, seenAt = heardAt(env, clock()))
+                storeProfileRow(env.senderId, content, pubKey, version, prekey, seenAt = heardAt(env, clock()), blocked = blocked)
+                    .also { if (it is StoredProfile.Applied) peers.recordProfileFrame(env.senderId, wire, clampFuture(env.sentAt)) }
             }
         val applied =
             when (stored) {
@@ -4169,19 +4184,18 @@ class InboundPipeline(
             content.avatarHash,
             applied.haveAvatar,
             version,
-            applied.stalePresentation,
+            applied.presentationHeld,
         )
-        applyDeviceTagBlockContinuity(env.senderId, content.deviceTag)
+        // Continuity records the block under its conditions of old (an applied profile whose tag is blocked); the
+        // presentation it would have earned was already held above.
+        if (caughtByTag) applyDeviceTagBlockContinuity(env.senderId, content.deviceTag)
+        settleBlockMovedMidProfile(env.senderId, blocked)
         // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it, and
         // re-send any group epoch seeds their outbox still shows unacked (their prekey may be new).
         flushPending(env.senderId)
         flushGroupKeys(env.senderId, false)
-        // Keep this peer's verbatim signed profile beside the pin, newest publish stamp winning (clamped: the peer
-        // picks it), so this phone can prove their key to a newcomer for as long as it carries their frames —
-        // after a restart, and after custody has lost the profile to the quota or the TTL (ADR 2026-09.g64k).
-        peers.recordProfileFrame(env.senderId, wire, clampFuture(env.sentAt))
-        // Cache it for the same re-serve, and resolve any key request we (or a node we're relaying for) had
-        // outstanding for it.
+        // Cache the frame kept beside the pin above for the same re-serve, and resolve any key request we (or a node
+        // we're relaying for) had outstanding for it.
         keyExchange.onProfilePinned(env.senderId, wire)
         // A pending contact-card intro to this sender can be sealed now that its prekey is pinned.
         onProfilePinned(env.senderId)
@@ -4204,17 +4218,26 @@ class InboundPipeline(
         /** A different key for a pinned node id: refused, nothing moved. */
         data object PinRefused : StoredProfile
 
-        /** The row was written; [previous] is how it stood before (null on first contact). */
+        /**
+         * The row was written; [previous] is how it stood before (null on first contact). [presentationHeld]: the
+         * profile's name, status, flag and photo were not applied — older than the row's presentation, or a blocked
+         * person's (ADR 2026-11.nsbf) — so none of their follow-ups run.
+         */
         class Applied(
             val previous: PeerEntity?,
             val haveAvatar: Boolean,
-            val stalePresentation: Boolean,
+            val presentationHeld: Boolean,
         ) : StoredProfile
     }
 
     /**
      * The peer-row half of [handleProfile]: read, gate and write the row. Runs inside the caller's write
      * transaction, so it must stay free of DataStore reads, the ratchet lock and anything that sends.
+     *
+     * [blocked] is the caller's verdict that this is a blocked person's profile (their node id, or a device tag
+     * continuity catches), read before the transaction. Their name, status, flag and photo then stay as the row
+     * showed them, as for a stale presentation, while everything that is not presentation moves as for anyone
+     * (ADR 2026-11.nsbf): the pin, the prekey, capabilities, device tag, the LoRa fields, `updatedAt`, `lastSeenAt`.
      *
      * `@Suppress("CyclomaticComplexMethod")`: the body is a straight-line sequence of null-coalesced field
      * resolutions and guards — not genuinely complex — and every guard is load-bearing (the #14 immutable-pin
@@ -4228,6 +4251,7 @@ class InboundPipeline(
         version: Long,
         prekey: app.getknit.knit.mesh.protocol.PrekeyInfo?,
         seenAt: Long,
+        blocked: Boolean,
     ): StoredProfile {
         val existing = peers.find(senderId)
         // Last-writer-wins, split across two watermarks. The key is immutable per nodeId (a different key
@@ -4257,17 +4281,20 @@ class InboundPipeline(
         // the prior [verified] state through the upsert is safe.
         val base = existing ?: PeerEntity(senderId)
         val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
+        // A blocked person's presentation is held like a stale one (ADR 2026-11.nsbf): nothing of their advertised photo
+        // is adopted, screened or released here, and a row this profile creates starts as any first row does.
+        val held = stalePresentation || blocked
         peers.upsert(
             base.copy(
                 // Clean inbound too: our own cap and line rules only bound what we originate, not what a peer sends
                 // (controls, bidi overrides and line breaks out, ADR 2026-10.2kfr). The signed frame stays verbatim.
-                name = if (stalePresentation) base.name else name,
-                status = if (stalePresentation) base.status else TextLimits.cleanReceived(content.status, TextLimits.STATUS),
+                name = if (held) base.name else name,
+                status = if (held) base.status else TextLimits.cleanReceived(content.status, TextLimits.STATUS),
                 pubKey = pubKey,
                 verified = existing?.verified ?: false,
                 deviceTag = content.deviceTag ?: existing?.deviceTag,
                 avatarHash =
-                    if (stalePresentation) {
+                    if (held) {
                         base.avatarHash
                     } else {
                         resolveAvatarHash(advertised, avatarAdoptable(advertised), existing?.avatarHash)
@@ -4290,8 +4317,9 @@ class InboundPipeline(
                 prekeyProfileAt = if (stalePrekey) base.prekeyProfileAt else version,
                 // A presentation field: gated with name/status, never with the prekey. Absent on the wire
                 // reads false, which is how a flip back to off arrives.
-                openToChat = if (stalePresentation) base.openToChat else content.openToChat,
-                // The same, for the bound LoRa board: absent means unbound (or handed on), and clears.
+                openToChat = if (held) base.openToChat else content.openToChat,
+                // The bound LoRa board: absent means unbound (or handed on), and clears. Ordered with the presentation but
+                // not held by a block: it is attribution, and the block on a blocked contact's board post reads it.
                 loraNode = if (stalePresentation) base.loraNode else content.loraNode,
                 loraKey = if (stalePresentation) base.loraKey else content.loraKey,
                 // Heard from now, stale presentation or not: a row this profile pins is never born quiet, which
@@ -4299,7 +4327,7 @@ class InboundPipeline(
                 lastSeenAt = maxOf(base.lastSeenAt, seenAt),
             ),
         )
-        return StoredProfile.Applied(existing, haveAvatar, stalePresentation)
+        return StoredProfile.Applied(existing, haveAvatar, held)
     }
 
     /**
@@ -4332,19 +4360,39 @@ class InboundPipeline(
     }
 
     /**
-     * Block-list continuity: a nodeId is the hash of a keypair, so a blocked peer that regenerates its
-     * key returns under a new nodeId. If this peer's (key-independent) [deviceTag] is already blocked,
-     * block this new [senderId] too — every other block check stays plain nodeId-based.
+     * Block-list continuity's condition: a nodeId is the hash of a keypair, so a blocked peer that regenerates its key
+     * returns under a new nodeId. True when this peer's (key-independent) [deviceTag] is already blocked and [senderId]
+     * is not yet — every other block check stays plain nodeId-based. [blockedIds] is the caller's read of the list.
+     * Reads DataStore, so never inside a transaction.
      */
+    private suspend fun caughtByDeviceTag(
+        senderId: String,
+        deviceTag: String?,
+        blockedIds: Set<String>,
+    ): Boolean = deviceTag != null && senderId !in blockedIds && deviceTag in settings.blockedDeviceTags.first()
+
+    /** Block-list continuity's record: blocks the new [senderId] that [caughtByDeviceTag] caught under [deviceTag]. */
     private suspend fun applyDeviceTagBlockContinuity(
         senderId: String,
         deviceTag: String?,
     ) {
-        if (deviceTag != null &&
-            senderId !in settings.blockedNodeIds.first() &&
-            deviceTag in settings.blockedDeviceTags.first()
-        ) {
-            settings.block(senderId, deviceTag)
+        settings.block(senderId, deviceTag)
+    }
+
+    /**
+     * The block list moved while a profile was being written (ADR 2026-11.nsbf): [handleProfile] read it once, before the
+     * row, and the block-list watch may have acted on the change before the row and its frame committed. A profile held as
+     * a blocked one whose sender is unblocked now is re-applied, from the frame just kept; one applied for a sender blocked
+     * now loses the face it may have just adopted. Both are idempotent beside the watch's own act.
+     */
+    private suspend fun settleBlockMovedMidProfile(
+        senderId: String,
+        heldAsBlocked: Boolean,
+    ) {
+        val blockedNow = senderId in settings.blockedNodeIds.first()
+        when {
+            heldAsBlocked && !blockedNow -> reapplyHeldProfile(senderId)
+            !heldAsBlocked && blockedNow -> onBlocked(senderId)
         }
     }
 
@@ -4355,6 +4403,7 @@ class InboundPipeline(
      *
      * The fetch carries the photo ceiling ([FileIntake.MAX_AVATAR_BYTES], #234): the link that receives it keeps no
      * byte past it, and a hash refused over it this session is not asked for again, by this profile or the next.
+     * A blocked person's photo is never wanted (ADR 2026-11.nsbf), whichever path asks.
      */
     private suspend fun pullRelayAvatarIfNeeded(
         senderId: String,
@@ -4362,6 +4411,7 @@ class InboundPipeline(
         haveAvatar: Boolean,
     ) {
         if (advertised == null || blobExchange.refusedAsPhoto(advertised)) return
+        if (senderId in settings.blockedNodeIds.first()) return
         if (!haveAvatar && transport.neighbors.value.none { it.nodeId == senderId }) {
             advertisedAvatars[senderId] = advertised
             blobExchange.want(advertised, author = senderId, ceiling = FileIntake.MAX_AVATAR_BYTES)
@@ -4443,10 +4493,22 @@ class InboundPipeline(
      * A pulled blob just landed: if any non-direct peer advertised it as their avatar (see
      * [handleProfile]), point those peers at it now that the bytes are local and drop the previous one.
      * A no-op for attachment blobs, which no peer advertises.
+     *
+     * A blocked owner is never pointed at it (ADR 2026-11.nsbf): a pull made before the block may land after it. When
+     * every owner is blocked the bytes go unless something else names them.
      */
     private suspend fun adoptAdvertisedAvatar(hash: String) {
-        val owners = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
-        if (owners.isEmpty()) return
+        val advertisedBy = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
+        if (advertisedBy.isEmpty()) return
+        val blocked = settings.blockedNodeIds.first()
+        val owners = advertisedBy.filter { it !in blocked }
+        if (owners.size < advertisedBy.size) {
+            advertisedBy.filter { it in blocked }.forEach { advertisedAvatars.remove(it) }
+            if (owners.isEmpty()) {
+                blobs.deleteIfUnreferenced(hash)
+                return
+            }
+        }
         // Over the photo ceiling (#234): it came by a fetch that was not a photo's, or before the cap. Never a face.
         if (releasedOverCeiling(hash)) {
             owners.forEach { advertisedAvatars.remove(it) }
@@ -4500,6 +4562,12 @@ class InboundPipeline(
         mime: String,
         srcPath: String,
     ) {
+        // A blocked person's push is refused before anything of it is kept (ADR 2026-11.nsbf): no bytes, no row.
+        if (nodeId in settings.blockedNodeIds.first()) {
+            Log.i(TAG, "Dropping avatar from ${nodeId.take(ID_CHARS)}: blocked")
+            File(srcPath).delete()
+            return
+        }
         // The link already kept no more than the photo ceiling (#234); checked again before the whole file is read.
         if (File(srcPath).length() > FileIntake.MAX_AVATAR_BYTES) {
             Log.w(TAG, "Dropping avatar from $nodeId: over the photo ceiling")
@@ -4528,6 +4596,143 @@ class InboundPipeline(
             return
         }
         pointPeerAtAvatar(nodeId, hash, createRow = true)?.let { blobs.deleteIfUnreferenced(it) }
+    }
+
+    /**
+     * [nodeId] is blocked (ADR 2026-11.nsbf): their face draws as the monogram from now on, the pull of their photo is
+     * forgotten so a landing transfer is never adopted, and the bytes go unless a message, a group photo, another row
+     * or a carried frame names them ([BlobRepository.deleteIfUnreferenced]; an outbound serve streams from its own
+     * temp copy, so one in flight is not cut). Idempotent: `MeshManager`'s block-list watch runs it on each block and
+     * its storage sweep on every blocked id still showing a face, whatever path made the block. BlobExchange has no
+     * unwant, so a want already made stays until it lands or expires; the adoption gate is what refuses it.
+     */
+    internal suspend fun onBlocked(nodeId: String) {
+        advertisedAvatars.remove(nodeId)
+        val previous: String =
+            db.withWriteTransaction<String?> {
+                val peer = peers.find(nodeId) ?: return@withWriteTransaction null
+                val face = peer.avatarHash ?: return@withWriteTransaction null
+                peers.upsert(peer.copy(avatarHash = null))
+                face
+            } ?: return
+        blobs.deleteIfUnreferenced(previous)
+    }
+
+    /**
+     * [nodeId] was unblocked (ADR 2026-11.nsbf): the profile frame this phone holds for them (`peer_profiles`) is
+     * applied again for its presentation alone — name, status and flag — in the profile's own order, so an equal
+     * version applies and an older one applies nothing. Nothing else of a delivery runs: no custody, fan-out, cache,
+     * count, flush or parked release, and no notice for what changed during the block.
+     *
+     * The face follows the frame's advertised photo whether or not its presentation applied: the block cleared it, and
+     * this frame is the only durable record of the photo they last advertised (the pull map is in memory, the row
+     * holds only the adopted face). Bytes held and adoptable are the face at once — a block undone before they were
+     * collected; otherwise the photo is wanted from any holder, the person too when they are a linked neighbour, whose
+     * push memo already holds the hash and so will not push it again. A hash refused as a photo stays refused. With no
+     * frame held it does nothing, and their next profile brings the rest.
+     */
+    internal suspend fun reapplyHeldProfile(nodeId: String) {
+        if (nodeId in settings.blockedNodeIds.first()) return
+        val (content, version) = heldProfile(nodeId) ?: return
+        val advertised = content.avatarHash
+        // Asked before the transaction: the screening verdict and the ceiling's release read DataStore.
+        val adoptable = avatarAdoptable(advertised)
+        val pinned = db.withWriteTransaction { reapplyRow(nodeId, content, version, adoptable) }
+        if (!pinned || advertised == null || adoptable) return
+        if (blobStore.has(advertised) || blobExchange.refusedAsPhoto(advertised)) return
+        wantFace(nodeId, advertised)
+        // Owed until it shows: this want lapses with the fetch TTL and a restart, and a linked neighbour never pushes it again.
+        blockList.oweFace(nodeId, advertised)
+    }
+
+    /** Wants [hash] as [nodeId]'s face, from any holder — the person too when linked — under the photo ceiling. */
+    private suspend fun wantFace(
+        nodeId: String,
+        hash: String,
+    ) {
+        advertisedAvatars[nodeId] = hash
+        blobExchange.want(hash, author = nodeId, ceiling = FileIntake.MAX_AVATAR_BYTES)
+    }
+
+    /**
+     * Re-wants every face an unblock still owes ([BlockListState.owedFaces], ADR 2026-11.nsbf), and settles each that no
+     * longer stands: the person is blocked again or gone, their face shows (this hash, or another a newer profile brought),
+     * the profile they hold now advertises a different photo, or the hash is refused as a photo. Held bytes are adopted
+     * here (a landing that raced the owner map). Run on every database re-arm — the tick, a link-up, the start — so the
+     * restore outlives the fetch TTL, a restart and a mesh stopped at the unblock.
+     */
+    internal suspend fun rewantOwedFaces() {
+        val owed = blockList.owedFaces.first()
+        if (owed.isEmpty()) return
+        val blocked = settings.blockedNodeIds.first()
+        for (entry in owed) {
+            val nodeId = entry.substringBefore(' ')
+            val hash = entry.substringAfter(' ')
+            val row = peers.find(nodeId)
+            val stands =
+                nodeId !in blocked && row != null && row.avatarHash == null &&
+                    heldProfile(nodeId)?.first?.avatarHash == hash && !blobExchange.refusedAsPhoto(hash)
+            when {
+                !stands -> {
+                    blockList.settleFace(entry)
+                }
+
+                blobStore.has(hash) -> {
+                    if (avatarAdoptable(hash)) pointPeerAtAvatar(nodeId, hash, createRow = false)
+                    blockList.settleFace(entry)
+                }
+
+                else -> {
+                    wantFace(nodeId, hash)
+                }
+            }
+        }
+    }
+
+    /** The profile held for [nodeId] (`peer_profiles`) with its version, or null when none is held or it is not theirs. */
+    private suspend fun heldProfile(nodeId: String): Pair<ProfileContent, Long>? {
+        val wire = peers.profileFrame(nodeId) ?: return null
+        val env = WireCodec.decodeEnvelope(wire.signed)?.takeIf { it.type == FrameType.PROFILE && it.senderId == nodeId }
+        val content = env?.let { WireCodec.decodeChecked<ProfileContent>(it.payload) } ?: return null
+        val pubKey = content.pubKey ?: return null
+        if (NodeId.fromPublicKeyBundle(pubKey) != nodeId) return null
+        return content to clampFuture(content.version ?: env.sentAt)
+    }
+
+    /**
+     * [reapplyHeldProfile]'s row write, inside its transaction: the presentation when [version] is not older than the
+     * row's, and the face from [content]'s photo either way. False when no row pins the frame's key.
+     */
+    private suspend fun reapplyRow(
+        nodeId: String,
+        content: ProfileContent,
+        version: Long,
+        adoptable: Boolean,
+    ): Boolean {
+        val row = peers.find(nodeId) ?: return false
+        if (row.pubKey != content.pubKey) return false
+        val advertised = content.avatarHash
+        val applies = version >= row.updatedAt
+        val face =
+            when {
+                applies -> resolveAvatarHash(advertised, adoptable, row.avatarHash)
+                adoptable -> advertised
+                else -> row.avatarHash
+            }
+        peers.upsert(
+            if (applies) {
+                row.copy(
+                    name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME),
+                    status = TextLimits.cleanReceived(content.status, TextLimits.STATUS),
+                    avatarHash = face,
+                    openToChat = content.openToChat,
+                    updatedAt = maxOf(row.updatedAt, version),
+                )
+            } else {
+                row.copy(avatarHash = face)
+            },
+        )
+        return true
     }
 
     /**

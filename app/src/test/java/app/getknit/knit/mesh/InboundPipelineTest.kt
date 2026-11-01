@@ -227,6 +227,8 @@ class InboundPipelineTest {
             deviceTag: String?,
         ) {
             blocked.value = blocked.value + nodeId
+            // As SettingsStore.block does: the tag rides beside the id, so continuity can follow a re-keyed phone.
+            if (deviceTag != null) blockedDeviceTags.value = blockedDeviceTags.value + deviceTag
         }
     }
 
@@ -300,6 +302,9 @@ class InboundPipelineTest {
 
         /** `nodeId -> (signed bytes, stamp)` of every proof of key the pipeline handed the pin store (ADR 2026-09.g64k). */
         val proofs = ConcurrentHashMap<String, Pair<ByteArray, Long>>()
+
+        /** `nodeId -> (frame, stamp)` the pin store keeps, newest stamp winning as `PeerDao.recordProfile` does. */
+        val heldProfiles = ConcurrentHashMap<String, Pair<WireEnvelope, Long>>()
         val msgMap = ConcurrentHashMap<String, MessageEntity>()
         val groupMap = ConcurrentHashMap<String, GroupEntity>()
 
@@ -326,6 +331,7 @@ class InboundPipelineTest {
                 .build()
         val notifier = mockk<Notifier>(relaxed = true)
         val settings = FakeSettings()
+        val blockList = MemoryBlockListState()
 
         // What the direct-transfer hook saw, and what it answers (true = a live incoming offer was admitted).
         val transferSignals = mutableListOf<Triple<String, TransferPayload, Long>>()
@@ -456,7 +462,10 @@ class InboundPipelineTest {
             coEvery { peers.upsert(any()) } answers { peerMap[firstArg<PeerEntity>().nodeId] = firstArg() }
             coEvery { peers.recordProfileFrame(any(), any(), any()) } answers {
                 proofs[firstArg()] = secondArg<WireEnvelope>().signed to thirdArg<Long>()
+                val held = heldProfiles[firstArg()]
+                if (held == null || thirdArg<Long>() > held.second) heldProfiles[firstArg()] = secondArg<WireEnvelope>() to thirdArg()
             }
+            coEvery { peers.profileFrame(any()) } answers { heldProfiles[firstArg()]?.first }
             // The real query orders claimants by updatedAt DESC and takes the first; the fake does the same.
             coEvery { peers.findByLoraNode(any()) } answers {
                 val node = firstArg<Long>()
@@ -555,6 +564,7 @@ class InboundPipelineTest {
                     db = db,
                     identity = FakeIdentity(self),
                     settings = settings,
+                    blockList = blockList,
                     messageCrypto = self.crypto,
                     notifier = notifier,
                     metrics = metrics,
@@ -690,6 +700,7 @@ class InboundPipelineTest {
             openToChat: Boolean = false,
             loraNode: Long? = null,
             loraKey: String? = null,
+            deviceTag: String? = null,
         ): RelayEnvelope =
             RelayEnvelope(
                 type = FrameType.PROFILE,
@@ -706,6 +717,7 @@ class InboundPipelineTest {
                             openToChat = openToChat,
                             loraNode = loraNode,
                             loraKey = loraKey,
+                            deviceTag = deviceTag,
                         ),
                     ),
             )
@@ -2937,6 +2949,445 @@ class InboundPipelineTest {
 
             assertTrue(rig.pipeline.canCarry(alice.sign(env), env))
             assertEquals(0L, rig.drops(DropReason.CARRY_REFUSED))
+        }
+
+    // --- A block also holds a person's profile presentation (ADR 2026-11.nsbf, #249) ---
+
+    /** Whether the exchange holds a want of [hash] — what a profile, a pull or an unblock asked it for. */
+    private fun Rig.wants(hash: String): Boolean = hash in blobExchange.wantedHashes()
+
+    /** A profile carrying every field a block holds or lets move: presentation, prekey, capabilities, tag and board. */
+    private fun fullProfile(
+        author: Party,
+        prekey: PrekeyInfo,
+    ): RelayEnvelope =
+        RelayEnvelope(
+            type = FrameType.PROFILE,
+            id = "profile-blocked",
+            senderId = author.nodeId,
+            sentAt = 10L,
+            payload =
+                WireCodec.encodePayload(
+                    ProfileContent(
+                        name = "New",
+                        status = "new status",
+                        avatarHash = "newFace",
+                        pubKey = author.bundle.encoded,
+                        deviceTag = "tag-a",
+                        capabilities = Protocol.LOCAL_CAPABILITIES,
+                        prekey = prekey,
+                        version = 10L,
+                        openToChat = true,
+                        loraNode = 77L,
+                        loraKey = "lora-key",
+                    ),
+                ),
+        )
+
+    @Test
+    fun aBlockedPeersNewerProfileMovesEverythingButItsPresentation() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(
+                    nodeId = alice.nodeId,
+                    pubKey = alice.bundle.encoded,
+                    name = "Old",
+                    status = "old status",
+                    avatarHash = "oldFace",
+                    updatedAt = 1L,
+                )
+            // An ordinary message in the thread, so a rename or a new photo would earn its notice there.
+            rig.msgMap["m1"] = MessageEntity(id = "m1", senderId = alice.nodeId, conversationId = alice.nodeId, body = "hi", sentAt = 1L)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            // The new photo's bytes are even held: still never adopted for a blocked person.
+            coEvery { rig.blobStore.has("newFace") } returns true
+            val prekey = signedPrekey(alice)
+            val env = fullProfile(alice, prekey)
+            val wire = alice.sign(env)
+
+            rig.pipeline.onDeliver(wire, env, "relay-node")
+
+            val row = rig.peerMap.getValue(alice.nodeId)
+            // Held: the presentation, as the row showed it at the block.
+            assertEquals("Old", row.name)
+            assertEquals("old status", row.status)
+            assertEquals("oldFace", row.avatarHash)
+            assertFalse(row.openToChat)
+            // Moved: everything that is not presentation.
+            assertEquals(10L, row.updatedAt)
+            assertEquals(7, row.prekeyId)
+            assertEquals(b64(prekey.pub), row.prekeyPub)
+            assertEquals(Protocol.LOCAL_CAPABILITIES, row.capabilities)
+            assertEquals("tag-a", row.deviceTag)
+            assertEquals(77L, row.loraNode)
+            assertEquals("lora-key", row.loraKey)
+            assertTrue("the proof of key is kept", rig.proofs.containsKey(alice.nodeId))
+            assertEquals("the key cache serves it", 1, rig.keyExchange.cachedCount())
+            assertEquals(listOf(alice.nodeId), rig.flushed)
+            // No notice, no count; custody and relay as for anyone (ADR 2026-09.bts9). No want is
+            // aBlockedPeersProfileWantsNoPhoto's: these bytes are held, so nothing would want them anyway.
+            assertTrue(rig.msgMap.values.none { it.isStatusNotice })
+            assertTrue(
+                rig.metrics
+                    .frames()
+                    .dropsByReason
+                    .isEmpty(),
+            )
+            assertTrue(rig.forwardStore.has("profile-blocked"))
+            assertTrue(rig.pipeline.canCarry(wire, env))
+        }
+
+    @Test
+    fun aBlockedPeersProfileWantsNoPhoto() =
+        runTest {
+            // The photo's bytes are not held, so only the block keeps the pull from asking for them.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = "face"), from = "relay-node")
+
+            assertFalse("wanted while blocked: ${rig.blobExchange.wantedHashes()}", rig.wants("face"))
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun aProfileHeldAsBlockedWhoseSenderIsUnblockedBeforeItCommitsIsReapplied() =
+        runTest {
+            // The block list moved between the profile's block read and its commit: the watch's unblock re-apply ran
+            // against the frame held before this one, so the profile itself re-applies once its frame is kept.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] = PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "Old", updatedAt = 1L)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            // The unblock lands inside the profile's transaction, after its row was written as a blocked one.
+            coEvery { rig.peers.recordProfileFrame(alice.nodeId, any(), any()) } answers {
+                rig.heldProfiles[alice.nodeId] = secondArg<WireEnvelope>() to thirdArg()
+                rig.settings.blocked.value = emptySet()
+            }
+
+            rig.deliver(alice, rig.profile(alice, name = "New", avatarHash = "newFace", sentAt = 10L), from = "relay-node")
+
+            assertEquals("New", rig.peerMap.getValue(alice.nodeId).name)
+            assertTrue("the face is owed: ${rig.blobExchange.wantedHashes()}", rig.wants("newFace"))
+            assertTrue("no notice for the held change", rig.msgMap.values.none { it.isStatusNotice })
+        }
+
+    @Test
+    fun aProfileCaughtByDeviceTagContinuityPresentsNothingEvenOnItsFirstProfile() =
+        runTest {
+            // A blocked phone re-keyed: a new node id, the old device tag. Continuity blocks the id, and the profile that
+            // carried the tag shows nothing — no name, no photo, no fetch — not even as the row's first write.
+            val rig = Rig(backgroundScope)
+            val mallory = party()
+            rig.settings.blockedDeviceTags.value = setOf("tag-m")
+
+            rig.deliver(
+                mallory,
+                rig.profile(mallory, name = "Mallory again", avatarHash = "face", deviceTag = "tag-m"),
+                from = "relay-node",
+            )
+
+            assertTrue(mallory.nodeId in rig.settings.blocked.value)
+            val row = rig.peerMap.getValue(mallory.nodeId)
+            assertEquals("", row.name)
+            assertNull(row.avatarHash)
+            assertEquals("tag-m", row.deviceTag)
+            assertEquals(mallory.bundle.encoded, row.pubKey)
+            assertFalse(rig.wants("face"))
+        }
+
+    @Test
+    fun aPushedAvatarFromABlockedSenderIsNotStoredAndMakesNoRow() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val bytes = byteArrayOf(9, 8, 7, 6)
+            val hash = sha256Hex(bytes)
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
+
+            assertNull(rig.peerMap[alice.nodeId])
+            coVerify(exactly = 0) { rig.blobs.insert(any(), any(), any()) }
+            assertFalse("the staging file is deleted", file.exists())
+        }
+
+    @Test
+    fun aPhotoWantedBeforeTheBlockIsNotAdoptedWhenItLandsAfterIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1"), from = "relay-node")
+            assertTrue("wanted before the block: ${rig.blobExchange.wantedHashes()}", rig.wants("av1"))
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.pipeline.onObtained("av1")
+
+            assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("av1") }
+        }
+
+    @Test
+    fun onBlockedClearsTheFaceAndReleasesItsBytes() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "Ann", avatarHash = "face", updatedAt = 1L)
+
+            rig.pipeline.onBlocked(alice.nodeId)
+
+            assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+            assertEquals("the name stays", "Ann", rig.peerMap.getValue(alice.nodeId).name)
+            coVerify(exactly = 1) { rig.blobs.deleteIfUnreferenced("face") }
+        }
+
+    @Test
+    fun aBlockedPeersSealedProfileDiesAtTheBlockedGate() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.deliver(
+                alice,
+                V2Author(alice, rig).dm(
+                    "ctl-p1",
+                    "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "New", status = "away", avatarHash = "face", version = 20L),
+                ),
+            )
+
+            val row = rig.peerMap.getValue(alice.nodeId)
+            assertEquals("", row.name)
+            assertEquals(1L, row.updatedAt)
+            assertFalse(rig.wants("face"))
+        }
+
+    /** A blocked person's newer profile, delivered while blocked, then the unblock's re-apply (ADR 2026-11.nsbf). */
+    private suspend fun Rig.blockedRename(alice: Party) {
+        peerMap[alice.nodeId] = PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "Old", updatedAt = 1L)
+        msgMap["m1"] = MessageEntity(id = "m1", senderId = alice.nodeId, conversationId = alice.nodeId, body = "hi", sentAt = 1L)
+        settings.blocked.value = setOf(alice.nodeId)
+        deliver(alice, profile(alice, name = "New", status = "away", avatarHash = "newFace", sentAt = 10L), from = "relay-node")
+        assertEquals("Old", peerMap.getValue(alice.nodeId).name)
+        settings.blocked.value = emptySet()
+    }
+
+    @Test
+    fun anUnblockReappliesTheHeldProfileWithNoNoticeAndWantsItsPhoto() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            val row = rig.peerMap.getValue(alice.nodeId)
+            assertEquals("New", row.name)
+            assertEquals("away", row.status)
+            assertNull("no face until its bytes land", row.avatarHash)
+            assertTrue("no notice for what changed during the block", rig.msgMap.values.none { it.isStatusNotice })
+            coVerify(exactly = 1) {
+                rig.blobExchange.want(
+                    "newFace",
+                    alice.nodeId,
+                    any(),
+                    any(),
+                    fastOnly = any(),
+                    approved = any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
+            // Nothing of a delivery ran again: one flush, from the blocked profile itself.
+            assertEquals(listOf(alice.nodeId), rig.flushed)
+
+            rig.pipeline.onObtained("newFace")
+            assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun anUnblockWantsThePhotoEvenFromALinkedNeighbour() =
+        runTest {
+            // A linked neighbour pushes its photo once per hash, and its memo already holds this one: the ordinary rule
+            // (a neighbour's photo is pushed, not pulled) would leave the face blank for good.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.transport.connect(FakeLoopTransport(alice.nodeId))
+            rig.blockedRename(alice)
+
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            assertTrue("wanted from any holder: ${rig.blobExchange.wantedHashes()}", rig.wants("newFace"))
+        }
+
+    @Test
+    fun anUnblockWithNoHeldProfileAppliesNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] = PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "Old", updatedAt = 1L)
+
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            assertEquals("Old", rig.peerMap.getValue(alice.nodeId).name)
+            coVerify(exactly = 0) { rig.peers.upsert(any()) }
+        }
+
+    @Test
+    fun anUnblockWithAStaleProfileKeepsTheNameButTheFaceFollowsItsPhoto() =
+        runTest {
+            // Contract revision 1: a sealed profile raised the row's presentation past the held cleartext frame (a badge-only
+            // sealed change does). The name and status stay; the face, which the block cleared, still follows the frame.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(name = "Newest", status = "here", updatedAt = 20L)
+
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            assertEquals("Newest", rig.peerMap.getValue(alice.nodeId).name)
+            assertEquals("here", rig.peerMap.getValue(alice.nodeId).status)
+            assertEquals(20L, rig.peerMap.getValue(alice.nodeId).updatedAt)
+            assertTrue("wanted from any holder: ${rig.blobExchange.wantedHashes()}", rig.wants("newFace"))
+            rig.pipeline.onObtained("newFace")
+            assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    @Test
+    fun anUnblockAdoptsAPhotoStillHeldAtOnce() =
+        runTest {
+            // A quick block and unblock: the bytes were never collected, so nothing would land to adopt them, and a want of
+            // held bytes makes nothing. The face is adopted on the spot.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            coEvery { rig.blobStore.has("newFace") } returns true
+            rig.blockedRename(alice)
+            assertNull("held but never adopted while blocked", rig.peerMap.getValue(alice.nodeId).avatarHash)
+
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
+            assertFalse(rig.wants("newFace"))
+        }
+
+    // --- The face an unblock owes outlives its want (ADR 2026-11.nsbf, contract revision 2) ---
+
+    private fun Rig.owed(alice: Party) = blockList.owedFaces.value.filter { it.startsWith(alice.nodeId) }
+
+    /** How many times [hash] was wanted with the photo ceiling. */
+    private fun Rig.faceWants(hash: String): Int {
+        val ceilings = mutableListOf<Long?>()
+        coVerify(atLeast = 0) {
+            blobExchange.want(
+                hash,
+                any(),
+                any(),
+                any(),
+                fastOnly = any(),
+                approved = any(),
+                pull = any(),
+                until = any(),
+                untilKnown = any(),
+                ceiling = captureNullable(ceilings),
+            )
+        }
+        return ceilings.count { it == FileIntake.MAX_AVATAR_BYTES }
+    }
+
+    @Test
+    fun anOwedFaceIsWantedAgainOnEveryPassAfterItsWantLapses() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.transport.connect(FakeLoopTransport(alice.nodeId))
+            rig.blockedRename(alice)
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+            assertEquals(listOf("${alice.nodeId} newFace"), rig.owed(alice))
+
+            rig.pipeline.rewantOwedFaces()
+            rig.pipeline.rewantOwedFaces()
+
+            // The unblock's want and one per pass: each re-arm asks again, whatever happened to the last want.
+            assertEquals(3, rig.faceWants("newFace"))
+            assertEquals(listOf("${alice.nodeId} newFace"), rig.owed(alice))
+        }
+
+    @Test
+    fun anOwedFaceSurvivesARestartAndClearsOnceItShows() =
+        runTest {
+            val before = Rig(backgroundScope)
+            val alice = party()
+            before.blockedRename(alice)
+            before.pipeline.reapplyHeldProfile(alice.nodeId)
+            // The process goes: the in-memory owner map and the exchange's want with it. The database and settings stay.
+            val after = Rig(backgroundScope)
+            after.peerMap.putAll(before.peerMap)
+            after.heldProfiles.putAll(before.heldProfiles)
+            after.blockList.owedFaces.value = before.blockList.owedFaces.value
+
+            after.pipeline.rewantOwedFaces()
+            assertTrue("wanted again after the restart: ${after.blobExchange.wantedHashes()}", after.wants("newFace"))
+            after.pipeline.onObtained("newFace")
+            assertEquals("newFace", after.peerMap.getValue(alice.nodeId).avatarHash)
+            after.pipeline.rewantOwedFaces()
+
+            assertEquals(emptyList<String>(), after.owed(alice))
+        }
+
+    @Test
+    fun anOwedFaceWhoseBytesAreHeldIsAdoptedAndSettled() =
+        runTest {
+            // The bytes landed with no owner to adopt them (a restart between the want and the landing).
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+            coEvery { rig.blobStore.has("newFace") } returns true
+
+            rig.pipeline.rewantOwedFaces()
+
+            assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
+            assertEquals(emptyList<String>(), rig.owed(alice))
+        }
+
+    @Test
+    fun anOwedFaceClearsWhenANewerProfileTakesOver() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+
+            rig.deliver(alice, rig.profile(alice, name = "Newer", avatarHash = "newerFace", sentAt = 20L), from = "relay-node")
+            rig.pipeline.rewantOwedFaces()
+
+            assertEquals(emptyList<String>(), rig.owed(alice))
+            assertEquals("the pass asked for the superseded photo", 1, rig.faceWants("newFace"))
+        }
+
+    @Test
+    fun anOwedFaceClearsWhenThePersonIsBlockedAgain() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.blockedRename(alice)
+            rig.pipeline.reapplyHeldProfile(alice.nodeId)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.pipeline.rewantOwedFaces()
+
+            assertEquals(emptyList<String>(), rig.owed(alice))
+            assertEquals("the pass asked for a blocked person's photo", 1, rig.faceWants("newFace"))
         }
 
     @Test

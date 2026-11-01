@@ -19,8 +19,10 @@ data class BlockedUser(
 
 /**
  * Backs the "Blocked users" screen: the blocked node ids ([SettingsStore.blockedNodeIds]) joined with
- * cached peer profiles for names/avatars, plus an [unblock] action. Nothing here touches the mesh —
- * unblocking just removes the id, and the (never-deleted) message history reappears reactively.
+ * cached peer profiles for names/avatars, plus an [unblock] action. Nothing here calls the mesh: unblocking
+ * removes the id, the (never-deleted) message history reappears reactively, and `mesh/BlockListWatch`
+ * sees the change and applies the person's held profile again (ADR 2026-11.nsbf). The name shown is the one
+ * they had at the block, and the face the monogram, until then.
  */
 class BlockedUsersViewModel(
     private val settings: SettingsStore,

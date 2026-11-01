@@ -11,6 +11,9 @@ topics: [privacy, custody, moderation]
 Status: Accepted (2026-07-08). Amended 2026-09-14 by ADR 2026-09.bts9: the block list also leaves `canCarry` and
 `KeyExchange.want` (it was read there, against this ADR's own rule, and diverged a blocker's custody digest for
 the life of the block — work item #45), and a message sent during a block stays unseen after an unblock.
+Amended 2026-11-01 by ADR 2026-11.nsbf: a block also holds the blocked person's profile presentation — their name and
+status stay as they were, their face is the monogram and their photo is never fetched — and the unblock applies their
+held profile again. Still presentation only: what the mesh carries is unchanged.
 
 Blocking suppresses *surfacing* (persist / notify / group-roster reconcile) but must not change what the
 mesh observes about delivery. `InboundPipeline.handleChat` therefore still sends the best-effort

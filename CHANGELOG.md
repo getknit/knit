@@ -81,6 +81,8 @@ document:
   use up to half of Knit's LoRa airtime.
 - When you pick a video longer than 61 seconds, Knit now asks whether to send its first 61 seconds before it
   starts shrinking it. If you cancel, nothing is sent.
+- Blocking someone now also stops their new name, status and photo from showing on your phone, and Knit no
+  longer downloads their photo. Until you unblock them, they show with their initial instead of a picture.
 
 ### Fixed
 

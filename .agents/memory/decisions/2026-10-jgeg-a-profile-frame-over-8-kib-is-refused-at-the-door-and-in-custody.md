@@ -107,7 +107,7 @@ cross the fast or LoRa planes anyway, and it sits well below the 61,440 byte cap
   than such a holder.
 
 Not covered, each its own change: blocking reaching presentation (knit-ios ADR 2026-10.5wgg keeps profiles and photo
-fetches of a blocked sender on purpose), receive-time stamps for peer eviction (a new column), a cap on knit-ios's
+fetches of a blocked sender on purpose; since done, ADR 2026-11.nsbf), receive-time stamps for peer eviction (a new column), a cap on knit-ios's
 unaccepted peers, and the photo want map's eviction order (#221).
 
 **What keeps it true.** `vectors/custody-v1.json` (`limits.maxProfileSignedBytes` 1,024 in the rig, three appended

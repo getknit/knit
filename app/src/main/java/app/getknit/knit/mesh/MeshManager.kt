@@ -626,6 +626,19 @@ class MeshManager(
             log = { Log.d(TAG, it) },
         )
 
+    // The one place mesh code reacts to the block list (ADR 2026-11.nsbf): a block drops the person's face and photo
+    // pull, an unblock applies their held profile again. Started on the session scope in start(), diffing against the list
+    // it last acted on, so a change made while the mesh was stopped is acted on then; the storage sweep backs up blocks.
+    internal val blockListWatch =
+        BlockListWatch(
+            blocked = settings.blockedNodeIds,
+            actedOn = { settings.blockList.actedOn.first() },
+            recordActed = { settings.blockList.setActedOn(it) },
+            onBlocked = { pipeline.onBlocked(it) },
+            onUnblocked = { pipeline.reapplyHeldProfile(it) },
+            onFailure = { Log.w(TAG, "block-list hook failed: ${it.message}") },
+        )
+
     // Bounded in-memory buffer of frames dropped for a missing sender key: parked alongside the key
     // request in verifyInbound and replayed through the deliver path once handleProfile pins the key, so
     // a frame that raced ahead of its sender's profile still lands. The inbound complement of flushPendingFor.
@@ -708,6 +721,7 @@ class MeshManager(
             db = db,
             identity = identity,
             settings = settings,
+            blockList = settings.blockList,
             messageCrypto = messageCrypto,
             notifier = notifier,
             metrics = metrics,
@@ -1111,6 +1125,7 @@ class MeshManager(
     override fun start() {
         if (started) return
         started = true
+        startSweepsDone = false
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         partials.purge() // and the cut transfers' kept prefixes: a resume lives within one session (#116)
         // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
@@ -1140,6 +1155,7 @@ class MeshManager(
         watchReachable(session)
         watchMetPeers(session)
         openToChatWatch.start(session)
+        blockListWatch.start(session)
         val seeded = seedOwnProfileCustody(session)
         watchProfileChanges(session, seeded = seeded)
         watchBadgeChanges(session)
@@ -3097,6 +3113,7 @@ class MeshManager(
             // blob only an evicted peer's avatar, a swept message or an expired carried frame named goes in the same pass
             // rather than at the next start (#234).
             blobs.deleteOrphans()
+            startSweepsDone = true
             // The first value is the startup re-arm; every change of the user's Bluetooth download limit re-arms with
             // the new verdict at once, so choosing "Never" fetches what was waiting without the next tick (ADR
             // 2026-10.js2p). Distinct: every settings flow re-emits on a write to any key.
@@ -3131,6 +3148,14 @@ class MeshManager(
      * a hash already in flight and returns at once for one the store has, so the repeat costs one bounded query.
      */
     private suspend fun rewantMissingBlobs() = rewantLock.withLock { rewantMissingBlobsLocked() }
+
+    /**
+     * Whether this session's start-up sweeps and orphan collection ([resumePendingFetches]) have run: `mesh/lab` waits on it
+     * before a blob may land, since the collection would take bytes that landed before the row naming them was written.
+     */
+    @Volatile
+    internal var startSweepsDone: Boolean = false
+        private set
 
     /** The blob wants the last [sweepExpired] reclaimed: `mesh/lab` counts a want's generations by them (#195). */
     @Volatile
@@ -3204,6 +3229,9 @@ class MeshManager(
         groups.photoHashesNeedingFetch().forEach { if (!refusedImage(it)) wanted += it to null }
         beforeRewantApplies?.invoke()
         blobExchange.wantAll(wanted, fastOnly, until)
+        // And the faces an unblock still owes (ADR 2026-11.nsbf): the durable want a linked neighbour's photo needs, since
+        // it never pushes one twice. Each pass settles the ones whose face shows or whose want no longer stands.
+        pipeline.rewantOwedFaces()
     }
 
     /**
@@ -3361,6 +3389,12 @@ class MeshManager(
         if (faces.isNotEmpty()) {
             metrics.onAvatarOverCeiling(faces.size)
             Log.w(TAG, "cleared ${faces.size} faces over the photo ceiling")
+        }
+        // The block list's backstop (ADR 2026-11.nsbf): a blocked person still showing a face loses it, however the block
+        // was made — while Knit was down, by a restore, or between a profile's block check and its write. Before the start's
+        // orphan collection, so the bytes it frees go in the same pass.
+        for (id in settings.blockedNodeIds.first()) {
+            if (peers.find(id)?.avatarHash != null) pipeline.onBlocked(id)
         }
     }
 

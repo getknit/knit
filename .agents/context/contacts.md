@@ -66,3 +66,16 @@ lines.
   row, the session, custody or the block list; nothing is sent. A group co-member stays a contact (only
   their own leave shrinks a roster), and a commons member is accepted on first sighting only. Regression:
   `ContactRemoverTest`, `ContactUniverseTest`, `BlockAndRequestLabTest`.
+- **When touching blocking — `SettingsStore.blockedNodeIds` / `blockedDeviceTags` / `block` / `unblock`,
+  `data/settings/BlockListStore`, `mesh/BlockListWatch`, `InboundPipeline.rewantOwedFaces` /
+  `settleBlockMovedMidProfile`, `InboundPipeline.onBlocked` / `reapplyHeldProfile` / `caughtByDeviceTag` /
+  `applyDeviceTagBlockContinuity`, the `blocked` argument of `storeProfileRow`, or the Blocked screen
+  (`ui/blocked/`):** READ ADR 010, ADR 2026-09.bts9 and ADR 2026-11.nsbf. A block is presentation only: never custody,
+  relay or a key want. It holds the person's name, status and flag as they were, draws their face as the monogram and
+  never wants, adopts or keeps their photo; everything that is not presentation (pin, prekey, `updatedAt`, LoRa fields)
+  moves as for anyone. The block is decided before the row is written, outside its transaction. An unblock applies the
+  held `peer_profiles` frame with no notice and brings the face back from its advertised hash, owed in DataStore
+  (`owedFaces`) and re-wanted on every database re-arm until it shows; the watch diffs against the list it last acted
+  on (`actedOn`), and the storage sweep is the backstop for a block made on any path. Our own profile and photo still
+  go to a blocked neighbour. A paired change with knit-ios. Regression: `InboundPipelineTest`'s block cases, `BlockListWatchTest`, `MeshManagerTest`'s block-list
+  cases, `BlockAndRequestLabTest`.

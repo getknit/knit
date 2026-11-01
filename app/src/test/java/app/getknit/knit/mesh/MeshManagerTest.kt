@@ -526,6 +526,9 @@ class MeshManagerTest {
          */
         val bluetoothDownloadLimit = MutableStateFlow<Long?>(null)
 
+        /** The faces an unblock owes and the block list the watch last acted on (ADR 2026-11.nsbf). */
+        val blockState = MemoryBlockListState()
+
         /** What the board was handed by [MeshManager.sendPublicPost], and what it answers. */
         val publicPosts = mutableListOf<String>()
         var publicChannelRefusal: PublicPostRefusal? = null
@@ -542,6 +545,8 @@ class MeshManagerTest {
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
             coEvery { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
             coEvery { settings.acceptedConversations } returns MutableStateFlow(emptySet())
+            // Every database re-arm reads the owed faces, and the block-list watch its last-acted list, with `.first()`.
+            coEvery { settings.blockList } returns blockState
             coEvery { textModeration.classify(any(), any()) } returns TextVerdict.ALLOWED
             coEvery { messages.save(any()) } answers { saved += firstArg<MessageEntity>() }
             // Nothing is held for the quote check (ADR 2026-10.gpa3): a relaxed mock would answer a made-up row.
@@ -3795,6 +3800,133 @@ class MeshManagerTest {
             val left = listOf("kept", "blocked", "gone").filter { rig.db.pinDao().isPinned(it) }
             assertEquals("pins left after the startup sweep", listOf("kept"), left)
             rig.manager.stop()
+        }
+
+    // --- The block list's presentation hooks (ADR 2026-11.nsbf, #249) ---
+
+    /** Backs [Rig.peers]' row reads and writes with a map, so a hook's write is what the next read sees. */
+    private fun Rig.peerRows(vararg rows: PeerEntity): ConcurrentHashMap<String, PeerEntity> {
+        val map = ConcurrentHashMap<String, PeerEntity>()
+        rows.forEach { map[it.nodeId] = it }
+        coEvery { peers.find(any()) } answers { map[firstArg()] }
+        coEvery { peers.upsert(any()) } answers { map[firstArg<PeerEntity>().nodeId] = firstArg() }
+        return map
+    }
+
+    /**
+     * The block list the rig's settings serve. The manager's watch took this very flow when it was built, so a test
+     * changes the list by setting it, never by stubbing a new one.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun Rig.blockList(): MutableStateFlow<Set<String>> = settings.blockedNodeIds as MutableStateFlow<Set<String>>
+
+    /**
+     * Starts the manager and returns once the block-list watch holds its baseline and the start's storage sweep has run
+     * (the first re-arm follows it), so a list change after this is the watch's alone to act on.
+     */
+    private suspend fun Rig.startPastTheSweep() {
+        val passes = countReArms()
+        manager.start()
+        await(1) { passes.get() }
+        await(1) { if (manager.blockListWatch.ready.value) 1 else 0 }
+    }
+
+    /** Holds a signed profile of Bob's at version 10 as his proof of key (`peer_profiles`), what an unblock re-applies. */
+    private fun Rig.holdProfile(
+        name: String,
+        status: String,
+    ) {
+        val held =
+            RelayEnvelope(
+                type = FrameType.PROFILE,
+                id = "profile-held",
+                senderId = bob.nodeId,
+                sentAt = 10L,
+                payload = WireCodec.encodePayload(ProfileContent(name = name, status = status, pubKey = bob.bundle.encoded, version = 10L)),
+            )
+        val signed = WireCodec.encodeEnvelope(held)
+        coEvery { peers.profileFrame(bob.nodeId) } returns WireEnvelope(relay = false, sig = bob.crypto.signRaw(signed), signed = signed)
+    }
+
+    @Test
+    fun anUnblockMadeWhileTheMeshWasStoppedIsReappliedAtStart() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Contract revision 2: the watch's first value is diffed against the list it last acted on, kept outside Room.
+            val rig = Rig(backgroundScope)
+            rig.blockList().value = emptySet()
+            rig.blockState.actedOn.value = setOf(rig.bob.nodeId)
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            val rows = rig.peerRows(PeerEntity(nodeId = rig.bob.nodeId, pubKey = rig.bob.bundle.encoded, name = "Old", updatedAt = 10L))
+            rig.holdProfile(name = "New", status = "away")
+
+            rig.startPastTheSweep()
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(AWAIT_MS) { while (rows.getValue(rig.bob.nodeId).name != "New") delay(POLL_MS) }
+            }
+
+            assertEquals("New", rows.getValue(rig.bob.nodeId).name)
+            assertEquals("what was acted on is recorded", emptySet<String>(), rig.blockState.actedOn.value)
+            rig.manager.stop()
+        }
+
+    @Test
+    fun aBlockClearsTheFaceAndReleasesItsBytes() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val blocked = rig.blockList().apply { value = emptySet<String>() }
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            val rows = rig.peerRows(PeerEntity(nodeId = rig.bob.nodeId, pubKey = rig.bob.bundle.encoded, name = "Bob", avatarHash = "face"))
+            rig.startPastTheSweep()
+
+            blocked.value = setOf(rig.bob.nodeId)
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(AWAIT_MS) { while (rows.getValue(rig.bob.nodeId).avatarHash != null) delay(POLL_MS) }
+            }
+
+            assertNull("their face draws as the monogram", rows.getValue(rig.bob.nodeId).avatarHash)
+            assertEquals("their name stays", "Bob", rows.getValue(rig.bob.nodeId).name)
+            // Released through the safe path: a message, a group photo, another row or a carried frame naming the bytes
+            // keeps them (BlobRepositoryTest's `keeps a blob referenced by a message attachment`).
+            coVerify(timeout = AWAIT_MS) { rig.blobs.deleteIfUnreferenced("face") }
+            rig.manager.stop()
+        }
+
+    @Test
+    fun anUnblockReappliesTheHeldProfile() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val blocked = rig.blockList().apply { value = setOf(rig.bob.nodeId) }
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            val rows = rig.peerRows(PeerEntity(nodeId = rig.bob.nodeId, pubKey = rig.bob.bundle.encoded, name = "Old", updatedAt = 10L))
+            rig.holdProfile(name = "New", status = "away")
+            rig.startPastTheSweep()
+
+            blocked.value = emptySet()
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(AWAIT_MS) { while (rows.getValue(rig.bob.nodeId).name != "New") delay(POLL_MS) }
+            }
+
+            assertEquals("New", rows.getValue(rig.bob.nodeId).name)
+            assertEquals("away", rows.getValue(rig.bob.nodeId).status)
+            rig.manager.stop()
+        }
+
+    @Test
+    fun theStorageSweepClearsABlockedRowsFace() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The backstop for a block made on any path while nothing watched: here, before the session started.
+            val rig = Rig(backgroundScope)
+            coEvery { rig.settings.blockedNodeIds } returns MutableStateFlow(setOf(rig.bob.nodeId))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            val rows = rig.peerRows(PeerEntity(nodeId = rig.bob.nodeId, pubKey = rig.bob.bundle.encoded, name = "Bob", avatarHash = "face"))
+
+            rig.manager.sweepLocalStorage()
+
+            assertNull(rows.getValue(rig.bob.nodeId).avatarHash)
+            coVerify(exactly = 1) { rig.blobs.deleteIfUnreferenced("face") }
         }
 
     @Test

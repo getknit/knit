@@ -365,9 +365,10 @@ throttled at the link.
 
 **The block list is a presentation input and never a custody one** (ADR 010, ADR 2026-09.bts9). It is read on
 the local delivery path only — `handleChat` and its siblings, the notification count, the DAO's read filters —
-and must never enter `InboundPipeline.canCarry`, the forward store, the relay decision, or `KeyExchange.want`:
-a blocker that refuses the blocked sender's frames is re-served them every exchange and refuses them every
-time, for the life of the block (work item #45). The same holds for any other per-node input — a setting, a
+and for a blocked person's profile presentation and photo (`handleProfile`'s held presentation, the photo's pull,
+adoption and push doors, `BlockListWatch`, ADR 2026-11.nsbf), and must never enter `InboundPipeline.canCarry`,
+the forward store, the relay decision, or `KeyExchange.want`: a blocker that refuses the blocked sender's frames is re-served them every exchange and refuses
+them every time, for the life of the block (work item #45). The same holds for any other per-node input — a setting, a
 moderation verdict, a version — a local decision is a delivery gate (`docs/WIRE_COMPAT.md` rule 5).
 
 ## Inbound handlers must never throw

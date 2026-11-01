@@ -38,7 +38,9 @@ with the DataStore block list intact; a device-tag continuity block on a re-keye
 sit in the same divergence until the profile happened to re-serve. The request goes to neighbors, never to
 the blocked peer, so nothing leaks. The block list is now read in exactly one kind of place: the local
 delivery path — `handleChat` (which still ticks a room or group post, ADR 010), the reaction, commons,
-group-leave and roster doors, the notification count, and the DAO's read filters.
+group-leave and roster doors, the notification count, and the DAO's read filters. Since ADR 2026-11.nsbf it is also
+read for presentation: the profile writer's name, status, flag and photo, the photo's pull, adoption and push doors,
+and `mesh/BlockListWatch` — never custody, relay or a key want.
 
 The alternative a reader reaches for first is to keep the refusal and make it convergence-safe: fold the
 ids a node refused-by-block into its digest as an accounted band, the way `ScopeSync` accounts a spool
