@@ -2,6 +2,9 @@
 <!-- Argentine Spanish: an overlay on values-es. Android falls back to values-es one string at a time, so this file
      holds only the strings Argentina says differently (voseo, local words), translated on Weblate. Never copy a
      string here unchanged: the copy would stop a later fix in values-es from reaching Argentina.
-     .agents/context/translations.md, "A regional variant". -->
-<resources>
+     .agents/context/translations.md, "A regional variant". --><resources>
+    <string name="app_name">Knit</string>
+    <string name="joined_with_dot">%1$s · %2$s</string>
+    <string name="notif_group_messages">Mensajes</string>
+    <string name="notif_group_app">App</string>
 </resources>
