@@ -182,6 +182,26 @@ class UploadBytesTest(unittest.TestCase):
         self.assertEqual(sync.upload_bytes(self.write("again.png", png(1079, 2339))), scaled)
 
 
+class ApplyPlanTest(unittest.TestCase):
+    def test_every_request_names_a_route_that_ends_in_a_slash(self):
+        shot = sync.Shot(7, "Chat", {3})
+        plan = sync.Plan(
+            create=[(preview("About", ["about_title"]), [1])],
+            replace=[(shot, preview("Chat", ["chat_send"]))],
+            link=[(shot, 4)],
+            unlink=[(shot, 3)],
+            delete=[sync.Shot(9, "Gone", set())],
+        )
+        weblate = mock.create_autospec(sync.Weblate, instance=True)
+        weblate.form.return_value = {"url": "https://hosted.weblate.org/api/screenshots/11/"}
+        with mock.patch("builtins.print"):
+            sync.apply_plan(weblate, plan, "knit", "app", "en")
+        paths = [c.args[0] for c in weblate.form.call_args_list + weblate.delete.call_args_list]
+        self.assertIn("screenshots/7/units/3/", paths)
+        self.assertEqual(len(paths), plan.requests())
+        self.assertEqual([p for p in paths if not p.endswith("/")], [])
+
+
 class UnitIdTest(unittest.TestCase):
     def test_reads_a_unit_url_an_id_or_an_object(self):
         self.assertEqual(sync.unit_id("https://hosted.weblate.org/api/units/217490720/"), 217490720)

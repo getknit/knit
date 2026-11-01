@@ -423,6 +423,14 @@ def main(argv: list[str]) -> int:
         print("Dry run: nothing changed. Re-run with --apply to make these changes on Weblate.")
         return 0
 
+    apply_plan(weblate, plan, project, component, source)
+    print(f"Done: {weblate.sent} requests.")
+    return 0
+
+
+def apply_plan(weblate: Weblate, plan: Plan, project: str, component: str, source: str) -> None:
+    """Makes the plan's changes on Weblate. Every route its API serves ends in a slash: without one a DELETE misses the
+    API and meets Django's HTML 404 (the unlink did, CI run 41250619065), so each path below keeps its slash."""
     for n, (preview, ids) in enumerate(plan.create, 1):
         created = weblate.form(
             "screenshots/",
@@ -438,12 +446,10 @@ def main(argv: list[str]) -> int:
     for shot, unit in plan.link:
         weblate.form(f"screenshots/{shot.id}/units/", {"unit_id": str(unit)})
     for shot, unit in plan.unlink:
-        weblate.delete(f"screenshots/{shot.id}/units/{unit}")
+        weblate.delete(f"screenshots/{shot.id}/units/{unit}/")
     for shot in plan.delete:
         weblate.delete(f"screenshots/{shot.id}/")
         print(f"  deleted {shot.name}")
-    print(f"Done: {weblate.sent} requests.")
-    return 0
 
 
 if __name__ == "__main__":
