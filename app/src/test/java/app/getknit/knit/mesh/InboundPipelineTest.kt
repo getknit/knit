@@ -339,7 +339,7 @@ class InboundPipelineTest {
         val imageScreening = mockk<ImageScreeningService>(relaxed = true)
         val blobStore = mockk<MeshBlobStore>(relaxed = true)
 
-        /** The blobs the rig holds: [blobStore]'s `has` answers from it, and a mocked `blobs.insert` adds to it. */
+        /** The blobs the rig holds: [blobStore]'s `has` answers from it, and a mocked `blobs.insertArrived` adds to it. */
         val heldBlobs: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         // A real in-memory DB purely as the transaction runner for reconcileGroup's db.withWriteTransaction; the repos
@@ -583,7 +583,7 @@ class InboundPipelineTest {
             coEvery { blobs.bytes(any()) } returns null
             // Held bytes: an insert holds them (a push's), and a test may hold them outright ([heldBlobs], what a landing
             // pull's ingest did before `onObtained`). A test's own `blobStore.has(x)` stub, declared later, wins over this.
-            coEvery { blobs.insert(any(), any(), any()) } answers { heldBlobs += firstArg<String>() }
+            coEvery { blobs.insertArrived(any(), any(), any()) } answers { heldBlobs += firstArg<String>() }
             coEvery { blobStore.has(any()) } answers { firstArg<String>() in heldBlobs }
             pipeline =
                 InboundPipeline(
@@ -3224,6 +3224,7 @@ class InboundPipelineTest {
             rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
 
             assertNull(rig.peerMap[alice.nodeId])
+            coVerify(exactly = 0) { rig.blobs.insertArrived(any(), any(), any()) }
             coVerify(exactly = 0) { rig.blobs.insert(any(), any(), any()) }
             assertFalse("the staging file is deleted", file.exists())
         }
@@ -6545,7 +6546,7 @@ class InboundPipelineTest {
             val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
 
             rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
-            coVerify { rig.blobs.insert(hash, "image/jpeg", any()) }
+            coVerify { rig.blobs.insertArrived(hash, "image/jpeg", any()) }
             assertNull("the row advertises no photo: the push is not its face yet", rig.peerMap.getValue(alice.nodeId).avatarHash)
             coEvery { rig.blobStore.has(hash) } returns true
 
@@ -6890,7 +6891,7 @@ class InboundPipelineTest {
             rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
 
             assertEquals(hash, rig.peerMap[alice.nodeId]?.avatarHash)
-            coVerify { rig.blobs.insert(hash, "image/jpeg", any()) }
+            coVerify { rig.blobs.insertArrived(hash, "image/jpeg", any()) }
             assertFalse("the staging file is deleted after ingest", file.exists())
         }
 
@@ -7040,6 +7041,7 @@ class InboundPipelineTest {
             rig.pipeline.onAvatarReceived(alice.nodeId, wrongHash, "image/jpeg", file.absolutePath)
 
             assertNull(rig.peerMap[alice.nodeId])
+            coVerify(exactly = 0) { rig.blobs.insertArrived(any(), any(), any()) }
             coVerify(exactly = 0) { rig.blobs.insert(any(), any(), any()) }
             assertFalse("a spoofed avatar's staging file is deleted", file.exists())
         }

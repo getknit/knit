@@ -4883,7 +4883,7 @@ class InboundPipeline(
         // Screened before it is stored, as MeshBlobStore.ingest does: a profile writer that finds the bytes
         // held must find their verdict too, or it adopts an avatar this push is about to refuse.
         imageScreening.screenImage(hash, bytes)
-        blobs.insert(hash, mime, bytes)
+        blobs.insertArrived(hash, mime, bytes)
         File(srcPath).delete()
         // With content filtering on, don't adopt an explicit avatar: leave the peer on its monogram fallback and drop
         // the bytes, keeping the verdict so the re-arm never fetches it again while the row advertises it (the setting

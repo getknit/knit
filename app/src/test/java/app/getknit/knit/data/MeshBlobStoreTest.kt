@@ -43,7 +43,7 @@ class MeshBlobStoreTest {
 
     @Before
     fun backBlobRepositoryWithAMap() {
-        coEvery { blobs.insert(any(), any(), any()) } answers { stored[firstArg()] = secondArg<String>() to thirdArg() }
+        coEvery { blobs.insertArrived(any(), any(), any()) } answers { stored[firstArg()] = secondArg<String>() to thirdArg() }
         coEvery { blobs.bytes(any()) } answers { stored[firstArg<String>()]?.second }
         coEvery { blobs.mimeFor(any()) } answers { stored[firstArg<String>()]?.first }
     }
@@ -73,7 +73,7 @@ class MeshBlobStoreTest {
             // (adoptAdvertisedAvatar / adoptAdvertisedGroupPhoto) read isImageFlagged == false.
             coVerify(exactly = 1) { imageScreening.screenImage(hash, bytes) }
             // Nothing local overrides the type, so the header stands as the fallback for the stored mime.
-            coVerify(exactly = 1) { blobs.insert(hash, "audio/aac", bytes) }
+            coVerify(exactly = 1) { blobs.insertArrived(hash, "audio/aac", bytes) }
         }
 
     @Test
@@ -133,7 +133,7 @@ class MeshBlobStoreTest {
 
             store().saveIncoming(hash, "audio/aac", staged().absolutePath)
 
-            coVerify(exactly = 1) { blobs.insert(hash, "image/webp", bytes) }
+            coVerify(exactly = 1) { blobs.insertArrived(hash, "image/webp", bytes) }
             coVerify(exactly = 1) { imageScreening.screenImage(hash, bytes) }
         }
 
@@ -145,7 +145,7 @@ class MeshBlobStoreTest {
             assertNull(store().saveIncoming("../etc/passwd", "image/webp", src.absolutePath))
 
             assertFileGone(src)
-            coVerify(exactly = 0) { blobs.insert(any(), any(), any()) }
+            coVerify(exactly = 0) { blobs.insertArrived(any(), any(), any()) }
             coVerify(exactly = 0) { imageScreening.screenImage(any(), any()) }
         }
 
@@ -158,7 +158,7 @@ class MeshBlobStoreTest {
             assertNull(store().saveIncoming(hash, "image/webp", src.absolutePath))
 
             assertFileGone(src)
-            coVerify(exactly = 0) { blobs.insert(any(), any(), any()) }
+            coVerify(exactly = 0) { blobs.insertArrived(any(), any(), any()) }
             coVerify(exactly = 0) { imageScreening.screenImage(any(), any()) }
         }
 
@@ -210,7 +210,7 @@ class MeshBlobStoreTest {
 
             store().ingest(hash, "image/jpeg", bytes)
 
-            coVerify(exactly = 1) { blobs.insert(hash, "image/jpeg", bytes) }
+            coVerify(exactly = 1) { blobs.insertArrived(hash, "image/jpeg", bytes) }
             coVerify(exactly = 1) { imageScreening.screenImage(hash, bytes) }
         }
 
@@ -266,7 +266,7 @@ class MeshBlobStoreTest {
 
             store().ingest(hash, "image/jpeg", bytes)
 
-            coVerify(exactly = 1) { blobs.insert(hash, "audio/aac", bytes) }
+            coVerify(exactly = 1) { blobs.insertArrived(hash, "audio/aac", bytes) }
             // Sealed non-image: ciphertext here, screened after decryption in InboundPipeline.onObtained.
             coVerify(exactly = 0) { imageScreening.screenImage(any(), any()) }
         }

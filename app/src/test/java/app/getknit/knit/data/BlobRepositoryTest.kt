@@ -14,6 +14,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
@@ -327,6 +328,50 @@ class BlobRepositoryTest : RoomDbTest() {
 
             assertFalse(db.blobDao().exists("orphan"))
             assertTrue(db.blobDao().exists("own"))
+        }
+
+    @Test
+    fun `our own new photo stored after the start-up collection read the old avatar is kept (#288)`() =
+        runTest {
+            val repo = repo()
+            // The collection reads the own avatar before its transaction; the photo save stores the bytes in that gap and
+            // names them only afterwards, so to the listing they are named by nothing.
+            every { settings.ownAvatarHash } returns
+                flow {
+                    repo.insert("new", "image/jpeg", byteArrayOf(1))
+                    emit("old")
+                }
+
+            repo.deleteOrphans()
+
+            assertTrue("the photo we are about to advertise was collected", db.blobDao().exists("new"))
+        }
+
+    @Test
+    fun `the start-up collection keeps what this process staged and takes an arrival's and an earlier process's orphans (#288)`() =
+        runTest {
+            ownAvatar(null)
+            val repo = repo()
+            repo.insert("staged", "image/jpeg", byteArrayOf(1)) // an attachment in the composer, which no row names yet
+            repo.insertArrived("arrived", "image/jpeg", byteArrayOf(2)) // a link delivered it, and nothing wants it
+            blob("earlier") // stored by an earlier process: this repository never saw it
+
+            repo.deleteOrphans() // a mesh restart inside this process
+
+            assertTrue("a staged attachment went at a mesh restart", db.blobDao().exists("staged"))
+            assertFalse(db.blobDao().exists("arrived"))
+            assertFalse(db.blobDao().exists("earlier"))
+        }
+
+    @Test
+    fun `the next process collects what this one staged and never named`() =
+        runTest {
+            ownAvatar(null)
+            repo().insert("staged", "image/jpeg", byteArrayOf(1))
+
+            repo().deleteOrphans() // a fresh repository: the process that staged it is gone
+
+            assertFalse(db.blobDao().exists("staged"))
         }
 
     @Test

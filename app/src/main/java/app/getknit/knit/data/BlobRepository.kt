@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Single source of truth for content-addressed image blobs (attachments + avatars + group photos) held
@@ -44,7 +45,34 @@ class BlobRepository(
     // The photos refused over their ceiling (#234), kept beside the verdicts (ADR 2026-11.4ckq).
     private val refusals: PhotoRefusalDao = db.photoRefusalDao(),
 ) {
+    /**
+     * The hash of every blob this process stored, kept out of [deleteOrphans] (#288), which runs at each mesh start, a
+     * mesh restart inside this process included. A blob is stored before anything names it — a picked attachment at
+     * staging, before its message row; our own new photo before its hash is persisted — and the composer that holds the
+     * one, or the save that names the other, lives on in this process. Only an earlier process's unnamed blobs are
+     * orphans for certain. Marked before the row is written, so the collection never sees the bytes without the mark; a
+     * fresh repository (a new process, a lab restart) starts empty. Never pruned: one hash string per distinct blob
+     * stored, small beside the bytes the table held for it, and gone with the process. The cost: a blob of ours that a
+     * removal leaves for the collection rather than releasing through [deleteIfUnreferenced] (a deleted conversation's
+     * sends, a staged attachment the composer replaced) waits for the next process instead of the next mesh start.
+     */
+    private val storedThisProcess: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Stores a blob this phone made or picked (an attachment staged, a sealed send, our own photo), kept from [deleteOrphans]. */
     suspend fun insert(
+        hash: String,
+        mime: String,
+        bytes: ByteArray,
+    ) {
+        storedThisProcess += hash
+        blobs.insert(BlobEntity(hash, mime, bytes))
+    }
+
+    /**
+     * Stores a blob that arrived over a link or the relay. Unmarked, unlike [insert]: an arrival nothing names is a start's
+     * orphan like any other (#277), and the row that wants it — a face, a message, a carried frame — is what keeps it.
+     */
+    suspend fun insertArrived(
         hash: String,
         mime: String,
         bytes: ByteArray,
@@ -254,14 +282,17 @@ class BlobRepository(
     suspend fun carrierOnlyBlobBytes(): Long = blobs.carrierOnlyBlobBytes()
 
     /**
-     * Deletes every blob no longer referenced by a message, a peer avatar, or the own avatar. Run once
-     * on mesh start to reclaim blobs left orphaned by, e.g., an attachment staged but never sent (its
-     * compose state doesn't survive a restart, so its blob is safe to drop).
+     * Deletes every blob an earlier process stored that no message, peer avatar, group photo, carried frame or our own
+     * avatar names. Run at each mesh start to reclaim blobs left orphaned by, e.g., an attachment staged but never sent
+     * in an earlier process (its compose state died with it, so its blob is safe to drop). A blob this process stored is
+     * never one ([storedThisProcess], #288): the composer holding it, or the save about to name it, is still running —
+     * a mesh restarts inside a process too — and the own-avatar hash is read before the transaction, so our new photo
+     * stored between that read and the listing would otherwise go, leaving a profile that advertises a photo nobody holds.
      */
     suspend fun deleteOrphans() {
         val own = settings.ownAvatarHash.first()
         db.withWriteTransaction {
-            blobs.orphanHashes().filter { it != own }.forEach {
+            blobs.orphanHashes().filter { it != own && it !in storedThisProcess }.forEach {
                 blobs.delete(it)
                 // A photo a peer still advertises keeps its verdict, as in [deleteIfUnreferenced] (ADR 2026-11.4ckq).
                 if (peers.countByAdvertisedAvatar(it) == 0) verdicts.delete(it)

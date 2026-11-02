@@ -4,8 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import app.getknit.knit.data.blob.BlobDao
-import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.moderation.ImageScreeningService
 import io.mockk.coEvery
@@ -27,12 +25,12 @@ import kotlin.random.Random
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AvatarStoreSizeTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val blobs = mockk<BlobDao>(relaxed = true)
+    private val blobs = mockk<BlobRepository>(relaxed = true)
     private val screening = mockk<ImageScreeningService>(relaxed = true)
-    private val stored = mutableListOf<BlobEntity>()
+    private val stored = mutableListOf<ByteArray>()
 
     init {
-        coEvery { blobs.insert(any()) } answers { stored += firstArg<BlobEntity>() }
+        coEvery { blobs.insert(any(), any(), any()) } answers { stored += thirdArg<ByteArray>() }
         coEvery { screening.isImageExplicit(any()) } returns false
     }
 
@@ -46,7 +44,7 @@ class AvatarStoreSizeTest {
 
             assertNotNull(AvatarStore(context, blobs, screening).saveOwnAvatar(noise))
 
-            val size = stored.single().bytes.size
+            val size = stored.single().size
             println("own avatar, noise: $size bytes (photo ceiling ${FileIntake.MAX_AVATAR_BYTES})")
             assertTrue("an honest face over the photo ceiling: $size bytes", size <= FileIntake.MAX_AVATAR_BYTES)
         }

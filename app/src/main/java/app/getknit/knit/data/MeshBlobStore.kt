@@ -162,7 +162,7 @@ class MeshBlobStore(
                 imageScreening.screenImage(hash, bytes)
             }
         }
-        blobs.insert(hash, localMime ?: mime, bytes)
+        blobs.insertArrived(hash, localMime ?: mime, bytes)
     }
 
     /**

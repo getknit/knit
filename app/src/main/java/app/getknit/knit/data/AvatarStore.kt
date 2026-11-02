@@ -4,8 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.core.graphics.scale
-import app.getknit.knit.data.blob.BlobDao
-import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.ui.util.CropRect
 import kotlinx.coroutines.Dispatchers
@@ -16,7 +14,7 @@ import kotlin.math.min
 
 /**
  * Produces the device's own avatar (picked + center-cropped to a 256² JPEG) and stores it in the
- * encrypted, content-addressed `blobs` table (see [BlobEntity]) rather than as a plaintext file.
+ * encrypted, content-addressed `blobs` table (see [app.getknit.knit.data.blob.BlobEntity]) rather than as a plaintext file.
  *
  * Avatars are **content-addressed** by the SHA-256 of the JPEG bytes — the same hash advertised in the
  * profile frame. The hash is what makes a *changed* avatar visible: Coil keys its image cache by the
@@ -30,7 +28,7 @@ import kotlin.math.min
  */
 class AvatarStore(
     private val context: Context,
-    private val blobs: BlobDao,
+    private val blobs: BlobRepository,
     private val screening: ImageScreeningService,
 ) {
     /**
@@ -76,7 +74,7 @@ class AvatarStore(
                     .toByteArray()
             if (screening.isImageExplicit(bytes)) return@withContext null
             val hash = sha256(bytes)
-            blobs.insert(BlobEntity(hash, "image/jpeg", bytes))
+            blobs.insert(hash, "image/jpeg", bytes)
             hash
         }
 
