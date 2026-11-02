@@ -99,6 +99,7 @@ import app.getknit.knit.ui.addcontact.ContactCardInbox
 import app.getknit.knit.ui.chat.quoteLabels
 import app.getknit.knit.ui.relay.RelayInviteInbox
 import app.getknit.knit.ui.review.ReviewPromptInbox
+import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.theme.AndroidNightMode
 import app.getknit.knit.ui.theme.NightMode
@@ -234,6 +235,8 @@ val appModule =
         single<ConversationGate> { get<ConversationShortcutSync>() }
         // Single-shot handoff for content arriving via the system share sheet (ACTION_SEND).
         single { ShareInbox() }
+        // Which URIs another app hands the composer may be read with Knit's permissions (#284, ADR 2026-11.vdx4).
+        single { OutsideUris.of(androidContext()) }
         // Debug trailer seam driving the real Nearby composer (see DemoComposer). Inert in every build
         // unless the debug DemoDirector emits into it; R8 strips it from release.
         single { DemoComposer() }

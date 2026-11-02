@@ -123,6 +123,7 @@ import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.TranslateOutcome
 import app.getknit.knit.translate.TranslateTarget
+import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.translate.LanguageNames
 import app.getknit.knit.ui.voice.VoicePlayer
 import app.getknit.knit.ui.voice.VoiceRecorder
@@ -689,6 +690,9 @@ class ChatViewModel(
     private val pins: PinRepository? = null,
     // Delete-for-me, shared with the debug bridge's PURGE so the two cannot drift. Stateless; defaulted for every rig.
     private val localDelete: LocalMessageDelete = LocalMessageDelete(messages, reactions, receipts, blobs, pins),
+    // Which URIs from another app (a share, a paste, a keyboard insert, a picker) may be read at all (#284, ADR
+    // 2026-11.vdx4). No default: every rig names the rule it runs under, and an admit-all default would fail open.
+    private val outsideUris: OutsideUris,
 ) : ViewModel() {
     // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
     private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
@@ -2878,9 +2882,11 @@ class ChatViewModel(
     /**
      * Ingests a picked or keyboard-inserted image and stages it in the input bar. A decode failure is
      * silently ignored, as before — the picture is still sitting in the picker, so there is nothing to
-     * explain.
+     * explain. A URI [outsideUris] refuses (one naming Knit's own files, from a paste or a keyboard) is never
+     * read, and is dropped as quietly.
      */
     fun attach(uri: Uri) {
+        if (!outsideUris.admits(uri)) return
         viewModelScope.launch { attachPicture(uri, shared = false, sharedType = null) }
     }
 
@@ -2889,11 +2895,19 @@ class ChatViewModel(
      * type the share declared. Unlike a pick, a failure speaks: the sender left the other app for this composer, and
      * a share that stages nothing reads as Knit ignoring it (#268). A share Knit cannot read at all goes the image
      * way, because without a grant the provider will not say it is a video either; [type] still calls it one.
+     *
+     * A share [outsideUris] refuses is never read and says what an unreadable one says, so the sender learns
+     * nothing about why (#284).
      */
     fun attachShared(
         uri: Uri,
         type: String?,
     ) {
+        if (!outsideUris.admits(uri)) {
+            val unreadable = AttachmentStore.IngestResult.Reason.Unreadable
+            _events.tryEmit(if (type?.startsWith("video/") == true) R.string.chat_video_unreadable else ingestFailureMessage(unreadable))
+            return
+        }
         viewModelScope.launch { attachPicture(uri, shared = true, sharedType = type) }
     }
 
@@ -3023,9 +3037,14 @@ class ChatViewModel(
     /**
      * Ingests a picked **file** of any type and stages it. Unlike [attach] every failure speaks up: a file
      * refused for its size cannot be shrunk the way a photo is, and one refused for being an app package is
-     * a decision rather than an accident, so silence would read as the app doing nothing.
+     * a decision rather than an accident, so silence would read as the app doing nothing. A URI [outsideUris]
+     * refuses is never read, not even to ask whether it is a video, and is unreadable as far as the sender is told.
      */
     fun attachFile(uri: Uri) {
+        if (!outsideUris.admits(uri)) {
+            _events.tryEmit(R.string.chat_transfer_unreadable)
+            return
+        }
         viewModelScope.launch {
             // A video is a video whichever button picked it (ADR 2026-10.hmfe's amendment): sent as-is it would be
             // refused past 8 MB, and under it would go out with no poster, as a file bubble on our side.
@@ -3102,6 +3121,11 @@ class ChatViewModel(
 
     /** Offers the file at [uri] to this DM's peer over a one-shot Wi-Fi Direct link; the bytes never ride the mesh. */
     fun offerTransfer(uri: Uri) {
+        // The transfer reads [uri] minutes from now, as Knit; one naming Knit's own files is never offered (#284).
+        if (!outsideUris.admits(uri)) {
+            _events.tryEmit(R.string.chat_transfer_unreadable)
+            return
+        }
         viewModelScope.launch {
             refusalForTransfer()?.let {
                 _events.tryEmit(it)

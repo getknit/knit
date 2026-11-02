@@ -122,6 +122,8 @@ class KoinGraphVerifyTest {
                 SttModelFiles::class,
                 SpeechToText::class,
                 CoroutineDispatcher::class,
+                // OutsideUris' authority set, read off the installed manifest by `OutsideUris.of` (#284).
+                Set::class,
             )
     }
 }

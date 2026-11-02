@@ -90,6 +90,8 @@ document:
 
 ### Fixed
 
+- Another app could get one of Knit's own private files, such as its settings, attached to a message you were
+  writing by sharing it to Knit or pasting it in. Knit now refuses to read those files.
 - Long-pressing a message while you type no longer closes the keyboard and shuffles the chat. The menu, the
   full emoji picker and the delete confirmation now open over the chat as it is, with the keyboard still up.
 - Emoji search now also matches the words people use for an emoji, so "100" or "exam" finds the hundred

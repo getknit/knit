@@ -7,9 +7,12 @@ import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * Text, an image, and/or an arbitrary file handed to Knit from another app's share sheet (an `ACTION_SEND`
- * intent). Each stream is kept as the [String] form of its `content://` URI — re-parsing that string with
- * `Uri.parse` preserves the temporary read grant (the grant is keyed to the (uid, uri) pair, not a
+ * intent). Each stream is kept as the [String] form of the URI the sender put in `EXTRA_STREAM` — re-parsing that
+ * string with `Uri.parse` preserves the temporary read grant (the grant is keyed to the (uid, uri) pair, not a
  * particular `Uri` instance), and keeping it a plain string makes [ShareInbox] JVM-unit-testable.
+ *
+ * The URI is the sender's word, not a checked one: it may name Knit's own files. Nothing here reads it; the chat
+ * asks [OutsideUris] before it does (#284).
  *
  * [imageUri] and [fileUri] are kept apart rather than folded into one field because they land in different
  * places: an image can be attached anywhere, while a file is only offered in DMs and groups (ADR

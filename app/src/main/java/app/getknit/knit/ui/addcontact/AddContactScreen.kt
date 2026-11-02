@@ -1,7 +1,6 @@
 package app.getknit.knit.ui.addcontact
 
 import android.content.ClipData
-import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -67,9 +66,7 @@ import app.getknit.knit.ui.relay.RelayInviteSheet
 import app.getknit.knit.ui.scan.QrScanner
 import app.getknit.knit.ui.shareText
 import app.getknit.knit.ui.verify.EncryptionSection
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -186,7 +183,7 @@ fun AddContactScreen(
             onPaste = {
                 scope.launch {
                     val clip = clipboard.getClipEntry()?.clipData
-                    val text = clip?.let { withContext(Dispatchers.IO) { clipText(it, context) } }
+                    val text = clip?.let(::clipText)
                     if (!text.isNullOrBlank()) {
                         viewModel.setInput(text)
                         viewModel.lookup()
@@ -204,18 +201,22 @@ fun AddContactScreen(
 }
 
 /**
- * The first non-blank text the clip holds. `coerceToText` needs a real [Context]: an item carrying a URI
- * (a copied image or file) is read through the content resolver, which a null context crashes on — and
- * that read is a stream open, so the caller runs this off the main thread.
+ * The first non-blank text the clip holds: an item's own text, or a URI it carries as text (a link copied with
+ * `ClipData.newRawUri`). Never `coerceToText`, which opens a `content://`, `file://` or `android.resource://` item as
+ * a stream and reads all of it as Knit: any app's clip could then pour Knit's own field log into this field, or an
+ * endless stream into memory (#284, ADR 2026-11.vdx4). A contact link or a relay invite is never a stream.
  */
-internal fun clipText(
-    clip: ClipData,
-    context: Context,
-): String? =
+internal fun clipText(clip: ClipData): String? =
     (0 until clip.itemCount)
         .asSequence()
-        .mapNotNull { clip.getItemAt(it).coerceToText(context)?.toString() }
+        .mapNotNull { clipItemText(clip.getItemAt(it)) }
         .firstOrNull { it.isNotBlank() }
+
+private fun clipItemText(item: ClipData.Item): String? =
+    item.text?.toString() ?: item.uri?.takeIf { it.scheme?.lowercase() !in STREAM_SCHEMES }?.toString()
+
+/** The schemes `ClipData.Item.coerceToText` would open as a stream rather than hand back as text. */
+private val STREAM_SCHEMES = setOf("content", "file", "android.resource")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

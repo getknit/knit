@@ -93,6 +93,7 @@ import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
 import app.getknit.knit.ui.reaction
+import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.voice.VoicePlayer
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -132,6 +133,7 @@ import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * The richest ViewModel: a 5-way state combine plus the send double-submit guard and the attach room-vs-DM
@@ -327,6 +329,8 @@ class ChatViewModelTest {
         preferMeshCalls = preferMeshCalls,
         directLinksOn = directLinksOn,
         pins = pins,
+        // This install's own rule, read off the merged manifest as the app's Koin graph reads it.
+        outsideUris = OutsideUris.of(context),
     )
 
     // --- Pinned messages (#42, ADR 2026-10.2r7e) ---------------------------------------------------------------------
@@ -2609,6 +2613,69 @@ class ChatViewModelTest {
             coVerify { attachments.ingest(video, true, any()) }
             coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
             assertNull(vm.pendingAttachment.value)
+        }
+
+    /**
+     * #284 (ADR 2026-11.vdx4): a share, a paste or a pick naming Knit's own files would be read with Knit's permissions
+     * and staged in the chat. None is read, not even to ask whether it is a video, and each says what an unreadable
+     * one says, so the sender learns nothing about why. A URI on someone else's provider still goes through.
+     */
+    @Test
+    fun aUriNamingKnitsOwnFilesIsNeverReadAndSaysWhatAnUnreadableOneSays() =
+        runTest {
+            // The store is a mock, so nothing here reads a byte either way: the gate is proven by the store never being
+            // asked (the coVerify checks below) and by what the composer says.
+            val ownFile = Uri.fromFile(File(context.filesDir, "datastore/knit_settings.preferences_pb"))
+            val ownLog = Uri.parse("content://0@${context.packageName}.fileprovider/fieldlog/knit-fieldlog.txt")
+            val ownCrash = Uri.parse("content://${context.packageName}.fileprovider/crash/report.txt")
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            stubDm("bob")
+            val vm = vm("bob")
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.attachShared(ownFile, "image/jpeg")
+            vm.attachShared(ownLog, "video/mp4")
+            vm.attachFile(ownCrash)
+            vm.attach(ownFile) // a paste or a keyboard insert: quiet, as every failed pick is
+            advanceUntilIdle()
+
+            assertEquals(
+                listOf(R.string.chat_image_capture_failed, R.string.chat_video_unreadable, R.string.chat_transfer_unreadable),
+                events,
+            )
+            assertNull(vm.pendingAttachment.value)
+            coVerify(exactly = 0) { attachments.isVideo(any()) }
+            coVerify(exactly = 0) { attachments.ingest(any<Uri>(), any(), any()) }
+            coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
+            coVerify(exactly = 0) { attachments.ingestFile(any(), any()) }
+
+            // Someone else's provider is read as before.
+            val picture = Uri.parse("content://com.android.providers.media.documents/document/image%3A40")
+            val ingested = AttachmentStore.Ingested(hash = "p40", mime = "image/jpeg")
+            coEvery { attachments.ingest(picture, any(), any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            vm.attachShared(picture, "image/jpeg")
+            advanceUntilIdle()
+            assertEquals(ingested, vm.pendingAttachment.value)
+        }
+
+    /** #284: the direct transfer reads its file minutes later, as Knit, so one naming Knit's own files is never offered. */
+    @Test
+    fun aDirectTransferOfKnitsOwnFilesIsNeverOffered() =
+        runTest {
+            stubDm("bob")
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            mesh.neighbors.value = setOf(Peer("bob"))
+            val vm = vm("bob")
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.offerTransfer(Uri.fromFile(File(context.filesDir, "datastore/knit_settings.preferences_pb")))
+            vm.offerTransfer(Uri.parse("content://${context.packageName}.fileprovider/apk/knit.apk"))
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.chat_transfer_unreadable, R.string.chat_transfer_unreadable), events)
+            coVerify(exactly = 0) { transfers.offer(any(), any()) }
         }
 
     /**

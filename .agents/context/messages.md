@@ -112,6 +112,13 @@ lines.
   scoped to one thread (Messages only, still inside the list's universe); a hit is handed back through the previous
   entry's `savedStateHandle` and popped, never `navigate(chat(id, messageId))`, and the hand-back is cleared as it is
   taken rather than guarded by `consumedJump`, so the same message found twice jumps twice.
+- **Before touching `OutsideUris`, `ChatViewModel.attach` / `attachShared` / `attachFile` / `offerTransfer`, or adding
+  anything that takes a URI from another app (an intent filter, a content receiver, a picker):** READ ADR
+  2026-11.vdx4 — a URI from outside is read only when it is `content://` on someone else's provider (the authority
+  taken past the last `@`), because the read runs with Knit's permissions; the gate comes before the first read,
+  `getType` and `isVideo` included, and a refusal says what an unreadable URI says. A clip is read for its text
+  only, never through `ClipData.Item.coerceToText` (Add contact's `clipText`). Tests: `OutsideUrisTest`,
+  `OutsideUrisOfTest`, `ClipTextTest`, `ChatViewModelTest`'s #284 cases.
 - **When touching `data/ImageStrip` or `AttachmentStore.passThrough`:** READ ADR 2026-10.unqn — a picture already
   bounded, upright and no sharper than the q85 re-encode goes out as its own bytes with the metadata stripped, so the
   "no GPS leaves the phone" invariant rests on the strip's allow-list: anything it does not fully understand answers

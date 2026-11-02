@@ -263,7 +263,10 @@ class MainActivity : ComponentActivity() {
         // rather than here.
         if (contactLinkFrom(intent.action, null, text) != null || relayInviteFrom(intent.action, null, text) != null) return
         // EXTRA_STREAM is read-granted for any stream our filters accept, which since ADR 2026-09.qq2r is
-        // any type at all. The split is by *destination*, not by grant: an image can be attached in any
+        // any type at all. It is also whatever the sender wrote: a file:// path or a URI on our own provider
+        // would be read with Knit's permissions, so it is carried here unread and the chat refuses one through
+        // OutsideUris before anything opens it (#284, ADR 2026-11.vdx4).
+        // The split is by *destination*, not by grant: an image can be attached in any
         // thread, while a file is offered only in DMs and groups, so the two ride separate fields and the
         // chat screen says so when it cannot take one. A video rides the image field: like a picture it is re-encoded
         // and can go to any thread, the Nearby room included (ADR 2026-10.hmfe).

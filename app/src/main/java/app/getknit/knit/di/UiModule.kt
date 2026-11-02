@@ -56,6 +56,7 @@ import app.getknit.knit.ui.requests.MessageRequestsViewModel
 import app.getknit.knit.ui.search.SearchViewModel
 import app.getknit.knit.ui.settings.ChatSettingsViewModel
 import app.getknit.knit.ui.settings.SettingsViewModel
+import app.getknit.knit.ui.share.OutsideUris
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.flowOf
@@ -102,6 +103,7 @@ val uiModule =
                 translation = if (TRANSLATE_WIRED) get<ChatTranslation>() else null,
                 pins = get<PinRepository>(),
                 localDelete = get<LocalMessageDelete>(),
+                outsideUris = get<OutsideUris>(),
             )
         }
         viewModel {
