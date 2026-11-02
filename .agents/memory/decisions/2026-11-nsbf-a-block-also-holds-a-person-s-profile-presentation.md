@@ -116,3 +116,15 @@ the mid-profile unblock and the owed-face lifetime cases), `BlockListWatchTest`,
 `anUnblockMadeWhileTheMeshWasStoppedIsReappliedAtStart`, `theStorageSweepClearsABlockedRowsFace`), and two
 `BlockAndRequestLabTest` scenarios: `aBlockHoldsTheBlockedPersonsNewNameAndPhotoUntilTheUnblock`, which ends in the
 full oracle with custody identical on the blocker, and `anUnblockedNeighboursFaceComesBackAfterARestartAndALapsedWant`.
+
+## Amendment (2026-11-01, #270): a block is recorded before its hook
+
+`BlockListWatch` recorded the list it acted on only once every hook of a change had returned. A mesh stop or a process
+death between a block's hook and that record lost the record: the next start diffed the block again, and an unblock made
+while down in between was diffed against a list that never held the person, so it was never acted on (no re-applied
+profile, no owed face). The watch now records a block before its hook (the list before plus the ids that joined) and an
+unblock after it, as before. A block recorded and not yet acted on is the storage sweep's: it clears every blocked
+person's face at each start and prune. An unblock has no such backstop, so it stays recorded only once acted on, and the
+next start's diff runs it again. Rejected: running hooks and record under `NonCancellable` (closes a stop, not a process
+death, and makes a stop wait on the hooks). A port with the watch wants the same order. Regression:
+`BlockListWatchTest.aStopInsideABlocksHookKeepsTheBlockRecordedSoTheUnblockMadeWhileDownIsActedOn`.

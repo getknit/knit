@@ -297,7 +297,10 @@ LoRa plane (2026-09.ggq4).
   `CTL_REACTION` and nothing else. A message it delivers is marked in `lora_direct_seen`, checked in `decryptAndDeliver`
   **before** the exists-gate: the signed copy then opens through the ratchet alone (peek + commit, writing only
   `ratchetDone` and shed inline acks), so no skipped key is left and an init carried only by LoRa is still processed; a
-  failed ratchet-only open is `LORA_DIRECT_RATCHET_MISSED`, never `onRatchetFailure`. A marked id is refused on the
+  failed ratchet-only open is `LORA_DIRECT_RATCHET_MISSED`, never `onRatchetFailure`. The signed copy's gate
+  (`alreadyDelivered`, no lock) reads the row first, then the mark, then takes the exists-gate on the row it read: mark
+  first, a compact commit between the reads acked a first contact's signed copy unopened (#261, x9fa's 2026-11-01
+  amendment); never decide on the row alone, a mark with no row is a deleted message. A marked id is refused on the
   compact door whether or not its row exists (deleted stays deleted). Offers ride beside the signed copy only, toward a
   pinned profile with the bit, inside 23 h; the bit is ours only while the plane and its DM switch are on. Regression:
   `LoraDirectSealTest`, `LoraDirectVectorTest`, `InboundPipelineTest`'s compact-door cases, `MeshManagerTest`'s compact

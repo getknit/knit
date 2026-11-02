@@ -339,6 +339,9 @@ class InboundPipelineTest {
         val imageScreening = mockk<ImageScreeningService>(relaxed = true)
         val blobStore = mockk<MeshBlobStore>(relaxed = true)
 
+        /** The blobs the rig holds: [blobStore]'s `has` answers from it, and a mocked `blobs.insert` adds to it. */
+        val heldBlobs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
         // A real in-memory DB purely as the transaction runner for reconcileGroup's db.withWriteTransaction; the repos
         // are mocked, so the mocked find/upsert calls just run harmlessly inside a real (empty) transaction.
         val db =
@@ -578,6 +581,10 @@ class InboundPipelineTest {
             // Object (not a byte[]) for a ByteArray?, which would crash the attachment-screen path in onObtained.
             coEvery { messages.attachmentKeyForHash(any()) } returns null
             coEvery { blobs.bytes(any()) } returns null
+            // Held bytes: an insert holds them (a push's), and a test may hold them outright ([heldBlobs], what a landing
+            // pull's ingest did before `onObtained`). A test's own `blobStore.has(x)` stub, declared later, wins over this.
+            coEvery { blobs.insert(any(), any(), any()) } answers { heldBlobs += firstArg<String>() }
+            coEvery { blobStore.has(any()) } answers { firstArg<String>() in heldBlobs }
             pipeline =
                 InboundPipeline(
                     transport = transport,
@@ -3230,10 +3237,36 @@ class InboundPipelineTest {
             assertTrue("wanted before the block: ${rig.blobExchange.wantedHashes()}", rig.wants("av1"))
             rig.settings.blocked.value = setOf(alice.nodeId)
 
+            rig.heldBlobs += "av1" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("av1")
 
             assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
             coVerify { rig.blobs.deleteIfUnreferenced("av1") }
+        }
+
+    /**
+     * #269: two adoptions of one landing race the ceiling's release. The winner finds the photo over the ceiling and
+     * deletes its bytes; the loser reads no size for it (no row), so the ceiling says nothing, and it used to write the
+     * face anyway. A face is written only while its bytes are held, read inside the write's transaction.
+     */
+    @Test
+    fun aLandingWhoseBytesAreAlreadyGoneWritesNoFace() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "released"), from = "relay-node")
+            assertEquals("released", rig.peerMap.getValue(alice.nodeId).advertisedAvatar)
+            // Held when the adoption looks, and released by the race's winner once it is inside the write's transaction
+            // (its row read is the first thing there), so only a check in that transaction refuses the face.
+            rig.heldBlobs += "released"
+            coEvery { rig.peers.find(alice.nodeId) } coAnswers {
+                rig.heldBlobs -= "released"
+                rig.peerMap[firstArg()]
+            }
+
+            rig.pipeline.onObtained("released")
+
+            assertNull("a face is never written without its bytes", rig.peerMap.getValue(alice.nodeId).avatarHash)
         }
 
     @Test
@@ -3317,6 +3350,7 @@ class InboundPipelineTest {
             // Nothing of a delivery ran again: one flush, from the blocked profile itself.
             assertEquals(listOf(alice.nodeId), rig.flushed)
 
+            rig.heldBlobs += "newFace" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("newFace")
             assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
         }
@@ -3365,6 +3399,7 @@ class InboundPipelineTest {
             assertEquals("here", rig.peerMap.getValue(alice.nodeId).status)
             assertEquals(20L, rig.peerMap.getValue(alice.nodeId).updatedAt)
             assertTrue("wanted from any holder: ${rig.blobExchange.wantedHashes()}", rig.wants("newFace"))
+            rig.heldBlobs += "newFace" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("newFace")
             assertEquals("newFace", rig.peerMap.getValue(alice.nodeId).avatarHash)
         }
@@ -3444,6 +3479,7 @@ class InboundPipelineTest {
 
             after.pipeline.rewantOwedFaces()
             assertTrue("wanted again after the restart: ${after.blobExchange.wantedHashes()}", after.wants("newFace"))
+            after.heldBlobs += "newFace" // landed: its ingest holds the bytes
             after.pipeline.onObtained("newFace")
             assertEquals("newFace", after.peerMap.getValue(alice.nodeId).avatarHash)
             coEvery { after.blobStore.has("newFace") } returns true // the bytes the face names are held: shown
@@ -6363,6 +6399,7 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.profile(alice, avatarHash = "av1"))
             assertNull("avatar not shown until its bytes arrive", rig.peerMap[alice.nodeId]?.avatarHash)
 
+            rig.heldBlobs += "av1" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("av1")
 
             assertEquals("av1", rig.peerMap[alice.nodeId]?.avatarHash)
@@ -6416,6 +6453,49 @@ class InboundPipelineTest {
             assertTrue(rig.peerMap.getValue(alice.nodeId).advertisedKnown)
         }
 
+    /**
+     * #271: a sealed profile that passed `handleChat`'s block read is still being opened when the block lands and the
+     * block-list watch clears the face; its commit then writes the face again. The CTL_PROFILE branch re-reads the block
+     * after the commit, as the cleartext path settles, so the blocked person's face does not come back.
+     */
+    @Test
+    fun aSealedProfileOpenedAcrossABlockDoesNotPutTheFaceBack() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            // A face showing, for the block to clear.
+            rig.heldBlobs += "old"
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(avatarHash = "old")
+            val author = V2Author(alice, rig)
+            rig.heldBlobs += "face"
+            // The block lands while the sealed profile is inside its commit (its held-bytes read), and the watch clears the
+            // face — after the sealed write read the row, before it writes it back.
+            var blockedMidCommit = false
+            coEvery { rig.blobStore.has("face") } coAnswers {
+                if (!blockedMidCommit) {
+                    blockedMidCommit = true
+                    rig.settings.blocked.value = setOf(alice.nodeId)
+                    rig.pipeline.onBlocked(alice.nodeId)
+                    assertNull("the watch cleared the face", rig.peerMap.getValue(alice.nodeId).avatarHash)
+                }
+                true
+            }
+
+            rig.deliver(
+                alice,
+                author.dm(
+                    "ctl-block-1",
+                    "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "Ann", status = "", version = 20L, avatarHash = "face"),
+                ),
+            )
+
+            assertTrue("the block landed inside the commit", blockedMidCommit)
+            assertNull("a blocked person's face stays cleared", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
     @Test
     fun aPhotoTheRowMovedOnFromPointsNobodyBackAtItWhenItLandsLate() =
         runTest {
@@ -6425,8 +6505,10 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.profile(alice, avatarHash = "old", sentAt = 6L))
             rig.deliver(alice, rig.profile(alice, avatarHash = "new", sentAt = 7L))
 
+            rig.heldBlobs += "old" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("old")
             assertNull(rig.peerMap.getValue(alice.nodeId).avatarHash)
+            rig.heldBlobs += "new" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("new")
             assertEquals("new", rig.peerMap.getValue(alice.nodeId).avatarHash)
         }
@@ -6445,6 +6527,7 @@ class InboundPipelineTest {
                     advertisedAvatar = "av1",
                     advertisedKnown = true,
                 )
+            rig.heldBlobs += "av1" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("av1")
             assertEquals("av1", rig.peerMap.getValue(alice.nodeId).avatarHash)
         }
@@ -6520,6 +6603,7 @@ class InboundPipelineTest {
             val alice = party()
             rig.deliver(alice, rig.profile(alice, avatarHash = "bad", sentAt = 6L))
             coEvery { rig.imageScreening.isImageFlagged("bad") } returns true // screened as it landed
+            rig.heldBlobs += "bad" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("bad")
             coVerify { rig.blobs.dropRefusedFace("bad") }
             coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced("bad") }
@@ -6626,6 +6710,7 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.profile(alice, avatarHash = "av5", sentAt = 5L))
             coEvery { rig.blobs.sizes(listOf("av5")) } returns mapOf("av5" to FileIntake.MAX_AVATAR_BYTES + 1)
 
+            rig.heldBlobs += "av5" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("av5")
 
             assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
@@ -6682,6 +6767,7 @@ class InboundPipelineTest {
             coEvery { rig.imageScreening.isImageFlagged("av2") } returns true
 
             rig.deliver(alice, rig.profile(alice, avatarHash = "av2"))
+            rig.heldBlobs += "av2" // landed: its ingest holds the bytes
             rig.pipeline.onObtained("av2")
 
             assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
@@ -6881,8 +6967,9 @@ class InboundPipelineTest {
                     gated = false
                     checked.complete(Unit)
                     resume.await()
+                    return@coAnswers false
                 }
-                false
+                hash in rig.heldBlobs // the push's insert holds it
             }
             val newer = rig.profile(alice, avatarHash = hash, name = "New", sentAt = 9L)
             val profile = launch { rig.pipeline.onDeliver(alice.sign(newer), newer, alice.nodeId) }
@@ -7404,6 +7491,42 @@ class InboundPipelineTest {
             val next = FrameId.new()
             rig.deliver(alice, author.dm(next, "on the ratchet", v3 = true))
             assertEquals("on the ratchet", rig.msgMap[next]?.body)
+        }
+
+    /**
+     * #261: the compact copy and the signed copy of a first contact's DM land at once, on two coroutines, and the compact
+     * copy's transaction (mark and row together) commits inside the signed copy's pre-decrypt gate, before the gate's row
+     * read answers. The signed copy still opens through the ratchet and the init is processed. The gate once read the mark
+     * first, and a row seen after a missing mark acked the copy unopened, leaving no session. A commit between the two reads
+     * (a mark and no row) takes the deleted message's door, `aDeletedCompactDmStaysDeletedWhenItsPacketReplaysOrItsSignedCopyLands`.
+     */
+    @Test
+    fun aCompactCopyCommittingBeforeTheSignedCopysRowReadStillLetsItsInitThrough() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinLoraPeer(alice)
+            val author = V2Author(alice, rig)
+            val id = FrameId.new()
+            val signed = author.dm(id, "hello", v3 = true)
+            var interleaved = false
+            coEvery { rig.messages.exists(id) } coAnswers {
+                if (!interleaved) {
+                    interleaved = true
+                    rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "hello")))
+                }
+                rig.msgMap.containsKey(id)
+            }
+
+            rig.deliver(alice, signed)
+
+            assertTrue("the compact copy committed inside the gate", interleaved)
+            assertEquals("the compact copy's row stands", DeliveryPlane.LoRa.code, rig.msgMap[id]?.receivedVia)
+            val session = checkNotNull(rig.ratchetStore.session(alice.nodeId)) { "the signed copy's init was never processed" }
+            assertTrue(session.confirmed && !session.weAreInitiator)
+            assertTrue(checkNotNull(rig.seen(id)).ratchetDone)
+            assertEquals(0L, rig.drops(DropReason.LORA_DIRECT_RATCHET_MISSED))
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
         }
 
     /** A ratchet-only open that fails is its own count and never reset evidence (Crypto 1); the row and the ack stand. */

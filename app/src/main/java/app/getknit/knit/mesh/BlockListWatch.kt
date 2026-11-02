@@ -19,7 +19,14 @@ import kotlinx.coroutines.launch
  * Room), so a block or an unblock made while the mesh was stopped is acted on at the next start. With nothing recorded
  * yet (the first start of a build that has the watch) the first value is a baseline: the start's storage sweep settles
  * those blocks. A hook that throws costs its own id alone ([onFailure]), and the id is recorded as not acted on, so the
- * next change or the next start tries it again; the watch goes on. Presentation only — never custody, relay or a key want (ADR
+ * next change or the next start tries it again; the watch goes on.
+ *
+ * A block is recorded **before** its hook runs, an unblock after (#270). A stop or a process death between a hook and
+ * the record after it loses that record: for a block, the next start diffed the block again, and an unblock made while
+ * down in between was diffed against a list that never held the person, so it was never acted on. A block recorded
+ * first and not yet acted on loses nothing: the storage sweep at every start and prune clears the face of each blocked
+ * person still showing one (`MeshManager.sweepLocalStorage`). An unblock has no such backstop, so it is recorded only
+ * once acted on, and the next start's diff runs it again. Presentation only — never custody, relay or a key want (ADR
  * 2026-09.bts9).
  */
 class BlockListWatch(
@@ -42,7 +49,9 @@ class BlockListWatch(
                 val before = last ?: actedOn()
                 var acted = now
                 if (before != null) {
-                    for (id in now - before) if (!tried(id, onBlocked)) acted = acted - id
+                    val joined = now - before
+                    if (joined.isNotEmpty()) runRound(onFailure) { recordActed(before + joined) }
+                    for (id in joined) if (!tried(id, onBlocked)) acted = acted - id
                     for (id in before - now) if (!tried(id, onUnblocked)) acted = acted + id
                 }
                 // The next value diffs against what was acted on, so a failed id is tried again then, as at the next start.

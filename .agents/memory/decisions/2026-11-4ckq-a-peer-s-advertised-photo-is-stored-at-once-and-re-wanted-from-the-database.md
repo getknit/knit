@@ -157,3 +157,12 @@ Kept true by:
 - `InboundPipelineTest`'s advertised-photo cases, `BlobExchangeTest`'s face cases (`pushedPool`, `wantFaces`,
   `claimPush`), `MeshManagerTest.theDatabaseReArmWantsTheAdvertisedFacesOfThePeersItHasAReasonToShow`,
   `PeerDaoTest`, `BlobRepositoryTest` and the 29 → 30 case in `KnitDatabaseMigrationTest`.
+
+## Amendment (2026-11-01, #269): a face is written only while its bytes are held
+
+Two adoptions of one landing raced the photo ceiling's release: the first found the photo over the ceiling and deleted
+its bytes, and the second read no size for it, so `releasedOverCeiling` said nothing and the face was written at a photo
+refused as over the ceiling, with no bytes (cleared by the next re-arm's `clearDanglingFaces`). `pointPeerAtAvatar` now
+checks the blob is held inside its write transaction, for every gate, so no face is written at bytes that have gone —
+this race, and #256's start-up orphan collection, whose dangling face the re-arm then wants again. Regression:
+`InboundPipelineTest.aLandingWhoseBytesAreAlreadyGoneWritesNoFace`.

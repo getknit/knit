@@ -1,7 +1,10 @@
 package app.getknit.knit.mesh
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -117,5 +120,43 @@ class BlockListWatchTest {
 
             assertEquals(listOf("a"), unblocks)
             assertEquals(setOf("b", "c"), acted)
+        }
+
+    /**
+     * #270: the mesh stops while a block's hook runs, after its effect and before the record the watch used to write only
+     * then. The block is recorded before its hook, so the unblock made while the mesh is down is diffed against a list
+     * that holds the person, and acted on at the next start. (A block recorded and never acted on is the storage sweep's.)
+     */
+    @Test
+    fun aStopInsideABlocksHookKeepsTheBlockRecordedSoTheUnblockMadeWhileDownIsActedOn() =
+        runTest {
+            // The session the first watch runs on, stopped mid-hook as `MeshManager.stop` cancels it.
+            val session = Job(backgroundScope.coroutineContext[Job])
+            val stuck = CompletableDeferred<Unit>()
+            BlockListWatch(
+                blocked,
+                { acted },
+                { acted = it },
+                onBlocked = {
+                    blocks += it
+                    stuck.await()
+                },
+                onUnblocked = { unblocks += it },
+                onFailure = { failures += it },
+            ).start(backgroundScope + session)
+            runCurrent()
+
+            blocked.value = setOf("a", "b")
+            runCurrent()
+            assertEquals("the hook ran", listOf("b"), blocks)
+            session.cancel()
+            runCurrent()
+            assertEquals("the block was recorded before its hook", setOf("a", "b"), acted)
+
+            blocked.value = setOf("a")
+            watch()
+
+            assertEquals(listOf("b"), unblocks)
+            assertEquals(setOf("a"), acted)
         }
 }

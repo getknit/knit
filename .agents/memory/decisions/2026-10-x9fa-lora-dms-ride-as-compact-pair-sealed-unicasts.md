@@ -395,3 +395,22 @@ compact-DM budgets. Not covered: decoding `MeshPacket.ack_proof_status` (field 2
 board reachable), a user turning on `use_aead` for the Knit secondary (invisible to Knit; peers without AEAD cannot
 decode), and more implicit ACKs with three or more boards now that `LOCAL_ONLY` boards relay opaque PKI unicasts
 (`20f7ab1be`).
+
+### Amendment (2026-11-01, #261, draft): the signed copy's gate reads the row before the mark
+
+The two copies of one DM are delivered on two coroutines, and the signed copy's pre-decrypt gate
+(`InboundPipeline.alreadyDelivered`) takes no lock; the compact copy writes its mark and its row in one transaction. The
+gate read the mark first, so a compact commit landing between its two reads showed no mark and a row: the signed copy
+was acked unopened as an unmarked exists-gate re-delivery, and a first contact's init carried in it was never processed
+(the recipient held no session, the author an unconfirmed init; nothing counted). The gate now reads the row first and
+keeps the answer, then reads the mark, and only then takes the exists-gate on the kept answer. A row the compact copy
+wrote implies its mark is visible to the read after it (a v1 row, a row from before the marks, or a non-pinned peer's
+has none, and still takes the exists-gate); a mark seen with no row (a deleted message, or a compact copy's or a sibling
+signed copy's commit between the reads) takes `loraDirectCopyTaken` as before; neither seen leaves the decrypt path, whose persist checks the compact row inside
+its commit. Rejected: deciding on the row alone ("no row, decrypt"), which sends a deleted compact-delivered DM's signed
+copy back through `deliverChat` (a second notification, Q2); taking `loraDirectLock` on the signed path (the LoRa
+plane's lock on every signed DM); a read transaction around both reads (one more per signed DM, no gain over the order).
+A side effect agrees with the 2026-10-29 amendment: a sibling signed copy that committed between the reads now lands in
+`loraDirectCopyTaken` (no `rideOwnFirstContact`) instead of the unmarked exists-gate. Regression:
+`InboundPipelineTest.aCompactCopyCommittingBeforeTheSignedCopysRowReadStillLetsItsInitThrough` (failed before the fix);
+a mark with no row is `aDeletedCompactDmStaysDeletedWhenItsPacketReplaysOrItsSignedCopyLands`.

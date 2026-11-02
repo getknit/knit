@@ -1492,6 +1492,16 @@ class InboundPipeline(
      * message key left a skipped key and an X3DH init it carries never processed. The exists-gate's re-ack is also the
      * ✓✓'s one retry over LoRa: a compact copy landing after its signed copy comes through `deliverLoraDirect`'s twin
      * of this gate and is acked again, which re-sends a compact ✓✓ that was lost.
+     *
+     * The row is read **before** the mark, and its answer kept for after it (#261). The two copies run on two coroutines
+     * and this gate takes no lock; the compact copy writes mark and row in one transaction. Mark first, a compact commit
+     * landing between the reads gave no mark and a row, and the signed copy was acked unopened as an unmarked
+     * re-delivery: a first contact's init never processed. Row first, a row the compact copy wrote means its mark is
+     * visible to the read after it (a v1 row, one from before the marks, or a non-pinned peer's has none and takes the
+     * exists-gate), and a row not seen still decides nothing until the mark is read — a mark without a row is a deleted
+     * message (it stays deleted, Q2), or a compact copy's or a sibling signed copy's commit that landed in between, and
+     * each takes [loraDirectCopyTaken].
+     * Nothing seen leaves the decrypt path, whose persist checks for the compact row inside its commit.
      */
     private suspend fun alreadyDelivered(
         env: RelayEnvelope,
@@ -1499,8 +1509,9 @@ class InboundPipeline(
         me: String,
         plane: DeliveryPlane,
     ): Boolean {
+        val held = messages.exists(env.id)
         if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) return true
-        if (!messages.exists(env.id)) return false
+        if (!held) return false
         // No mark: a v1 copy, or a row from before the marks. Its receipt's own first seal may have minted our init (a
         // v1 first contact), and a re-seal past the floor rides that init rather than wait on an answer (NB1).
         acknowledge(env, me, plane, reDelivery = true, rideOwnFirstContact = true)
@@ -1800,6 +1811,10 @@ class InboundPipeline(
                 // written so the bytes have somewhere to be adopted into when they land.
                 outcome.released.forEach { blobs.deleteIfUnreferenced(it) }
                 outcome.avatarToPull?.let { pullRelayAvatarIfNeeded(env.senderId, it, haveAvatar = false) }
+                // [handleChat] read the block list once, at entry, and the block-list watch may have cleared the face
+                // before this commit wrote it again (#271, ADR 2026-11.nsbf): re-read it now, as the cleartext path's
+                // [settleBlockMovedMidProfile] does. A block landing after this read is the watch's own to act on.
+                if (env.senderId in settings.blockedNodeIds.first()) onBlocked(env.senderId)
             }
 
             MessageContent.CTL_REACTION -> {
@@ -4822,6 +4837,10 @@ class InboundPipeline(
                     FaceGate.Any -> true
                 }
             if (!takes || peer.avatarHash == hash) return@withWriteTransaction null
+            // Every caller means the bytes are here, and they may have gone since it looked (#269): a second adoption of
+            // one landing after the first released it over the photo ceiling, or the start's orphan collection (#256). A
+            // face is written only with its bytes held, read in the same transaction as the write.
+            if (!blobStore.has(hash)) return@withWriteTransaction null
             peers.upsert(peer.copy(avatarHash = hash))
             peer.avatarHash
         }

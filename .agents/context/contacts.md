@@ -61,7 +61,8 @@ lines.
   2026-09.nxcq, whose split it applies). `advertisedAvatar` is the photo the newest profile decided on, recorded at once
   by every profile writer under the presentation watermark, blocked or not; `avatarHash` is the one that renders, bytes
   held and screened. A renderer never reads the advertised one (#108's trap for peers). The want is the row: a landing
-  blob is adopted by the rows advertising it, a push only by a row that advertises it or does not know, and the database
+  blob is adopted by the rows advertising it, a push only by a row that advertises it or does not know, and a face is
+  written only while its bytes are held, read in the write's transaction (`pointPeerAtAvatar`, #269), and the database
   re-arm wants every advertised photo not held for a bounded set of peers (contacts, co-members, conversations, verified,
   heard within a day; those with a reason ahead of the merely heard, 64 at most, fetch only, a quarter of the want table
   left to everything else, never before the start's sweeps). A refused photo keeps its
@@ -91,6 +92,7 @@ lines.
   moves as for anyone. The block is decided before the row is written, outside its transaction. An unblock applies the
   held `peer_profiles` frame with no notice and brings the face back from its advertised hash, owed in DataStore
   (`owedFaces`) and re-wanted on every database re-arm until it shows; the watch diffs against the list it last acted
-  on (`actedOn`), and the storage sweep is the backstop for a block made on any path. Our own profile and photo still
+  on (`actedOn`), recording a block before its hook and an unblock after it (#270), and the storage sweep is the
+  backstop for a block made on any path or recorded and not yet acted on. Our own profile and photo still
   go to a blocked neighbour. A paired change with knit-ios. Regression: `InboundPipelineTest`'s block cases, `BlockListWatchTest`, `MeshManagerTest`'s block-list
   cases, `BlockAndRequestLabTest`.
