@@ -39,12 +39,7 @@ class AdvertOrderTest {
     private fun id(): String = NodeId.fromBytes(ByteArray(NodeId.BYTES).also(random::nextBytes))
 
     private fun tag(): String =
-        NodeId.fromBytes(
-            BlindTag.mint(
-                ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes),
-                random.nextLong() and BlindTag.NONCE_MASK,
-            ),
-        )
+        NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes), random.nextInt(SLOTS).toLong(), 0))
 
     private fun phone(
         build: Build,
@@ -55,7 +50,7 @@ class AdvertOrderTest {
      * Whether [dialer]'s dial to [responder], made against the form it saw ([seen]), links: a shipped build expects the
      * dialed form back as the HELLO's id, so its dial to a tag fails on `WrongPeer`; a blinding responder refuses a
      * dialer that cannot read tags; any other responder refuses only a sighted dialer it should have dialed itself,
-     * judged on the HELLO's `d` and `t` ([AdvertOrder.responderShouldHaveDialed]). A shipped responder keeps the
+     * judged on the HELLO's `a` and `t` ([AdvertOrder.responderShouldHaveDialed]). A shipped responder keeps the
      * classic row, and never sights a writer's real id.
      */
     private fun lands(
@@ -186,6 +181,14 @@ class AdvertOrderTest {
     }
 
     @Test
+    fun aFormPrintsNoTagOrId() {
+        val tag = tag()
+        val printed = Form(tag, blinded = true).toString() + Form.clear("abcdefghij").toString()
+        assertFalse(printed.contains(tag.substring(4, 10)))
+        assertFalse(printed.contains("efghij"))
+    }
+
+    @Test
     fun theDialersFormComesFromItsHello() {
         assertEquals(Form.clear("abc"), Form.fromHello("abc", null))
         assertEquals("a t equal to the id is a clear advert", Form.clear("abc"), Form.fromHello("abc", "abc"))
@@ -207,7 +210,7 @@ class AdvertOrderTest {
         val reader = phone(Build.Reader)
         val writer = phone(Build.Writer)
         assertTrue("a lonely reader dials a writer by tag", AdvertOrder.lonelyMayDial(reader.current, writer.current))
-        // As for every lonely dial (ADR 2026-09.hj4a): a responder that sights the dialer refuses it, judged on `d`
+        // As for every lonely dial (ADR 2026-09.hj4a): a responder that sights the dialer refuses it, judged on `a`
         // and `t`, and its own ordinary dial is on the way; one that does not sight it admits it unsighted.
         assertFalse("a writer that sights the reader refuses it", lands(reader, writer, writer.current))
         assertTrue("and dials it itself", writer.dials(reader.current) && lands(writer, reader, reader.current))
@@ -233,5 +236,6 @@ class AdvertOrderTest {
 
     private companion object {
         const val PAIRS = 200
+        const val SLOTS = 1_000_000
     }
 }

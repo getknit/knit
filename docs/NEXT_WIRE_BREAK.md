@@ -438,7 +438,7 @@ not, the break can do all of it at once, and the transition half below simply ne
 **At the break.**
 
 - **Bluetooth advert.** Every advert is a tag. Drop the `zzzz` prefix (it exists only so old builds never dial a tag)
-  and spend all 128 bits on nonce and MAC. `FLAG_BLINDED` stays set for good; never recycle the bit. `Parsed.nodeId`
+  and spend all 128 bits on the slot MAC. `FLAG_BLINDED` stays set for good; never recycle the bit. `Parsed.nodeId`
   becomes a tag, and its clear-advert reader path goes: rule (b) ("a blinding phone dials every clear advert"),
   `BleAdmissionPolicy`'s legacy-dialer refusal row, and `LinkHandshake.dial(expectedId)` with its `WrongPeer` outcome
   (every Bluetooth dial becomes `dialTag`). `AdvertOrder` loses its classic id-order branch. Take the capability byte
@@ -463,7 +463,7 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **iPhone.** knit-ios serves a tag from its GATT payload characteristic (`DoorbellPolicy.PAYLOAD_UUID`) and reads
   Android's. `GattPayloads.confirmed` and `forgetGattPayloadIfOther` compare a payload's id with the HELLO's, so they
   move to the alias table.
-- **The handshake.** If #286's encrypted link handshake rides the same break, the HELLO's `t` and `d` fields and the
+- **The handshake.** If #286's encrypted link handshake rides the same break, the HELLO's `t` and `a` fields and the
   `TAG_NEXT` record move inside it, and a passive listener stops learning the id from the HELLO too.
 - **Markers and vectors.** The lockstep checklist above: `SERVICE_UUID`, `SERVICE_NAME`, `Protocol.VERSION`. The
   advert and HELLO entries in `vectors/keyed-v1.json` move (the only vectors that do). `CAP_BLIND_ADVERT` becomes

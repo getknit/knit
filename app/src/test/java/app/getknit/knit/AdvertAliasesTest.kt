@@ -18,21 +18,27 @@ import org.junit.Test
 import java.util.Random
 
 /**
- * [AdvertAliases] (ADR 2026-11.xp6d): resolve order, the HMAC budget, the caches, a contact's key replaced mid-tag,
- * and every claim rule of the 2026-11-02 design pass. The clock is a field the test moves; keys and nonces come from a
- * seeded [Random].
+ * [AdvertAliases] (ADR 2026-11.xp6d): resolve order, the expected-tag table and its window, a contact's key replaced
+ * mid-tag, and every claim rule of the 2026-11-02 design and security passes. Both clocks are fields the test moves;
+ * keys come from a seeded [Random].
  */
 class AdvertAliasesTest {
     private var now = 1_000_000L
+    private var wall = 1_800_000_000_000L
     private val random = Random(285)
 
     private fun key(): ByteArray = ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes)
 
-    private fun tagUnder(key: ByteArray): String = NodeId.fromBytes(BlindTag.mint(key, random.nextLong() and BlindTag.NONCE_MASK))
+    /** [key]'s tag for the slot [slotOffset] from the wall clock's, at [restart]. */
+    private fun tagUnder(
+        key: ByteArray,
+        slotOffset: Long = 0,
+        restart: Int = 0,
+    ): String = NodeId.fromBytes(BlindTag.tag(key, BlindTag.slotOf(wall) + slotOffset, restart))
 
     private fun blinded(tag: String) = Form(tag, blinded = true)
 
-    private fun aliases(config: AdvertAliases.Config = AdvertAliases.Config()) = AdvertAliases<String>({ now }, config)
+    private fun aliases(config: AdvertAliases.Config = AdvertAliases.Config()) = AdvertAliases<String>({ now }, { wall }, config)
 
     private val alice = NodeId.derive("alice")
     private val bob = NodeId.derive("bob")
@@ -40,10 +46,12 @@ class AdvertAliasesTest {
     private val aliceKey = key()
     private val bobKey = key()
 
+    /** An answer that may suppress a dial unless it is a hint, or [held] is false (a claim past its link's end). */
     private fun resolved(
         id: String,
         source: Source,
-    ) = Resolution.Resolved(id, source)
+        held: Boolean = true,
+    ) = Resolution.Resolved(id, source, suppressesDial = source != Source.Hint && held)
 
     @Test
     fun aClearAdvertIsItsOwnId() {
@@ -51,81 +59,144 @@ class AdvertAliasesTest {
     }
 
     @Test
-    fun aBlindedFormWithoutThePrefixIsMalformedBeforeAnyHmac() {
+    fun aBlindedFormWithoutThePrefixIsMalformed() {
         val a = aliases()
         a.setKeys(mapOf(alice to ContactKey(aliceKey)))
         assertEquals(Resolution.Malformed, a.resolve(blinded(bob)))
         assertEquals(Resolution.Malformed, a.resolve(blinded("not a form")))
         assertEquals(2L, a.counters().malformed)
-        assertEquals(0L, a.counters().hmacs)
     }
 
     @Test
-    fun myOwnTagsAreOwnWithoutAnHmac() {
+    fun myOwnTagsAreOwn() {
         val a = aliases()
         val mine = key()
         val current = tagUnder(mine)
-        val previous = tagUnder(mine)
+        val previous = tagUnder(mine, restart = 1)
         a.setKeys(mapOf(alice to ContactKey(aliceKey)))
         a.setOwnTags(current, previous)
         assertEquals(Resolution.Own, a.resolve(blinded(current)))
         assertEquals(Resolution.Own, a.resolve(blinded(previous)))
-        assertEquals(0L, a.counters().hmacs)
     }
 
     @Test
-    fun aContactsKeyResolvesItsTagOnceThenTheCacheAnswers() {
+    fun aContactResolvesOnItsFirstSightingAndAFloodCostsNoHmacs() {
         val a = aliases()
         a.setKeys(mapOf(alice to ContactKey(aliceKey), bob to ContactKey(bobKey)))
-        val tag = tagUnder(bobKey)
-        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(tag)))
-        val spent = a.counters().hmacs
-        assertEquals(2L, spent)
-        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(tag)))
-        assertEquals("a cache hit spends nothing", spent, a.counters().hmacs)
-        a.setKeys(mapOf(alice to ContactKey(aliceKey.copyOf()), bob to ContactKey(bobKey.copyOf())))
-        a.resolve(blinded(tag))
-        assertEquals("the same keys again keep the cache", spent, a.counters().hmacs)
-        assertEquals(3L, a.counters().resolvedByKey)
-        assertEquals(2L, a.counters().keyCacheHits)
+        val listed = 2 * WINDOW_SLOTS * BlindTag.RESTARTS
+        assertEquals(listed, a.counters().tableSize)
+        val built = a.counters().tableHmacs
+        assertEquals(listed.toLong(), built)
+        repeat(10_000) { assertEquals(Resolution.Unresolved, a.resolve(blinded(tagUnder(key())))) }
+        assertEquals("a flood of unknown tags costs no HMAC", built, a.counters().tableHmacs)
+        assertEquals("first sighting", resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobKey))))
     }
 
     @Test
-    fun aStrangersTagIsCachedNegativeUntilItsTtlOrAKeyChange() {
+    fun aTagResolvesOnlyWhileItsSlotIsInTheWindow() {
         val a = aliases()
-        a.setKeys(mapOf(alice to ContactKey(aliceKey)))
-        val tag = tagUnder(bobKey)
-        assertEquals(Resolution.Unresolved, a.resolve(blinded(tag)))
-        assertEquals(Resolution.Unresolved, a.resolve(blinded(tag)))
-        assertEquals("the second answer came from the negative cache", 1L, a.counters().hmacs)
-        now += AdvertAliases.Config().negativeTtlMs
-        a.resolve(blinded(tag))
-        assertEquals("swept again after the ttl", 2L, a.counters().hmacs)
-        a.setKeys(mapOf(alice to ContactKey(aliceKey), bob to ContactKey(bobKey)))
-        assertEquals("a new key clears the negative cache", resolved(bob, Source.Key), a.resolve(blinded(tag)))
-        assertEquals(3L, a.counters().unresolved)
+        a.setKeys(mapOf(bob to ContactKey(bobKey)))
+        assertEquals("8 hours back", resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobKey, slotOffset = -32))))
+        assertEquals("half an hour ahead", resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobKey, slotOffset = 2))))
+        assertEquals("past the window", Resolution.Unresolved, a.resolve(blinded(tagUnder(bobKey, slotOffset = -33))))
+        assertEquals("more than 30 min ahead", Resolution.Unresolved, a.resolve(blinded(tagUnder(bobKey, slotOffset = 3))))
     }
 
     @Test
-    fun overBudgetIsCountedAndNotCachedNegative() {
-        val a = aliases(AdvertAliases.Config(hmacBudgetPerSecond = 2))
+    fun aSlotChangeListsTheNewSlotAndDropsTheOldest() {
+        val a = aliases()
         a.setKeys(mapOf(alice to ContactKey(aliceKey), bob to ContactKey(bobKey)))
-        val stranger = tagUnder(key())
+        val oldest = tagUnder(bobKey, slotOffset = -32)
+        val beyond = tagUnder(bobKey, slotOffset = 3)
+        val before = a.counters()
+        wall += BlindTag.SLOT_MS
+        assertEquals("the oldest slot left", Resolution.Unresolved, a.resolve(blinded(oldest)))
+        assertEquals("the new ahead slot entered", resolved(bob, Source.Key), a.resolve(blinded(beyond)))
+        val after = a.counters()
+        assertEquals(before.tableSize, after.tableSize)
+        assertEquals("one slot per key", before.tableHmacs + 2 * BlindTag.RESTARTS, after.tableHmacs)
+        assertEquals(before.tableSlotSteps + 2, after.tableSlotSteps)
+        assertEquals("no key rebuilt", before.tableBuilds, after.tableBuilds)
+    }
+
+    @Test
+    fun everyRestartIndexResolves() {
+        val a = aliases()
+        a.setKeys(mapOf(bob to ContactKey(bobKey)))
+        for (restart in 0 until BlindTag.RESTARTS) {
+            assertEquals(resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobKey, restart = restart))))
+        }
+    }
+
+    @Test
+    fun aContactSendingAnothersKeyGainsNothingOverHim() {
+        val a = aliases()
+        // Mallory sent Bob's presence key as her own.
+        a.setKeys(mapOf(bob to ContactKey(bobKey), mallory to ContactKey(bobKey)))
         val bobs = tagUnder(bobKey)
-        assertEquals(Resolution.Unresolved, a.resolve(blinded(stranger)))
-        assertEquals(Resolution.OverBudget, a.resolve(blinded(bobs)))
-        assertEquals(1L, a.counters().overBudget)
-        now += 1_000
-        assertEquals("not cached negative: the next second resolves it", resolved(bob, Source.Key), a.resolve(blinded(bobs)))
+        assertEquals("neither id by key", Resolution.Unresolved, a.resolve(blinded(bobs)))
+        // Bob's own dial-proven link claim stands: no key contradicts it, and his proof is no replay.
+        assertEquals(ClaimOutcome.Recorded, a.onDialed("l1", blinded(bobs), bobs, bob))
+        assertEquals(resolved(bob, Source.Claim), a.resolve(blinded(bobs)))
+        wall += BlindTag.SLOT_MS
+        a.slide()
+        assertEquals("the window moved; still his claim", resolved(bob, Source.Claim), a.resolve(blinded(bobs)))
+        val counted = a.counters()
+        assertEquals(0L, counted.keyProofMismatches)
+        assertEquals(0L, counted.claimsDropped)
+        assertTrue(counted.keyCollisions > 0)
+        assertEquals("a slot the window gained is no one's either", Resolution.Unresolved, a.resolve(blinded(tagUnder(bobKey, 2))))
     }
 
     @Test
-    fun aKeySetLargerThanTheBudgetStillResolvesATagASecond() {
-        val keys = List(4) { NodeId.derive("c$it") to key() }
-        val a = aliases(AdvertAliases.Config(hmacBudgetPerSecond = 2))
-        a.setKeys(keys.associate { (id, k) -> id to ContactKey(k) })
-        assertEquals(resolved(keys[3].first, Source.Key), a.resolve(blinded(tagUnder(keys[3].second))))
-        assertEquals(Resolution.OverBudget, a.resolve(blinded(tagUnder(keys[2].second))))
+    fun aKeyChangeRebuildsOnlyThatContact() {
+        val a = aliases()
+        a.setKeys(mapOf(alice to ContactKey(aliceKey), bob to ContactKey(bobKey)))
+        val before = a.counters().tableHmacs
+        val bobNext = key()
+        a.setKeys(mapOf(alice to ContactKey(aliceKey), bob to ContactKey(bobNext)))
+        assertEquals("only bob's new key listed", before + WINDOW_SLOTS * BlindTag.RESTARTS, a.counters().tableHmacs)
+        assertEquals(
+            "his old key stays listed until a successor tag is heard",
+            3 * WINDOW_SLOTS * BlindTag.RESTARTS,
+            a.counters().tableSize,
+        )
+        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobNext))))
+        assertEquals(2 * WINDOW_SLOTS * BlindTag.RESTARTS, a.counters().tableSize)
+    }
+
+    @Test
+    fun aVoidOurDialsMadeOutlastsUnprovenOnesAtTheCap() {
+        val a = aliases(AdvertAliases.Config(maxClaims = 1, tagNextMinIntervalMs = 0))
+        val (proven, first, second) = List(3) { tagUnder(key()) }
+        val eve = NodeId.derive("eve")
+        // Two of our dials to one tag prove two ids: a void that stands against a dial.
+        a.onDialed("d1", blinded(proven), proven, alice)
+        a.onDialed("d2", blinded(proven), proven, bob)
+        now += 1
+        a.onTagNext("u1", mallory, first)
+        a.onTagNext("u2", eve, first)
+        now += 1
+        a.onTagNext("u3", mallory, second)
+        a.onTagNext("u4", eve, second)
+        assertEquals(2, a.counters().voided)
+        assertEquals("the unproven void went, though younger", ClaimOutcome.Pending, a.onTagNext("u5", bob, first))
+        assertEquals("ours stands", ClaimOutcome.Contested, a.onDialed("d3", blinded(proven), proven, alice))
+    }
+
+    @Test
+    fun anEndedLinksAnnouncementGoesBeforeAHeldOnesAtTheCap() {
+        val a = aliases(AdvertAliases.Config(maxClaims = 1))
+        val (held, ended, late) = List(3) { tagUnder(key()) }
+        a.onTagNext("h", alice, held)
+        now += 1
+        a.onTagNext("e", bob, ended)
+        a.onLinkEnded("e")
+        now += 1
+        a.onTagNext("l", mallory, late)
+        assertEquals(2, a.counters().pending)
+        assertEquals("the held link's announcement stays, though older", resolved(alice, Source.Claim), a.resolve(blinded(held)))
+        assertEquals("the ended link's went", Resolution.Unresolved, a.resolve(blinded(ended)))
     }
 
     @Test
@@ -218,7 +289,11 @@ class AdvertAliasesTest {
         assertEquals("an announced tag outlives the hold too", resolved(bob, Source.Claim), a.resolve(blinded(next)))
         a.onLinkEnded("l1")
         now += lifetime - 1
-        assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(tag)))
+        assertEquals(
+            "past its link it names her, but suppresses no dial",
+            resolved(alice, Source.Claim, held = false),
+            a.resolve(blinded(tag)),
+        )
         now += 1
         assertEquals("990 s after the link ended", Resolution.Unresolved, a.resolve(blinded(tag)))
     }
@@ -259,7 +334,7 @@ class AdvertAliasesTest {
         val bobs = tagUnder(bobKey)
         assertEquals(ClaimOutcome.Recorded, a.onDialed("l1", blinded(bobs), bobs, mallory))
         a.setKeys(mapOf(bob to ContactKey(bobKey)))
-        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(bobs)))
+        assertEquals("the key outranks it", resolved(bob, Source.Key), a.resolve(blinded(bobs)))
         assertEquals(1L, a.counters().claimsDropped)
         a.setKeys(emptyMap())
         assertEquals("the claim is gone, not shadowed", Resolution.Unresolved, a.resolve(blinded(bobs)))
@@ -307,6 +382,7 @@ class AdvertAliasesTest {
         val first = tagUnder(key())
         val second = tagUnder(key())
         a.onTagNext("l1", alice, first)
+        now += AdvertAliases.Config().tagNextMinIntervalMs
         a.onTagNext("l1", mallory, second)
         assertEquals("the link's earlier announcement is gone", Resolution.Unresolved, a.resolve(blinded(first)))
         assertEquals(resolved(mallory, Source.Claim), a.resolve(blinded(second)))
@@ -319,7 +395,7 @@ class AdvertAliasesTest {
         a.onDialed("l1", blinded(tag), tag, alice)
         a.onLinkEnded("l1")
         now += AdvertAliases.Config().claimLifetimeMs - 1
-        assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(tag)))
+        assertEquals(resolved(alice, Source.Claim, held = false), a.resolve(blinded(tag)))
         now += 1
         assertEquals(Resolution.Unresolved, a.resolve(blinded(tag)))
         assertEquals(990_000L, AdvertAliases.Config().claimLifetimeMs)
@@ -423,14 +499,112 @@ class AdvertAliasesTest {
     }
 
     @Test
-    fun theClaimTableHasACapAndKeepsWhatItHolds() {
+    fun aFullTableEvictsTheSoonestEndedClaimAndNeverRefusesAHeldLink() {
         val a = aliases(AdvertAliases.Config(maxClaims = 2))
-        val tags = List(3) { tagUnder(key()) }
-        assertEquals(ClaimOutcome.Recorded, a.onDialed("l0", blinded(tags[0]), tags[0], alice))
-        assertEquals(ClaimOutcome.Recorded, a.onDialed("l1", blinded(tags[1]), tags[1], bob))
-        assertEquals(ClaimOutcome.Full, a.onDialed("l2", blinded(tags[2]), tags[2], mallory))
-        assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(tags[0])))
+        val tags = List(5) { tagUnder(key()) }
+        val carol = NodeId.derive("carol")
+        val eve = NodeId.derive("eve")
+        a.onDialed("l0", blinded(tags[0]), tags[0], alice)
+        a.onLinkEnded("l0")
+        now += 1
+        a.onDialed("l1", blinded(tags[1]), tags[1], bob)
+        a.onLinkEnded("l1")
+        now += 1
+        assertEquals(
+            "a held link's claim takes the soonest ended one's place",
+            ClaimOutcome.Recorded,
+            a.onDialed("l2", blinded(tags[2]), tags[2], mallory),
+        )
+        assertEquals(Resolution.Unresolved, a.resolve(blinded(tags[0])))
+        assertEquals(resolved(bob, Source.Claim, held = false), a.resolve(blinded(tags[1])))
+        assertEquals(ClaimOutcome.Recorded, a.onDialed("l3", blinded(tags[3]), tags[3], eve))
+        assertEquals(2L, a.counters().claimsEvicted)
+        // Every slot is a held link's now; an ended link's announced tag, first heard, cannot displace one.
+        a.onTagNext("l4", carol, tags[4])
+        a.onLinkEnded("l4")
+        assertEquals(Resolution.Unresolved, a.resolve(blinded(tags[4])))
         assertEquals(1L, a.counters().claimsRefusedFull)
+        assertEquals("refused, the announced tag survives to try again", 1, a.counters().pending)
+        a.onLinkEnded("l2")
+        assertEquals(resolved(carol, Source.Claim, held = false), a.resolve(blinded(tags[4])))
+        assertEquals(0, a.counters().pending)
+    }
+
+    @Test
+    fun sybilsCyclingDialProvenClaimsCannotLockOutAHeldLink() {
+        val a = aliases()
+        repeat(200) {
+            val tag = tagUnder(key())
+            assertEquals(ClaimOutcome.Recorded, a.onDialed("s$it", blinded(tag), tag, NodeId.derive("sybil$it")))
+            a.onLinkEnded("s$it")
+            now += 10
+        }
+        assertEquals(AdvertAliases.Config().maxClaims, a.counters().claims)
+        val alices = tagUnder(aliceKey)
+        assertEquals(ClaimOutcome.Recorded, a.onDialed("la", blinded(alices), alices, alice))
+        assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(alices)))
+        val bobs = tagUnder(bobKey)
+        assertEquals(ClaimOutcome.Pending, a.onTagNext("lb", bob, bobs))
+        assertEquals("a promoted announcement survives the full table", resolved(bob, Source.Claim), a.resolve(blinded(bobs)))
+        assertEquals(0L, a.counters().claimsRefusedFull)
+    }
+
+    @Test
+    fun alternatingAnnouncementsStayBounded() {
+        // Two links announce the same fresh tag, pair after pair: each pair voids a tag for 990 s.
+        val throttled = aliases()
+        val unthrottled = aliases(AdvertAliases.Config(maxClaims = 8, tagNextMinIntervalMs = 0))
+        val k = key()
+        repeat(10_000) {
+            val tag = tagUnder(k, slotOffset = -it.toLong())
+            for (a in listOf(throttled, unthrottled)) {
+                a.onTagNext("l1", alice, tag)
+                a.onTagNext("l2", mallory, tag)
+                a.resolve(blinded(tag))
+            }
+            now += 50
+        }
+        val limited = throttled.counters()
+        assertTrue("one TAG_NEXT per link per window", limited.tagNextRateLimited > 19_000)
+        assertTrue(limited.voided <= AdvertAliases.Config().entryCap)
+        val open = unthrottled.counters()
+        val cap = AdvertAliases.Config(maxClaims = 8).entryCap
+        assertTrue("voids stay at their cap: ${open.voided}", open.voided <= cap)
+        assertTrue("announced tags stay at their cap: ${open.pending}", open.pending <= cap)
+        assertTrue(
+            "the deadline queue stays bounded: ${open.deadlines}",
+            open.deadlines <= 4 * (open.claims + open.pending + open.voided) + 256,
+        )
+        assertTrue(open.entriesEvicted > 0)
+    }
+
+    @Test
+    fun ourDialLiftsAVoidThatUnprovenClaimantsMade() {
+        val a = aliases()
+        val strangersId = NodeId.derive("stranger")
+        val strangers = tagUnder(key())
+        val other = tagUnder(key())
+        a.onDialed("l0", blinded(other), other, mallory)
+        a.onTagNext("l1", mallory, strangers)
+        assertEquals(ClaimOutcome.Contested, a.onTagNext("l2", bob, strangers))
+        assertEquals(Resolution.Unresolved, a.resolve(blinded(strangers)))
+        assertEquals(
+            "our dial's proof lifts their void",
+            ClaimOutcome.Recorded,
+            a.onDialed("l3", blinded(strangers), strangers, strangersId),
+        )
+        assertEquals(resolved(strangersId, Source.Claim), a.resolve(blinded(strangers)))
+        assertEquals("the claimants lose their other entries", Resolution.Unresolved, a.resolve(blinded(other)))
+    }
+
+    @Test
+    fun aTagDialProvingAnotherIdThanTheKeyIsAReplay() {
+        val a = aliases()
+        a.setKeys(mapOf(bob to ContactKey(bobKey)))
+        val bobs = tagUnder(bobKey)
+        assertFalse(a.onDialProved(blinded(bobs), mallory))
+        assertEquals(1L, a.counters().keyProofMismatches)
+        assertEquals("nothing voided: the key still answers", resolved(bob, Source.Key), a.resolve(blinded(bobs)))
     }
 
     @Test
@@ -473,6 +647,10 @@ class AdvertAliasesTest {
         assertFalse(printed.contains(tag.substring(8)))
         assertFalse(printed.contains(bobKey.joinToString("") { "%02x".format(it) }))
         assertTrue(printed.contains("SpotCheck("))
+    }
+
+    private companion object {
+        val WINDOW_SLOTS = (BlindTag.WINDOW_PAST_SLOTS + 1 + BlindTag.WINDOW_AHEAD_SLOTS).toInt()
     }
 
     private fun <T : Any> present(value: T?): T {

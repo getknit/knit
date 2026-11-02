@@ -215,15 +215,26 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
   or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
-- **When touching `AdvertOrder`, `AdvertAliases`, `BlindTag`, or any pre-link `localId > nodeId` in the plane:** READ
+- **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`, or any pre-link
+  `localId > nodeId` in the plane:** READ
   ADR 2026-11.xp6d (Proposed; the pure core is built, the wiring is not). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
-  two tags go to the larger, and the responder judges a dialer on the form its HELLO `d` names (current or previous
+  two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
   `CodedPhyPolicy.drives` today move to `iDial`. `AdvertAliases` resolves own tags, then direct contacts' keys (a
   replaced key tried until a tag under its successor is heard, at most a week), then link claims, then responder
-  hints (presence only, never suppressing a dial), under a per-second HMAC budget; every claim rule is in its KDoc,
-  and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`.
+  hints (presence only, never suppressing a dial). Contacts resolve by one lookup in `ExpectedTagTable`: every direct
+  contact's key listed over `BlindTag.window` of the wall clock (8 hours back, half an hour ahead, every restart),
+  moved a slot at a time and rebuilt per contact on a key change, on the confined worker; an unknown tag costs a miss,
+  so there is no HMAC budget, deferral or cache. A tag outside the window does not resolve, and one two contacts' keys
+  both list resolves to nobody. `TagSchedule` picks the tag to air: never a (slot, restart) at or below the persisted
+  per-generation mark, a random unresolvable tag while the clock is behind it or the slot's restarts are spent, a
+  `stale` flag (start a new key generation) when the mark is past the window's lead; the announced tag is `reserve`d
+  and aired with `take`, and the mark's store throws rather than answers null on error. When to rotate is the
+  wiring's, on the confined worker. A claim suppresses a dial
+  only while its link is held, and an unresolved answer never does. The claim tables are capped (unproven voids and
+  ended links' announcements evicted first) and expire off a deadline queue; every claim rule is in `AdvertAliases`'
+  KDoc, and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`, `ExpectedTagTableTest`, `TagScheduleTest`.
 
 ## Adding an entry
 

@@ -46,7 +46,12 @@ internal object AdvertOrder {
         val advertised: String,
         val blinded: Boolean,
     ) {
+        /** Redacted, so no log line pairs a tag with an id: the first four characters only (a tag's are always `zzzz`). */
+        override fun toString(): String = "Form(${advertised.take(SHOWN)}…, blinded=$blinded)"
+
         companion object {
+            private const val SHOWN = 4
+
             /** A clear advert: the node id itself. */
             fun clear(nodeId: String): Form = Form(nodeId, blinded = false)
 
@@ -99,7 +104,7 @@ internal object AdvertOrder {
     ): Set<String> = peers.filterTo(HashSet()) { it != localId && (blinding || localId > it) }
 
     /**
-     * The form of mine a dialer's HELLO `d` names ([dialed], decoded to the 26-char form), honoured only when it is my
+     * The form of mine a dialer's HELLO `a` names ([dialed], decoded to the 26-char form), honoured only when it is my
      * [current] or [previous] advertised form; null when absent or neither (stale past one rotation, or not mine).
      */
     fun dialedForm(
@@ -117,7 +122,7 @@ internal object AdvertOrder {
     /**
      * The responder's order check: whether I should have dialed this [dialer] instead (the dialer's form from its HELLO,
      * [Form.fromHello]), judged on the form of mine it says it dialed ([dialedForm]) so a dial made against my previous
-     * tag is judged as the dialer saw it. With no honoured `d` it is judged against my [current] form, which is the
+     * tag is judged as the dialer saw it. With no honoured `a` it is judged against my [current] form, which is the
      * shipped rule for a clear phone. True is the "sighted and out of order" refusal of `BleAdmissionPolicy.decide`.
      */
     fun responderShouldHaveDialed(
