@@ -58,7 +58,7 @@
     <string name="channel_commons_desc">Publicações na sala compartilhada de um retransmissor</string>
     <string name="mention_channel_name">Menções</string>
     <string name="mention_channel_description">Notificações quando alguém menciona você com @</string>
-    <string name="notif_title_nearby">Por perto</string>
+    <string name="notif_title_nearby">Por Perto</string>
     <string name="notif_title_meshtastic">Meshtastic</string>
     <string name="notif_self_name">Você</string>
     <string name="chat_gone">Essa conversa não está mais neste celular</string>
@@ -593,8 +593,8 @@
     <string name="chat_list_delete_action">Excluir</string>
     <string name="chat_list_delete_confirm_title">Excluir conversa?</string>
     <string name="chat_list_delete_confirm_body">Todas as mensagens desta conversa serão removidas só deste aparelho.</string>
-    <string name="chat_list_clear_nearby_confirm_title">Limpar mensagens da sala Por perto?</string>
-    <string name="chat_list_clear_nearby_confirm_body">Todas as mensagens da sala Por perto serão removidas só deste aparelho. A sala continua na sua lista de conversas.</string>
+    <string name="chat_list_clear_nearby_confirm_title">Limpar mensagens da sala Por Perto?</string>
+    <string name="chat_list_clear_nearby_confirm_body">Todas as mensagens da sala Por Perto serão removidas só deste aparelho. A sala continua na sua lista de conversas.</string>
     <string name="chat_action_block">Bloquear usuário</string>
     <string name="chat_action_unblock">Desbloquear usuário</string>
     <string name="chat_view_profile">Ver perfil de %1$s</string>
@@ -691,14 +691,14 @@
     <string name="share_target_title">Compartilhar com…</string>
     <string name="contacts_title">Nova mensagem</string>
     <string name="contacts_new_message">Nova mensagem</string>
-    <string name="contacts_empty">Nenhum contato ainda.\nDiga oi em Por perto, escaneie o código de alguém ou adicione a pessoa por um link de contato.</string>
+    <string name="contacts_empty">Nenhum contato ainda.\nDiga oi em Por Perto, escaneie o código de alguém ou adicione a pessoa por um link de contato.</string>
     <string name="contacts_start_chat">Iniciar conversa</string>
     <plurals name="contacts_group_full">
         <item quantity="one">Grupos podem ter até %1$d pessoa</item>
         <item quantity="many">Grupos podem ter até %1$d pessoas</item>
         <item quantity="other">Grupos podem ter até %1$d pessoas</item>
     </plurals>
-    <string name="nearby_title">Por perto</string>
+    <string name="nearby_title">Por Perto</string>
     <string name="meshtastic_title">Meshtastic</string>
     <string name="commons_title">Sala comum</string>
     <string name="chat_list_empty_preview">Nenhuma mensagem ainda</string>
