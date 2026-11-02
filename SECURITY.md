@@ -42,6 +42,14 @@ they are documented and out of scope for reports:
   multi-hop routing is future work, so relays see who is talking to whom and how often.
 - **Trust-on-first-use (TOFU)** key pinning: a relay substituting keys before first contact is
   mitigated by out-of-band safety-number / QR verification, not prevented.
+- **A phone running the mesh can be recognised by its radio adverts.** Its Bluetooth and Wi-Fi Aware
+  adverts carry its node id in the clear, and that id stays the same across places, days, address
+  rotations and restarts. Any Bluetooth scanner can therefore log when the same phone passes, and anyone
+  who has seen that id once in the mesh can put a name to it, because profiles carry the name beside the
+  id unsealed. Even with blinded adverts, a device that advertises itself as a Knit phone gets dialed
+  by the phones in range and reads each one's node id in the link handshake, which a listener nearby
+  can also read. A phone's own messages, typing cues and receipts sent over Bluetooth's connectionless
+  side channel name it as their author whenever another Knit phone is near.
 
 See the README's *Security note* and [`docs/`](docs/) for the full threat model and design detail. Novel
 issues **beyond** these documented trade-offs — key handling, the crypto envelope, signature

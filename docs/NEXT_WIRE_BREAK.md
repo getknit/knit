@@ -417,6 +417,71 @@ out of the global cap. Like every custody rule change, this one needs a `mesh/la
 `assertConverged` across a frame older than 24 hours, and `liveFingerprint` must match across the lab phones
 after the trial.
 
+### 13. Finish blinding the adverts, and drop the clear-advert path
+
+**What.** Make every discovery advert a rotating tag only contacts can resolve, and delete the machinery the
+additive route needed to live beside builds that read the advert as a node id. ADR 2026-11.xp6d blinds the
+Bluetooth presence and Coded adverts additively (knit-next #285); this item is everything it could not reach: the
+Wi-Fi Aware SSI, the iPhone's GATT payload, and the transition code itself. It assumes xp6d has shipped. If it has
+not, the break can do all of it at once, and the transition half below simply never gets written.
+
+**Why it is parked.**
+
+- **Wi-Fi Aware cannot be blinded additively.** Every shipped Aware responder refuses a dialer whose id sorts at or
+  below its own (`WifiAwareTransport.admits`, the `localNodeId >= id` row). An old build never initiates toward a
+  `zzzz` tag, and refuses the new build's dial whenever the new phone's real id is the smaller one, so half of all
+  old↔new pairs would lose Aware. The SSI (`Protocol.advertise`, `nodeId|version|caps|d<digest>`) keeps the clear id
+  until the break.
+- **The transition code is only for builds without `CAP_BLIND_ADVERT`,** and only a partition retires them. Until
+  then a blinding phone must keep reading clear adverts, dialing every one of them, and refusing their lonely dials.
+
+**At the break.**
+
+- **Bluetooth advert.** Every advert is a tag. Drop the `zzzz` prefix (it exists only so old builds never dial a tag)
+  and spend all 128 bits on nonce and MAC. `FLAG_BLINDED` stays set for good; never recycle the bit. `Parsed.nodeId`
+  becomes a tag, and its clear-advert reader path goes: rule (b) ("a blinding phone dials every clear advert"),
+  `BleAdmissionPolicy`'s legacy-dialer refusal row, and `LinkHandshake.dial(expectedId)` with its `WrongPeer` outcome
+  (every Bluetooth dial becomes `dialTag`). `AdvertOrder` loses its classic id-order branch. Take the capability byte
+  off the air (the decisions made before a link become flag bits; the full capabilities ride the HELLO) and drop the
+  4-byte digest cue, which no Bluetooth decision ever read. The freed 5 bytes can widen the MAC or stay spare.
+- **Wi-Fi Aware.** Split `Protocol.advertise` so the SSI carries a tag (its own, never the Bluetooth one) while the
+  HELLO keeps the id, and feed Aware sightings through `AdvertAliases`. Mint a new SSI tag at every fresh attach
+  (`onAttached`): the Aware MAC changes when Aware restarts, not on a timer, so a tag that followed the
+  `IdentityChangedListener` alone would last as long as an attach does (hours), and that callback may not be
+  delivered at all under `NEARBY_WIFI_DEVICES` with `neverForLocation` (check it on a device). A timed rotation is a
+  session cycle through the existing settle path, gated on no live NDP and no owed sync, and never an `updatePublish`:
+  that keeps the MAC, relights ICM for 30 s, and re-delivers the same `PeerHandle` under a second id.
+- **Wi-Fi Aware roles.** Today both ends compute the order from SSI ids identically and for good. With tags, the two
+  ends learn each other's new tag at different moments, so around a rotation both may initiate (an inbound NDP while
+  our own initiate holds the one NDI drops the accept-any responder, the 724a3fed ghost path) or neither does. Order
+  both ends from the same tag pair, and let `admits` accept a dialer under the current or the previous tag for one
+  rotation. Audit every `localNodeId` comparison in `WifiAwareTransport` and the `Nan*Policy` callers (the cue gate,
+  the initiator flag, the next-initiate pick, `admits`, `initiatorHeld`, the responder's ICM relight, the
+  idle-responder self-heal), not only ADR 004's responder.
+- **The link PHY driver stays on real ids.** `CodedPhyPolicy.drives` picks which end steps a live link's PHY from the
+  ids both HELLOs prove; only the pre-link roles move to `AdvertOrder`, before and after the break.
+- **iPhone.** knit-ios serves a tag from its GATT payload characteristic (`DoorbellPolicy.PAYLOAD_UUID`) and reads
+  Android's. `GattPayloads.confirmed` and `forgetGattPayloadIfOther` compare a payload's id with the HELLO's, so they
+  move to the alias table.
+- **The handshake.** If #286's encrypted link handshake rides the same break, the HELLO's `t` and `d` fields and the
+  `TAG_NEXT` record move inside it, and a passive listener stops learning the id from the HELLO too.
+- **Markers and vectors.** The lockstep checklist above: `SERVICE_UUID`, `SERVICE_NAME`, `Protocol.VERSION`. The
+  advert and HELLO entries in `vectors/keyed-v1.json` move (the only vectors that do). `CAP_BLIND_ADVERT` becomes
+  diagnostic, like `CAP_E2E`. The `NodeId` derivation is untouched, so no identity is re-minted, the spool and its
+  vectors stay where they are, and the database migrates nothing for this item.
+
+**Watch out.**
+
+- **Aware's roles rotate with the tags.** Today the smallest id is the phone that only ever answers, for good (the
+  idle-responder wedge). Ordered by tags, that role moves every rotation, and every recovery written for the
+  permanent responder keys on id order (see the roles bullet above).
+- **One tag per radio.** The Bluetooth sets restart on Knit's own timer; the Aware MAC rotates on the framework's.
+  A tag shared between them would chain each radio's rotation to the other's.
+- **iOS cannot rotate its address with its characteristic.** It rotates the address on its own timer, so a reader
+  that connects repeatedly can chain the two. Decide the iOS cadence in the paired change.
+- **The honeypot stays.** A device that advertises a small tag still gets dialed and reads proven ids in the HELLO;
+  only #286's handshake and link pseudonyms for strangers would change that.
+
 ---
 
 ## Deliberately *not* on this list

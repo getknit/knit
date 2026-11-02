@@ -240,10 +240,14 @@ The malicious-fork audit's class, and the densest evidence.
     it goes; whatever ties two such values together (a radio address to a node id, a LoRa node to a Knit id, a spool
     pseudonym to a scope, a group id to its members) joins two trails into one. The BLE advert carries the raw node id
     (`BleAdvertPayload` bytes 1–16) and the Wi-Fi Aware advert `nodeId|version|caps` (`Protocol.advertise`), to anyone
-    in range, by design, for discovery. A change that adds a stable cleartext field, carries the id on a new radio or
-    advert, exposes it in a GATT payload anyone may read, or adds a counter that fingerprints the phone widens that; one
-    that rotates or blinds it is a wire break (`docs/NEXT_WIRE_BREAK.md`). Evidence: ADR 035, ADR 2026-10.rp3s (the
-    LoRa plane airs only its user's own frames); otherwise none audited.
+    in range, for discovery (#285). A change that adds a stable cleartext field, carries the id on a new radio or
+    advert, exposes it in a GATT payload anyone may read, or adds a counter that fingerprints the phone widens that.
+    Blinding the Bluetooth advert is additive (ADR 2026-11.xp6d, proposed): read a change to it for a tag that keeps
+    its address across a rotation (an in-place data swap), a field that survives a rotation unchanged and links two
+    tags, a presence key that reaches anyone outside the direct contacts (group co-members included), a tag claim on
+    a link outranking a key, and an unresolved tag published as a peer id.
+    Blinding the Aware advert is a wire break (`docs/NEXT_WIRE_BREAK.md` item 13). Evidence: ADR 035, ADR 2026-10.rp3s
+    (the LoRa plane airs only its user's own frames); otherwise none audited.
 15. **An address or a place given away.** A connection tells the other end our IP address, and a picture, a reading or
     a radio can tell anyone where the phone is. Ask who learns it, and whether a stranger can trigger it without the
     user acting. The defences to keep: a direct Internet link is contacts only, opt-in and on demand (ADR

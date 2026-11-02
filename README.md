@@ -625,7 +625,10 @@ build pins a whole group to it, and a group's info screen says which scheme it i
 who is talking to whom and how often, since DMs flood the mesh rather than being routed. On a paired
 **LoRa board** the content stays sealed, but a DM's sender, recipient, timing, and size ride the board's
 shared rendezvous channel at kilometre range — **Private messages over LoRa** on the radio screen turns
-that off while the Nearby room keeps going. The at-rest database is encrypted with SQLCipher.
+that off while the Nearby room keeps going. A phone's **Bluetooth and Wi-Fi Aware adverts carry its node
+id** in the clear while the mesh runs, so a scanner can recognise the same phone wherever it goes, and anyone
+who has seen the id in the mesh can match it to the name in that person's profile. The at-rest database is
+encrypted with SQLCipher.
 
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md) — please **do not** open a public issue for
 security problems.
