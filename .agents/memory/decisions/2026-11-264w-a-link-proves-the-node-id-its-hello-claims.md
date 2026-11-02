@@ -86,7 +86,8 @@ link-up exchanges ride the link's id too.
   before the change). iOS's mirror is `isFromItsLink`.
 - **Counters** `linksProven`, `linkProofFailed`, `linkClaimRefused` (`MeshMetrics`, `metricsJson`; knit-ios reports
   the same keys), and one `LinkClaims` log line per refusal naming the plane, the claimed id and the reason, never a
-  key or a signature.
+  key or a signature. `linkClaimRefused` counts R1 refusals plus each live unproven link closed because its id proved
+  itself or became proof-capable (R3, R4), once, on whichever plane closes it.
 
 The alternative a reader reaches for first is a link key and a MAC on every record. It also closes the relayed
 handshake below, but it rewrites the framing of every link; the proof is additive and is the first half of it.
@@ -133,3 +134,10 @@ handshake: `LinkHandshakeTest` (both roles over a pipe, every failure shape, the
 refused; a bit-less lane peer feeds no claim), the pipeline's profile and blob-control tests, and the device trial
 do. `vectors/keyed-v1.json` → `link` pins the HELLOs, both transcripts, both PROOF records and the rejects;
 `ios-emitted-v1.json` pins iOS's proofs once it exports them.
+
+## Amendment 2026-11-01 — a same-plane displacement counts as a closed claim (contract revision 6)
+
+A proven link that takes an unproven link's place on its own plane now counts that link under `linkClaimRefused`
+(`LinkClaims.proven` with `displaced`), as iOS already did. The count had covered only another plane's R3 close and
+R4. No plane's listener sees the replaced link (each skips a proven one), so it is counted once. Regression:
+`LinkClaimsTest.aSameRadioDisplacementCountsOneClosedClaim`.

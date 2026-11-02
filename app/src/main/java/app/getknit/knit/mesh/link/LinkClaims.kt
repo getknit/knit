@@ -46,7 +46,8 @@ class LinkClaims(
      * A link that proved [nodeId] was registered on [plane]: counts it, makes the id proof-capable for the rest of the
      * run, and tells every plane, so each closes any unproven link it holds claiming the id (R3). Called after the link
      * is in its plane's table, so that plane's own listener finds the proven link there and leaves it. [displaced] says
-     * the registration itself replaced an unproven link claiming the id (R3 on its own plane): see [onDisplaced].
+     * the registration itself replaced an unproven link claiming the id (R3 on its own plane): that link is counted under
+     * `linkClaimRefused` here, once, since no listener ever sees it (contract revision 6), and see [onDisplaced].
      */
     fun proven(
         nodeId: String,
@@ -54,6 +55,7 @@ class LinkClaims(
         displaced: Boolean = false,
     ) {
         metrics.onLinkProven()
+        if (displaced) metrics.onLinkClaimRefused()
         synchronized(provenThisRun) {
             provenThisRun.remove(nodeId) // re-added as the newest
             provenThisRun.add(nodeId)
@@ -126,7 +128,11 @@ class LinkClaims(
         log("link claim refused: $plane $nodeId ($why)")
     }
 
-    /** R4: a live unproven link claiming [nodeId] on [plane] was closed, the id being proof-capable now. */
+    /**
+     * R3 or R4: a live unproven link claiming [nodeId] on [plane] was closed, the id having proved itself or become
+     * proof-capable. A link is counted once, on the plane that closes it; one a proven link replaced on its own plane is
+     * counted by [proven] instead.
+     */
     fun claimClosed(
         nodeId: String,
         plane: String,

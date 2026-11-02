@@ -81,7 +81,24 @@ class LinkClaimsTest {
         claims.claimClosed(Z, "bt") // another plane's squatter, closed after Z proved itself
 
         assertEquals(listOf(X, Z), displaced)
-        assertEquals(2L, metrics.frames().linkClaimRefused)
+        assertEquals("X's replaced link, Y's and Z's closes", 3L, metrics.frames().linkClaimRefused)
+    }
+
+    /**
+     * A proven link that takes an unproven link's place on its own radio closes a claim, and counts it once (contract
+     * revision 6, as knit-ios counts it): no plane's listener sees that link, each skipping the proven one now held.
+     */
+    @Test
+    fun aSameRadioDisplacementCountsOneClosedClaim() {
+        claims.proven(X, "bt")
+        assertEquals("a proof that replaced nothing closes no claim", 0L, metrics.frames().linkClaimRefused)
+
+        claims.proven(Y, "bt", displaced = true)
+
+        val frames = metrics.frames()
+        assertEquals(1L, frames.linkClaimRefused)
+        assertEquals(2L, frames.linksProven)
+        assertEquals(0L, frames.linkProofFailed)
     }
 
     @Test

@@ -852,8 +852,9 @@ class MeshMetrics {
     }
 
     /**
-     * An unproven link claiming a proof-capable node id was refused at its handshake, or closed once the id became
-     * proof-capable (`LinkClaims`).
+     * An unproven link claiming a proof-capable node id was refused at its handshake (R1), or a live one was closed because
+     * its id proved itself or became proof-capable (R3, R4), including one a proven link replaced on its own plane. Each
+     * link counts once (`LinkClaims`).
      */
     fun onLinkClaimRefused() {
         linkClaimRefused.incrementAndGet()
