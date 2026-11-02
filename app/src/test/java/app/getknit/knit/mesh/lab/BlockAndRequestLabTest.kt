@@ -206,7 +206,11 @@ class BlockAndRequestLabTest {
             lab.await(1) { if (alice.peer(bob)?.avatarHash == hash) 1 else 0 }
             awaitBlockWatch(alice)
             alice.block(bob)
-            assertTrue("the block never cleared the face", lab.tryAwait(1) { if (alice.peer(bob)?.avatarHash == null) 1 else 0 })
+            // Read after the wait, never as `assertTrue`'s message, which runs before its condition does.
+            if (!lab.tryAwait(1) { if (alice.peer(bob)?.avatarHash == null) 1 else 0 }) {
+                val report = lab.report(listOf(alice, bob))
+                throw AssertionError("the block never cleared the face\n${blockState(alice)}\n${faceState(alice, bob, hash)}\n$report")
+            }
 
             // Custody may keep a blocked person's photo as a carried attachment (ADR 2026-09.bts9). Once the frames naming it
             // expire, nothing does, and the start's orphan collection lets it go: the bytes are gone, as after any block.
@@ -347,6 +351,16 @@ class BlockAndRequestLabTest {
                 .filter { hash.take(8) in it.msg }
                 .joinToString("\n") { "  ${it.tag}: ${it.msg}" }
     }
+
+    /** What [node]'s block-list watch has seen and acted on, and every hook it failed: a block oracle's context. */
+    private suspend fun blockState(node: LabNode): String =
+        "  ${node.name}: watch ready ${node.manager.blockListWatch.ready.value}, " +
+            "blocked ${node.settings.blockedNodeIds.first().map { it.take(6) }}, " +
+            "acted on ${node.settings.blockList.actedOn.first()?.map { it.take(6) }}\n" +
+            org.robolectric.shadows.ShadowLog
+                .getLogs()
+                .filter { "block-list" in it.msg }
+                .joinToString("\n") { "  ${it.tag}: ${it.msg}" }
 
     /** Waits for [node]'s block-list watch to hold its first value, so a block made next is a diff it acts on. */
     private suspend fun awaitBlockWatch(node: LabNode) = lab.await(1) { if (node.manager.blockListWatch.ready.value) 1 else 0 }
