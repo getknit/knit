@@ -2,6 +2,8 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -54,7 +56,9 @@ class KeyExchangeLabTest {
      * In a boards run Alice's board airs her post (an own one-packet room post, ADR 2026-10.rp3s), so Carol can hear
      * it and ask Bob for the key before the release. Bob's answer then parks in the hold with the relays, so the
      * release lets it through as well. Without that, the release dropped the key and Carol's 30 s re-ask cooldown
-     * kept her from asking again (boards run 1 of CI run 41261854309).
+     * kept her from asking again (boards run 1 of CI run 41261854309). A boards node's transport is a composite, whose
+     * `fastFanout` floods a child with no fast plane at once, beside the router's jittered relay: the hold can park two
+     * copies of one post, which the release writes once, so the post is counted by frame.
      */
     @Test
     fun aFrameFromAStrangerIsParkedAndReplayedWhenTheKeyIsFetched() =
@@ -78,7 +82,14 @@ class KeyExchangeLabTest {
                 bob.transport.release(carol.transport) { batch ->
                     batch.filter { it.isRoomPostFrom(alice.nodeId) || (!it.relay && it.isProfileFrom(alice.nodeId)) }
                 }
-            assertEquals(1, released.count { it.isRoomPostFrom(alice.nodeId) })
+            // Counted by frame: the flood's copy and the fast path's can both park, and the release writes them once
+            // (`LabTransport.deliverHeld`, as the phone's link does).
+            val posts = released.filter { it.isRoomPostFrom(alice.nodeId) }
+            val distinct = posts.mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }.distinct()
+            if (distinct.size != 1) {
+                val report = lab.report(listOf(alice, bob, carol))
+                throw AssertionError("the release let through ${describe(posts)}\n$report")
+            }
 
             assertTrue("carol never refused the stranger's frame", lab.tryAwait(1) { carol.drops(DropReason.NO_SENDER_KEY).toInt() })
             assertTrue(
@@ -100,6 +111,17 @@ class KeyExchangeLabTest {
                 },
             )
             assertTrue("carol never pinned alice", lab.tryAwait(1) { if (carol.knows(alice)) 1 else 0 })
+            // Alice answers Bob's tick for her post (his first sealed frame to her) with a sealed profile addressed to Bob,
+            // the KDoc's second chat frame. Bob keeps it and floods it no further, so Carol's carrier copy comes from a
+            // digest exchange: the re-link's when it has reached Bob by then, else the 60 s re-offer, past the oracle
+            // (boards seed 747986550). It is in Bob's custody before the re-link.
+            lab.await(1) {
+                alice.metrics
+                    .keys()
+                    .introsAnswered
+                    .toInt()
+            }
+            lab.await(1) { if (bob.custodyIds().containsAll(alice.custodyIdsFrom(alice))) 1 else 0 }
 
             // Issue #49 (found here on 2026-09-14, fixed by ADR 2026-09.7bu7): the served profile is a
             // point-to-point `relay = false` frame, and the custody gate used to take flood frames only — so
@@ -110,10 +132,15 @@ class KeyExchangeLabTest {
             bob.transport.lossy(carol.transport) // a clean link again: the re-link's digest exchange repairs what the hold and the air ate
             lab.unlink(bob, carol)
             lab.link(bob, carol)
-            assertTrue(lab.tryAwait(1) { if (carol.roomPosts()[alice.nodeId]?.contains("from a stranger") == true) 1 else 0 })
-            assertTrue(lab.tryAwait(1) { if (bob.custodyIds().minus(carol.custodyIds()).isEmpty()) 1 else 0 })
-            val short = bob.custodyIds() - carol.custodyIds()
-            assertTrue("carol is short nothing bob carries, got $short", short.isEmpty())
+            if (!lab.tryAwait(1) { if (carol.roomPosts()[alice.nodeId]?.contains("from a stranger") == true) 1 else 0 }) {
+                val report = lab.report(listOf(alice, bob, carol))
+                throw AssertionError("carol never showed alice's post: ${carol.roomPosts()}, ${carol.metrics.snapshot().keys}\n$report")
+            }
+            // The wait's own answer is the verdict: a re-read after it races frames custodied since (a tick, a relayed answer).
+            if (!lab.tryAwait(1) { if (bob.custodyIds().minus(carol.custodyIds()).isEmpty()) 1 else 0 }) {
+                val report = lab.report(listOf(alice, bob, carol))
+                throw AssertionError("carol is short ${bob.custodyIds() - carol.custodyIds()} of what bob carries\n$report")
+            }
             val snap = carol.metrics.snapshot()
             assertEquals("one frame parked, one replayed", 1L to 1L, snap.keys.framesHeld to snap.keys.framesReplayed)
             assertEquals("the missing key was recovered", 1L, snap.keys.keysRecovered)
@@ -149,4 +176,8 @@ class KeyExchangeLabTest {
             lab.assertConverged(listOf(alice, carol), atLeast = 1) { it.dmWith(if (it === alice) carol else alice) }
             assertEquals(early, carol.decrypted(carol.dmWith(alice)).single().first)
         }
+
+    /** Each frame's id, relay flag and signed bytes' length: what a held batch let through, for a failure to name. */
+    private fun describe(frames: List<WireEnvelope>): String =
+        frames.joinToString { w -> "${WireCodec.decodeEnvelope(w.signed)?.id} relay=${w.relay} bytes=${w.signed.size}" }
 }
