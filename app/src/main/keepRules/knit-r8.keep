@@ -96,6 +96,16 @@
 # keep that stood here are gone with the copies. scripts/r8-platform-gate.sh fails a release whose mapping still
 # renames a class the platform defines.
 
+# ---- Media3 Transformer: no class merge for the owners of a LogSessionId field (ADR 2026-11.zmc6) ----------
+# R8 9.4.24 merged these horizontally into unrelated classes, widened their LogSessionId field to Object and put a
+# `check-cast LogSessionId` back on the read. ART resolves a check-cast's class even when the value is null, so on
+# API 29-30, where the class does not exist, every video send threw NoClassDefFoundError (2.10.0 and 2.10.1). A keep
+# that allows renaming and shrinking only stops the merge, so the field keeps its type and the cast goes. Main's
+# scripts/dex-api-cast-gate.sh counts what is left (budget 0).
+-keep,allowobfuscation,allowshrinking class androidx.media3.transformer.DefaultAssetLoaderFactory
+-keep,allowobfuscation,allowshrinking class androidx.media3.transformer.ExoPlayerAssetLoader$Factory
+-keep,allowobfuscation,allowshrinking class androidx.media3.transformer.ExoPlayerAssetLoader$RenderersFactoryImpl
+
 # ---- Google Play In-App Review (optional GMS; pre-gated + failures swallowed at runtime) ------------------
 -dontwarn com.google.android.gms.**
 
