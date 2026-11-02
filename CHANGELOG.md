@@ -22,6 +22,8 @@ document:
 
 ### Fixed
 
+- Picking a video to send no longer closes Knit on Android 10 and 11, where it closed the app every time and
+  dropped its connection to nearby phones.
 - Sharing a photo or video that Knit can't open, such as one deleted after you shared it, no longer closes
   Knit and drops its connection to nearby phones. Knit now tells you it couldn't attach it.
 
