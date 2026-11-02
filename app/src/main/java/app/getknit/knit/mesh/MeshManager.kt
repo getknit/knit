@@ -454,6 +454,17 @@ class MeshManager(
     @Volatile
     internal var betweenRewantReads: (suspend () -> Unit)? = null
 
+    /**
+     * Test seam: told of each transport frame once the router has handled it ([MeshRouter.onHandled]), by every router
+     * this manager builds. `mesh/lab` drains a node behind a composite by it. Null in production.
+     */
+    @Volatile
+    internal var onInboundHandled: ((InboundFrame) -> Unit)? = null
+
+    /** Test seam: told of each custody digest once [ForwardSync.onDigest] has answered it. Null in production. */
+    @Volatile
+    internal var onDigestAnswered: ((ReceivedDigest) -> Unit)? = null
+
     // Content-addressed image fetch over the mesh, backed by the encrypted blob store.
     private val blobExchange =
         BlobExchange(
@@ -1383,7 +1394,7 @@ class MeshManager(
             budget = ingressBudget,
             onRelayed = { env, to -> ledger.onHandedOff(env, to.filterTo(HashSet(), ::radioLinked)) },
             onDeliver = pipeline::onDeliver,
-        )
+        ).also { it.onHandled = { frame -> onInboundHandled?.invoke(frame) } }
 
     override fun spoolStatus(): List<SpoolStatus> = demoSpools ?: scopeSync?.status().orEmpty()
 
@@ -4056,7 +4067,10 @@ class MeshManager(
         session.launch {
             // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
             // By the plane it crossed: one off a contact's direct link is answered inside that link's rule (ADR 2026-10.a5yj).
-            transport.incomingDigests.collect { forwardSync.onDigest(it.fromNodeId, it.ids, it.via) }
+            transport.incomingDigests.collect {
+                forwardSync.onDigest(it.fromNodeId, it.ids, it.via)
+                onDigestAnswered?.invoke(it)
+            }
         }
     }
 

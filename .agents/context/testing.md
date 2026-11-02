@@ -442,6 +442,19 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   scenario whose subject is two islands no radio reaches (`DirectLinkLabTest`, `InternetLinkLabTest`,
   `LinkDownloadLimitLabTest`) builds those nodes `board = false`: otherwise a DM rides the air beside the link the
   scenario is about, and a stranger's room post heard over it parks for a key no island can bring (ADR 2026-10.rp3s).
+- **Behind a composite, a drain is counted at the router** (2026-11-01). A node with a board or a direct link plane
+  runs its manager on `CompositeMeshTransport`, whose `merge` takes each plane's frames on a channel, so the plane's
+  `emit` returns when the frame is queued, not when it is handled. `awaitInboundDrained` then counted a frame
+  handled while the router still had it queued. The radio's count now moves at the router: `MeshRouter.onHandled`, by
+  way of `MeshManager.onInboundHandled`, calls `LabTransport.frameHandled` for each of the radio's frames once
+  `handleInbound` returns (`handledDownstream`, set at the boot), and its `awaitDigestsAnswered` likewise at the
+  manager (`MeshManager.onDigestAnswered` → `LabTransport.digestAnswered`). Both match the radio's frames by the plane
+  the composite stamps (`kind` / `via` equal to the radio's own, `TransportKind.Other`), so a new composite child must
+  report a kind of its own or it is counted as the radio. `awaitNeighborsHandled` is still early behind the
+  composite's `combine`. Before it, a boards sweep failed two ways. A
+  `lab.unlink` cut the link while Bob still had Alice's DM queued, so his ✓✓ was sealed after the cut, and Alice's
+  reset overtook it (#260's gap; `ScopeConfigLabTest`, 6 of 8 shards). And `AvatarCeilingLabTest`'s `cycle` jumped
+  the calendar while a holder still had Bob's ask queued, so Bob asked again and was served two copies.
 - **Two legitimate orderings are not a state to await.** `AttachmentLabTest`'s #79 scenario awaited Carol's
   copy of the blob and then asserted she never served Bob — but Bob then asked every neighbour at once, and whether
   Carol holds the bytes when his ask reaches her is a race the mesh does not decide (her pull is two hops and

@@ -196,17 +196,31 @@ class LabTransport(
      * The inbound frames, counted out as the collector *finishes* each one: a direct collector (the router's
      * `collect { handleInbound(…) }`) returns from `emit` only once `handleInbound` has, so [awaitInboundDrained]
      * means "every frame this node was handed has been handled" — its custody writes and the sends it
-     * provoked included. Behind a composite's `merge` (a node with a board) `emit` returns at the channel, so
-     * there the signal is early; [LabNode.restart] and [MeshLab.unlink] keep their settle for that case, which
-     * a chaos stall can outlast: a board scenario that re-links right after a delivery awaits the event first.
+     * provoked included. Behind a composite's `merge` (a node with a board, or a direct link plane) `emit` returns
+     * at the channel, long before the router has the frame, so there the count moves at the router instead
+     * ([handledDownstream], [frameHandled]): a drain that read the channel let a scenario jump the calendar under a
+     * holder's unserved ask, or reset under a ✓✓ still queued for its open.
      */
     override val inbound: Flow<InboundFrame> =
         flow {
             _inbound.asSharedFlow().lagged().collect {
                 emit(it)
-                framesHandled.incrementAndGet()
+                if (!handledDownstream) framesHandled.incrementAndGet()
             }
         }
+
+    /**
+     * Set at the boot for a node whose manager runs on a composite: [inbound] and [incomingDigests] then count
+     * nothing, and the manager's seams (`MeshManager.onInboundHandled`, `onDigestAnswered`) call [frameHandled] and
+     * [digestAnswered] for each of this plane's frames and digests once it has handled them.
+     */
+    @Volatile
+    internal var handledDownstream = false
+
+    /** One of this plane's frames handled by the router behind a composite ([handledDownstream]). */
+    internal fun frameHandled() {
+        framesHandled.incrementAndGet()
+    }
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = BUFFER)
     override val incomingFiles: Flow<ReceivedFile> = _incomingFiles.asSharedFlow().lagged()
@@ -246,15 +260,21 @@ class LabTransport(
     /**
      * The custody digests peers advertised, counted out as the collector *finishes* each one, as [inbound] counts
      * frames: the manager's `collect { forwardSync.onDigest(…) }` returns from `emit` only once its reply (every
-     * frame the peer lacked) is sent. Early behind a composite's `merge`, as [inbound] is.
+     * frame the peer lacked) is sent. Behind a composite's `merge` the count moves at the manager instead, as
+     * [inbound]'s does ([handledDownstream], [digestAnswered]).
      */
     override val incomingDigests: Flow<ReceivedDigest> =
         flow {
             _incomingDigests.asSharedFlow().lagged().collect {
                 emit(it)
-                digestsAnswered.incrementAndGet()
+                if (!handledDownstream) digestsAnswered.incrementAndGet()
             }
         }
+
+    /** One of this plane's digests answered by the manager behind a composite ([handledDownstream]). */
+    internal fun digestAnswered() {
+        digestsAnswered.incrementAndGet()
+    }
 
     private fun <T> Flow<T>.lagged(): Flow<T> = chaos?.let { c -> onEach { c.jitter() } } ?: this
 
@@ -587,8 +607,9 @@ class LabTransport(
      * that is every newcomer hook `MeshManager.watchNeighbors` runs on a link-up: the profile push, the digest, the
      * key and tick re-offers and, last, the group-seed flush, which sends a seed only once one exists.
      * [MeshLab.awaitAcquainted] waits here on every node it is given, so a scenario that mints a seed next finds the
-     * link-up's own flush done (#201). Early behind a composite's `combine` (a node with a board), as
-     * [awaitInboundDrained] is behind its `merge`.
+     * link-up's own flush done (#201). Early behind a composite's `combine` (a node with a board), which re-publishes the
+     * link set to the manager on a collector of its own; unlike [awaitInboundDrained], whose count moves at the router
+     * there ([handledDownstream]).
      */
     suspend fun awaitNeighborsHandled() {
         val target = links.value.generation

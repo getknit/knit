@@ -133,9 +133,9 @@ class LoraDirectLabTest {
             assertTrue(alice.sendDm(bob, "and now over the link"))
             val next = alice.ownMessageId(alice.dmWith(bob), "and now over the link")
             lab.await(1) { holds(bob, alice, next) }
-            // The mark lands inside the signed copy's delivery, before anything that would notify; and behind a board's
-            // merged inbound `awaitInboundDrained` returns at the channel. The router handles one frame at a time, in
-            // order, so once the next DM over the same link has notified, the signed copy's delivery has returned.
+            // The mark lands inside the signed copy's delivery, before anything that would notify. The router handles one
+            // frame at a time, in order, so once the next DM over the same link has notified, the signed copy's delivery
+            // has returned.
             lab.await(1) { notified(bob, "and now over the link") }
             coVerify(exactly = 0) { bob.notifier.notify(match { it.body == "over the board" }, any(), any(), any(), any()) }
             assertTrue("bob's session is confirmed", lab.tryAwait(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 })

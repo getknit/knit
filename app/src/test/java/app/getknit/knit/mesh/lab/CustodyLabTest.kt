@@ -258,9 +258,8 @@ class CustodyLabTest {
                 }
             }
             alice.transport.awaitInboundDrained()
-            // With a board the drain signal returns at the composite's merge channel, before the pipeline has answered
-            // the copy (LabTransport.inbound), and the answer could land after the oracle below (KNIT_LAB_BOARDS seed
-            // 2008). Await the answer itself: a skip, a seal or a hold — the asserts below say which it had to be.
+            // Await the answer itself, not only the drain: a skip, a seal or a hold — the asserts below say which it had to
+            // be. (The drain once returned at a board node's merge channel, before the answer: KNIT_LAB_BOARDS seed 2008.)
             lab.await(1) {
                 val r = alice.metrics.receipts()
                 ((r.receiptsReAckSkipped - skippedBefore) + (r.receiptsHeld - heldBefore) + (r.receiptsSealed - sealed)).toInt()

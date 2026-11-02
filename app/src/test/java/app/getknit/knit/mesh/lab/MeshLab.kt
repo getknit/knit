@@ -337,8 +337,9 @@ class MeshLab {
      * through the re-link's digest exchange, which must not run before the receipt and its custody row exist (#137).
      * Last, each manager must have acted on the departure ([LabNode.awaitLinksActedOn]) — on a board node it
      * collects the composite's `StateFlow`, a second conflation the radio's hand-off record cannot see.
-     * The [SETTLE_MS] pause stays for the composite's other `StateFlow`s (`reachable`, the status), and for a
-     * board node's `merge`, which makes the drained signal early.
+     * The [SETTLE_MS] pause stays for the composite's other `StateFlow`s (`reachable`, the status), and as margin for
+     * what a handled frame launches (a relay in its jitter, a debounced tick). Behind a composite's `merge` the drain is
+     * counted at the router ([LabTransport.handledDownstream]), so it is not early there.
      */
     suspend fun unlink(
         a: LabNode,
@@ -1567,6 +1568,19 @@ class LabNode internal constructor(
         ) = manager.sendLinkSignal(peerId, signal)
     }
 
+    /**
+     * Behind the composite's merge the radio's `emit` returns at the channel, so this boot's radio counts a frame handled,
+     * and a digest answered, only once the manager has ([LabTransport.handledDownstream]): its seams report each one of
+     * the radio's, by the plane the composite stamped. A restart builds the next transport and sets it again.
+     */
+    private fun countDrainsDownstream() {
+        val radio = transport
+        radio.handledDownstream = composite != null
+        if (!radio.handledDownstream) return
+        manager.onInboundHandled = { frame -> if (frame.kind == radio.kind) radio.frameHandled() }
+        manager.onDigestAnswered = { digest -> if (digest.via == radio.kind) radio.digestAnswered() }
+    }
+
     // The composite the manager runs on when a board or a link plane sits beside the radio; null for the radio alone. Each
     // plane goes in with its collectors counted, which the boot waits on ([LabCollectors]); the link plane recorded too
     // ([LabLinkPlane]): its files and frames sent, the digests it took, and its hand-off to the manager through [linkFileGate].
@@ -1856,6 +1870,7 @@ class LabNode internal constructor(
                 extraCapabilities = if (internet != null) Protocol.CAP_INET_LINK else 0L,
                 blobMetered = { metered },
             )
+        countDrainsDownstream()
         buildLinks(scope, meshTransport)
         bindBoard()
         val callLines = CopyOnWriteArrayList<String>().also { callLog = it }
@@ -1979,8 +1994,9 @@ class LabNode internal constructor(
      * Every peer of a node going down has been handed the departure, and has finished handling each frame it
      * was handed before it ([LabTransport.awaitInboundDrained]) — its custody row, a DM receipt it seals inline.
      * A frame sent into the dying link reaches the relaunched node only through its digest exchange, which must not
-     * run before the frame and its custody row exist, or the 60 s re-offer is left to carry it. The settle stays for a
-     * peer with a board, whose composite `merge` makes the drained signal early.
+     * run before the frame and its custody row exist, or the 60 s re-offer is left to carry it. The settle stays as margin
+     * for what a handled frame launches; behind a composite's `merge` the drain is counted at the router
+     * ([LabTransport.handledDownstream]).
      */
     private suspend fun awaitPeersSettled(peers: List<LabTransport>) {
         peers.forEach { it.awaitNeighborsObserved() }

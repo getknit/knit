@@ -403,8 +403,8 @@ class SessionLabTest {
     fun anAuthorsResetDrawsOneFreshReceiptForADmACarrierBackFillsToTheRecipient() =
         runBlocking {
             // No board on any, whatever the run: the signed re-ack's gate is the subject, and a compact copy would tick
-            // around it. A board's drain signal is early too (LabTransport.inbound): a copy still behind it past the jump
-            // re-arms Alice's seen entry and Dave's copy is deduped (KNIT_LAB_BOARDS seed 2001).
+            // around it. (A board's drain signal was early too, before it was counted at the router: a copy still behind
+            // it past the jump re-armed Alice's seen entry and Dave's copy was deduped, KNIT_LAB_BOARDS seed 2001.)
             val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
@@ -572,7 +572,7 @@ class SessionLabTest {
     /**
      * [to]'s back-fill of [dm] through [carrier], who lacks it: [to] links the carrier with its own frames to it held (its
      * copy cannot cross first), then [source] feeds the carrier, whose relay reaches [to] as a fresh flood. Returns once
-     * [to] has declined and held the re-ack (the answer itself, not the drain: a composite's drain signal is early).
+     * [to] has declined and held the re-ack (the answer itself, not the drain, which says nothing of an answer held).
      */
     private suspend fun backFill(
         to: LabNode,

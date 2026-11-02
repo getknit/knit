@@ -77,6 +77,14 @@ class MeshRouter(
     private val pending = mutableMapOf<String, PendingRelay>()
     private val pendingLock = Mutex()
 
+    /**
+     * Test seam: told of each transport frame once [handleInbound] has returned for it. `mesh/lab` counts a frame handled
+     * here on a node whose planes a composite merges, where the plane's own `emit` returns at the merge's channel, long
+     * before the frame is handled. Null in production.
+     */
+    @Volatile
+    internal var onHandled: ((InboundFrame) -> Unit)? = null
+
     /** Begins consuming inbound frames from the transport. */
     fun start() {
         scope.launch {
@@ -84,6 +92,7 @@ class MeshRouter(
             // the ones named, and the frame's kind (the plane it arrived on) would read as Other for every frame.
             transport.inbound.collect { frame ->
                 handleInbound(frame.wire, frame.envelope, frame.fromNodeId, frame.kind, frame.onLink)
+                onHandled?.invoke(frame)
             }
         }
     }
