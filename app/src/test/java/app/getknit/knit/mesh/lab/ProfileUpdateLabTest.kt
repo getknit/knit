@@ -178,6 +178,10 @@ class ProfileUpdateLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            // A photo landing while Bob's start-up collection is pending can lose its bytes before the face takes them, for
+            // the next database re-arm to fetch again (#256's window, ADR 2026-11.4ckq): past this oracle's wait, and not
+            // this scenario's subject. Both starts' sweeps are done before the photo is set.
+            lab.await(2) { listOf(alice, bob).count { it.manager.startSweepsDone } }
 
             val v0 = alice.settings.profileVersion.first()
             val picture = Random(7).nextBytes(2_048)
