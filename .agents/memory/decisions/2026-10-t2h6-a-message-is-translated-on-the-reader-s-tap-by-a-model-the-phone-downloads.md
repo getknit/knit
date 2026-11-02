@@ -403,3 +403,32 @@ hint and with its own language as the hint, out of 91 lines, 88 for English):
 - A phone bench and trial on the P9 and P7 for each direction's load time, latency and memory.
 - A French↔Ukrainian chat end to end, where each side gets English.
 - A native reader's look at uk-en.
+
+## Amendment 2026-11-02: the phone's language before what they write
+
+**Why.** An alpha tester reported that translating a Spanish message gave English, and that every other language
+went into English too. Automatic ranked the language written most (three confident picks of the 50 newest sends)
+above the system's list, and what a person sends names the chat as often as the reader. A Spanish speaker writing to
+English contacts sends English, by hand or through the composer's own translation (the field holds the translation
+when it is sent, so `recentOwnBodies` reads it as theirs). After three such sends their phone read them as an English
+reader: Spanish messages offered Translate into English, the other languages went into English, and English messages
+offered nothing. The spike had only met phones in English, where the two rules agree.
+
+**What changes.** Automatic (`ReaderLanguages.estimate`) is now:
+
+1. The first language on the system's list that a model translates into, unless it is English.
+2. Else the language written most, with at least three confident picks.
+3. Else that English.
+
+A phone set to Spanish reads Spanish whatever it sends. A phone set to English, or to a language no model reaches,
+still reads what its person writes, the case the rule was made for: someone on an English phone who writes in
+Spanish. A later language on the list that a model reaches (Italian, then Spanish) counts as the phone's: the person
+put it there. The choice in Settings still overrides all three, and `declaredReads` is unchanged.
+Settings › Chats › "Translate messages into" explains Automatic in those terms in every shipped language.
+
+**What it does not fix.** A Spanish reader still gets a French, German, Portuguese or Ukrainian message in English:
+no model goes between two languages that are not English, and nothing pivots (the 2026-10-29 amendment). A Spanish
+line CLD2 reads reliably as English ("que fotos tan bonitas", en:95; one of 20 casual unaccented lines on the desktop
+bench) still runs through en→es and says so, with "Not English?" to correct it.
+
+**Owed.** The tester's confirmation on the next alpha, on a phone set to Spanish that has sent English.

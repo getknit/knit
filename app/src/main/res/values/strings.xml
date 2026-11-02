@@ -2108,6 +2108,6 @@
     <string name="settings_translate_into_title">Translate messages into</string>
     <string name="settings_translate_into_auto">Automatic (%1$s)</string>
     <string name="settings_translate_into_auto_none">Automatic</string>
-    <string name="settings_translate_into_body">Automatic uses the language you write in, or else your phone\'s language.</string>
+    <string name="settings_translate_into_body">Automatic uses your phone\'s language. If your phone is in English, or in a language Knit can\'t translate into, it uses the language you write in.</string>
     <string name="translate_preview_draft" translatable="false">¿Vienes al parque más tarde?</string>
 </resources>

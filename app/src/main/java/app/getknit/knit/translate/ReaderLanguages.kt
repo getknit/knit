@@ -3,11 +3,15 @@ package app.getknit.knit.translate
 import app.getknit.knit.mesh.protocol.LanguageRegistry
 
 /**
- * The language a reader wants a translation in (ADR 2026-10.t2h6 and its 2026-10-29 amendment). The app's language says
- * nothing reliable: a direct install shows English, Google Play translates the strings into the phone's language by
- * itself, and a person may run the app in English and write in Spanish. So, in order: the reader's own choice in
- * Settings, the language they write in, read from their own sent messages, and the phone's preferred list — the
- * system's, never the app's resolved locale. Only a language a model translates into counts.
+ * The language a reader wants a translation in (ADR 2026-10.t2h6 and its 2026-10-29 and 2026-11-02 amendments). The
+ * app's language says nothing reliable: a direct install shows English, Google Play translates the strings into the
+ * phone's language by itself, and a person may run the app in English and write in Spanish. So, in order: the reader's
+ * own choice in Settings, then the phone's preferred list — the system's, never the app's resolved locale — when its
+ * first language a model reaches is not English, then the language they write in, read from their own sent messages,
+ * then English off that list. Only a language a model translates into counts.
+ *
+ * What they write ranks below a phone set to another language because it names the chat as often as the reader: a
+ * Spanish speaker writing to English contacts, by hand or through the composer's translation, sends English.
  */
 object ReaderLanguages {
     /** Fewer confident picks than this from the reader's own messages say nothing about what they write. */
@@ -21,7 +25,8 @@ object ReaderLanguages {
         val unsure: Int,
         val preferred: List<String>,
         val override: TranslateLang?,
-        // What Automatic picks: what the reader writes, else the system list. [target] is it, unless overridden.
+        // What Automatic picks: the system list's language unless it is English, else what the reader writes, else
+        // English off the list. [target] is it, unless overridden.
         val automatic: TranslateLang?,
     ) {
         val target: TranslateLang? get() = override ?: automatic
@@ -29,8 +34,9 @@ object ReaderLanguages {
 
     /**
      * [own] is a pick per recent message this phone sent; [preferred] the system's language tags in order; [override]
-     * the code chosen in Settings, or null for Automatic. Automatic is the language written most, with at least
-     * [MIN_WRITTEN] picks, else the first preferred language a model translates into.
+     * the code chosen in Settings, or null for Automatic. Automatic is the first preferred language a model
+     * translates into, unless that is English; then the language written most, with at least [MIN_WRITTEN] picks;
+     * then that English. A phone whose list no model reaches reads what they write alone.
      */
     fun estimate(
         own: List<LanguagePick>,
@@ -48,7 +54,9 @@ object ReaderLanguages {
         val most = written.maxByOrNull { it.value }?.takeIf { it.value >= MIN_WRITTEN }?.key
         val fromSystem = preferred.firstNotNullOfOrNull { tag -> TranslateLang.ofCode(tag)?.takeIf { it in targets } }
         val chosen = override?.let(TranslateLang::ofCode)?.takeIf { it in targets }
-        return Estimate(written, unsure, preferred, chosen, most ?: fromSystem)
+        // English is every model's hub, so a phone in English says least: there, what they write decides.
+        val automatic = fromSystem?.takeIf { it != TranslateLang.EN } ?: most ?: fromSystem
+        return Estimate(written, unsure, preferred, chosen, automatic)
     }
 
     /**

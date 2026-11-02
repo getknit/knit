@@ -1766,5 +1766,5 @@
     <string name="settings_translate_into_title">Idioma da tradução</string>
     <string name="settings_translate_into_auto">Automático (%1$s)</string>
     <string name="settings_translate_into_auto_none">Automático</string>
-    <string name="settings_translate_into_body">No modo automático, usa o idioma em que você escreve ou, se não houver, o do seu celular.</string>
+    <string name="settings_translate_into_body">No modo automático, usa o idioma do seu celular. Se ele estiver em inglês, ou em um idioma para o qual o Knit não traduz, usa o idioma em que você escreve.</string>
 </resources>

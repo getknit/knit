@@ -840,8 +840,9 @@ class ChatViewModel(
     }
 
     /**
-     * The language this phone's reader wants translations in (ADR 2026-10.t2h6's 2026-10-29 amendment): the choice in
-     * Settings, else what they write, else the system's list. Read again each time a chat opens.
+     * The language this phone's reader wants translations in (ADR 2026-10.t2h6's 2026-10-29 and 2026-11-02
+     * amendments, [ReaderLanguages]): the choice in Settings, else the system's list unless it is English, else what
+     * they write. Read again each time a chat opens.
      */
     private val readerLanguage: StateFlow<TranslateLang?> =
         translation?.reader?.stateIn(viewModelScope, SharingStarted.Eagerly, null) ?: MutableStateFlow(null)

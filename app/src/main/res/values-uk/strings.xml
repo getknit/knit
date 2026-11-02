@@ -1796,5 +1796,5 @@
     <string name="settings_translate_into_title">Мова перекладу</string>
     <string name="settings_translate_into_auto">Автоматично (%1$s)</string>
     <string name="settings_translate_into_auto_none">Автоматично</string>
-    <string name="settings_translate_into_body">Автоматично — мова, якою ви пишете, а якщо її не визначено, мова вашого телефона.</string>
+    <string name="settings_translate_into_body">Автоматично — мова вашого телефона. Якщо це англійська або мова, на яку Knit не перекладає, — мова, якою ви пишете.</string>
 </resources>

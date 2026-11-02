@@ -6,8 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The reader's language by the rule of ADR 2026-10.t2h6 and its 2026-10-29 amendment: their own choice first, then
- * what they write in, then the system's list, and only a language a model translates into.
+ * The reader's language by the rule of ADR 2026-10.t2h6 and its 2026-10-29 and 2026-11-02 amendments: their own choice
+ * first, then the system's list unless its language is English, then what they write in, then that English, and only a
+ * language a model translates into.
  */
 class ReaderLanguagesTest {
     private val es = LanguagePick.Picked(TranslateLang("es"))
@@ -22,8 +23,49 @@ class ReaderLanguagesTest {
     }
 
     @Test
+    fun aSpanishPhoneThatWritesEnglishStillReadsSpanish() {
+        // An alpha tester's report: a Spanish speaker writing to English contacts, by hand or through the composer's
+        // translation, sends English, and every translation went into English, Spanish messages included.
+        val own = List(5) { en } + es
+        for (tag in listOf("es-AR", "es-419", "es")) {
+            val estimate = ReaderLanguages.estimate(own, listOf(tag, "en-US"))
+            assertEquals(tag, TranslateLang("es"), estimate.target)
+            assertEquals(tag, TranslateLang("es"), estimate.automatic)
+        }
+    }
+
+    @Test
+    fun aPhoneInEnglishReadsWhatTheyWrite() {
+        // The lab's Pixel 9: 39 English, 1 Spanish of its last 50 sends, on an English phone.
+        val lab = List(39) { en } + es + List(10) { LanguagePick.Unsure }
+        assertEquals(TranslateLang.EN, ReaderLanguages.estimate(lab, listOf("en-US")).target)
+        // English first and Spanish after it: English says least, so what they write decides, then that English.
+        val fr = LanguagePick.Picked(TranslateLang("fr"))
+        assertEquals(TranslateLang("fr"), ReaderLanguages.estimate(listOf(fr, fr, fr), listOf("en-US", "es-US")).target)
+        assertEquals(TranslateLang.EN, ReaderLanguages.estimate(listOf(es, es), listOf("en-US", "es-US")).target)
+    }
+
+    @Test
+    fun aPhoneNoModelReachesReadsWhatTheyWrite() {
+        // A registry language no model translates into, read off the table so a new model never turns this red.
+        val unreached = LanguageRegistry.CODES.first { TranslateLang(it) !in TranslateDirection.targets }
+        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(es, es, es), listOf(unreached)).target)
+        // English after it is still English: what they write comes first.
+        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(es, es, es), listOf(unreached, "en-US")).target)
+        assertEquals(TranslateLang.EN, ReaderLanguages.estimate(listOf(es), listOf(unreached, "en-US")).target)
+    }
+
+    @Test
+    fun aLaterPreferredLanguageAModelReachesBeatsWhatTheyWrite() {
+        val unreached = LanguageRegistry.CODES.first { TranslateLang(it) !in TranslateDirection.targets }
+        val estimate = ReaderLanguages.estimate(listOf(en, en, en), listOf(unreached, "es-MX", "en-US"))
+        assertEquals(TranslateLang("es"), estimate.target)
+    }
+
+    @Test
     fun tooFewOwnMessagesFallBackToTheSystemList() {
-        assertEquals(TranslateLang("es"), ReaderLanguages.estimate(listOf(en, en), listOf("it-IT", "es-MX", "en-US")).target)
+        // English is the list's first language a model reaches, and two Spanish picks are not enough to beat it.
+        assertEquals(TranslateLang.EN, ReaderLanguages.estimate(listOf(es, es), listOf("it-IT", "en-US", "es-MX")).target)
         assertEquals(TranslateLang.EN, ReaderLanguages.estimate(emptyList(), listOf("EN-gb")).target)
     }
 
@@ -48,6 +90,13 @@ class ReaderLanguagesTest {
         assertEquals(TranslateLang("es"), estimate.target)
         assertEquals(TranslateLang("es"), estimate.override)
         assertEquals(TranslateLang.EN, estimate.automatic)
+    }
+
+    @Test
+    fun englishChosenInSettingsWinsOverASpanishPhone() {
+        val estimate = ReaderLanguages.estimate(listOf(es, es, es), listOf("es-ES"), override = "en")
+        assertEquals(TranslateLang.EN, estimate.target)
+        assertEquals(TranslateLang("es"), estimate.automatic)
     }
 
     @Test

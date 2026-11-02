@@ -4,9 +4,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * This phone's reader's language as it stands ([ReaderLanguages]): the choice in Settings, else what they write, else
- * the system's list. Their own messages are read through the identifier at most once per [TTL_MS], in memory only;
- * [ownBodies] reads their newest sent messages, [read] is the identifier over one, [preferred] the system's language tags.
+ * This phone's reader's language as it stands ([ReaderLanguages]): the choice in Settings, else the system's list
+ * unless it is English, else what they write, else English. Their own messages are read through the identifier at
+ * most once per [TTL_MS], in memory only; [ownBodies] reads their newest sent messages, [read] is the identifier over
+ * one, [preferred] the system's language tags.
  */
 class ReaderLanguage(
     private val ownBodies: suspend (limit: Int) -> List<String>,
