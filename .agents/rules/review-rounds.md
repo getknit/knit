@@ -24,8 +24,8 @@ findings unrelated to the last round kept arriving, and the test reviewers tight
 
 ## 2. The subsystem reviewer goes first, the test reviewers after
 
-- Stage 1 is the subsystem reviewers (`bluetooth`, `wifi-aware`, `lora`, `crypto`, `blobs`); stage 2 is the test
-  reviewers (`mesh-lab-reviewer`, `unit-test-reviewer`). `review-gate.conf` records each reviewer's stage.
+- Stage 1 is the subsystem reviewers (`bluetooth`, `wifi-aware`, `lora`, `crypto`, `blobs`) and `security`; stage 2
+  is the test reviewers (`mesh-lab-reviewer`, `unit-test-reviewer`). `review-gate.conf` records each reviewer's stage.
 - Stage 2 runs once no stage-1 review is pending. The gate lists only stage 1 while a stage-1 reviewer is pending
   (owed, or asked for and not yet stamped), so the test reviewers never review tests written for a design the
   subsystem reviewer is about to reject.

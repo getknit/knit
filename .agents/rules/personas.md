@@ -23,7 +23,7 @@ reviewer is never the agent that wrote the change.
 ## Reviewers: who must look before a change is done
 
 Each reviewer hunts one class of defect from a catalogue of the ones this repo already shipped and fixed, and never
-edits.
+edits. The security reviewer also works from a threat model, for the attack classes no audit has covered yet.
 
 - **When creating or modifying anything under `app/src/test/java/app/getknit/knit/mesh/lab/`:** keep
   `scripts/lab-lint.py` clean (a `PostToolUse` hook runs it on every scenario edit, `lab-chaos.sh` before every sweep,
@@ -74,6 +74,20 @@ edits.
   cannot see:** ADOPT (Claude Code: spawn) the `blobs-reviewer` persona in `.agents/personas/blobs-reviewer.md` before
   calling the change done — every blob and custody fix so far was code that passed single-node tests and cost the
   mesh a copy per neighbour, a stranded picture or a digest that never converged. A Stop hook enforces the review for
+  the gated paths.
+- **When creating or modifying code at a trust boundary** — `mesh/InboundPipeline.kt`, `MeshRouter`, `IngressBudget`,
+  `SeenSet`, `RoomAttachments`, `mesh/protocol/`, the link door (`LinkHandshake`, `LinkClaims`, `LinkFraming` and the
+  link codecs), the BLE advert and GATT payloads, `mesh/crypto/LinkProof.kt` / `ContactCard.kt` / `scope/`,
+  `mesh/spool/`, `mesh/inet/`, `identity/`, `moderation/`, `TextLimits.kt`, `data/crypto/`, `data/backup/`, the
+  attachment decode and strip path, `linkpreview/`, `net/`, `transfer/`, `notifications/`, `fieldlog/`,
+  `crash/CrashRedactor.kt`, the call's ICE policy, `MainActivity` and `ui/share/`, the main manifest, `res/xml/` or
+  `.github/workflows/` (the exact list is its `review-gate.conf` line) — or code elsewhere that acts on what a peer, a
+  server, another app or an outsider wrote, or that sends, stores, logs or shows something about the user
+  (`MeshManager`, `BlobExchange`, `AckSync`, the chat UI, the debug bridge, a new dependency), which the hook cannot
+  see: ADOPT (Claude Code: spawn) the `security-reviewer` persona in `.agents/personas/security-reviewer.md` before
+  calling the change done. It walks the change as each adversary, from a modified client to another app on the phone
+  to a passive listener, because a security or privacy hole passes every test written for honest peers and honest
+  users. It runs beside the subsystem's own reviewer when a file is in both gates. A Stop hook enforces the review for
   the gated paths.
 
 ## Adding a persona

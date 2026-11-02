@@ -83,7 +83,7 @@ check() {
 
 # --- Stage 1: the tests of every touched class, and the classes each persona always runs. ---
 tests=()
-for r in bluetooth-reviewer wifi-aware-reviewer lora-reviewer crypto-reviewer blobs-reviewer; do
+for r in bluetooth-reviewer wifi-aware-reviewer lora-reviewer crypto-reviewer blobs-reviewer security-reviewer; do
   is_owed "$r" || continue
   while read -r f; do
     cls=$(basename "$f" .kt)
@@ -100,6 +100,15 @@ for r in bluetooth-reviewer wifi-aware-reviewer lora-reviewer crypto-reviewer bl
     crypto-reviewer)
       tests+=('*.RatchetEngineTest' '*.RatchetSessionsResetTest' '*.SessionTransactorOrderTest' '*.PendingGroupKeysTest'
         '*.WireSerializationTest' '*.GoldenVectorTest' '*.KeyedVectorTest' '*.IosEmittedVectorTest')
+      ;;
+    security-reviewer)
+      if owed "$r" | grep -q '/mesh/protocol/'; then
+        tests+=('*.WireSerializationTest' '*.GoldenVectorTest' '*.KeyedVectorTest' '*.IosEmittedVectorTest'
+          '*.CborTextTest' '*.FrameIdTest' '*.EnvelopeUtf8Test')
+      fi
+      if owed "$r" | grep -q -E '/mesh/link/Link(Handshake|Claims)\.kt|/mesh/crypto/LinkProof\.kt'; then
+        tests+=('*.LinkProofTest' '*.LinkClaimsTest' '*.LinkHandshakeTest')
+      fi
       ;;
   esac
 done

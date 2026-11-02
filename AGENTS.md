@@ -86,7 +86,8 @@ Tests, devices and review:
   two nodes exchange gets a `mesh/lab/` scenario ending in `assertConverged`.
 - **When adding/renaming a `@Preview` or touching screenshot tests:** READ the "Compose preview screenshot tests"
   section of `.agents/context/testing.md`.
-- **When creating or modifying a test, or code in an owned subsystem:** obey `.agents/rules/personas.md` — which
+- **When creating or modifying a test, code in an owned subsystem, code that acts on what a peer, a server or another
+  app wrote, or code that sends, stores or shows something about the user:** obey `.agents/rules/personas.md` — which
   reviewer to ADOPT before the change is done (a Stop hook enforces it).
 - **When delegating to an owner, spawning a reviewer or relaying findings:** obey `.agents/rules/review-rounds.md`.
 - **When driving the app on a device:** obey `.agents/rules/devices.md`, then RUN the `debug-bridge` skill.
