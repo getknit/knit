@@ -340,7 +340,7 @@ class InboundPipelineTest {
         val blobStore = mockk<MeshBlobStore>(relaxed = true)
 
         /** The blobs the rig holds: [blobStore]'s `has` answers from it, and a mocked `blobs.insert` adds to it. */
-        val heldBlobs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        val heldBlobs: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         // A real in-memory DB purely as the transaction runner for reconcileGroup's db.withWriteTransaction; the repos
         // are mocked, so the mocked find/upsert calls just run harmlessly inside a real (empty) transaction.
