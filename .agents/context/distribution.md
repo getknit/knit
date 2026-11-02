@@ -349,8 +349,11 @@ the tag up on its own; sending the MR just skips the wait.
 **GitHub Actions runs the copy of the workflow that exists at the tag**, so editing `release.yml` only
 affects tags cut afterwards. Fixing a workflow bug for an already-created tag means moving the tag.
 
-Required repo secrets (four; the job that reads them declares `environment: release`, so you can attach
-required-reviewer or tag-only protection rules to exactly that job):
+Required repo secrets (four, repo-level, read only by `build-signed`). The `release` environment, with its
+required reviewer and `v*`-tags-only rule, sits on `publish` instead, the one job that publishes anything: the
+signed build and the F-Droid rebuild run unattended, and the approval holds only the Release itself. The
+review request appears once both builds are done, since a job asks for its deployment only when its `needs`
+are met.
 
 | Secret | Value |
 |---|---|

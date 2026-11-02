@@ -232,10 +232,8 @@ jobs:
     name: Build signed APK
     needs: preflight
     runs-on: ubuntu-latest
-    # Declaring an environment lets you attach protection rules (required reviewers, tag-only deployment
-    # branches) to the ONE job that can touch the distribution key. Repo-level secrets resolve here either
-    # way, so this costs nothing if you never configure the environment.
-    environment: release
+    # No environment here: the `release` environment's required reviewer gates `publish`, so the signed build
+    # and the F-Droid rebuild run while the approval waits. The distribution key is four repo-level secrets.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -441,6 +439,9 @@ jobs:
     name: Verify reproducible & publish Release
     needs: [preflight, build-signed, build-fdroid]
     runs-on: ubuntu-latest
+    # The one human gate: the `release` environment (required reviewer, `v*` tags only) holds this job, the only
+    # one that publishes anything, until it is approved. Everything it needs is built by then.
+    environment: release
     permissions:
       contents: write # create the Release and upload assets
     steps:
