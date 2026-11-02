@@ -82,14 +82,7 @@ class KeyExchangeLabTest {
                 bob.transport.release(carol.transport) { batch ->
                     batch.filter { it.isRoomPostFrom(alice.nodeId) || (!it.relay && it.isProfileFrom(alice.nodeId)) }
                 }
-            // Counted by frame: the flood's copy and the fast path's can both park, and the release writes them once
-            // (`LabTransport.deliverHeld`, as the phone's link does).
-            val posts = released.filter { it.isRoomPostFrom(alice.nodeId) }
-            val distinct = posts.mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }.distinct()
-            if (distinct.size != 1) {
-                val report = lab.report(listOf(alice, bob, carol))
-                throw AssertionError("the release let through ${describe(posts)}\n$report")
-            }
+            assertOnePostReleased(released, alice, listOf(alice, bob, carol))
 
             assertTrue("carol never refused the stranger's frame", lab.tryAwait(1) { carol.drops(DropReason.NO_SENDER_KEY).toInt() })
             assertTrue(
@@ -111,17 +104,7 @@ class KeyExchangeLabTest {
                 },
             )
             assertTrue("carol never pinned alice", lab.tryAwait(1) { if (carol.knows(alice)) 1 else 0 })
-            // Alice answers Bob's tick for her post (his first sealed frame to her) with a sealed profile addressed to Bob,
-            // the KDoc's second chat frame. Bob keeps it and floods it no further, so Carol's carrier copy comes from a
-            // digest exchange: the re-link's when it has reached Bob by then, else the 60 s re-offer, past the oracle
-            // (boards seed 747986550). It is in Bob's custody before the re-link.
-            lab.await(1) {
-                alice.metrics
-                    .keys()
-                    .introsAnswered
-                    .toInt()
-            }
-            lab.await(1) { if (bob.custodyIds().containsAll(alice.custodyIdsFrom(alice))) 1 else 0 }
+            awaitIntroAnswerHeld(alice, bob)
 
             // Issue #49 (found here on 2026-09-14, fixed by ADR 2026-09.7bu7): the served profile is a
             // point-to-point `relay = false` frame, and the custody gate used to take flood frames only — so
@@ -132,15 +115,7 @@ class KeyExchangeLabTest {
             bob.transport.lossy(carol.transport) // a clean link again: the re-link's digest exchange repairs what the hold and the air ate
             lab.unlink(bob, carol)
             lab.link(bob, carol)
-            if (!lab.tryAwait(1) { if (carol.roomPosts()[alice.nodeId]?.contains("from a stranger") == true) 1 else 0 }) {
-                val report = lab.report(listOf(alice, bob, carol))
-                throw AssertionError("carol never showed alice's post: ${carol.roomPosts()}, ${carol.metrics.snapshot().keys}\n$report")
-            }
-            // The wait's own answer is the verdict: a re-read after it races frames custodied since (a tick, a relayed answer).
-            if (!lab.tryAwait(1) { if (bob.custodyIds().minus(carol.custodyIds()).isEmpty()) 1 else 0 }) {
-                val report = lab.report(listOf(alice, bob, carol))
-                throw AssertionError("carol is short ${bob.custodyIds() - carol.custodyIds()} of what bob carries\n$report")
-            }
+            awaitRepaired(alice, bob, carol, "from a stranger")
             val snap = carol.metrics.snapshot()
             assertEquals("one frame parked, one replayed", 1L to 1L, snap.keys.framesHeld to snap.keys.framesReplayed)
             assertEquals("the missing key was recovered", 1L, snap.keys.keysRecovered)
@@ -176,6 +151,59 @@ class KeyExchangeLabTest {
             lab.assertConverged(listOf(alice, carol), atLeast = 1) { it.dmWith(if (it === alice) carol else alice) }
             assertEquals(early, carol.decrypted(carol.dmWith(alice)).single().first)
         }
+
+    /**
+     * One post of [author]'s let through, counted by frame: the flood's copy and the fast path's can both park, and the
+     * release writes them once (`LabTransport.deliverHeld`, as the phone's link does).
+     */
+    private fun assertOnePostReleased(
+        released: List<WireEnvelope>,
+        author: LabNode,
+        nodes: List<LabNode>,
+    ) {
+        val posts = released.filter { it.isRoomPostFrom(author.nodeId) }
+        val distinct = posts.mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }.distinct()
+        if (distinct.size != 1) throw AssertionError("the release let through ${describe(posts)}\n${lab.report(nodes)}")
+    }
+
+    /**
+     * Alice answers Bob's tick for her post (his first sealed frame to her) with a sealed profile addressed to Bob, the
+     * KDoc's second chat frame. Bob keeps it and floods it no further, so Carol's carrier copy comes from a digest
+     * exchange: the re-link's when it has reached Bob by then, else the 60 s re-offer, past the oracle (boards seed
+     * 747986550). Waits until it is in Bob's custody.
+     */
+    private suspend fun awaitIntroAnswerHeld(
+        alice: LabNode,
+        bob: LabNode,
+    ) {
+        lab.await(1) {
+            alice.metrics
+                .keys()
+                .introsAnswered
+                .toInt()
+        }
+        lab.await(1) { if (bob.custodyIds().containsAll(alice.custodyIdsFrom(alice))) 1 else 0 }
+    }
+
+    /**
+     * After the re-link, Carol shows Alice's [post] and holds everything Bob carries. Each wait's own answer is its
+     * verdict: a re-read after it races frames custodied since (a tick, a relayed answer).
+     */
+    private suspend fun awaitRepaired(
+        alice: LabNode,
+        bob: LabNode,
+        carol: LabNode,
+        post: String,
+    ) {
+        val nodes = listOf(alice, bob, carol)
+        if (!lab.tryAwait(1) { if (carol.roomPosts()[alice.nodeId]?.contains(post) == true) 1 else 0 }) {
+            val keys = carol.metrics.snapshot().keys
+            throw AssertionError("carol never showed alice's post: ${carol.roomPosts()}, $keys\n${lab.report(nodes)}")
+        }
+        if (!lab.tryAwait(1) { if (bob.custodyIds().minus(carol.custodyIds()).isEmpty()) 1 else 0 }) {
+            throw AssertionError("carol is short ${bob.custodyIds() - carol.custodyIds()} of what bob carries\n${lab.report(nodes)}")
+        }
+    }
 
     /** Each frame's id, relay flag and signed bytes' length: what a held batch let through, for a failure to name. */
     private fun describe(frames: List<WireEnvelope>): String =
