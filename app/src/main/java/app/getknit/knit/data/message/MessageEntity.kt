@@ -296,6 +296,13 @@ data class MessageEntity(
      */
     val bodyLang: String? = null,
     val authorReads: String? = null,
+    /**
+     * On a message this phone sent whose body is the composer's translation of the draft: the language the draft was
+     * in, a model registry code (ADR 2026-10.t2h6's 2026-11-02 amendment). The reader's language reads it in place of
+     * the body, which is the chat's language, not the sender's. Null on every other row. Written once on insert;
+     * **local only**: never framed, sealed or carried in custody.
+     */
+    val draftTranslatedFrom: String? = null,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

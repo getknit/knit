@@ -1688,6 +1688,7 @@ class MeshManager(
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
+        draftTranslatedFrom: String?,
     ): Boolean {
         val isRoom = recipientId == null && group == null
         // Whoever built it, a frame carries only what the wire does not imply: English by an English reader costs 0.
@@ -1732,6 +1733,8 @@ class MeshManager(
                     styles = StyleStore.encode(spans),
                     bodyLang = declared.lang,
                     authorReads = declared.reads,
+                    // Local only: what the reader's language reads in place of a translated body (ADR 2026-10.t2h6).
+                    draftTranslatedFrom = draftTranslatedFrom,
                 ).withReply(replyTo)
                     .withVideo(attachment?.video),
             )
@@ -1806,6 +1809,8 @@ class MeshManager(
                 styles = StyleStore.encode(spans),
                 bodyLang = declared.lang,
                 authorReads = declared.reads,
+                // Local only, never framed: the frame reads the declared pair alone (ADR 2026-10.t2h6).
+                draftTranslatedFrom = draftTranslatedFrom,
             ).withReply(replyTo)
                 // A video's duration, size and poster, sealed with the rest (ADR 2026-10.hmfe).
                 .withVideo(attachment?.video)
@@ -4997,6 +5002,7 @@ class MeshManager(
         attachment: AttachmentStore.Ingested?,
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
+        draftTranslatedFrom: String?,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
         val declared = declared.normalized()
@@ -5067,6 +5073,8 @@ class MeshManager(
                 styles = StyleStore.encode(spans),
                 bodyLang = declared.lang,
                 authorReads = declared.reads,
+                // Local only, never framed: the frame reads the declared pair alone (ADR 2026-10.t2h6).
+                draftTranslatedFrom = draftTranslatedFrom,
             ).withReply(replyTo)
                 .withVideo(attachment?.video),
             sig = wire.sig,

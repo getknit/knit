@@ -1127,12 +1127,37 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 30 to 31 keeps every message and leaves its draft language empty`() =
+        runTest {
+            helper.createDatabase(30).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(
+                        ") ",
+                        ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged, translationFlagged, " +
+                            "translationGuessed) ",
+                    ) +
+                        "VALUES ('m1','me','peer-1','are you coming?',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(31, listOf(KnitMigrations.MIGRATION_30_31)).use { c ->
+                c.prepare("SELECT body, draftTranslatedFrom FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("are you coming?", s.getText(0))
+                    // ADR 2026-10.t2h6's 2026-11-02 amendment: no build before this recorded a translated draft's language,
+                    // so an existing row is read by its body, as before.
+                    assertTrue(s.isNull(1))
+                    assertFalse(s.step())
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 30
+        const val CURRENT_VERSION = 31
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

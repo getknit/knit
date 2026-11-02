@@ -188,6 +188,8 @@ interface MeshController {
      * it against [text] and never rebases it, so a caller that trims or clamps the draft rebases first
      * (`StyleSpans.rebase`). [declared] is the body's language and the language its author reads, each only when not
      * implied (ADR 2026-10.t2h6's 2026-10-29 amendment): cleartext on a room post, sealed with the rest otherwise.
+     * [draftTranslatedFrom] is the language the draft was in when [text] is the composer's translation of it: kept on
+     * our own row for the reader's language (the 2026-11-02 amendment), never on the wire.
      */
     suspend fun sendChat(
         text: String,
@@ -198,6 +200,7 @@ interface MeshController {
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
+        draftTranslatedFrom: String? = null,
     ): Boolean
 
     /**
@@ -216,7 +219,8 @@ interface MeshController {
      * Posts [text] in the commons [conversationId] (docs/SPOOL_PROTOCOL.md §7.4): signed, stored, and handed
      * to the Internet plane for the one relay that runs the room — never the radios. An [attachment] goes key-less,
      * its bytes sealed under the room's key chunk by chunk (§4.5) and pushed by the room's own pass. False when the
-     * room is not one this device has joined. [styles] as [sendChat] takes them, indexed against [text].
+     * room is not one this device has joined. [styles], [declared] and [draftTranslatedFrom] as [sendChat] takes them,
+     * [styles] indexed against [text].
      */
     suspend fun sendCommons(
         conversationId: String,
@@ -226,6 +230,7 @@ interface MeshController {
         attachment: AttachmentStore.Ingested? = null,
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
+        draftTranslatedFrom: String? = null,
     ): Boolean = false
 
     /**

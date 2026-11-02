@@ -65,7 +65,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 30
+internal const val KNIT_DB_SCHEMA_VERSION = 31
 
 @Database(
     entities = [
@@ -266,6 +266,10 @@ internal const val KNIT_DB_SCHEMA_VERSION = 30
     //     (never backfilled from `avatarHash`, which would hide exactly the faces that stranded; the start-up pass reads
     //     it from each row's held profile frame); and one `photo_refusals` table — a blob refused as a profile photo
     //     over its ceiling, carried in a backup beside `blob_verdicts`. Migrated by KnitMigrations.MIGRATION_29_30.
+    // v31: `messages.draftTranslatedFrom` — on our own message whose body the composer translated, the language the draft
+    //     was in (ADR 2026-10.t2h6's 2026-11-02 amendment), so the reader's language reads what the person wrote, not
+    //     the chat's language. Local only, written once on insert, carried in a backup with the row; null on existing
+    //     rows. Migrated by KnitMigrations.MIGRATION_30_31.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

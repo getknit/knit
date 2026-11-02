@@ -49,6 +49,16 @@ object TranslateTarget {
     ): Pair<String?, String?> = (translatedInto?.code ?: typedIn) to reads
 
     /**
+     * What our own row keeps of a translated draft (ADR 2026-10.t2h6's 2026-11-02 amendment), a registry code: the
+     * language the draft was in ([translatedFrom]) while the field holds its translation into another ([translatedInto]),
+     * else null. Never framed: the reader's language reads it in place of the translated body.
+     */
+    fun draftFrom(
+        translatedInto: TranslateLang?,
+        translatedFrom: TranslateLang?,
+    ): String? = translatedFrom?.takeIf { translatedInto != null && it != translatedInto }?.code
+
+    /**
      * Whether a message whose language resolved to [resolution] offers Translate to a reader of [reader] (the
      * 2026-10-29 amendment): not when its words, or the language it was typed in, name a language with nowhere to go
      * or no model here; a language only a prior settled, or none, keeps the offer, since the reader may know better.

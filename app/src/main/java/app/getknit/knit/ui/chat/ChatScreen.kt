@@ -665,6 +665,7 @@ fun ChatScreen(
                 replyingTo,
                 styles = inputState.bodySpans(),
                 translatedInto = draftTranslatedTo,
+                translatedFrom = draftTranslatedFrom?.takeIf { draftTranslatedTo != null },
                 typedIn = if (TRANSLATE_WIRED) inputLanguages.language(text.trim().length) else null,
             )
         },

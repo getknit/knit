@@ -404,13 +404,13 @@ hint and with its own language as the hint, out of 91 lines, 88 for English):
 - A French↔Ukrainian chat end to end, where each side gets English.
 - A native reader's look at uk-en.
 
-## Amendment 2026-11-02: the phone's language before what they write
+## Amendment 2026-11-02: the phone's language before what they write, and a translated draft by its own language
 
 **Why.** An alpha tester reported that translating a Spanish message gave English, and that every other language
 went into English too. Automatic ranked the language written most (three confident picks of the 50 newest sends)
 above the system's list, and what a person sends names the chat as often as the reader. A Spanish speaker writing to
 English contacts sends English, by hand or through the composer's own translation (the field holds the translation
-when it is sent, so `recentOwnBodies` reads it as theirs). After three such sends their phone read them as an English
+when it is sent, so the read of their own messages took it for theirs). After three such sends their phone read them as an English
 reader: Spanish messages offered Translate into English, the other languages went into English, and English messages
 offered nothing. The spike had only met phones in English, where the two rules agree.
 
@@ -426,9 +426,25 @@ Spanish. A later language on the list that a model reaches (Italian, then Spanis
 put it there. The choice in Settings still overrides all three, and `declaredReads` is unchanged.
 Settings › Chats › "Translate messages into" explains Automatic in those terms in every shipped language.
 
+**A translated draft counts as the language it was written in.** The first rule leaves a phone in English exposed:
+an English speaker who translates three drafts into Spanish for a Spanish contact becomes a Spanish reader, and that
+contact's replies then offer no Translate at all. That is the composer's commonest use. So a send whose body is the
+composer's translation keeps the draft's language on its own row, `messages.draftTranslatedFrom` (DB v31, a model
+registry code, null on every other row and on rows from before), and `MessageDao.recentOwnSends` hands it to
+`ReaderLanguages.ownPick`, which counts that language and never reads the translated body. The Spanish speaker on an
+English phone who translates every draft into English is read as writing Spanish, which they do.
+
+- **What sets it.** `ChatViewModel.send`, from the composer's translation still in the field (`translatedFrom` beside
+  `translatedInto`), into another language, with translation wired and on. A draft translated and then edited by
+  hand still counts as its original: the words are mostly the model's. Undo or an emptied field clears it.
+- **Local only.** Passed to `MeshController.sendChat` / `sendCommons` beside `declared`, written once on our own row,
+  and never framed, sealed (`sealedContent` reads the declared pair alone) or carried in custody. It rides a backup
+  with the row.
+
 **What it does not fix.** A Spanish reader still gets a French, German, Portuguese or Ukrainian message in English:
 no model goes between two languages that are not English, and nothing pivots (the 2026-10-29 amendment). A Spanish
 line CLD2 reads reliably as English ("que fotos tan bonitas", en:95; one of 20 casual unaccented lines on the desktop
 bench) still runs through en→es and says so, with "Not English?" to correct it.
 
-**Owed.** The tester's confirmation on the next alpha, on a phone set to Spanish that has sent English.
+**Owed.** The tester's confirmation on the next alpha, on a phone set to Spanish that has sent English; and a phone
+in English that sends three drafts translated into Spanish and still offers Translate on the replies.

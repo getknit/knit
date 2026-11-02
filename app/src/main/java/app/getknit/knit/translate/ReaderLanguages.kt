@@ -60,6 +60,22 @@ object ReaderLanguages {
     }
 
     /**
+     * What one of the reader's own messages says they write (ADR 2026-10.t2h6's 2026-11-02 amendment): the language its
+     * draft was in when the composer translated the body ([draftTranslatedFrom], a registry code), else the identifier's
+     * [read] of the body. A translated body is in the chat's language, not the reader's, so it is never read; a draft
+     * language no model reaches is unsure.
+     */
+    suspend fun ownPick(
+        draftTranslatedFrom: String?,
+        read: suspend () -> LanguagePick,
+    ): LanguagePick =
+        if (draftTranslatedFrom == null) {
+            read()
+        } else {
+            TranslateLang.ofCode(draftTranslatedFrom)?.let(LanguagePick::Picked) ?: LanguagePick.Unsure
+        }
+
+    /**
      * The language this reader says they read, on what they send (ADR 2026-10.t2h6's 2026-10-29 amendment), a registry
      * code: [override], their choice in Settings, else the first of [perApp], the language they chose for this app,
      * else the first of [system], the phone's own. A choice is the evidence: never the language the app fell back to

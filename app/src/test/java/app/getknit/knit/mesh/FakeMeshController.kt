@@ -60,6 +60,7 @@ class FakeMeshController : MeshController {
         val replyTo: ReplyRef?,
         val styles: List<StyleSpan> = emptyList(),
         val declared: DeclaredLangs = DeclaredLangs.NONE,
+        val draftTranslatedFrom: String? = null,
     )
 
     val sentChats = mutableListOf<SentChat>()
@@ -131,8 +132,9 @@ class FakeMeshController : MeshController {
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
+        draftTranslatedFrom: String?,
     ): Boolean {
-        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo, styles, declared)
+        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo, styles, declared, draftTranslatedFrom)
         return sendChatResult
     }
 
@@ -153,6 +155,7 @@ class FakeMeshController : MeshController {
         attachment: AttachmentStore.Ingested?,
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
+        draftTranslatedFrom: String?,
     ): Boolean {
         sentCommons += conversationId to text
         sentCommonsAttachments += attachment

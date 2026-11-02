@@ -28,9 +28,9 @@ lines.
   `scripts/egress-check.sh` green: a fresh install with default settings sends no byte over IP (the "Egress
   check" section of `.agents/context/testing.md`).
 - **When touching `translate/`, `ui/translate/`, `di/TranslateWiring`, `BuildConfig.TRANSLATE`, the `translate-native`
-  pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnBodies`, `SettingsStore.translateTarget`,
-  `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`, `SettingsStore.translationEnabled` or
-  `scripts/translate-*`:** READ ADR 2026-10.t2h6
+  pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnSends`, `SettingsStore.translateTarget`,
+  `MessageEntity.draftTranslatedFrom`, `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`,
+  `SettingsStore.translationEnabled` or `scripts/translate-*`:** READ ADR 2026-10.t2h6
   (Proposed; offline translation) and its 2026-10-23, 2026-10-29, 2026-11-01 and 2026-11-02 amendments. It is a
   build made with `-Ptranslate=true` only (a debug, or a testers' alpha built here). The runtime, slimt and CLD2
   behind `TranslateJni`, is the `app.getknit:translate-native` AAR that the separate knit-translate-native
@@ -43,9 +43,10 @@ lines.
   treats a sure CLD2 read the text's own letters contradict (English over ñ or ¿, Serbian over Ukrainian's і) as
   unsure, never as the language the letters suggest. A translation is the reader's, on tap, into the reader's
   language (`TranslateTarget`, `ReaderLanguages`: Settings, then the system list unless its language is English, then
-  what they write, never the app's language: the 2026-11-02 amendment), kept on the row (DB v27, `setTranslation`
-  only; the chat list previews it behind `PreviewMark.Translated`), never on the wire and never logged; it is screened
-  by `ScopedTextModerator` in the message's scope. The author's own declaration (`lang` / `reads`, `LanguageRegistry`
+  what they write, a composer-translated send counted by its draft's language, never the app's language: the
+  2026-11-02 amendment, DB v31), kept on the row (DB v27, `setTranslation` only; the chat list previews it behind
+  `PreviewMark.Translated`), never on the wire and never logged; it is screened by `ScopedTextModerator` in the
+  message's scope. The author's own declaration (`lang` / `reads`, `LanguageRegistry`
   indices, append-only wire law) is the one thing carried: a label for the resolver and the composer's hint, never a
   trust input. Settings › Chats › Translation (`translationEnabled`, on by default) gates all of it: off, nothing is
   offered or drawn and nothing is declared on the wire. The composer may also translate the sender's own draft (`ComposePolicy`, `translateNow`, the ADR's

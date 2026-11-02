@@ -474,17 +474,18 @@ interface MessageDao {
     ): Boolean
 
     /**
-     * The bodies this phone wrote most recently, newest first: the reader's language is read from them when Settings
-     * leaves it Automatic (ADR 2026-10.t2h6's 2026-10-29 amendment). Never logged.
+     * The messages this phone wrote most recently, newest first: the reader's language is read from them when Settings
+     * leaves it Automatic (ADR 2026-10.t2h6's 2026-10-29 amendment), from the draft's language where the composer
+     * translated the body (the 2026-11-02 amendment). Never logged.
      */
     @Query(
-        "SELECT body FROM messages WHERE kind = 0 AND senderId = :me AND originNode IS NULL AND body <> '' " +
-            "ORDER BY sentAt DESC LIMIT :limit",
+        "SELECT body, draftTranslatedFrom FROM messages WHERE kind = 0 AND senderId = :me AND originNode IS NULL " +
+            "AND body <> '' ORDER BY sentAt DESC LIMIT :limit",
     )
-    suspend fun recentOwnBodies(
+    suspend fun recentOwnSends(
         me: String,
         limit: Int,
-    ): List<String>
+    ): List<OwnSend>
 
     /**
      * What [author] wrote most recently in [conversationId], newest first: the translation spike reads the language
@@ -910,6 +911,15 @@ data class OwnPost(
     val id: String,
     val conversationId: String,
     val sentAt: Long,
+)
+
+/**
+ * Room projection for [MessageDao.recentOwnSends]: one message of ours, and the language its draft was in when the
+ * composer translated it ([MessageEntity.draftTranslatedFrom]).
+ */
+data class OwnSend(
+    val body: String,
+    val draftTranslatedFrom: String?,
 )
 
 /** One delivery's plane ([DeliveryPlane.code]) and how long it took, for the field log's latency summary. */

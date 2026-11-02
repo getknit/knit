@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.OwnSend
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import kotlinx.coroutines.flow.first
@@ -80,6 +81,38 @@ class DeclaredLanguageLabTest {
                 assertNull(node.name, node.row(id)?.bodyLang)
                 assertEquals(node.name, "es", node.row(id)?.authorReads)
             }
+        }
+
+    /**
+     * A draft the composer translated keeps its own language on the sender's row only (ADR 2026-10.t2h6's 2026-11-02
+     * amendment): the room's cleartext and a sealed DM each carry the declaration and nothing of it, so every reader's
+     * row holds null there while the author's holds the code.
+     */
+    @Test
+    fun aTranslatedDraftsLanguageStaysOnTheSendersRow() =
+        runBlocking {
+            val (alice, bob) = pair()
+
+            assertTrue(alice.sendRoom(ENGLISH, declared = DeclaredLangs.of("en", "es"), draftTranslatedFrom = "es"))
+            assertTrue(alice.sendDm(bob, TRANSLATED_DM, declared = DeclaredLangs.of("en", "es"), draftTranslatedFrom = "es"))
+            val post = alice.ownMessageId(Conversations.NEARBY, ENGLISH)
+            val dm = alice.ownMessageId(alice.dmWith(bob), TRANSLATED_DM)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { Conversations.NEARBY }
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+
+            for (id in listOf(post, dm)) {
+                assertEquals("es", alice.row(id)?.draftTranslatedFrom)
+                val landed = checkNotNull(bob.row(id)) { "bob's copy of $id" }
+                assertNull("never on the wire", landed.draftTranslatedFrom)
+                // The declaration beside it still lands: what the author reads.
+                assertEquals("es", landed.authorReads)
+            }
+            // What the reader's language reads back: the author's two sends, each with its draft's language, and none
+            // of hers among the receiver's own.
+            val sent = alice.db.messageDao().recentOwnSends(alice.nodeId, limit = 10)
+            assertEquals(setOf(OwnSend(ENGLISH, "es"), OwnSend(TRANSLATED_DM, "es")), sent.toSet())
+            val bobsOwn = bob.db.messageDao().recentOwnSends(bob.nodeId, limit = 10)
+            assertTrue(bobsOwn.isEmpty())
         }
 
     /** Toward a build without crypto scheme v3 the same content seals in the named layout, `"l"` and `"r"` beside the body. */
@@ -169,5 +202,6 @@ class DeclaredLanguageLabTest {
     private companion object {
         const val SPANISH = "¿vienes al parque más tarde?"
         const val ENGLISH = "are you coming to the park later?"
+        const val TRANSLATED_DM = "see you at the park at five"
     }
 }

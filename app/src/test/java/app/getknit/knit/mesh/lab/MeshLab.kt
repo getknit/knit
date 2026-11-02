@@ -2144,7 +2144,17 @@ class LabNode internal constructor(
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
-    ): Boolean = spaced { manager.sendChat(text = text, replyTo = replyTo, styles = styles, declared = declared) }
+        draftTranslatedFrom: String? = null,
+    ): Boolean =
+        spaced {
+            manager.sendChat(
+                text = text,
+                replyTo = replyTo,
+                styles = styles,
+                declared = declared,
+                draftTranslatedFrom = draftTranslatedFrom,
+            )
+        }
 
     /** The call ids whose end this node's call layer has written to its settings file (C-3.4-3). */
     suspend fun savedCallTombs(): Set<String> = CallTombStore(dataStore).load().mapTo(HashSet()) { it.id }
@@ -2174,13 +2184,26 @@ class LabNode internal constructor(
         castToo: Boolean = false,
     ): Boolean = spaced { manager.sendCallTalk(to.nodeId, chunk, castToo = castToo) != null }
 
-    /** Sends a DM, formatted by [styles], declaring [declared]; the frame the app's composer would send. */
+    /**
+     * Sends a DM, formatted by [styles], declaring [declared], with [draftTranslatedFrom] as the composer passes it for a
+     * translated draft; the frame the app's composer would send.
+     */
     suspend fun sendDm(
         to: LabNode,
         text: String,
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
-    ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId, styles = styles, declared = declared) }
+        draftTranslatedFrom: String? = null,
+    ): Boolean =
+        spaced {
+            manager.sendChat(
+                text = text,
+                recipientId = to.nodeId,
+                styles = styles,
+                declared = declared,
+                draftTranslatedFrom = draftTranslatedFrom,
+            )
+        }
 
     /**
      * Makes this node seal its DMs to [peer] in the named v2 layout, as it does toward a build without crypto scheme

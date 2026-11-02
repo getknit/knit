@@ -99,4 +99,17 @@ class TranslateTargetTest {
         // Kept in another language than the reader's target (an older choice in Settings): offered again.
         assertTrue(TranslateTarget.offersAgain(kept.copy(to = TranslateLang("de")), TranslateLang.EN))
     }
+
+    @Test
+    fun ourRowKeepsATranslatedDraftsLanguageOnlyWhileTheFieldHoldsItsTranslation() {
+        // ADR 2026-10.t2h6's 2026-11-02 amendment: the reader's language reads the draft's language, not the body's.
+        assertEquals("es", TranslateTarget.draftFrom(translatedInto = TranslateLang.EN, translatedFrom = es))
+        assertEquals("en", TranslateTarget.draftFrom(translatedInto = es, translatedFrom = TranslateLang.EN))
+        // Undone or never translated: the field holds what the person typed, read by its words.
+        assertNull(TranslateTarget.draftFrom(translatedInto = null, translatedFrom = es))
+        assertNull(TranslateTarget.draftFrom(translatedInto = null, translatedFrom = null))
+        assertNull(TranslateTarget.draftFrom(translatedInto = es, translatedFrom = null))
+        // A translation into the draft's own language is no translation.
+        assertNull(TranslateTarget.draftFrom(translatedInto = es, translatedFrom = es))
+    }
 }

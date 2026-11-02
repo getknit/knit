@@ -726,6 +726,17 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v30 → v31 (ADR 2026-10.t2h6's 2026-11-02 amendment): the language a sent message's draft was in when the composer
+     * translated it. Null on existing rows: no build before this recorded it, so those are read by their body, as before.
+     */
+    val MIGRATION_30_31 =
+        object : Migration(30, 31) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `draftTranslatedFrom` TEXT DEFAULT NULL")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -758,5 +769,6 @@ object KnitMigrations {
             MIGRATION_27_28,
             MIGRATION_28_29,
             MIGRATION_29_30,
+            MIGRATION_30_31,
         )
 }

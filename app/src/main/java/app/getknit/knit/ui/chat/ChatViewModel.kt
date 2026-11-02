@@ -2623,7 +2623,9 @@ class ChatViewModel(
     /**
      * Sends the draft. [translatedInto] is the language the composer translated it into, while the field holds that
      * translation, and [typedIn] the keyboard language it was typed in ([InputLanguageTally]): the first, else the
-     * second, is the language the message declares (ADR 2026-10.t2h6's 2026-10-29 amendment).
+     * second, is the language the message declares (ADR 2026-10.t2h6's 2026-10-29 amendment). [translatedFrom] is the
+     * language that translation's draft was in, kept on our own row alone (the 2026-11-02 amendment): the reader's
+     * language reads it, never the translated body.
      */
     fun send(
         text: String,
@@ -2632,6 +2634,7 @@ class ChatViewModel(
         styles: List<StyleSpan> = emptyList(),
         translatedInto: TranslateLang? = null,
         typedIn: String? = null,
+        translatedFrom: TranslateLang? = null,
     ) {
         val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
@@ -2669,7 +2672,9 @@ class ChatViewModel(
                     _events.tryEmit(R.string.chat_gone)
                     return@launch
                 }
-                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans, declaredFor(translatedInto, typedIn))
+                val declared = declaredFor(translatedInto, typedIn)
+                val draftFrom = draftFromFor(translatedInto, translatedFrom)
+                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans, declared, draftFrom)
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
                 if (sent) {
@@ -2719,9 +2724,19 @@ class ChatViewModel(
         replyTo: ReplyRef?,
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
+        draftTranslatedFrom: String?,
     ): Boolean {
         if (isCommons) {
-            return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment, styles = styles, declared = declared)
+            return meshManager.sendCommons(
+                conversationId,
+                body,
+                mentions,
+                replyTo,
+                attachment,
+                styles = styles,
+                declared = declared,
+                draftTranslatedFrom = draftTranslatedFrom,
+            )
         }
         val group = if (isRoom) null else groups.find(conversationId)
         if (group != null) {
@@ -2734,11 +2749,21 @@ class ChatViewModel(
                 replyTo = replyTo,
                 styles = styles,
                 declared = declared,
+                draftTranslatedFrom = draftTranslatedFrom,
             )
         }
         // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
         val recipientId = if (isRoom) null else conversationId
-        return meshManager.sendChat(body, attachment, mentions, recipientId, replyTo = replyTo, styles = styles, declared = declared)
+        return meshManager.sendChat(
+            body,
+            attachment,
+            mentions,
+            recipientId,
+            replyTo = replyTo,
+            styles = styles,
+            declared = declared,
+            draftTranslatedFrom = draftTranslatedFrom,
+        )
     }
 
     /**
@@ -2755,6 +2780,19 @@ class ChatViewModel(
         if (!settings.translationEnabled.first()) return DeclaredLangs.NONE
         val (lang, reads) = TranslateTarget.declaration(translatedInto, typedIn, t.declaredReads())
         return DeclaredLangs.of(lang, reads)
+    }
+
+    /**
+     * The language a translated draft was in, for our own row ([TranslateTarget.draftFrom], ADR 2026-10.t2h6's
+     * 2026-11-02 amendment), only where translation is wired and on, as [declaredFor] reads it. Never framed.
+     */
+    private suspend fun draftFromFor(
+        translatedInto: TranslateLang?,
+        translatedFrom: TranslateLang?,
+    ): String? {
+        val from = TranslateTarget.draftFrom(translatedInto, translatedFrom) ?: return null
+        if (translation == null || !settings.translationEnabled.first()) return null
+        return from
     }
 
     /**

@@ -72,7 +72,7 @@ private fun translateGraph(): Module =
             val messages = get<MessageDao>()
             val identity = get<Identity>()
             ReaderLanguage(
-                ownBodies = { limit -> messages.recentOwnBodies(identity.nodeId(), limit) },
+                ownSends = { limit -> messages.recentOwnSends(identity.nodeId(), limit) },
                 read = { body ->
                     val words = VerbatimSpans.wordsOnly(body)
                     if (words.isBlank()) LanguagePick.Unsure else LanguagePolicy.pick(engine.detect(words), words)
