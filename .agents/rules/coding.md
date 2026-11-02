@@ -59,6 +59,11 @@ Invariants for all Kotlin/Compose/data code. (Mesh-specific invariants are in `r
   image's own pixel dimensions, and for anything off the mesh — a peer's avatar, an attachment — those are
   attacker-chosen: a ~30 kB PNG at 12000² decodes to ~576 MB. detekt's `ForbiddenImport` enforces this on
   our sources and `scripts/dex-bitmap-gate.sh` enforces it on the release dex, libraries included. ADR 051.
+- **A content resolver refuses a stream by throwing, not by answering null.** `openInputStream` throws
+  `FileNotFoundException` for a file Knit may not open and `SecurityException` for a `content://` item it has no
+  grant for (revoked, expired, or deleted since the share). Every read of a picked or shared `Uri` catches both and
+  fails as unreadable: `decodeOrientedBounded` answers null, `AttachmentStore`'s reads use `runCatching`. One
+  uncaught on `viewModelScope` takes the app and the mesh service down with it (#268).
 
 ## Coroutines
 

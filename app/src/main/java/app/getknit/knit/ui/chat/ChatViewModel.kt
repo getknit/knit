@@ -2881,12 +2881,38 @@ class ChatViewModel(
      * explain.
      */
     fun attach(uri: Uri) {
-        viewModelScope.launch {
-            if (attachments.isVideo(uri)) {
-                attachVideo(uri)
-            } else {
-                stage(attachments.ingest(uri, screen = isRoom, fitBytes = photoFit()), notifyFailure = false)
-            }
+        viewModelScope.launch { attachPicture(uri, shared = false, sharedType = null) }
+    }
+
+    /**
+     * [attach] for a picture or video another app shared ([app.getknit.knit.ui.share.ShareInbox]), [type] being the
+     * type the share declared. Unlike a pick, a failure speaks: the sender left the other app for this composer, and
+     * a share that stages nothing reads as Knit ignoring it (#268). A share Knit cannot read at all goes the image
+     * way, because without a grant the provider will not say it is a video either; [type] still calls it one.
+     */
+    fun attachShared(
+        uri: Uri,
+        type: String?,
+    ) {
+        viewModelScope.launch { attachPicture(uri, shared = true, sharedType = type) }
+    }
+
+    /** [attach]'s and [attachShared]'s door: the video encode for a video, else the image ingest. */
+    private suspend fun attachPicture(
+        uri: Uri,
+        shared: Boolean,
+        sharedType: String?,
+    ) {
+        if (attachments.isVideo(uri)) {
+            attachVideo(uri)
+            return
+        }
+        val result = attachments.ingest(uri, screen = isRoom, fitBytes = photoFit())
+        val unreadable = (result as? AttachmentStore.IngestResult.Failed)?.reason == AttachmentStore.IngestResult.Reason.Unreadable
+        if (shared && unreadable && sharedType?.startsWith("video/") == true) {
+            _events.tryEmit(R.string.chat_video_unreadable)
+        } else {
+            stage(result, notifyFailure = shared)
         }
     }
 

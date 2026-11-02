@@ -274,6 +274,7 @@ class MainActivity : ComponentActivity() {
                 text = text,
                 imageUri = stream?.takeIf { isImage },
                 fileUri = stream?.takeIf { !isImage },
+                imageType = intent.type?.takeIf { isImage && stream != null },
             ),
         )
     }

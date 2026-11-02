@@ -14,11 +14,16 @@ import kotlinx.coroutines.flow.getAndUpdate
  * [imageUri] and [fileUri] are kept apart rather than folded into one field because they land in different
  * places: an image can be attached anywhere, while a file is only offered in DMs and groups (ADR
  * 2026-09.qq2r), so the destination has to be able to tell them apart and say so if it cannot take one.
+ *
+ * [imageType] is the type the share declared for [imageUri] (an `image/` or `video/` one). It names the failure
+ * when Knit cannot read the item at all: without a grant the provider will not even type it for Knit, so the
+ * share's own word is the only thing that still calls it a video (#268).
  */
 data class SharedContent(
     val text: String?,
     val imageUri: String?,
     val fileUri: String? = null,
+    val imageType: String? = null,
 )
 
 /**

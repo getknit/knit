@@ -5,9 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.util.Log
 import androidx.core.graphics.scale
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.io.InputStream
 import kotlin.math.min
 
@@ -20,7 +22,7 @@ import kotlin.math.min
 /**
  * Decodes [uri] applying its EXIF orientation, sub-sampling during decode so the result stays at or
  * just above [maxDim] on each pre-rotation edge. Pair with [downscale] for an exact bound. Returns
- * null if the stream can't be read.
+ * null if the stream can't be read, also when the resolver refuses it by throwing ([openOrNull]).
  */
 internal fun decodeOrientedBounded(
     context: Context,
@@ -40,7 +42,9 @@ internal fun decodeOrientedBounded(
 
 /**
  * Shared body of the two overloads above. [source] is opened three times — the bounds pre-pass, the
- * sub-sampled decode, and the EXIF read — because each consumes the stream.
+ * sub-sampled decode, and the EXIF read — because each consumes the stream. A source that will not open
+ * at any of the three is unreadable: a picture whose orientation cannot be read is not one to send
+ * as if it were upright.
  */
 private fun decodeOrientedBounded(
     maxDim: Int,
@@ -49,7 +53,7 @@ private fun decodeOrientedBounded(
     // inJustDecodeBounds populates bounds.outWidth/outHeight and returns null by design, so the
     // null check must be on the source, not on decodeStream's (always-null) result.
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    (source() ?: return null).use {
+    (openOrNull(source) ?: return null).use {
         BitmapFactory.decodeStream(it, null, bounds)
     }
 
@@ -58,16 +62,35 @@ private fun decodeOrientedBounded(
             inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, maxDim)
         }
     val bitmap =
-        (source() ?: return null).use {
+        (openOrNull(source) ?: return null).use {
             BitmapFactory.decodeStream(it, null, options)
         } ?: return null
 
     val orientation =
-        source()?.use {
+        (openOrNull(source) ?: return null).use {
             ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-        } ?: ExifInterface.ORIENTATION_NORMAL
+        }
     return rotatedForExif(bitmap, orientation)
 }
+
+/**
+ * [source] opened, or null when it will not open. A content resolver refuses by throwing, not by answering
+ * null: `FileNotFoundException` for a file Knit may not open, `SecurityException` for an item it holds no
+ * grant for (one revoked or expired, or deleted since it was shared). Nothing above the decode caught
+ * either, so a share Knit could not read crashed the app and the mesh service with it (#268).
+ */
+private fun openOrNull(source: () -> InputStream?): InputStream? =
+    try {
+        source()
+    } catch (e: IOException) {
+        Log.w(TAG, "image source would not open: ${e.javaClass.simpleName}")
+        null
+    } catch (e: SecurityException) {
+        Log.w(TAG, "image source refused: ${e.javaClass.simpleName}")
+        null
+    }
+
+private const val TAG = "ImageDecode"
 
 /**
  * [bytes]' EXIF orientation tag ([ExifInterface.ORIENTATION_UNDEFINED] when they carry none), or null when their
