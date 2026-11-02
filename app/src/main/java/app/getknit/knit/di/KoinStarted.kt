@@ -10,7 +10,7 @@ import org.koin.core.context.GlobalContext
  * `android.app.Application` is instantiated instead of ours and no ContentProvider is installed, so
  * `startKoin` never happens. That process is still a live record for our uid, and
  * `ActiveServices.bringUpServiceLocked` (likewise the broadcast queue) hands a start to whichever process is
- * alive — so the heartbeat alarm, a `START_STICKY` restart or a notification action can land in it. A
+ * alive — so the revive alarm, a `START_STICKY` restart or a notification action can land in it. A
  * component created there must **decline**, not resolve: its first `by inject()` reads this same global and
  * throws `IllegalStateException("KoinApplication has not been started")` — a Play-reported crash on 2.5.0,
  * Android 15, in the background. The process is killed by the backup manager when the pass ends, and the

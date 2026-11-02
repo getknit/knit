@@ -90,6 +90,9 @@ document:
 
 ### Fixed
 
+- Some phones, realme models among them, could show "Knit isn't responding" for a routine check Knit runs in
+  the background every 15 minutes. That check no longer triggers the warning, even when the phone holds Knit
+  back for a while.
 - Another app could get one of Knit's own private files, such as its settings, attached to a message you were
   writing by sharing it to Knit or pasting it in. Knit now refuses to read those files.
 - Long-pressing a message while you type no longer closes the keyboard and shuffles the chat. The menu, the

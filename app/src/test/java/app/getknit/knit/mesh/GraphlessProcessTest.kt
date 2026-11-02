@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import android.app.AlarmManager
 import android.app.Application
 import android.app.Service
 import android.content.Intent
@@ -63,6 +64,15 @@ class GraphlessProcessTest {
         // A start command on the same stillborn instance stays graph-free and does not re-arm the restart.
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent(app, MeshService::class.java), 0, 1))
         controller.destroy()
+        // stopSelf() cleared the sticky record, so the revive alarm is what tries again, in a normal process: a
+        // one-shot service start, kept through onDestroy (ADR 2026-11.82s7).
+        val revive = shadowOf(app.getSystemService(AlarmManager::class.java)).scheduledAlarms.single()
+
+        @Suppress("DEPRECATION") // `operation` is the shadow's only handle on the PendingIntent
+        val operation = shadowOf(revive.operation)
+        assertTrue(operation.isService)
+        assertEquals(MeshService.ACTION_HEAL, operation.savedIntent.action)
+        assertEquals(0L, revive.intervalMs)
     }
 
     @Test

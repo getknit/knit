@@ -217,10 +217,17 @@ class MeshServiceGraphOffMainTest {
         val alert = shadowOf(app.getSystemService(NotificationManager::class.java)).getNotification(StorageAlert.ID)
         assertEquals(NotificationChannels.ALERTS, alert!!.channelId)
 
-        // The system's onDestroy after stopSelf keeps the heartbeat — the next tick may find the Keystore answering —
-        // and nothing turns the mesh off: the next app open starts it as usual.
+        // The system's onDestroy after stopSelf keeps the revive — a one-shot service start, since no running
+        // service is left to call back into (ADR 2026-11.82s7); it may find the Keystore answering — and nothing
+        // turns the mesh off: the next app open starts it as usual.
         controller.destroy()
-        assertNotNull(shadowOf(app.getSystemService(AlarmManager::class.java)).peekNextScheduledAlarm())
+        val revive = shadowOf(app.getSystemService(AlarmManager::class.java)).scheduledAlarms.single()
+
+        @Suppress("DEPRECATION") // `operation` is the shadow's only handle on the PendingIntent
+        val operation = shadowOf(revive.operation)
+        assertTrue(operation.isService)
+        assertEquals(MeshService.ACTION_HEAL, operation.savedIntent.action)
+        assertEquals("one-shot, not the old repeating heartbeat", 0L, revive.intervalMs)
         coVerify(exactly = 0) { settings.setMeshEnabled(any()) }
     }
 

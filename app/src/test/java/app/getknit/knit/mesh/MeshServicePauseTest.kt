@@ -5,6 +5,7 @@ import android.app.Application
 import android.app.Notification
 import android.app.Service
 import android.content.Intent
+import android.os.Looper
 import android.os.SystemClock
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.core.app.ApplicationProvider
@@ -91,17 +92,28 @@ class MeshServicePauseTest {
 
     private fun pause(minutes: Int) = intent(MeshService.ACTION_PAUSE).putExtra(MeshService.EXTRA_PAUSE_MINUTES, minutes)
 
-    // `operation` is the shadow's only handle on the alarm's PendingIntent; deprecated without a successor.
+    private val alarmManager get() = shadowOf(app.getSystemService(AlarmManager::class.java))
+
+    // `operation` is the shadow's only handle on the alarm's PendingIntent; deprecated without a successor. A
+    // listener alarm has none.
     @Suppress("DEPRECATION")
-    private fun ShadowAlarmManager.ScheduledAlarm.action(): String? = shadowOf(operation).savedIntent.action
+    private fun ShadowAlarmManager.ScheduledAlarm.action(): String? = operation?.let { shadowOf(it).savedIntent.action }
 
     @Suppress("DEPRECATION")
-    private fun ShadowAlarmManager.ScheduledAlarm.startsService(): Boolean = shadowOf(operation).isService
+    private fun ShadowAlarmManager.ScheduledAlarm.startsService(): Boolean = operation?.let { shadowOf(it).isService } == true
 
+    // Likewise `onAlarmListener`, the shadow's only handle on a listener alarm's callback.
+    @Suppress("DEPRECATION")
+    private fun ShadowAlarmManager.ScheduledAlarm.isListener(): Boolean = onAlarmListener != null
+
+    /** The while-idle resume (a service start: it has no listener form) and the windowed one (a listener). */
     private fun resumeAlarms(): List<ShadowAlarmManager.ScheduledAlarm> =
-        shadowOf(app.getSystemService(AlarmManager::class.java))
-            .scheduledAlarms
-            .filter { it.action() == MeshService.ACTION_RESUME }
+        alarmManager.scheduledAlarms.filter { it.action() == MeshService.ACTION_RESUME || it.tag == MeshService.TAG_RESUME }
+
+    private fun fire(tag: String) {
+        alarmManager.fireAlarm(alarmManager.scheduledAlarms.single { it.tag == tag })
+        shadowOf(Looper.getMainLooper()).idle()
+    }
 
     private fun Notification.title() = extras.getCharSequence(Notification.EXTRA_TITLE).toString()
 
@@ -134,10 +146,11 @@ class MeshServicePauseTest {
         alarms.forEach {
             assertEquals(AlarmManager.ELAPSED_REALTIME_WAKEUP, it.getType())
             assertEquals(at, it.triggerAtMs)
-            assertTrue(it.startsService())
         }
-        assertEquals(1, alarms.count { it.isAllowWhileIdle })
-        assertEquals(1, alarms.count { it.windowLengthMs == 10 * 60_000L })
+        assertTrue("no listener form reaches a dozing phone", alarms.single { it.isAllowWhileIdle }.startsService())
+        val windowed = alarms.single { !it.isAllowWhileIdle }
+        assertEquals(10 * 60_000L, windowed.windowLengthMs)
+        assertTrue("the windowed resume calls back in process (ADR 2026-11.82s7)", windowed.isListener())
         controller.destroy()
         // Already down: the pause's stop was the one stop.
         assertEquals(1, mesh.stopCount)
@@ -248,11 +261,44 @@ class MeshServicePauseTest {
         service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
         now += 16 * 60_000L
 
+        fire(MeshService.TAG_HEARTBEAT)
+
+        assertEquals(2, mesh.startCount)
+        assertNull(pausedFlow.value)
+        assertTrue(resumeAlarms().isEmpty())
+        // No start's re-claim follows a listener tick, so the tick posts the running text itself.
+        assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
+        controller.destroy()
+    }
+
+    @Test
+    fun `a heal start past the deadline resumes`() {
+        // The revive alarm's start, or a pre-82s7 build's heartbeat still armed after an update.
+        val service = create()
+        service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
+        now += 16 * 60_000L
+
         service.onStartCommand(intent(MeshService.ACTION_HEAL), 0, 3)
 
         assertEquals(2, mesh.startCount)
         assertNull(pausedFlow.value)
         assertTrue(resumeAlarms().isEmpty())
+        controller.destroy()
+    }
+
+    @Test
+    fun `the windowed resume alarm resumes in process, without a service start`() {
+        val service = create()
+        service.onStartCommand(pause(MeshPause.SHORT_MINUTES), 0, 2)
+        now += 15 * 60_000L
+
+        fire(MeshService.TAG_RESUME)
+
+        assertEquals(2, mesh.startCount)
+        assertNull(pausedFlow.value)
+        assertTrue(resumeAlarms().isEmpty())
+        assertNull("no startService, so no executing-service timer", shadowOf(app).nextStartedService)
+        assertEquals(app.getString(R.string.mesh_notification_title), shadowOf(service).lastForegroundNotification!!.title())
         controller.destroy()
     }
 

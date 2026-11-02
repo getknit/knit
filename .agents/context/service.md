@@ -26,13 +26,26 @@ lines.
   receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. Regression:
   `MeshServiceForegroundReclaimTest`, `MeshServiceGraphOffMainTest`, `GraphlessProcessTest`,
   `MeshServiceStartTest`, `BootReceiverTest`.
+  **When touching the heartbeat or the revive alarm (`scheduleHeartbeat`, `heartbeatListener`, `onHeartbeat`,
+  `heartbeatHeal`, `nextHeartbeatAt`, `heartbeatLapsed` / `rearmHeartbeatIfLapsed`, `alarmHandler`, `armRevive` / `cancelRevive`, `cancelStartAlarms`,
+  `ACTION_HEAL`), or adding any alarm to `MeshService`:** READ ADR 2026-11.82s7. An alarm armed with a
+  `PendingIntent` while the service runs is a `startService` into it, and each one arms AMS's 20 s "executing
+  service" timer, which a frozen process misses (#248, realme Android 16). So the periodic ticks are
+  `OnAlarmListener` alarms on the main looper, re-armed in their own callback and checking `destroyed` first; every
+  start and motion trigger re-arms a heartbeat whose chain lapsed (a tick lost in delivery would end it). A tick
+  that ends a pause posts the notification itself, since no start's re-claim follows it. The only `getService`
+  alarms are the one-shot revive, armed by the two stand-downs that `stopSelf()` (graphless, Keystore refusal)
+  and cancelled by `startMesh`, and the while-idle resume, which has no listener form. `startMesh` also cancels
+  the tokens a pre-82s7 build left armed across an update. Regression: `MeshServiceHeartbeatTest`,
+  `NextHeartbeatAtTest`, `GraphlessProcessTest`, `MeshServiceGraphOffMainTest`.
   **When touching the notification's Pause / Resume actions, `SettingsStore.meshPausedUntil`, `mesh/MeshPause`,
   `MeshService.applyPause`, or the resume alarms:** READ ADR 2026-09.wz99. A pause is one DataStore deadline
   the service applies idempotently in place — the service stays foreground, `MeshManager` goes down, every
   surface reads the key through `MeshPause.activeDeadline` — never `MeshTransport.pause` (that is the Wi-Fi
   Direct hand-over) and never a stop-and-restart (an alarm cannot start a foreground service from the
   background). Every plain start re-claims without resuming; the two resume alarms are inexact and bounded, not
-  `SCHEDULE_EXACT_ALARM`; Stop cancels the store collector before `stopSelf()`. **Stop is sticky** (the
+  `SCHEDULE_EXACT_ALARM` (the windowed one an in-process listener, `resumeWindowListener` / `onResumeAlarm`, the
+  while-idle one a `getService` start — ADR 2026-11.82s7); Stop cancels the store collector before `stopSelf()`. **Stop is sticky** (the
   amendment): `KnitApp`'s route effect and `ON_RESUME` observer both ask `ui/MeshStartPolicy.kt`'s
   `shouldStartMeshFromUi` with `SettingsStore.meshEnabled` read from the store at that moment (a
   lifecycle-collected copy is stale on the resume after a Stop — device-observed) — and the chat list's Start

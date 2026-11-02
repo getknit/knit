@@ -54,7 +54,8 @@ import org.koin.android.ext.android.inject
  * [MeshManager] and adds the background-survival machinery: a periodic heartbeat alarm and a
  * significant-motion trigger (new location → likely new peers), both of which nudge the transport to
  * rediscover/reconnect. (Wi-Fi Aware availability changes are handled inside the transport itself.)
- * The UI controls the mesh by starting/stopping it.
+ * The UI controls the mesh by starting/stopping it. The alarms reach this running instance as in-process
+ * callbacks, never as a `startService` into it (ADR 2026-11.82s7).
  */
 class MeshService : LifecycleService() {
     private val meshManager: MeshController by inject()
@@ -76,15 +77,15 @@ class MeshService : LifecycleService() {
     /**
      * The other stillbirth: the system created us in a process that never ran `KnitApplication.onCreate`
      * (restricted backup mode — see [isKoinStarted]), so there is no graph to resolve and every `by inject()`
-     * above would throw. Unlike a refused foreground start it leaves the heartbeat alarm armed: nothing was
-     * refused, and its next tick lands in a normal process and starts the mesh properly.
+     * above would throw. Unlike a refused foreground start it arms the revive alarm ([armRevive]): nothing was
+     * refused, and that start lands in a normal process and starts the mesh properly.
      */
     private var graphless = false
 
     /**
      * The third: the graph could not be built because the Keystore refused to unwrap a storage key, and this
-     * instance stood down instead of crashing ([declineStorage]). Like [graphless] it leaves the heartbeat armed —
-     * nothing was refused but the Keystore, and the next tick may find it answering. ADR 2026-10.47rw.
+     * instance stood down instead of crashing ([declineStorage]). Like [graphless] it arms the revive alarm —
+     * nothing was refused but the Keystore, and the next start may find it answering. ADR 2026-10.47rw.
      */
     private var storageDeclined = false
 
@@ -130,6 +131,23 @@ class MeshService : LifecycleService() {
     private var lastMotionHealAt = 0L
 
     /**
+     * Where the heartbeat and the windowed resume alarm call back: the main thread, which owns every field they
+     * touch. An `OnAlarmListener` delivery has no ANR timer, unlike the `startService` a `PendingIntent.getService`
+     * alarm made into this running service: that start armed AMS's 20 s "executing service" timer against
+     * [onStartCommand], and a main thread held past it by a vendor freezer or a stall was an ANR for a tick the
+     * user never saw (Play, realme Note 60/60x, Android 16, #248). A held listener tick waits for the thaw and
+     * then runs. ADR 2026-11.82s7.
+     */
+    private val alarmHandler = Handler(Looper.getMainLooper())
+
+    /** The heartbeat's last nominal trigger on the elapsed-realtime clock, null until [scheduleHeartbeat] first runs. */
+    private var heartbeatNominal: Long? = null
+
+    private val heartbeatListener = AlarmManager.OnAlarmListener { onHeartbeat() }
+
+    private val resumeWindowListener = AlarmManager.OnAlarmListener { onResumeAlarm() }
+
+    /**
      * The Wear OS status server — a prototype, defined in the graph only while `BuildConfig.WEAR_STATUS` is on,
      * so null in a shipped build. Resolved by [resolveGraph] on the worker with the rest, started by [startMesh]
      * and kept up through a pause (a paused mesh is still a status worth reading), stopped in [onDestroy].
@@ -169,16 +187,18 @@ class MeshService : LifecycleService() {
         } else {
             Log.d(TAG, "motion: heal floored, last ${since}ms ago")
         }
+        rearmHeartbeatIfLapsed()
         armSignificantMotion() // one-shot sensor; re-arm for the next move
     }
 
     override fun onCreate() {
         super.onCreate()
         // No graph in this process (restricted backup mode): decline before anything resolves it. stopSelf()
-        // clears the sticky restart record; the heartbeat stays armed (see [graphless]).
+        // clears the sticky restart record, so the revive alarm is what comes back (see [graphless]).
         if (!isKoinStarted()) {
             Log.w(TAG, "created without the app graph (restricted backup mode?) — declining until a normal start")
             graphless = true
+            armRevive()
             stopSelf()
             return
         }
@@ -202,7 +222,7 @@ class MeshService : LifecycleService() {
         // and the onStartCommand right behind it run under the 20 s "executing service" ANR timer, a separate
         // deadline from the startForeground() one claimed above, and Play reported it lapsing (2.6.0, API 34)
         // in a process born for this service: the Activity path builds the same graph during KnitApp's first
-        // composition, so the service's read there is a cache hit and only a boot, heartbeat or sticky restart
+        // composition, so the service's read there is a cache hit and only a boot, revive alarm or sticky restart
         // ever paid it here. So the build rides the app scope and only the start comes back to the main thread.
         // The app scope, not lifecycleScope: a built graph is process-wide and never wasted, and [destroyed]
         // covers the one thing cancellation would have. ADR 2026-09.vztn.
@@ -233,7 +253,7 @@ class MeshService : LifecycleService() {
      * a refusal, not a loss, so every file was left as it was (ADR 2026-10.47rw). Crashing would only buy a
      * sticky restart that the system refuses from the background, or a crash loop on a battery-exempt phone, and
      * a "Knit keeps stopping" dialog that reads as data loss. So stand down: say so in a notification, drop the
-     * foreground state, keep the heartbeat for the next try, and stop. `meshEnabled` is left alone, so the next
+     * foreground state, arm the revive alarm for the next try, and stop. `meshEnabled` is left alone, so the next
      * app open (whose own open retries — `ui/StorageGate`) or reboot starts the mesh as usual; that start takes
      * the notification back ([startMesh]).
      */
@@ -243,7 +263,7 @@ class MeshService : LifecycleService() {
         storageDeclined = true
         StorageAlert.post(this)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        scheduleHeartbeat()
+        armRevive()
         stopSelf()
     }
 
@@ -278,6 +298,7 @@ class MeshService : LifecycleService() {
         // Remember the mesh is running so BootReceiver restores it after a reboot; a later manual Stop
         // flips this off. Guarded to skip the redundant write on the common already-enabled start.
         scope.launch { if (!settings.meshEnabled.first()) settings.setMeshEnabled(true) }
+        cancelStartAlarms()
         scheduleHeartbeat()
         observeLowPower()
         observePause()
@@ -412,11 +433,9 @@ class MeshService : LifecycleService() {
             return START_NOT_STICKY
         }
         when (intent?.action) {
+            // The revive alarm's start, or a pre-82s7 build's repeating heartbeat still armed after the update.
             ACTION_HEAL -> {
-                // A mesh still coming up (see [onCreate]) starts fresh, which is all a heal would do; a paused
-                // one is not running, and heal() is a no-op on it.
-                expirePauseIfDue()
-                if (meshStarted) meshManager.heal()
+                heartbeatHeal()
             }
 
             // A new pause supersedes an expired one outright: expiring first would raise the radios for the
@@ -434,6 +453,7 @@ class MeshService : LifecycleService() {
                 expirePauseIfDue()
             }
         }
+        rearmHeartbeatIfLapsed()
         // Re-claim the foreground state on every start, not only the first. The system can take it from a
         // running service without telling it: a background-restricted app loses it the moment it leaves the
         // screen (`ActiveServices.stopAllForegroundServicesLocked`, a `stopForeground` with no callback), and
@@ -465,36 +485,29 @@ class MeshService : LifecycleService() {
     override fun onDestroy() {
         destroyed = true
         // Nothing was ever started (see [onCreate]); touching the injected fields here would build the very
-        // Koin graph the stillbirth path exists to skip. The heartbeat alarm is still cancelled: it needs no
-        // graph, and a live one left armed by an earlier ungraceful death would otherwise keep waking the
-        // device every 15 minutes to attempt a background service start the system will refuse. A [graphless]
-        // instance keeps it: that start was never refused, only landed in the wrong process.
-        // The resume alarms go with the heartbeat, for the same reason: left armed past a death, one would
+        // Koin graph the stillbirth path exists to skip. The alarms are still cancelled: they need no graph,
+        // and a revive (or a pre-82s7 repeating heartbeat) left armed by an earlier ungraceful death would
+        // otherwise keep waking the device to attempt a background service start the system will refuse. A
+        // [graphless] instance keeps its revive: that start was never refused, only landed in the wrong process.
+        // The resume alarms go with it, for the same reason: left armed past a death, the idle one would
         // create a service the system refuses (a stillbirth) or, on 29-30, a mesh nobody asked for.
         if (!foregrounded) {
-            if (!graphless) {
-                cancelHeartbeat()
-                cancelResume()
-            }
+            if (!graphless) cancelAlarms()
             super.onDestroy()
             return
         }
         // Taken down while the graph was still building on a worker: nothing is running yet, and the build's
         // return to the main thread reads [destroyed] and starts nothing. Reading the injected fields here
-        // would block on that build. A [storageDeclined] instance stopped itself and keeps the alarms, as a
+        // would block on that build. A [storageDeclined] instance stopped itself and keeps its revive, as a
         // [graphless] one does: its start was never refused, only the Keystore was.
         if (!meshStarted) {
-            if (!storageDeclined) {
-                cancelHeartbeat()
-                cancelResume()
-            }
+            if (!storageDeclined) cancelAlarms()
             super.onDestroy()
             return
         }
         powerMonitor.stop()
         disarmSignificantMotion()
-        cancelHeartbeat()
-        cancelResume()
+        cancelAlarms()
         wearStatus?.stop()
         if (meshRunning) meshManager.stop()
         super.onDestroy()
@@ -509,28 +522,112 @@ class MeshService : LifecycleService() {
         significantMotion?.let { sensorManager.cancelTriggerSensor(motionListener, it) }
     }
 
-    private fun heartbeatIntent(): PendingIntent =
+    private val alarms: AlarmManager get() = getSystemService(AlarmManager::class.java)
+
+    /**
+     * The 15-minute heartbeat: a one-shot listener alarm re-armed on every tick, on the nominal grid
+     * ([nextHeartbeatAt]) so a late delivery does not stretch the cadence, with the window `setInexactRepeating`
+     * gave it. Like that alarm it waits for a maintenance window in Doze. It dies with the process, which is
+     * fine: it only ever nudged a running service. ADR 2026-11.82s7.
+     */
+    private fun scheduleHeartbeat() {
+        val next = nextHeartbeatAt(heartbeatNominal, SystemClock.elapsedRealtime())
+        heartbeatNominal = next
+        alarms.setWindow(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            next,
+            HEARTBEAT_WINDOW_MS,
+            TAG_HEARTBEAT,
+            heartbeatListener,
+            alarmHandler,
+        )
+    }
+
+    /**
+     * Re-arm a heartbeat whose chain broke. A repeating alarm sustained itself; this one-shot is re-armed only by its
+     * own tick, so a tick that never arrives (a delivery the system dropped into a frozen process) would end every
+     * later one silently. Every start (each app open and resume) and every motion trigger asks this, and only a
+     * heartbeat a whole interval past the end of its window counts as lapsed ([heartbeatLapsed]). One that Doze
+     * held longer than that and that is still pending as the device wakes is replaced too: the cost is that one
+     * tick's heal, on a wake the app open or the move already heals. ADR 2026-11.82s7.
+     */
+    private fun rearmHeartbeatIfLapsed() {
+        if (!meshStarted || destroyed) return
+        if (!heartbeatLapsed(heartbeatNominal, SystemClock.elapsedRealtime())) return
+        Log.w(TAG, "heartbeat: chain lapsed since $heartbeatNominal; re-armed")
+        scheduleHeartbeat()
+    }
+
+    /**
+     * A heartbeat tick: re-armed first, so a heal that throws cannot end the cadence. A pause it expires posts the
+     * running text itself: the re-claim at the tail of [onStartCommand] used to, and no start follows a listener
+     * tick (the store collector's own apply finds nothing changed).
+     */
+    private fun onHeartbeat() {
+        if (destroyed || !meshStarted) return
+        scheduleHeartbeat()
+        Log.d(TAG, "heartbeat: heal")
+        val paused = pausedUntil != null
+        heartbeatHeal()
+        if (paused && pausedUntil == null) refreshNotification()
+    }
+
+    /** The windowed resume alarm: [resumeNow] in process, then the running text, which no start will post. */
+    private fun onResumeAlarm() {
+        if (destroyed) return
+        resumeNow()
+        if (meshStarted) refreshNotification()
+    }
+
+    /**
+     * What a heartbeat does, from the listener or from an `ACTION_HEAL` start. A mesh still coming up (see
+     * [onCreate]) starts fresh, which is all a heal would do; a paused one is not running, and heal() is a no-op
+     * on it.
+     */
+    private fun heartbeatHeal() {
+        expirePauseIfDue()
+        if (meshStarted) meshManager.heal()
+    }
+
+    /**
+     * The start a stand-down leaves for itself. [graphless] and [storageDeclined] call `stopSelf()`, which clears
+     * the sticky restart record, so with no running service to call back into, this one-shot `getService` alarm
+     * is what tries again. It succeeds only where a background start may claim the foreground (the battery
+     * exemption, ADR 043). It is the token the repeating heartbeat used before ADR 2026-11.82s7, so
+     * [cancelRevive] also clears one a pre-82s7 build left armed across an update.
+     */
+    private fun reviveIntent(): PendingIntent =
         PendingIntent.getService(
             this,
-            2,
+            REQUEST_REVIVE,
             Intent(this, MeshService::class.java).setAction(ACTION_HEAL),
             PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun scheduleHeartbeat() {
-        getSystemService(AlarmManager::class.java).setInexactRepeating(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + AlarmManager.INTERVAL_FIFTEEN_MINUTES,
-            AlarmManager.INTERVAL_FIFTEEN_MINUTES,
-            heartbeatIntent(),
-        )
+    private fun armRevive() {
+        alarms.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + HEARTBEAT_INTERVAL_MS, reviveIntent())
     }
 
-    private fun cancelHeartbeat() {
-        getSystemService(AlarmManager::class.java).cancel(heartbeatIntent())
+    private fun cancelRevive() = alarms.cancel(reviveIntent())
+
+    /**
+     * A running service needs no revive. The same cancels clear the `getService` alarms a pre-82s7 build armed on
+     * these two tokens — the repeating heartbeat and the windowed resume — which an app update leaves in place,
+     * and which would otherwise keep starting this running service under the 20 s timer.
+     */
+    private fun cancelStartAlarms() {
+        cancelRevive()
+        alarms.cancel(resumeIntent(REQUEST_RESUME_WINDOW))
     }
 
-    /** The Resume action and both resume alarms carry this; the notification shares the while-idle token. */
+    /** Every alarm this service arms: the heartbeat, the revive and the resume pair. */
+    private fun cancelAlarms() {
+        alarms.cancel(heartbeatListener)
+        cancelRevive()
+        cancelResume()
+    }
+
+    /** The Resume action and the while-idle resume alarm carry this; the notification shares the while-idle token. */
     private fun resumeIntent(requestCode: Int): PendingIntent =
         PendingIntent.getService(
             this,
@@ -544,20 +641,21 @@ class MeshService : LifecycleService() {
      * (a Settings trip on 14+, for a messenger): `setAndAllowWhileIdle` reaches a dozing phone but its
      * delivery window is 0.75 × the span (`AlarmManagerService.maxTriggerTime` — 45 min late on a one-hour
      * pause is legal); `setWindow` is bounded to ten minutes on an awake phone (the floor our targetSdk gets)
-     * but is held to a maintenance window in Doze. Same action, different tokens, armed and cancelled as one.
-     * The alarms' `startService` lands on a running foreground service, like the heartbeat's; they never
-     * create one on purpose. Late is still covered: every start runs [expirePauseIfDue].
+     * but is held to a maintenance window in Doze. Armed and cancelled as one. The windowed one calls back in
+     * process ([resumeWindowListener]). The while-idle one has no listener form, so it stays a `startService`
+     * into the running service: one exposure to the 20 s timer per pause, where the heartbeat had 96 a day
+     * (ADR 2026-11.82s7). Neither creates a service on purpose. Late is still covered: every heartbeat and
+     * start runs [expirePauseIfDue].
      */
     private fun armResume(until: Long) {
         val at = SystemClock.elapsedRealtime() + (until - clock()).coerceAtLeast(0L)
-        val alarms = getSystemService(AlarmManager::class.java)
         alarms.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, resumeIntent(REQUEST_RESUME_IDLE))
-        alarms.setWindow(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, RESUME_WINDOW_MS, resumeIntent(REQUEST_RESUME_WINDOW))
+        alarms.setWindow(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, RESUME_WINDOW_MS, TAG_RESUME, resumeWindowListener, alarmHandler)
     }
 
     private fun cancelResume() {
-        val alarms = getSystemService(AlarmManager::class.java)
         alarms.cancel(resumeIntent(REQUEST_RESUME_IDLE))
+        alarms.cancel(resumeWindowListener)
         alarms.cancel(resumeIntent(REQUEST_RESUME_WINDOW))
     }
 
@@ -759,16 +857,30 @@ class MeshService : LifecycleService() {
         internal const val ACTION_RESUME = "app.getknit.knit.RESUME_MESH"
         internal const val EXTRA_PAUSE_MINUTES = "minutes"
 
-        // PendingIntent request codes: 0 is the open-app activity, 2 the heartbeat. Distinct on purpose —
-        // the system tells tokens apart by code and filter, never by extras.
+        // PendingIntent request codes: 0 is the open-app activity, 2 the revive (the heartbeat's before ADR
+        // 2026-11.82s7). Distinct on purpose — the system tells tokens apart by code and filter, never by extras.
         private const val REQUEST_STOP = 1
+        private const val REQUEST_REVIVE = 2
         private const val REQUEST_PAUSE_SHORT = 3
         private const val REQUEST_PAUSE_LONG = 4
         private const val REQUEST_RESUME_IDLE = 5
+
+        // The windowed resume alarm's token before it became a listener (ADR 2026-11.82s7). Only cancelled, so an
+        // alarm a pre-82s7 build armed across an update cannot start the running service.
         private const val REQUEST_RESUME_WINDOW = 6
 
         /** The windowed resume alarm's window: the floor the platform applies to a non-exact `setWindow` anyway. */
         private const val RESUME_WINDOW_MS = 10 * 60_000L
+
+        /** The heartbeat's period, and the delay before a stand-down's revive. */
+        internal const val HEARTBEAT_INTERVAL_MS = AlarmManager.INTERVAL_FIFTEEN_MINUTES
+
+        /** The heartbeat's delivery window: the 0.75 × interval `setInexactRepeating` applied. */
+        internal const val HEARTBEAT_WINDOW_MS = HEARTBEAT_INTERVAL_MS * 3 / 4
+
+        /** Alarm tags: what `dumpsys alarm` and the alarm wakelock show for the two listener alarms. */
+        internal const val TAG_HEARTBEAT = "MeshService.heartbeat"
+        internal const val TAG_RESUME = "MeshService.resume"
 
         /** The least time between two heals the motion trigger may fire ([onSignificantMotion]). */
         internal const val MOTION_HEAL_FLOOR_MS = 60_000L
@@ -834,6 +946,34 @@ class MeshService : LifecycleService() {
         }
     }
 }
+
+/**
+ * When the heartbeat fires next, on the elapsed-realtime clock: one [interval] past the last nominal trigger, the
+ * grid `setInexactRepeating` kept, so a tick delivered late in its window does not push every later one back and
+ * the cadence stays near the 96 a day the heal basket counts on (ADR 2026-09.6st4). The first arm ([lastNominal]
+ * null) and a tick that missed its next grid point too (Doze held it to a maintenance window) start a fresh grid
+ * from [now]. ADR 2026-11.82s7.
+ */
+internal fun nextHeartbeatAt(
+    lastNominal: Long?,
+    now: Long,
+    interval: Long = MeshService.HEARTBEAT_INTERVAL_MS,
+): Long {
+    val onGrid = lastNominal?.plus(interval)
+    return if (onGrid != null && onGrid > now) onGrid else now + interval
+}
+
+/**
+ * Whether the heartbeat armed for [nominal] has lapsed: [now] is a whole [interval] past the end of its [window], so
+ * its tick was lost rather than late. A heartbeat never armed ([nominal] null) has not lapsed; there is nothing to
+ * repair. ADR 2026-11.82s7.
+ */
+internal fun heartbeatLapsed(
+    nominal: Long?,
+    now: Long,
+    interval: Long = MeshService.HEARTBEAT_INTERVAL_MS,
+    window: Long = MeshService.HEARTBEAT_WINDOW_MS,
+): Boolean = nominal != null && now > nominal + window + interval
 
 /**
  * The foreground-service type bitmask [MeshService.postForeground] claims, **tiered like the radio permissions**:

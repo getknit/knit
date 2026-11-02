@@ -1097,6 +1097,15 @@ reconcile tick. Run it after adding anything that can open an Internet socket: a
 `net/InternetGate`, a dependency that phones home, or a default that switches a plane on. It never runs on a phone:
 a `--serial` that is not an emulator is refused.
 
+## A main thread the system cannot see stalled
+
+To reproduce an ANR from a stall the platform doesn't know about (a vendor freezer, #248), stop the process with
+`adb shell "run-as app.getknit.knit kill -STOP <pid>"` and resume it with `-CONT`. That works on a debug build
+with no root. `am freeze --sticky` is the platform's own freezer, and AMS does not run the "executing service"
+timeout against a process it froze itself, so a negative control under it stays green (verified on API 37,
+2026-11-02). Read the result with `dumpsys activity exit-info app.getknit.knit` (`reason=6 (ANR)`) and the
+`ActivityManager: ANR in` line. ADR 2026-11.82s7 has the trial.
+
 ## Real BLE from an emulator (USB passthrough)
 
 `scripts/emulator-ble-mesh.sh` puts a **real** BLE radio behind an emulator, so it joins the actual mesh

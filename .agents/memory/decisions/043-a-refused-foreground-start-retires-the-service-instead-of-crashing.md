@@ -115,3 +115,8 @@ since it needs no binder call. The refusal's line is now `Tier-2 restart deferre
 re-claimed`, once per episode, so the soak poller's `NAN data plane wedged` count no longer reads it as a kill.
 Corroboration moved too: Bluetooth's `near`, not its `reachable` (ADR 2026-10.yvn6's Coded PHY made the latter reach
 past an NDP).
+
+*Amendment (2026-11-01, #248).* The heartbeat is no longer `setInexactRepeating` + `PendingIntent.getService`: it is
+a re-armed `OnAlarmListener` alarm calling back into the running service, because each start into a running service
+armed a 20 s ANR timer that a frozen process missed. The two stand-downs that `stopSelf()` (graphless, Keystore
+refusal) arm a one-shot `getService` revive instead. ADR 2026-11.82s7.

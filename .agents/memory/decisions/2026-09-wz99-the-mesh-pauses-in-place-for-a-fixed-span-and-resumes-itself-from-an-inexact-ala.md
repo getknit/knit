@@ -100,3 +100,7 @@ foreground app open" now holds only while the flag is on — the resume retry th
 service without writing it. Pinned by `MeshStartPolicyTest` and the two chat list tests' stopped cases;
 device-verified on the Pixel 3 the same evening (Stop, open → no service, no radio bring-up, the banner;
 Start → service and both radios back within a second).
+
+*Amendment (2026-11-01, #248).* The windowed resume alarm is an `OnAlarmListener` calling back into the running
+service, not a `startService`, and posts the running text itself, since no start's re-claim follows it. The while-idle
+one stays `getService`: a non-exact while-idle alarm has no listener form. ADR 2026-11.82s7.
