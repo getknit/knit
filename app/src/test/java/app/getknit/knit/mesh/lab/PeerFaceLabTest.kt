@@ -539,10 +539,11 @@ class PeerFaceLabTest {
             lab.linkAll(alice to carol, carol to bob)
             lab.awaitAcquainted(alice, bob, carol)
             startSwept(alice, bob, carol)
-            assertTrue(alice.sendDm(bob, "hello"))
-            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
-            assertTrue(bob.sendDm(alice, "hello back"))
-            lab.await(1) { alice.decrypted(alice.dmWith(bob)).size }
+            // Settled, not just read: with boards, Bob can open "hello" from its compact copy and answer before the link
+            // copy's init runs, so his reply opens a session of his own that confirms only on Alice's answer (ADR
+            // 2026-10.x9fa, Q1). The sealed fan-out reaches confirmed sessions alone, and one that confirms after the
+            // edit waits for the next heal: the edit must come after both sides agree on one confirmed session.
+            converge(alice, bob, carriers = listOf(carol))
             val photo = Random(2590).nextBytes(2_048)
             val hash = sha256Hex(photo)
 
