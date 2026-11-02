@@ -117,8 +117,19 @@ document:
   later.
 - If a contact's new profile photo didn't reach you the first time, Knit now asks for it again. Before, you
   could keep seeing their old photo or initials until one of you restarted Knit.
+
+## [2.10.2](https://github.com/getknit/knit/releases/tag/v2.10.2) — 2026-11-02T03:32:31Z
+
+> Videos that closed Knit on Android 10 and 11, and shares it couldn't open.
+
+### Fixed
+
+- Picking a video to send no longer closes Knit on Android 10 and 11, where it closed the app every time and
+  dropped its connection to nearby phones.
 - Sharing a photo or video that Knit can't open, such as one deleted after you shared it, no longer closes
   Knit and drops its connection to nearby phones. Knit now tells you it couldn't attach it.
+- A group someone new adds you to now shows in Message requests before anyone writes in it. Until now the chat
+  list counted it as a request while Message requests stayed empty.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 
