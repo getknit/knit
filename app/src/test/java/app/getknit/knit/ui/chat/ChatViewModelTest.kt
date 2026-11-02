@@ -2025,6 +2025,35 @@ class ChatViewModelTest {
         }
 
     /**
+     * #268: a share Knit cannot read crashed the app; failing as Unreadable instead, it still has to say so, since the
+     * sender left the other app for this composer and a share that stages nothing reads as Knit ignoring it. Without a
+     * grant the provider will not say a video is one, so a shared video fails through the image door, and the type
+     * the share declared names it.
+     */
+    @Test
+    fun aShareKnitCannotReadSaysSoAndCallsASharedVideoAVideo() =
+        runTest {
+            val picture = Uri.parse("content://media/external/images/media/40")
+            val video = Uri.parse("content://media/external/video/media/41")
+            coEvery { attachments.ingest(any<Uri>(), any(), any()) } returns
+                AttachmentStore.IngestResult.Failed(AttachmentStore.IngestResult.Reason.Unreadable)
+            val vm = vm()
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.attachShared(picture, "image/jpeg")
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_image_capture_failed), events)
+
+            vm.attachShared(video, "video/mp4")
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_image_capture_failed, R.string.chat_video_unreadable), events)
+            coVerify { attachments.ingest(video, true, any()) }
+            coVerify(exactly = 0) { attachments.ingestVideo(any(), any(), any()) }
+            assertNull(vm.pendingAttachment.value)
+        }
+
+    /**
      * The bug in knit/knit-next#31: a DM/group attachment's stored blob is `iv || ciphertext`, so exporting
      * it verbatim wrote ciphertext into the gallery under an image mime and still toasted success. The saved
      * bytes must be the same plaintext the bubble renders.

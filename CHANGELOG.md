@@ -18,6 +18,13 @@ document:
 
 # Knit changelog
 
+## Unreleased
+
+### Fixed
+
+- Sharing a photo or video that Knit can't open, such as one deleted after you shared it, no longer closes
+  Knit and drops its connection to nearby phones. Knit now tells you it couldn't attach it.
+
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 
 > Calls that closed Knit on mobile data, and a double Back that left a blank screen.

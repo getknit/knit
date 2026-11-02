@@ -464,13 +464,14 @@ fun ChatScreen(
         }
     }
     // Drain any payload handed in from the system share sheet (see ShareInbox): prefill the text draft
-    // and stage the image through the normal attach() path, so it inherits ingest-time screening and
-    // the "send anyway?" / hard-block handling. consume() is single-shot, so only the chat opened right
-    // after the share-target picker prefills — normal chat opens see nothing.
+    // and stage the image through attachShared(), the picker's attach() path, so it inherits ingest-time
+    // screening and the "send anyway?" / hard-block handling, but says so when the share cannot be read.
+    // consume() is single-shot, so only the chat opened right after the share-target picker prefills —
+    // normal chat opens see nothing.
     LaunchedEffect(Unit) {
         shareInbox.consume()?.let { shared ->
             shared.text?.let { if (it.isNotEmpty()) inputState.setTextAndPlaceCursorAtEnd(it) }
-            shared.imageUri?.let { viewModel.attach(it.toUri()) }
+            shared.imageUri?.let { viewModel.attachShared(it.toUri(), shared.imageType) }
             // A shared *file* lands only where one can be sent — and the refusal is the ViewModel's, not
             // ours: this runs on first composition, before the state combine has read a peer row, so a
             // check against `state.canSendFile` here would refuse every capable peer exactly once.

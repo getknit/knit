@@ -154,6 +154,8 @@ class AttachmentStore(
      *
      * The source is read whole first (bounded) so a picture this phone already holds is found by its bytes
      * ([ingestPicked]). One past [MAX_BYTES] can be nothing we hold, so it takes the long way, decoded from [uri].
+     * One that will not open at all (no grant, a file Knit may not read, an item deleted since the pick) fails
+     * there as [IngestResult.Reason.Unreadable], never as a throw.
      *
      * [fitBytes], when set, is the most a still photo should take to go up through the relays this conversation
      * uses ([fitted], C-7.6-32): over it, the picture is re-encoded smaller.
@@ -170,7 +172,9 @@ class AttachmentStore(
                 sourceMime = sourceMime,
                 screen = screen,
                 held = null,
-                readRaw = { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } },
+                // Guarded as readBounded is: a resolver refuses a stream by throwing, and a GIF typed as one
+                // reaches this read rather than the decode, which guards its own (#268).
+                readRaw = { runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull() },
                 decodeOriented = { decodeOrientedBounded(context, uri, MAX_DIMENSION) },
                 fitBytes = fitBytes,
             )
