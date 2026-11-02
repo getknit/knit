@@ -125,6 +125,8 @@ document:
   later.
 - If a contact's new profile photo didn't reach you the first time, Knit now asks for it again. Before, you
   could keep seeing their old photo or initials until one of you restarted Knit.
+- On a phone with no Files app, Knit closed when you went to send a file or photo, save a file, or make or
+  restore a backup. It now says the phone has no app for picking or saving files.
 
 ## [2.10.2](https://github.com/getknit/knit/releases/tag/v2.10.2) — 2026-11-02T03:32:31Z
 

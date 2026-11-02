@@ -566,6 +566,7 @@
     <string name="chat_transfer_failed_background">Failed — Knit must be on screen to send a file directly on this phone</string>
     <string name="chat_transfer_interrupted">Interrupted</string>
     <string name="chat_transfer_no_app">No app can open this file</string>
+    <string name="picker_missing">No app on this phone can pick or save files</string>
     <string name="chat_transfer_consent_title_send">Send a file directly?</string>
     <string name="chat_transfer_consent_title_receive">Receive this file?</string>
     <string name="chat_transfer_consent_can_title">How it works</string>

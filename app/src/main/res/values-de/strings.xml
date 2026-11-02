@@ -452,6 +452,7 @@
     <string name="chat_transfer_failed_background">Fehlgeschlagen – Knit muss auf dem Bildschirm geöffnet sein, um auf diesem Smartphone eine Datei direkt zu senden</string>
     <string name="chat_transfer_interrupted">Unterbrochen</string>
     <string name="chat_transfer_no_app">Keine App kann diese Datei öffnen</string>
+    <string name="picker_missing">Keine App auf diesem Smartphone kann Dateien auswählen oder speichern</string>
     <string name="chat_transfer_consent_title_send">Datei direkt senden?</string>
     <string name="chat_transfer_consent_title_receive">Diese Datei empfangen?</string>
     <string name="chat_transfer_consent_can_title">So funktioniert’s</string>

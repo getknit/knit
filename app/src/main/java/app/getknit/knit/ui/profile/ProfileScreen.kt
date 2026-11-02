@@ -58,6 +58,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -77,6 +78,7 @@ import app.getknit.knit.ui.components.DetailRow
 import app.getknit.knit.ui.components.DisplayNameField
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.components.noAutofillMenu
+import app.getknit.knit.ui.launchOrSay
 import app.getknit.knit.ui.preview.KnitPreview
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
@@ -122,6 +124,7 @@ fun ProfileScreen(
     // The photo persists the moment the crop is confirmed, while Save stays greyed out (it batches only the
     // name and status) — so the change says so itself, or it reads as unsaved (#26).
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
     val photoUpdated = stringResource(R.string.profile_photo_updated)
     val photoRemoved = stringResource(R.string.profile_photo_removed)
     val photoRefused = stringResource(R.string.moderation_photo_refused)
@@ -172,7 +175,8 @@ fun ProfileScreen(
         badgeRow = badgeRow,
         onToggleBadge = viewModel::setShowBadge,
         onPickPhoto = {
-            picker.launch(
+            picker.launchOrSay(
+                context,
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
             )
         },

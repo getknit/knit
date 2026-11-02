@@ -273,6 +273,7 @@ import app.getknit.knit.ui.components.skeletonBlockColor
 import app.getknit.knit.ui.components.skeletonPulseAlpha
 import app.getknit.knit.ui.icons.KnitIcons
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.launchOrSay
 import app.getknit.knit.ui.openLocation
 import app.getknit.knit.ui.openLocationSettings
 import app.getknit.knit.ui.openUrl
@@ -441,6 +442,7 @@ fun ChatScreen(
     // A ticking clock so each bubble's relative timestamp ("2 min ago") recomposes as time passes;
     // System.currentTimeMillis() alone is not a tracked read and would freeze at first composition.
     val now by rememberCurrentTimeMillis()
+    val context = LocalContext.current
 
     // Modern Android Photo Picker — needs no runtime permission. Photos (GIFs included) and videos, which are
     // re-encoded small before they are staged (ADR 2026-10.hmfe).
@@ -464,7 +466,7 @@ fun ChatScreen(
             uri?.let(viewModel::offerTransfer)
         }
     LaunchedEffect(Unit) {
-        viewModel.transferPickerNeeded.collect { largeFilePicker.launch(arrayOf(ANY_MIME)) }
+        viewModel.transferPickerNeeded.collect { largeFilePicker.launchOrSay(context, arrayOf(ANY_MIME)) }
     }
 
     // Where a received file goes: the user names the destination and Knit streams the decrypted bytes into
@@ -482,7 +484,7 @@ fun ChatScreen(
         }
     val startSave: (PendingSave) -> Unit = { pending ->
         savingFile = pending
-        fileSaver.launch(pending)
+        if (!fileSaver.launchOrSay(context, pending)) savingFile = null
     }
 
     // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
@@ -513,7 +515,6 @@ fun ChatScreen(
 
     // Surface one-shot results (e.g. image saved) as toasts; a toast shows over the fullscreen Dialog,
     // unlike a Scaffold snackbar which the viewer would cover.
-    val context = LocalContext.current
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
@@ -681,12 +682,13 @@ fun ChatScreen(
         onRefreshLocation = viewModel::refreshLocation,
         onOpenLocationSettings = { openLocationSettings(context) },
         onAttachClick = {
-            picker.launch(
+            picker.launchOrSay(
+                context,
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
             )
         },
         onCameraClick = { capturing = true },
-        onFileClick = { filePicker.launch(arrayOf(ANY_MIME)) },
+        onFileClick = { filePicker.launchOrSay(context, arrayOf(ANY_MIME)) },
         onSaveFile = { hash, key, name, mime ->
             val pending = PendingSave(hash, key, name, mime)
             // Nothing on the device can look inside an archive or an executable, so the recipient is told

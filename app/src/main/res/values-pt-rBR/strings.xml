@@ -460,6 +460,7 @@
     <string name="chat_transfer_failed_background">Falhou — o Knit precisa estar na tela para enviar um arquivo diretamente neste celular</string>
     <string name="chat_transfer_interrupted">Interrompido</string>
     <string name="chat_transfer_no_app">Nenhum app consegue abrir este arquivo</string>
+    <string name="picker_missing">Nenhum app neste celular consegue escolher ou salvar arquivos</string>
     <string name="chat_transfer_consent_title_send">Enviar um arquivo diretamente?</string>
     <string name="chat_transfer_consent_title_receive">Receber este arquivo?</string>
     <string name="chat_transfer_consent_can_title">Como funciona</string>

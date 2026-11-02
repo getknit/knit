@@ -460,6 +460,7 @@
     <string name="chat_transfer_failed_background">Échec — Knit doit être à l’écran pour envoyer un fichier directement sur ce téléphone</string>
     <string name="chat_transfer_interrupted">Interrompu</string>
     <string name="chat_transfer_no_app">Aucune application ne peut ouvrir ce fichier</string>
+    <string name="picker_missing">Aucune application de ce téléphone ne permet de choisir ou d’enregistrer des fichiers</string>
     <string name="chat_transfer_consent_title_send">Envoyer un fichier directement ?</string>
     <string name="chat_transfer_consent_title_receive">Recevoir ce fichier ?</string>
     <string name="chat_transfer_consent_can_title">Fonctionnement</string>

@@ -65,6 +65,7 @@ import app.getknit.knit.data.backup.BackupProblem
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.DetailCard
 import app.getknit.knit.ui.components.leftToRight
+import app.getknit.knit.ui.launchOrSay
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
@@ -109,8 +110,8 @@ fun BackupScreen(
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) snackbarHostState.showSnackbar(copiedMessage)
             }
         },
-        onPickBackupFile = { createDocument.launch(suggestedName()) },
-        onPickRestoreFile = { openDocument.launch(arrayOf(ANY_MIME)) },
+        onPickBackupFile = { createDocument.launchOrSay(context, suggestedName()) },
+        onPickRestoreFile = { openDocument.launchOrSay(context, arrayOf(ANY_MIME)) },
         onStageRestore = viewModel::stageRestore,
         onCancelRestore = viewModel::cancelRestore,
         onConfirmRestore = viewModel::confirmRestore,

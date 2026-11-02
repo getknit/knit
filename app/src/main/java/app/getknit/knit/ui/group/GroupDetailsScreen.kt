@@ -66,6 +66,7 @@ import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.components.peerBadge
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.launchOrSay
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.profile.AvatarCropDialog
 import app.getknit.knit.ui.theme.knitColors
@@ -123,7 +124,8 @@ fun GroupDetailsScreen(
         onBack = onBack,
         onOpenMemberProfile = onOpenMemberProfile,
         onSetPhoto = {
-            groupPhotoPicker.launch(
+            groupPhotoPicker.launchOrSay(
+                context,
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
             )
         },

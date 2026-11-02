@@ -468,6 +468,7 @@
     <string name="chat_transfer_failed_background">Не вдалося — на цьому телефоні Knit має бути на екрані, щоб надіслати файл напряму</string>
     <string name="chat_transfer_interrupted">Перервано</string>
     <string name="chat_transfer_no_app">Немає застосунку, щоб відкрити цей файл</string>
+    <string name="picker_missing">На цьому телефоні немає застосунку, щоб вибрати або зберегти файли</string>
     <string name="chat_transfer_consent_title_send">Надіслати файл напряму?</string>
     <string name="chat_transfer_consent_title_receive">Отримати цей файл?</string>
     <string name="chat_transfer_consent_can_title">Як це працює</string>
