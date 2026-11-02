@@ -150,7 +150,7 @@ Builds:
 
   - versionName: 2.10.2
     versionCode: 37
-    commit: v2.10.2
+    commit: 96b8d79fb10494065471cf8ec2b1d67c8af40693
     subdir: app
     gradle:
       - yes
