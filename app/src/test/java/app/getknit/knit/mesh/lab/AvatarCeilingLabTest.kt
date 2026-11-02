@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -100,6 +101,23 @@ class AvatarCeilingLabTest {
         hash: String,
     ) = holder.transport.files.count { it == "${to.nodeId} ATTACHMENT $hash" }
 
+    /** Why [holder] sent Bob more than one copy: Bob's asks to it, its sends, Bob's marks and every line naming [hash]. */
+    private suspend fun copyState(
+        m: Mesh,
+        holder: LabNode,
+        hash: String,
+    ): String =
+        "${holder.name} sent ${copies(holder, m.bob, hash)} copies at ${lab.clock.now()}, handled " +
+            "${holder.metrics.files().blobAsksHandled} asks; ids bob=${m.bob.nodeId.take(6)} relay=${m.relay.nodeId.take(6)} " +
+            m.holders.joinToString(" ") { "${it.name}=${it.nodeId.take(6)}" } + "; bob asked it " +
+            "${m.bob.transport.blobAsks.filter { it.to == holder.nodeId && it.hash == hash }}; " +
+            "its sends ${holder.transport.files.filter { hash in it }}; marked ${m.bob.partials.markedHolders(hash).map { it.take(6) }}\n" +
+            org.robolectric.shadows.ShadowLog
+                .getLogs()
+                .filter { hash.take(8) in it.msg }
+                .joinToString("\n") { "  ${it.tag}: ${it.msg}" } + "\n" +
+            lab.report(listOf(m.bob, holder, m.relay))
+
     private fun LabNode.asksTo(
         holder: LabNode,
         hash: String,
@@ -125,13 +143,34 @@ class AvatarCeilingLabTest {
     private suspend fun cycle(m: Mesh) {
         settle(m)
         lab.clock.advance(BlobExchange.CYCLE_MS)
+        settle(m) // an ask one of Bob's timers sent as the first settle returned is served before the re-offer runs
         m.bob.reoffer()
         settle(m)
     }
 
+    /**
+     * Every node has handled everything it was handed, and every holder every ask Bob sent it, until a round hands nobody
+     * another frame. An ask's `send` returns once the holder has the frame, not once its router has served it: one still
+     * waiting there across a jump of [BlobExchange.CYCLE_MS] stamps its serve memo at the old time, and the next cycle's ask
+     * to the same holder finds the memo lapsed and is served a second copy (chaos seed 891632160).
+     */
     private suspend fun settle(m: Mesh) {
-        (m.holders + m.relay).forEach { it.transport.awaitInboundDrained() }
-        m.bob.transport.awaitInboundDrained()
+        val nodes = m.holders + m.relay + m.bob
+        val quiet =
+            // lab-lint: allow sleep-as-sync — a deadline on a loop of awaited events that fails with a report, never a pause
+            withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                do {
+                    val handed = nodes.sumOf { it.transport.framesReceived }
+                    nodes.forEach { it.transport.awaitInboundDrained() }
+                    for (holder in m.holders) {
+                        val asked =
+                            m.bob.transport.blobAsks
+                                .count { it.to == holder.nodeId }
+                        lab.await(1) { if (holder.metrics.files().blobAsksHandled >= asked) 1 else 0 }
+                    }
+                } while (nodes.sumOf { it.transport.framesReceived } != handed)
+            } != null
+        check(quiet) { "the mesh never went quiet: " + nodes.joinToString { "${it.name} frames=${it.transport.framesReceived}" } }
     }
 
     /** A DM each way, so the oracle has a thread to read across Alice and Bob, with Relay carrying it. */
@@ -180,7 +219,7 @@ class AvatarCeilingLabTest {
             cycle(m)
 
             for (holder in m.holders) {
-                assertTrue("${holder.name} sent ${copies(holder, m.bob, hash)} copies", copies(holder, m.bob, hash) <= 1)
+                if (copies(holder, m.bob, hash) > 1) throw AssertionError(copyState(m, holder, hash))
             }
             assertEquals("a holder that answered is never asked", 0, m.bob.asksTo(m.liar, hash) + m.bob.asksTo(m.honest, hash))
             for (holder in m.holders) {
