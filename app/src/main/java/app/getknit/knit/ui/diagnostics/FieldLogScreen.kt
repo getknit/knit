@@ -18,12 +18,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -93,6 +95,7 @@ fun FieldLogScreen(
                 }
             }
         },
+        onSendInChat = viewModel::sendInChat,
         onClear = viewModel::clear,
     )
 }
@@ -106,6 +109,7 @@ internal fun FieldLogScreenContent(
     onBack: () -> Unit,
     onSetEnabled: (Boolean) -> Unit,
     onShare: () -> Unit,
+    onSendInChat: () -> Unit,
     onClear: () -> Unit,
 ) {
     var confirmingClear by remember { mutableStateOf(false) }
@@ -142,6 +146,13 @@ internal fun FieldLogScreenContent(
                             Icon(Icons.Filled.Share, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.field_log_action_share))
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        // Knit is left out of the share sheet above (#287): this is the way into a Knit chat.
+                        OutlinedButton(onClick = onSendInChat, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.field_log_action_send_in_chat))
                         }
                     }
                 }
@@ -256,6 +267,7 @@ fun FieldLogScreenPreview() =
             onBack = {},
             onSetEnabled = {},
             onShare = {},
+            onSendInChat = {},
             onClear = {},
         )
     }
@@ -271,6 +283,7 @@ fun FieldLogScreenOffPreview() =
             onBack = {},
             onSetEnabled = {},
             onShare = {},
+            onSendInChat = {},
             onClear = {},
         )
     }

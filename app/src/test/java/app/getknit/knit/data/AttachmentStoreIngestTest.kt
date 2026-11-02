@@ -251,6 +251,58 @@ class AttachmentStoreIngestTest {
             assertEquals(IngestResult.Failed(IngestResult.Reason.Unreadable), store.ingestFile(fileUri("empty.txt", ByteArray(0))))
         }
 
+    // --- A file Knit wrote itself, handed over as bytes (#287) ---
+
+    /** Diagnostics sends a field log into a chat as bytes; it keeps its own name and type. */
+    @Test
+    fun aFileKnitWroteIsStoredUnderItsOwnNameAndType() =
+        runTest {
+            val log = """{"t":1,"k":"tick"}""".toByteArray() + "\n".toByteArray()
+            val result = success(store.ingestFileBytes(log, "knit-fieldlog-2.10.2-20261102-1432.jsonl", "text/plain"))
+
+            val (mime, bytes) = stored.getValue(result.ingested.hash)
+            assertEquals("text/plain", mime)
+            assertArrayEquals(log, bytes)
+            assertEquals("knit-fieldlog-2.10.2-20261102-1432.jsonl", result.ingested.name)
+            assertEquals(log.size, result.ingested.sizeBytes)
+            assertFalse(result.flagged)
+        }
+
+    /** The bytes door is the URI door past the read: the same name rules and the same refusals. */
+    @Test
+    fun bytesMeetTheSameNameRulesAndRefusals() =
+        runTest {
+            val sanitized = success(store.ingestFileBytes("x".toByteArray(), "../logs/report.txt", "text/plain"))
+            assertEquals("..logsreport.txt", sanitized.ingested.name)
+
+            // The name alone and the type alone each refuse a package: either can be the honest one.
+            assertEquals(
+                IngestResult.Failed(IngestResult.Reason.Installable),
+                store.ingestFileBytes("PK".toByteArray(), "Knit.apk", "application/octet-stream"),
+            )
+            assertEquals(
+                IngestResult.Failed(IngestResult.Reason.Installable),
+                store.ingestFileBytes("PK".toByteArray(), "notes.bin", "application/vnd.android.package-archive"),
+            )
+            assertEquals(
+                IngestResult.Failed(IngestResult.Reason.TooLarge),
+                store.ingestFileBytes(ByteArray(MAX_BYTES + 1), "big.txt", null),
+            )
+            assertEquals(IngestResult.Failed(IngestResult.Reason.Unreadable), store.ingestFileBytes(ByteArray(0), "empty.txt", null))
+        }
+
+    /** Bytes that are a picture take the image door here too, so nothing reaches a room unscreened by a name. */
+    @Test
+    fun aJpegHandedOverAsBytesTakesTheImageDoor() =
+        runTest {
+            val result = success(store.ingestFileBytes(geotaggedJpeg(), "report.txt", "text/plain", screen = true))
+
+            val (mime, bytes) = stored.getValue(result.ingested.hash)
+            assertEquals("image/jpeg", mime)
+            assertNoMetadata(bytes)
+            coVerify(exactly = 1) { screening.isImageExplicit(bytes) }
+        }
+
     @Test
     fun anEmptyVoiceNoteIsRefused() =
         runTest {

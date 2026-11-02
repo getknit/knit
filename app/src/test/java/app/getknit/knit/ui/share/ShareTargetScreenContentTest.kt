@@ -60,4 +60,19 @@ class ShareTargetScreenContentTest {
         compose.onNodeWithTag("chat_row_dm-1").performClick()
         assertEquals("dm-1", picked)
     }
+
+    /** A file can go only to a DM or a group (ADR 2026-09.qq2r), so a file-only share lists no room, bridged or not. */
+    @Test
+    fun aFileOnlyShareListsNoRoom() {
+        val rows = listOf(row("nearby", "Nearby", isRoom = true), row("meshtastic", "LongFast", isRoom = true), row("dm-1", "Ada"))
+        compose.setContent {
+            KnitTheme {
+                ShareTargetScreenContent(conversations = rows, now = now, fileOnly = true, onBack = {}, onPick = {})
+            }
+        }
+
+        compose.onNodeWithTag("chat_row_dm-1").assertIsDisplayed()
+        compose.onNodeWithTag("chat_row_nearby").assertDoesNotExist()
+        compose.onNodeWithTag("chat_row_meshtastic").assertDoesNotExist()
+    }
 }

@@ -407,24 +407,54 @@ class AttachmentStore(
                 return@withContext IngestResult.Failed(IngestResult.Reason.TooLarge)
             }
             val bytes = readBounded(uri) ?: return@withContext IngestResult.Failed(IngestResult.Reason.TooLarge)
-            failureFor(bytes)?.let { return@withContext it }
-            reused(bytes, name, screen)?.let { return@withContext it }
-
-            FileTypes.imageMimeOf(bytes)?.let { sniffed ->
-                val asImage = ingestPicked(bytes, sniffed, screen)
-                if (asImage is IngestResult.Success) return@withContext asImage
-            }
-
-            val mime = declared?.takeIf { it.isNotBlank() } ?: DEFAULT_MIME
-            val hash = sha256(bytes)
-            blobs.insert(hash, mime, bytes)
-            // A picked audio file draws as a voice note (VoiceAudio.isVoice), so it gets a note's length and waveform.
-            val voice = if (VoiceAudio.isVoice(mime)) VoiceAudio.describe(bytes) else null
-            IngestResult.Success(
-                Ingested(hash, mime, voice = voice, name = name, sizeBytes = bytes.size),
-                flagged = false,
-            )
+            storeFile(bytes, name, declared, screen)
         }
+
+    /**
+     * [ingestFile] for a file Knit made itself and holds in memory: a field log or a crash report sent from
+     * Diagnostics into a chat (#287). There is no URI on purpose — Knit's own provider is never read on a URI's
+     * word (ADR 2026-11.vdx4) — so the bytes are handed over and meet the same refusals and the same image sniff
+     * as a picked file.
+     */
+    suspend fun ingestFileBytes(
+        bytes: ByteArray,
+        name: String?,
+        declared: String?,
+        screen: Boolean = false,
+    ): IngestResult =
+        withContext(Dispatchers.IO) {
+            val sanitized = AttachmentName.sanitize(name)
+            if (FileTypes.isInstallable(declared, sanitized)) {
+                return@withContext IngestResult.Failed(IngestResult.Reason.Installable)
+            }
+            storeFile(bytes, sanitized, declared, screen)
+        }
+
+    /** What [ingestFile] and [ingestFileBytes] share once the bytes are in hand and the name is sanitized. */
+    private suspend fun storeFile(
+        bytes: ByteArray,
+        name: String?,
+        declared: String?,
+        screen: Boolean,
+    ): IngestResult {
+        failureFor(bytes)?.let { return it }
+        reused(bytes, name, screen)?.let { return it }
+
+        FileTypes.imageMimeOf(bytes)?.let { sniffed ->
+            val asImage = ingestPicked(bytes, sniffed, screen)
+            if (asImage is IngestResult.Success) return asImage
+        }
+
+        val mime = declared?.takeIf { it.isNotBlank() } ?: DEFAULT_MIME
+        val hash = sha256(bytes)
+        blobs.insert(hash, mime, bytes)
+        // A picked audio file draws as a voice note (VoiceAudio.isVoice), so it gets a note's length and waveform.
+        val voice = if (VoiceAudio.isVoice(mime)) VoiceAudio.describe(bytes) else null
+        return IngestResult.Success(
+            Ingested(hash, mime, voice = voice, name = name, sizeBytes = bytes.size),
+            flagged = false,
+        )
+    }
 
     /** The provider's display name for [uri], or null when it offers none. */
     private fun displayName(uri: Uri): String? =

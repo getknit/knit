@@ -94,6 +94,7 @@ import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
 import app.getknit.knit.ui.reaction
 import app.getknit.knit.ui.share.OutsideUris
+import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.voice.VoicePlayer
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -3602,6 +3603,48 @@ class ChatViewModelTest {
             advanceUntilIdle()
 
             assertEquals(ingested, vm.pendingAttachment.value)
+        }
+
+    /**
+     * #287: a field log or a crash report from Diagnostics arrives as Knit's own bytes, never a URI, so nothing asks
+     * OutsideUris and no provider is read (ADR 2026-11.vdx4). It meets a shared file's refusals, the room and an old
+     * peer, from the repositories rather than the unsettled state, and then stages.
+     */
+    @Test
+    fun aLogKnitWroteStagesFromItsBytesBehindTheFileRefusals() =
+        runTest {
+            val log = OwnFile("knit-fieldlog-2.10.2-20261102-1432.jsonl", "text/plain", "{}\n".toByteArray())
+            val ingested = AttachmentStore.Ingested("loghash", "text/plain", name = log.name, sizeBytes = log.bytes.size)
+            coEvery { attachments.ingestFileBytes(log.bytes, log.name, log.mime, any()) } returns
+                AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            coEvery { peers.find("bob") } returns peer("bob", "Bob", capabilities = Protocol.LOCAL_CAPABILITIES)
+            coEvery { peers.find("old") } returns peer("old", "Old", capabilities = Protocol.CAP_E2E)
+
+            val room = vm()
+            val roomEvents = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { room.events.collect { roomEvents += it } }
+            room.attachOwnFile(log)
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_share_needs_chat), roomEvents)
+            assertNull(room.pendingAttachment.value)
+
+            stubDm("old")
+            val stale = vm("old")
+            val staleEvents = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { stale.events.collect { staleEvents += it } }
+            stale.attachOwnFile(log)
+            advanceUntilIdle()
+            assertEquals(listOf(R.string.chat_file_peer_too_old), staleEvents)
+            assertNull(stale.pendingAttachment.value)
+
+            stubDm("bob")
+            val fresh = vm("bob")
+            fresh.attachOwnFile(log)
+            advanceUntilIdle()
+            assertEquals(ingested, fresh.pendingAttachment.value)
+            coVerify(exactly = 1) { attachments.ingestFileBytes(log.bytes, log.name, log.mime, false) }
+            coVerify(exactly = 0) { attachments.isVideo(any()) }
+            coVerify(exactly = 0) { attachments.ingestFile(any(), any()) }
         }
 
     @Test

@@ -1251,6 +1251,7 @@
     <string name="crash_action_report">Auf GitHub melden</string>
     <string name="crash_action_copy">Kopieren</string>
     <string name="crash_action_share">Als Datei teilen</string>
+    <string name="crash_action_send_in_chat">An einen Chat senden</string>
     <string name="crash_action_delete">Löschen</string>
     <string name="crash_copied">Kopiert</string>
     <string name="crash_share_chooser_title">Absturzdetails senden</string>
@@ -1280,6 +1281,7 @@
         <item quantity="other">…und %1$d weitere Zeilen in der Datei</item>
     </plurals>
     <string name="field_log_action_share">Als Datei teilen</string>
+    <string name="field_log_action_send_in_chat">An einen Chat senden</string>
     <string name="field_log_share_chooser_title">Feldprotokoll senden</string>
     <string name="field_log_preview_header">Inhalt der Datei</string>
     <string name="field_log_empty">Noch nichts aufgezeichnet. Einträge erscheinen, sobald das Mesh-Netzwerk eine Minute lang läuft.</string>

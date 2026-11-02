@@ -124,6 +124,7 @@ import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.TranslateOutcome
 import app.getknit.knit.translate.TranslateTarget
 import app.getknit.knit.ui.share.OutsideUris
+import app.getknit.knit.ui.share.OwnFile
 import app.getknit.knit.ui.translate.LanguageNames
 import app.getknit.knit.ui.voice.VoicePlayer
 import app.getknit.knit.ui.voice.VoiceRecorder
@@ -3053,6 +3054,22 @@ class ChatViewModel(
             } else {
                 attachAsFile(uri)
             }
+        }
+    }
+
+    /**
+     * Stages a file Knit wrote itself (a field log or a crash report from Diagnostics, #287), handed over as bytes.
+     * There is no URI to ask [outsideUris] about: Knit's own provider is refused on a URI's word because another app
+     * could name it (ADR 2026-11.vdx4), and these bytes never left the process. The rest is [attachFile]'s: the same
+     * refusals, every one of them spoken, and the same ingest.
+     */
+    fun attachOwnFile(file: OwnFile) {
+        viewModelScope.launch {
+            refusalForFile()?.let {
+                _events.tryEmit(it)
+                return@launch
+            }
+            stage(attachments.ingestFileBytes(file.bytes, file.name, file.mime, screen = isRoom), notifyFailure = true)
         }
     }
 

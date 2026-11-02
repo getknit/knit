@@ -6,6 +6,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.fieldlog.FieldLog
 import app.getknit.knit.fieldlog.FieldLogDocument
 import app.getknit.knit.fieldlog.FieldLogExport
+import app.getknit.knit.ui.share.ShareInbox
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -21,11 +22,14 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 /**
  * The Field log screen's driver (ADR 2026-10.a239): it shows the file exactly as the user would send it — its line
@@ -48,6 +52,7 @@ class FieldLogViewModelTest {
             coEvery { setEnabled(any(), any()) } coAnswers { secondArg<suspend (Boolean) -> Unit>().invoke(firstArg()) }
         }
     private val export = mockk<FieldLogExport>(relaxed = true)
+    private val inbox = ShareInbox()
 
     @Before
     fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -73,7 +78,7 @@ class FieldLogViewModelTest {
             val doc = document(3)
             coEvery { export.render() } returns doc
 
-            val vm = FieldLogViewModel(log, export, settings)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
             advanceUntilIdle()
 
             val state = vm.state.value
@@ -90,7 +95,7 @@ class FieldLogViewModelTest {
         runTest {
             coEvery { export.render() } returns document(250)
 
-            val vm = FieldLogViewModel(log, export, settings)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
             advanceUntilIdle()
 
             assertEquals(200, vm.state.value.preview.size)
@@ -106,7 +111,7 @@ class FieldLogViewModelTest {
     fun switchingTheLogOnPersistsTheChoiceAndReReadsTheFile() =
         runTest {
             coEvery { export.render() } returns document(0) andThen document(1)
-            val vm = FieldLogViewModel(log, export, settings)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
             advanceUntilIdle()
             assertFalse(vm.state.value.enabled)
 
@@ -122,7 +127,7 @@ class FieldLogViewModelTest {
     fun clearEmptiesTheLogSaysSoAndShowsTheEmptiedFile() =
         runTest {
             coEvery { export.render() } returns document(5) andThen document(0)
-            val vm = FieldLogViewModel(log, export, settings)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
             val events = events(vm)
             advanceUntilIdle()
             assertEquals(5, vm.state.value.events)
@@ -143,12 +148,54 @@ class FieldLogViewModelTest {
     fun aShareTheSystemCouldNotStartSaysSo() =
         runTest {
             coEvery { export.render() } returns document(1)
-            val vm = FieldLogViewModel(log, export, settings)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
             val events = events(vm)
             advanceUntilIdle()
 
             vm.onShareFailed()
 
             assertEquals(listOf(R.string.crash_share_error), events)
+        }
+
+    /**
+     * Send in a chat (#287) hands the chat picker the file Share would write, as bytes and never as a URI: the chat
+     * refuses Knit's own provider (ADR 2026-11.vdx4).
+     */
+    @Test
+    fun sendInChatOffersTheFileAsBytes() =
+        runTest {
+            val doc = document(2)
+            coEvery { export.render() } returns doc
+            every { export.fileName() } returns "knit-fieldlog-2.10.2-20261102-1432.jsonl"
+            val vm = FieldLogViewModel(log, export, settings, inbox)
+            advanceUntilIdle()
+
+            vm.sendInChat()
+            advanceUntilIdle()
+
+            val shared = requireNotNull(inbox.pending.value)
+            val file = requireNotNull(shared.ownFile)
+            assertEquals("knit-fieldlog-2.10.2-20261102-1432.jsonl", file.name)
+            assertEquals("text/plain", file.mime)
+            assertArrayEquals(doc.text.encodeToByteArray(), file.bytes)
+            assertNull(shared.fileUri)
+            assertNull(shared.imageUri)
+            assertTrue(shared.fileOnly)
+        }
+
+    @Test
+    fun aLogThatCannotBeRenderedForAChatSaysSoAndOffersNothing() =
+        runTest {
+            coEvery { export.render() } returns document(1)
+            val vm = FieldLogViewModel(log, export, settings, inbox)
+            val events = events(vm)
+            advanceUntilIdle()
+            coEvery { export.render() } throws IOException("journal gone")
+
+            vm.sendInChat()
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.crash_share_error), events)
+            assertNull(inbox.pending.value)
         }
 }

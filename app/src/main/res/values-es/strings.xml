@@ -1273,6 +1273,7 @@
     <string name="crash_action_report">Informar en GitHub</string>
     <string name="crash_action_copy">Copiar</string>
     <string name="crash_action_share">Compartir como archivo</string>
+    <string name="crash_action_send_in_chat">Enviar a un chat</string>
     <string name="crash_action_delete">Eliminar</string>
     <string name="crash_copied">Copiado</string>
     <string name="crash_share_chooser_title">Enviar detalles del fallo</string>
@@ -1304,6 +1305,7 @@
         <item quantity="other">…y %1$d líneas más en el archivo</item>
     </plurals>
     <string name="field_log_action_share">Compartir como archivo</string>
+    <string name="field_log_action_send_in_chat">Enviar a un chat</string>
     <string name="field_log_share_chooser_title">Enviar registro de campo</string>
     <string name="field_log_preview_header">Qué hay en el archivo</string>
     <string name="field_log_empty">Todavía no hay nada registrado. Las entradas aparecen cuando la mesh lleva un minuto funcionando.</string>

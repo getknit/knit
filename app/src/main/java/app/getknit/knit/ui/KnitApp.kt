@@ -287,8 +287,9 @@ fun KnitApp(startRoute: String? = null) {
         }
     }
 
-    // A share arrived (cold start: pending at first composition; warm start: onNewIntent flips it).
-    // Open the target picker over the chat list — so Back/abandon returns there. A share that lands
+    // A share arrived (cold start: pending at first composition; warm start: onNewIntent flips it), or
+    // Diagnostics' Send in a chat offered a log from inside the app (#287).
+    // Open the target picker over the current screen — so Back/abandon returns there. A share that lands
     // before onboarding is dropped rather than left to leak into a later chat. launchSingleTop keeps
     // the cold-start navigate from stacking a second picker.
     LaunchedEffect(pendingShare != null) {
@@ -462,9 +463,14 @@ fun KnitApp(startRoute: String? = null) {
                 )
             }
             composable(Routes.SHARE) { entry ->
+                // Read once on entry: Back clears the inbox before the picker leaves, and the rows must not
+                // change under the exit animation.
+                val fileOnly = remember(entry) { shareInbox.pending.value?.fileOnly == true }
                 ShareTargetScreen(
-                    // Abandoning the share clears the inbox so it can't prefill a later chat; the picker
-                    // always sits over the chat list, so popping returns there.
+                    fileOnly = fileOnly,
+                    // Abandoning the share clears the inbox so it can't prefill a later chat. Popping returns to
+                    // whatever the picker opened over: the chat list for another app's share, or the field log
+                    // or crash report that Send in a chat came from (#287).
                     onBack = {
                         navController.ifOnTop(entry) {
                             shareInbox.clear()

@@ -37,12 +37,14 @@ import org.koin.androidx.compose.koinViewModel
  * conversation — the Nearby room, a group, or an existing DM — to open it with the shared content
  * staged in the draft. The target list reuses [ChatListViewModel]'s conversation rows (so it shows
  * Nearby + active groups + DMs with history); [onPick] receives the chosen conversation id, and
- * [onBack] (UI or hardware Back) abandons the share.
+ * [onBack] (UI or hardware Back) abandons the share. A [fileOnly] share lists only the DMs and groups, the
+ * only threads a file can go to (ADR 2026-09.qq2r).
  */
 @Composable
 fun ShareTargetScreen(
     onBack: () -> Unit,
     onPick: (conversationId: String) -> Unit,
+    fileOnly: Boolean = false,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -54,17 +56,28 @@ fun ShareTargetScreen(
 
     ShareTargetScreenContent(
         conversations = state.conversations,
+        fileOnly = fileOnly,
         now = now,
         onBack = onBack,
         onPick = onPick,
     )
 }
 
+/**
+ * The rows a share can go to. A file reaches only a DM or a group, so a [fileOnly] share drops every room, the
+ * Meshtastic room among them; the chat still refuses one on its own, this only stops offering it.
+ */
+internal fun shareTargets(
+    conversations: List<ConversationRow>,
+    fileOnly: Boolean,
+): List<ConversationRow> = if (fileOnly) conversations.filterNot { it.isRoom } else conversations
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ShareTargetScreenContent(
     conversations: List<ConversationRow>,
     now: Long,
+    fileOnly: Boolean = false,
     onBack: () -> Unit,
     onPick: (conversationId: String) -> Unit,
 ) {
@@ -88,7 +101,7 @@ internal fun ShareTargetScreenContent(
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
-            items(conversations, key = { it.id }) { row ->
+            items(shareTargets(conversations, fileOnly), key = { it.id }) { row ->
                 ConversationListItem(row = row, now = now, onClick = { onPick(row.id) })
             }
         }

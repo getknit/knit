@@ -21,12 +21,38 @@ import kotlinx.coroutines.flow.getAndUpdate
  * [imageType] is the type the share declared for [imageUri] (an `image/` or `video/` one). It names the failure
  * when Knit cannot read the item at all: without a grant the provider will not even type it for Knit, so the
  * share's own word is the only thing that still calls it a video (#268).
+ *
+ * [ownFile] is a file Knit made itself, handed over as bytes from inside the process (#287). It is the only
+ * field no intent can fill: `MainActivity` never sets it.
  */
 data class SharedContent(
     val text: String?,
     val imageUri: String?,
     val fileUri: String? = null,
     val imageType: String? = null,
+    val ownFile: OwnFile? = null,
+) {
+    /** No text worth a draft and nothing to attach. */
+    val isEmpty: Boolean
+        get() = text.isNullOrBlank() && listOfNotNull(imageUri, fileUri, ownFile).isEmpty()
+
+    /** True when the payload is a file and nothing a room could take, so only a DM or a group can receive it. */
+    val fileOnly: Boolean
+        get() = text.isNullOrBlank() && imageUri == null && (fileUri != null || ownFile != null)
+}
+
+/**
+ * A file Knit rendered itself, a field log or a crash report from Diagnostics, carried into a chat as bytes
+ * (#287). Diagnostics' share sheet serves these through Knit's own `FileProvider`, and the chat refuses every URI
+ * on Knit's own provider because another app can name one just as well (ADR 2026-11.vdx4). Bytes handed over in
+ * process carry no such doubt: only Knit's own code builds one, and it is never parsed from an intent.
+ *
+ * Not a data class: generated equality on a [ByteArray] compares identities, which reads as a value and is not.
+ */
+class OwnFile(
+    val name: String,
+    val mime: String,
+    val bytes: ByteArray,
 )
 
 /**
@@ -42,7 +68,7 @@ class ShareInbox {
 
     /** Stage a payload from the share sheet. Fully-empty payloads are ignored. */
     fun offer(content: SharedContent) {
-        if (content.text.isNullOrBlank() && content.imageUri == null && content.fileUri == null) return
+        if (content.isEmpty) return
         _pending.value = content
     }
 

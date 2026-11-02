@@ -7,7 +7,11 @@ import app.getknit.knit.R
 import app.getknit.knit.crash.CrashIssueUrl
 import app.getknit.knit.crash.CrashReportRef
 import app.getknit.knit.crash.CrashReports
+import app.getknit.knit.crash.shareFileName
 import app.getknit.knit.ui.ISSUES_URL
+import app.getknit.knit.ui.share.OwnFile
+import app.getknit.knit.ui.share.ShareInbox
+import app.getknit.knit.ui.share.SharedContent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,10 +30,12 @@ data class CrashLogUiState(
  * Backs the "Last crash" detail screen — read the newest stored report, copy it, share it as a file,
  * open a prefilled GitHub bug form for it, or delete every stored report.
  *
- * Nothing here transmits: [issueUrl] returns a link the user's browser opens, and the app never posts.
+ * Nothing here transmits: [issueUrl] returns a link the user's browser opens, [sendInChat] hands the report to
+ * the chat picker, and the app never posts.
  */
 class CrashLogViewModel(
     private val crashes: CrashReports,
+    private val shareInbox: ShareInbox,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CrashLogUiState())
     val state: StateFlow<CrashLogUiState> = _state.asStateFlow()
@@ -64,6 +70,28 @@ class CrashLogViewModel(
      * launch the chooser with the result, the same shape as `prepareKnitApk`.
      */
     suspend fun stageForShare(): Uri? = _state.value.ref?.let { crashes.exportForShare(it) }
+
+    /**
+     * Send in a chat (#287): the report [stageForShare] would write, read again so the name pass is as fresh as
+     * the share sheet's, handed to the chat picker as bytes. Never a URI: the chat refuses Knit's own provider
+     * (ADR 2026-11.vdx4).
+     */
+    fun sendInChat() {
+        val ref = _state.value.ref
+        if (ref == null) {
+            onShareFailed()
+            return
+        }
+        viewModelScope.launch {
+            val text = crashes.read(ref)
+            if (text == null) {
+                onShareFailed()
+            } else {
+                val file = OwnFile(shareFileName(ref.appVersion, ref.at), DIAGNOSTICS_FILE_MIME, text.encodeToByteArray())
+                shareInbox.offer(SharedContent(text = null, imageUri = null, ownFile = file))
+            }
+        }
+    }
 
     /**
      * A prefilled new-issue URL for the loaded report, or `null` if there is nothing to report. The

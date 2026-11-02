@@ -7,6 +7,9 @@ import app.getknit.knit.R
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.fieldlog.FieldLog
 import app.getknit.knit.fieldlog.FieldLogExport
+import app.getknit.knit.ui.share.OwnFile
+import app.getknit.knit.ui.share.ShareInbox
+import app.getknit.knit.ui.share.SharedContent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,13 +32,14 @@ data class FieldLogUiState(
 
 /**
  * Backs the Field log screen (ADR 2026-10.a239): what the log holds, the file the user would send, and the
- * switch and Clear. Nothing here transmits — [stageForShare] returns a Uri for the system share sheet, and the
- * user picks where it goes.
+ * switch and Clear. Nothing here transmits — [stageForShare] returns a Uri for the system share sheet, and
+ * [sendInChat] hands the file to the chat picker; either way the user picks where it goes.
  */
 class FieldLogViewModel(
     private val log: FieldLog,
     private val export: FieldLogExport,
     private val settings: SettingsStore,
+    private val shareInbox: ShareInbox,
 ) : ViewModel() {
     private val _state = MutableStateFlow(FieldLogUiState())
     val state: StateFlow<FieldLogUiState> = _state.asStateFlow()
@@ -70,6 +74,26 @@ class FieldLogViewModel(
     }
 
     suspend fun stageForShare(): Uri? = export.stage()
+
+    /**
+     * Send in a chat (#287): the file [stageForShare] would write, handed to the chat picker as bytes. The
+     * picker opens on the offer, and the chat the user picks stages it in the composer. Never a URI: the chat
+     * refuses Knit's own provider (ADR 2026-11.vdx4).
+     */
+    fun sendInChat() {
+        viewModelScope.launch {
+            // render() reads on IO; encoding its text here costs less than the line split refresh() already does.
+            val file =
+                runCatching {
+                    OwnFile(export.fileName(), DIAGNOSTICS_FILE_MIME, export.render().text.encodeToByteArray())
+                }.getOrNull()
+            if (file == null) {
+                onShareFailed()
+            } else {
+                shareInbox.offer(SharedContent(text = null, imageUri = null, ownFile = file))
+            }
+        }
+    }
 
     fun setEnabled(value: Boolean) {
         viewModelScope.launch {

@@ -50,6 +50,7 @@ class CrashLogScreenContentTest {
         state: CrashLogUiState,
         onCopy: (String) -> Unit = {},
         onShare: () -> Unit = {},
+        onSendInChat: () -> Unit = {},
         onReport: () -> Unit = {},
         onDelete: () -> Unit = {},
     ) {
@@ -62,6 +63,7 @@ class CrashLogScreenContentTest {
                     onBack = {},
                     onCopy = onCopy,
                     onShare = onShare,
+                    onSendInChat = onSendInChat,
                     onReportOnGitHub = onReport,
                     onDelete = onDelete,
                 )
@@ -86,16 +88,20 @@ class CrashLogScreenContentTest {
     }
 
     @Test
-    fun copyAndShareInvokeTheirCallbacks() {
+    fun copyShareAndSendInChatInvokeTheirCallbacks() {
         var copied = ""
         var shares = 0
-        show(loaded(), onCopy = { copied = it }, onShare = { shares++ })
+        var sends = 0
+        show(loaded(), onCopy = { copied = it }, onShare = { shares++ }, onSendInChat = { sends++ })
 
         compose.onNodeWithText(context.getString(R.string.crash_action_copy)).performClick()
         compose.onNodeWithText(context.getString(R.string.crash_action_share)).performClick()
+        scrollTo(context.getString(R.string.crash_action_send_in_chat))
+        compose.onNodeWithText(context.getString(R.string.crash_action_send_in_chat)).performClick()
 
         assertEquals(trace, copied)
         assertEquals(1, shares)
+        assertEquals(1, sends)
     }
 
     /**

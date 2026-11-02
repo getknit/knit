@@ -579,6 +579,8 @@ fun ChatScreen(
             // ours: this runs on first composition, before the state combine has read a peer row, so a
             // check against `state.canSendFile` here would refuse every capable peer exactly once.
             shared.fileUri?.let { viewModel.attachFile(it.toUri()) }
+            // A log Knit wrote itself, handed over as bytes from Diagnostics (#287); never a URI.
+            shared.ownFile?.let { viewModel.attachOwnFile(it) }
         }
     }
     // Put back what was left in this thread's composer and never sent. One-shot (the ViewModel hands the

@@ -14,6 +14,10 @@ lines.
   screens:** READ ADR 028 and ADR 2026-10.fzsy. Reports are written redacted and leave the phone only by the user's
   hand; ANRs are imported from `ApplicationExitInfo` at start, once each (the `anr-seen` watermark), and `AnrTrace`
   is the privacy boundary for native frames, which the redactor passes verbatim.
+- **When touching the Diagnostics share paths (`launchCrashShareChooser`, `FieldLogViewModel.sendInChat` /
+  `CrashLogViewModel.sendInChat`, `FieldLogExport.fileName`):** READ ADR 2026-11.vdx4's 2026-11-02 amendment. The
+  share sheet leaves Knit out (`EXTRA_EXCLUDE_COMPONENTS`), because the chat refuses a URI on Knit's own provider;
+  Send to a chat hands the same rendered file to the chat picker as bytes (`OwnFile`), never a URI.
 - **When touching `fieldlog/`, a `FieldEvent`, a `field.record(…)` / `field.sampler(…)` / `follower(…)` call in a
   transport, the spool plane (`mesh/spool/SpoolFieldLog.kt`), the LoRa plane (`mesh/lora/LoraFieldLog.kt`) or the call
   plane (`call/CallFieldLog.kt`, `CallMediaSampler`), `ui/diagnostics/FieldLog*`, or `MessageDao.inboundDelays` /

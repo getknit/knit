@@ -1273,6 +1273,7 @@
     <string name="crash_action_report">Signaler sur GitHub</string>
     <string name="crash_action_copy">Copier</string>
     <string name="crash_action_share">Partager en fichier</string>
+    <string name="crash_action_send_in_chat">Envoyer dans une discussion</string>
     <string name="crash_action_delete">Supprimer</string>
     <string name="crash_copied">Copié</string>
     <string name="crash_share_chooser_title">Envoyer les détails du plantage</string>
@@ -1304,6 +1305,7 @@
         <item quantity="other">…et %1$d lignes de plus dans le fichier</item>
     </plurals>
     <string name="field_log_action_share">Partager en fichier</string>
+    <string name="field_log_action_send_in_chat">Envoyer dans une discussion</string>
     <string name="field_log_share_chooser_title">Envoyer le journal de terrain</string>
     <string name="field_log_preview_header">Contenu du fichier</string>
     <string name="field_log_empty">Rien d’enregistré pour l’instant. Les entrées apparaissent une fois que le réseau mesh fonctionne depuis une minute.</string>

@@ -156,8 +156,8 @@ val uiModule =
                 hiddenKnown = get<HiddenKnownStore>(),
             )
         }
-        viewModel { CrashLogViewModel(get()) }
-        viewModel { FieldLogViewModel(get(), get(), get()) }
+        viewModel { CrashLogViewModel(get(), get()) }
+        viewModel { FieldLogViewModel(get(), get(), get(), get()) }
         // Your mesh: the plain-words companion to Diagnostics. Reads the concrete ForwardRepository for its
         // "carrying now" count — a UI projection deliberately kept off the ForwardStore seam.
         viewModel { YourMeshViewModel(get(), get(), get(), get<ForwardRepository>(), get()) }

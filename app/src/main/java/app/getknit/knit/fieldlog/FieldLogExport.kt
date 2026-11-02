@@ -58,12 +58,17 @@ class FieldLogExport(
             runCatching {
                 val dir = File(context.cacheDir, FIELD_LOG_SHARE_DIR).apply { mkdirs() }
                 dir.listFiles()?.forEach { it.delete() }
-                val name = shareFileName(currentCrashEnvironment().versionName, clock(), stem = "knit-fieldlog", extension = "jsonl")
-                val dest = File(dir, name)
+                val dest = File(dir, fileName())
                 dest.writeText(doc.text)
                 FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
             }.getOrNull()
         }
+
+    /**
+     * The name the file goes out under, e.g. `knit-fieldlog-2.10.2-20261102-1432.jsonl`: [stage]'s file, and the
+     * attachment's name when Diagnostics sends the log into a chat as bytes (#287).
+     */
+    fun fileName(): String = shareFileName(currentCrashEnvironment().versionName, clock(), stem = "knit-fieldlog", extension = "jsonl")
 
     /** ASCII `key: value` facts — the crash report's own header lines, so a reader sees the same device. */
     private fun device(): List<String> {

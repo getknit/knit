@@ -119,6 +119,11 @@ lines.
   `getType` and `isVideo` included, and a refusal says what an unreadable URI says. A clip is read for its text
   only, never through `ClipData.Item.coerceToText` (Add contact's `clipText`). Tests: `OutsideUrisTest`,
   `OutsideUrisOfTest`, `ClipTextTest`, `ChatViewModelTest`'s #284 cases.
+  **When touching `OwnFile`, `SharedContent.ownFile` / `fileOnly`, `ChatViewModel.attachOwnFile`,
+  `AttachmentStore.ingestFileBytes` / `storeFile`, or `shareTargets`:** READ ADR 2026-11.vdx4's 2026-11-02
+  amendment — Knit's own field log and crash reports reach a chat as in-process bytes from Diagnostics' Send to a
+  chat, never as a URI; `ownFile` is the one `SharedContent` field no intent fills, and the bytes meet a picked
+  file's refusals and ingest. A file-only share lists only DMs and groups.
 - **When touching `data/ImageStrip` or `AttachmentStore.passThrough`:** READ ADR 2026-10.unqn — a picture already
   bounded, upright and no sharper than the q85 re-encode goes out as its own bytes with the metadata stripped, so the
   "no GPS leaves the phone" invariant rests on the strip's allow-list: anything it does not fully understand answers

@@ -1,6 +1,7 @@
 package app.getknit.knit.ui.diagnostics
 
 import android.content.ClipData
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -19,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Share
@@ -53,6 +55,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.crash.CrashReportRef
 import app.getknit.knit.ui.components.BarTitle
@@ -68,7 +71,8 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import java.io.File
 
-private const val CRASH_MIME = "text/plain"
+/** The type a crash report or the field log goes out under, through the share sheet or into a chat. */
+internal const val DIAGNOSTICS_FILE_MIME = "text/plain"
 
 /**
  * The stored crash report, with the three ways to hand it over — a prefilled GitHub bug form, the
@@ -125,6 +129,7 @@ fun CrashLogScreen(
                 if (uri == null) viewModel.onShareFailed() else launchCrashShareChooser(context, uri)
             }
         },
+        onSendInChat = viewModel::sendInChat,
         onReportOnGitHub = {
             // Clipboard first, so the paste target is populated before the browser takes focus: the
             // prefilled form carries an excerpt, the clipboard carries the whole report.
@@ -146,6 +151,7 @@ internal fun CrashLogScreenContent(
     onBack: () -> Unit,
     onCopy: (String) -> Unit,
     onShare: () -> Unit,
+    onSendInChat: () -> Unit,
     onReportOnGitHub: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -195,6 +201,7 @@ internal fun CrashLogScreenContent(
                         onReport = { confirmingReport = true },
                         onCopy = { onCopy(state.text) },
                         onShare = onShare,
+                        onSendInChat = onSendInChat,
                     )
                 }
                 item { SectionHeader(stringResource(R.string.crash_trace_header)) }
@@ -282,6 +289,7 @@ private fun CrashActionsSection(
     onReport: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
+    onSendInChat: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         // Primary, because it is the action that actually gets the trace to a maintainer.
@@ -301,6 +309,13 @@ private fun CrashActionsSection(
             Icon(Icons.Filled.Share, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.crash_action_share))
+        }
+        Spacer(Modifier.height(8.dp))
+        // Knit is left out of the share sheet (#287): this is the way into a Knit chat.
+        OutlinedButton(onClick = onSendInChat, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.crash_action_send_in_chat))
         }
     }
 }
@@ -339,7 +354,7 @@ fun launchCrashShareChooser(
 ) {
     val send =
         Intent(Intent.ACTION_SEND).apply {
-            type = CRASH_MIME
+            type = DIAGNOSTICS_FILE_MIME
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_TITLE, uri.lastPathSegment)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -348,6 +363,9 @@ fun launchCrashShareChooser(
         Intent
             .createChooser(send, context.getString(title))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Knit itself is left out (#287): this file is on Knit's own provider, which the chat refuses on a
+            // URI's word (ADR 2026-11.vdx4). Send in a chat hands the same bytes over in process instead.
+            .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(context, MainActivity::class.java)))
     runCatching { context.startActivity(chooser) }
 }
 
@@ -387,6 +405,7 @@ fun CrashLogScreenPreview() =
             onBack = {},
             onCopy = {},
             onShare = {},
+            onSendInChat = {},
             onReportOnGitHub = {},
             onDelete = {},
         )
@@ -403,6 +422,7 @@ fun CrashLogScreenEmptyPreview() =
             onBack = {},
             onCopy = {},
             onShare = {},
+            onSendInChat = {},
             onReportOnGitHub = {},
             onDelete = {},
         )

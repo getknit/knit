@@ -1528,6 +1528,7 @@
     <string name="crash_action_report">Report on GitHub</string>
     <string name="crash_action_copy">Copy</string>
     <string name="crash_action_share">Share as a file</string>
+    <string name="crash_action_send_in_chat">Send to a chat</string>
     <string name="crash_action_delete">Delete</string>
     <string name="crash_copied">Copied</string>
     <string name="crash_share_chooser_title">Send crash details</string>
@@ -1558,6 +1559,7 @@
         <item quantity="other">…and %1$d more lines in the file</item>
     </plurals>
     <string name="field_log_action_share">Share as a file</string>
+    <string name="field_log_action_send_in_chat">Send to a chat</string>
     <string name="field_log_share_chooser_title">Send field log</string>
     <string name="field_log_preview_header">What\'s in the file</string>
     <string name="field_log_empty">Nothing recorded yet. Entries appear once the mesh has been running for a minute.</string>

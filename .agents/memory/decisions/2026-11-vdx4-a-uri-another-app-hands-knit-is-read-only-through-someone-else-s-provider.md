@@ -55,3 +55,37 @@ that takes a URI from another app (a new intent filter, a new receiver, a widget
 first read, `getType` and `query` included. Tests: `OutsideUrisTest` (the rule), `OutsideUrisOfTest` (the manifest
 read), `ClipTextTest` (a clip the platform would read is not), and `ChatViewModelTest`'s two #284 cases, which
 check that no refused URI reaches `AttachmentStore` or `TransferManager`.
+
+## Amendment 2026-11-02 — Knit's own logs reach a chat as bytes, never as a URI (#287)
+
+**What was observed.** #287, found by reading the code while reviewing #284. Diagnostics shares the field log and a
+crash report through Knit's own `FileProvider`, and none of its share sheets left Knit out, so a tester could pick
+Knit, then a chat, and get "Knit couldn't read that file": the refusal above, doing its job on a URI it cannot tell
+from a hostile one. Testers sending logs to the maintainer over Knit lost the route #284 closed. Admitting the
+provider when the share is Knit's own is not workable: an `ACTION_SEND` does not reliably carry its sender
+(`Activity.getReferrer` is the caller's word, `getCallingPackage` is null for `startActivity`).
+
+**What changed.** The field log and crash report screens gain **Send to a chat**. It renders the same file the share
+sheet would stage (`FieldLogExport.fileName` and `render`; `CrashReports.read` and `shareFileName`) and offers it to
+`ShareInbox` as an `OwnFile`: a name, `text/plain` and the bytes, held in memory. `KnitApp` opens the share-target
+picker on any pending share, so the existing route does the rest: the picked chat drains the inbox into
+`ChatViewModel.attachOwnFile`, which meets `attachFile`'s refusals (`refusalForFile`, read from the repositories
+because the drain runs before the state has a peer row) and stages through `AttachmentStore.ingestFileBytes`, the
+URI door past its read: the same name sanitizing, installable and size refusals, image sniff and identity reuse
+(`storeFile`). There is no URI to ask `OutsideUris` about, and that is the point: `SharedContent.ownFile` is the one
+field no intent fills (`MainActivity.handleShareIntent` never sets it), so nothing outside the process can reach
+this door.
+
+The two Diagnostics sheets (`launchCrashShareChooser`) now pass `EXTRA_EXCLUDE_COMPONENTS` naming `MainActivity`,
+so they no longer offer the route that ends in a refusal. A share that is a file and nothing else
+(`SharedContent.fileOnly`) lists only DMs and groups in the picker (`shareTargets`), since a room refuses one
+anyway (ADR 2026-09.qq2r); that holds for another app's file too.
+
+**What it costs.** The copy in the chat is a sent message: the field log's Clear and a crash report's Delete do not
+reach it, as they never reached a copy sent through another app, and the log still leaves the phone only by the
+user's hand (ADR 2026-10.a239, ADR 028). The rendered file sits in memory until the chat drains it or the picker is
+abandoned (the field log is at most 4 MiB, under `AttachmentStore.MAX_BYTES`). The APK share is unchanged: an
+installable package is never sent in a chat (`FileTypes.isInstallable`), so that route was refused before #284 too.
+Tests: `ShareInboxTest`, `ShareTargetScreenContentTest`, `AttachmentStoreIngestTest`'s bytes cases,
+`ChatViewModelTest.aLogKnitWroteStagesFromItsBytesBehindTheFileRefusals`, `FieldLogViewModelTest`,
+`CrashLogViewModelTest`, `CrashShareChooserTest`.
