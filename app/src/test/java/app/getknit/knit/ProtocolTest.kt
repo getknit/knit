@@ -179,6 +179,76 @@ class ProtocolTest {
     }
 
     @Test
+    fun aHelloCarriesItsToldAndAddressedFormsBehindTheNonce() {
+        // ADR 2026-11.xp6d: `t` is what the sender airs, `a` (a dialer's only) the form it dialed.
+        val nonce = ByteArray(Protocol.HELLO_NONCE_BYTES) { (0xA0 + it).toByte() }
+        val told = ByteArray(Protocol.HELLO_FORM_BYTES) { (0x10 + it).toByte() }
+        val addressed = ByteArray(Protocol.HELLO_FORM_BYTES) { (0xC0 + it).toByte() }
+        val hello = Protocol.hello(ID, nonce, told, addressed)
+
+        assertEquals(
+            "${Protocol.hello(ID, nonce)}|t101112131415161718191a1b1c1d1e1f|ac0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+            hello,
+        )
+        val parsed = checkNotNull(Protocol.parse(hello))
+        assertEquals("101112131415161718191a1b1c1d1e1f", parsed.toldHex)
+        assertEquals("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf", parsed.addressedHex)
+        assertEquals(NodeId.fromBytes(told), parsed.told)
+        assertEquals(NodeId.fromBytes(addressed), parsed.addressed)
+        // An older reader still gets fields 0-3 exactly as from a HELLO without them.
+        val plain = checkNotNull(Protocol.parse(Protocol.hello(ID, nonce)))
+        assertEquals(plain, parsed.copy(toldHex = null, addressedHex = null))
+        assertNull(plain.toldHex)
+        assertNull(plain.addressedHex)
+    }
+
+    @Test
+    fun aFormFieldCountsOnlyInItsExactShapeAndOnlyBehindAValidNonce() {
+        val nonce = "n" + "ab".repeat(Protocol.HELLO_NONCE_BYTES)
+        val form = "1a".repeat(Protocol.HELLO_FORM_BYTES) // a letter in it, so its uppercase twin differs
+        for (bad in listOf("t$form" + "0", "t" + form.dropLast(1), "T$form", "t" + form.uppercase(), "x$form", "t", "")) {
+            assertNull(bad, checkNotNull(Protocol.parse("$ID|1|42fff|$nonce|$bad")).toldHex)
+        }
+        // Behind no nonce (an advert, or an SSI's `|d<digest>`), nothing is a form, whatever it looks like.
+        val advert = checkNotNull(Protocol.parse("$ID|1|42fff|t$form|a$form"))
+        val ssi = checkNotNull(Protocol.parse("$ID|1|42fff|d1617346507|t$form|a$form"))
+        for (noNonce in listOf(advert, ssi)) {
+            assertNull(noNonce.toldHex)
+            assertNull(noNonce.addressedHex)
+        }
+        // Either order after the nonce, and a stray future field between them, still reads.
+        val parsed = checkNotNull(Protocol.parse("$ID|1|42fff|$nonce|a$form|future|t$form"))
+        assertEquals(form, parsed.toldHex)
+        assertEquals(form, parsed.addressedHex)
+        // A letter twice in its exact shape is absent, whichever copy a port would take; the other letter still reads.
+        val other = "2b".repeat(Protocol.HELLO_FORM_BYTES)
+        val twice = checkNotNull(Protocol.parse("$ID|1|42fff|$nonce|t$form|a$form|t$other"))
+        assertNull(twice.toldHex)
+        assertEquals(form, twice.addressedHex)
+        val twiceA = checkNotNull(Protocol.parse("$ID|1|42fff|$nonce|a$form|t$form|a$other"))
+        assertNull(twiceA.addressedHex)
+        assertEquals(form, twiceA.toldHex)
+        // A malformed second copy is no copy at all.
+        assertEquals(form, checkNotNull(Protocol.parse("$ID|1|42fff|$nonce|t$form|t$other" + "0")).toldHex)
+    }
+
+    @Test
+    fun aHelloRefusesAFormOfTheWrongSize() {
+        val nonce = ByteArray(Protocol.HELLO_NONCE_BYTES)
+        for (size in listOf(0, Protocol.HELLO_FORM_BYTES - 1, Protocol.HELLO_FORM_BYTES + 1)) {
+            assertTrue(runCatching { Protocol.hello(ID, nonce, told = ByteArray(size)) }.isFailure)
+            assertTrue(runCatching { Protocol.hello(ID, nonce, addressed = ByteArray(size)) }.isFailure)
+        }
+    }
+
+    @Test
+    fun theBlindAdvertBitIsTheNextFreeOneAndNotYetLocal() {
+        assertEquals(Protocol.CAP_LINK_PROOF shl 1, Protocol.CAP_BLIND_ADVERT)
+        val local = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_BLIND_ADVERT
+        assertEquals("only the Bluetooth wiring that reads tags may claim it", 0L, local)
+    }
+
+    @Test
     fun theWifiAwareSsiKeepsItsDigestBehindTheUnchangedAdvert() {
         // The SSI is advertise() + "|d<digest>", found by its last "|d": the nonce never goes there.
         val ssi = Protocol.advertise(ID) + NanCueCodec.encodeSsiDigest(1_617_346_507L)

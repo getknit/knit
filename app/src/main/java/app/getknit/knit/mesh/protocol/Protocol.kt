@@ -214,6 +214,16 @@ object Protocol {
      */
     const val CAP_LINK_PROOF = 0x40000L
 
+    /**
+     * Blinded adverts (ADR 2026-11.xp6d, knit-next #285): this build reads a Bluetooth advert whose bytes 1–16 are a
+     * rotating tag rather than a node id (`BleAdvertPayload.FLAG_BLINDED`), dials such a tag without expecting an id
+     * back ([app.getknit.knit.mesh.link.LinkHandshake.dialTag]), and writes and reads the HELLO's advertised-form fields
+     * ([hello]'s `told` and `addressed`). It says the build *reads* tags, not that it writes them. Unauthenticated, like
+     * every HELLO bit: nothing private is decided on it; a dialer without it, while this phone blinds, is the older
+     * build's lonely dial to a tag, and is refused. Not in [LOCAL_CAPABILITIES] until the Bluetooth plane reads tags.
+     */
+    const val CAP_BLIND_ADVERT = 0x80000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
@@ -223,9 +233,17 @@ object Protocol {
     /** The bytes of a link HELLO's nonce ([hello]): 16, written as 32 lowercase hex digits after an `n`. */
     const val HELLO_NONCE_BYTES = 16
 
+    /**
+     * The bytes of an advertised form in a HELLO's `t` / `a` field ([hello]): Bluetooth advert bytes 1–16 (a node id, or
+     * a blinded tag), written as 32 lowercase hex digits after the letter.
+     */
+    const val HELLO_FORM_BYTES = 16
+
     private const val SEP = '|'
     private const val NONCE_PREFIX = 'n'
     private const val NONCE_FIELD = 3
+    private const val TOLD_PREFIX = 't'
+    private const val ADDRESSED_PREFIX = 'a'
 
     /** The endpoint-info string a peer advertises: its [nodeId] plus this build's version + capabilities. */
     fun advertise(nodeId: String): String = "$nodeId$SEP$VERSION$SEP${LOCAL_CAPABILITIES.toString(RADIX)}"
@@ -236,27 +254,56 @@ object Protocol {
      * suffix `NanCueCodec.parseSsiDigest` finds by its last `|d`, so the nonce never goes there. Every shipped build
      * reads fields 0-2 alone ([parse]), so the field costs an older peer nothing. Written only while
      * [LOCAL_CAPABILITIES] carries [CAP_LINK_PROOF]: the field is present exactly when the caps carry the bit.
+     *
+     * Blinded adverts (ADR 2026-11.xp6d) add up to two fields after the nonce, each [HELLO_FORM_BYTES] in lowercase hex:
+     * `t<form>` ([told]), the advert bytes 1–16 the sender airs now, and `a<form>` ([addressed]), on a dialer's HELLO, the
+     * form it dialed. `a`, not `d`: the SSI's `|d<digest>` must never look like one. Every shipped parser reads at most
+     * fields 0-3, so the two cost an older peer nothing, and the link proof signs both HELLOs as they crossed the link, so
+     * on a proven link they are the proven sender's words (a claim about a tag, never proof it owns one).
      */
     fun hello(
         nodeId: String,
         nonce: ByteArray,
+        told: ByteArray? = null,
+        addressed: ByteArray? = null,
     ): String {
         require(nonce.size == HELLO_NONCE_BYTES) { "a HELLO nonce is $HELLO_NONCE_BYTES bytes" }
-        return "${advertise(nodeId)}$SEP$NONCE_PREFIX${nonce.toHex()}"
+        require(told == null || told.size == HELLO_FORM_BYTES) { "a told form is $HELLO_FORM_BYTES bytes" }
+        require(addressed == null || addressed.size == HELLO_FORM_BYTES) { "an addressed form is $HELLO_FORM_BYTES bytes" }
+        val base = "${advertise(nodeId)}$SEP$NONCE_PREFIX${nonce.toHex()}"
+        val t = told?.let { "$SEP$TOLD_PREFIX${it.toHex()}" }.orEmpty()
+        val a = addressed?.let { "$SEP$ADDRESSED_PREFIX${it.toHex()}" }.orEmpty()
+        return base + t + a
     }
 
     /**
      * A neighbor's advertised identity parsed from its endpoint name. [nonceHex] is a link HELLO's nonce, its 32 hex
-     * digits, only when field 3 has [hello]'s exact form (null otherwise, and always for an advert).
+     * digits, only when field 3 has [hello]'s exact form (null otherwise, and always for an advert). [toldHex] and
+     * [addressedHex] are a HELLO's `t` / `a` fields ([hello]): read only behind a valid nonce, in any order after it, in
+     * their exact shape, unknown fields skipped; a letter that appears twice in that shape is absent. They are the
+     * sender's claim only on a link that proved itself (`proven = true`); read before a proof (a responder's
+     * [app.getknit.knit.mesh.link.LinkHandshake.receiveHello], an unproven `Linked`) they are a hint at most (ADR
+     * 2026-11.xp6d).
      */
     data class PeerWire(
         val nodeId: String,
         val protoVersion: Int,
         val capabilities: Long,
         val nonceHex: String? = null,
+        val toldHex: String? = null,
+        val addressedHex: String? = null,
     ) {
         /** Its caps carry [CAP_LINK_PROOF]: the HELLO asks for, and promises, a proof. */
         val offersProof: Boolean get() = capabilities and CAP_LINK_PROOF != 0L
+
+        /** Its caps carry [CAP_BLIND_ADVERT]: the sender reads tags (and so is no older build's lonely dial). */
+        val readsTags: Boolean get() = capabilities and CAP_BLIND_ADVERT != 0L
+
+        /** The advertised form the sender says it airs, as the 26-char string of its 16 bytes, or null. */
+        val told: String? get() = toldHex?.let(::formOf)
+
+        /** The advertised form a dialer says it dialed, as the 26-char string of its 16 bytes, or null. */
+        val addressed: String? get() = addressedHex?.let(::formOf)
     }
 
     /**
@@ -272,20 +319,40 @@ object Protocol {
     fun parse(endpointName: String): PeerWire? {
         val parts = endpointName.split(SEP)
         if (NodeId.toBytesOrNull(parts[0]) == null) return null
+        val nonceHex = parts.getOrNull(NONCE_FIELD)?.let { hexField(it, NONCE_PREFIX, HELLO_NONCE_BYTES) }
+        // The form fields sit behind a valid nonce only, so an SSI (`…|d<digest>`) or a future field never reads as one.
+        val forms = if (nonceHex == null) emptyList() else parts.drop(NONCE_FIELD + 1)
         return PeerWire(
             nodeId = parts[0],
             protoVersion = parts.getOrNull(1)?.toIntOrNull() ?: 0,
             capabilities = parts.getOrNull(2)?.toLongOrNull(RADIX) ?: 0L,
-            nonceHex = parts.getOrNull(NONCE_FIELD)?.let(::nonceOf),
+            nonceHex = nonceHex,
+            toldHex = onlyForm(forms, TOLD_PREFIX),
+            addressedHex = onlyForm(forms, ADDRESSED_PREFIX),
         )
     }
 
-    // Field 3 is a nonce only as `n` + exactly 32 of [0-9a-f]; anything else is no nonce, never an error.
-    private fun nonceOf(field: String): String? {
-        if (field.length != 1 + 2 * HELLO_NONCE_BYTES || field[0] != NONCE_PREFIX) return null
+    // The one exact-shape field with [prefix] among [forms], or null when there is none or more than one: a signer that
+    // writes `|tX|tY` must not be read as X here and as Y by a port that takes the last (one proven claim, two readings).
+    private fun onlyForm(
+        forms: List<String>,
+        prefix: Char,
+    ): String? = forms.mapNotNull { hexField(it, prefix, HELLO_FORM_BYTES) }.singleOrNull()
+
+    // A field is `prefix` + exactly 2 * bytes of [0-9a-f], or nothing at all: never an error.
+    private fun hexField(
+        field: String,
+        prefix: Char,
+        bytes: Int,
+    ): String? {
+        if (field.length != 1 + 2 * bytes || field[0] != prefix) return null
         val hex = field.substring(1)
         return hex.takeIf { it.all { c -> c in '0'..'9' || c in 'a'..'f' } }
     }
+
+    // 32 lowercase hex digits (already checked by [hexField]) as the 26-char form of their 16 bytes.
+    private fun formOf(hex: String): String =
+        NodeId.fromBytes(ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(RADIX).toByte() })
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 

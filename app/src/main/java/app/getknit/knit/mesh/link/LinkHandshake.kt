@@ -59,7 +59,11 @@ object LinkHandshake {
             val reply: Protocol.PeerWire,
         ) : Dialed
 
-        /** The reply carries the bit and its proof failed for [why]. Nothing was written after our HELLO. */
+        /**
+         * The reply carries the bit and its proof failed for [why], or, for a [dialTag], the reply carries no bit at all
+         * ([WHY_UNPROVEN]). Nothing was written after our HELLO. On a tag dial, [reply]'s id is unproven: never key the
+         * failure on it.
+         */
         data class ProofFailed(
             val reply: Protocol.PeerWire,
             val why: String,
@@ -96,13 +100,51 @@ object LinkHandshake {
         prover: LinkProver,
         expectedId: String,
         nonce: ByteArray = freshNonce(),
+        told: ByteArray? = null,
+        addressed: ByteArray? = null,
     ): Dialed {
-        val helloD = Protocol.hello(prover.nodeId, nonce).encodeToByteArray()
+        val helloD = Protocol.hello(prover.nodeId, nonce, told, addressed).encodeToByteArray()
         LinkFraming.write(output, LinkFraming.Type.HELLO, helloD)
         output.flush()
         val reply = receiveHello(input) ?: return Dialed.NoReply
         if (reply.wire.nodeId != expectedId) return Dialed.WrongPeer(reply.wire)
         if (!reply.offersProof) return Dialed.Linked(reply.wire, proven = false)
+        if (reply.malformedOffer) return Dialed.ProofFailed(reply.wire, "no nonce")
+        val why = readProof(input, reply.wire.nodeId, LinkProof.Role.RESPONDER, helloD, reply.payload)
+        if (why != null) return Dialed.ProofFailed(reply.wire, why)
+        LinkFraming.write(output, LinkFraming.Type.PROOF, prover.proof(LinkProof.Role.DIALER, helloD, reply.payload))
+        output.flush()
+        return Dialed.Linked(reply.wire, proven = true)
+    }
+
+    /**
+     * Dialer, toward a blinded advert (ADR 2026-11.xp6d): [tag] is the advert's bytes 1–16, which name no node, so no id
+     * is expected back. Our HELLO carries [tag] as its `a` field and [told] (what we air now) as its `t`. The reply must
+     * carry [Protocol.CAP_LINK_PROOF] and a proof that verifies: every build that airs a tag proves itself, so a reply
+     * that does not is not that advert's phone ([WHY_UNPROVEN]). The proven id is whatever the reply names; whether it
+     * owns [tag] is the resolver's question (`AdvertAliases.onDialed`), never this one's. Our own HELLO is written
+     * before anything is read, so whoever answers learns our id even when the dial then fails.
+     *
+     * A failed tag dial ([Dialed.NoReply], [Dialed.WrongPeer], [Dialed.ProofFailed]) carries the reply's node id, which
+     * nothing proved: it is whatever the answerer wrote. The caller keys the failure on [tag] and the address it dialed,
+     * never on that id — no backoff, claim refusal, proof-failure count or GATT payload forget for it — or a forged answer
+     * would steer the penalty onto any phone (ADR 2026-11.264w, "a claim close never bumps the real peer's backoff").
+     */
+    @Suppress("ReturnCount") // one early return per outcome, in the order the records arrive, as [dial]
+    fun dialTag(
+        input: InputStream,
+        output: OutputStream,
+        prover: LinkProver,
+        tag: ByteArray,
+        told: ByteArray? = null,
+        nonce: ByteArray = freshNonce(),
+    ): Dialed {
+        val helloD = Protocol.hello(prover.nodeId, nonce, told, addressed = tag).encodeToByteArray()
+        LinkFraming.write(output, LinkFraming.Type.HELLO, helloD)
+        output.flush()
+        val reply = receiveHello(input) ?: return Dialed.NoReply
+        if (reply.wire.nodeId == prover.nodeId) return Dialed.WrongPeer(reply.wire)
+        if (!reply.offersProof) return Dialed.ProofFailed(reply.wire, WHY_UNPROVEN)
         if (reply.malformedOffer) return Dialed.ProofFailed(reply.wire, "no nonce")
         val why = readProof(input, reply.wire.nodeId, LinkProof.Role.RESPONDER, helloD, reply.payload)
         if (why != null) return Dialed.ProofFailed(reply.wire, why)
@@ -135,9 +177,10 @@ object LinkHandshake {
         prover: LinkProver,
         dialer: ReceivedHello,
         nonce: ByteArray = freshNonce(),
+        told: ByteArray? = null,
     ): Answered {
         if (dialer.malformedOffer) return Answered.ProofFailed("no nonce")
-        val helloR = Protocol.hello(prover.nodeId, nonce).encodeToByteArray()
+        val helloR = Protocol.hello(prover.nodeId, nonce, told).encodeToByteArray()
         val proves = dialer.offersProof
         val wrote =
             runCatching {
@@ -195,6 +238,12 @@ object LinkHandshake {
 
     /** The `why` for a link the peer closed where its PROOF belonged: it was there to close it, and is gone now. */
     const val WHY_EOF = "eof"
+
+    /**
+     * The `why` for a tag dial ([dialTag]) whose reply carries no [Protocol.CAP_LINK_PROOF]: every build that airs a tag
+     * proves itself, so this is not that advert's phone. Not transient: it is evidence about who answered.
+     */
+    const val WHY_UNPROVEN = "unproven"
 
     /**
      * Whether a proof failure's [why] says only that the peer went quiet or away mid-handshake ([WHY_UNREADABLE],

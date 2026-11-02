@@ -269,6 +269,147 @@ class LinkHandshakeTest {
         }
     }
 
+    // --- a tag dial (ADR 2026-11.xp6d) ---
+
+    private val tag = ByteArray(Protocol.HELLO_FORM_BYTES) { (0xCE + it).toByte() }
+    private val aliceAirs = ByteArray(Protocol.HELLO_FORM_BYTES) { (0x30 + it).toByte() }
+    private val tagHelloD = Protocol.hello(alice.nodeId, nonceA, told = aliceAirs, addressed = tag).encodeToByteArray()
+
+    @Test
+    fun aTagDialTakesTheProvenIdItReachedAndProvesItself() {
+        val bobsProof = bob.prover.proof(LinkProof.Role.RESPONDER, tagHelloD, helloR)
+        val out = ByteArrayOutputStream()
+
+        val dialed =
+            LinkHandshake.dialTag(
+                ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + record(LinkFraming.Type.PROOF, bobsProof)),
+                out,
+                alice.prover,
+                tag,
+                told = aliceAirs,
+                nonce = nonceA,
+            )
+
+        // No id was expected: Bob is whoever the proof says answered.
+        assertEquals(LinkHandshake.Dialed.Linked(Protocol.parse(helloR.decodeToString())!!, proven = true), dialed)
+        val written = records(out.toByteArray())
+        assertEquals(listOf(LinkFraming.Type.HELLO, LinkFraming.Type.PROOF), written.map { it.type })
+        assertArrayEquals(tagHelloD, written[0].payload)
+        val sent = Protocol.parse(written[0].payload.decodeToString())!!
+        assertEquals("our HELLO names the tag we dialed", NodeId.fromBytes(tag), sent.addressed)
+        assertEquals(NodeId.fromBytes(aliceAirs), sent.told)
+        // Our proof signs the HELLO with both fields in it, as it crossed the link.
+        assertNull(LinkProof.verify(written[1].payload, alice.nodeId, LinkProof.Role.DIALER, tagHelloD, helloR))
+    }
+
+    @Test
+    fun aTagDialRefusesAReplyThatCannotProveItselfAndSendsNoProof() {
+        val out = ByteArrayOutputStream()
+
+        val legacy = legacyHello(bob.nodeId)
+        val dialed = LinkHandshake.dialTag(ByteArrayInputStream(record(LinkFraming.Type.HELLO, legacy)), out, alice.prover, tag)
+
+        val expected = LinkHandshake.Dialed.ProofFailed(Protocol.parse(legacy.decodeToString())!!, LinkHandshake.WHY_UNPROVEN)
+        assertEquals(expected, dialed)
+        assertFalse(LinkHandshake.isTransient(LinkHandshake.WHY_UNPROVEN))
+        assertEquals(listOf(LinkFraming.Type.HELLO), records(out.toByteArray()).map { it.type })
+    }
+
+    @Test
+    fun aTagDialWhoseProofFailsOrIsMissingSendsNoProof() {
+        val forged = alice.prover.proof(LinkProof.Role.RESPONDER, tagHelloD, helloR) // signed by the wrong identity
+        // A forged proof is evidence (not transient); a missing one is the peer gone (transient): the caller's retry or
+        // penalty rests on that split.
+        val cases = listOf(record(LinkFraming.Type.PROOF, forged) to false, ByteArray(0) to true)
+        for ((after, transient) in cases) {
+            val out = ByteArrayOutputStream()
+            val dialed =
+                LinkHandshake.dialTag(
+                    ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + after),
+                    out,
+                    alice.prover,
+                    tag,
+                    told = aliceAirs,
+                    nonce = nonceA,
+                )
+            assertTrue(dialed is LinkHandshake.Dialed.ProofFailed)
+            val why = (dialed as LinkHandshake.Dialed.ProofFailed).why
+            assertEquals(why, transient, LinkHandshake.isTransient(why))
+            if (transient) assertEquals(LinkHandshake.WHY_EOF, why)
+            assertEquals(listOf(LinkFraming.Type.HELLO), records(out.toByteArray()).map { it.type })
+        }
+    }
+
+    @Test
+    fun aClearDialCarriesTheFormsItIsGivenAndProvesOverThem() {
+        // A blinding phone dialing a clear advert says what it airs (`t`) and what it dialed (`a`) in the HELLO its proof
+        // then signs.
+        val addressed = NodeId.toBytes(bob.nodeId)
+        val helloTold = Protocol.hello(alice.nodeId, nonceA, told = aliceAirs, addressed = addressed).encodeToByteArray()
+        val bobsProof = bob.prover.proof(LinkProof.Role.RESPONDER, helloTold, helloR)
+        val out = ByteArrayOutputStream()
+
+        val dialed =
+            LinkHandshake.dial(
+                ByteArrayInputStream(record(LinkFraming.Type.HELLO, helloR) + record(LinkFraming.Type.PROOF, bobsProof)),
+                out,
+                alice.prover,
+                bob.nodeId,
+                nonceA,
+                told = aliceAirs,
+                addressed = addressed,
+            )
+
+        assertTrue(dialed is LinkHandshake.Dialed.Linked && dialed.proven)
+        val written = records(out.toByteArray())
+        assertArrayEquals(helloTold, written[0].payload)
+        val sent = Protocol.parse(written[0].payload.decodeToString())!!
+        assertEquals(NodeId.fromBytes(aliceAirs), sent.told)
+        assertEquals(bob.nodeId, sent.addressed)
+        assertNull(LinkProof.verify(written[1].payload, alice.nodeId, LinkProof.Role.DIALER, helloTold, helloR))
+    }
+
+    @Test
+    fun aTagDialThatReachesItselfIsTheWrongPeer() {
+        val ownReply = Protocol.hello(alice.nodeId, nonceB).encodeToByteArray()
+        val reply = ByteArrayInputStream(record(LinkFraming.Type.HELLO, ownReply))
+        val dialed = LinkHandshake.dialTag(reply, ByteArrayOutputStream(), alice.prover, tag)
+        assertTrue(dialed is LinkHandshake.Dialed.WrongPeer)
+    }
+
+    @Test
+    fun theRespondersToldFormRidesItsReplyAndItsProofCoversIt() {
+        val bobAirs = ByteArray(Protocol.HELLO_FORM_BYTES) { (0x50 + it).toByte() }
+        val toBob = PipedOutputStream()
+        val bobIn = BufferedInputStream(PipedInputStream(toBob, PIPE_BYTES))
+        val toAlice = PipedOutputStream()
+        val aliceIn = BufferedInputStream(PipedInputStream(toAlice, PIPE_BYTES))
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val dialer = pool.submit(Callable { LinkHandshake.dialTag(aliceIn, toBob, alice.prover, bobAirs, told = aliceAirs) })
+            val responder =
+                pool.submit(
+                    Callable {
+                        val hello = checkNotNull(LinkHandshake.receiveHello(bobIn))
+                        hello.wire to LinkHandshake.answer(bobIn, toAlice, bob.prover, hello, told = bobAirs)
+                    },
+                )
+
+            val dialed = dialer.get(JOIN_S, TimeUnit.SECONDS)
+            val (dialerHello, answered) = responder.get(JOIN_S, TimeUnit.SECONDS)
+
+            assertTrue(dialed is LinkHandshake.Dialed.Linked && dialed.proven)
+            val reply = (dialed as LinkHandshake.Dialed.Linked).reply
+            assertEquals(bob.nodeId, reply.nodeId)
+            assertEquals("the reply tells what Bob airs", NodeId.fromBytes(bobAirs), reply.told)
+            assertEquals("the dialer's HELLO names what it dialed", NodeId.fromBytes(bobAirs), dialerHello.addressed)
+            assertEquals(NodeId.fromBytes(aliceAirs), dialerHello.told)
+            assertEquals(LinkHandshake.Answered.Linked(proven = true), answered)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
     // --- both ends at once ---
 
     @Test
