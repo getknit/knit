@@ -3246,6 +3246,64 @@ class InboundPipelineTest {
         }
 
     /**
+     * #289: a pulled photo's landing reads the block list before the block, and the block-list watch runs while the landing
+     * is inside its write, with no face yet to clear. The write is settled against the block after its commit, so the
+     * blocked person shows no face.
+     */
+    @Test
+    fun aPulledPhotoLandingAcrossABlockShowsNoFace() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1"), from = "relay-node")
+            rig.heldBlobs += "av1" // landed: its ingest holds the bytes
+            // The block lands once the landing has read the list, as its write's transaction reads the row.
+            var blockedMidLanding = false
+            coEvery { rig.peers.find(alice.nodeId) } coAnswers {
+                if (!blockedMidLanding) {
+                    blockedMidLanding = true
+                    rig.settings.blocked.value = setOf(alice.nodeId)
+                    rig.pipeline.onBlocked(alice.nodeId)
+                }
+                rig.peerMap[firstArg()]
+            }
+
+            rig.pipeline.onObtained("av1")
+
+            assertTrue("the block landed inside the landing", blockedMidLanding)
+            assertNull("a blocked person shows no face", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    /** #289, the push: a neighbour's second push of a shown photo is screened after its block read, and the block lands there. */
+    @Test
+    fun aPushedPhotoLandingAcrossABlockDoesNotPutTheFaceBack() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bytes = byteArrayOf(1, 2, 3, 4, 5)
+            val hash = sha256Hex(bytes)
+            rig.deliver(alice, rig.profile(alice, avatarHash = hash))
+            val first = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", first.absolutePath)
+            assertEquals("the first push shows the face", hash, rig.peerMap.getValue(alice.nodeId).avatarHash)
+            var blockedMidPush = false
+            coEvery { rig.imageScreening.screenImage(hash, any()) } coAnswers {
+                if (!blockedMidPush) {
+                    blockedMidPush = true
+                    rig.settings.blocked.value = setOf(alice.nodeId)
+                    rig.pipeline.onBlocked(alice.nodeId)
+                    assertNull("the watch cleared the face", rig.peerMap.getValue(alice.nodeId).avatarHash)
+                }
+            }
+
+            val second = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", second.absolutePath)
+
+            assertTrue("the block landed inside the push", blockedMidPush)
+            assertNull("a blocked person's face stays cleared", rig.peerMap.getValue(alice.nodeId).avatarHash)
+        }
+
+    /**
      * #269: two adoptions of one landing race the ceiling's release. The winner finds the photo over the ceiling and
      * deletes its bytes; the loser reads no size for it (no row), so the ceiling says nothing, and it used to write the
      * face anyway. A face is written only while its bytes are held, read inside the write's transaction.

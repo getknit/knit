@@ -4821,29 +4821,43 @@ class InboundPipeline(
      * collector while these run on the files path, and a photo change sends both at once: a row read outside
      * the lock and written back whole reverts a profile that landed in between — name, version, prekey pin — and a
      * gate read outside it could point a face at a photo the row has just moved on from.
+     *
+     * The block list is not in that transaction (DataStore cannot join it): each caller read it before, and a block whose
+     * clear ran between that read and this write would be undone for good (#289). So a write is settled after its commit,
+     * as the profile writers settle theirs ([settleBlockMovedMidProfile]): the list is read again and a person blocked
+     * by now is cleared. A block landing after that read is the block-list watch's own to clear, after this write.
      */
     private suspend fun pointPeerAtAvatar(
         nodeId: String,
         hash: String,
         gate: FaceGate,
-    ): String? =
-        db.withWriteTransaction {
-            val found = peers.find(nodeId)
-            val peer = found ?: if (gate == FaceGate.Pushed) PeerEntity(nodeId) else return@withWriteTransaction null
-            val takes =
-                when (gate) {
-                    FaceGate.Advertised -> peer.advertisedAvatar == hash
-                    FaceGate.Pushed -> found == null || !peer.advertisedKnown || peer.advertisedAvatar == hash
-                    FaceGate.Any -> true
-                }
-            if (!takes || peer.avatarHash == hash) return@withWriteTransaction null
-            // Every caller means the bytes are here, and they may have gone since it looked (#269): a second adoption of
-            // one landing after the first released it over the photo ceiling, or the start's orphan collection (#256). A
-            // face is written only with its bytes held, read in the same transaction as the write.
-            if (!blobStore.has(hash)) return@withWriteTransaction null
-            peers.upsert(peer.copy(avatarHash = hash))
-            peer.avatarHash
+    ): String? {
+        var wrote = false
+        val replaced =
+            db.withWriteTransaction {
+                val found = peers.find(nodeId)
+                val peer = found ?: if (gate == FaceGate.Pushed) PeerEntity(nodeId) else return@withWriteTransaction null
+                val takes =
+                    when (gate) {
+                        FaceGate.Advertised -> peer.advertisedAvatar == hash
+                        FaceGate.Pushed -> found == null || !peer.advertisedKnown || peer.advertisedAvatar == hash
+                        FaceGate.Any -> true
+                    }
+                if (!takes || peer.avatarHash == hash) return@withWriteTransaction null
+                // Every caller means the bytes are here, and they may have gone since it looked (#269): a second adoption of
+                // one landing after the first released it over the photo ceiling, or the start's orphan collection (#256). A
+                // face is written only with its bytes held, read in the same transaction as the write.
+                if (!blobStore.has(hash)) return@withWriteTransaction null
+                peers.upsert(peer.copy(avatarHash = hash))
+                wrote = true
+                peer.avatarHash
+            }
+        if (wrote) {
+            Log.i(TAG, "face ${hash.take(ID_CHARS)}… of ${nodeId.take(ID_CHARS)} ($gate)")
+            if (nodeId in settings.blockedNodeIds.first()) onBlocked(nodeId)
         }
+        return replaced
+    }
 
     /**
      * Ingests a direct neighbor's pushed avatar into the encrypted blob store, points the peer row at
@@ -4901,7 +4915,8 @@ class InboundPipeline(
 
     /**
      * [nodeId] is blocked (ADR 2026-11.nsbf): their face draws as the monogram from now on, a landing transfer of their
-     * photo is never adopted ([adoptAdvertisedAvatar] reads the block, the database re-arm skips them), and the bytes go
+     * photo is never adopted ([adoptAdvertisedAvatar] reads the block, the database re-arm skips them, and a landing that
+     * read it before the block is cleared again after its write, [pointPeerAtAvatar], #289), and the bytes go
      * unless a message, a group photo, another row or a carried frame names them ([BlobRepository.deleteIfUnreferenced];
      * an outbound serve streams from its own temp copy, so one in flight is not cut). Idempotent: `MeshManager`'s
      * block-list watch runs it on each block and its storage sweep on every blocked id still showing a face, whatever
@@ -4916,6 +4931,7 @@ class InboundPipeline(
                 peers.upsert(peer.copy(avatarHash = null))
                 face
             } ?: return
+        Log.i(TAG, "block cleared face ${previous.take(ID_CHARS)}… of ${nodeId.take(ID_CHARS)}")
         blobs.deleteIfUnreferenced(previous)
     }
 
