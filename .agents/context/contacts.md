@@ -82,6 +82,13 @@ lines.
   row, the session, custody or the block list; nothing is sent. A group co-member stays a contact (only
   their own leave shrinks a roster), and a commons member is accepted on first sighting only. Regression:
   `ContactRemoverTest`, `ContactUniverseTest`, `BlockAndRequestLabTest`.
+- **When touching `contacts/DirectContacts` (`directContactIds`), `SettingsStore.acceptFromCommons` /
+  `commonsAccepts` / `backfillCommonsAccepts`, or which `settings.accept` a new path calls:** READ ADR 2026-11.xp6d
+  ("The presence key"). The presence key goes to direct contacts only: the user's own accepts, verified peers and DM
+  threads they wrote in, less blocked node ids and blocked device tags — never group co-members, and never a commons
+  poster, whose accept is marked as the commons' in the same edit. A path that accepts on the user's behalf calls
+  `accept` (which clears the mark); one that accepts for someone else's act must not. Regression: `DirectContactsTest`,
+  `SettingsStoreTest`, `MeshManagerTest`'s commons-member cases.
 - **When touching blocking — `SettingsStore.blockedNodeIds` / `blockedDeviceTags` / `block` / `unblock`,
   `data/settings/BlockListStore`, `mesh/BlockListWatch`, `InboundPipeline.rewantOwedFaces` /
   `settleBlockMovedMidProfile`, `InboundPipeline.onBlocked` / `reapplyHeldProfile` / `caughtByDeviceTag` /

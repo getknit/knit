@@ -1432,7 +1432,9 @@ class MeshManager(
      *
      * Accepted on the first sighting in the room only, as a card is imported once: a restart re-pulls the
      * whole room, and re-accepting on every frame would undo the user removing the member (ADR 2026-09.adgd).
-     * The accept goes before the insert, so a crash between them re-accepts on the next pull.
+     * The accept goes before the insert, so a crash between them re-accepts on the next pull. It is marked as the
+     * commons' in the same edit ([SettingsStore.acceptFromCommons]), so it never makes a direct contact who gets the
+     * presence key (ADR 2026-11.xp6d); a person the user already accepted keeps their unmarked accept.
      */
     internal suspend fun onCommonsMember(
         conversationId: String,
@@ -1440,7 +1442,7 @@ class MeshManager(
     ) {
         if (nodeId == identity.nodeId()) return
         val store = commons ?: return
-        if (!store.isMember(conversationId, nodeId)) settings.accept(nodeId)
+        if (!store.isMember(conversationId, nodeId)) settings.acceptFromCommons(nodeId)
         store.recordMember(conversationId, nodeId, clock())
     }
 

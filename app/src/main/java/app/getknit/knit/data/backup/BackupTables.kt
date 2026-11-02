@@ -58,6 +58,11 @@ object BackupTables {
             // Which DMs a compact LoRa copy delivered and whether the signed copy's ratchet step ran (ADR 2026-10.x9fa):
             // ratchet state, which a restore re-derives from nothing like the sessions it describes.
             "lora_direct_seen",
+            // Presence keys (ADR 2026-11.xp6d): our own are minted afresh after a restore (the carried generation counter
+            // keeps their numbers above the old ones), and a contact's would let a backup file recognise every contact's
+            // phone; a restore re-roots every session, so contacts hand theirs again over the next link.
+            "own_presence_keys",
+            "peer_presence_keys",
         )
 
     /**

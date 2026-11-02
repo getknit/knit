@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v30) creates and opens from the exported JSON`() =
+    fun `the current schema (v32) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -1152,12 +1152,54 @@ class KnitDatabaseMigrationTest {
             }
         }
 
+    @Test
+    fun `migrate 31 to 32 keeps every peer and adds the two empty presence-key tables`() =
+        runTest {
+            helper.createDatabase(31).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, avatarHash, verified, updatedAt, openToChat, lastSeenAt, advertisedKnown) " +
+                        "VALUES ('peer-1','Ann','',NULL,1,7,0,9,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(32, listOf(KnitMigrations.MIGRATION_31_32)).use { c ->
+                c.prepare("SELECT name FROM peers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                    assertFalse(s.step())
+                }
+                for (table in listOf("own_presence_keys", "peer_presence_keys")) {
+                    c.prepare("SELECT COUNT(*) FROM $table").use { s ->
+                        assertTrue(s.step())
+                        assertEquals(table, 0L, s.getLong(0))
+                    }
+                }
+                // The writers' shapes (ADR 2026-11.xp6d): a next key (no activation, no mark yet) beside the current one,
+                // and a contact's key under the root its frame opened in, one row per (peer, generation).
+                c.execSQL(
+                    "INSERT INTO own_presence_keys (generation, key, mintedAt, activatedAt, audience, markSlot, markRestart) " +
+                        "VALUES (5, x'00', 1, 2, 'peer-1', 3, 0), (6, x'01', 2, NULL, 'peer-1', NULL, NULL)",
+                )
+                c.execSQL(
+                    "INSERT INTO peer_presence_keys (nodeId, generation, key, receivedAt, rootTag) " +
+                        "VALUES ('peer-1', 5, x'02', 4, -9), ('peer-1', 6, x'03', 4, -9)",
+                )
+                c.prepare("SELECT generation FROM own_presence_keys WHERE activatedAt IS NULL").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(6L, s.getLong(0))
+                }
+                c.prepare("SELECT COUNT(*) FROM peer_presence_keys WHERE nodeId = 'peer-1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(2L, s.getLong(0))
+                }
+            }
+        }
+
     private companion object {
         /**
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 31
+        const val CURRENT_VERSION = 32
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

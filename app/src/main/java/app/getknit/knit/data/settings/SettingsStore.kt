@@ -666,14 +666,71 @@ class SettingsStore(
         }
     }
 
-    /** Accepts [conversationId] out of the message-request queue (a DM peer id or a "g-…" group id). */
-    suspend fun accept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + conversationId }
+    /**
+     * Accepts [conversationId] out of the message-request queue (a DM peer id or a "g-…" group id), as the user's own
+     * act: a card imported, a request accepted, the profile's Message. Clears any [commonsAccepts] mark in the same
+     * edit, so the person counts as a direct contact from here on (ADR 2026-11.xp6d).
+     */
+    suspend fun accept(conversationId: String) =
+        dataStore.edit {
+            it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + conversationId
+            it[KEY_COMMONS_ACCEPTS] = (it[KEY_COMMONS_ACCEPTS] ?: emptySet()) - conversationId
+        }
+
+    /**
+     * Accepts a commons poster the first time the room shows them (`MeshManager.onCommonsMember`) and marks the accept
+     * as the commons' in the same edit, so no crash leaves the accept without its mark. A commons-only accept never
+     * makes a direct contact: whoever holds the invite grants commons reach (ADR 2026-11.xp6d).
+     */
+    suspend fun acceptFromCommons(nodeId: String) =
+        dataStore.edit {
+            if (nodeId !in (it[KEY_ACCEPTED] ?: emptySet())) {
+                it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + nodeId
+                it[KEY_COMMONS_ACCEPTS] = (it[KEY_COMMONS_ACCEPTS] ?: emptySet()) + nodeId
+            }
+        }
+
+    /**
+     * The accepts that came from a commons ([acceptFromCommons]) and that the user has not made since ([accept]). A
+     * mark on an id that is not accepted means nothing.
+     */
+    val commonsAccepts: Flow<Set<String>> = dataStore.data.map { it[KEY_COMMONS_ACCEPTS] ?: emptySet() }
+
+    /**
+     * Marks, once per install, the accepted ids among [members] (every `commons_members` node id) as commons accepts:
+     * builds before ADR 2026-11.xp6d accepted commons posters without a mark. Idempotent; later calls do nothing.
+     * `DirectContacts` runs it before every read, so nothing judges a direct contact on an unmarked set.
+     */
+    suspend fun backfillCommonsAccepts(members: Set<String>) =
+        dataStore.edit {
+            if (it[KEY_COMMONS_ACCEPTS_BACKFILLED] != true) {
+                val accepted = it[KEY_ACCEPTED] ?: emptySet()
+                it[KEY_COMMONS_ACCEPTS] = (it[KEY_COMMONS_ACCEPTS] ?: emptySet()) + (members intersect accepted)
+                it[KEY_COMMONS_ACCEPTS_BACKFILLED] = true
+            }
+        }
+
+    /** Whether [backfillCommonsAccepts] has run on this install. */
+    suspend fun commonsAcceptsBackfilled(): Boolean = dataStore.data.first()[KEY_COMMONS_ACCEPTS_BACKFILLED] == true
 
     /**
      * Takes [conversationId] back out of the accepted set — [accept]'s inverse, and idempotent. Only a contact
      * removal calls it (`ContactRemover`, ADR 2026-09.adgd): the thread's next message is a request again.
      */
-    suspend fun unaccept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) - conversationId }
+    suspend fun unaccept(conversationId: String) =
+        dataStore.edit {
+            it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) - conversationId
+            it[KEY_COMMONS_ACCEPTS] = (it[KEY_COMMONS_ACCEPTS] ?: emptySet()) - conversationId
+        }
+
+    /**
+     * The highest presence-key generation this identity has minted (ADR 2026-11.xp6d), 0 before the first. Carried in a
+     * backup, so a restored phone never mints a number it used before; the key rows themselves are not carried.
+     */
+    suspend fun presenceKeyLastGeneration(): Long = dataStore.data.first()[KEY_PRESENCE_KEY_LAST_GENERATION] ?: 0L
+
+    /** Records [generation] as [presenceKeyLastGeneration] before the key that carries it is used. */
+    suspend fun setPresenceKeyLastGeneration(generation: Long) = dataStore.edit { it[KEY_PRESENCE_KEY_LAST_GENERATION] = generation }
 
     /** Fronts [emoji] in [recentReactions] — read-modify-write inside one edit, which DataStore serializes. */
     suspend fun recordReaction(emoji: String) =
@@ -1087,6 +1144,9 @@ class SettingsStore(
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")
         val KEY_ACCEPTED = stringSetPreferencesKey("accepted_conversations")
+        val KEY_COMMONS_ACCEPTS = stringSetPreferencesKey("commons_accepts")
+        val KEY_COMMONS_ACCEPTS_BACKFILLED = booleanPreferencesKey("commons_accepts_backfilled")
+        val KEY_PRESENCE_KEY_LAST_GENERATION = longPreferencesKey("presence_key_last_generation")
         val KEY_PENDING_INTROS = stringSetPreferencesKey("pending_intros")
         val KEY_INTRO_GRACE = stringSetPreferencesKey("intro_grace")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")

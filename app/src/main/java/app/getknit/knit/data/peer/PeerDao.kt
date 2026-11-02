@@ -130,6 +130,14 @@ interface PeerDao {
     @Query("SELECT nodeId FROM peers WHERE verified = 1")
     suspend fun verifiedNodeIds(): List<String>
 
+    /** The live form of [verifiedNodeIds], for the direct-contact set (ADR 2026-11.xp6d). */
+    @Query("SELECT nodeId FROM peers WHERE verified = 1")
+    fun observeVerifiedNodeIds(): Flow<List<String>>
+
+    /** The node ids whose pinned device tag is one of [tags]: who a device-tag block covers. */
+    @Query("SELECT nodeId FROM peers WHERE deviceTag IN (:tags)")
+    suspend fun nodeIdsWithDeviceTags(tags: List<String>): List<String>
+
     /** The peers whose stored profile carries every bit of [bits] (the link-proof seed, ADR 2026-11.264w). */
     @Query("SELECT nodeId FROM peers WHERE (capabilities & :bits) = :bits")
     suspend fun withCapabilities(bits: Long): List<String>
@@ -183,6 +191,10 @@ interface PeerDao {
     /** Drops every badge whose pin is gone — run beside [deleteOrphanProfiles]. */
     @Query("DELETE FROM peer_badges WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
     suspend fun deleteOrphanBadges()
+
+    /** Drops every presence key whose peer row is gone (ADR 2026-11.xp6d) — run beside [deleteOrphanProfiles]. */
+    @Query("DELETE FROM peer_presence_keys WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
+    suspend fun deleteOrphanPresenceKeys()
 
     @Query("DELETE FROM peer_badges WHERE nodeId = :nodeId")
     suspend fun deleteBadges(nodeId: String)

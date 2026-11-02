@@ -1264,8 +1264,10 @@ class MeshManagerTest {
             advanceUntilIdle()
 
             assertEquals(listOf(roomId to rig.bob.nodeId), store.members)
-            coVerify(exactly = 1) { rig.settings.accept(rig.bob.nodeId) }
-            coVerify(exactly = 0) { rig.settings.accept(rig.me.nodeId) }
+            // Accepted as the commons' (ADR 2026-11.xp6d): marked, so never a direct contact the presence key goes to.
+            coVerify(exactly = 1) { rig.settings.acceptFromCommons(rig.bob.nodeId) }
+            coVerify(exactly = 0) { rig.settings.acceptFromCommons(rig.me.nodeId) }
+            coVerify(exactly = 0) { rig.settings.accept(any()) }
         }
 
     @Test
@@ -1279,7 +1281,7 @@ class MeshManagerTest {
 
             // Every sighting is still recorded (it stamps the latest), but only the first made a contact.
             assertEquals(3, store.members.size)
-            coVerify(exactly = 1) { rig.settings.accept(rig.bob.nodeId) }
+            coVerify(exactly = 1) { rig.settings.acceptFromCommons(rig.bob.nodeId) }
         }
 
     @Test
@@ -1293,6 +1295,7 @@ class MeshManagerTest {
             rig.manager.onCommonsMember(roomId, rig.bob.nodeId)
             advanceUntilIdle()
 
+            coVerify(exactly = 0) { rig.settings.acceptFromCommons(any()) }
             coVerify(exactly = 0) { rig.settings.accept(any()) }
         }
 

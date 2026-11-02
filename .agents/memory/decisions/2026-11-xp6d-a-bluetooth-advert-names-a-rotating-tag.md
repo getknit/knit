@@ -9,7 +9,7 @@ topics: [ble, mesh, privacy, wire, crypto]
 # ADR 2026-11.xp6d — A Bluetooth advert names a rotating tag, not the node id
 
 Status: Proposed (2026-11-02). Not built yet; this text has absorbed the design pass of 2026-11-02 (bluetooth, crypto,
-security and wifi-aware reviewers). knit-next #285; lead of a paired change with knit-ios. The Wi-Fi Aware half and
+security and wifi-aware reviewers) and the presence key's own design pass and follow-up the same day. knit-next #285; lead of a paired change with knit-ios. The Wi-Fi Aware half and
 the cleanup are `docs/NEXT_WIRE_BREAK.md` item 13.
 
 **What was observed.** Bytes 1–16 of the BLE presence advert (`BleAdvertPayload`) are the node id, raw. The advert
@@ -96,16 +96,27 @@ foreground head-start dial and background seeking dial.
   published sets (`reachable`, `near`) carry resolved and linked peers only, so no tag becomes a met peer; an
   unresolved tag with the Aware flag enters the Aware candidate sets alone, so a dormant Aware plane still wakes at
   the first sighting.
-- **The presence key.** 32 random bytes per generation, kept in a local-only table that backups skip; the generation
-  number is `max(last + 1, now)` on the sender's clock, and `last` rides backups, so a restore never reuses a number.
-  It goes only to direct contacts: accepted one-to-one chats and verified peers, never group co-members, who could be
-  added by someone else. It rotates on a removal, a block, a restore, any shrink of that set, and weekly with the
-  signed prekey. Delivered by its own sealed ctl, `CTL_PRESENCE_KEY = 11` (named form only), on confirmed sessions
-  only, owed per (peer, pairwise root, generation) so that any new root re-sends it, and checked against the
-  generation's audience at sealing time. Not on the sealed profile, which goes to every confirmed session, strangers
-  included. A receiver stores a 32-byte key from any peer with a row (`peer_presence_keys`) and uses only its direct
-  contacts' keys. The rotation on block makes a block more than presentation for this one key, an exception to ADR
-  2026-09.bts9 and ADR 2026-11.nsbf.
+- **The presence key.** A phone holds a previous, a current and a next key (32 random bytes each) in a local-only
+  table that backups skip. A generation number is `max(last + 1, now)` on the sender's clock, overflow-checked, with a
+  restored `last` more than a year ahead clamped; `last` rides backups, so a restore never reuses a number. Keys go
+  only to direct contacts: the user's own accepts (less those a commons made, marked as such when made), verified
+  peers and DM threads the user wrote in, minus blocked (`DirectContacts`). Never group co-members or commons posters,
+  whose reach someone else grants. Rotation is a pure function of the persisted key rows and a fresh read of that set:
+  any shrink of a key's audience (a removal, a block, an un-verify) mints a fresh current and next; weekly, and on a
+  corrected clock or a stale advertiser mark (at most once a day), the next key becomes current; a new contact joins
+  the next key's audience, and the current one's only within a day of its activation, so nobody added later can read
+  back days of aired tags. Delivered by its own sealed ctl, `CTL_PRESENCE_KEY = 11` (named form only, padded to one
+  size), only point to point over a live proven link: signed, `relay = false`, never flooded, custodied or cast. A
+  flooded delivery would show every relay the user's direct contacts each week and, by who is missing from a
+  rotation's burst, whom the user removed or blocked. What each linked contact is owed is reconciled against what it
+  was sent, on link-up, key changes, session root changes and capability changes, and at every heal; the next key
+  goes ahead, so a weekly rotation is seamless for a contact met during the week. A restore's session reset to a
+  direct contact with no DM thread or shared group goes over the first link too, not the flood. A receiver stores up
+  to three keys per peer, not in backups, each with the session root its frame opened under: a later generation is
+  added, an equal one is a no-op, and a lower one is taken only when it opens under a new active root (a sender
+  restored after its clock ran ahead). Only direct contacts' keys are listed; a key equal to another listed
+  contact's, or to one of ours, is listed for no one and counted. The rotation on block makes a block more than
+  presentation for this one key, an exception to ADR 2026-09.bts9 and ADR 2026-11.nsbf.
 - **Staging.** Release N ships every reader and the keys, with writing tags behind `BuildConfig.BLIND_ADVERT` (on in
   debug, with a runtime switch for the legacy harnesses; off in release). Release N+1 turns writing on.
 
@@ -140,8 +151,17 @@ sleep, a controller-timed set lifetime or an alarm per rotation, both declined i
 - **Strangers.** One appears in the nearby count only once linked. Its sighting no longer corroborates the Wi-Fi Aware
   watchdog's Tier-2 kill until it is linked or resolved, so a wedge beside strangers only (more than six phones, or
   failing Bluetooth dials) lasts until a contact or an old build comes near; ADR 2026-09.9dnk is amended when built.
-- **Contacts.** One recognises the phone only once it holds the current key, and a removed or blocked contact until
-  the rotation lands.
+- **Contacts.** One recognises the phone only once it holds the current key, and keys travel only over links: after
+  a fresh rotation (a removal, a block), or a weekly one whose next key it never got, a contact recognises the phone
+  only after their next link. A removed or blocked contact keeps recognising it until the advert moves to the new key.
+  The key's ctl, though padded, tells a listener in radio range that two linked phones are direct contacts, until
+  links are encrypted (#286). A direct contact with no DM thread or shared group who messages from afar after our
+  restore is not read until its own reset heuristic fires or the two link.
+- **Commons accepts from before the mark.** Builds before this one accepted commons posters with no mark, so the first
+  reader marks every accepted id still in a joined commons' member list. A poster from a commons the user left before
+  upgrading has no member row left, so stays a direct contact; and a commons member the user had also accepted by hand
+  before upgrading is marked, so stops being one until verified or written to. Both only on builds that showed the
+  commons, which release does not.
 
 Guards: `BlindTagTest`, `AdvertOrderTest` (a two-phone run across rotation edges and mixed builds),
 `AdvertAliasesTest` (claims, the lookup table and its window, a flood that costs nothing), `BleAdmissionPolicyTest`, `LinkHandshakeTest` (tag dial with and without
@@ -149,7 +169,8 @@ a proof, legacy dialer refused, fields 4 and 5 ignored by an old parser), a unit
 never seals the new generation to the removed peer, a `blindTag` slot-construction vector (a negative slot, slot 0, all
 four restarts; it lands before the iOS reader brief and release N), the advert, HELLO and ctl vectors (new entries,
 none moved),
-`PresenceKeyLabTest` (direct contacts resolve; strangers and group co-members never do; removal, block and restore
-rotate; restores and resets on either side re-deliver; a clock 46 min ahead or 9 h behind, slot phase pinned, links as a stranger) ending in
+`DirectContactsTest`, `PresenceKeyPolicyTest`, `PresenceKeyLabTest` (direct contacts resolve; strangers, group
+co-members and commons posters never do; removal, block and restore rotate; restores and resets on either side
+re-deliver, with the link up throughout; a passive carrier holds and floods nothing naming a key's recipient; a clock 46 min ahead or 9 h behind, slot phase pinned, links as a stranger) ending in
 `assertConverged`, and a `MaliciousForkLabTest` case
 in which a linked Sybil claims other phones' tags.

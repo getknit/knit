@@ -52,6 +52,60 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `a commons accept is marked and a later accept by the user clears the mark`() =
+        runTest {
+            val store = newStore()
+            store.acceptFromCommons("poster")
+            assertEquals(setOf("poster"), store.acceptedConversations.first())
+            assertEquals(setOf("poster"), store.commonsAccepts.first())
+            store.accept("poster") // a card imported, a request accepted, the profile's Message
+            assertEquals(setOf("poster"), store.acceptedConversations.first())
+            assertEquals(emptySet<String>(), store.commonsAccepts.first())
+        }
+
+    @Test
+    fun `a commons accept never marks someone the user already accepted`() =
+        runTest {
+            val store = newStore()
+            store.accept("friend")
+            store.acceptFromCommons("friend")
+            assertEquals(emptySet<String>(), store.commonsAccepts.first())
+        }
+
+    @Test
+    fun `unaccept clears the commons mark with the accept`() =
+        runTest {
+            val store = newStore()
+            store.acceptFromCommons("poster")
+            store.unaccept("poster")
+            assertEquals(emptySet<String>(), store.acceptedConversations.first())
+            assertEquals(emptySet<String>(), store.commonsAccepts.first())
+        }
+
+    @Test
+    fun `the commons backfill marks accepted members once and never again`() =
+        runTest {
+            val store = newStore()
+            store.accept("poster")
+            store.accept("friend")
+            store.backfillCommonsAccepts(setOf("poster", "stranger"))
+            assertEquals("only accepted members", setOf("poster"), store.commonsAccepts.first())
+            store.accept("poster") // the user accepts them afterwards
+            store.accept("friend")
+            store.backfillCommonsAccepts(setOf("poster", "friend"))
+            assertEquals("a second backfill marks nothing", emptySet<String>(), store.commonsAccepts.first())
+        }
+
+    @Test
+    fun `the presence key's last generation starts at zero and keeps what is written`() =
+        runTest {
+            val store = newStore()
+            assertEquals(0L, store.presenceKeyLastGeneration())
+            store.setPresenceKeyLastGeneration(1_800_000_000_000L)
+            assertEquals(1_800_000_000_000L, store.presenceKeyLastGeneration())
+        }
+
+    @Test
     fun `name and status default to empty`() =
         runTest {
             val store = newStore()

@@ -228,6 +228,7 @@ class PeerRepository(
         dao.delete(nodeId)
         dao.deleteOrphanProfiles()
         dao.deleteOrphanBadges()
+        dao.deleteOrphanPresenceKeys()
         return true
     }
 
@@ -239,6 +240,13 @@ class PeerRepository(
 
     /** Node ids the user has out-of-band verified — exempt from [sweepCap] and the message-request queue. */
     suspend fun verifiedNodeIds(): List<String> = dao.verifiedNodeIds()
+
+    /** The live form of [verifiedNodeIds] (ADR 2026-11.xp6d's direct-contact set). */
+    fun observeVerifiedNodeIds(): Flow<List<String>> = dao.observeVerifiedNodeIds()
+
+    /** The node ids whose pinned device tag is one of [tags]; empty for none. */
+    suspend fun nodeIdsWithDeviceTags(tags: Set<String>): List<String> =
+        if (tags.isEmpty()) emptyList() else tags.toList().chunked(SQL_CHUNK).flatMap { dao.nodeIdsWithDeviceTags(it) }
 
     /**
      * Bounds the `peers` table (any valid inbound profile upserts a row, uncapped) against a Sybil profile
@@ -262,6 +270,7 @@ class PeerRepository(
         evicted.chunked(SQL_CHUNK).forEach { dao.deleteCappable(it) }
         dao.deleteOrphanProfiles() // the proof of key goes with the pin it proves
         dao.deleteOrphanBadges()
+        dao.deleteOrphanPresenceKeys() // so does any presence key the peer handed us
         return evicted
     }
 

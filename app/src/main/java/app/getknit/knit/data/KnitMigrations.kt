@@ -737,6 +737,27 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v31 → v32 (ADR 2026-11.xp6d, #285): two empty presence-key tables, `own_presence_keys` and `peer_presence_keys`.
+     * No build before this held a presence key, so there is nothing to fill. Both are local only, never in a backup. The
+     * SQL must stay byte-equivalent to what Room generates for `app/schemas/**/32.json`.
+     */
+    val MIGRATION_31_32 =
+        object : Migration(31, 32) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `own_presence_keys` (`generation` INTEGER NOT NULL, `key` BLOB NOT NULL, " +
+                        "`mintedAt` INTEGER NOT NULL, `activatedAt` INTEGER, `audience` TEXT NOT NULL, `markSlot` INTEGER, " +
+                        "`markRestart` INTEGER, PRIMARY KEY(`generation`))",
+                )
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `peer_presence_keys` (`nodeId` TEXT NOT NULL, `generation` INTEGER NOT NULL, " +
+                        "`key` BLOB NOT NULL, `receivedAt` INTEGER NOT NULL, `rootTag` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`nodeId`, `generation`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -770,5 +791,6 @@ object KnitMigrations {
             MIGRATION_28_29,
             MIGRATION_29_30,
             MIGRATION_30_31,
+            MIGRATION_31_32,
         )
 }
