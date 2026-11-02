@@ -228,6 +228,11 @@ class KeyedVectorTest {
 
     private fun safetyNumber(): String = SafetyNumber.compute(alice.nodeId, alice.bundle.encoded, bob.nodeId, bob.bundle.encoded)
 
+    // Blinded adverts (ADR 2026-11.xp6d): the tag construction, a link dialed by tag, the HELLO's t / a contract.
+    private val blind = BlindVectors(alice, bob, PUBLISHED_AT)
+
+    private fun blindJson(): JsonObject = file.getValue("blind").jsonObject
+
     private val file: JsonObject by lazy { VectorFiles.read(FILE) }
 
     private fun frameHex(name: String): String =
@@ -431,6 +436,24 @@ class KeyedVectorTest {
     }
 
     @Test
+    fun `the blind tags rebuild from their layout`() {
+        assumeFalse(VectorFiles.writing)
+        blind.assertTags(blindJson())
+    }
+
+    @Test
+    fun `the tag-dialed link proof rebuilds byte for byte and verifies`() {
+        assumeFalse(VectorFiles.writing)
+        blind.assertLink(blindJson())
+    }
+
+    @Test
+    fun `every pinned HELLO reads the t and a fields the file states`() {
+        assumeFalse(VectorFiles.writing)
+        blind.assertHelloFields(blindJson())
+    }
+
+    @Test
     fun `KNIT_WRITE_VECTORS=1 rewrites the keyed vectors`() {
         assumeTrue(VectorFiles.writing)
         val previousDm = runCatching { frameHex("aliceDmToBob") }.getOrNull()
@@ -454,6 +477,7 @@ class KeyedVectorTest {
                 put("frames", framesJson(dm))
                 put("link", linkJson())
                 put("linkKeys", linkKeysJson())
+                put("blind", blind.json())
             },
         )
     }

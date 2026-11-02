@@ -149,5 +149,257 @@
     "linkId": "21282f363d444b525960676e757c838a",
     "o2a": "e04bcfe6379a056a08df3e27724fe86a151c322d29647d160b6a2c9042541144",
     "a2o": "7edb0fc4d409c5e5243d651fb46fcfffdb00d37ff1cf9504bf55cca33c383840"
+  },
+  "blind": {
+    "about": "Blinded adverts (ADR 2026-11.xp6d, knit-next #285). tags: m = HMAC-SHA256(presenceKey, label ‖ u64be(slot) ‖ u8(restart)); tag = CE 73 (90 | m[0] >> 4) ‖ m[1..13]; slot = floor(wallMs / slotMs). hasPrefix: 16 bytes starting CE 73 9_, saying nothing of whose. link: Alice, blinding, dials Bob's tag; her HELLO tells her tag (t) and the tag she dialed (a), his tells his; both proofs sign the HELLOs as sent, so a rewritten t fails. helloFields: t and a are read only behind a valid nonce, in any order, as exactly 32 lowercase hex digits; a letter whose exact-shape field appears twice is absent (null). Caps c0009 throughout.",
+    "presenceKeys": {
+      "alice": "2930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb02",
+      "bob": "2a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc03"
+    },
+    "constants": {
+      "label": "knit/advert/v1/slot",
+      "slotMs": 900000,
+      "restarts": 4,
+      "windowPastSlots": 32,
+      "windowAheadSlots": 2
+    },
+    "slotOf": [
+      {
+        "wallMs": 0,
+        "slot": 0
+      },
+      {
+        "wallMs": 899999,
+        "slot": 0
+      },
+      {
+        "wallMs": 900000,
+        "slot": 1
+      },
+      {
+        "wallMs": -1,
+        "slot": -1
+      },
+      {
+        "wallMs": -900000,
+        "slot": -1
+      },
+      {
+        "wallMs": -900001,
+        "slot": -2
+      },
+      {
+        "wallMs": 1756100000000,
+        "slot": 1951222
+      }
+    ],
+    "window": {
+      "wallMs": 1756100000000,
+      "from": 1951190,
+      "to": 1951224
+    },
+    "tags": {
+      "aliceSlotMinus1": {
+        "key": "alice",
+        "slot": -1,
+        "restart": 0,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74ffffffffffffffff00",
+        "mac": "f1a449bf173c41200cc92c9edc27a0aec9ad853526180245282f2d2bb680660c",
+        "tag": "ce739fa449bf173c41200cc92c9edc27",
+        "asNodeId": "zzzz7jcjx4ltyqjabteszhw4e4"
+      },
+      "aliceSlot0": {
+        "key": "alice",
+        "slot": 0,
+        "restart": 0,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74000000000000000000",
+        "mac": "996cb53008aaa93306cb7790d092706003b41ef88b2c44cfbe6d542ed8c9b01d",
+        "tag": "ce73996cb53008aaa93306cb7790d092",
+        "asNodeId": "zzzzs3fvgaekvkjta3fxpegqsi"
+      },
+      "aliceNowRestart0": {
+        "key": "alice",
+        "slot": 1951222,
+        "restart": 0,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f600",
+        "mac": "ca7cd904e70887dbc6e38d218d19fd3b1f7473d4aefcb0c0112260fcf717ffd2",
+        "tag": "ce739c7cd904e70887dbc6e38d218d19",
+        "asNodeId": "zzzzy7gzattqrb63y3ry2imnde"
+      },
+      "aliceNowRestart1": {
+        "key": "alice",
+        "slot": 1951222,
+        "restart": 1,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f601",
+        "mac": "cea46ca62e91303c43a760068f32e37c1e98d9c382f9fe0c20b4304599a2c931",
+        "tag": "ce739ca46ca62e91303c43a760068f32",
+        "asNodeId": "zzzzzjdmuyxjcmb4iotwabupgi"
+      },
+      "aliceNowRestart2": {
+        "key": "alice",
+        "slot": 1951222,
+        "restart": 2,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f602",
+        "mac": "8af89b32e49564341a5fd484cf8834c39ff2f5c3ca479a844ff5e0ffe5cd9511",
+        "tag": "ce7398f89b32e49564341a5fd484cf88",
+        "asNodeId": "zzzzr6e3glsjkzbudjp5jbgpra"
+      },
+      "aliceNowRestart3": {
+        "key": "alice",
+        "slot": 1951222,
+        "restart": 3,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f603",
+        "mac": "9764210db6bbba9a45c808cfc94ace333fc4b83a50625b743705db3b2e3b27fb",
+        "tag": "ce739964210db6bbba9a45c808cfc94a",
+        "asNodeId": "zzzzszbbbw3lxou2ixeart6jji"
+      },
+      "bobNowRestart0": {
+        "key": "bob",
+        "slot": 1951222,
+        "restart": 0,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f600",
+        "mac": "ffe8ebf5a276b9c769276c0ec4a7ef380524b60bd83b11b5169dc5c9e27fa2ab",
+        "tag": "ce739fe8ebf5a276b9c769276c0ec4a7",
+        "asNodeId": "zzzz72hl6wrhnoohnetwydweu4"
+      }
+    },
+    "hasPrefix": {
+      "tag": {
+        "bytes": "ce739c7cd904e70887dbc6e38d218d19",
+        "hasPrefix": true
+      },
+      "aliceClearId": {
+        "bytes": "e08d0d3da73f9fb4ec05b4a84d88f17a",
+        "hasPrefix": false
+      },
+      "prefixOnly": {
+        "bytes": "ce739f00000000000000000000000000",
+        "hasPrefix": true
+      },
+      "lastPrefixBitFlipped": {
+        "bytes": "ce738c7cd904e70887dbc6e38d218d19",
+        "hasPrefix": false
+      },
+      "short": {
+        "bytes": "ce739c7cd904e70887dbc6e38d218d",
+        "hasPrefix": false
+      },
+      "long": {
+        "bytes": "ce739c7cd904e70887dbc6e38d218d1900",
+        "hasPrefix": false
+      }
+    },
+    "link": {
+      "helloTaggedDialer": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "record": "06000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137"
+      },
+      "helloTaggedReply": {
+        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739fe8ebf5a276b9c769276c0ec4a7",
+        "record": "06000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+      },
+      "proofTranscriptDialer": {
+        "signer": "alice",
+        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6601000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+      },
+      "proofTranscriptResponder": {
+        "signer": "bob",
+        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6602000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+      },
+      "proofDialer": {
+        "signer": "alice",
+        "record": "0800000080e4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df073e79971c9110029723632a80b707bf4f62c125763346e1e8718d6c0dcc3aa3ae29bad0607cf2ff65bb91de21088c9a6d618794f300036ff1f45683df8dbdc823ce9820be5bbe4627c16a54c4902e11e4d14c80995ee0a6b9f91c5403ac6d201"
+      },
+      "proofResponder": {
+        "signer": "bob",
+        "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad0110370632813f544dea295d6226d7c6c96b25137c7d539b5661cb951a507bb9a8c7fdd9015a53a9f04443d1b801abc390f69bd0b966aa7ad6edde41ec08eb668f03"
+      },
+      "toldRewritten": {
+        "checkedAs": "bob, responder, helloTaggedDialer and this payload",
+        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739c7cd904e70887dbc6e38d218d19",
+        "record": "proofResponder",
+        "reason": "the signature does not cover this transcript"
+      }
+    },
+    "helloFields": {
+      "both": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "nonce": true,
+        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+      },
+      "reversed": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|ace739fe8ebf5a276b9c769276c0ec4a7|tce739c7cd904e70887dbc6e38d218d19",
+        "nonce": true,
+        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+      },
+      "unknownFieldSkipped": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|x0123|tce739c7cd904e70887dbc6e38d218d19",
+        "nonce": true,
+        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "addressed": null
+      },
+      "duplicateTold": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tce739ca46ca62e91303c43a760068f32|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "nonce": true,
+        "told": null,
+        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+      },
+      "duplicateAddressed": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7|ace739ca46ca62e91303c43a760068f32",
+        "nonce": true,
+        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "addressed": null
+      },
+      "sameToldTwice": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tce739c7cd904e70887dbc6e38d218d19",
+        "nonce": true,
+        "told": null,
+        "addressed": null
+      },
+      "malformedSecondTold": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "nonce": true,
+        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "addressed": null
+      },
+      "upperHex": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tCE739C7CD904E70887DBC6E38D218D19",
+        "nonce": true,
+        "told": null,
+        "addressed": null
+      },
+      "shortTold": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d1",
+        "nonce": true,
+        "told": null,
+        "addressed": null
+      },
+      "longTold": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d190",
+        "nonce": true,
+        "told": null,
+        "addressed": null
+      },
+      "noNonce": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "nonce": false,
+        "told": null,
+        "addressed": null
+      },
+      "shortNonce": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4|tce739c7cd904e70887dbc6e38d218d19",
+        "nonce": false,
+        "told": null,
+        "addressed": null
+      },
+      "nonceNotThird": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|x0123|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19",
+        "nonce": false,
+        "told": null,
+        "addressed": null
+      }
+    }
   }
 }
