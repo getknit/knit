@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-10-30T23:39:43Z
+  updated: 2026-11-02T03:32:31Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.10.2](https://github.com/getknit/knit/releases/tag/v2.10.2) — 2026-11-02T03:32:31Z
+
+> Videos that closed Knit on Android 10 and 11, and shares it couldn't open.
 
 ### Fixed
 
@@ -26,6 +28,8 @@ document:
   dropped its connection to nearby phones.
 - Sharing a photo or video that Knit can't open, such as one deleted after you shared it, no longer closes
   Knit and drops its connection to nearby phones. Knit now tells you it couldn't attach it.
+- A group someone new adds you to now shows in Message requests before anyone writes in it. Until now the chat
+  list counted it as a request while Message requests stayed empty.
 
 ## [2.10.1](https://github.com/getknit/knit/releases/tag/v2.10.1) — 2026-10-30T23:39:43Z
 

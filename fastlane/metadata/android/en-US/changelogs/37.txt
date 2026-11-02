@@ -1,0 +1,9 @@
+Videos that closed Knit on Android 10 and 11, and shares it couldn't open.
+
+Knit no longer closes when you pick a video to send on Android 10 or 11. A change in how 2.10.0 was built left
+a step in video sending that those versions can't run, so every video closed Knit and dropped its connection
+to nearby phones. Android 12 and later were not affected.
+
+Also fixed: sharing a photo or video that Knit can't open, such as one deleted after you shared it, now tells
+you Knit couldn't attach it instead of closing the app. A group someone new adds you to now shows in Message
+requests before anyone writes in it, where before only the chat list counted it.
