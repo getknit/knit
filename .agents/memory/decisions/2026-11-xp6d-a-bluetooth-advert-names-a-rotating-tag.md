@@ -42,10 +42,13 @@ foreground head-start dial and background seeking dial.
   the presence and Coded sets, then start both as fresh advertisers with the same new tag. An in-place
   `setAdvertisingData` keeps a set's address and would tie the two tags together. A rotation due during a Coded fast
   window or a range hunt waits for it, bounded.
-- **Who dials.** `AdvertOrder.iDial` decides every role before a link: against a clear advert a blinding phone dials,
-  otherwise the classic order holds; between two blinded adverts the larger advertised form dials; a lonely dial goes
-  only to a peer that would not dial us. The PHY driver of a live link (`CodedPhyPolicy.drives`) stays on the real
-  ids from the HELLOs, or the two ends of an old↔new link would both step the PHY.
+- **Who dials.** `AdvertOrder.iDial` decides every role before a link: against a clear advert a blinding phone dials
+  and a clear one keeps the classic order; a clear phone never dials a blinded advert (a literal string comparison
+  would let the 2⁻²⁰ of real ids that sort above a tag dial too, and both responders would refuse, so the pair would
+  never link); between two blinded adverts the larger advertised form dials; a lonely dial goes only to a peer that
+  would not dial us. The PHY steps of a live link (`CodedPhyPolicy.drives`) stay on the real
+  ids from the HELLOs, or the two ends of an old↔new link would both step the PHY; who dials back or hunts after a
+  drop at range (`fastAdvertAfterDrop`, `huntAfterDrop`, `coldHunt`) is a dial role and moves to `iDial`.
 - **The handshake.** `Protocol.CAP_BLIND_ADVERT = 0x80000` ("I read tags"); no privacy decision rests on it. Two
   HELLO fields after the nonce: `t<32 hex>` (the sender's advertised form) and `d<32 hex>` (the form the dialer
   dialed). The link proof signs both HELLOs (ADR 2026-11.264w), which binds the fields to the proven id but does not
@@ -57,9 +60,15 @@ foreground head-start dial and background seeking dial.
 - **Rotation is announced.** `LinkFraming.Type.TAG_NEXT` (tag 9, 16 bytes) goes to every proven tag-aware link at
   least 30 s before a rotation, and to a link that comes up while one is due.
 - **Aliases** (`AdvertAliases`). Resolve order: own tags, then direct contacts' keys, then claims learned on links,
-  then caches (positive and negative, cleared when keys change), under a per-second HMAC budget. A link holds one
-  claim; a claim a key contradicts is dropped; two claimants void each other; a dialer believes `t` only when it
-  equals the `d` it dialed. Presence and every per-peer map are keyed by the resolved id where there is one. The
+  then caches (positive and negative, cleared when keys change), under a per-second HMAC budget. A link, and a node id, holds one
+  claim, in a table capped at 128 that refuses rather than evicts; a claim a key contradicts is dropped; two
+  claimants void each other; a dialer believes `t` only when it equals the `d` it dialed, and holds a different `t` after
+  a tag dial pending as an announced tag (a rotation edge). A held link's claim and pending tag do not lapse while the
+  link is up; they expire one tag lifetime after it ends. A responder takes the
+  dialer's `t` as a hint: it attributes the tag to the link for presence and RSSI but never suppresses a dial
+  `iDial` calls for. An honest hint names a peer we would not dial until our own next rotation; after it, half the
+  time we dial a peer we hold, it refuses with no reply and resends its tag over the link, and the resend becomes a
+  claim. A forged hint is dialed, and the proof that comes back voids it. Presence and every per-peer map are keyed by the resolved id where there is one. The
   published sets (`reachable`, `near`) carry resolved and linked peers only, so no tag becomes a met peer; an
   unresolved tag with the Aware flag enters the Aware candidate sets alone, so a dormant Aware plane still wakes at
   the first sighting.

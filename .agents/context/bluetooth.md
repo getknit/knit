@@ -215,6 +215,15 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
   or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
+- **When touching `AdvertOrder`, `AdvertAliases`, `BlindTag`, or any pre-link `localId > nodeId` in the plane:** READ
+  ADR 2026-11.xp6d (Proposed; the pure core is built, the wiring is not). `AdvertOrder.iDial` decides every role
+  before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
+  two tags go to the larger, and the responder judges a dialer on the form its HELLO `d` names (current or previous
+  only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
+  `CodedPhyPolicy.drives` today move to `iDial`. `AdvertAliases` resolves own tags, then direct contacts' keys (a
+  replaced key tried until a tag under its successor is heard, at most a week), then link claims, then responder
+  hints (presence only, never suppressing a dial), under a per-second HMAC budget; every claim rule is in its KDoc,
+  and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`.
 
 ## Adding an entry
 
