@@ -229,6 +229,7 @@ class PeerRepository(
         dao.deleteOrphanProfiles()
         dao.deleteOrphanBadges()
         dao.deleteOrphanPresenceKeys()
+        dao.deleteOrphanLinkOwedResets()
         return true
     }
 
@@ -271,6 +272,7 @@ class PeerRepository(
         dao.deleteOrphanProfiles() // the proof of key goes with the pin it proves
         dao.deleteOrphanBadges()
         dao.deleteOrphanPresenceKeys() // so does any presence key the peer handed us
+        dao.deleteOrphanLinkOwedResets() // and a restore's reset owed to them over a link
         return evicted
     }
 

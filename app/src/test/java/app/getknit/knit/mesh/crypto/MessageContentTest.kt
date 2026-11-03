@@ -710,7 +710,7 @@ class MessageContentTest {
          * [MessageContent.VERSION]) and the ctl machinery. A new conversational field must be mapped in
          * [sealedContent]; only a new machinery field belongs here.
          */
-        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl", "sc")
+        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl", "sc", "pk")
 
         /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the row filled. */
         val JSON = Json { encodeDefaults = false }

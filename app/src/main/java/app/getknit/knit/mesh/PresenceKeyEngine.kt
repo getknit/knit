@@ -1,0 +1,545 @@
+package app.getknit.knit.mesh
+
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
+import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.mesh.crypto.BlindTag
+import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.PresenceKeyFrame
+import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
+import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * This phone's presence keys and their delivery to linked direct contacts (ADR 2026-11.xp6d, "The presence key";
+ * knit-next #285): the engine around [PresenceKeyPolicy].
+ *
+ * **One lock.** [lock] serialises every [PresenceKeyPolicy.due] evaluation, mint, rotation, grow and seal. It is always
+ * taken **outside** any Room transaction and never inside one: under it the engine calls the stores (each opens its own
+ * transaction) and the ratchet facade (transaction outer, ratchet mutex inner, as always), so the order is engine lock →
+ * transaction → ratchet mutex, everywhere. The inbound arm (`InboundPipeline`'s `CTL_PRESENCE_KEY`, inside a ratchet
+ * commit) and the data layer never take it; a path that did would invert that order and wedge two suspended coroutines
+ * no thread dump shows (the 051284eb deadlock). The lock is never held across a transport send: [reconcile] seals under
+ * it and hands the sealed frames to the links after releasing it.
+ *
+ * **Keys.** At start and in every pass, [settle] asks [PresenceKeyPolicy.due] and applies the answer until nothing is
+ * due, each time against a fresh read of the direct contacts ([direct], never a cached value). A mint writes the last
+ * generation ([Store.setLastGeneration]) before the row that uses it. A clock-or-mark advance is allowed once per
+ * [PresenceKeyPolicy.DAY_MS] of [elapsed] (a spoofed wall clock cannot burn generations every heal); a process restart
+ * permits one.
+ *
+ * **Delivery: a reconcile, never a queue.** What each live-linked peer is owed ([PresenceKeyPolicy.owed]: a peer with a
+ * live proven link, in the fresh direct-contact read, holding `CAP_BLIND_ADVERT` in its link HELLO or its pinned
+ * profile, with a confirmed session) is compared with what it was last sent ([sent]: the generations and the session
+ * root the seal itself committed under); a difference in either is sealed (`confirmedOnly`, so the engine never opens a
+ * session) and sent, signed `relay = false`, over the peer's live link — never flooded, custodied or cast, so no relay
+ * learns who this phone's direct contacts are. One record per peer, not per link: a peer on two planes gets one copy.
+ * A pass deals only with links the neighbour pass registered ([onLinkUp]); a capability or root trigger that lands before
+ * that registration is served by the delayed link-up pass and every heal.
+ * The record outlives a link (a relink with nothing changed sends nothing, so no key is sealed under a root the peer
+ * left while apart) and lives in memory: a restart sends again. Cost: a receiver that dies between the open and its
+ * commit, or a frame lost in a dying link, leaves the peer without the key until the next generation or root change, or
+ * our restart — a week at most. Runs on a link
+ * proving itself (after a random [LINK_UP_DELAY_MIN_MS]–[LINK_UP_DELAY_MAX_MS] wait, the wiring's), a link dropping, a
+ * direct-contact change, a session root change, a capability change, and every heal as the backstop.
+ *
+ * **A restore's link-owed resets.** The direct contacts a restore's flooded resets do not cover ([onRestore]) get theirs
+ * here, point to point: sealed once ([sealReset], `AFTER_WIPE`) at the first live link, kept with the root its seal
+ * committed ([Store.recordLinkOwedReset]), and re-sent verbatim at each link-up until the session confirms, then dropped
+ * — unless another reset of ours replaced it, or the peer's prekey moved on ([PresenceKeyPolicy.linkReset]). Nothing about
+ * them reaches a relay.
+ *
+ * **Keys of people who stop being direct contacts** are deleted on the pass that sees them go; the first pass of a
+ * session deletes every stored key whose peer is not a direct contact (a removal made while the mesh was stopped).
+ *
+ * Never logs a key, a tag or a root tag beside a peer id: generations and counts only. Pure of Android: every seam is
+ * injected, so `PresenceKeyEngineTest` drives it on the JVM.
+ */
+class PresenceKeyEngine(
+    private val store: Store,
+    /** A fresh read of the direct contacts (`contacts/DirectContacts.read`). */
+    private val direct: suspend () -> Set<String>,
+    /** The peers with a live proven link now, one entry per peer whatever the planes (`MeshTransport.neighbors`). */
+    private val linked: () -> Collection<Peer>,
+    /** The capabilities of [nodeId]'s pinned profile, or null with none. */
+    private val pinnedCapabilities: suspend (nodeId: String) -> Long?,
+    /** The `RatchetCrypto.rootTag` of the session held with the peer now, or null with none. */
+    private val rootTagFor: suspend (nodeId: String) -> Long?,
+    /** Whether the session held with the peer is confirmed. */
+    private val sessionConfirmed: suspend (nodeId: String) -> Boolean,
+    /** Seals [content] to the peer under a confirmed session only, signed `relay = false`; null when it cannot. */
+    private val sealKeys: suspend (nodeId: String, content: MessageContent) -> Sealed?,
+    /**
+     * Seals a restore's reset to the peer, signed `relay = false`, with the root the seal committed: `AFTER_WIPE`'s plan,
+     * or with `remark` the marker under our own pending reset init alone. Null when declined or impossible.
+     */
+    private val sealReset: suspend (nodeId: String, remark: Boolean) -> Sealed?,
+    /** Our side of the session with the peer, for a link-owed reset's step ([PresenceKeyPolicy.linkReset]). */
+    private val pendingReset: suspend (nodeId: String) -> PendingReset,
+    /** Hands a sealed frame to the peer's live link. */
+    private val send: suspend (peer: Peer, frame: Sealed) -> Unit,
+    /** The wall clock: generations, activation stamps, the weekly turnover. */
+    private val wall: () -> Long,
+    /** A monotonic clock (`SystemClock.elapsedRealtime`): the once-a-day floor on clock-or-mark advances. */
+    private val elapsed: () -> Long,
+    private val metrics: MeshMetrics = MeshMetrics(),
+    private val log: (String) -> Unit = {},
+    /** Per-decision diagnostics (a link-owed reset's step and link epochs); ids and counts only, never bytes or a tag. */
+    private val debug: (String) -> Unit = {},
+    private val newKey: () -> ByteArray = { BlindTag.newKey() },
+) {
+    /** The engine's persisted state: its own key rows, its last generation, the peers' stored keys, the link-owed resets. */
+    interface Store {
+        suspend fun ownKeys(): List<PresenceKeyPolicy.Own>
+
+        suspend fun applyOwn(
+            inserted: List<PresenceKeyPolicy.Own>,
+            updated: List<PresenceKeyPolicy.Own>,
+            keep: Set<Long>,
+        )
+
+        suspend fun lastGeneration(): Long
+
+        suspend fun setLastGeneration(generation: Long)
+
+        suspend fun peersWithKeys(): List<String>
+
+        suspend fun deletePeerKeys(nodeIds: Collection<String>)
+
+        /** Peer → its kept reset, or null until sealed. */
+        suspend fun linkOwedResets(): Map<String, KeptReset?>
+
+        suspend fun setLinkOwedResets(peers: Set<String>)
+
+        suspend fun recordLinkOwedReset(
+            peer: String,
+            kept: KeptReset,
+        )
+
+        suspend fun dropLinkOwedReset(peer: String)
+    }
+
+    /** A sealed frame: the signed wire, its frame id (the router's seen-set key) and the session root it was sealed under. */
+    class Sealed(
+        val wire: WireEnvelope,
+        val id: String,
+        val rootTag: Long,
+    )
+
+    /** A link-owed reset as first sealed: its signed wire and the root its seal committed. */
+    class KeptReset(
+        val wire: ByteArray,
+        val rootTag: Long,
+    )
+
+    /**
+     * Our side of a session a link-owed reset is for: whether it is our own unanswered reset ([ownPendingReset]), and
+     * whether its init is against the prekey the peer's profile pins now ([initOnPinnedPrekey]).
+     */
+    class PendingReset(
+        val ownPendingReset: Boolean,
+        val initOnPinnedPrekey: Boolean,
+    )
+
+    /** What was last sealed to a peer: the generations handed over and the root they were sealed under. */
+    private class Sent(
+        val generations: List<Long>,
+        val rootTag: Long,
+    )
+
+    private val lock = Mutex()
+
+    // Guarded by [lock].
+    private val sent = HashMap<String, Sent>()
+
+    // The link-owed resets sent, by peer, with the link epoch ([presentLinks]) they were sent on (guarded by [lock]): a mark
+    // from another epoch is a reset not sent on the link held now.
+    private val resetSentThisLink = HashMap<String, Long>()
+
+    // The links the neighbour pass registered, peer → the epoch of the link held now ([onLinkUp] / [onLinkDepart]),
+    // lock-free and synchronous with the pass: a pass only deals with a peer whose link the neighbour pass has seen, and
+    // "this link" is the epoch here. [linkEpochs] keeps each peer's last epoch across departures, so a new link counts on.
+    private val presentLinks = ConcurrentHashMap<String, Long>()
+    private val linkEpochs = ConcurrentHashMap<String, Long>()
+
+    // When the last clock-or-mark advance ran, on [elapsed]; null since the process started, which permits one.
+    private var lastClockAdvanceAt: Long? = null
+
+    // The direct contacts the last pass saw, to tell who left; null before the session's first pass.
+    private var lastDirect: Set<String>? = null
+
+    @Volatile
+    private var started = false
+
+    /**
+     * The first start after a restore (`MeshManager.finishRestore`), before [start]: clamps a restored last generation
+     * more than a year past the clock ([PresenceKeyPolicy.clampRestored]) and records [linkOwed] — the direct contacts
+     * the restore's flooded resets do not cover — as owed a reset over a link.
+     */
+    suspend fun onRestore(linkOwed: Set<String>) =
+        lock.withLock {
+            val last = store.lastGeneration()
+            PresenceKeyPolicy.clampRestored(last, wall())?.let {
+                store.setLastGeneration(it)
+                metrics.onPresenceKeyGenerationClamped()
+                log("restored presence-key generation clamped to the clock")
+            }
+            store.setLinkOwedResets(linkOwed)
+            log("restore: ${linkOwed.size} direct contacts owed a reset over a link")
+        }
+
+    /**
+     * Arms the engine for a mesh session and runs its first pass; triggers before this do nothing. The sent records stay
+     * (a process restart is what clears them); a session starts with no link-owed reset sent and no direct-contact set
+     * seen, so its first pass also deletes the keys of anyone who stopped being a direct contact while the mesh was stopped.
+     */
+    suspend fun start() {
+        lock.withLock {
+            resetSentThisLink.clear()
+            lastDirect = null
+        }
+        started = true
+        reconcile("start")
+    }
+
+    /**
+     * [ids]' last live link dropped. What they were sent is kept: a relink with the same root and generations owes them
+     * nothing, so no ctl 11 goes under a root the peer may have left while apart (its restore) — sealed there, it would
+     * fail to open and count toward the peer's reset heuristic. Only the link-owed resets, which go once per link until
+     * the session confirms, start over.
+     */
+    suspend fun onLinksDown(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        lock.withLock { ids.forEach { resetSentThisLink.remove(it) } }
+    }
+
+    /** The generations last sealed to [nodeId], or null when none was (a diagnostic: what the engine decided, not what landed). */
+    internal suspend fun sentTo(nodeId: String): List<Long>? = lock.withLock { sent[nodeId]?.generations }
+
+    /**
+     * [ids] linked (the neighbour pass, synchronously, before their link-up pass is scheduled): each starts a new link
+     * epoch, so a link-owed reset marked sent on an earlier link goes again on this one. Lock-free on purpose.
+     */
+    fun onLinkUp(ids: Collection<String>) {
+        for (id in ids) {
+            if (presentLinks.containsKey(id)) continue // listed again (a retried or displaced pass) with no departure: the same link
+            presentLinks[id] = linkEpochs.merge(id, 1L, Long::plus) ?: 1L
+        }
+    }
+
+    /**
+     * [ids]' last link went (the neighbour pass, synchronously, lock-free): no pass deals with them until a new link, and
+     * the next arrival is a new epoch. What the departure clears under the lock is [onLinksDown]'s, async.
+     */
+    fun onLinkDepart(ids: Collection<String>) {
+        ids.forEach { presentLinks.remove(it) }
+    }
+
+    /** [ids]' frames were sealed and never left (a send that threw): forgotten, so the next pass seals them again. */
+    private suspend fun onSendFailed(ids: Collection<String>) {
+        lock.withLock {
+            ids.forEach {
+                sent.remove(it)
+                resetSentThisLink.remove(it)
+            }
+        }
+    }
+
+    /**
+     * Whether a profile carrying [capabilities] asks for a [reconcile]: it carries `CAP_BLIND_ADVERT`, so a linked peer
+     * may be owed its keys now. Nothing is remembered per id (a Sybil profile flood grows no set): the reconcile is
+     * idempotent through what was sent, so a second profile with the bit costs a pass and seals nothing.
+     */
+    fun asksForKeys(capabilities: Long?): Boolean = capabilities != null && capabilities and Protocol.CAP_BLIND_ADVERT != 0L
+
+    /**
+     * One pass: under [lock], settle the own keys, delete the keys of people who left the direct contacts, seal every
+     * link-owed reset and every owed presence key that differs from what was sent; then, released, send them. [cause]
+     * is for the log line alone.
+     */
+    suspend fun reconcile(cause: String) {
+        if (!started) return
+        val outgoing = lock.withLock { if (started) pass() else emptyList() }
+        // One peer's failed send never loses the others', and forgets what that peer was sent, so the next pass resends.
+        val failed = outgoing.filter { (peer, frame) -> runCatchingUnlessCancelled { send(peer, frame) }.isFailure }.map { it.first.nodeId }
+        if (failed.isNotEmpty()) onSendFailed(failed)
+        if (outgoing.isNotEmpty()) {
+            log(
+                "presence keys ($cause): ${outgoing.size - failed.size} frames to linked contacts, ${failed.size} failed",
+            )
+        }
+    }
+
+    private suspend fun pass(): List<Pair<Peer, Sealed>> {
+        val contacts = direct()
+        dropLeavers(contacts)
+        settle(contacts)
+        val keys = PresenceKeyPolicy.keysOf(store.ownKeys())
+        // Only links the neighbour pass registered: a pass that ran before the pass saw a link would mark a reset sent on an
+        // epoch the link-up then moves past, and send it twice on one link. A capability or root trigger that lands before
+        // the neighbour pass registers the link is served by the delayed link-up pass and every heal.
+        val peers = linked().filter { it.nodeId in contacts && presentLinks.containsKey(it.nodeId) }.distinctBy { it.nodeId }
+        val out = mutableListOf<Pair<Peer, Sealed>>()
+        val owedResets = store.linkOwedResets()
+        // The link-owed resets first: a peer that just took one holds no confirmed session yet, so no key follows it.
+        for (peer in peers.filter { it.nodeId in owedResets }) resetFor(peer, owedResets[peer.nodeId])?.let { out += peer to it }
+        for (peer in peers) sealOwed(peer, keys)?.let { out += peer to it }
+        return out
+    }
+
+    /**
+     * The keys [peer] is owed, sealed, when they differ from what it was last sent — in generations or in the session
+     * root, the seal's own tag — and the record of them; null when nothing is owed or the seal declined.
+     */
+    private suspend fun sealOwed(
+        peer: Peer,
+        keys: PresenceKeyPolicy.Keys,
+    ): Sealed? {
+        val owed = PresenceKeyPolicy.owed(peer.nodeId, keys).takeIf { it.isNotEmpty() && capable(peer) } ?: return null
+        val generations = owed.map { it.generation }
+        val tag = rootTagFor(peer.nodeId) ?: return null
+        val was = sent[peer.nodeId]
+        if (was != null && was.generations == generations && was.rootTag == tag) return null
+        return sealKeys(peer.nodeId, PresenceKeyFrame.content(owed.map { it.generation to it.key }))?.also {
+            sent[peer.nodeId] = Sent(generations, it.rootTag)
+            metrics.onPresenceKeySent()
+        }
+    }
+
+    /** Whether [peer] reads tags: its link HELLO or its pinned profile carries `CAP_BLIND_ADVERT`. */
+    private suspend fun capable(peer: Peer): Boolean =
+        peer.capabilities and Protocol.CAP_BLIND_ADVERT != 0L ||
+            (pinnedCapabilities(peer.nodeId) ?: 0L) and Protocol.CAP_BLIND_ADVERT != 0L
+
+    /**
+     * A restore's link-owed reset to the linked [peer] ([kept]: as first sealed, or null before that): dropped once the
+     * session confirms; otherwise one frame per link, chosen by [PresenceKeyPolicy.linkReset] — the kept bytes verbatim
+     * (a seal consumes a chain key, and a second `AFTER_WIPE` would be declined anyway), a fresh seal kept with its root,
+     * the marker under our own pending reset when a sealed frame was lost before it was kept, or nothing when another
+     * reset of ours replaced the kept one. A seal the facade declines leaves nothing to send, counted apart.
+     */
+    private suspend fun resetFor(
+        peer: Peer,
+        kept: KeptReset?,
+    ): Sealed? {
+        val id = peer.nodeId
+        if (sessionConfirmed(id)) {
+            store.dropLinkOwedReset(id)
+            log("restore reset to $id answered")
+            return null
+        }
+        if (resetSentThisLink[id] == presentLinks[id]) return null
+        val ours = pendingReset(id)
+        val step = PresenceKeyPolicy.linkReset(kept?.rootTag, rootTagFor(id), ours.ownPendingReset, ours.initOnPinnedPrekey)
+        debug("link-owed reset to $id: $step on link epoch ${presentLinks[id]}, last sent on ${resetSentThisLink[id] ?: "none"}")
+        val frame =
+            when (step) {
+                PresenceKeyPolicy.LinkReset.RESEND -> kept?.let { unwrap(it.wire) }
+                PresenceKeyPolicy.LinkReset.SEAL -> sealReset(id, false)
+                PresenceKeyPolicy.LinkReset.REMARK -> sealReset(id, true)
+                PresenceKeyPolicy.LinkReset.SUPERSEDED -> null
+            }
+        if (frame == null) {
+            store.dropLinkOwedReset(id)
+            val superseded = step == PresenceKeyPolicy.LinkReset.SUPERSEDED
+            if (superseded) metrics.onLinkOwedResetSuperseded() else metrics.onLinkOwedResetDeclined()
+            log("restore reset to $id dropped: ${if (superseded) "another reset replaced it" else "declined"}")
+            return null
+        }
+        if (step != PresenceKeyPolicy.LinkReset.RESEND) store.recordLinkOwedReset(id, KeptReset(encode(frame.wire), frame.rootTag))
+        resetSentThisLink[id] = presentLinks[id] ?: 0L
+        metrics.onLinkOwedResetSent()
+        return frame
+    }
+
+    /** Deletes the stored keys of everyone who left the direct contacts, and drops their link-owed resets. */
+    private suspend fun dropLeavers(contacts: Set<String>) {
+        val before = lastDirect
+        lastDirect = contacts
+        val leavers = if (before == null) store.peersWithKeys().filterNot { it in contacts } else (before - contacts).toList()
+        if (leavers.isEmpty()) return
+        store.deletePeerKeys(leavers)
+        val owed = store.linkOwedResets().keys
+        leavers.filter { it in owed }.forEach { store.dropLinkOwedReset(it) }
+        leavers.forEach { sent.remove(it) }
+        log("presence keys of ${leavers.size} former direct contacts deleted")
+    }
+
+    /** Applies [PresenceKeyPolicy.due] until nothing is due. Bounded: each step settles what made it due. */
+    private suspend fun settle(contacts: Set<String>) {
+        repeat(MAX_STEPS) {
+            val rows = store.ownKeys()
+            val now = wall()
+            val allowed = lastClockAdvanceAt?.let { elapsed() - it >= PresenceKeyPolicy.DAY_MS } ?: true
+            val due = PresenceKeyPolicy.due(rows, contacts, now, allowed, BlindTag::slotOf, BlindTag.WINDOW_AHEAD_SLOTS)
+            if (due == PresenceKeyPolicy.Due.None) return
+            if (!apply(due, rows, contacts, now)) return
+        }
+        log("presence keys did not settle in $MAX_STEPS steps")
+    }
+
+    /** One rotation's writes: new generations, moved ones, and the generations kept. */
+    private class Change(
+        val inserted: List<PresenceKeyPolicy.Own>,
+        val updated: List<PresenceKeyPolicy.Own>,
+        val keep: Set<Long>,
+    )
+
+    /** Applies one [due] step; false when a generation could not be minted (nothing changed). */
+    private suspend fun apply(
+        due: PresenceKeyPolicy.Due,
+        rows: List<PresenceKeyPolicy.Own>,
+        contacts: Set<String>,
+        now: Long,
+    ): Boolean {
+        val change = changeFor(due, rows, contacts, now) ?: return false
+        store.applyOwn(change.inserted, change.updated, change.keep)
+        if (due is PresenceKeyPolicy.Due.Advance && due.cause != PresenceKeyPolicy.AdvanceCause.WEEKLY) lastClockAdvanceAt = elapsed()
+        if (change.inserted.isNotEmpty()) {
+            metrics.onPresenceKeyRotated()
+            val current = PresenceKeyPolicy.keysOf(store.ownKeys()).current?.generation
+            log("presence key ${due.javaClass.simpleName.lowercase()}: current g=$current")
+        }
+        return true
+    }
+
+    /** The writes [due] asks for, or null when a generation could not be minted. */
+    private suspend fun changeFor(
+        due: PresenceKeyPolicy.Due,
+        rows: List<PresenceKeyPolicy.Own>,
+        contacts: Set<String>,
+        now: Long,
+    ): Change? {
+        val keys = PresenceKeyPolicy.keysOf(rows)
+        val held = rows.mapTo(HashSet()) { it.generation }
+        return when (due) {
+            PresenceKeyPolicy.Due.None -> {
+                Change(emptyList(), emptyList(), held)
+            }
+
+            // With no current key there is nothing to keep; on a shrink the next key may be held by whoever left and goes,
+            // while the current one stays as the previous key, never aired again.
+            PresenceKeyPolicy.Due.Mint, PresenceKeyPolicy.Due.Fresh -> {
+                freshPair(keys, now, contacts)
+            }
+
+            is PresenceKeyPolicy.Due.Advance -> {
+                advance(keys, now, contacts)
+            }
+
+            PresenceKeyPolicy.Due.MintNext -> {
+                mint(now, activatedAt = null, contacts)?.let { Change(listOf(it), emptyList(), held + it.generation) }
+            }
+
+            is PresenceKeyPolicy.Due.Grow -> {
+                val updated =
+                    listOfNotNull(
+                        keys.next?.let { it.copy(audience = it.audience + due.toNext) },
+                        keys.current?.takeIf { due.toCurrent.isNotEmpty() }?.let { it.copy(audience = it.audience + due.toCurrent) },
+                    )
+                Change(emptyList(), updated, held)
+            }
+        }
+    }
+
+    /** The next key becomes the current one and a new next key is minted; with no next key, a fresh pair. */
+    private suspend fun advance(
+        keys: PresenceKeyPolicy.Keys,
+        now: Long,
+        contacts: Set<String>,
+    ): Change? {
+        val promoted = keys.next ?: return freshPair(keys, now, contacts)
+        val next = mint(now, activatedAt = null, contacts) ?: return null
+        return Change(
+            listOf(next),
+            listOf(promoted.copy(activatedAt = now)),
+            setOfNotNull(keys.current?.generation, promoted.generation, next.generation),
+        )
+    }
+
+    /** A new current key and a new next one, the old current kept as the previous key (none on a first mint). */
+    private suspend fun freshPair(
+        keys: PresenceKeyPolicy.Keys,
+        now: Long,
+        contacts: Set<String>,
+    ): Change? {
+        val current = mint(now, activatedAt = now, contacts) ?: return null
+        val next = mint(now, activatedAt = null, contacts) ?: return null
+        return Change(listOf(current, next), emptyList(), setOfNotNull(keys.current?.generation, current.generation, next.generation))
+    }
+
+    /** A new key of the next generation, with that generation recorded as the last before it is used. */
+    private suspend fun mint(
+        now: Long,
+        activatedAt: Long?,
+        audience: Set<String>,
+    ): PresenceKeyPolicy.Own? {
+        val generation = PresenceKeyPolicy.nextGeneration(store.lastGeneration(), now)
+        if (generation == null) {
+            log("presence key generation would overflow; nothing minted")
+            return null
+        }
+        store.setLastGeneration(generation)
+        return PresenceKeyPolicy.Own(generation, newKey(), mintedAt = now, activatedAt = activatedAt, audience = audience)
+    }
+
+    private fun encode(wire: WireEnvelope): ByteArray = WireCodec.encodeWire(wire)
+
+    /** A kept reset, back as the frame it was: its wire and the id the router marks seen. */
+    private fun unwrap(bytes: ByteArray): Sealed? {
+        val wire = WireCodec.decodeWire(bytes) ?: return null
+        val env = WireCodec.decodeEnvelope(wire.signed) ?: return null
+        return Sealed(wire, env.id, rootTag = 0L) // a resend's tag is the kept one's; nothing reads it
+    }
+
+    companion object {
+        /** The shortest and longest wait before a link-up's reconcile (the brief: a random 2–20 s). */
+        const val LINK_UP_DELAY_MIN_MS = 2_000L
+        const val LINK_UP_DELAY_MAX_MS = 20_000L
+
+        // More than any chain of steps the policy can name (mint, then grow; fresh; advance, then grow).
+        private const val MAX_STEPS = 6
+    }
+}
+
+/**
+ * [PresenceKeyEngine.Store] over the rows ([PresenceKeyRepository]): the own keys, the peers' keys and a restore's
+ * link-owed resets (all local-only tables), and the last generation, the one setting kept beside them (carried in a backup).
+ */
+internal class PresenceKeyEngineStore(
+    private val rows: PresenceKeyRepository,
+    private val settings: SettingsStore,
+    private val clock: () -> Long,
+) : PresenceKeyEngine.Store {
+    override suspend fun ownKeys() = rows.ownKeys()
+
+    override suspend fun applyOwn(
+        inserted: List<PresenceKeyPolicy.Own>,
+        updated: List<PresenceKeyPolicy.Own>,
+        keep: Set<Long>,
+    ) = rows.applyOwn(inserted, updated, keep)
+
+    override suspend fun lastGeneration() = settings.presenceKeyLastGeneration()
+
+    override suspend fun setLastGeneration(generation: Long) {
+        settings.setPresenceKeyLastGeneration(generation)
+    }
+
+    override suspend fun peersWithKeys() = rows.peersWithKeys()
+
+    override suspend fun deletePeerKeys(nodeIds: Collection<String>) = rows.deletePeerKeys(nodeIds)
+
+    override suspend fun linkOwedResets(): Map<String, PresenceKeyEngine.KeptReset?> = rows.linkOwedResets()
+
+    override suspend fun setLinkOwedResets(peers: Set<String>) = rows.setLinkOwedResets(peers, clock())
+
+    override suspend fun recordLinkOwedReset(
+        peer: String,
+        kept: PresenceKeyEngine.KeptReset,
+    ) = rows.recordLinkOwedReset(peer, kept)
+
+    override suspend fun dropLinkOwedReset(peer: String) = rows.dropLinkOwedReset(peer)
+}

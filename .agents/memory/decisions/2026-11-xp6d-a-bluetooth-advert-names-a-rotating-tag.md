@@ -106,7 +106,8 @@ foreground head-start dial and background seeking dial.
   corrected clock or a stale advertiser mark (at most once a day), the next key becomes current; a new contact joins
   the next key's audience, and the current one's only within a day of its activation, so nobody added later can read
   back days of aired tags. Delivered by its own sealed ctl, `CTL_PRESENCE_KEY = 11` (named form only, padded to one
-  size), only point to point over a live proven link: signed, `relay = false`, never flooded, custodied or cast. A
+  size: every ctl 11 plaintext is 128 bytes, its CBOR names `g`, `k`, `ng`, `nk` and `p`, which an iOS port mirrors), only
+  point to point over a live proven link: signed, `relay = false`, never flooded, custodied or cast. A
   flooded delivery would show every relay the user's direct contacts each week and, by who is missing from a
   rotation's burst, whom the user removed or blocked. What each linked contact is owed is reconciled against what it
   was sent, on link-up, key changes, session root changes and capability changes, and at every heal; the next key
@@ -134,7 +135,10 @@ sleep, a controller-timed set lifetime or an alarm per rotation, both declined i
   name to id. The Wi-Fi Aware SSI keeps the clear id until item 13. Every holder of the presence key can recognise the
   phone wherever they scan, and forge its presence, until the next rotation; a captured tag replays as "nearby" for its
   contacts for as long as its slot stays in their window (about 8 hours), longer for a contact whose clock an attacker
-  sets back.
+  sets back. The key's ctl and the restore's link-owed reset go `relay = false`, but that bit is outside the
+  signature: the addressee, or a listener on a link read in the clear (#286), can re-wrap either as `relay = true`,
+  and every relay then custodies and floods a signed frame saying the user wrote to that contact (parked as
+  `docs/NEXT_WIRE_BREAK.md` item 14).
 - **Clocks.** A contact resolves a tag only while its slot falls in the contact's window, so a phone whose wall clock
   is off by more than that is not recognised before a link; it still links as a stranger, and the link proves it.
   Where each clock sits in its slot decides the exact margin: a phone running ahead resolves up to between 30 and 45
@@ -156,7 +160,14 @@ sleep, a controller-timed set lifetime or an alarm per rotation, both declined i
   only after their next link. A removed or blocked contact keeps recognising it until the advert moves to the new key.
   The key's ctl, though padded, tells a listener in radio range that two linked phones are direct contacts, until
   links are encrypted (#286). A direct contact with no DM thread or shared group who messages from afar after our
-  restore is not read until its own reset heuristic fires or the two link.
+  restore is not read until its own reset heuristic fires or the two link. The link-owed reset goes only over a link whose peer proved its id (ADR
+  2026-11.264w), so for a contact on a build without the link proof the restore split changes nothing: the pair heals
+  through the reset heuristic as before. When it is the contact who restores, our reset in answer to its frames still
+  floods: those frames already named the pair. What each contact was sent is remembered per contact and session root across link drops, so a
+  relink with nothing changed sends nothing (a resend under a root the peer just abandoned would feed its reset
+  heuristic). The price: a contact whose phone dies between opening the key and committing it, or a key lost in a
+  dying link, holds no current key until the next generation, the next session root or this phone's restart, a week
+  at most.
 - **Commons accepts from before the mark.** Builds before this one accepted commons posters with no mark, so the first
   reader marks every accepted id still in a joined commons' member list. A poster from a commons the user left before
   upgrading has no member row left, so stays a direct contact; and a commons member the user had also accepted by hand

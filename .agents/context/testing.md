@@ -635,6 +635,10 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   parent tree, none on this one). Launched sends (a relay in its jitter, a debounced tick) are not covered. A node
   with a board gains nothing from these waits: its manager reads the composite's `combine` and `merge`, so they
   return early, and it waits for its board to hold the radio's links instead.
+  It also waits for every node's delayed presence-key pass (`awaitPresencePasses()`, ADR 2026-11.xp6d): the link-up
+  pass runs `LabLimits.presenceLinkUpDelayMs` after the neighbour pass, and a restore's link-owed reset rides it, so a
+  scenario that held or counted the link straight after acquaintance could catch or strand it. A node whose link-up
+  wait is at least `AWAIT_MS` (the mid-link capability case) is skipped on purpose.
 - **The CI runner is one slow vCPU**, and every relay jitter, tick and seal ordering a scenario assumed on a
   24-core box is randomized there. Reproduce a CI-only flake with the throttled loop, not on all cores:
   `systemd-run --user --scope -q -p CPUQuota=50% taskset -c 0 ./gradlew :app:testDebugUnitTest --tests '…' --rerun --no-daemon`

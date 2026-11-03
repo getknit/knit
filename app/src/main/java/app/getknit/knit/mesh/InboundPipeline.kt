@@ -37,6 +37,7 @@ import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
@@ -55,6 +56,7 @@ import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.crypto.b64
@@ -89,6 +91,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.LinkSignal
+import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -311,6 +314,12 @@ class InboundPipeline(
     // Who must prove the node id its link HELLO claims (ADR 2026-11.264w): told each stored profile's capabilities once
     // its commit landed, so a gain of the bit closes every unproven link claiming the id (R4). Null in a rig.
     private val linkClaims: LinkClaims? = null,
+    // The presence keys a sealed CTL_PRESENCE_KEY stores (ADR 2026-11.xp6d), inside the ratchet commit that opened it.
+    // Over [db] by default, which is what MeshManager and every rig want.
+    private val presenceKeys: PresenceKeyRepository = PresenceKeyRepository(db),
+    // Each stored profile's capabilities, after its commit: the presence-key engine re-reconciles a linked peer whose
+    // profile just gained `CAP_BLIND_ADVERT` (MeshManager → PresenceKeyEngine.onCapabilities). The default ignores them.
+    private val onProfileCapabilities: (nodeId: String, capabilities: Long?) -> Unit = { _, _ -> },
 ) {
     // The title and avatar a notification wears, resolved from the conversation alone — the resolver the
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
@@ -1283,14 +1292,19 @@ class InboundPipeline(
         }
     }
 
-    /** The compact door's shapes (Crypto 3): a message, a receipt or a reaction, and none of the payloads only a ctl carries. */
+    /**
+     * The compact door's shapes (Crypto 3): a message, a receipt or a reaction, and none of the payloads only a ctl carries
+     * — a seed, a scope config, a profile, a transfer, a call, a presence key (ADR 2026-11.xp6d: a key that rode the
+     * compact door would have reached us off a link, which its sender never does).
+     */
     private fun admitsLoraDirect(plain: MessageContent): Boolean =
         (plain.ctl == null || plain.ctl == MessageContent.CTL_RECEIPT || plain.ctl == MessageContent.CTL_REACTION) &&
             plain.gk == null &&
             plain.sc == null &&
             plain.pr == null &&
             plain.xf == null &&
-            plain.cl == null
+            plain.cl == null &&
+            plain.pk == null
 
     private suspend fun deliverLoraDirectChat(
         env: RelayEnvelope,
@@ -1685,7 +1699,7 @@ class InboundPipeline(
         // roster it carries (so the commit below adopts it), or — carrying none — is parked whole with the
         // chain left where it was, so the replay after the roster lands opens it again.
         if (source != null && holdGroupKeyForUnknownGroup(source, plain, me)) return
-        val commit: suspend (suspend () -> Unit) -> Boolean = { onOpened ->
+        val commit: suspend (suspend (RatchetSessions.OpenedUnder) -> Unit) -> Boolean = { onOpened ->
             val committed =
                 db.withWriteTransaction {
                     ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt, onOpened)
@@ -1722,7 +1736,7 @@ class InboundPipeline(
         env: RelayEnvelope,
         plain: MessageContent,
         plane: DeliveryPlane,
-        commit: suspend (suspend () -> Unit) -> Boolean,
+        commit: suspend (suspend (RatchetSessions.OpenedUnder) -> Unit) -> Boolean,
         markSeen: Boolean = false,
     ): suspend (MessageEntity) -> Unit =
         { row ->
@@ -1774,10 +1788,10 @@ class InboundPipeline(
         me: String,
         now: Long,
         plane: DeliveryPlane,
-        commit: suspend (suspend () -> Unit) -> Boolean,
+        commit: suspend (suspend (RatchetSessions.OpenedUnder) -> Unit) -> Boolean,
     ) {
         var outcome = CtlOutcome()
-        val committed = commit { outcome = applyCtlInTxn(env, plain, now, plane) }
+        val committed = commit { under -> outcome = applyCtlInTxn(env, plain, me, now, plane, under) }
         if (!committed) return
         when (plain.ctl) {
             MessageContent.CTL_SESSION_RESET -> {
@@ -1832,6 +1846,11 @@ class InboundPipeline(
                 plain.cl?.let { onCallSignal(env, it, me) }
             }
 
+            MessageContent.CTL_PRESENCE_KEY -> {
+                // Counted after the commit, so a rolled-back write is never counted as stored.
+                notePresenceKey(env, outcome.presenceKey)
+            }
+
             else -> {}
         }
     }
@@ -1851,6 +1870,8 @@ class InboundPipeline(
         val released: List<String> = emptyList(),
         /** A sealed reaction whose write changed what its reactor shows (`CTL_REACTION` only), else null. */
         val reaction: ReactionEntity? = null,
+        /** What a presence key did to the keys held for its sender (`CTL_PRESENCE_KEY` only), else null. */
+        val presenceKey: PresenceKeyPolicy.Verdict? = null,
     )
 
     /**
@@ -1859,11 +1880,14 @@ class InboundPipeline(
      * unknown code does nothing here — the commit still advances the chain, which is the additive-ctl
      * contract.
      */
+    @Suppress("CyclomaticComplexMethod", "ReturnCount") // one arm per ctl value, each returning what its post-commit half needs
     private suspend fun applyCtlInTxn(
         env: RelayEnvelope,
         plain: MessageContent,
+        me: String,
         now: Long,
         plane: DeliveryPlane,
+        under: RatchetSessions.OpenedUnder,
     ): CtlOutcome {
         when (plain.ctl) {
             MessageContent.CTL_GROUP_KEY -> {
@@ -1904,9 +1928,60 @@ class InboundPipeline(
                 applyScopeConfig(env, plain.sc, conversationId = env.senderId, groupId = null, now = now)
             }
 
+            MessageContent.CTL_PRESENCE_KEY -> {
+                return CtlOutcome(presenceKey = applyPresenceKey(env, plain.pk, me, now, under))
+            }
+
             else -> {}
         }
         return CtlOutcome()
+    }
+
+    /**
+     * Applies a sealed `CTL_PRESENCE_KEY` (ADR 2026-11.xp6d) inside the ratchet commit that opened it: Room alone (no
+     * DataStore, never the key engine's lock — the transaction is outer and the ratchet mutex inner here). Taken only from
+     * a sender with a peer row who is not us, with a well-formed payload ([PresenceKeyPolicy.keysIn]); then ordered by
+     * generation against the keys held for the sender within the root era the frame opened under ([under], the pz9g
+     * predicate: only an active-root open starts a new era, a drain never does — [PresenceKeyPolicy.receive]). Null for a
+     * ctl 11 that carries no `pk`. A refusal changes nothing and the chain still advances; it is counted after the commit
+     * ([notePresenceKey]), never fed to the reset heuristic.
+     */
+    private suspend fun applyPresenceKey(
+        env: RelayEnvelope,
+        pk: PresenceKeyPayload?,
+        me: String,
+        now: Long,
+        under: RatchetSessions.OpenedUnder,
+    ): PresenceKeyPolicy.Verdict? {
+        pk ?: return null
+        val keys = PresenceKeyPolicy.keysIn(pk) ?: return PresenceKeyPolicy.Verdict.Refused(PresenceKeyPolicy.Refusal.MALFORMED)
+        if (env.senderId == me || peers.find(env.senderId) == null) {
+            return PresenceKeyPolicy.Verdict.Refused(PresenceKeyPolicy.Refusal.UNKNOWN_SENDER)
+        }
+        val verdict = PresenceKeyPolicy.receive(presenceKeys.heldBy(env.senderId), keys, under.rootTag, under.active)
+        if (verdict is PresenceKeyPolicy.Verdict.Store) presenceKeys.applyHeld(env.senderId, verdict.rows, now)
+        return verdict
+    }
+
+    /** Counts what [applyPresenceKey] decided, once its commit landed. Generations and counts only, never a key or a tag. */
+    private fun notePresenceKey(
+        env: RelayEnvelope,
+        verdict: PresenceKeyPolicy.Verdict?,
+    ) {
+        when (verdict) {
+            is PresenceKeyPolicy.Verdict.Store -> {
+                if (verdict.replaced) metrics.onPresenceKeyReplaced() else metrics.onPresenceKeyStored()
+                val era = if (verdict.replaced) " (a new era)" else ""
+                Log.i(TAG, "presence key from ${env.senderId}: ${verdict.added} stored$era, ${verdict.rows.size} held")
+            }
+
+            is PresenceKeyPolicy.Verdict.Refused -> {
+                metrics.onDropped(DropReason.PRESENCE_KEY_REFUSED)
+                Log.w(TAG, "presence key ${env.id} from ${env.senderId} refused: ${verdict.why}")
+            }
+
+            PresenceKeyPolicy.Verdict.NoOp, null -> {}
+        }
     }
 
     /**
@@ -2795,6 +2870,9 @@ class InboundPipeline(
         me: String,
         now: Long,
         cause: RatchetSessions.ResetCause = RatchetSessions.ResetCause.ON_DEMAND,
+        // Where the sealed reset goes instead of the flood: a restore's link-owed reset (ADR 2026-11.xp6d), which the key
+        // engine signs `relay = false` and sends over one link. Null floods it, as every other reset.
+        deliver: (suspend (RelayEnvelope) -> Unit)? = null,
     ): String? {
         val peer = peers.find(peerId) ?: return "no peer row"
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return "peer is not ratchet-capable"
@@ -2826,7 +2904,7 @@ class InboundPipeline(
         } else {
             Log.w(TAG, "requesting ratchet session reset with $peerId under the session we hold")
         }
-        originate(
+        val frame =
             RelayEnvelope(
                 type = FrameType.CHAT,
                 id = id,
@@ -2834,8 +2912,8 @@ class InboundPipeline(
                 sentAt = now,
                 recipientId = peerId,
                 payload = WireCodec.encodePayload(ChatContent(enc = sealed.envelope)),
-            ),
-        )
+            )
+        if (deliver != null) deliver(frame) else originate(frame)
         return null
     }
 
@@ -4441,6 +4519,7 @@ class InboundPipeline(
         // After the commit, so a rolled-back write never reaches the in-memory set: a gain of the link-proof bit closes
         // every unproven link claiming the sender on every plane (R4, ADR 2026-11.264w).
         linkClaims?.profileCapabilities(env.senderId, applied.capabilities)
+        onProfileCapabilities(env.senderId, applied.capabilities)
         val name = TextLimits.cleanReceived(content.name, TextLimits.DISPLAY_NAME)
         applyPresentationFollowUps(
             env.senderId,

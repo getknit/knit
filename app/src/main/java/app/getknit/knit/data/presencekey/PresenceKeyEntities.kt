@@ -46,3 +46,18 @@ data class PeerPresenceKeyEntity(
     val receivedAt: Long,
     val rootTag: Long,
 )
+
+/**
+ * A restore's session reset owed over a link (ADR 2026-11.xp6d, "Restore"): one row per direct contact the restore's
+ * flooded resets do not cover (card-, QR- or accept-only, no DM thread, no shared group). [wire] is the reset's signed
+ * `relay = false` frame as first sealed, null until sealed; [rootTag] the session root that seal committed (its init's
+ * root), so a kept frame another reset has since replaced is never resent. Local only (`BackupTables.TRANSIENT`): it names
+ * contacts a relay must never learn of, and it is about this phone's restore. Goes with the peer row.
+ */
+@Entity(tableName = "link_owed_resets")
+data class LinkOwedResetEntity(
+    @PrimaryKey val nodeId: String,
+    val wire: ByteArray?,
+    val rootTag: Long?,
+    val owedSince: Long,
+)

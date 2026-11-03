@@ -19,6 +19,21 @@ interface PresenceKeyDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putOwn(rows: List<OwnPresenceKeyEntity>)
 
+    /** A newly minted own key; never over an existing generation (a mint always takes a fresh one). */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertOwn(row: OwnPresenceKeyEntity)
+
+    /**
+     * Moves one own key's role and audience, leaving its mark columns as the advertiser last wrote them
+     * (`TagSchedule.MarkStore`): a rotation never rewrites a mark it read before the advertiser moved it.
+     */
+    @Query("UPDATE own_presence_keys SET activatedAt = :activatedAt, audience = :audience WHERE generation = :generation")
+    suspend fun updateOwn(
+        generation: Long,
+        activatedAt: Long?,
+        audience: String,
+    ): Int
+
     @Query("DELETE FROM own_presence_keys WHERE generation NOT IN (:keep)")
     suspend fun deleteOwnExcept(keep: List<Long>)
 
@@ -44,6 +59,10 @@ interface PresenceKeyDao {
     @Query("DELETE FROM peer_presence_keys WHERE nodeId = :nodeId")
     suspend fun deletePeerKeys(nodeId: String)
 
+    /** Every peer we hold a key for. */
+    @Query("SELECT DISTINCT nodeId FROM peer_presence_keys")
+    suspend fun peersWithKeys(): List<String>
+
     @Query("DELETE FROM peer_presence_keys WHERE nodeId = :nodeId AND generation NOT IN (:keep)")
     suspend fun deletePeerKeysExcept(
         nodeId: String,
@@ -56,3 +75,28 @@ data class OwnMark(
     val markSlot: Long?,
     val markRestart: Int?,
 )
+
+/** A restore's link-owed resets ([LinkOwedResetEntity], ADR 2026-11.xp6d). Never logs a row: it names contacts. */
+@Dao
+interface LinkOwedResetDao {
+    /** A restore's link-owed resets ([LinkOwedResetEntity]). */
+    @Query("SELECT * FROM link_owed_resets")
+    suspend fun linkOwedResets(): List<LinkOwedResetEntity>
+
+    @Query("DELETE FROM link_owed_resets")
+    suspend fun clearLinkOwedResets()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putLinkOwedResets(rows: List<LinkOwedResetEntity>)
+
+    /** Records the sealed reset for [nodeId]; 0 when it is no longer owed one. */
+    @Query("UPDATE link_owed_resets SET wire = :wire, rootTag = :rootTag WHERE nodeId = :nodeId")
+    suspend fun recordLinkOwedReset(
+        nodeId: String,
+        wire: ByteArray?,
+        rootTag: Long?,
+    ): Int
+
+    @Query("DELETE FROM link_owed_resets WHERE nodeId = :nodeId")
+    suspend fun dropLinkOwedReset(nodeId: String)
+}

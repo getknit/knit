@@ -138,6 +138,17 @@ enum class DropReason {
     SCOPE_CONFIG_REFUSED,
 
     /**
+     * A sealed presence key (`CTL_PRESENCE_KEY`, ADR 2026-11.xp6d) that opened and was refused: malformed (a key that is
+     * not 32 bytes, a generation that is not positive, half a next pair, a next generation not above the first), from a
+     * sender with no peer row or from ourselves, or out of order within the root era it opened under — an equal
+     * generation with another key, or one lower than every key held (a new era, opened under the active root, is the one
+     * place a lower generation is taken). Nothing is stored and the chain still advances. Never reset-triggering: the
+     * frame decrypted, so it says nothing about the session. An equal generation with the same key is no refusal and is
+     * not counted (a re-send after a link came back).
+     */
+    PRESENCE_KEY_REFUSED,
+
+    /**
      * A blob frame (`FrameType.isUnsignedPointToPoint`) marked for relay — refused by `InboundPipeline.verifyInbound`
      * and never flooded by [MeshRouter]. Every build sends the blob traffic point-to-point, so a count here is a crafted
      * frame.
@@ -156,8 +167,8 @@ enum class DropReason {
     /**
      * A compact LoRa DM that opened under its pair key and was refused at delivery (`InboundPipeline.deliverLoraDirect`,
      * ADR 2026-10.x9fa): a plaintext that is not v3 compact content this build reads, or one that is anything but a
-     * message, a `CTL_RECEIPT` or a `CTL_REACTION` — a reset, a seed, a profile, a scope config, a transfer or a call
-     * never ride that door. Never reset-triggering: the compact door is no `WireEnvelope` and never touches a ratchet.
+     * message, a `CTL_RECEIPT` or a `CTL_REACTION` — a reset, a seed, a profile, a scope config, a transfer, a call
+     * or a presence key never ride that door. Never reset-triggering: the compact door is no `WireEnvelope` and never touches a ratchet.
      */
     LORA_DIRECT_REFUSED,
 
@@ -307,6 +318,17 @@ class MeshMetrics {
     private val introsSent = AtomicLong()
     private val introsAnswered = AtomicLong()
     private val ratchetSwappedBack = AtomicLong()
+    private val presenceKeysSent = AtomicLong()
+    private val presenceKeysStored = AtomicLong()
+    private val presenceKeysReplaced = AtomicLong()
+    private val presenceKeysExcluded = AtomicLong()
+    private val presenceKeyRotations = AtomicLong()
+    private val presenceKeyGenerationClamped = AtomicLong()
+    private val linkOwedResetsSent = AtomicLong()
+    private val linkOwedResetsDeclined = AtomicLong()
+    private val linkOwedResetsSuperseded = AtomicLong()
+    private val presenceLinkPassesScheduled = AtomicLong()
+    private val presenceLinkPassesCompleted = AtomicLong()
     private val keysServed = AtomicLong()
     private val keysRecovered = AtomicLong()
     private val framesHeld = AtomicLong()
@@ -546,6 +568,61 @@ class MeshMetrics {
      */
     fun onRatchetReclaimed() {
         ratchetSwappedBack.incrementAndGet()
+    }
+
+    /** A `CTL_PRESENCE_KEY` sealed to a linked direct contact and handed to its link (ADR 2026-11.xp6d). */
+    fun onPresenceKeySent() {
+        presenceKeysSent.incrementAndGet()
+    }
+
+    /** A peer's `CTL_PRESENCE_KEY` stored a generation we did not hold, in the era it opened under. */
+    fun onPresenceKeyStored() {
+        presenceKeysStored.incrementAndGet()
+    }
+
+    /** A peer's `CTL_PRESENCE_KEY` opened under a new active root and replaced every key held for it (a new era). */
+    fun onPresenceKeyReplaced() {
+        presenceKeysReplaced.incrementAndGet()
+    }
+
+    /** A stored key left out of the listing: byte-equal to another listed contact's or to one of ours. */
+    fun onPresenceKeysExcluded(count: Int) {
+        if (count > 0) presenceKeysExcluded.addAndGet(count.toLong())
+    }
+
+    /** Our own presence keys moved: a mint, a fresh pair, an advance or a next key minted. */
+    fun onPresenceKeyRotated() {
+        presenceKeyRotations.incrementAndGet()
+    }
+
+    /** A restored `presence_key_last_generation` more than a year past the clock, clamped to the clock. */
+    fun onPresenceKeyGenerationClamped() {
+        presenceKeyGenerationClamped.incrementAndGet()
+    }
+
+    /** A restore's session reset to a direct contact no flooded reset covers, sent point to point over a link. */
+    fun onLinkOwedResetSent() {
+        linkOwedResetsSent.incrementAndGet()
+    }
+
+    /** A restore's link-owed reset the facade declined to seal: dropped with nothing sent (another reset already went). */
+    fun onLinkOwedResetDeclined() {
+        linkOwedResetsDeclined.incrementAndGet()
+    }
+
+    /** A restore's kept link-owed reset another reset of ours replaced: dropped, never resent. */
+    fun onLinkOwedResetSuperseded() {
+        linkOwedResetsSuperseded.incrementAndGet()
+    }
+
+    /** A link-up's presence-key pass was scheduled (it runs after the link-up wait). */
+    fun onPresenceLinkPassScheduled() {
+        presenceLinkPassesScheduled.incrementAndGet()
+    }
+
+    /** A link-up's presence-key pass ran to its end (or failed): `mesh/lab` waits for these to match the scheduled ones. */
+    fun onPresenceLinkPassCompleted() {
+        presenceLinkPassesCompleted.incrementAndGet()
     }
 
     /** A key-request frame we sent to recover a peer's missing profile/key (see [KeyExchange]). */
@@ -1551,6 +1628,17 @@ class MeshMetrics {
             introsSent = introsSent.get(),
             introsAnswered = introsAnswered.get(),
             ratchetSwappedBack = ratchetSwappedBack.get(),
+            presenceKeysSent = presenceKeysSent.get(),
+            presenceKeysStored = presenceKeysStored.get(),
+            presenceKeysReplaced = presenceKeysReplaced.get(),
+            presenceKeysExcluded = presenceKeysExcluded.get(),
+            presenceKeyRotations = presenceKeyRotations.get(),
+            presenceKeyGenerationClamped = presenceKeyGenerationClamped.get(),
+            linkOwedResetsSent = linkOwedResetsSent.get(),
+            linkOwedResetsDeclined = linkOwedResetsDeclined.get(),
+            linkOwedResetsSuperseded = linkOwedResetsSuperseded.get(),
+            presenceLinkPassesScheduled = presenceLinkPassesScheduled.get(),
+            presenceLinkPassesCompleted = presenceLinkPassesCompleted.get(),
         )
 
     /** The [Snapshot.Seals] counters alone, read now. */
@@ -1834,6 +1922,19 @@ class MeshMetrics {
             val introsAnswered: Long = 0,
             // ADR 2026-10.4mjm: a race loser moved back onto its own init, which the peer had answered.
             val ratchetSwappedBack: Long = 0,
+            // ADR 2026-11.xp6d: presence keys sent and stored, eras replaced, keys left out of the listing, our own
+            // rotations, a restored generation clamped, and a restore's resets sent over a link.
+            val presenceKeysSent: Long = 0,
+            val presenceKeysStored: Long = 0,
+            val presenceKeysReplaced: Long = 0,
+            val presenceKeysExcluded: Long = 0,
+            val presenceKeyRotations: Long = 0,
+            val presenceKeyGenerationClamped: Long = 0,
+            val linkOwedResetsSent: Long = 0,
+            val linkOwedResetsDeclined: Long = 0,
+            val linkOwedResetsSuperseded: Long = 0,
+            val presenceLinkPassesScheduled: Long = 0,
+            val presenceLinkPassesCompleted: Long = 0,
         )
 
         /** How DMs and reactions were sealed, and how many fell back to an older form. */

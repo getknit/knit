@@ -482,6 +482,24 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **The honeypot stays.** A device that advertises a small tag still gets dialed and reads proven ids in the HELLO;
   only #286's handshake and link pseudonyms for strangers would change that.
 
+### 14. Sign the relay bit
+
+**What.** Move `WireEnvelope.relay` inside the signed bytes, so a frame its author sent point to point can never be
+flooded under the author's signature.
+
+**Why it is parked.** `relay` sits in the unsigned wrapper beside `ttl` and `hops` (`Wire.kt`, `WireEnvelope`), and
+every shipped verifier checks the signature over `signed` alone, so moving it is a break. Today anyone who holds a
+signed `relay = false` frame (the addressee, or a listener on a Bluetooth or Wi-Fi Aware link read in the clear:
+knit-next #286) can re-wrap it as `relay = true`, and every honest node verifies it, custodies it under the author's
+quota and floods it 8 hops. The frames that rely on staying point to point: AckSync's live ticks, the presence key's
+`CTL_PRESENCE_KEY` and the restore's link-owed reset (ADR 2026-11.xp6d), which go over one link precisely so relays
+never learn who the user's direct contacts are. A re-wrapped copy tells every relay "this author wrote to that
+recipient", signed.
+
+**At the break.** Put the relay intent in `RelayEnvelope` (signed), make a relay honour only the signed value, and
+drop the wrapper field. A point-to-point type never floods whatever its wrapper says. Vectors: every signed frame's
+`signed` bytes move, so this rides the same break as item 8 if that one goes.
+
 ---
 
 ## Deliberately *not* on this list

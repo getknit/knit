@@ -22,6 +22,7 @@ import app.getknit.knit.clampToUtf16
 import app.getknit.knit.contacts.ContactCards
 import app.getknit.knit.contacts.ContactImporter
 import app.getknit.knit.contacts.ContactRemover
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
@@ -38,6 +39,7 @@ import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.backup.BackupTables
+import app.getknit.knit.data.commons.CommonsMemberEntity
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
@@ -54,6 +56,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.StatusNotices
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
@@ -1004,6 +1007,8 @@ class MeshLab {
                 withTimeoutOrNull(AWAIT_MS) {
                     do {
                         val before = handed()
+                        // The link-up's presence-key pass runs after its own short wait and may send a ctl 11.
+                        nodes.forEach { it.awaitPresencePasses() }
                         nodes.forEach { it.transport.awaitDigestsAnswered() }
                         nodes.forEach { it.transport.awaitInboundDrained() }
                     } while (handed() != before)
@@ -1120,6 +1125,9 @@ class MeshLab {
          */
         const val CALENDAR_ROUND_MS = 1_000L
 
+        /** A link-up's wait before its presence-key reconcile, in place of the field's random 2–20 s ([LabLimits]). */
+        const val PRESENCE_LINK_UP_MS = 20L
+
         /** How long a departure is left visible before the next topology change ([unlink], [LabNode.restart]). */
         const val SETTLE_MS = 100L
 
@@ -1234,6 +1242,14 @@ data class LabLimits(
      */
     val spoolTickMs: Long = ScopeSync.TICK_INTERVAL_MS,
     val spoolAttachmentRetryMs: Long = ScopeSync.ATTACHMENT_RETRY_MS,
+    /**
+     * Whether the node reads blinded adverts (`Protocol.CAP_BLIND_ADVERT`, ADR 2026-11.xp6d) — in its profile and its link
+     * HELLO, as a build that ships the bit will. Off by default, as `LOCAL_CAPABILITIES` has it until the Bluetooth plane
+     * reads tags; [LabNode.blindAdvert] moves it across a restart.
+     */
+    val blindAdvert: Boolean = false,
+    /** How long a link-up waits before its presence-key reconcile (a random 2–20 s in the field). */
+    val presenceLinkUpDelayMs: Long = MeshLab.PRESENCE_LINK_UP_MS,
 ) {
     /** These limits with the Internet plane's timed waits cut to [MeshLab.CALENDAR_ROUND_MS] (see [spoolTickMs]). */
     fun calendarRounds(): LabLimits = copy(spoolTickMs = MeshLab.CALENDAR_ROUND_MS, spoolAttachmentRetryMs = MeshLab.CALENDAR_ROUND_MS)
@@ -1274,6 +1290,70 @@ class LabNode internal constructor(
 
     /** This node's clock: the lab's shared calendar, plus its own skew if a scenario gave it one. */
     val now: () -> Long = clock.forNode(name)
+
+    /**
+     * Whether the node's build reads blinded adverts (`CAP_BLIND_ADVERT`, [LabLimits.blindAdvert]): read at each boot, so
+     * a [restart] that flips it is the same phone's next build — its profile republished with the bit, its HELLO with it.
+     */
+    @Volatile
+    var blindAdvert: Boolean = limits.blindAdvert
+
+    /**
+     * How far the presence-key engine's clock runs ahead of [now] (ADR 2026-11.xp6d's B3): a clock-ahead mint without
+     * stamping every frame the node sends into the future, which custody would refuse and the oracle would see.
+     */
+    @Volatile
+    var presenceSkewMs: Long = 0L
+
+    /** This node's DM ratchet facade, rebuilt at each boot: what a scenario reads a session's root tag through. */
+    private lateinit var ratchetSessions: RatchetSessions
+
+    /** The DM ratchet facade as `di/MeshModule` builds it, over this node's store and the shared lock, kept for [rootTagFor]. */
+    private fun newRatchet(
+        ratchetMutex: Mutex,
+        transactor: SessionTransactor,
+    ): RatchetSessions =
+        RatchetSessions(
+            store = RatchetRepository(db.ratchetDao()),
+            dhIdentityPriv = keyStore::dhIdentityPrivate,
+            spkPrivFor = keyStore::prekeyPrivFor,
+            mutex = ratchetMutex,
+            transact = transactor,
+            onReclaimed = { metrics.onRatchetReclaimed() },
+            resetFloorMs = { limits.resetFloorMs },
+        ).also { ratchetSessions = it }
+
+    /** The [app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto.rootTag] of the session this node holds with [peer] now. */
+    suspend fun rootTagFor(peer: LabNode): Long? = ratchetSessions.rootTagFor(peer.nodeId)
+
+    /**
+     * Waits until every link-up presence-key pass this node scheduled has run (`MeshManager`'s delayed reconcile,
+     * `presenceLinkPassesCompleted`), so an acquaintance covers the keys a link-up hands over. A node whose link-up wait
+     * is held off past [MeshLab.AWAIT_MS] on purpose ([LabLimits.presenceLinkUpDelayMs]) is not waited for.
+     */
+    internal suspend fun awaitPresencePasses() {
+        if (limits.presenceLinkUpDelayMs >= MeshLab.AWAIT_MS) return
+        val done =
+            withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                while (metrics.keys().let { it.presenceLinkPassesCompleted < it.presenceLinkPassesScheduled }) delay(1)
+            } != null
+        check(done) { "$name: a link-up presence-key pass never completed (${metrics.keys().presenceLinkPassesScheduled} scheduled)" }
+    }
+
+    /** This node's direct contacts as its key engine reads them (`contacts/DirectContacts`), rebuilt at each boot. */
+    lateinit var directContacts: DirectContacts
+        private set
+
+    /** This node's presence-key rows: its own keys and the ones its peers handed it (the step-5 read side). */
+    val presenceKeys: PresenceKeyRepository by lazy { PresenceKeyRepository(db) }
+
+    /** What the node's link HELLO advertises at this boot: the holder query, and tag reading when [blindAdvert]. */
+    private fun helloCapabilities(): Long =
+        (if (limits.answersHolderQueries) Protocol.CAP_BLOB_HAVE else 0L) or (if (blindAdvert) Protocol.CAP_BLIND_ADVERT else 0L)
+
+    /** The bits beyond `LOCAL_CAPABILITIES` the node's profile carries at this boot, as `MeshManager.extraCapabilities`. */
+    private fun profileCapabilities(): Long =
+        (if (internet != null) Protocol.CAP_INET_LINK else 0L) or (if (blindAdvert) Protocol.CAP_BLIND_ADVERT else 0L)
 
     // --- persistent across restarts ---
 
@@ -1715,7 +1795,7 @@ class LabNode internal constructor(
         partials = PartialBlobs(File(dir, "blob-partials"), now = now)
         transport =
             LabTransport(nodeId, File(dir, "rx"), partials, pages, chaos).apply {
-                advertises = if (limits.answersHolderQueries) Protocol.CAP_BLOB_HAVE else 0L
+                advertises = helloCapabilities()
                 clock = now
                 feedStallMs = limits.feedStallMs
             }
@@ -1828,16 +1908,7 @@ class LabNode internal constructor(
                 notifier = notifier,
                 textModeration = textModerator,
                 messageCrypto = messageCrypto,
-                ratchet =
-                    RatchetSessions(
-                        store = RatchetRepository(db.ratchetDao()),
-                        dhIdentityPriv = keyStore::dhIdentityPrivate,
-                        spkPrivFor = keyStore::prekeyPrivFor,
-                        mutex = ratchetMutex,
-                        transact = transactor,
-                        onReclaimed = { metrics.onRatchetReclaimed() },
-                        resetFloorMs = { limits.resetFloorMs },
-                    ),
+                ratchet = newRatchet(ratchetMutex, transactor),
                 groupRatchet = GroupRatchetSessions(store = groupRatchetStore, mutex = ratchetMutex, transact = transactor),
                 groupRoots = groupRoots,
                 scope = scope,
@@ -1876,7 +1947,19 @@ class LabNode internal constructor(
                 // A node on the lab's Internet takes links as `di/DirectLinkWiring` wires them: the bit in its profile, and
                 // each opened signal handed to its links, resolved late.
                 onLinkSignal = { sender, signal, sentAt -> links?.onSignal(sender, signal, sentAt) },
-                extraCapabilities = if (internet != null) Protocol.CAP_INET_LINK else 0L,
+                extraCapabilities = profileCapabilities(),
+                // The presence key's engine, as the DI module wires it (ADR 2026-11.xp6d): the direct contacts over this node's
+                // stores, the commons store always bound as Koin binds it, a short link-up wait, and the B3 clock seam.
+                directContacts =
+                    DirectContacts(
+                        settings,
+                        peers,
+                        messages,
+                        commons ?: CommonsRepository(db.commonsDao(), messages, db),
+                        identity,
+                    ).also { directContacts = it },
+                presenceKeyClock = { now() + presenceSkewMs },
+                presenceLinkUpDelayMs = { limits.presenceLinkUpDelayMs },
                 blobMetered = { metered },
             )
         countDrainsDownstream()
@@ -2451,6 +2534,17 @@ class LabNode internal constructor(
 
     /** Blocks [peer] as every Block button does (the device tag rides along so a re-keyed peer stays blocked). */
     suspend fun block(peer: LabNode) = settings.block(peer.nodeId, peers.find(peer.nodeId)?.deviceTag)
+
+    /**
+     * Plays a build from before ADR 2026-11.xp6d's commons mark: [peer] accepted the way `onCommonsMember` used to — no
+     * mark — and listed in a commons room's members, with the once-per-install backfill not yet run. For a [restart]'s
+     * `whileDown`: the next boot's first direct-contact read runs the backfill, which marks the accept.
+     */
+    internal suspend fun acceptAsAnOlderBuildsCommons(peer: LabNode) {
+        settings.accept(peer.nodeId)
+        db.commonsDao().upsertMember(CommonsMemberEntity(conversationId = "c-legacy", nodeId = peer.nodeId, seenAt = now()))
+        dataStore.edit { it.remove(booleanPreferencesKey("commons_accepts_backfilled")) }
+    }
 
     suspend fun unblock(peer: LabNode) = settings.unblock(peer.nodeId, peers.find(peer.nodeId)?.deviceTag)
 

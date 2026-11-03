@@ -563,6 +563,10 @@ val meshModule =
                 // The home relay (ADR 2026-10.8kfx); the directory is read only where the build says it is live.
                 homes = get<HomeStore>(),
                 directory = if (BuildConfig.SPOOL_DIRECTORY) AndroidPublicSpoolDirectory(get()) else null,
+                // The presence key (ADR 2026-11.xp6d): handed to direct contacts only, its daily advance floor on a clock that
+                // counts deep sleep.
+                directContacts = get(),
+                elapsedRealtime = SystemClock::elapsedRealtime,
             ).also { manager ->
                 // The compact LoRa DM (ADR 2026-10.x9fa), where the build carries the plane: the transport is reached at
                 // call time, the seam the two constructions need one late edge for. Unbound, the profile never claims it.

@@ -242,9 +242,22 @@ class RatchetSessions(
     }
 
     /**
+     * Which root a committed frame opened under, handed to [commitOpen]'s hook: the [RatchetCrypto.rootTag] of the root
+     * candidate that opened it, and whether that is the root the session holds once this open committed — the active
+     * root (a fresh session, an adopted replacement or race, a reclaim) — rather than a draining `prevRoot` or a late
+     * race loser's read-only root. The pz9g predicate, for a ctl that files what it carries by era (the presence key,
+     * ADR 2026-11.xp6d): only an active-root open may start a new era. The root itself never leaves the facade.
+     */
+    class OpenedUnder(
+        val rootTag: Long,
+        val active: Boolean,
+    )
+
+    /**
      * Phase two: re-opens on fresh state under the session lock and, on success, persists the ratchet
      * delta and runs [onOpened] (the caller's row write) in the same enclosing Room transaction —
      * callers MUST wrap this call in `db.withWriteTransaction { }` when they persist anything alongside it.
+     * [onOpened] is told which root the frame opened under ([OpenedUnder]), read from this very open.
      * Returns false when the frame no longer opens (a concurrent delivery already consumed it, or
      * state moved on) — benign; the caller's exists/isNew gates make the visible outcome idempotent.
      */
@@ -258,7 +271,7 @@ class RatchetSessions(
         aad: ByteArray,
         now: Long,
         frameSentAt: Long? = null,
-        onOpened: suspend () -> Unit,
+        onOpened: suspend (OpenedUnder) -> Unit,
     ): Boolean {
         var before: ScopeView? = null
         var after: ScopeView? = null
@@ -273,7 +286,9 @@ class RatchetSessions(
                 // transaction back, and a stamp set ahead of it would outlive the session row it describes — a
                 // replacement floor started, or an answer recorded, for a frame that still opens as new (#141
                 // finding 11). Still under the lock, so no other open reads the session without its stamps.
-                onOpened()
+                val activeTag = RatchetCrypto.rootTag(outcome.delta.session.root)
+                val openedTag = outcome.delta.openedRootTag ?: activeTag
+                onOpened(OpenedUnder(rootTag = openedTag, active = openedTag == activeTag))
                 if (outcome.delta.purgePeerRecvState) {
                     // A replacement was adopted: start its rate-limit window and clear the reset heuristic —
                     // the session is fresh, old failures are moot.
@@ -642,6 +657,7 @@ class RatchetSessions(
         now: Long,
         cause: ResetCause,
     ): ResetPlan {
+        if (cause == ResetCause.REMARK_OWN) return remarkPlan(old, peerSpk)
         if (old == null) return ResetPlan.ReRoot
         val pendingInit = old.weAreInitiator && !old.confirmed
         // An init against a prekey the peer has since replaced may never be adoptable: only a fresh one heals it.
@@ -659,6 +675,18 @@ class RatchetSessions(
             }
         }
         return answeredPlan(peerId, old, now, cause)
+    }
+
+    /**
+     * [ResetCause.REMARK_OWN]'s plan: the marker under our own unanswered reset init, still against the peer's pinned
+     * prekey, or nothing — never a new root. Runs under the lock.
+     */
+    private fun remarkPlan(
+        old: RatchetEngine.SessionState?,
+        peerSpk: RatchetEngine.PeerPrekey,
+    ): ResetPlan {
+        val ownReset = old != null && old.weAreInitiator && !old.confirmed && old.lastResetSentAt > 0L && old.initPkid == peerSpk.id
+        return if (ownReset) ResetPlan.Mark else ResetPlan.Decline("no pending reset of ours to mark")
     }
 
     /** [resetPlan] past our own pending init: the floors our init's answer started at the peer. Runs under the lock. */
@@ -814,6 +842,13 @@ class RatchetSessions(
 
         /** The first start after a backup restore: every session present was made since the ratchet tables emptied. */
         AFTER_WIPE,
+
+        /**
+         * A restore's link-owed reset whose sealed frame was lost before it was kept (a crash between the seal and the
+         * write, ADR 2026-11.xp6d): the marker under our own pending reset init, still against the pinned prekey, and
+         * nothing else — no new root (the peer may already be adopting the lost one), declined when no such init is held.
+         */
+        REMARK_OWN,
     }
 
     /** What [sealResetDm] did. */

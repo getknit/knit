@@ -738,8 +738,9 @@ object KnitMigrations {
         }
 
     /**
-     * v31 → v32 (ADR 2026-11.xp6d, #285): two empty presence-key tables, `own_presence_keys` and `peer_presence_keys`.
-     * No build before this held a presence key, so there is nothing to fill. Both are local only, never in a backup. The
+     * v31 → v32 (ADR 2026-11.xp6d, #285): two empty presence-key tables, `own_presence_keys` and `peer_presence_keys`, and
+     * `link_owed_resets`. No build before this held a presence key, so there is nothing to fill. All are local only, never
+     * in a backup. The
      * SQL must stay byte-equivalent to what Room generates for `app/schemas/**/32.json`.
      */
     val MIGRATION_31_32 =
@@ -754,6 +755,10 @@ object KnitMigrations {
                     "CREATE TABLE IF NOT EXISTS `peer_presence_keys` (`nodeId` TEXT NOT NULL, `generation` INTEGER NOT NULL, " +
                         "`key` BLOB NOT NULL, `receivedAt` INTEGER NOT NULL, `rootTag` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`nodeId`, `generation`))",
+                )
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `link_owed_resets` (`nodeId` TEXT NOT NULL, `wire` BLOB, `rootTag` INTEGER, " +
+                        "`owedSince` INTEGER NOT NULL, PRIMARY KEY(`nodeId`))",
                 )
             }
         }

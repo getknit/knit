@@ -808,6 +808,46 @@ data class ScopeConfigPayload(
 )
 
 /**
+ * The `pk` payload for a `CTL_PRESENCE_KEY` ctl frame (ADR 2026-11.xp6d, "The presence key"; additive): one or two of
+ * the sender's presence keys, the 32 bytes its blinded Bluetooth advert's tag is a MAC under (`BlindTag`). Sealed to a
+ * direct contact only, point to point over a live link (`relay = false`, never flooded, custodied or cast), so a relay
+ * never learns who the sender's direct contacts are.
+ *
+ * [generation] / [key] are required (`docs/WIRE_COMPAT.md` rule 6): a frame that encodes as `{}` must never read as a
+ * key. [nextGeneration] / [nextKey] are optional, **both or neither**, and `nextGeneration > generation`: the key the
+ * sender will air at its next rotation, handed over ahead so a weekly rotation is seamless. A generation is an order
+ * only, never a time (it starts at the sender's clock and rises within a session era; a restore may clamp it lower,
+ * which a receiver takes as a new era); nothing computes `now − generation`.
+ *
+ * [pad] is filler and means nothing: the sender sizes it so every ctl 11 plaintext is
+ * `PresenceKeyFrame.PLAINTEXT_BYTES` long, with or without the next pair, and a listener in radio range cannot tell
+ * the two apart by length (`PresenceKeyFrame.content`). A receiver ignores its bytes. Named form only
+ * (`MessageContentV2` refuses it). Short names, as the styles and languages are; a plain class equal by its bytes,
+ * like [GroupSeed].
+ */
+@Serializable
+class PresenceKeyPayload(
+    @SerialName("g") val generation: Long,
+    @SerialName("k") @ByteString val key: ByteArray,
+    @SerialName("ng") val nextGeneration: Long? = null,
+    @SerialName("nk") @ByteString val nextKey: ByteArray? = null,
+    @SerialName("p") @ByteString val pad: ByteArray? = null,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is PresenceKeyPayload &&
+            generation == other.generation &&
+            key.contentEquals(other.key) &&
+            nextGeneration == other.nextGeneration &&
+            (nextKey?.contentEquals(other.nextKey) ?: (other.nextKey == null)) &&
+            (pad?.contentEquals(other.pad) ?: (other.pad == null))
+
+    override fun hashCode(): Int = generation.hashCode() * 31 + key.contentHashCode()
+
+    // Never a key in a log line (ADR 2026-11.xp6d, "Logging").
+    override fun toString(): String = "PresenceKeyPayload(g=$generation, next=${nextGeneration ?: "-"})"
+}
+
+/**
  * A sealed profile update, carried as [app.getknit.knit.mesh.crypto.MessageContent.pr] under
  * `CTL_PROFILE` — the encrypted replacement for re-flooding a cleartext [ProfileContent] frame at an
  * *established* contact.

@@ -63,6 +63,7 @@ object BackupTables {
             // phone; a restore re-roots every session, so contacts hand theirs again over the next link.
             "own_presence_keys",
             "peer_presence_keys",
+            "link_owed_resets",
         )
 
     /**

@@ -37,6 +37,8 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.peer.PeerProfileEntity
 import app.getknit.knit.data.pin.PinDao
 import app.getknit.knit.data.pin.PinEntity
+import app.getknit.knit.data.presencekey.LinkOwedResetDao
+import app.getknit.knit.data.presencekey.LinkOwedResetEntity
 import app.getknit.knit.data.presencekey.OwnPresenceKeyEntity
 import app.getknit.knit.data.presencekey.PeerPresenceKeyEntity
 import app.getknit.knit.data.presencekey.PresenceKeyDao
@@ -84,7 +86,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 32
         PeerProfileEntity::class, GroupMemberClockEntity::class, PeerBadgeEntity::class,
         AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
         PinEntity::class, LoraDirectSeenEntity::class, PhotoRefusalEntity::class,
-        OwnPresenceKeyEntity::class, PeerPresenceKeyEntity::class,
+        OwnPresenceKeyEntity::class, PeerPresenceKeyEntity::class, LinkOwedResetEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -275,8 +277,9 @@ internal const val KNIT_DB_SCHEMA_VERSION = 32
     //     the chat's language. Local only, written once on insert, carried in a backup with the row; null on existing
     //     rows. Migrated by KnitMigrations.MIGRATION_30_31.
     // v32: two presence-key tables (ADR 2026-11.xp6d, #285): `own_presence_keys`, this phone's previous, current and next
-    //     key with each one's audience and the advertiser's mark, and `peer_presence_keys`, the keys contacts handed it.
-    //     Both local only, never in a backup; empty on arrival. Migrated by KnitMigrations.MIGRATION_31_32.
+    //     key with each one's audience and the advertiser's mark, and `peer_presence_keys`, the keys contacts handed it;
+    //     and `link_owed_resets`, a restore's session resets owed over a link to contacts no flooded reset covers.
+    //     All local only, never in a backup; empty on arrival. Migrated by KnitMigrations.MIGRATION_31_32.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -326,6 +329,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun loraDirectSeenDao(): LoraDirectSeenDao
 
     abstract fun presenceKeyDao(): PresenceKeyDao
+
+    abstract fun linkOwedResetDao(): LinkOwedResetDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

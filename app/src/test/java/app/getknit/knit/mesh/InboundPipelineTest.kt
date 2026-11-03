@@ -33,6 +33,7 @@ import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.message.settledWith
 import app.getknit.knit.data.message.videoInfo
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
@@ -49,6 +50,8 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PresenceKeyFrame
+import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.crypto.XeddsaVerify
@@ -86,6 +89,7 @@ import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.PrekeyInfo
+import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -154,6 +158,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -7276,6 +7281,8 @@ class InboundPipelineTest {
             xf: TransferPayload? = null,
             cl: CallPayload? = null,
             sc: ScopeConfigPayload? = null,
+            /** A presence key (ADR 2026-11.xp6d), beside `ctl = CTL_PRESENCE_KEY`. */
+            pk: PresenceKeyPayload? = null,
             sentAt: Long = 5L,
             /** Seal crypto scheme v3 (derived nonce, compact plaintext, header-bound AAD) instead of v2. */
             v3: Boolean = false,
@@ -7309,6 +7316,7 @@ class InboundPipelineTest {
                     xf = xf,
                     cl = cl,
                     sc = sc,
+                    pk = pk,
                     styles = styles,
                     lang = lang,
                     reads = reads,
@@ -11802,6 +11810,135 @@ class InboundPipelineTest {
             assertFalse(rig.msgMap.containsKey("ctl-u1"))
             assertFalse(rig.msgMap.containsKey("ctl-u2"))
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    /** A padded presence-key payload, as the key engine seals it (ADR 2026-11.xp6d). */
+    private fun presenceKey(vararg keys: Pair<Long, Int>): PresenceKeyPayload =
+        checkNotNull(PresenceKeyFrame.content(keys.map { (generation, seed) -> generation to ByteArray(32) { (it + seed).toByte() } }).pk)
+
+    private fun V2Author.presenceKeyDm(
+        id: String,
+        vararg keys: Pair<Long, Int>,
+    ) = dm(id, "", ctl = MessageContent.CTL_PRESENCE_KEY, pk = presenceKey(*keys))
+
+    /**
+     * The `CTL_PRESENCE_KEY` arm (ADR 2026-11.xp6d): a peer's keys land inside the commit that opened them, under the root
+     * they opened under; a re-send is the silent no-op and is not counted; a conflicting key, an older one and a malformed
+     * one are each refused and counted, never reset evidence, and the chain still advances. Nothing is a message.
+     */
+    @Test
+    fun aPresenceKeyIsStoredUnderItsRootAndAResendIsNoOpWhileEachRefusalIsCounted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val v2 = V2Author(alice, rig)
+            val keys = PresenceKeyRepository(rig.db)
+
+            rig.deliver(alice, v2.presenceKeyDm("pk-1", 500L to 1, 501L to 2))
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertEquals(listOf(501L, 500L), keys.heldBy(alice.nodeId).map { it.generation })
+            assertTrue(keys.heldBy(alice.nodeId).all { it.rootTag == tag })
+            assertEquals(1L, rig.metrics.keys().presenceKeysStored)
+
+            // The same keys again, sealed afresh after a link came back: nothing, and not counted.
+            rig.deliver(alice, v2.presenceKeyDm("pk-2", 500L to 1, 501L to 2))
+            assertEquals(1L, rig.metrics.keys().presenceKeysStored)
+            assertEquals(0L, rig.drops(DropReason.PRESENCE_KEY_REFUSED))
+
+            rig.deliver(alice, v2.presenceKeyDm("pk-conflict", 501L to 9))
+            assertEquals(1L, rig.drops(DropReason.PRESENCE_KEY_REFUSED))
+            rig.deliver(alice, v2.presenceKeyDm("pk-older", 499L to 3))
+            assertEquals(2L, rig.drops(DropReason.PRESENCE_KEY_REFUSED))
+            rig.deliver(alice, v2.dm("pk-short", "", ctl = MessageContent.CTL_PRESENCE_KEY, pk = PresenceKeyPayload(502L, ByteArray(31))))
+            assertEquals(3L, rig.drops(DropReason.PRESENCE_KEY_REFUSED))
+            assertEquals("nothing a refusal carried was stored", listOf(501L, 500L), keys.heldBy(alice.nodeId).map { it.generation })
+
+            rig.deliver(alice, v2.presenceKeyDm("pk-3", 501L to 2, 502L to 4))
+            assertEquals(listOf(502L, 501L, 500L), keys.heldBy(alice.nodeId).map { it.generation })
+            rig.deliver(alice, v2.presenceKeyDm("pk-4", 503L to 5))
+            assertEquals("three generations kept", listOf(503L, 502L, 501L), keys.heldBy(alice.nodeId).map { it.generation })
+
+            rig.deliver(alice, v2.dm("dm-after", "still alive"))
+            assertEquals("still alive", rig.msgMap["dm-after"]?.body)
+            assertTrue(listOf("pk-1", "pk-2", "pk-conflict", "pk-older", "pk-short", "pk-3", "pk-4").none { rig.msgMap.containsKey(it) })
+            assertEquals("a refusal is never reset evidence", 0L, rig.drops(DropReason.RATCHET_AEAD_FAIL))
+        }
+
+    /**
+     * The era a frame opened under decides (the pz9g predicate, `RatchetSessions.OpenedUnder`): after the sender's reset,
+     * its keys under the new active root replace the old era's even with lower generations (a restored sender whose clock
+     * had run ahead, B3), and a late frame of the old session, opened on the draining `prevRoot`, never starts an era —
+     * lower, it is refused; newer, it joins the held keys under their tag.
+     */
+    @Test
+    fun aNewActiveRootReplacesTheKeysAndADrainOpenNeverDoes() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val keys = PresenceKeyRepository(rig.db)
+            val old = V2Author(alice, rig, at = 5L)
+            rig.deliver(alice, old.presenceKeyDm("pk-old", 900L to 1, 901L to 2))
+            val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+
+            val reborn = V2Author(alice, rig, at = 60_000L)
+            rig.deliver(alice, reborn.dm("reset", "", ctl = MessageContent.CTL_SESSION_RESET))
+            val newTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            assertNotEquals(oldTag, newTag)
+            rig.deliver(alice, reborn.presenceKeyDm("pk-new", 20L to 3, 21L to 4))
+            assertEquals(listOf(21L, 20L), keys.heldBy(alice.nodeId).map { it.generation })
+            assertTrue(keys.heldBy(alice.nodeId).all { it.rootTag == newTag })
+            assertEquals(1L, rig.metrics.keys().presenceKeysReplaced)
+
+            // The old session's late frames drain under prevRoot: never a new era.
+            rig.deliver(alice, old.presenceKeyDm("pk-late-low", 10L to 5))
+            assertEquals(1L, rig.drops(DropReason.PRESENCE_KEY_REFUSED))
+            assertEquals(listOf(21L, 20L), keys.heldBy(alice.nodeId).map { it.generation })
+            rig.deliver(alice, old.presenceKeyDm("pk-late-high", 902L to 6))
+            assertEquals(listOf(902L, 21L, 20L), keys.heldBy(alice.nodeId).map { it.generation })
+            assertTrue("a drain never moves a tag", keys.heldBy(alice.nodeId).all { it.rootTag == newTag })
+            assertEquals(1L, rig.metrics.keys().presenceKeysReplaced)
+        }
+
+    /** A key two peers handed us, or one of our own, is listed for no one and counted (security N7). */
+    @Test
+    fun aKeyEqualToOursOrAnothersIsListedForNoOne() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            val carol = party()
+            listOf(alice, bob, carol).forEach { rig.pin(it) }
+            val keys = PresenceKeyRepository(rig.db)
+            keys.applyOwn(
+                inserted =
+                    listOf(
+                        PresenceKeyPolicy.Own(
+                            7L,
+                            ByteArray(32) { (it + 30).toByte() },
+                            mintedAt = 1L,
+                            activatedAt = 1L,
+                            audience = emptySet(),
+                        ),
+                    ),
+                updated = emptyList(),
+                keep = setOf(7L),
+            )
+            rig.deliver(alice, V2Author(alice, rig).presenceKeyDm("pk-a", 100L to 10, 101L to 11))
+            rig.deliver(bob, V2Author(bob, rig).presenceKeyDm("pk-b", 200L to 10))
+            rig.deliver(carol, V2Author(carol, rig).presenceKeyDm("pk-c", 300L to 30, 301L to 31))
+
+            val (listed, excluded) = keys.presenceKeysFor(setOf(alice.nodeId, bob.nodeId, carol.nodeId))
+            assertEquals(listOf(101L), listed.getValue(alice.nodeId).map { it.generation })
+            assertFalse("bob's only key is alice's too", bob.nodeId in listed)
+            assertEquals("carol's first key is ours", listOf(301L), listed.getValue(carol.nodeId).map { it.generation })
+            assertEquals(3, excluded)
+            assertEquals(
+                "a stored key of anyone else is never listed",
+                emptyMap<String, Any>(),
+                keys.presenceKeysFor(setOf("someone")).first,
+            )
         }
 
     private fun scopeConfig(

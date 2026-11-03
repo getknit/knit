@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -75,7 +76,7 @@ data class MessageContent(
     val replyTo: ReplyRef? = null,
     // Control marker for ratchet session management and sealed metadata (additive;
     // [CTL_SESSION_RESET], [CTL_GROUP_KEY], [CTL_GROUP_KEY_REQ], [CTL_GROUP_KEY_ACK], [CTL_RECEIPT],
-    // [CTL_REACTION], [CTL_SCOPE_CONFIG], [CTL_PROFILE], [CTL_TRANSFER], [CTL_CALL]). A non-null value
+    // [CTL_REACTION], [CTL_SCOPE_CONFIG], [CTL_PROFILE], [CTL_TRANSFER], [CTL_CALL], [CTL_PRESENCE_KEY]). A non-null value
     // means this frame is machinery, not conversation: it is never persisted as a message, never
     // acked-as-a-message, and notifies only as a reaction to a message we wrote, post-commit (ADR
     // 2026-10.59fu) — see docs/FORWARD_SECRECY_RATCHET.md §7. Inside the ciphertext deliberately: a relay cannot
@@ -102,6 +103,9 @@ data class MessageContent(
     // A scope's relays and bounds for [CTL_SCOPE_CONFIG] (additive; docs/SPOOL_PROTOCOL.md §5). Named layout only:
     // the compact v3 codec refuses it, as it does `gk`, `xf` and `cl`.
     val sc: ScopeConfigPayload? = null,
+    // One or two presence keys for [CTL_PRESENCE_KEY] (additive; ADR 2026-11.xp6d). Named layout only, like `sc`: the
+    // compact v3 codec refuses it and the compact LoRa door never admits it.
+    val pk: PresenceKeyPayload? = null,
     // The body's formatting as ranges (additive; ADR 2026-10.p95v): one CBOR byte string under "s", absent while
     // empty, so an unformatted message seals to the bytes it did before styles existed. Conversational: mapped by
     // [sealedContent], never set on a ctl. Label 17 in the compact layout ([MessageContentV2]). Normalised against
@@ -200,6 +204,16 @@ data class MessageContent(
          * feature consumes it as the usual silent no-op.
          */
         const val CTL_CALL = 10
+
+        /**
+         * [ctl]: [pk] hands the sender's current and next presence keys to a direct contact (ADR 2026-11.xp6d, "The
+         * presence key"): what lets the receiver resolve the sender's blinded Bluetooth advert. Sealed under a confirmed
+         * session only and sent point to point over a live link (signed, `relay = false`), never flooded, custodied,
+         * cast or relayed; padded to one size ([PresenceKeyFrame]). Applied inside the commit that opened it, ordered
+         * by generation within the root era it opened under (`InboundPipeline`); a refusal is the chain-advancing
+         * no-op. A build without the feature consumes it as the usual silent no-op.
+         */
+        const val CTL_PRESENCE_KEY = 11
 
         @OptIn(ExperimentalSerializationApi::class)
         fun decode(bytes: ByteArray): MessageContent? =

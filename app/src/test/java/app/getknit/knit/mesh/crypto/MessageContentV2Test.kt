@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -309,6 +310,7 @@ class MessageContentV2Test {
             full.copy(
                 sc = ScopeConfigPayload(spools = listOf("wss://a.example/spool/v1"), maxFrames = 1, ttlMs = 1L, maxBlob = 1, version = 1),
             ),
+            full.copy(pk = PresenceKeyPayload(generation = 1L, key = ByteArray(32))),
         )) {
             assertNull("a named-only payload refuses the compact form", MessageContentV2.encodeOrNull(named))
         }
@@ -318,7 +320,7 @@ class MessageContentV2Test {
 
     private companion object {
         /** The schema version (elided while default) and the payloads [MessageContentV2] has no label for. */
-        val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc")
+        val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc", "pk")
 
         /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the fixture set. */
         val JSON = Json { encodeDefaults = false }

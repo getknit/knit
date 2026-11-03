@@ -15,6 +15,7 @@ import app.getknit.knit.badge.PeerBadges
 import app.getknit.knit.contacts.ContactCards
 import app.getknit.knit.contacts.ContactImporter
 import app.getknit.knit.contacts.ContactRemover
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.crash.CrashReports
 import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.crash.crashStore
@@ -49,6 +50,7 @@ import app.getknit.knit.data.emoji.EmojiCatalogLoader
 import app.getknit.knit.data.emoji.EmojiLocales
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.peer.MetPeerRepository
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
@@ -401,4 +403,8 @@ val appModule =
         // The phones this one has met — the lifetime union of the nearby set, for the Your mesh screen.
         single { MetPeerRepository(get(), get()) }
         single<CommonsStore> { get<CommonsRepository>() }
+        // The presence keys (ADR 2026-11.xp6d): who this phone hands its key to, and the rows the key engine and the
+        // Bluetooth plane's resolver read. The commons store is always bound, so the commons-accept backfill reads it.
+        single { DirectContacts(get(), get(), get(), get<CommonsStore>(), get<Identity>()) }
+        single { PresenceKeyRepository(get()) }
     }

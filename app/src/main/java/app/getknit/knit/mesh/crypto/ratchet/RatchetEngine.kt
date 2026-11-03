@@ -251,6 +251,14 @@ class RatchetEngine(
         val keepRecvTag: Long? = null,
         /** True when this open moved the session back to our own abandoned init ([reclaim], rule C). */
         val reclaimed: Boolean = false,
+        /**
+         * The [RatchetCrypto.rootTag] of the root candidate the frame opened under, whichever rung opened it. Read against
+         * [session]'s own root, it says whether the frame opened under the root the session holds after this open (the
+         * active root, a reclaim's included) or under another — a draining `prevRoot`, a late race loser's — which a
+         * ctl that files state by era must not treat as a new era (ADR 2026-11.xp6d's presence key, the pz9g predicate).
+         * Null only on a delta built outside the ladder.
+         */
+        val openedRootTag: Long? = null,
     )
 
     class Initiation(
@@ -512,6 +520,7 @@ class RatchetEngine(
                             purgePeerRecvState = candidate.reclaims,
                             keepRecvTag = candidate.tag.takeIf { candidate.reclaims },
                             reclaimed = candidate.reclaims,
+                            openedRootTag = candidate.tag,
                         ),
                     )
                 }
@@ -889,6 +898,7 @@ class RatchetEngine(
                     purgePeerRecvState = resolved.purge || candidate.reclaims,
                     keepRecvTag = rootTag.takeIf { candidate.reclaims },
                     reclaimed = candidate.reclaims,
+                    openedRootTag = rootTag,
                 ),
             )
         }

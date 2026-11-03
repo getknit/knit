@@ -12,6 +12,7 @@ import app.getknit.knit.call.CallSignals
 import app.getknit.knit.call.TurnServer
 import app.getknit.knit.call.TurnSource
 import app.getknit.knit.clampToUtf16
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
@@ -39,6 +40,7 @@ import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
@@ -98,6 +100,7 @@ import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.LinkSignal
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.PrekeyInfo
+import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -163,6 +166,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -187,6 +191,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 /** What one inline ack costs inside a DM's ciphertext (a 22-char frame id plus its CBOR header), ADR 054. */
 internal const val INLINE_ACK_BYTES = 23
@@ -403,6 +408,20 @@ class MeshManager(
     // fed every stored profile by the pipeline, and read for the displacements the neighbour set cannot show. The DI
     // hands the planes' shared one; a test that runs no link plane gets its own.
     private val linkClaims: LinkClaims = LinkClaims(metrics),
+    // Who this phone hands its presence key to (ADR 2026-11.xp6d): the direct contacts, read fresh by the key engine. Null
+    // — every rig that wires none — runs no presence-key engine, and a restore sends every reset it sent before.
+    private val directContacts: DirectContacts? = null,
+    // A monotonic clock that counts deep sleep (`SystemClock.elapsedRealtime`): the presence-key engine's once-a-day floor
+    // on a clock-or-mark advance. The default is the JVM's monotonic clock, which every rig wants.
+    private val elapsedRealtime: () -> Long = { System.nanoTime() / NANOS_PER_MS },
+    // The wall clock the presence-key engine mints and rotates by: [clock] in production. `mesh/lab` runs one ahead of
+    // the node's own clock to stage a clock-ahead mint (B3) without stamping every frame it sends into the future.
+    presenceKeyClock: (() -> Long)? = null,
+    // How long a link-up waits before its presence-key reconcile (the brief: a random 2–20 s, so the ctl does not ride
+    // the link's first second). `mesh/lab` shortens it.
+    private val presenceLinkUpDelayMs: () -> Long = {
+        Random.nextLong(PresenceKeyEngine.LINK_UP_DELAY_MIN_MS, PresenceKeyEngine.LINK_UP_DELAY_MAX_MS + 1)
+    },
 ) : MeshController,
     TransferSignals,
     CallSignals,
@@ -747,6 +766,9 @@ class MeshManager(
     /** The DMs a compact LoRa copy delivered (ADR 2026-10.x9fa): written by the pipeline, swept with the ratchet's keys. */
     private val loraSeen = LoraDirectSeenRepository(db)
 
+    /** The presence keys' rows (ADR 2026-11.xp6d): the engine's own keys, and the peers' the inbound arm stores. */
+    private val presenceKeyStore = PresenceKeyRepository(db)
+
     // The inbound half of the mesh: verify → custody → dispatch → deliver/ack, plus the store-and-forward
     // carry gate and the avatar/group-photo/attachment screening. MeshManager still OWNS the DTN services
     // above and the outbound origination choke; the pipeline receives the services by reference and reaches
@@ -826,12 +848,42 @@ class MeshManager(
             scopeConfigs = scopeConfigs,
             linkClaims = linkClaims,
             loraSeen = loraSeen,
+            presenceKeys = presenceKeyStore,
+            onProfileCapabilities = ::onProfileCapabilities,
         )
 
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and are
     // cancelled by stop() (rather than leaking on the never-cancelled app scope). Declared after `pipeline`
     // so onDeliver targets it.
     private var router = newRouter(scope)
+
+    /**
+     * This phone's presence keys and their delivery to linked direct contacts (ADR 2026-11.xp6d): null without a
+     * direct-contact source. Its lock is taken outside any transaction and never by the inbound path (its KDoc).
+     */
+    private val presenceKeys: PresenceKeyEngine? =
+        directContacts?.let { contacts ->
+            val wall = presenceKeyClock ?: clock
+            PresenceKeyEngine(
+                store = PresenceKeyEngineStore(presenceKeyStore, settings, clock),
+                direct = contacts::read,
+                // A live link to a proof-capable id is a proven one: an unproven link claiming it is refused or closed
+                // (ADR 2026-11.264w, R1–R4). The frame is sealed to the peer's session anyway, so a squatter reads nothing.
+                linked = { transport.neighbors.value.filter { linkClaims.isProofCapable(it.nodeId) } },
+                pinnedCapabilities = { peers.find(it)?.capabilities },
+                rootTagFor = ratchet::rootTagFor,
+                sessionConfirmed = { ratchet.sessionFor(it)?.confirmed == true },
+                sealKeys = ::sealPresenceKeys,
+                sealReset = ::sealLinkReset,
+                pendingReset = ::pendingResetOf,
+                send = { peer, frame -> router.sendOwn(frame.wire, frame.id, to = peer, live = true) },
+                wall = wall,
+                elapsed = elapsedRealtime,
+                metrics = metrics,
+                log = { Log.i(TAG, it) },
+                debug = { Log.d(TAG, it) },
+            )
+        }
 
     /**
      * The §9.5 rounds' holder queries for a DM photo of ours, sent as one frame per peer per window (ADR 2026-10.vy27).
@@ -1272,6 +1324,7 @@ class MeshManager(
             seeded.join()
             quotes.settleBacklog(identity.nodeId())
         }
+        watchPresenceKeys(session, seeded)
         scopeSync?.start(session)
         ticketRefresher?.start(session)
         badgeRefresher?.start(session)
@@ -1279,6 +1332,30 @@ class MeshManager(
         scopeIssuer?.start(session)
         watchRoute(session)
         watchScopeInputs(session)
+    }
+
+    /**
+     * The presence-key engine's session (ADR 2026-11.xp6d): armed once the own-profile seed — which runs a restore's
+     * [finishRestore], whose clamp and link-owed resets must land before the first mint — is done, then re-run on every
+     * change of the direct contacts and on every session root change (a confirmation, an adopted replacement, the answer
+     * to our reset). Link-ups and drops reach it from [neighborPass], a profile's capabilities from the pipeline, and the
+     * heal basket runs it as the backstop.
+     */
+    private fun watchPresenceKeys(
+        session: CoroutineScope,
+        seeded: Job,
+    ) {
+        val engine = presenceKeys ?: return
+        val contacts = directContacts ?: return
+        val failed: (Exception) -> Unit = { Log.w(TAG, "presence keys failed: ${it.message}") }
+        // Subscribed before the engine arms, so no change lands between its first pass and the collectors (a trigger
+        // before [PresenceKeyEngine.start] is a no-op that the first pass covers).
+        session.launch { contacts.observe().collect { runRound(failed) { engine.reconcile("contacts") } } }
+        session.launch { ratchet.rootChanges.collect { runRound(failed) { engine.reconcile("root") } } }
+        session.launch {
+            seeded.join()
+            runRound(failed) { engine.start() }
+        }
     }
 
     /**
@@ -1566,6 +1643,7 @@ class MeshManager(
                 bootstrapCommonsSessions() // a session with every commons member, eight intros at a time (§7.4)
                 introSync.retry() // re-send stale contact-card intros, settle confirmed ones, expire pair-scope grace
                 mintGroupRootsIfDue() // mint a group's spool root when it is our turn (spec §3.2)
+                presenceKeys?.reconcile("heal") // the backstop: rotations due by the clock, keys a linked contact lacks
                 metrics.onHealCompleted() // the lab's "the basket ran" signal; nothing above may be observed from outside
             }
     }
@@ -1613,7 +1691,9 @@ class MeshManager(
      *   Without it a peer notices nothing until three of its frames fail to open and its own heuristic fires,
      *   six hours apart — for a device that just lost *every* session, that is the slow path. Peers we hold no
      *   prekey for decline here as they would anywhere; their next profile bootstraps the session the
-     *   ordinary way.
+     *   ordinary way. The direct contacts [wipedPeers] does not cover (card-, QR- or accept-only, no DM thread,
+     *   no shared group) get theirs over the first live link instead, from the presence-key engine
+     *   ([PresenceKeyEngine.onRestore], ADR 2026-11.xp6d): a flooded reset would list them to every relay.
      *
      * The resets go as [RatchetSessions.ResetCause.AFTER_WIPE] (ADR 2026-09.qerd). The transport is already up, so a peer's backlog
      * may have tripped the heuristic's own reset by now, or a group post may have opened a session with a
@@ -1631,7 +1711,11 @@ class MeshManager(
         val me = identity.nodeId()
         Log.i(TAG, "finishing a backup restore: fresh prekey, session resets, profile bump")
         identity.rotatePrekey(clock())
-        for (peer in wipedPeers(me)) {
+        val wiped = wipedPeers(me)
+        // The direct contacts no flooded reset covers — card-, QR- or accept-only, no DM thread, no shared group — get
+        // theirs over the first link instead (ADR 2026-11.xp6d, "Restore"): a flood would list them to every relay.
+        presenceKeys?.let { engine -> directContacts?.let { engine.onRestore(it.read() - wiped - me) } }
+        for (peer in wiped) {
             pipeline.sendSessionReset(peer, me, clock(), RatchetSessions.ResetCause.AFTER_WIPE)?.let {
                 Log.i(TAG, "no session reset to $peer: $it")
             }
@@ -3770,8 +3854,19 @@ class MeshManager(
             // not at the next tick (#140) — an ask stands on a live link until its floor, never on one that is gone.
             // Ahead of [linksActedOn], which `mesh/lab` reads as "the departure has been acted on".
             blobExchange.unlinked(departed)
+            // A peer whose last link went is owed its link-owed reset again at its next link-up; its keys only on a change.
+            // The link presence moves here, synchronously and lock-free; what is cleared under the engine's lock goes async.
+            presenceKeys?.let { engine ->
+                engine.onLinkDepart(departed)
+                sessionScope?.launch { engine.onLinksDown(departed) }
+            }
             owedDepartures = emptySet()
             linksActedOn = currentIds
+            // The newcomers' links are registered with the presence-key engine before any newcomer hook (the profile push
+            // first among them), synchronously and lock-free: a new link epoch only for a peer not already present (a retried
+            // or displaced pass lists the same link again), so a pass sees this link as new whatever the departure's clear
+            // reached, and a capability or root trigger the hooks set off finds the link registered.
+            presenceKeys?.onLinkUp(newcomers.map { it.nodeId })
             // A newcomer may be the holder of bytes whose want the sweep already reclaimed — re-arm from
             // the database first, so the re-ask below has the full missing set to ask it for.
             // A newcomer holds no ask of ours — one sent before may have died with its old link — so each round
@@ -3792,10 +3887,33 @@ class MeshManager(
                 ackSync.onNeighborAdded(it) // re-send any broadcast/group delivery tick we owe it, over the link
                 flushPendingGroupKeysFor(it.nodeId) // re-send unacked group epoch seeds (partition merge)
             }
+            if (newcomers.isNotEmpty()) reconcilePresenceKeysAfterLinkUp()
             knownLinks = currentIds
             neighborPassOwed = false
         }
     }
+
+    /**
+     * A link came up: the presence keys (and a restore's link-owed reset) go over it after a random wait
+     * ([presenceLinkUpDelayMs], 2–20 s), so the ctl never rides a link's first second (ADR 2026-11.xp6d). A link that went
+     * in the wait has nothing sent; the next link-up waits again.
+     */
+    private fun reconcilePresenceKeysAfterLinkUp() {
+        val engine = presenceKeys ?: return
+        val session = sessionScope ?: return
+        metrics.onPresenceLinkPassScheduled()
+        session.launch {
+            try {
+                delay(presenceLinkUpDelayMs())
+                runRound({ Log.w(TAG, "presence keys failed: ${it.message}") }) { engine.reconcile("link") }
+            } finally {
+                metrics.onPresenceLinkPassCompleted()
+            }
+        }
+    }
+
+    /** `mesh/lab`'s oracle: the presence-key generations this node last sealed to [peerId], or null when it never did. */
+    internal suspend fun presenceKeysSentTo(peerId: String): List<Long>? = presenceKeys?.sentTo(peerId)
 
     /**
      * Seed our own profile frame into custody at startup (idempotent: the persisted profileVersion keeps the
@@ -4371,6 +4489,101 @@ class MeshManager(
         val sent = if (group) sealScopeConfigGroup(conversationId, content, me) else sealScopeConfigDm(conversationId, content, me)
         if (!sent) scopeConfigs.release(reservation)
         return sent
+    }
+
+    /**
+     * Seals one `CTL_PRESENCE_KEY` (ADR 2026-11.xp6d) to [peerId] for the key engine: the named v2 layout (the compact
+     * one has no label for `pk`), under a confirmed session only — never an X3DH, never over our own unanswered reset —
+     * and signed `relay = false`, the shape of the live-link tick: the router never floods it, no node custodies it and no
+     * spool is pushed it. Null when it cannot seal; nothing is persisted then. The root tag is the seal's own.
+     */
+    private suspend fun sealPresenceKeys(
+        peerId: String,
+        content: MessageContent,
+    ): PresenceKeyEngine.Sealed? {
+        val peer = peers.find(peerId) ?: return null
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return null
+        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return null
+        val me = identity.nodeId()
+        val id = FrameId.new()
+        val now = clock()
+        val aad = MessageCrypto.header(id, me, now, peerId)
+        val tagged =
+            ratchet.sealDmTagged(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), content.encode(), aad, now, confirmedOnly = true)
+                ?: return null
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = me,
+                sentAt = now,
+                recipientId = peerId,
+                payload = WireCodec.encodePayload(ChatContent(enc = tagged.envelope)),
+            )
+        return PresenceKeyEngine.Sealed(sign(env, relay = false), id, tagged.rootTag)
+    }
+
+    /**
+     * Seals a restore's `AFTER_WIPE` session reset to [peerId] for the key engine's link-owed resets (ADR 2026-11.xp6d,
+     * "Restore"): the reset [InboundPipeline.sendSessionReset] would flood, signed `relay = false` and handed back instead,
+     * so it crosses one link and no relay ever sees whom it names. Null when the facade declines it.
+     */
+    private suspend fun sealLinkReset(
+        peerId: String,
+        remark: Boolean,
+    ): PresenceKeyEngine.Sealed? {
+        var sealed: Pair<WireEnvelope, String>? = null
+        val cause = if (remark) RatchetSessions.ResetCause.REMARK_OWN else RatchetSessions.ResetCause.AFTER_WIPE
+        val why =
+            pipeline.sendSessionReset(
+                peerId,
+                identity.nodeId(),
+                clock(),
+                cause,
+            ) { env -> sealed = sign(env, relay = false) to env.id }
+        if (why != null) Log.i(TAG, "no link reset to $peerId: $why")
+        val (wire, id) = sealed ?: return null
+        // The root the seal committed, read straight after it under the engine's lock (no other reset of ours runs there):
+        // a kept frame whose root another reset has since replaced is never resent ([PresenceKeyPolicy.linkReset]).
+        val tag = ratchet.rootTagFor(peerId) ?: return null
+        return PresenceKeyEngine.Sealed(wire, id, tag)
+    }
+
+    /**
+     * `mesh/lab`'s fork seam (`MaliciousForkLabTest`): seals [payload] as this node's `CTL_PRESENCE_KEY` to [peerId] and
+     * hands it to the live link, exactly as the key engine would — the frame a modified client sends with keys it chose
+     * (another contact's, one equal to its peer's own, a churn of generations). False when it could not seal or no link
+     * holds the peer. Production never calls it.
+     */
+    internal suspend fun sendPresenceKeyAsAFork(
+        peerId: String,
+        payload: PresenceKeyPayload,
+    ): Boolean {
+        val peer = transport.neighbors.value.firstOrNull { it.nodeId == peerId } ?: return false
+        val frame = sealPresenceKeys(peerId, MessageContent(body = "", ctl = MessageContent.CTL_PRESENCE_KEY, pk = payload)) ?: return false
+        router.sendOwn(frame.wire, frame.id, to = peer, live = true)
+        return true
+    }
+
+    /** Our side of the session with [peerId] as a link-owed reset reads it: our own unanswered reset, and on which prekey. */
+    private suspend fun pendingResetOf(peerId: String): PresenceKeyEngine.PendingReset {
+        val session = ratchet.sessionFor(peerId)
+        val pinned = peers.find(peerId)?.prekeyId
+        return PresenceKeyEngine.PendingReset(
+            ownPendingReset = session != null && session.weAreInitiator && !session.confirmed && session.lastResetSentAt > 0L,
+            initOnPinnedPrekey = session != null && pinned != null && session.initPkid == pinned,
+        )
+    }
+
+    /** A stored profile's capabilities (the pipeline's hook): a linked peer that just gained `CAP_BLIND_ADVERT` is owed its keys. */
+    private fun onProfileCapabilities(
+        nodeId: String,
+        capabilities: Long?,
+    ) {
+        val engine = presenceKeys ?: return
+        if (!engine.asksForKeys(capabilities)) return
+        if (transport.neighbors.value.none { it.nodeId == nodeId }) return
+        sessionScope?.launch { runRound({ Log.w(TAG, "presence keys failed: ${it.message}") }) { engine.reconcile("capability") } }
     }
 
     /** [sendScopeConfig]'s DM half: a v2 ctl DM under a confirmed session, or nothing. */
@@ -5624,6 +5837,9 @@ class MeshManager(
     private companion object {
         /** Debug-bridge root fingerprint length — enough to compare eras across devices, nothing more. */
         const val ROOT_HASH_HEX_CHARS = 8
+
+        /** Nanoseconds in a millisecond, for the default monotonic clock. */
+        const val NANOS_PER_MS = 1_000_000L
 
         /** How much of a file's key a log line names. */
         const val LOG_KEY_CHARS = 8

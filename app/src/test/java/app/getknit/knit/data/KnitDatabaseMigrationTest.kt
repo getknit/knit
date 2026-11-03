@@ -1153,7 +1153,7 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
-    fun `migrate 31 to 32 keeps every peer and adds the two empty presence-key tables`() =
+    fun `migrate 31 to 32 keeps every peer and adds the empty presence-key and link-owed reset tables`() =
         runTest {
             helper.createDatabase(31).use { c ->
                 c.execSQL(
@@ -1167,7 +1167,7 @@ class KnitDatabaseMigrationTest {
                     assertEquals("Ann", s.getText(0))
                     assertFalse(s.step())
                 }
-                for (table in listOf("own_presence_keys", "peer_presence_keys")) {
+                for (table in listOf("own_presence_keys", "peer_presence_keys", "link_owed_resets")) {
                     c.prepare("SELECT COUNT(*) FROM $table").use { s ->
                         assertTrue(s.step())
                         assertEquals(table, 0L, s.getLong(0))
@@ -1190,6 +1190,13 @@ class KnitDatabaseMigrationTest {
                 c.prepare("SELECT COUNT(*) FROM peer_presence_keys WHERE nodeId = 'peer-1'").use { s ->
                     assertTrue(s.step())
                     assertEquals(2L, s.getLong(0))
+                }
+                // A restore's link-owed reset: owed before it is sealed (no wire, no tag), then kept with its root.
+                c.execSQL("INSERT INTO link_owed_resets (nodeId, wire, rootTag, owedSince) VALUES ('peer-1', NULL, NULL, 8)")
+                c.execSQL("UPDATE link_owed_resets SET wire = x'04', rootTag = -3 WHERE nodeId = 'peer-1'")
+                c.prepare("SELECT rootTag FROM link_owed_resets WHERE nodeId = 'peer-1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(-3L, s.getLong(0))
                 }
             }
         }

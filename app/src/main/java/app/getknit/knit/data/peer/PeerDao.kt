@@ -196,6 +196,10 @@ interface PeerDao {
     @Query("DELETE FROM peer_presence_keys WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
     suspend fun deleteOrphanPresenceKeys()
 
+    /** Drops every restore's link-owed reset whose peer row is gone (ADR 2026-11.xp6d) — beside [deleteOrphanPresenceKeys]. */
+    @Query("DELETE FROM link_owed_resets WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
+    suspend fun deleteOrphanLinkOwedResets()
+
     @Query("DELETE FROM peer_badges WHERE nodeId = :nodeId")
     suspend fun deleteBadges(nodeId: String)
 

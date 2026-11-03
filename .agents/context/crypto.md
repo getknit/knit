@@ -317,6 +317,27 @@ LoRa plane (2026-09.ggq4).
   below), not here. Regression: `RatchetSessionsSealTest`'s answer cases, `MeshManagerTest`'s
   no-session tick and reaction cases, `RestoreLabTest` under `KNIT_LAB_BOARDS=1`.
 
+- **When touching `MessageContent.CTL_PRESENCE_KEY` / `pk`, `PresenceKeyPayload`, `PresenceKeyFrame`, `PresenceKeyPolicy`,
+  `PresenceKeyEngine` / `PresenceKeyEngineStore`, `PresenceKeyRepository` (its `markStore`, `presenceKeysFor`, `ownCurrent`,
+  `applyHeld`), `InboundPipeline.applyPresenceKey`, `RatchetSessions.OpenedUnder` / `OpenDelta.openedRootTag`,
+  `MeshManager.sealPresenceKeys` / `sealLinkReset` / `watchPresenceKeys`, the link-owed resets (`SettingsStore.linkOwedResets`,
+  `finishRestore`'s split, `sendSessionReset`'s `deliver`), or `DropReason.PRESENCE_KEY_REFUSED`:** READ ADR 2026-11.xp6d
+  ("The presence key", "What it costs"), then ADR 2026-09.pz9g and ADR 2026-09.qerd. Keys go only to direct contacts
+  (`contacts/DirectContacts`, read fresh), only sealed under a confirmed session (`confirmedOnly`, never an X3DH) and only
+  point to point over a live link to a proof-capable id: signed `relay = false`, never flooded, custodied, cast or
+  relayed, padded to one plaintext size. Delivery is a reconcile of owed against sent (generations and the seal's own root
+  tag, per peer, cleared when the peer's last link drops), never a queue. The engine's one lock is taken outside any
+  transaction and never by the inbound arm, which runs inside the ratchet commit (Room only) and files keys by the era the
+  frame opened under: only an active-root open starts a new era (`OpenedUnder.active`, the pz9g predicate), a drain orders
+  against what is held and never moves a tag, an equal key is the uncounted no-op, and a refusal is never reset evidence.
+  Rotation is a pure function of the rows and a fresh direct-contact read: any shrink mints fresh, never rate-limited; a
+  clock-or-mark advance at most once a day of elapsed time; a mint records its generation before its row. A restore clamps a
+  last generation more than a year ahead and sends the direct contacts `wipedPeers` misses their `AFTER_WIPE` reset over
+  the first link, sealed once and re-sent verbatim until the session confirms — never the flood. Keys of people who stop
+  being direct contacts are deleted. Never a key, a tag or a root tag in a log line beside a peer id. Regression:
+  `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `InboundPipelineTest`'s presence-key cases, `GoldenVectorTest`'s
+  `messageContentPresenceKey*`, `PresenceKeyLabTest`.
+
 ## Adding an entry
 
 A new decision about this plane gets a bullet here — the symbols that trigger it, the ADR, and the invariant in a

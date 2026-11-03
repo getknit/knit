@@ -40,7 +40,8 @@ import kotlinx.serialization.encodeToByteArray
  * [MessageContent.gk] is not modelled (the group-key ctls stay v2; label 13 is reserved for a raw-seed form)
  * and refuses the same way, as does [MessageContent.xf] (the direct-transfer ctl stays v2: a rare control frame
  * with nothing to gain from the compact layout), and so do [MessageContent.cl] (the call ctl, for the same reason) and
- * [MessageContent.sc] (the scope config, likewise — and [wireOf] has no label for it, so a compact form would drop it).
+ * [MessageContent.sc] (the scope config, likewise — and [wireOf] has no label for it, so a compact form would drop it)
+ * and [MessageContent.pk] (the presence key, ADR 2026-11.xp6d: a padded fixed-size ctl with no label here either).
  *
  * Nested types are this codec's own rather than the domain's: `Mention`/`ReplyRef`/`ReactionPayload`/
  * `ProfilePayload` are shared with the cleartext `ChatContent`, whose shape is frozen (docs/WIRE_COMPAT.md
@@ -63,8 +64,11 @@ internal object MessageContentV2 {
         }
     }
 
-    /** The rare control payloads the compact layout does not model: the group key, a transfer, a call, a scope config. */
-    private fun MessageContent.hasNamedOnlyPayload(): Boolean = gk != null || xf != null || cl != null || sc != null
+    /**
+     * The rare control payloads the compact layout does not model: the group key, a transfer, a call, a scope config, a
+     * presence key.
+     */
+    private fun MessageContent.hasNamedOnlyPayload(): Boolean = gk != null || xf != null || cl != null || sc != null || pk != null
 
     /** Signals one non-canonical id/hash/key inside [wireOf]: the whole content falls back to the named form. */
     private class NonCanonical : RuntimeException()

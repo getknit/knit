@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.protocol
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
+import app.getknit.knit.mesh.crypto.PresenceKeyFrame
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.cryptoCbor
@@ -711,6 +712,14 @@ class GoldenVectorTest {
                         m = true,
                     ),
                 ),
+            // The sealed presence key (ADR 2026-11.xp6d, ctl 11): the additive `pk` beside the ctl marker, on the named form
+            // only (MessageContentV2 refuses it), padded by `p` to PresenceKeyFrame.PLAINTEXT_BYTES with or without the
+            // next pair. Short keys g / k / ng / nk / p; g and k required. Every fixture above stays byte-identical.
+            "messageContentPresenceKey" to PresenceKeyFrame.content(listOf(PRESENCE_GENERATION to bytes(32, 17))).encode(),
+            "messageContentPresenceKeyNext" to
+                PresenceKeyFrame
+                    .content(listOf(PRESENCE_GENERATION to bytes(32, 17), PRESENCE_GENERATION + 1 to bytes(32, 18)))
+                    .encode(),
         )
 
     private fun compact(content: MessageContent): ByteArray =
@@ -799,7 +808,24 @@ class GoldenVectorTest {
         @ByteString val hpkePub: ByteArray,
     )
 
+    /**
+     * The presence key's plaintext (ADR 2026-11.xp6d) has no compact form, and pads to one size whether or not it carries
+     * the next pair, so a listener on an unencrypted link cannot tell the two apart by length.
+     */
+    @Test
+    fun `the presence key is named-only and both of its forms are one size`() {
+        val one = PresenceKeyFrame.content(listOf(PRESENCE_GENERATION to bytes(32, 17)))
+        val two = PresenceKeyFrame.content(listOf(PRESENCE_GENERATION to bytes(32, 17), PRESENCE_GENERATION + 1 to bytes(32, 18)))
+        for (content in listOf(one, two)) {
+            assertEquals(null, MessageContentV2.encodeOrNull(content))
+            assertEquals(PresenceKeyFrame.PLAINTEXT_BYTES, content.encode().size)
+        }
+    }
+
     private companion object {
+        /** A presence-key generation as a phone mints one: a millisecond wall clock (2026-11-02T00:00:00Z). */
+        const val PRESENCE_GENERATION = 1_793_577_600_000L
+
         const val FILE = "wire-v1.json"
 
         // A call fixture's SDP: its bytes are what is pinned, not its sense; the real one is 2–5 KB (§3.6).

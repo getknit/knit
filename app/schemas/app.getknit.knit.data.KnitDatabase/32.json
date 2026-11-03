@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 32,
-    "identityHash": "499b880ba0828b6820393e22247da3f8",
+    "identityHash": "29f70e32e5dd2bef2802abde2117777a",
     "entities": [
       {
         "tableName": "messages",
@@ -2164,11 +2164,45 @@
             "generation"
           ]
         }
+      },
+      {
+        "tableName": "link_owed_resets",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`nodeId` TEXT NOT NULL, `wire` BLOB, `rootTag` INTEGER, `owedSince` INTEGER NOT NULL, PRIMARY KEY(`nodeId`))",
+        "fields": [
+          {
+            "fieldPath": "nodeId",
+            "columnName": "nodeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wire",
+            "columnName": "wire",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "rootTag",
+            "columnName": "rootTag",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "owedSince",
+            "columnName": "owedSince",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "nodeId"
+          ]
+        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '499b880ba0828b6820393e22247da3f8')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '29f70e32e5dd2bef2802abde2117777a')"
     ]
   }
 }
