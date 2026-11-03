@@ -49,7 +49,8 @@ class DemoSeeder(
 
     private suspend fun seedInternal() {
         val me = koin.get<Identity>().nodeId()
-        val scenario = demoScenarioFor(BuildConfig.DEMO_THEME)
+        // What this build can show: the translation DM and the direct-link lines join only where their flags are on.
+        val scenario = demoScenarioFor(BuildConfig.DEMO_THEME).forBuild()
         val msgById =
             (
                 scenario.nearby +
