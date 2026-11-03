@@ -1,5 +1,6 @@
 # Project detekt config — a thin OVERLAY on detekt's bundled defaults (applied with
-# `buildUponDefaultConfig = true` in app/build.gradle.kts; CI `verify:detekt` runs `./gradlew detekt`).
+# `buildUponDefaultConfig = true` in app/ and wear/build.gradle.kts; `./gradlew detekt` is the type-resolved detektAll,
+# ADR 2026-11.acs5).
 # Only rules whose defaults misfire on this Jetpack Compose + Koin codebase are listed; everything else
 # keeps detekt's bundled defaults. Goal: silence framework-shaped false positives so the report is
 # signal, not noise. Genuine nits are fixed in code instead (see the MR that introduced this file).
@@ -20,10 +21,10 @@
 #  - MagicNumber: theme color/typography literals live in property declarations; ignore those.
 #  - ReturnCount: the flagged functions are guard-clause early-returns (some lint-mandated).
 #  - ForbiddenImport: bans android.graphics.BitmapFactory outside data/ImageDecode.kt, so an unbounded
-#    decode of peer-supplied image bytes can't reappear (ADR 051). It is an *import* rule rather than
-#    ForbiddenMethodCall because detekt runs here without type resolution, which that rule requires.
+#    decode of peer-supplied image bytes can't reappear (ADR 051). It is an *import* rule, chosen when detekt ran
+#    without types; ForbiddenMethodCall, which needs them, could now catch a fully-qualified call too.
 #    scripts/dex-bitmap-gate.sh is the matching check on the release dex, where library code is visible.
-#  - Rules that need types (detektAll, .agents/context/toolchain.md) run on every source folder. Those that guard
+#  - Every rule runs type-resolved on every source folder (.agents/context/toolchain.md). Those that guard
 #    production behaviour (a user's locale, an ignored result) skip the test folders, and the size rules skip
 #    src/debug, the adb bridge and demo harness. Each list below says why.
 

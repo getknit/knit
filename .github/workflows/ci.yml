@@ -415,8 +415,11 @@ jobs:
         with:
           packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
       - uses: gradle/actions/setup-gradle@v5
+      # Type-resolved only (ADR 2026-11.acs5): `detekt` stands for `detektAll`, which compiles the debug app, its
+      # three test kinds and :wear first. --build-cache reuses what setup-gradle restored; --continue reports every
+      # variant. With the tests of our own rules.
       - name: detekt
-        run: ./gradlew :detekt-rules:test detekt --stacktrace --console=plain # with the tests of our own rules
+        run: ./gradlew -Pknit.wear=true :detekt-rules:test detekt --continue --build-cache --stacktrace --console=plain
       - name: ktlint
         run: ./gradlew ktlintCheck --stacktrace --console=plain
 

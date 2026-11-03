@@ -1,5 +1,5 @@
-// Knit's own detekt rules (ruleset `knit`, configured in config/detekt/detekt.yml). :app's detekt task loads this
-// jar through its `detektPlugins` configuration and nothing else depends on it, so no APK ever carries a byte of it
+// Knit's own detekt rules (ruleset `knit`, configured in config/detekt/detekt.yml). :app's and :wear's detekt tasks load
+// this jar through their `detektPlugins` configurations and nothing else depends on it, so no APK ever carries a byte of it
 // and F-Droid's release rebuild only configures it. See .agents/context/toolchain.md.
 plugins {
     // On the classpath already: the root buildscript's kotlin-gradle-plugin (the Kotlin 2.4 override) provides it.

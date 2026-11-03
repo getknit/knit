@@ -18,4 +18,6 @@ isolated task classpath and adds nothing to `:app`'s compile/runtime graph (veri
 doesn't apply — none does compile-time codegen on `:app`'s sources. Kover was already a plugin (its old
 "one exception" framing is retired). ktlint's check task is now `ktlintCheck` (and `ktlintFormat`
 autocorrects); the CI `verify:detekt` job runs `./gradlew detekt` (a `verify:ktlint` job was added).
+*Amended by ADR 2026-11.acs5 (2026-11-02): detekt no longer runs without type resolution; `detekt` stands for
+the type-resolved `detektAll` over every source folder.*
 Detail: `context/toolchain.md`.

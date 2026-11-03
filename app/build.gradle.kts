@@ -1164,8 +1164,8 @@ kotlin {
         // prints a diagnostic for the files it actually compiles, so an UP-TO-DATE / FROM-CACHE / incremental
         // `assembleDebug` reports nothing, and the whole module's warning set only reappears on a cold compile
         // of a variant nobody builds often (which is how eight of them reached 2.5.0 unseen). Nothing else
-        // catches these: Android Lint runs its own UAST issue registry, and detekt runs without type
-        // resolution, so neither sees an unused expression, an always-true condition, or a missing opt-in.
+        // catches these: Android Lint runs its own UAST issue registry, and detekt reports its own rules, not the
+        // compiler's, so neither sees an unused expression, an always-true condition, or a missing opt-in.
         //
         // Applies to every compilation in the module — main, unit-test and androidTest — deliberately: a
         // flag that covered only main sources would let the test sources rot instead.
@@ -1217,29 +1217,26 @@ kover {
 }
 
 detekt {
-    // Overlay config/detekt/detekt.yml on detekt's bundled defaults (== the old CLI's
-    // --build-upon-default-config). Analyze the same inputs the CLI did — main + unit-test Kotlin — set
-    // explicitly rather than via source-set autodiscovery: AGP 9's built-in Kotlin (no kotlin-android
-    // plugin) can leave detekt's discovery empty. No compile classpath is wired, so this runs WITHOUT type
-    // resolution, exactly like the old `detekt-cli` invocation. Reports land in build/reports/detekt/.
+    // Overlay config/detekt/detekt.yml on detekt's bundled defaults (== the old CLI's --build-upon-default-config).
+    // Every detekt task reads these, the type-resolved variant tasks below included. Reports land in build/reports/detekt/.
     buildUponDefaultConfig = true
     config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
-    source.setFrom(files("src/main/java", "src/test/java"))
     // The loops BarePeriodicLoop found when it arrived (#207); fix one rather than add to it.
     baseline = file("$rootDir/config/detekt/baseline.xml")
 }
 
 dependencies {
-    // Knit's own rules (ruleset `knit`): BarePeriodicLoop, #206. Loaded into the detekt task only.
+    // Knit's own rules (ruleset `knit`): BarePeriodicLoop, #206. Loaded into every detekt task of this module.
     detektPlugins(project(":detekt-rules"))
 }
 
-// detekt WITH type resolution over every Kotlin source folder the app has — the replacement for the plain
-// `detekt` task above, which reads src/main + src/test alone and silently skips every rule that needs types
-// (LongParameterList and UnusedImport among them in detekt 2.0). Not yet a gate: the Stop hook and both CIs run
-// plain `detekt` until this one is clean (.agents/context/toolchain.md, "Type-resolved detekt"). The variant tasks
-// come from the plugin, each against its compilation's classpath and reusing the extension's config, baseline and
-// rules; each depends on that compilation's compile task, so this compiles the debug app and its three test kinds.
+// detekt runs WITH type resolution over every Kotlin source folder the app has, and only that way (ADR 2026-11.acs5).
+// The plugin's plain `detekt` task has no compile classpath, so it silently skips every rule that needs types
+// (LongParameterList and UnusedImport among them in detekt 2.0), and it reads only the sources it is handed. It is
+// switched off below and stands for `detektAll`, so `./gradlew detekt`, `check` and anything else that names it run
+// this. The variant tasks come from the plugin, each against its compilation's classpath and reusing the extension's
+// config, baseline and rules; each depends on that compilation's compile task, so this compiles the debug app and its
+// three test kinds. .agents/context/toolchain.md, "Static analysis".
 //   detektDebug               src/main + src/debug
 //   detektDebugUnitTest       src/test + src/testDebug
 //   detektDebugAndroidTest    src/androidTest
@@ -1250,26 +1247,36 @@ dependencies {
 // src/release holds the no-op demo/keystore stubs that release, staging and nonMinifiedRelease compile in place of
 // src/debug's. detektRelease would compile all of release and read src/main a second time for them, so these two
 // files are read against debug's classpath instead: every type they name is src/main's, there too, and debug's
-// same-named stubs on that classpath only shadow them, which no rule reads.
+// same-named stubs on that classpath only shadow them, which no rule reads. The classpath is the debug compile's own,
+// as the plugin wires detektDebug's: taken from detektDebug, it would make this wait on that task's analysis and be
+// skipped whenever detektDebug finds something and the run has no --continue.
 val detektReleaseStubs =
     tasks.register<dev.detekt.gradle.Detekt>("detektReleaseStubs") {
         group = "verification"
         description = "Run detekt with type resolution on src/release, against the debug classpath"
-        val debug = tasks.named<dev.detekt.gradle.Detekt>("detektDebug")
+        val compile = tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>("compileDebugKotlin")
         setSource(files("src/release/java"))
-        classpath.from(debug.map { it.classpath })
-        friendPaths.from(debug.map { it.friendPaths })
-        jvmTarget.convention(debug.flatMap { it.jvmTarget })
-        languageVersion.convention(debug.flatMap { it.languageVersion })
-        apiVersion.convention(debug.flatMap { it.apiVersion })
-        optIn.convention(debug.flatMap { it.optIn })
-        freeCompilerArgs.convention(debug.flatMap { it.freeCompilerArgs })
+        classpath.from(compile.flatMap { it.destinationDirectory }, compile.map { it.libraries })
+        friendPaths.from(compile.flatMap { it.destinationDirectory }, compile.map { it.friendPaths })
+        jvmTarget.convention(compile.flatMap { it.compilerOptions.jvmTarget.map { target -> target.target } })
+        languageVersion.convention(compile.flatMap { it.compilerOptions.languageVersion.map { version -> version.version } })
+        apiVersion.convention(compile.flatMap { it.compilerOptions.apiVersion.map { version -> version.version } })
+        optIn.convention(compile.flatMap { it.compilerOptions.optIn })
+        freeCompilerArgs.convention(compile.flatMap { it.compilerOptions.freeCompilerArgs })
     }
 
-tasks.register("detektAll") {
-    group = "verification"
-    description = "Run detekt with type resolution on every Kotlin source folder of :app"
-    dependsOn("detektDebug", "detektDebugUnitTest", "detektDebugAndroidTest", "detektDebugScreenshotTest", detektReleaseStubs)
+val detektAll =
+    tasks.register("detektAll") {
+        group = "verification"
+        description = "Run detekt with type resolution on every Kotlin source folder of :app"
+        dependsOn("detektDebug", "detektDebugUnitTest", "detektDebugAndroidTest", "detektDebugScreenshotTest", detektReleaseStubs)
+    }
+
+// The plain task is the type-resolved sweep by another name: it analyses nothing itself, and its dependency runs
+// detektAll for whoever asks for `detekt`.
+tasks.named("detekt") {
+    enabled = false
+    dependsOn(detektAll)
 }
 
 ktlint {

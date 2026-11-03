@@ -27,7 +27,8 @@ terminals.
 ## Code checks run before any review
 
 The code checks are the static ones whose fix moves code: `ktlintCheck`, `detekt`, Android `lint` and lintorama, not
-the tests. Run them with `.claude/hooks/review-gate.sh --checks`, never by hand beside it: it runs Gradle through
+the tests. `detekt` is the type-resolved `detektAll` on every source folder, so it compiles the debug app and its three
+test kinds first (`context/toolchain.md`). Run them with `.claude/hooks/review-gate.sh --checks`, never by hand beside it: it runs Gradle through
 `scripts/gradle-turn.sh`, skips a check whose tree already passed, and records the pass, so the Stop hook reuses it
 and no tree is checked twice. The Stop hook (`review-gate.sh`) runs the same checks in order before it asks for any
 reviewer, and blocks the stop on a finding instead of asking: a ktlint or detekt fix after a review moves lines the

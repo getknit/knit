@@ -2,13 +2,11 @@
 #
 # Run type-resolved detekt over every Kotlin source folder (`detektAll`) and tally what it finds.
 #
-# WHY THIS EXISTS. Plain `./gradlew detekt` reads src/main + src/test without type resolution, so every rule that
-# needs types is skipped without a word and src/debug, src/release, src/androidTest and src/screenshotTest are never
-# read. `detektAll` (app/build.gradle.kts, wear/build.gradle.kts) is its replacement, but it is not a gate until its
-# findings are cleared (.agents/context/toolchain.md, "Type-resolved detekt"). This is the tool for clearing them: it
-# runs every variant task in one Gradle pass and prints the findings by rule and source folder, so a fix shows as a
-# count going down. Exits 0 when the sweep ran, whatever it found; 1 when a task did not get as far as analysing (a
-# compile error, a crash), since then the tally would read low.
+# WHY THIS EXISTS. detekt runs type-resolved over every source folder (`detektAll`, which `detekt` stands for:
+# app/build.gradle.kts, wear/build.gradle.kts, ADR 2026-11.acs5), as a handful of variant tasks, each with its own
+# report. This runs every one in one Gradle pass and prints the findings by rule and source folder, so a rule's cost
+# shows at a glance and a fix shows as a count going down. Exits 0 when the sweep ran, whatever it found; 1 when a
+# task did not get as far as analysing (a compile error, a crash), since then the tally would read low.
 #
 # Usage: scripts/detekt-sweep.sh [--wear] [--reuse]
 #   --wear   also sweep :wear (configures it with -Pknit.wear=true, as its builds do)

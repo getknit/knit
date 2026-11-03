@@ -118,9 +118,9 @@ run_checks() {
       [ "$status" -ne 0 ] || status=75
     else
       out+="\`./gradlew ktlintCheck detekt lint\` failed (exit $gradle_status). Most ktlint findings autocorrect with"
-      out+=" \`./gradlew ktlintFormat\`; fix detekt and lint findings by hand:"$'\n'
+      out+=" \`./gradlew ktlintFormat\`; fix detekt and lint findings by hand (detekt is the type-resolved detektAll):"$'\n'
       out+=$(printf '%s\n' "$gradle_out" |
-        grep -iE '\.kts?:[0-9]+:[0-9]+:|weighted issues|error:|Lint found|lint-results|FAILURE' ||
+        grep -iE '\.kts?:[0-9]+:[0-9]+[: ]|weighted issues|error:|Lint found|lint-results|FAILURE' ||
         printf '%s\n' "$gradle_out" | tail -n 30)
       out+=$'\n'
       status=1

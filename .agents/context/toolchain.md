@@ -101,8 +101,8 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
 
 `app/build.gradle.kts` sets `kotlin { compilerOptions { allWarningsAsErrors } }` for **every** compilation
 in the module — main, unit-test and androidTest. Nothing else in the build sees these diagnostics: Android
-Lint runs its own UAST issue registry, and detekt runs *without type resolution*, so an unused expression, an
-always-true condition or a missing `@OptIn` is invisible to both. And kotlinc only prints a diagnostic for
+Lint runs its own UAST issue registry, and detekt reports its own rules rather than the compiler's, so an unused
+expression, an always-true condition or a missing `@OptIn` is invisible to both. And kotlinc only prints a diagnostic for
 the files it actually compiles, so an UP-TO-DATE / FROM-CACHE / incremental build reports nothing at all —
 the module's full warning set only reappears on a cold compile of a variant nobody builds often, which is how
 eighteen of them reached 2.5.0 unseen.
@@ -134,50 +134,60 @@ runs only fatal checks, so the release build is untouched.
 ## Static analysis: detekt / ktlint Gradle plugins
 
 `detekt` runs via the **`dev.detekt` Gradle plugin** (detekt 2.0.x — the first line that supports
-Gradle 9; 1.23.x capped at Gradle 8.12.1, and `dev.detekt` is the new plugin/group id). Applied on
-`:app`, it analyzes `src/main/java` + `src/test/java` **without type resolution** (no compile classpath is
-wired — same scope/behavior as the old CLI), overlaying `config/detekt/detekt.yml` on detekt's defaults
-(`buildUponDefaultConfig = true`). The `detekt` task exits non-zero on findings; reports land in
-`app/build/reports/detekt/`. CI's `verify:detekt` job runs `./gradlew detekt`. (Config note: detekt 2.0
-renamed several config keys — `LongParameterList.constructorThreshold/functionThreshold` →
+Gradle 9; 1.23.x capped at Gradle 8.12.1, and `dev.detekt` is the new plugin/group id), on `:app` and `:wear`,
+overlaying `config/detekt/detekt.yml` on detekt's defaults (`buildUponDefaultConfig = true`). (Config note: detekt
+2.0 renamed several config keys — `LongParameterList.constructorThreshold/functionThreshold` →
 `allowedConstructorParameters/allowedFunctionParameters`, `TooManyFunctions.thresholdIn*` →
 `allowedFunctionsPer*`, and the style rule `UnusedImports` → singular `UnusedImport`.)
 
-### Type-resolved detekt (cutover in progress)
+### detekt runs type-resolved, on every source folder, and only that way
 
-Plain `detekt` misses two things. Every rule that needs types is skipped without a word, and in detekt 2.0 that
-includes `LongParameterList` and `UnusedImport`, which `detekt.yml` tunes. And it never reads `src/debug`,
-`src/release`, `src/androidTest` or `src/screenshotTest`, so the import bans, `HardcodedUiText` and `BarePeriodicLoop`
-don't reach them either.
+ADR 2026-11.acs5, amending ADR 011. The plugin's plain task has no compile classpath. So it skips every rule that
+needs types without a word, and in detekt 2.0 that includes `LongParameterList` and `UnusedImport`, which
+`detekt.yml` tunes. It also reads only the folders it is handed. It is **switched off**, and depends on
+**`detektAll`**, so `./gradlew detekt`, `check`, the Stop hook and both CIs all run the type-resolved sweep.
 
-**`detektAll`** replaces it, on `:app` and `:wear`. It runs the plugin's variant tasks (`detektDebug` for main + debug,
-`detektDebugUnitTest`, `detektDebugAndroidTest`, `detektDebugScreenshotTest`), each against its compilation's
-classpath with the same config, baseline and `knit` rules, plus `detektReleaseStubs`. That last one reads
-`src/release`'s two stubs against debug's classpath, because `detektRelease` would compile all of release and read
-`src/main` a second time. `src/calls`, `src/liveCalls` and `src/stt` hold no Kotlin. Each variant task compiles its
-source set first, so a cold run builds the debug app and its three test kinds.
+`detektAll` runs the plugin's variant tasks, each against its compilation's classpath with the same config, baseline
+and `knit` rules:
 
-It is **not a gate yet**: the Stop hook and both CIs run plain `detekt` until `detektAll` is clean. Clear it with
-`scripts/detekt-sweep.sh [--wear]`, which runs every task in one pass and tallies findings by rule and source folder
-into `build/reports/detekt-sweep.md`. Fix findings or turn a rule off in `detekt.yml` with its reason; never baseline
-them. At cutover:
+- on `:app`: `detektDebug` (main and debug), `detektDebugUnitTest` (test and testDebug), `detektDebugAndroidTest` and
+  `detektDebugScreenshotTest`;
+- also on `:app`: `detektReleaseStubs`, which reads `src/release`'s two stubs against the debug compile's classpath,
+  because `detektRelease` would compile all of release and read `src/main` a second time. It takes that classpath
+  from `compileDebugKotlin`, not from `detektDebug`, so a finding in debug never skips it;
+- on `:wear`: `detektDebug` (with the wearstatus codec it compiles from `:app`'s tree) and `detektDebugUnitTest`.
 
-- swap `detekt` for `detektAll` in `.claude/hooks/gradle-checks-stop.sh`, `.gitlab-ci.yml`'s `verify:detekt`,
-  `.github/workflows/ci.yml`'s `verify` job (a workflow edit owes `security-reviewer`), the PR template,
-  `rules/build-and-test.md` and `commands.md`;
-- record an ADR amending ADR 011's "same scope/behaviour as the old CLI", rewrite this section, and update the
-  "without type resolution" lines below and in `detekt.yml`'s ForbiddenImport note, since `knit` rules and
-  `ForbiddenMethodCall` can then use types.
+`src/calls`, `src/liveCalls` and `src/stt` hold no Kotlin. Each variant task compiles its source set first, so a cold
+run builds the debug app and its three test kinds. `:wear` is opt-in (`-Pknit.wear=true`): the Stop hook leaves it out,
+as its ktlint and lint do, and both CIs pass the flag.
+
+- **Reports:** each variant writes `<module>/build/reports/detekt/<variant>.{xml,html,md,sarif}`.
+  `scripts/detekt-sweep.sh [--wear]` runs the sweep and tallies the findings by rule and source folder into
+  `build/reports/detekt-sweep.md`.
+- **A finding:** fix it, or turn the rule off or narrow it in `detekt.yml` with its reason there. Never baseline it.
+- **Excludes:** setting a rule's `excludes` replaces detekt's default list, which skips `**/test/**` and
+  `**/androidTest/**` for the size and number rules. Restate those when you add one. The defaults never covered
+  `testDebug` or `screenshotTest`, which detekt now reads. `detekt.yml` keeps the four test folders as the
+  `&testSources` anchor.
+- **CI:**
+  - GitLab's `verify:detekt` runs on skuld after `build:debug`, so it takes the debug and unit-test compiles from
+    that job's build cache. It compiles the rest in one invocation and analyses in a second, for the 2 GB memory
+    profile.
+  - It saves the deps and build caches even when it finds something, so the next pipeline reruns only what changed.
+    An unchanged variant's analysis comes FROM-CACHE.
+  - GitHub's `verify` job passes `--build-cache`.
+  - Both pass `--continue`, so every variant reports.
 
 **Knit's own detekt rules live in `:detekt-rules`**: a plain Kotlin JVM module holding the `knit` ruleset
-(`KnitRuleSetProvider`), configured under `knit:` in `detekt.yml` and loaded into `:app`'s detekt task through
-`detektPlugins(project(":detekt-rules"))`, and nowhere else.
+(`KnitRuleSetProvider`), configured under `knit:` in `detekt.yml` and loaded into `:app`'s and `:wear`'s detekt
+tasks through `detektPlugins(project(":detekt-rules"))`, and nowhere else.
 
 - It applies `org.jetbrains.kotlin.jvm` from the root buildscript's KGP (the Kotlin-2.4 override above), compiles
   against `detekt-api` (compileOnly, the plugin's version) and adds no stdlib of its own (its `gradle.properties`).
   So nothing reaches `:app`'s classpaths, and F-Droid's rebuild only configures it.
-- A rule reads the tree alone, since detekt runs here without type resolution. Its tests parse their snippets without
-  compiling them (`lint(code, compile = false)`), and CI's detekt jobs run them (`./gradlew :detekt-rules:test detekt`).
+- The rules read the tree alone, though detekt now hands them types (ADR 2026-11.acs5), so a new rule may use a
+  binding context. Their tests parse their snippets without compiling them (`lint(code, compile = false)`), and CI's
+  detekt jobs run them (`./gradlew :detekt-rules:test detekt`).
 - The plugin caches the rules' classloader by the jar's *path* for the daemon's life (`DefaultClassLoaderCache`). After
   editing a rule, run detekt with `--no-daemon`: a warm daemon keeps running the rule it first loaded.
 - `BarePeriodicLoop` (#206) fails a launched endless loop that ticks on `delay` with a round nothing catches
@@ -197,8 +207,8 @@ behavior stays fixed. Rules are the ktlint standard ruleset, configured via the 
 (auto-discovered), including the `@Composable` function-naming opt-out
 (`ktlint_function_naming_ignore_when_annotated_with = Composable`). `./gradlew ktlintCheck` verifies (reports
 in `build/reports/ktlint/`); **`./gradlew ktlintFormat` autocorrects** — a capability the old CLI lacked.
-`detekt` and `ktlint` both run as `Stop` hooks (`.claude/hooks/gradle-{detekt,ktlint}-stop.sh`) alongside
-`./gradlew lint`.
+`ktlintCheck`, `detekt` and `lint` run together in the Stop hook's code checks (`.claude/hooks/review-gate.sh`,
+`--checks` to run them by hand).
 
 These are ordinary Gradle plugins now (this reverses the old "standalone CLIs" doctrine — ADR 007 is
 Superseded by ADR 011). They still add nothing to `:app`'s compile/runtime classpath — detekt and ktlint

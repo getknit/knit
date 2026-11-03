@@ -50,11 +50,13 @@ workflow:
 # shared cache server), so a job only sees what a job on the SAME runner saved.
 #   * deps  — resolved jars, transforms, wrapper, SDK. Saved by both build jobs: build:release always runs
 #             on a bigmem runner and build:debug on either, so each runner's copy stays current after a
-#             version bump. Same key as before the split, so existing caches carry over.
+#             version bump. Same key as before the split, so existing caches carry over. verify:detekt saves
+#             it too, after build:debug on skuld, for the detekt CLI and the androidTest/screenshotTest jars.
 #   * build — Gradle's local build cache (the init script below puts it in .gradle/build-cache/), one per
-#             branch. Saved by build:debug only, which also compiles the unit-test sources, so test:unit,
+#             branch. Saved by build:debug, which also compiles the unit-test sources, so test:unit,
 #             test:mesh-lab and test:coverage take the compile FROM-CACHE instead of each redoing it —
-#             when they land on build:debug's runner.
+#             when they land on build:debug's runner. Then by verify:detekt, which runs after build:debug
+#             (needs:) on the same runner and adds the compiles only it does and its own reports.
 .gradle-deps-cache: &gradle-deps-cache
   key:
     files:
@@ -565,17 +567,34 @@ verify:lintorama:
 # (allow_failure) to mirror the prior detekt job and keep the pass/fail test signal clean; locally they
 # are enforced by the Stop hooks. Reports land under build/reports/{detekt,ktlint}/. The detekt job also runs the
 # tests of Knit's own rules (:detekt-rules, the `knit` ruleset), which nothing else runs.
+#
+# detekt runs type-resolved only (ADR 2026-11.acs5): `detekt` stands for `detektAll`, which compiles the debug app,
+# its unit, instrumented and screenshot tests, and :wear, then analyses each against its classpath. So the job runs
+# on skuld after build:debug, whose build cache holds the debug and unit-test compiles, and saves both caches even
+# when detekt finds something, so the next pipeline's run redoes only what changed (an unchanged variant's analysis
+# comes FROM-CACHE too). Two invocations for the memory reason .compile-unit-tests gives: the compiles, then the
+# analysis (both detekt variants fit the CI heap, measured 2026-11-02). --continue so every variant reports.
 verify:detekt:
   extends: .android
   stage: verify
-  needs: []
+  tags: [skuld]
+  needs: [{job: "build:debug", artifacts: false}]
   allow_failure: true
+  cache:
+    - <<: *gradle-deps-cache
+      policy: pull-push
+      when: always
+    - <<: *gradle-build-cache
+      policy: pull-push
+      when: always
   script:
-    - ./gradlew :detekt-rules:test detekt --stacktrace --console=plain
+    - ./gradlew -Pknit.wear=true :detekt-rules:test :app:compileDebugUnitTestKotlin :app:compileDebugAndroidTestKotlin :app:compileDebugScreenshotTestKotlin :wear:compileDebugUnitTestKotlin --stacktrace --console=plain
+    - ./gradlew -Pknit.wear=true detekt --continue --stacktrace --console=plain
   artifacts:
     when: always
     paths:
       - app/build/reports/detekt/
+      - wear/build/reports/detekt/
     expire_in: 1 week
 
 verify:ktlint:

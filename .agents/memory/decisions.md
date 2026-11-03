@@ -309,6 +309,7 @@ carries; never renumber an old one.
 | [2026-11.264w](decisions/2026-11-264w-a-link-proves-the-node-id-its-hello-claims.md) | A link proves the node id its HELLO claims | mesh, security |
 | [2026-11.4ckq](decisions/2026-11-4ckq-a-peer-s-advertised-photo-is-stored-at-once-and-re-wanted-from-the-database.md) | a peer's advertised photo is stored at once and re-wanted from the database | blobs, contacts |
 | [2026-11.82s7](decisions/2026-11-82s7-the-mesh-service-s-alarms-call-into-the-running-service.md) | The mesh service's alarms call into the running service, never start it | service, power, reliability |
+| [2026-11.acs5](decisions/2026-11-acs5-detekt-runs-only-type-resolved.md) | detekt runs only type-resolved, on every source folder | build, toolchain, static-analysis |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |

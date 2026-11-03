@@ -38,9 +38,10 @@ if [ "$status" -ne 0 ]; then
     echo "Stop blocked: \`./gradlew ktlintCheck detekt lint\` found issues (exit $status). Fix them, then"
     echo "finish (most ktlint/detekt findings autocorrect with \`./gradlew ktlintFormat\`):"
     echo
-    # Surface the per-tool findings — ktlint/detekt `path:line:col:` lines, detekt's weighted summary,
+    # Surface the per-tool findings — ktlint's `path:line:col:` and detekt's and kotlinc's `path:line:col` lines (detekt
+    # compiles what it reads: `detekt` stands for the type-resolved detektAll, ADR 2026-11.acs5), detekt's weighted summary,
     # and Android lint's error/summary lines; fall back to a tail so a format change never swallows it.
-    printf '%s\n' "$output" | grep -iE '\.kts?:[0-9]+:[0-9]+:|weighted issues|error:|Lint found|lint-results|FAILURE' \
+    printf '%s\n' "$output" | grep -iE '\.kts?:[0-9]+:[0-9]+[: ]|weighted issues|error:|Lint found|lint-results|FAILURE' \
       || printf '%s\n' "$output" | tail -n 30
   } >&2
   exit 2
