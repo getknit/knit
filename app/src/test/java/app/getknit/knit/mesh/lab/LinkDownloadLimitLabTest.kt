@@ -74,6 +74,11 @@ class LinkDownloadLimitLabTest {
         )
         a.awaitLinksActedOn()
         b.awaitLinksActedOn()
+        // The link-up's presence-key pass (a short wait, then maybe a ctl 11 across the link, which is a use of it), best
+        // effort: the manager schedules it after it marks the links acted on, so a poll in between passes early; the idle
+        // close's loop is what absorbs a ctl 11 that lands later.
+        a.awaitPresencePasses()
+        b.awaitPresencePasses()
     }
 
     /**
@@ -206,25 +211,31 @@ class LinkDownloadLimitLabTest {
 
     // The link between [a] and [b], with nothing to carry, idles out on the link's clock (as
     // `InternetLinkLabTest.theDemandOpensALinkThatIdlesOutAndReopensForTheNextMessage` reads it: a use that lands just
-    // after the jump moves the close a whole period on), and both planes and managers let it go.
+    // after the jump moves the close a whole period on), and both planes and managers let it go. Each jump ends in the
+    // link down or a use after it; another period only for such a use, at most [LATE_USE_PERIODS] of them (the last
+    // exchange's own use, noted once its send returns, and the link-up's presence-key ctl 11, noted on each end), and a
+    // link that stayed up with no use fails at once.
     private suspend fun awaitIdledOut(
         a: LabNode,
         b: LabNode,
     ) {
         val bothDown = { checkNotNull(a.links).links.value.isEmpty() && checkNotNull(b.links).links.value.isEmpty() }
         val uses = { a.linkUses.get() + b.linkUses.get() }
-        val atJump = uses()
-        lab.clock.advance(LinkSession.IDLE_MS)
-        assertTrue(
-            "the link neither idled out nor carried a use\n${a.linkLog}\n${b.linkLog}",
-            lab.tryAwait(1) { if (bothDown() || uses() > atJump) 1 else 0 },
-        )
-        if (!bothDown()) {
+        var periods = 0
+        while (true) {
+            val atJump = uses()
             lab.clock.advance(LinkSession.IDLE_MS)
             assertTrue(
-                "the link never idled out\n${a.linkLog}\n${b.linkLog}\n${a.name} link frames: ${a.linkFrames.takeLast(20)}\n" +
-                    "${b.name} link frames: ${b.linkFrames.takeLast(20)}\n${lab.report(listOf(a, b))}",
-                lab.tryAwait(1) { if (bothDown()) 1 else 0 },
+                "the link neither idled out nor carried a use\n${a.linkLog}\n${b.linkLog}\n${a.name} link frames: " +
+                    "${a.linkFrames.takeLast(20)}\n${b.name} link frames: ${b.linkFrames.takeLast(20)}\n${lab.report(listOf(a, b))}",
+                lab.tryAwait(1) { if (bothDown() || uses() > atJump) 1 else 0 },
+            )
+            if (bothDown()) break
+            periods++
+            assertTrue(
+                "the link kept carrying uses past $LATE_USE_PERIODS idle periods\n${a.linkLog}\n${b.linkLog}\n" +
+                    "${a.name} link frames: ${a.linkFrames.takeLast(20)}\n${b.name} link frames: ${b.linkFrames.takeLast(20)}",
+                periods <= LATE_USE_PERIODS,
             )
         }
         lab.await(1) { if (!a.linkPlaneHolds(b) && !b.linkPlaneHolds(a)) 1 else 0 }
@@ -252,6 +263,10 @@ class LinkDownloadLimitLabTest {
 
         // How long after a held want's link idled out the receiver's network turns unmetered.
         const val UNMETERED_AFTER_MS = 1_000L
+
+        // Idle periods past the first a late use may cost (`awaitIdledOut`): the last exchange's own, and the link-up's
+        // presence-key ctl 11 noted on each end.
+        const val LATE_USE_PERIODS = 3
 
         // The hash prefix `BlobExchange`'s log lines name.
         const val HASH_CHARS = 8

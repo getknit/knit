@@ -45,4 +45,33 @@ class CodedDialsBackTest {
             ),
         )
     }
+
+    @Test
+    fun aDropWithPresenceExpiredStillPicksTheSideTheLinksFormSaysDials() {
+        // bluetooth's part-1 review: at a drop at range presence has usually lost the peer; the link recorded its form.
+        val clearB = AdvertOrder.Mine.clear("b")
+        val blindedA = AdvertOrder.Form("zzzzaaaaaaaaaaaaaaaaaaaaaa", blinded = true)
+        assertFalse(
+            "the link's form says the blinding peer dials, presence gone",
+            CodedPhyPolicy.dialsBackAfterDrop(clearB, linkForm = blindedA, heard = null, localNodeId = "b", peerNodeId = "a"),
+        )
+        assertTrue(
+            "without it, the real ids would have the clear side hunt for nothing",
+            CodedPhyPolicy.dialsBackAfterDrop(clearB, linkForm = null, heard = null, localNodeId = "b", peerNodeId = "a"),
+        )
+        assertFalse(
+            "presence is the second source",
+            CodedPhyPolicy.dialsBackAfterDrop(clearB, linkForm = null, heard = blindedA, localNodeId = "b", peerNodeId = "a"),
+        )
+        assertTrue(
+            "the link's form wins over a stale presence one",
+            CodedPhyPolicy.dialsBackAfterDrop(
+                clearB,
+                linkForm = AdvertOrder.Form.clear("a"),
+                heard = blindedA,
+                localNodeId = "b",
+                peerNodeId = "a",
+            ),
+        )
+    }
 }

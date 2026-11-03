@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.bluetooth.BleConnectArbiter
 import app.getknit.knit.mesh.bluetooth.BleGattPayloadReader
 import app.getknit.knit.mesh.bluetooth.DoorbellPolicy
 import app.getknit.knit.mesh.bluetooth.GattPayloads
+import app.getknit.knit.mesh.crypto.BlindTag
 import app.getknit.knit.mesh.power.ElapsedWait
 import io.mockk.every
 import io.mockk.mockk
@@ -208,6 +209,21 @@ class BleGattPayloadReaderTest {
                 it.onCharacteristicRead(gatt, characteristic, byteArrayOf(1, 2, 3), BluetoothGatt.GATT_SUCCESS)
             }
         assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "value"), result)
+    }
+
+    @Test
+    fun aBlindedPayloadIsAStrangerOfItsOwnPhase() {
+        // ADR 2026-11.xp6d: no port serves a blinded payload, and its tag would be forgotten and re-read at every dial.
+        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, slot = 1, restart = 0))
+        val blinded = BleAdvertPayload.advert(tag, 0L, 0L, 0x83, sideLive = false, gattPeers = false, aware = false, blinded = true)
+        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        every { gatt.readCharacteristic(characteristic) } returns true
+        val result =
+            readWith {
+                discovered(it)
+                it.onCharacteristicRead(gatt, characteristic, blinded, BluetoothGatt.GATT_SUCCESS)
+            }
+        assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, BleGattPayloadReader.PHASE_BLINDED), result)
     }
 
     @Test

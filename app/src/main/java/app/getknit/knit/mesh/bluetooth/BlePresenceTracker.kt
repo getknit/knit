@@ -34,6 +34,32 @@ class BlePresenceTracker(
     // Read at every 1M hit, so `…debug.PHY --ei oneMWeak` moves it live (the 2026-10-20 amendment).
     private val oneMWeakDbm: () -> Double = { PromotionConfig.DEFAULT_RSSI_FLOOR_DBM.toDouble() },
 ) {
+    /**
+     * What may suppress a dial to a sighted peer that holds a link here (ADR 2026-11.xp6d, obligation 11), read against
+     * the links when the dial is decided ([DialPlan]), so a link that comes up after the sighting counts at once.
+     */
+    sealed interface Suppressor {
+        /** Any link to the peer's id: a clear advert, the shipped rule. */
+        data object Linked : Suppressor
+
+        /** Only a proven link to the peer's id: a key's answer (nothing counts without the id's proof). */
+        data object Proven : Suppressor
+
+        /**
+         * Only the claimant's own [link], while it is the one held under the peer's id: a claim's answer (ADR
+         * 2026-11.xp6d, "a claim suppresses our dial only while its claimant's link is held"). A new link from the same
+         * id is not it, so a liar who relinks cannot keep blocking the dial whose proof would void its lie.
+         */
+        data class Claim(
+            val link: Any,
+        ) : Suppressor {
+            override fun toString(): String = "Claim"
+        }
+
+        /** Nothing: a hint's or an unresolved form's answer; the dial `iDial` calls for goes ahead. */
+        data object None : Suppressor
+    }
+
     /** One scan hit for a peer: RSSI plus the fields decoded from its [BleAdvertPayload]. */
     data class Sighting(
         val nodeId: String,
@@ -44,7 +70,14 @@ class BlePresenceTracker(
         val digestCue: Int,
         /** Heard on the Coded PHY (`ScanResult.primaryPhy`), not 1M. */
         val coded: Boolean = false,
-    )
+        /** The form it advertised ([Snapshot.advertised]); [nodeId] is the key it is attributed to. */
+        val advertised: String = nodeId,
+        val blinded: Boolean = false,
+        /** What may suppress a dial on this answer ([Snapshot.suppressor]). */
+        val suppressor: Suppressor = Suppressor.Linked,
+    ) {
+        override fun toString(): String = "Sighting(${FormKeys.shown(nodeId)}, blinded=$blinded, rssi=$rssiDbm)"
+    }
 
     /** A peer's current presence: smoothed RSSI, continuous dwell, and staleness — the promotion inputs. */
     data class Snapshot(
@@ -80,12 +113,23 @@ class BlePresenceTracker(
         /**
          * The form the peer advertised (ADR 2026-11.xp6d): [advertised] is advert bytes 1–16 as a 26-char string, its
          * node id when the advert is clear and a tag when [blinded]. Every pre-link role decides on it
-         * (`AdvertOrder.iDial`), never on [nodeId]. Clear for every entry in this build: a blinded advert never enters
-         * presence until its resolver is wired.
+         * (`AdvertOrder.iDial`), never on [nodeId], which is the key the sighting is attributed to: the resolved id, or an
+         * unresolved form's handle (`FormKeys`). The latest sighting's form.
          */
         val advertised: String = nodeId,
         val blinded: Boolean = false,
-    )
+        /**
+         * What may suppress a dial `AdvertOrder.iDial` calls for on the latest sighting's answer (ADR 2026-11.xp6d's
+         * "What an answer may do"), evaluated when the dial is decided, never frozen at the sighting: a clear advert's
+         * by any link to [nodeId], a key's only by a proven one, a claim's only by its claimant's own link while that is
+         * the link held under the id, a hint's and an unresolved form's never.
+         */
+        val suppressor: Suppressor = Suppressor.Linked,
+    ) {
+        /** Redacted: a tag never reaches a log through a snapshot ([FormKeys.shown]). */
+        override fun toString(): String =
+            "Snapshot(${FormKeys.shown(nodeId)}, blinded=$blinded, rssi=${smoothedRssi.toInt()}, dwellMs=$dwellMs)"
+    }
 
     private class Entry(
         var protoVersion: Int,
@@ -100,6 +144,9 @@ class BlePresenceTracker(
         var lastCodedAt: Long? = null,
         // The 1M-listening clock at the latest Coded hit.
         var lastCodedClock: Long? = null,
+        var advertised: String = "",
+        var blinded: Boolean = false,
+        var suppressor: Suppressor = Suppressor.Linked,
     ) {
         /** Whether 1M was heard in the latest burst: its last hit within [PresenceConfig.presenceGapResetMs] of the latest sighting. */
         fun oneMFresh(config: PresenceConfig): Boolean = fresh(last1mAt, config.presenceGapResetMs)
@@ -142,14 +189,15 @@ class BlePresenceTracker(
             val last = if (coded) lastCodedAt else last1mAt
             val held = if (coded) rssiCoded else rssi1m
             val next = if (held == null || last == null || now - last > gapMs) rssi.toDouble() else alpha * rssi + (1 - alpha) * held
+            // A sighting resolved off the scan thread can land after a later one: every time takes the later of the two.
             if (coded) {
                 rssiCoded = next
-                lastCodedAt = now
+                lastCodedAt = maxOf(lastCodedAt ?: now, now)
             } else {
                 rssi1m = next
-                last1mAt = now
+                last1mAt = maxOf(last1mAt ?: now, now)
             }
-            lastSeenAt = now
+            lastSeenAt = maxOf(lastSeenAt, now)
         }
     }
 
@@ -212,18 +260,55 @@ class BlePresenceTracker(
                     digestCue = s.digestCue,
                     firstSeenAt = now,
                     lastSeenAt = now,
+                    advertised = s.advertised,
+                    blinded = s.blinded,
+                    suppressor = s.suppressor,
                 ).also {
                     it.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, phyGapMs)
                     noteClock(s, it, now)
                 }
             return
         }
+        // A sighting captured before the entry's latest (resolved late) moves its RSSI and nothing else.
+        val latest = now >= existing.lastSeenAt
         existing.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, phyGapMs)
         noteClock(s, existing, now)
+        if (!latest) return
         existing.protoVersion = s.protoVersion
         existing.capabilities = s.capabilities
         existing.psm = s.psm
         existing.digestCue = s.digestCue
+        existing.advertised = s.advertised
+        existing.blinded = s.blinded
+        existing.suppressor = s.suppressor
+    }
+
+    /**
+     * Moves [from]'s entry (an unresolved form's handle) to [to] (the id it resolved to by a key or by our own dial's
+     * proof, ADR 2026-11.xp6d): its dwell, its RSSI and its 1M mark go with it. When [to] has an entry too, the two
+     * merge: the earlier first sighting, the later last one, and the later entry's readings. [suppressor], when given, is
+     * the answer that resolved it, carried onto the moved entry.
+     */
+    @Synchronized
+    fun rekey(
+        from: String,
+        to: String,
+        suppressor: Suppressor? = null,
+    ) {
+        val moved = entries.remove(from) ?: return
+        suppressor?.let { moved.suppressor = it }
+        val mark = oneMMarks.remove(from)
+        val held = entries[to]
+        if (held == null) {
+            entries[to] = moved
+            mark?.let { oneMMarks[to] = it }
+            return
+        }
+        val newer = if (moved.lastSeenAt > held.lastSeenAt) moved else held
+        newer.firstSeenAt = minOf(moved.firstSeenAt, held.firstSeenAt)
+        newer.lastSeenAt = maxOf(moved.lastSeenAt, held.lastSeenAt)
+        entries[to] = newer
+        if (mark != null && to !in oneMMarks) oneMMarks[to] = mark
     }
 
     /** Presence snapshots for every peer still within the reachable linger, oldest sightings pruned first. */
@@ -247,6 +332,9 @@ class BlePresenceTracker(
                 codedLagMs = e.lastCodedClock?.let { coded -> maxOf(0L, coded - (oneMMarks[nodeId] ?: coded)) },
                 oneMFresh = e.oneMFresh(config),
                 codedFresh = e.codedFresh(config),
+                advertised = e.advertised.ifEmpty { nodeId },
+                blinded = e.blinded,
+                suppressor = e.suppressor,
             )
         }
     }

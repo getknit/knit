@@ -103,6 +103,19 @@ internal object BleAdmissionPolicy {
             ?: unprovenTable(outOfOrder, sightedForAdmission(sighted, doorbell, heardAgoMs), heldLinkAgeMs, atCap)
 
     /**
+     * Whether a dialer's HELLO `t` and `a` count in [outOfOrder] and [heldLinkRow] (the security design pass of ADR
+     * 2026-11.xp6d, Blocking): on the first pass (not [late]) only when the HELLO [offersProof]; on the late pass, after
+     * the proof, only when it was [proven]. A HELLO that offered a proof and failed it is closed before the late pass,
+     * so neither pass ever honours a field on an unproven link. The transport calls this at both passes, so the gate is
+     * pinned here rather than in which boolean each call site hands over.
+     */
+    fun honours(
+        offersProof: Boolean,
+        proven: Boolean,
+        late: Boolean,
+    ): Boolean = if (late) proven else offersProof
+
+    /**
      * The responder's order check on advertised forms (ADR 2026-11.xp6d, [AdvertOrder.responderShouldHaveDialed]):
      * whether I, airing [mine], should have dialed the dialer whose HELLO names [dialerId], tells [told] (its `t`, the
      * form it airs) and says it dialed [addressed] (its `a`). True is [decide]'s "sighted and out of order" refusal.

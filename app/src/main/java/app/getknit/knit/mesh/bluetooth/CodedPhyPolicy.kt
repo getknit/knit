@@ -517,6 +517,20 @@ object CodedPhyPolicy {
         localNodeId: String,
         peerNodeId: String,
     ): Boolean = theirs?.let { AdvertOrder.iDial(mine.current, it) } ?: drives(localNodeId, peerNodeId)
+
+    /**
+     * [dialsBack] at a link's drop: on the form the link recorded for its peer ([linkForm]: a sighting while linked, or
+     * the HELLO's honoured `t`), else the one presence still holds ([heard]), else the classic order on the real ids. At
+     * a drop at range (sparse Coded hits, a floored scan) presence has usually lost the peer, and a mixed clear↔blinded
+     * pair read on the real ids would have nobody hunting usefully (bluetooth's part-1 review of ADR 2026-11.xp6d).
+     */
+    internal fun dialsBackAfterDrop(
+        mine: AdvertOrder.Mine,
+        linkForm: AdvertOrder.Form?,
+        heard: AdvertOrder.Form?,
+        localNodeId: String,
+        peerNodeId: String,
+    ): Boolean = dialsBack(mine, linkForm ?: heard, localNodeId, peerNodeId)
 }
 
 /**

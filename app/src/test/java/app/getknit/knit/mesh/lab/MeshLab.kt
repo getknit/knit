@@ -1280,9 +1280,13 @@ data class LabLimits(
     val spoolTickMs: Long = ScopeSync.TICK_INTERVAL_MS,
     val spoolAttachmentRetryMs: Long = ScopeSync.ATTACHMENT_RETRY_MS,
     /**
-     * Whether the node reads blinded adverts (`Protocol.CAP_BLIND_ADVERT`, ADR 2026-11.xp6d) — in its profile and its link
-     * HELLO, as a build that ships the bit will. Off by default, as `LOCAL_CAPABILITIES` has it until the Bluetooth plane
-     * reads tags; [LabNode.blindAdvert] moves it across a restart.
+     * Whether the node reads blinded adverts (`Protocol.CAP_BLIND_ADVERT`, ADR 2026-11.xp6d) — in its profile and its radio
+     * link HELLO, as a build that ships the bit does. Off by default, so a lab node models a build from before the Bluetooth
+     * reader shipped it: the bit is withheld from its profile (`MeshManager.withheldCapabilities`), though
+     * `LOCAL_CAPABILITIES` carries it now. Not from a direct link's lane HELLO, which is the build's own (`Protocol.hello`
+     * writes `LOCAL_CAPABILITIES`): over a direct link every lab node reads as a tag reader, as every build since the
+     * reader does, and the link-up's presence-key pass may send a ctl 11 across it, a late use a scenario timing the link's
+     * idle close must allow. [LabNode.blindAdvert] moves it across a restart.
      */
     val blindAdvert: Boolean = false,
     /** How long a link-up waits before its presence-key reconcile (a random 2–20 s in the field). */
@@ -1458,6 +1462,12 @@ class LabNode internal constructor(
     /** What the node's link HELLO advertises at this boot: the holder query, and tag reading when [blindAdvert]. */
     private fun helloCapabilities(): Long =
         (if (limits.answersHolderQueries) Protocol.CAP_BLOB_HAVE else 0L) or (if (blindAdvert) Protocol.CAP_BLIND_ADVERT else 0L)
+
+    /**
+     * The bits of `LOCAL_CAPABILITIES` the node's profile leaves out at this boot, as `MeshManager.withheldCapabilities`: a
+     * node that does not read tags models a build from before the Bluetooth reader shipped the bit (ADR 2026-11.xp6d).
+     */
+    private fun withheldCapabilities(): Long = if (blindAdvert) 0L else Protocol.CAP_BLIND_ADVERT
 
     /** The bits beyond `LOCAL_CAPABILITIES` the node's profile carries at this boot, as `MeshManager.extraCapabilities`. */
     private fun profileCapabilities(): Long =
@@ -2063,6 +2073,7 @@ class LabNode internal constructor(
                 // each opened signal handed to its links, resolved late.
                 onLinkSignal = { sender, signal, sentAt -> links?.onSignal(sender, signal, sentAt) },
                 extraCapabilities = profileCapabilities(),
+                withheldCapabilities = withheldCapabilities(),
                 // The presence key's engine, as the DI module wires it (ADR 2026-11.xp6d): the direct contacts over this node's
                 // stores, the commons store always bound as Koin binds it, a short link-up wait, and the B3 clock seam.
                 directContacts =

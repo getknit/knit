@@ -748,6 +748,10 @@ class CompositeMeshTransport(
         for (child in children) child.coveredByInternet(peers)
     }
 
+    override fun onPresenceKeys(keys: Map<String, List<ByteArray>>) {
+        for (child in children) child.onPresenceKeys(keys)
+    }
+
     // A live frame (a walkie chunk) rides the high-throughput child when it holds a link to [to]: an NDP's latency is
     // a Wi-Fi radio's, not a connection interval's. Everything else keeps the Bluetooth-first order of [send].
     override suspend fun sendLive(

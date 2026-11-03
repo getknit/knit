@@ -130,7 +130,8 @@ class ProtocolTest {
         // HELLO and every signed profile.
         assertEquals(0x40000L, Protocol.CAP_LINK_PROOF)
         assertEquals(Protocol.CAP_INET_LINK shl 1, Protocol.CAP_LINK_PROOF)
-        assertEquals(0x42FFFL, Protocol.LOCAL_CAPABILITIES)
+        // 0x42FFF until the Bluetooth reader added CAP_BLIND_ADVERT (ADR 2026-11.xp6d, step 5a).
+        assertEquals(0xC2FFFL, Protocol.LOCAL_CAPABILITIES)
     }
 
     @Test
@@ -242,10 +243,12 @@ class ProtocolTest {
     }
 
     @Test
-    fun theBlindAdvertBitIsTheNextFreeOneAndNotYetLocal() {
+    fun theBlindAdvertBitIsTheNextFreeOneAndShipsWithTheReader() {
         assertEquals(Protocol.CAP_LINK_PROOF shl 1, Protocol.CAP_BLIND_ADVERT)
         val local = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_BLIND_ADVERT
-        assertEquals("only the Bluetooth wiring that reads tags may claim it", 0L, local)
+        assertEquals("the Bluetooth plane reads tags, so the build says so", Protocol.CAP_BLIND_ADVERT, local)
+        // Above the advert's low byte: the advert itself does not move.
+        assertEquals(0L, Protocol.CAP_BLIND_ADVERT and 0xFFL)
     }
 
     @Test

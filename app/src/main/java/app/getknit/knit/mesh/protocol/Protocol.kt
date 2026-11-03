@@ -221,7 +221,8 @@ object Protocol {
      * back ([app.getknit.knit.mesh.link.LinkHandshake.dialTag]), and writes and reads the HELLO's advertised-form fields
      * ([hello]'s `told` and `addressed`). It says the build *reads* tags, not that it writes them. Unauthenticated, like
      * every HELLO bit: nothing private is decided on it; a dialer without it, while this phone blinds, is the older
-     * build's lonely dial to a tag, and is refused. Not in [LOCAL_CAPABILITIES] until the Bluetooth plane reads tags.
+     * build's lonely dial to a tag, and is refused. In [LOCAL_CAPABILITIES] since the Bluetooth plane reads tags (the
+     * reader shipped with the bit, step 5a); it also turns on the presence keys' delivery between two such builds.
      */
     const val CAP_BLIND_ADVERT = 0x80000L
 
@@ -229,7 +230,7 @@ object Protocol {
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
             CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES or CAP_LINK_PREVIEW or
-            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF
+            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF or CAP_BLIND_ADVERT
 
     /** The bytes of a link HELLO's nonce ([hello]): 16, written as 32 lowercase hex digits after an `n`. */
     const val HELLO_NONCE_BYTES = 16

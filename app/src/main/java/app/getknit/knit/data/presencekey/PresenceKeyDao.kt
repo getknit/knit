@@ -4,6 +4,7 @@ import androidx.room3.Dao
 import androidx.room3.Insert
 import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
+import kotlinx.coroutines.flow.Flow
 
 /**
  * This phone's presence keys and the ones its peers handed it (ADR 2026-11.xp6d). Never log a row: they are keys. A
@@ -58,6 +59,13 @@ interface PresenceKeyDao {
 
     @Query("DELETE FROM peer_presence_keys WHERE nodeId = :nodeId")
     suspend fun deletePeerKeys(nodeId: String)
+
+    /**
+     * Each peer key's (node, generation) and each own generation, as tokens: a change of either table re-lists the
+     * resolver's keys (an own key a peer's equals is listed for no one). Never a key.
+     */
+    @Query("SELECT nodeId || ':' || generation FROM peer_presence_keys UNION ALL SELECT ':' || generation FROM own_presence_keys")
+    fun observeKeyRows(): Flow<List<String>>
 
     /** Every peer we hold a key for. */
     @Query("SELECT DISTINCT nodeId FROM peer_presence_keys")

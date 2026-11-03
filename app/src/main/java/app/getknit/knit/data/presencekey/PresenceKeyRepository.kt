@@ -5,6 +5,8 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.mesh.PresenceKeyEngine
 import app.getknit.knit.mesh.bluetooth.TagSchedule
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -160,6 +162,12 @@ class PresenceKeyRepository(
             .mapValues { (peer, keys) -> keys.map { ContactKey(it.generation, it.key, received.getValue(peer to it.generation)) } }
             .filterValues { it.isNotEmpty() } to excluded
     }
+
+    /**
+     * Ticks whenever a peer's keys or our own change (the rows' generations, never the keys): with the direct contacts'
+     * own flow, what re-reads [presenceKeysFor] for the Bluetooth plane's resolver.
+     */
+    fun keyChanges(): Flow<List<String>> = dao.observeKeyRows().distinctUntilChanged()
 
     /** Our own current key — the one the advertiser airs — as (generation, key), or null before the first mint. */
     suspend fun ownCurrent(): Pair<Long, ByteArray>? = PresenceKeyPolicy.keysOf(ownKeys()).current?.let { it.generation to it.key }

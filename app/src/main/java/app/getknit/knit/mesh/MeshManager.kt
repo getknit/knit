@@ -51,6 +51,7 @@ import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.location.GeoUri
+import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.LinkSignals
 import app.getknit.knit.mesh.crypto.LoraDirectSeal
@@ -370,6 +371,9 @@ class MeshManager(
     // Capability bits this build advertises beyond [Protocol.LOCAL_CAPABILITIES] — [Protocol.CAP_CALL] when the call
     // media is wired (di/CallWiring). OR-ed into our own profile; a change republishes it at the next start.
     private val extraCapabilities: Long = 0L,
+    // Bits of [Protocol.LOCAL_CAPABILITIES] this build leaves out of its profile: none in the app. The mesh lab models a
+    // build from before a bit shipped with it (`LabLimits.blindAdvert` off withholds [Protocol.CAP_BLIND_ADVERT]).
+    private val withheldCapabilities: Long = 0L,
     // One plaintext, one identity (ADR 2026-10.mptm): handed to the inbound pipeline, which records each sealed
     // attachment's plaintext name and makes a room copy from a sealed one this phone holds. Stateless over [messages]
     // and [blobs], so the default is what every test wants; production hands in the Koin single.
@@ -1335,6 +1339,7 @@ class MeshManager(
             quotes.settleBacklog(identity.nodeId())
         }
         watchPresenceKeys(session, seeded)
+        feedPresenceKeys(session)
         scopeSync?.start(session)
         ticketRefresher?.start(session)
         badgeRefresher?.start(session)
@@ -1365,6 +1370,27 @@ class MeshManager(
         session.launch {
             seeded.join()
             runRound(failed) { engine.start() }
+        }
+    }
+
+    /**
+     * The Bluetooth plane's resolver reads the direct contacts' presence keys (ADR 2026-11.xp6d's key feed): the store's
+     * listing, re-read on every change of the keys or of the direct contacts, goes whole to the transport, which bounds a
+     * contact's churn itself. Keys a collision left out are counted as they rise. Never logs a key.
+     */
+    private fun feedPresenceKeys(session: CoroutineScope) {
+        val contacts = directContacts ?: return
+        val failed: (Exception) -> Unit = { Log.w(TAG, "presence key feed failed: ${it.message}") }
+        session.launch {
+            var excludedBefore = 0
+            combine(contacts.observe(), presenceKeyStore.keyChanges()) { direct, _ -> direct }.collect { direct ->
+                runRound(failed) {
+                    val (listed, excluded) = presenceKeyStore.presenceKeysFor(direct)
+                    metrics.onPresenceKeysExcluded(excluded - excludedBefore)
+                    excludedBefore = excluded
+                    transport.onPresenceKeys(listed.mapValues { (_, keys) -> keys.map { it.key } })
+                }
+            }
         }
     }
 
@@ -4319,7 +4345,9 @@ class MeshManager(
         session.launch {
             var known = emptySet<String>()
             nearbyPeers.collect { current ->
-                val ids = current.mapTo(HashSet()) { it.nodeId }
+                // An unresolved Bluetooth form's handle never becomes a met peer (ADR 2026-11.xp6d); the plane publishes
+                // none, and this keeps it so.
+                val ids = current.mapNotNullTo(HashSet()) { peer -> peer.nodeId.takeIf { !FormKeys.isForm(it) } }
                 val newcomers = ids - known
                 known = ids
                 if (newcomers.isNotEmpty()) metPeers.recordMet(newcomers, clock())
@@ -4448,7 +4476,7 @@ class MeshManager(
 
     /** Our profile's capability bits: the build's, the wired extras, and the compact door when [direct]. */
     private fun capabilitiesWith(direct: Boolean): Long =
-        Protocol.LOCAL_CAPABILITIES or extraCapabilities or (if (direct) Protocol.CAP_LORA_DIRECT else 0L)
+        (Protocol.LOCAL_CAPABILITIES and withheldCapabilities.inv()) or extraCapabilities or (if (direct) Protocol.CAP_LORA_DIRECT else 0L)
 
     private fun watchIncomingFiles(session: CoroutineScope) {
         session.launch {

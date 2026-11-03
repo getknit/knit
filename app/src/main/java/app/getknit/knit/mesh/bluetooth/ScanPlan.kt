@@ -92,6 +92,29 @@ internal object ScanPlan {
             else -> "chase=${chasedCoded()}"
         }
 
+    /** The three sets the transport publishes from one presence read ([published]). */
+    data class Published(
+        val reachable: Set<Peer>,
+        val near: Set<Peer>,
+        val aware: AwareCandidateTracker.Sets,
+    )
+
+    /**
+     * What the transport publishes from one [snaps] read (ADR 2026-11.xp6d's reader, obligation 10): [reachable] and
+     * [near] carry resolved and linked peers only, so no unresolved form's handle ([FormKeys]) becomes a met peer, a
+     * nearby entry or a foreign-near corroboration; the Aware candidate sets ([aware], [AwareCandidateTracker.sets]) take
+     * every snapshot, so an unresolved tag carrying the Aware flag still wakes a dormant Aware plane at its first sighting
+     * (wifi-aware's design finding 2). Filtering before all three would lose that wake; filtering none would leak tags.
+     */
+    fun published(
+        snaps: List<BlePresenceTracker.Snapshot>,
+        linkPeers: Collection<Peer>,
+        aware: (List<BlePresenceTracker.Snapshot>) -> AwareCandidateTracker.Sets,
+    ): Published {
+        val resolved = snaps.filter { !FormKeys.isForm(it.nodeId) }
+        return Published(reachable(resolved, linkPeers), near(resolved, linkPeers), aware(snaps))
+    }
+
     /**
      * What the transport publishes as reachable: every sighted peer in [snaps], and every peer it holds a link to
      * ([linkPeers]), so a linked peer stays nearby while the throttled scan has not re-sighted it. A link's [Peer] wins

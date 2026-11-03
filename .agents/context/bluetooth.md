@@ -216,9 +216,12 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
 - **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
-  `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow`,
-  `DialPlan.DialKind`, `CodedPhyPolicy.dialsBack`, `BleBlindDrop`, or any pre-link `localId > nodeId` in the plane:**
-  READ ADR 2026-11.xp6d (Proposed; the pure core is built, the reader's wiring in part, the writer not). `AdvertOrder.iDial` decides every role
+  `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow` /
+  `honours`, `DialPlan.DialKind` / `InFlight`, `DialKeys`, `CodedPhyPolicy.dialsBack` /
+  `dialsBackAfterDrop`, `FormKeys`, `BlindQueue`, `LinkEventStamps`, `BlindSightings`, `ReplayMarks`, `KeyChurnLimiter`,
+  `BtLines`, `ScanPlan.published`, `MeshTransport.onPresenceKeys`, `BleBlindDrop`, `Protocol.CAP_BLIND_ADVERT`, or any
+  pre-link `localId > nodeId` in the plane:**
+  READ ADR 2026-11.xp6d (Proposed; the pure core and the reader are built, the writer not). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
   two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
@@ -233,19 +236,39 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `stale` flag (start a new key generation) when the mark is past the window's lead; the announced tag is `reserve`d
   and aired with `take`, and the mark's store throws rather than answers null on error. When to rotate is the
   wiring's, on the confined worker. A claim suppresses a dial
-  only while its link is held, and an unresolved answer never does. The claim tables are capped (unproven voids and
+  only while its claimant's own link is held (not a later link from the same id), and an unresolved answer never does. The claim tables are capped (unproven voids and
   ended links' announcements evicted first) and expire off a deadline queue; every claim rule is in `AdvertAliases`'
   KDoc, and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`, `ExpectedTagTableTest`, `TagScheduleTest`.
-  The reader's wiring so far (step 5a, part one): every pre-link role reads `AdvertOrder` with my forms as one
-  `AdvertOrder.Mine` snapshot (clear in this build), a dial records its `DialKind` when it starts, and the drop and
-  cold-hunt roles take `dialsBack` while the PHY step stays on the proven ids. The responder judges order on forms, `t`
-  and `a` honoured only on a HELLO that offers (first pass) or proved (late pass) a proof and `t` only with the tag
-  prefix, so a no-proof dialer is judged exactly as before (#275). The held-link row fires only when `a` names a
-  blinded form of mine, never on a held quiet or doorbell link, so it is inert while this phone airs its id and shzv's
-  replace is untouched. A clear dial carries `a`, never `t`. `FLAG_BLINDED` is parsed (a prefixless one dropped as
-  malformed) but a blinded advert, a blinded GATT payload and any `TAG_NEXT` (a wrong length drops the link) are
-  dropped and counted (`BleBlindDrop`) until the resolver runs on its worker; `CAP_BLIND_ADVERT` stays out of
-  `LOCAL_CAPABILITIES` until then, since the bit says "I read tags".
+  The reader (step 5a): every pre-link role reads `AdvertOrder` with my forms as one `AdvertOrder.Mine` snapshot (clear
+  in this build), a dial records its kind when it starts, the drop and cold-hunt roles take `dialsBack` on the form the
+  link recorded for its peer (presence second, real ids last) while the PHY step stays on the proven ids. The responder
+  judges order on forms, `t` and `a` honoured only as `BleAdmissionPolicy.honours` says (a proof offered on the first
+  pass, proven on the late one) and `t` only with the tag prefix (#275). The held-link row fires only when `a` names a
+  blinded form of mine, never on a quiet or doorbell link, so it is inert while this phone airs its id. A clear dial
+  carries `a`, never `t`. A blinded advert is prefix-checked on the scan thread, then hops through `BlindQueue` (latest
+  per tag, bounded, stamped at capture and with the radio generation) to one confined worker that runs `AdvertAliases`
+  and the key feed alone; a clear advert never waits on it. A resolved sighting lands under the id, an unresolved one
+  under its form's `FormKeys` handle (`~zzzz…<n>`: no id can take it, and it shows no tag, so logs and collections are
+  redacted by construction; a handle the cap evicts takes its entries with it); `BlindSightings` decides the
+  `BlePresenceTracker.Suppressor` (read against the links when the dial is decided: a key's only by a proven link to
+  the id, a claim's only by its claimant's own link), the handshake guard (`BlindSightings.current`: an event reaches `AdvertAliases` only while
+  its link is the registered one), the history carry (a key's or our own dial's proof carries dwell and addresses; a claim or hint attributes from then on),
+  hints' presence-only reach and the replay rule (`ReplayMarks`). A sighting captured before its peer's last link event
+  (`LinkEventStamps`) feeds presence and RSSI only. `reachable` and `near` carry resolved and linked peers only; the
+  Aware candidate sets also take an unresolved Aware-flagged tag (`ScanPlan.published`). `inFlight` and the backoff are
+  booked by `DialKeys.dialKey` (a clear id, or a tag's handle and address), an unresolved form's failed dial also
+  advances its address's and its handle's streaks (`DialKeys.addressKey`, `handleKey`), every candidate filter reads backoff through them
+  (`DialKeys.backedOff`), and device caches hold the form each address was heard under. A dial to a blinded advert (lonely
+  only, while this phone airs its id) is `LinkHandshake.dialTag`, registers under the proven id and feeds `onDialed`; a
+  responder feeds a proven dialer's `t` to `onAnswered`, a proven tag-aware link's `TAG_NEXT` to `onTagNext`, every
+  link end to `onLinkEnded`, `ACTION_TIME_CHANGED` to `slide`. Keys arrive through `MeshTransport.onPresenceKeys` (fed
+  by `MeshManager` from `PresenceKeyRepository.presenceKeysFor` on every change of the keys or the direct contacts),
+  every one of a contact's up to three keys listed (a hit under one caps the older ones a generation on, never retires
+  them at once), bounded by `KeyChurnLimiter` (one gain per contact per minute, the newest held listing wins, unlisting
+  never delayed, a contact that left counted for a day). `CAP_BLIND_ADVERT` is in `LOCAL_CAPABILITIES`; the mesh lab
+  withholds it from a node with `LabLimits.blindAdvert` off (`MeshManager.withheldCapabilities`). The `bt …` lines
+  that name a dial's peer are built in `BtLines`. Tests: `BlindReaderTest`, `BlindSightingsTest`, `KeyChurnLimiterTest`,
+  `DialPlanTest`, `BleAdmissionPolicyTest`, `CodedDialsBackTest`, `ExpectedTagTableTest`.
 
 ## Adding an entry
 

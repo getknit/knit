@@ -185,3 +185,39 @@ co-members and commons posters never do; removal, block and restore rotate; rest
 re-deliver, with the link up throughout; a passive carrier holds and floods nothing naming a key's recipient; a clock 46 min ahead or 9 h behind, slot phase pinned, links as a stranger) ending in
 `assertConverged`, and a `MaliciousForkLabTest` case
 in which a linked Sybil claims other phones' tags.
+
+## Amendment 2026-11-03: the reader's wiring (step 5a, draft)
+
+Status: draft, with the reader's change; the caller decides whether it stands.
+
+- **An unresolved form's key is a handle** (`FormKeys`, `~zzzz…<n>`), not the tag: it lives in a namespace no node id
+  can take, and it is the redaction, so a log line, a collection's `toString()` or a debug read-back that prints a
+  per-peer key never carries a tag. A form that resolves by a key or by our own dial's proof moves its entries to the id;
+  a claim or a hint drops them and attributes from then on. A handle goes only with its entries (a tag flood past the
+  table's cap evicts both, counted).
+- **Suppression is read when the dial is decided**, never frozen at the sighting: a sighting stores what may suppress a
+  dial on its answer (`BlePresenceTracker.Suppressor`): any link to the id for a clear advert, a proven link to the id
+  for a key's answer, the claimant's own link (while it is the one held under the id) for a claim's, nothing for a
+  hint's or an unresolved form's. A link proved after the sighting suppresses at once; a claimant that relinks does
+  not, so the dial whose proof would void a false claim still goes.
+- **Handshake events reach the resolver only for the registered link**: the transport drops `onDialed`, `onAnswered`
+  and `onTagNext` on the worker unless the link is still the one held under its id, so none lands after its link's end
+  (a tag dial on a dead link still settles its proof's rivals through `onDialProved`).
+- **The dial key** (`DialKeys.dialKey`) is a clear advert's id, or a blinded one's handle and address. `inFlight`, the
+  backoff and `beginConnect` book on it; a link's flap still backs off the id, and every candidate filter reads both. A
+  failed dial to an unresolved form also advances its address's own streak (`DialKeys.addressKey`) and its handle's
+  (`DialKeys.handleKey`), which an unresolved form reads too: an airer changing its tag from one address keeps backing
+  off, one tag dialed at its 1M and Coded sets' two addresses keeps one streak, and a contact a key resolves at that
+  address is not held back. The handle's streak is the tag's whatever the address, so a replayer airing an unresolved
+  stranger's tag and refusing our dials can delay our dial to the real airer by up to the backoff cap, accepted.
+- **Every key the store lists is listed** (up to three per contact, newest first, since the next key goes ahead of the
+  weekly rotation); a tag heard under one caps every older one at a key generation from then, never retires it at
+  once, since any other contact of the owner holds the owner's next key and could air one tag under it; a key the
+  store drops is unlisted at once, and a newest key the feed replaced without naming it (the two-key form) still goes
+  at a tag under its successor.
+- **A contact's key churn is bounded where the feed meets the resolver** (`KeyChurnLimiter`): one gain per contact per
+  minute and 24 a day, the newest held listing applied when the window frees, unlisting never delayed, and a contact
+  that leaves the listing and returns within a day counted against what it gained before, so a contact streaming
+  generations costs the table at most 420 HMACs a minute (three keys' tags), beside the window's own slide.
+- **`CAP_BLIND_ADVERT` joins `LOCAL_CAPABILITIES`** with the reader. The mesh lab models a build from before it by
+  withholding the bit from a node's profile (`MeshManager.withheldCapabilities`); the app withholds nothing.

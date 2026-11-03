@@ -58,10 +58,11 @@ import java.util.PriorityQueue
  *    before one two of our own dials made, the soonest to expire first. Expiry runs off a deadline queue, never a walk
  *    of the tables.
  *
- * **What an answer may do** ([Resolution.Resolved.suppressesDial]). A key's or a clear advert's answer may suppress a
- * dial. A claim may only while its claimant's link is held: past the link's end it still names the peer for presence,
- * but a dial [AdvertOrder.iDial] calls for goes ahead, and its proof settles the claim ([onDialed]). A hint never may,
- * and neither may an unresolved answer.
+ * **What an answer may do.** A clear advert's answer may suppress a dial while its id holds a link, a key's while the id
+ * holds a proven one. A claim may only while its claimant's link ([Resolution.Resolved.claimant]) is held: past the
+ * link's end, a new link from the same id included, it still names the peer for presence, but a dial
+ * [AdvertOrder.iDial] calls for goes ahead, and its proof settles the claim ([onDialed]). A hint never may, and neither
+ * may an unresolved answer. The wiring reads this against its live links when it decides a dial.
  *
  * **Wiring: a sighting's history.** Until a form resolves, the wiring keys what it learns of the sighting (its dwell,
  * its admission sighting, its cold sightings) on the advertised form; once it resolves, that history carries over to
@@ -124,16 +125,36 @@ internal class AdvertAliases<L : Any>(
     }
 
     /**
-     * A direct contact's presence key, and the one it replaced with the elapsed time it is listed until. A caller that
-     * knows only the [current] key passes it alone: when it differs from the one held, the held one becomes the
-     * previous key, listed until a tag under [current] is heard or [Config.previousKeyMaxMs] passes. [previousUntilMs]
-     * caps an explicit [previous] on the same elapsed clock (default the same cap).
+     * A direct contact's presence keys, newest first: the store holds up to three (a previous, a current and a next key
+     * that went ahead), and every one is listed, since a tag carries no generation and the contact may air any of them.
+     * A tag heard under one key retires every older one ([ExpectedTagTable]). A key the feed drops is unlisted at once,
+     * except the newest when a new newest replaces it: a caller that knows only the current key passes it alone, and the
+     * held one then lingers, listed until a tag under its successor is heard or [Config.previousKeyMaxMs] passes.
+     * [previousUntilMs] caps every older key on the same elapsed clock; [capsOlder] caps them at
+     * [Config.previousKeyMaxMs] from now when it is null (the two-key form's rule); the store's list leaves them uncapped,
+     * its own bound of three being theirs.
      */
     class ContactKey(
-        val current: ByteArray,
-        val previous: ByteArray? = null,
+        val keys: List<ByteArray>,
         val previousUntilMs: Long? = null,
-    )
+        val capsOlder: Boolean = false,
+    ) {
+        init {
+            require(keys.isNotEmpty()) { "a contact key lists at least one key" }
+        }
+
+        /** The current key alone, or with the one it replaced ([previous]), capped as [previousUntilMs] says. */
+        constructor(
+            current: ByteArray,
+            previous: ByteArray? = null,
+            previousUntilMs: Long? = null,
+        ) : this(listOfNotNull(current, previous), previousUntilMs, capsOlder = previous != null)
+
+        /** The newest key. */
+        val current: ByteArray get() = keys.first()
+
+        override fun toString(): String = "ContactKey(${keys.size} keys)"
+    }
 
     enum class Source {
         Clear,
@@ -146,15 +167,19 @@ internal class AdvertAliases<L : Any>(
 
     sealed interface Resolution {
         /**
-         * [nodeId] from [source]. [suppressesDial] says whether the wiring may skip a dial [AdvertOrder.iDial] calls
-         * for on this answer: a clear advert's or a key's, a claim's only while its claimant's link is held, a hint's
-         * never.
+         * [nodeId] from [source]. For a claim, [claimant] is the link that made it: the wiring skips a dial on this answer
+         * only while that very link is held (the class KDoc's "What an answer may do"). A handle for the wiring, not part
+         * of the answer: two answers naming the same id from the same source are equal.
          */
         data class Resolved(
             val nodeId: String,
             val source: Source,
-            val suppressesDial: Boolean,
-        ) : Resolution
+            val claimant: Any? = null,
+        ) : Resolution {
+            override fun equals(other: Any?): Boolean = other is Resolved && other.nodeId == nodeId && other.source == source
+
+            override fun hashCode(): Int = 31 * nodeId.hashCode() + source.hashCode()
+        }
 
         /** One of my own tags, current or previous. */
         data object Own : Resolution
@@ -327,7 +352,7 @@ internal class AdvertAliases<L : Any>(
 
     /** The node id [form] names, or why there is none. */
     fun resolve(form: AdvertOrder.Form): Resolution {
-        if (!form.blinded) return Resolution.Resolved(form.advertised, Source.Clear, suppressesDial = true)
+        if (!form.blinded) return Resolution.Resolved(form.advertised, Source.Clear)
         val tag = form.advertised
         if (tagBytes(tag) == null) {
             malformed++
@@ -340,7 +365,7 @@ internal class AdvertAliases<L : Any>(
         if (keyId != null) {
             dropContradicted(tag, keyId)
             resolvedByKey++
-            return Resolution.Resolved(keyId, Source.Key, suppressesDial = true)
+            return Resolution.Resolved(keyId, Source.Key)
         }
         // An announced tag heard for the first time becomes its link's claim.
         promotePending(tag, now)
@@ -492,6 +517,12 @@ internal class AdvertAliases<L : Any>(
         if (provenId != null) onDialProved(AdvertOrder.Form(check.tag, blinded = true), provenId)
     }
 
+    /**
+     * [Counters.keyProofMismatches] alone, without [counters]' walk of the table: the transport reads it around a tag
+     * dial's [onDialed] to learn that the dial met a replay.
+     */
+    val keyProofMismatchCount: Long get() = keyProofMismatches
+
     fun counters(): Counters =
         Counters(
             resolvedByKey = resolvedByKey,
@@ -523,14 +554,14 @@ internal class AdvertAliases<L : Any>(
         )
 
     /** The contact whose expected tags list [tag], or null. */
-    private fun keyAnswer(tag: String): String? = table.lookup(tag)?.nodeId
+    private fun keyAnswer(tag: String): String? = table.lookup(tag, nowMs())?.nodeId
 
     /** A claim's answer, else a hint's when every hint for [tag] names one id; null when neither answers. */
     private fun linkAnswer(tag: String): Resolution? {
         val claim = claims[tag]
         if (claim != null) {
             resolvedByClaim++
-            return Resolution.Resolved(claim.nodeId, Source.Claim, suppressesDial = claim.link in heldLinks)
+            return Resolution.Resolved(claim.nodeId, Source.Claim, claimant = claim.link)
         }
         val hinted =
             hints.values
@@ -539,7 +570,7 @@ internal class AdvertAliases<L : Any>(
                 .distinct()
                 .singleOrNull() ?: return null
         resolvedByHint++
-        return Resolution.Resolved(hinted, Source.Hint, suppressesDial = false)
+        return Resolution.Resolved(hinted, Source.Hint)
     }
 
     /** [onDialProved]'s work once the proof stands: liars voided, their void lifted, a proven rival contested. */

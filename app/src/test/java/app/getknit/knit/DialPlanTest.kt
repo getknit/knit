@@ -2,9 +2,14 @@ package app.getknit.knit
 
 import app.getknit.knit.mesh.ConnectFailReason
 import app.getknit.knit.mesh.bluetooth.AdvertOrder
+import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.bluetooth.BlePresenceTracker
 import app.getknit.knit.mesh.bluetooth.CodedPhyPolicy
+import app.getknit.knit.mesh.bluetooth.ConnectBackoffEntry
+import app.getknit.knit.mesh.bluetooth.ConnectBackoffs
+import app.getknit.knit.mesh.bluetooth.DialKeys
 import app.getknit.knit.mesh.bluetooth.DialPlan
+import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.bluetooth.LonelyDialPolicy
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.bluetooth.PromotionPolicy
@@ -27,6 +32,7 @@ class DialPlanTest {
         psm: Int = 100,
         dwell: Long = 15_000,
         tag: String? = null,
+        suppressor: BlePresenceTracker.Suppressor = BlePresenceTracker.Suppressor.Linked,
     ): BlePresenceTracker.Snapshot =
         BlePresenceTracker.Snapshot(
             nodeId = nodeId,
@@ -39,6 +45,7 @@ class DialPlanTest {
             lastSeenAgoMs = 0,
             advertised = tag ?: nodeId,
             blinded = tag != null,
+            suppressor = suppressor,
         )
 
     @Test
@@ -90,7 +97,7 @@ class DialPlanTest {
     fun theLonelyDialChoosesAmongDialableUnlinkedPeersWithAPsmAndMarksTheBackedOff() {
         val snaps = listOf(snap("aaa"), snap("bbb", psm = 0), snap("ccc"), snap("ddd"), snap("zzz", rssi = -40.0, dwell = 9_000))
         val got =
-            DialPlan.lonelyCandidates(snaps, linked = setOf("ccc"), backoff = setOf("zzz")) { it != "ddd" }
+            DialPlan.lonelyCandidates(snaps, linked = setOf("ccc"), backoff = setOf("zzz")) { it.nodeId != "ddd" }
         assertEquals(
             listOf(
                 LonelyDialPolicy.Candidate("aaa", -60.0, 15_000, backedOff = false),
@@ -114,31 +121,210 @@ class DialPlanTest {
 
     @Test
     fun aClearPhoneNeverOrdinaryDialsABlindedAdvertWhereverItsTagSorts() {
+        // My clear id sorts between the two tags: a plan comparing advertised strings without the blinded rule would
+        // dial TAG_LOW (unit-test review of part 1).
+        val between = AdvertOrder.Mine.clear(BETWEEN)
         val snaps = listOf(snap("aaa"), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
-        assertEquals(listOf("aaa"), DialPlan.ordinaryCandidates(mine, snaps, emptySet(), emptySet()).map { it.nodeId })
-        assertEquals(setOf("aaa"), DialPlan.scanCandidates(mine, snaps, emptySet(), emptySet(), -90.0))
+        assertEquals(listOf("aaa"), DialPlan.ordinaryCandidates(between, snaps, emptySet(), emptySet()).map { it.nodeId })
+        assertEquals(setOf("aaa"), DialPlan.scanCandidates(between, snaps, emptySet(), emptySet(), -90.0))
         assertFalse(
             "a tag sorting below my id is still the blinding side's to dial",
-            DialPlan.promotable(mine, AdvertOrder.Form(TAG_LOW, blinded = true), "bbb", -60.0, emptySet(), -90.0) { false },
+            DialPlan.promotable(between, AdvertOrder.Form(TAG_LOW, blinded = true), "bbb", -60.0, emptySet(), -90.0) { false },
         )
     }
 
     @Test
-    fun aClearPhoneMayLonelyDialABlindedAdvertAndItsCandidateCarriesTheForm() {
+    fun aClearPhoneMayLonelyDialABlindedAdvertBelowItAndItsCandidateCarriesTheForm() {
+        val between = AdvertOrder.Mine.clear(BETWEEN)
         val snaps = listOf(snap("bbb", tag = TAG_LOW))
         val candidates = DialPlan.lonelyCandidates(snaps, emptySet(), emptySet()) { true }
         assertEquals(listOf(AdvertOrder.Form(TAG_LOW, blinded = true)), candidates.map { it.form })
-        val picked = LonelyDialPolicy.pick(mine, linkCount = 0, aloneForMs = Long.MAX_VALUE, candidates, lonelyDialInFlight = false)
+        // TAG_LOW sorts below my id: the shipped "lonely dials a larger id" on strings would refuse it.
+        val picked = LonelyDialPolicy.pick(between, linkCount = 0, aloneForMs = Long.MAX_VALUE, candidates, lonelyDialInFlight = false)
         assertEquals("the blinding side would not dial me", "bbb", picked?.nodeId)
     }
 
     @Test
     fun aBlindingPhoneOrdinaryDialsEveryClearAdvertAndTheLargerOfTwoTags() {
-        val snaps = listOf(snap("aaa"), snap("zzz"), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
+        val snaps =
+            listOf(snap("aaa"), snap("zzz"), snap(ABOVE_MINE), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
         assertEquals(
-            listOf("aaa", "zzz", "bbb"),
+            "a clear id sorting above my tag is dialed too",
+            listOf("aaa", "zzz", ABOVE_MINE, "bbb"),
             DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet()).map { it.nodeId },
         )
+    }
+
+    @Test
+    fun aClearAdvertsDialKeyIsItsIdAndABlindedOnesIsItsHandleAndAddressWithNoTag() {
+        val keys = FormKeys()
+        assertEquals("aaa", DialKeys.dialKey(snap("aaa"), keys::keyFor, "AA:BB"))
+        val tagged = DialKeys.dialKey(snap("bbb", tag = TAG_LOW), keys::keyFor, "AA:BB")
+        assertEquals("${keys.keyFor(TAG_LOW)}@AA:BB", tagged)
+        assertFalse("no tag in a dial key", TAG_LOW in tagged)
+        assertTrue("a namespace no id takes", FormKeys.isForm(tagged))
+        assertTrue(
+            "another address is another dial key",
+            DialKeys.dialKey(snap("bbb", tag = TAG_LOW), keys::keyFor, "CC:DD") != tagged,
+        )
+    }
+
+    @Test
+    fun aRefusedLonelyTagDialToAKeyResolvedContactBacksOffAndItsStreakGrows() {
+        // A blinding contact sighted me and will not promote me: it refuses my lonely tag dial every time.
+        val keys = FormKeys()
+        val contact = snap("bbb", tag = TAG_LOW)
+        val dialKey = DialKeys.dialKey(contact, keys::keyFor, "AA:BB")
+        val dialKeyOf: (BlePresenceTracker.Snapshot) -> String = { DialKeys.dialKey(it, keys::keyFor, "AA:BB") }
+        val entries = HashMap<String, ConnectBackoffEntry>()
+        val config = BackoffConfig(baseMs = 10_000, maxMs = 180_000)
+        var now = 0L
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB")
+        repeat(3) { round ->
+            val linked = DialKeys.linkedNow(record, dialKey, linked = emptySet())
+            val (streak, nextAt) = ConnectBackoffs.onDialFailed(entries, dialKey, linked, now, config) { 0.5 }
+            assertEquals("the streak grows", round + 1, streak)
+            val active = ConnectBackoffs.active(entries, now)
+            val backoff = DialKeys.backedOff(listOf(contact), active, dialKeyOf)
+            assertTrue("the contact's candidate reads it", "bbb" in backoff)
+            val candidates = DialPlan.lonelyCandidates(listOf(contact), emptySet(), backoff) { true }
+            assertNull(LonelyDialPolicy.pick(mine, 0, Long.MAX_VALUE, candidates, lonelyDialInFlight = false))
+            // Present, so the prune keeps the streak.
+            ConnectBackoffs.prune(entries, nextAt) { it == dialKey }
+            now = nextAt
+        }
+        assertFalse("never booked under the resolved id", "bbb" in entries)
+    }
+
+    @Test
+    fun aFailedTagDialNeverBacksOffTheIdItsReplyNamed() {
+        val keys = FormKeys()
+        val dialKey = DialKeys.dialKey(snap(FormKeys.MARK + "x", tag = TAG_LOW), keys::keyFor, "AA:BB")
+        val entries = HashMap<String, ConnectBackoffEntry>()
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = keys.keyFor(TAG_LOW), address = "AA:BB")
+        // The reply named "ccc" and failed its proof: nothing is booked for "ccc", and an unresolved form is never linked.
+        ConnectBackoffs.onDialFailed(entries, dialKey, DialKeys.linkedNow(record, dialKey, setOf("ccc")), 0, BackoffConfig()) { 0.5 }
+        assertEquals(setOf(dialKey), entries.keys)
+        assertFalse("ccc" in DialKeys.backedOff(listOf(snap("ccc")), ConnectBackoffs.active(entries, 0)) { it.nodeId })
+    }
+
+    @Test
+    fun aDialWhosePeerLinkedMeanwhileIsNoFailure() {
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB")
+        assertTrue("its resolved id linked: a crossing dial", DialKeys.linkedNow(record, "~zzzz…0@AA:BB", setOf("bbb")))
+        assertFalse(DialKeys.linkedNow(record, "~zzzz…0@AA:BB", setOf("ccc")))
+        assertTrue("a clear dial with no record reads its key", DialKeys.linkedNow(null, "bbb", setOf("bbb")))
+    }
+
+    @Test
+    fun aKeyResolvedPeerSightedUnlinkedStopsBeingACandidateOnceItsIdHoldsAProvenLinkWithNoNewSighting() {
+        // The bluetooth review of step 5a: suppression is read when the dial is decided, never frozen at the sighting.
+        val contact = snap("bbb", tag = TAG_LOW, suppressor = BlePresenceTracker.Suppressor.Proven)
+        val snaps = listOf(contact)
+        assertEquals(listOf("bbb"), DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet(), emptySet()).map { it.nodeId })
+        // My tag dial proved bbb: the same snapshot, no new sighting.
+        assertEquals(
+            emptyList<String>(),
+            DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), setOf("bbb")).map { it.nodeId },
+        )
+        assertEquals(0, DialPlan.lonelyCandidates(snaps, setOf("bbb"), emptySet(), setOf("bbb")) { true }.size)
+        // A link to bbb that never proved itself suppresses nothing on a key's answer.
+        assertEquals(listOf("bbb"), DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), emptySet()).map { it.nodeId })
+        assertTrue(DialPlan.suppressed(BlePresenceTracker.Suppressor.Linked, "bbb", setOf("bbb"), emptySet()))
+        assertFalse(DialPlan.suppressed(BlePresenceTracker.Suppressor.None, "bbb", setOf("bbb"), setOf("bbb")))
+    }
+
+    @Test
+    fun anAirerChangingItsTagFromOneAddressStillBacksOff() {
+        // The bluetooth review of step 5a: every fresh tag is a new dial key, the address's streak carries on.
+        val keys = FormKeys()
+        val entries = HashMap<String, ConnectBackoffEntry>()
+        var now = 0L
+        listOf(TAG_LOW, TAG_MINE, TAG_HIGH).forEachIndexed { round, tag ->
+            val unresolved = snap(keys.keyFor(tag), tag = tag)
+            val dialKey = DialKeys.dialKey(unresolved, keys::keyFor, "AA:BB")
+            if (round > 0) {
+                val backoff = DialKeys.backedOff(listOf(unresolved), ConnectBackoffs.active(entries, now)) { dialKey }
+                assertTrue("a fresh tag at a backed-off address", unresolved.nodeId in backoff)
+            }
+            val address = DialKeys.addressKey(dialKey)!!
+            val (streak, nextAt) = ConnectBackoffs.onDialFailed(entries, address, false, now, BackoffConfig()) { 0.5 }
+            assertEquals("the address's streak grows", round + 1, streak)
+            ConnectBackoffs.onDialFailed(entries, dialKey, false, now, BackoffConfig()) { 0.5 }
+            now = nextAt - 1
+        }
+        // A contact a key resolves at that address is not held back by the airer's streak, read through backedOff.
+        val contact = snap("bbb", tag = TAG_LOW, suppressor = BlePresenceTracker.Suppressor.Proven)
+        val contactKey = DialKeys.dialKey(contact, keys::keyFor, "AA:BB")
+        assertFalse("bbb" in DialKeys.backedOff(listOf(contact), ConnectBackoffs.active(entries, now)) { contactKey })
+        assertNull("a clear dial key has no address streak", DialKeys.addressKey("aaa"))
+    }
+
+    @Test
+    fun oneUnresolvedTagDialedAtItsTwoSetsAddressesKeepsOneGrowingStreak() {
+        // The bluetooth review of step 5a, round 2: its 1M and Coded sets air from two random addresses.
+        val keys = FormKeys()
+        val handle = keys.keyFor(TAG_LOW)
+        val unresolved = snap(handle, tag = TAG_LOW)
+        val entries = HashMap<String, ConnectBackoffEntry>()
+        var now = 0L
+        listOf("AA:BB", "CC:DD", "AA:BB", "CC:DD").forEachIndexed { round, address ->
+            val dialKey = DialKeys.dialKey(unresolved, keys::keyFor, address)
+            if (round > 0) {
+                val backoff = DialKeys.backedOff(listOf(unresolved), ConnectBackoffs.active(entries, now)) { dialKey }
+                assertTrue("the other set's address backs off too", handle in backoff)
+            }
+            val (streak, nextAt) = ConnectBackoffs.onDialFailed(entries, DialKeys.handleKey(dialKey)!!, false, now, BackoffConfig()) { 0.5 }
+            assertEquals("one streak for the handle", round + 1, streak)
+            now = nextAt - 1
+        }
+        assertEquals(handle, DialKeys.handleKey(DialKeys.dialKey(unresolved, keys::keyFor, "AA:BB")))
+        assertNull("a resolved peer's dial keeps no handle streak", DialKeys.handleKey("~zzzz…0@AA:BB", unresolved = false))
+    }
+
+    @Test
+    fun aClaimSuppressesOnlyWhileItsClaimantsOwnLinkIsHeld() {
+        // ADR 2026-11.xp6d: a claim suppresses our dial only while its claimant's link is held.
+        val claimant = Any()
+        val claimed = snap("bbb", tag = TAG_LOW, suppressor = BlePresenceTracker.Suppressor.Claim(claimant))
+        val snaps = listOf(claimed)
+        val linked = setOf("bbb")
+        assertEquals(
+            "the claimant's link held: suppressed",
+            emptyList<String>(),
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), linked) { claimant }.map { it.nodeId },
+        )
+        // Its link ended, and the claimant relinked, proven: another link, so my dial to the claimed tag goes ahead.
+        val relinked = Any()
+        assertEquals(
+            listOf("bbb"),
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), linked) { relinked }.map { it.nodeId },
+        )
+        assertEquals(listOf("bbb"), DialPlan.lonelyCandidates(snaps, linked, emptySet(), linked, { relinked }) { true }.map { it.nodeId })
+    }
+
+    @Test
+    fun aLinkedPeerStaysACandidateOnlyWhenItsAnswerMayNotSuppressADial() {
+        val snaps = listOf(snap("aaa", suppressor = BlePresenceTracker.Suppressor.None), snap("bbb"))
+        val linked = setOf("aaa", "bbb")
+        assertEquals(
+            "a hint or an unproven key answer leaves the dial standing",
+            listOf("aaa"),
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet()).map { it.nodeId },
+        )
+        assertEquals(listOf("aaa"), DialPlan.lonelyCandidates(snaps, linked, emptySet()) { true }.map { it.nodeId })
+        assertTrue(
+            DialPlan.promotable(
+                blinding,
+                AdvertOrder.Form.clear("aaa"),
+                "aaa",
+                -60.0,
+                linked,
+                -90.0,
+                BlePresenceTracker.Suppressor.None,
+            ) { false },
+        )
+        assertFalse(DialPlan.promotable(blinding, AdvertOrder.Form.clear("bbb"), "bbb", -60.0, linked, -90.0) { false })
     }
 
     @Test
@@ -293,5 +479,9 @@ class DialPlanTest {
         const val TAG_LOW = "zzzzaaaaaaaaaaaaaaaaaaaaaa"
         const val TAG_MINE = "zzzzmmmmmmmmmmmmmmmmmmmmmm"
         const val TAG_HIGH = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+
+        // A clear id above TAG_LOW and below TAG_HIGH, and one above TAG_MINE.
+        const val BETWEEN = "zzzzzzzzzz"
+        const val ABOVE_MINE = "zzzzzzzzzzzzzz"
     }
 }

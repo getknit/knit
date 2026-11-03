@@ -13,6 +13,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Random
@@ -46,12 +47,14 @@ class AdvertAliasesTest {
     private val aliceKey = key()
     private val bobKey = key()
 
-    /** An answer that may suppress a dial unless it is a hint, or [held] is false (a claim past its link's end). */
+    /**
+     * [id] from [source]. Whether a claim may still suppress a dial is the wiring's, read against its live links through
+     * [Resolution.Resolved.claimant] (`DialPlanTest`), which is not part of the answer's equality.
+     */
     private fun resolved(
         id: String,
         source: Source,
-        held: Boolean = true,
-    ) = Resolution.Resolved(id, source, suppressesDial = source != Source.Hint && held)
+    ) = Resolution.Resolved(id, source)
 
     @Test
     fun aClearAdvertIsItsOwnId() {
@@ -286,14 +289,18 @@ class AdvertAliasesTest {
         // Deep suspend: nothing heard for three lifetimes while both links stand.
         now += 3 * lifetime
         assertEquals("unheard but held: still hers", resolved(alice, Source.Claim), a.resolve(blinded(tag)))
+        // The claimant rides the answer (equality ignores it): the dial plan's `held(id) === claimant` reads it.
+        assertSame("a claim's answer carries its claimant", "l1", (a.resolve(blinded(tag)) as Resolution.Resolved).claimant)
         assertEquals("an announced tag outlives the hold too", resolved(bob, Source.Claim), a.resolve(blinded(next)))
         a.onLinkEnded("l1")
         now += lifetime - 1
         assertEquals(
-            "past its link it names her, but suppresses no dial",
-            resolved(alice, Source.Claim, held = false),
+            "past its link it still names her",
+            resolved(alice, Source.Claim),
             a.resolve(blinded(tag)),
         )
+        // Still the ended link: no link held under her id is that one, so the claim suppresses no dial.
+        assertSame("the claimant stays the ended link", "l1", (a.resolve(blinded(tag)) as Resolution.Resolved).claimant)
         now += 1
         assertEquals("990 s after the link ended", Resolution.Unresolved, a.resolve(blinded(tag)))
     }
@@ -395,7 +402,7 @@ class AdvertAliasesTest {
         a.onDialed("l1", blinded(tag), tag, alice)
         a.onLinkEnded("l1")
         now += AdvertAliases.Config().claimLifetimeMs - 1
-        assertEquals(resolved(alice, Source.Claim, held = false), a.resolve(blinded(tag)))
+        assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(tag)))
         now += 1
         assertEquals(Resolution.Unresolved, a.resolve(blinded(tag)))
         assertEquals(990_000L, AdvertAliases.Config().claimLifetimeMs)
@@ -516,7 +523,7 @@ class AdvertAliasesTest {
             a.onDialed("l2", blinded(tags[2]), tags[2], mallory),
         )
         assertEquals(Resolution.Unresolved, a.resolve(blinded(tags[0])))
-        assertEquals(resolved(bob, Source.Claim, held = false), a.resolve(blinded(tags[1])))
+        assertEquals(resolved(bob, Source.Claim), a.resolve(blinded(tags[1])))
         assertEquals(ClaimOutcome.Recorded, a.onDialed("l3", blinded(tags[3]), tags[3], eve))
         assertEquals(2L, a.counters().claimsEvicted)
         // Every slot is a held link's now; an ended link's announced tag, first heard, cannot displace one.
@@ -526,7 +533,7 @@ class AdvertAliasesTest {
         assertEquals(1L, a.counters().claimsRefusedFull)
         assertEquals("refused, the announced tag survives to try again", 1, a.counters().pending)
         a.onLinkEnded("l2")
-        assertEquals(resolved(carol, Source.Claim, held = false), a.resolve(blinded(tags[4])))
+        assertEquals(resolved(carol, Source.Claim), a.resolve(blinded(tags[4])))
         assertEquals(0, a.counters().pending)
     }
 

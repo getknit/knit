@@ -21,6 +21,36 @@ internal object DialPlan {
     }
 
     /**
+     * A dial in flight (ADR 2026-11.xp6d's reader, obligation 9): its [kind], recorded when it starts; the per-peer key
+     * it was attributed to then ([peerKey]: the resolved id, or an unresolved form's handle), which `failConnect` reads
+     * as the dial's resolved id; and the [address] it went to, so no ACL release lands on it.
+     */
+    data class InFlight(
+        val kind: DialKind,
+        val peerKey: String,
+        val address: String?,
+    )
+
+    /**
+     * Whether a link held now suppresses a dial to [nodeId] whose answer names [suppressor]: any link ([linked]) for a
+     * clear advert, a proven one ([proven]) for a key's, the claimant's own link (the one [held] names under the id now)
+     * for a claim's, none for a hint's or an unresolved form's.
+     */
+    fun suppressed(
+        suppressor: BlePresenceTracker.Suppressor,
+        nodeId: String,
+        linked: Set<String>,
+        proven: Set<String>,
+        held: (String) -> Any? = { null },
+    ): Boolean =
+        when (suppressor) {
+            BlePresenceTracker.Suppressor.Linked -> nodeId in linked
+            BlePresenceTracker.Suppressor.Proven -> nodeId in proven
+            is BlePresenceTracker.Suppressor.Claim -> held(nodeId) === suppressor.link
+            BlePresenceTracker.Suppressor.None -> false
+        }
+
+    /**
      * The sighted peers the ordinary order has me dial ([AdvertOrder.iDial] on [mine] against each snapshot's advertised
      * form: for two clear phones, a smaller id), not [linked], no dial to it [inFlight]. A clear phone never dials a
      * blinded advert here; the blinding side dials it.
@@ -30,14 +60,20 @@ internal object DialPlan {
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         inFlight: Set<String>,
+        proven: Set<String> = linked,
+        held: (String) -> Any? = { null },
     ): List<BlePresenceTracker.Snapshot> =
-        snaps.filter { AdvertOrder.iDial(mine.current, it.form) && it.nodeId !in linked && it.nodeId !in inFlight }
+        snaps.filter {
+            AdvertOrder.iDial(mine.current, it.form) && !suppressed(it.suppressor, it.nodeId, linked, proven, held) &&
+                it.nodeId !in inFlight
+        }
 
     /**
      * Whether a sighted peer advertising [theirs] at [smoothedRssi] gives the scan promotion work: one I, airing [mine],
-     * would dial ([AdvertOrder.iDial]; a smaller id between two clear phones), not [linked], at or above [rssiFloorDbm]
-     * so it can promote, and not [backingOff] (read last: it takes the transport's lock). [linked] and [backingOff] read
-     * [nodeId], the id presence attributes the sighting to. The scan's floor reads the same gate over every sighting
+     * would dial ([AdvertOrder.iDial]; a smaller id between two clear phones), not held off by a link its answer's
+     * [suppressor] counts ([suppressed] over [linked] and [proven], read now), at or above [rssiFloorDbm] so it can
+     * promote, and not [backingOff] (read last: it takes the transport's lock). [linked] and [backingOff] read [nodeId],
+     * the key presence attributes the sighting to. The scan's floor reads the same gate over every sighting
      * ([scanCandidates]) as a fresh sighting's boost does over one.
      */
     @Suppress("LongParameterList") // the gate's inputs, each a different source in the transport
@@ -48,10 +84,13 @@ internal object DialPlan {
         smoothedRssi: Double?,
         linked: Set<String>,
         rssiFloorDbm: Double,
+        suppressor: BlePresenceTracker.Suppressor = BlePresenceTracker.Suppressor.Linked,
+        proven: Set<String> = linked,
+        held: (String) -> Any? = { null },
         backingOff: (String) -> Boolean,
     ): Boolean =
-        AdvertOrder.iDial(mine.current, theirs) && nodeId !in linked && smoothedRssi != null && smoothedRssi >= rssiFloorDbm &&
-            !backingOff(nodeId)
+        AdvertOrder.iDial(mine.current, theirs) && !suppressed(suppressor, nodeId, linked, proven, held) && smoothedRssi != null &&
+            smoothedRssi >= rssiFloorDbm && !backingOff(nodeId)
 
     /**
      * Whether the connect loop's own promotion ([PromotionPolicy.decide] over the [links] it scores, with [backoff] and
@@ -77,24 +116,40 @@ internal object DialPlan {
         linked: Set<String>,
         backoff: Set<String>,
         rssiFloorDbm: Double,
+        proven: Set<String> = linked,
+        held: (String) -> Any? = { null },
     ): Set<String> =
         snaps
-            .filter { promotable(mine, it.form, it.nodeId, it.smoothedRssi, linked, rssiFloorDbm) { id -> id in backoff } }
-            .mapTo(HashSet()) { it.nodeId }
+            .filter {
+                promotable(
+                    mine,
+                    it.form,
+                    it.nodeId,
+                    it.smoothedRssi,
+                    linked,
+                    rssiFloorDbm,
+                    it.suppressor,
+                    proven,
+                    held,
+                ) { id -> id in backoff }
+            }.mapTo(HashSet()) { it.nodeId }
 
     /**
-     * The sighted peers [LonelyDialPolicy] may pick from: not [linked], advertising a PSM, [dialable] (an address
-     * known), each marked whether it is in [backoff] and carrying its advertised form. The policy applies the order
+     * The sighted peers [LonelyDialPolicy] may pick from: not [linked] (or linked on an answer that may not suppress a
+     * dial), advertising a PSM, [dialable] (an address known for the form it airs now), each marked whether it is in
+     * [backoff] (by per-peer key, [backedOff]) and carrying its advertised form. The policy applies the order
      * ([AdvertOrder.lonelyMayDial]) and its other gates.
      */
     fun lonelyCandidates(
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         backoff: Set<String>,
-        dialable: (String) -> Boolean,
+        proven: Set<String> = linked,
+        held: (String) -> Any? = { null },
+        dialable: (BlePresenceTracker.Snapshot) -> Boolean,
     ): List<LonelyDialPolicy.Candidate> =
         snaps
-            .filter { it.nodeId !in linked && it.psm != 0 && dialable(it.nodeId) }
+            .filter { !suppressed(it.suppressor, it.nodeId, linked, proven, held) && it.psm != 0 && dialable(it) }
             .map { LonelyDialPolicy.Candidate(it.nodeId, it.smoothedRssi, it.dwellMs, it.nodeId in backoff, it.form) }
 
     /** Whether a lonely dial is [inFlight]: by the kind each dial recorded when it started ([DialKind]), never the order. */

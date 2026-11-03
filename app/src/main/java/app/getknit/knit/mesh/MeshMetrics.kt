@@ -247,20 +247,35 @@ enum class BleBlindDrop {
     /** A `FLAG_BLINDED` advert whose bytes 1–16 lack the tag prefix: malformed, dropped on the scan thread. */
     MALFORMED_ADVERT,
 
-    /**
-     * A well-formed `FLAG_BLINDED` advert, dropped unread: this build parses the flag, but its resolver is not wired
-     * yet, so the tag is kept out of every per-peer map rather than read as an id.
-     */
-    UNREAD_ADVERT,
-
     /** A `FLAG_BLINDED` GATT payload: no port serves one, and its tag would be forgotten and re-read at every dial. */
     GATT_BLINDED,
 
     /** A `TAG_NEXT` from an unproven link, or one whose HELLO lacked `CAP_BLIND_ADVERT`. */
     TAG_NEXT_UNPROVEN,
 
-    /** A `TAG_NEXT` from a proven, tag-aware link, dropped unread while the resolver is not wired. */
-    TAG_NEXT_UNREAD,
+    /** A blinded sighting a newer one of the same tag replaced while both waited for the resolver's worker. */
+    QUEUE_CONFLATED,
+
+    /** A blinded sighting of a new tag past the resolver queue's cap. */
+    QUEUE_FULL,
+
+    /** A blinded sighting queued before the adapter went off (an older radio generation), dropped at the worker. */
+    STALE_RADIO,
+
+    /** An unresolved form's handle the handle table's cap let go (a flood of tags), its entries with it. */
+    HANDLE_EVICTED,
+
+    /** One of my own tags, heard back. */
+    OWN_ADVERT,
+
+    /** A tag a contact's key names, heard from an address whose tag dial proved another id: a replay. */
+    REPLAYED_ADVERT,
+
+    /** A contact's key listing that gained a key inside its churn window ([app.getknit.knit.mesh.bluetooth.KeyChurnLimiter]): held. */
+    KEY_LISTING_HELD,
+
+    /** A held key listing a newer one replaced before its window freed. */
+    KEY_LISTING_COALESCED,
 
     /** The held-link row refused a dialer whose proven link is held and whose `a` names a blinded form of mine. */
     HELD_LINK_REFUSED,

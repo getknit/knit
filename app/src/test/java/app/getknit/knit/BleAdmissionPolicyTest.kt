@@ -385,6 +385,32 @@ class BleAdmissionPolicyTest {
     }
 
     @Test
+    fun theHelloFieldsAreHonouredOnTheFirstPassOnlyWithAProofOfferedAndOnTheLateOnlyWhenProven() {
+        // The security design pass's Blocking gate, pinned here and not in which boolean each transport call hands over.
+        data class Row(
+            val offersProof: Boolean,
+            val proven: Boolean,
+            val late: Boolean,
+            val honoured: Boolean,
+        )
+        listOf(
+            Row(offersProof = false, proven = false, late = false, honoured = false),
+            Row(offersProof = true, proven = false, late = false, honoured = true),
+            Row(offersProof = true, proven = false, late = true, honoured = false),
+            Row(offersProof = true, proven = true, late = true, honoured = true),
+            Row(offersProof = false, proven = false, late = true, honoured = false),
+            // A late pass is never reached proven without the offer; read on `proven` alone, it stays honest.
+            Row(offersProof = false, proven = true, late = true, honoured = true),
+            Row(offersProof = false, proven = true, late = false, honoured = false),
+            Row(offersProof = true, proven = true, late = false, honoured = true),
+        ).forEach { r ->
+            assertEquals(r.toString(), r.honoured, BleAdmissionPolicy.honours(r.offersProof, r.proven, r.late))
+        }
+        // And what it guards: a no-proof dialer's tag `t` never skips "sighted and out of order".
+        assertTrue(outOfOrder(told = contactTag, addressed = high, honoured = BleAdmissionPolicy.honours(false, false, late = false)))
+    }
+
+    @Test
     fun aGarbageToldIsJudgedClear() {
         assertTrue("a prefixless t is absent", outOfOrder(told = garbage))
         assertTrue("a t equal to the id is clear", outOfOrder(told = low))

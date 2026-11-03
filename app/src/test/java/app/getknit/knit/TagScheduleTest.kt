@@ -123,8 +123,8 @@ class TagScheduleTest {
         assertTrue(BlindTag.hasPrefix(fallback.tag))
         val table = ExpectedTagTable(previousKeyMaxMs = 1_000)
         table.setKeys(mapOf(NodeId.derive("me") to ContactKey(key)), nowMs = 0, wallMs = wall)
-        assertNull(table.lookup(NodeId.fromBytes(fallback.tag)))
-        assertEquals(NodeId.derive("me"), table.lookup(NodeId.fromBytes(aired.first().toByteArray()))?.nodeId)
+        assertNull(table.lookup(NodeId.fromBytes(fallback.tag), 0L))
+        assertEquals(NodeId.derive("me"), table.lookup(NodeId.fromBytes(aired.first().toByteArray()), 0L)?.nodeId)
         assertFalse("the diagnostics name no tag", fallback.toString().contains(NodeId.fromBytes(fallback.tag).substring(4)))
     }
 

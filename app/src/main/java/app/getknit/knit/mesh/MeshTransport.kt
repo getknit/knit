@@ -438,6 +438,15 @@ interface MeshTransport {
     fun coveredByInternet(peers: Set<String>) {}
 
     /**
+     * The direct contacts' presence keys (ADR 2026-11.xp6d): node id → the keys held for it, newest first (at most
+     * three), as the key store lists them (a key equal to another contact's or to one of ours is already left out). The
+     * whole listing each time, on every change of the keys or of the direct contacts; never logged. Driven by
+     * `MeshManager`; forwarded to every child by [CompositeMeshTransport]. Default no-op — only the Bluetooth plane
+     * reads blinded adverts.
+     */
+    fun onPresenceKeys(keys: Map<String, List<ByteArray>>) {}
+
+    /**
      * Lends the Wi-Fi radio to another **same-app** role — the one-shot Wi-Fi Direct group of a direct file
      * transfer (`transfer/`). On Android 12+ two interface requests from one app carry equal priority and
      * neither evicts the other, so a transport whose radio cannot share (Wi-Fi Aware) has to let go of its
