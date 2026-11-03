@@ -48,6 +48,8 @@ Now the sender raises `awaitingVerdict` as the last chunk goes out, before the t
 CANCEL sent after it can arrive first. A CANCEL that lands while it is raised is kept (`peerCancel`) and used only if
 no OK verdict comes: an OK verdict ends Done, a corrupt one Failed, and none at all ends with the CANCEL's reason.
 `TransferManagerTest.aCancelAfterTheLastByteWaitsForTheVerdict` holds the verdict back while a CANCEL lands.
+The receiver's own card for a commit that fails after an OK verdict reads `REASON_NOT_SAVED` (10, a local outcome):
+the file could not be saved or the models could not be installed, not a dropped link.
 
 **Rejected.**
 

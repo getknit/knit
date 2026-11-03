@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.chat
 
+import app.getknit.knit.R
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.mesh.protocol.TransferPayload
@@ -73,6 +74,14 @@ class TransferViewTest {
     @Test
     fun aRowWhoseBodyIsNotARecordHasNoCard() {
         assertNull(transferViewFor(row.copy(body = "not a record"), emptyMap()))
+    }
+
+    @Test
+    fun aTransferThatArrivedButWasNotKeptSaysSoNotThatTheLinkDropped() {
+        assertEquals(R.string.chat_transfer_failed_not_saved, failedText(TransferPayload.REASON_NOT_SAVED, models = false))
+        assertEquals(R.string.chat_transfer_failed_not_installed, failedText(TransferPayload.REASON_NOT_SAVED, models = true))
+        assertEquals(R.string.chat_transfer_failed_connection, failedText(TransferPayload.REASON_CONNECTION, models = true))
+        assertEquals(R.string.chat_transfer_failed, failedText(null, models = false))
     }
 
     @Test

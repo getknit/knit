@@ -453,6 +453,8 @@
     <string name="chat_transfer_cancelled">Cancelado</string>
     <string name="chat_transfer_failed">Falhou</string>
     <string name="chat_transfer_failed_corrupt">Falhou — o arquivo não chegou inteiro</string>
+    <string name="chat_transfer_failed_not_saved">Falhou — o arquivo chegou, mas não foi possível salvá-lo</string>
+    <string name="chat_transfer_failed_not_installed">Falhou — os modelos chegaram, mas não foi possível instalá-los</string>
     <string name="chat_transfer_failed_connection">Falhou — a conexão Wi-Fi caiu</string>
     <string name="chat_transfer_failed_join">Falhou — a conexão Wi-Fi direta não se estabeleceu</string>
     <string name="chat_transfer_failed_no_space">Falhou — sem espaço livre suficiente</string>

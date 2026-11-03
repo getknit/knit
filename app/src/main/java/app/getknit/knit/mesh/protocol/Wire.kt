@@ -926,6 +926,10 @@ data class TransferPayload(
         const val REASON_CONNECTION = 7
         const val REASON_NO_SPACE = 8
         const val REASON_FOREGROUND = 9
+
+        // The bytes arrived intact and the verdict said so, but the receiver could not keep them: a file it could
+        // not save, models it could not install (ADR 2026-11.ejn8). The sender, holding that verdict, stays Done.
+        const val REASON_NOT_SAVED = 10
     }
 }
 

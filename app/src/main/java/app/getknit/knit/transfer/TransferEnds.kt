@@ -1,6 +1,7 @@
 package app.getknit.knit.transfer
 
 import app.getknit.knit.data.message.TransferRecord
+import java.io.IOException
 
 /**
  * What a transfer reads from and writes to: a picked file and a Downloads entry, or a bundle of translation models and
@@ -38,5 +39,19 @@ internal class TransferEnds(
     suspend fun retryReadable(record: TransferRecord): Boolean {
         val pins = record.models
         return if (pins != null) bundle(pins) != null else record.sourceUri?.let { file(it) } != null
+    }
+}
+
+/** A commit that failed after an OK verdict: the bytes were good, and this phone could not keep them. */
+internal class NotSaved(
+    cause: IOException,
+) : IOException(cause)
+
+/** [TransferSink.commit], its failure marked as this phone's own ([NotSaved]) rather than the link's. */
+internal suspend fun TransferSink.commitOrNotSaved() {
+    try {
+        commit()
+    } catch (e: IOException) {
+        throw NotSaved(e)
     }
 }

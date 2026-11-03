@@ -559,6 +559,8 @@
     <string name="chat_transfer_cancelled">Cancelled</string>
     <string name="chat_transfer_failed">Failed</string>
     <string name="chat_transfer_failed_corrupt">Failed — the file didn\'t arrive intact</string>
+    <string name="chat_transfer_failed_not_saved">Failed — the file arrived but couldn\'t be saved</string>
+    <string name="chat_transfer_failed_not_installed">Failed — the models arrived but couldn\'t be installed</string>
     <string name="chat_transfer_failed_connection">Failed — the Wi-Fi link dropped</string>
     <string name="chat_transfer_failed_join">Failed — the direct Wi-Fi link never came up</string>
     <string name="chat_transfer_failed_no_space">Failed — not enough free space</string>

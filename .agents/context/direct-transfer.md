@@ -43,7 +43,9 @@ before changing behaviour — this file is the map, they are the reasoning.
   the verdict, `OfferReading` (the pin lists and the subset ACCEPT), `TransferEnds` (file or bundle, never one for
   the other) and `TransferDialer` (the receiver's join and connect retries, split out for LargeClass like
   `TransferListener`). The OFFER is a whole file offer of a tar with the pins beside it, so a build that ignores `md`
-  takes a file and its ACCEPT without pins gets the whole archive. A models offer gets no automatic answer.
+  takes a file and its ACCEPT without pins gets the whole archive. A models offer gets no automatic answer. One
+  that brings nothing new is admitted at size 0, and the card shows no size: nothing would cross
+  (`OfferReading.read`).
 - **`onSignal` refuses an id that is not a canonical `FrameId`, in every phase** (ADR 2026-11.ejn8). The id keys the
   row and, before that check, nothing validated it.
 
@@ -68,7 +70,8 @@ before changing behaviour — this file is the map, they are the reasoning.
 - **Once every byte is out, the verdict decides the sender's card** (ADR 2026-11.ejn8, the maintainer's rule). The
   receiver writes its verdict before it commits, so a failed commit's CANCEL used to race the sender's Done.
   `awaitingVerdict` goes up as the last chunk leaves, before the trailer, and a CANCEL that lands then is kept
-  (`peerCancel`) and used only if no OK verdict comes.
+  (`peerCancel`) and used only if no OK verdict comes. The receiver's own card for a failed commit reads
+  `REASON_NOT_SAVED` (a local outcome, 10: "arrived but couldn't be saved / installed"), never `REASON_CONNECTION`.
 - **The receiver may hold no IPv4 address at all.** IP provisioning mode is the *client's* choice (API 34,
   not 33 — lint is right and AOSP's `@RequiresApi` is wrong) and the host is never told which was used, so
   the host binds every address on the group interface. Interface names differ per phone, so re-pin a

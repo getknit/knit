@@ -51,7 +51,9 @@ internal object OfferReading {
         if (!wellFormed(pins)) return null.also { refused("a malformed pin list (${pins.size} entries)") }
         if (!nearby()) return null.also { refused("a models offer from out of range") }
         val wanted = models.wanted(pins)
-        return Offered(wanted.label, wanted.bytes, mime = null, pins = pins, notify = wanted.take.isNotEmpty())
+        // The card sizes what would cross to this phone: with nothing new, nothing would, not an empty archive's 1 KiB.
+        val size = if (wanted.take.isEmpty()) 0L else wanted.bytes
+        return Offered(wanted.label, size, mime = null, pins = pins, notify = wanted.take.isNotEmpty())
     }
 
     /**

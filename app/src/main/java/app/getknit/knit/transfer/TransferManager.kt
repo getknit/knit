@@ -654,7 +654,7 @@ class TransferManager(
                 val ok = receive(l, socket.getInputStream(), sink) && sink.check()
                 TransferStream.writeVerdict(socket.getOutputStream(), ok)
                 if (ok) {
-                    sink.commit()
+                    sink.commitOrNotSaved()
                     l.committed = true
                     log("xfer ${l.state.id} received bytes=${l.state.size} → ${sink.uri}")
                     // A bundle is installed, not saved: there is nothing for the card to open.
@@ -667,6 +667,9 @@ class TransferManager(
             failure = TransferPayload.REASON_TIMEOUT
         } catch (_: NoSpace) {
             failure = TransferPayload.REASON_NO_SPACE
+        } catch (e: NotSaved) {
+            log("xfer ${l.state.id} arrived but not kept: ${e.cause}")
+            failure = TransferPayload.REASON_NOT_SAVED
         } catch (e: DirectWifiException) {
             log("xfer ${l.state.id} join failed: ${e.message}")
             failure = reasonFor(e)

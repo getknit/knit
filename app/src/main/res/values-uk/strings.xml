@@ -461,6 +461,8 @@
     <string name="chat_transfer_cancelled">Скасовано</string>
     <string name="chat_transfer_failed">Не вдалося</string>
     <string name="chat_transfer_failed_corrupt">Не вдалося — файл надійшов пошкодженим</string>
+    <string name="chat_transfer_failed_not_saved">Не вдалося — файл надійшов, але його не вдалося зберегти</string>
+    <string name="chat_transfer_failed_not_installed">Не вдалося — моделі надійшли, але їх не вдалося встановити</string>
     <string name="chat_transfer_failed_connection">Не вдалося — з’єднання Wi-Fi обірвалося</string>
     <string name="chat_transfer_failed_join">Не вдалося — пряме з’єднання Wi-Fi так і не встановилося</string>
     <string name="chat_transfer_failed_no_space">Не вдалося — недостатньо вільного місця</string>

@@ -453,6 +453,8 @@
     <string name="chat_transfer_cancelled">Cancelado</string>
     <string name="chat_transfer_failed">Error</string>
     <string name="chat_transfer_failed_corrupt">Error: el archivo no llegó completo</string>
+    <string name="chat_transfer_failed_not_saved">Error: el archivo llegó, pero no se pudo guardar</string>
+    <string name="chat_transfer_failed_not_installed">Error: los modelos llegaron, pero no se pudieron instalar</string>
     <string name="chat_transfer_failed_connection">Error: se cortó la conexión Wi-Fi</string>
     <string name="chat_transfer_failed_join">Error: la conexión Wi-Fi directa nunca se estableció</string>
     <string name="chat_transfer_failed_no_space">Error: no hay suficiente espacio libre</string>

@@ -453,6 +453,8 @@
     <string name="chat_transfer_cancelled">Annulé</string>
     <string name="chat_transfer_failed">Échec</string>
     <string name="chat_transfer_failed_corrupt">Échec — le fichier n’est pas arrivé intact</string>
+    <string name="chat_transfer_failed_not_saved">Échec — le fichier est arrivé mais n’a pas pu être enregistré</string>
+    <string name="chat_transfer_failed_not_installed">Échec — les modèles sont arrivés mais n’ont pas pu être installés</string>
     <string name="chat_transfer_failed_connection">Échec — la liaison Wi-Fi a été coupée</string>
     <string name="chat_transfer_failed_join">Échec — la liaison Wi-Fi directe ne s’est jamais établie</string>
     <string name="chat_transfer_failed_no_space">Échec — espace libre insuffisant</string>

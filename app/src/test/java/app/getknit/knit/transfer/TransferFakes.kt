@@ -175,14 +175,18 @@ class FakeTransferFiles : TransferFiles {
 
     class Sink(
         override val uri: String,
+        private val commitFails: Boolean = false,
     ) : TransferSink {
         val buffer = ByteArrayOutputStream()
         var committed = false
+
+        @Volatile
         var discarded = false
 
         override fun stream(): OutputStream = buffer
 
         override suspend fun commit() {
+            if (commitFails) throw IOException("the downloads folder refused it")
             committed = true
         }
 
@@ -195,6 +199,9 @@ class FakeTransferFiles : TransferFiles {
     val sinks = Collections.synchronizedList(mutableListOf<Sink>())
     var free = Long.MAX_VALUE
     var sinkFails = false
+
+    /** When set, a sink's commit throws, as a save the downloads folder refused after every byte checked out. */
+    var commitFails = false
 
     override suspend fun openSource(uri: String): TransferSource? {
         val e = sources[uri] ?: return null
@@ -209,7 +216,7 @@ class FakeTransferFiles : TransferFiles {
         size: Long,
     ): TransferSink? {
         if (sinkFails) return null
-        return Sink("fake://downloads/${sinks.size}/$name").also { sinks += it }
+        return Sink("fake://downloads/${sinks.size}/$name", commitFails).also { sinks += it }
     }
 
     override fun freeBytes(): Long = free

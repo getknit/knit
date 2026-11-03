@@ -445,6 +445,8 @@
     <string name="chat_transfer_cancelled">Abgebrochen</string>
     <string name="chat_transfer_failed">Fehlgeschlagen</string>
     <string name="chat_transfer_failed_corrupt">Fehlgeschlagen – die Datei kam nicht unversehrt an</string>
+    <string name="chat_transfer_failed_not_saved">Fehlgeschlagen – die Datei kam an, ließ sich aber nicht speichern</string>
+    <string name="chat_transfer_failed_not_installed">Fehlgeschlagen – die Modelle kamen an, ließen sich aber nicht installieren</string>
     <string name="chat_transfer_failed_connection">Fehlgeschlagen – die WLAN-Verbindung ist abgebrochen</string>
     <string name="chat_transfer_failed_join">Fehlgeschlagen – die direkte WLAN-Verbindung kam nicht zustande</string>
     <string name="chat_transfer_failed_no_space">Fehlgeschlagen – nicht genug freier Speicher</string>

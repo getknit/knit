@@ -94,8 +94,10 @@ fun TransferCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        // An offer that brings this phone nothing new carries no size: nothing would cross.
+                        val status = transferStatusText(view)
                         Text(
-                            "$size · ${transferStatusText(view)}",
+                            if (view.size > 0) "$size · $status" else status,
                             style = MaterialTheme.typography.labelSmall,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
@@ -245,7 +247,7 @@ private fun transferStatusText(view: TransferView): String =
         }
 
         else -> {
-            stringResource(failedText(view.reason))
+            stringResource(failedText(view.reason, models = view.models != null))
         }
     }
 
@@ -256,8 +258,14 @@ private fun declinedText(view: TransferView): Int =
         else -> R.string.chat_transfer_declined
     }
 
-private fun failedText(reason: Int?): Int =
-    when (reason) {
+internal fun failedText(
+    reason: Int?,
+    models: Boolean,
+): Int {
+    // Every byte arrived intact; the receiver could not keep them, which is not a dropped link.
+    val notSaved = if (models) R.string.chat_transfer_failed_not_installed else R.string.chat_transfer_failed_not_saved
+    return when (reason) {
+        TransferPayload.REASON_NOT_SAVED -> notSaved
         TransferPayload.REASON_CORRUPT -> R.string.chat_transfer_failed_corrupt
         TransferPayload.REASON_CONNECTION -> R.string.chat_transfer_failed_connection
         TransferPayload.REASON_JOIN_FAILED -> R.string.chat_transfer_failed_join
@@ -266,6 +274,7 @@ private fun failedText(reason: Int?): Int =
         TransferPayload.REASON_FOREGROUND -> R.string.chat_transfer_failed_background
         else -> R.string.chat_transfer_failed
     }
+}
 
 /** Hands the saved file to whatever app claims its type; false when nothing does. */
 internal fun openSavedFile(

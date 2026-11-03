@@ -245,6 +245,37 @@ class TransferManagerTest {
         }
 
     @Test
+    fun aFileThatArrivesButCannotBeSavedFailsOnlyTheReceiver() =
+        runBlocking {
+            // Every byte crosses and checks out, then Bob's save fails: his card says so, not that the link dropped, and
+            // Alice, holding an OK verdict, keeps Done whenever his CANCEL lands. A long offer TTL, as a starved runner
+            // can take longer than `fast`'s 400 ms to reach the accept.
+            val (a, b) = pair(modelTimings, modelTimings)
+            a.withClip()
+            b.files.commitFails = true
+            val id = offer(a)
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Done)
+            awaitPhase(b, id, TransferPhase.Failed)
+            assertEquals(TransferPayload.REASON_NOT_SAVED, b.record(id)!!.reason)
+            assertNull(b.record(id)!!.savedUri)
+            assertTrue(
+                "bob threw the unsaved file away",
+                b.files.sinks
+                    .single()
+                    .discarded,
+            )
+            await("bob tells alice why") {
+                synchronized(b.signals.sent) {
+                    b.signals.sent.any { it.phase == TransferPayload.PHASE_CANCEL && it.reason == TransferPayload.REASON_NOT_SAVED }
+                }
+            }
+            await("alice is done with it") { id !in a.manager.states.value }
+            assertFalse("the sender heard the verdict and keeps Done", TransferPhase.Failed in a.phases(id))
+        }
+
+    @Test
     fun aDeclineEndsItOnBothSides() =
         runBlocking {
             val (a, b) = pair()
@@ -844,6 +875,7 @@ class TransferManagerTest {
             val offer = TransferPayload(id = id, phase = TransferPayload.PHASE_OFFER, md = listOf(P1, P3))
             assertNull("nothing new is worth a notification", b.manager.onSignal("alice", offer, clock()))
             assertEquals(listOf(P1, P3), b.record(id)!!.models)
+            assertEquals("nothing would cross, so the card shows no size", 0L, b.record(id)!!.size)
             assertTrue(b.signals.sent.isEmpty())
             assertEquals(TransferRefusal.Gone, b.manager.accept(id))
             assertTrue(b.signals.sent.isEmpty())
@@ -1039,6 +1071,7 @@ class TransferManagerTest {
             assertNull(b.manager.accept(again))
             awaitPhase(a, again, TransferPhase.Done)
             awaitPhase(b, again, TransferPhase.Failed)
+            assertEquals("the models arrived; the install failed", TransferPayload.REASON_NOT_SAVED, b.record(again)!!.reason)
             await("a stage whose install failed is removed") { shelves.second.stages.none { it.exists() } }
             await("alice is done with it") { again !in a.manager.states.value }
             assertFalse("the sender heard the verdict and keeps Done", TransferPhase.Failed in a.phases(again))
