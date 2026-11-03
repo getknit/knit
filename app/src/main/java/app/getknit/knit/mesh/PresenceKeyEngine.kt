@@ -309,6 +309,9 @@ class PresenceKeyEngine(
         val tag = rootTagFor(peer.nodeId) ?: return null
         val was = sent[peer.nodeId]
         if (was != null && was.generations == generations && was.rootTag == tag) return null
+        // A link that went since the pass listed the peer ([onLinkDepart] is lock-free) is no link to send on: sealed and
+        // recorded, the frame would be dropped there and the record would keep the next link from resending it.
+        if (!presentLinks.containsKey(peer.nodeId)) return null
         return sealKeys(peer.nodeId, PresenceKeyFrame.content(owed.map { it.generation to it.key }))?.also {
             sent[peer.nodeId] = Sent(generations, it.rootTag)
             metrics.onPresenceKeySent()
@@ -337,10 +340,13 @@ class PresenceKeyEngine(
             log("restore reset to $id answered")
             return null
         }
-        if (resetSentThisLink[id] == presentLinks[id]) return null
+        // One read of the epoch: [onLinkDepart] is lock-free, so a link that went since the pass listed the peer leaves
+        // nothing to send on, and a re-read after the departure would mark the reset sent on no link at all.
+        val epoch = presentLinks[id] ?: return null
+        if (resetSentThisLink[id] == epoch) return null
         val ours = pendingReset(id)
         val step = PresenceKeyPolicy.linkReset(kept?.rootTag, rootTagFor(id), ours.ownPendingReset, ours.initOnPinnedPrekey)
-        debug("link-owed reset to $id: $step on link epoch ${presentLinks[id]}, last sent on ${resetSentThisLink[id] ?: "none"}")
+        debug("link-owed reset to $id: $step on link epoch $epoch, last sent on ${resetSentThisLink[id] ?: "none"}")
         val frame =
             when (step) {
                 PresenceKeyPolicy.LinkReset.RESEND -> kept?.let { unwrap(it.wire) }
@@ -356,7 +362,7 @@ class PresenceKeyEngine(
             return null
         }
         if (step != PresenceKeyPolicy.LinkReset.RESEND) store.recordLinkOwedReset(id, KeptReset(encode(frame.wire), frame.rootTag))
-        resetSentThisLink[id] = presentLinks[id] ?: 0L
+        resetSentThisLink[id] = epoch
         metrics.onLinkOwedResetSent()
         return frame
     }

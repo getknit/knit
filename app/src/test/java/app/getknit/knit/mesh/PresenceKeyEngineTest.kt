@@ -41,6 +41,12 @@ class PresenceKeyEngineTest {
                 engine.onLinkUp((after - before).toList())
             }
         val confirmed = mutableSetOf("alice", "bob")
+
+        /** Runs as a pass asks whether a peer's session confirmed: the first look `resetFor` takes at a listed peer. */
+        var onConfirmedAsked: (String) -> Unit = {}
+
+        /** Runs as a pass seals a peer's presence keys, before the frame is recorded. */
+        var onSealKeys: (String) -> Unit = {}
         val roots = mutableMapOf("alice" to 1L, "bob" to 1L)
         val pinned = mutableMapOf<String, Long>()
 
@@ -73,8 +79,12 @@ class PresenceKeyEngineTest {
                 linked = { links },
                 pinnedCapabilities = { pinned[it] },
                 rootTagFor = { roots[it] },
-                sessionConfirmed = { it in confirmed },
+                sessionConfirmed = {
+                    onConfirmedAsked(it)
+                    it in confirmed
+                },
                 sealKeys = { peer, content ->
+                    onSealKeys(peer)
                     if (peer !in confirmed) {
                         null
                     } else {
@@ -465,6 +475,56 @@ class PresenceKeyEngineTest {
             rig.engine.onLinksDown(listOf("alice")) // the departure's clear, late
             rig.engine.reconcile("heal")
             assertEquals("and only once", 2, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+        }
+
+    /**
+     * The link departs mid-pass, after the pass listed the peer and before the link-owed reset is decided, its async clear
+     * not yet run: the departed link is no link to send on, so nothing goes and no mark is made; the next link gets it.
+     */
+    @Test
+    fun aLinkThatDepartsMidPassGetsNoLinkOwedReset() =
+        runTest {
+            val rig = Rig()
+            rig.confirmed.clear()
+            rig.engine.onRestore(setOf("alice"))
+            rig.engine.start()
+            assertEquals(1, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+
+            var departed = false
+            rig.onConfirmedAsked = { peer ->
+                if (peer == "alice" && !departed) {
+                    departed = true
+                    rig.engine.onLinkDepart(listOf("alice")) // the neighbour pass, lock-free, while this pass runs
+                }
+            }
+            rig.engine.reconcile("heal")
+            assertTrue(departed)
+            assertEquals("none on a departed link", 1, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+
+            rig.engine.onLinkUp(listOf("alice"))
+            rig.engine.reconcile("link")
+            assertEquals("the next link gets it", 2, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+        }
+
+    /**
+     * A link that departs mid-pass, after the pass listed its peer and before its keys are sealed: nothing is sealed or
+     * recorded for it, so the next link is handed the keys rather than meeting a record of a frame that never landed.
+     */
+    @Test
+    fun aLinkThatDepartsMidPassIsHandedTheKeysOnTheNextLink() =
+        runTest {
+            val rig = Rig()
+            rig.onSealKeys = { peer ->
+                if (peer == "alice") rig.engine.onLinkDepart(listOf("bob")) // the neighbour pass, while this pass runs
+            }
+            rig.engine.start()
+            assertTrue("alice is handed the keys", rig.handed("alice").isNotEmpty())
+            assertTrue("none sealed to a departed link", rig.handed("bob").isEmpty())
+
+            rig.onSealKeys = {}
+            rig.engine.onLinkUp(listOf("bob"))
+            rig.engine.reconcile("link")
+            assertTrue("the next link is handed them", rig.handed("bob").isNotEmpty())
         }
 
     @Test
