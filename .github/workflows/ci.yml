@@ -514,6 +514,10 @@ jobs:
           fetch-depth: 0
       - name: Checker unit tests
         run: python3 -m unittest scripts/test_doc_lint.py
+      - name: versionCode derivation unit tests (ADR 2026-11.7t9z)
+        run: python3 -m unittest scripts/test_version_code.py
+      - name: knit.versionCode matches knit.versionName
+        run: python3 scripts/version-code.py --check
       - name: Check the docs
         run: python3 scripts/doc-lint.py
 

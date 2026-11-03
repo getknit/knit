@@ -227,7 +227,8 @@ silently to allow-all / block-all on a bad interpreter).
 `.github/workflows/release.yml` does it: push a `v*` tag and it builds, signs, verifies and drafts the
 GitHub Release. Prepare the commit first —
 
-1. Bump `knit.versionCode` / `knit.versionName` in `gradle.properties`. **Keep the tag equal to
+1. Set `knit.versionName` in `gradle.properties`, then `python3 scripts/version-code.py --write`: the versionCode is
+   derived from the name (ADR 2026-11.7t9z) and the build refuses a stored one that disagrees. **Keep the tag equal to
    `v<versionName>`** — fdroiddata's `Binaries:` URL expands `%v` to the *versionName*, so a `2.1` /
    `v2.1.0` mismatch breaks the binary lookup. (`AutoUpdateMode` is bare `Version` under `UpdateCheckMode:
    Tags` — see the F-Droid-scanner section below for why `Version v%v` is wrong there.)
@@ -265,10 +266,12 @@ higher again, updates over the alpha normally. The Release notes say all of this
 
 To cut one:
 
-1. Bump **both** `knit.versionCode` and `knit.versionName` in `gradle.properties` — e.g. `13` /
-   `2.4.0-alpha.0`. There is one monotonic versionCode counter shared by stable and pre-release builds;
-   gaps in F-Droid's sequence are fine, a versionCode reused or moving backwards is not. The following
-   stable then takes `14`, so it can update over the alpha.
+1. Set `knit.versionName` (e.g. `2.12.0-alpha.0`) and run `python3 scripts/version-code.py --write`. The code
+   is `major·10⁷ + minor·10⁵ + patch·10³ + stage·10² + n` (stage alpha 0, beta 1, rc 2, stable 9; ADR
+   2026-11.7t9z): 2.12.0-alpha.0 is 21 200 000, its stable 21 200 900. Every hotfix of the shipped line (2.11.x,
+   at most 21 199 900) sorts below the next line's pre-releases, so a production patch never pulls Play's alpha
+   testers back onto a line that cannot open their database, and nobody has to cut an alpha before a hotfix.
+   Each field is at most 99 (major included, which keeps the watch APKs' 1 000 000 000 base clear).
 2. **Leave `.fdroid.yml` alone.** No `Builds:` entry, no `CurrentVersion*` bump. Preflight fails the
    release if any of them names the pre-release.
 3. Optionally add `fastlane/metadata/android/en-US/changelogs/<code>.txt`; without one the Release notes

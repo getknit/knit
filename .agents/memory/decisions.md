@@ -308,6 +308,7 @@ carries; never renumber an old one.
 | [2026-10.zeja](decisions/2026-10-zeja-what-s-new.md) | What's New: a chat-list card, bundled announcements | ui, onboarding |
 | [2026-11.264w](decisions/2026-11-264w-a-link-proves-the-node-id-its-hello-claims.md) | A link proves the node id its HELLO claims | mesh, security |
 | [2026-11.4ckq](decisions/2026-11-4ckq-a-peer-s-advertised-photo-is-stored-at-once-and-re-wanted-from-the-database.md) | a peer's advertised photo is stored at once and re-wanted from the database | blobs, contacts |
+| [2026-11.7t9z](decisions/2026-11-7t9z-versioncode-is-derived-from-versionname-so-a-hotfix-never-outranks-the-next-line.md) | versionCode is derived from versionName so a hotfix never outranks the next line's pre-releases | build, release, versioning |
 | [2026-11.82s7](decisions/2026-11-82s7-the-mesh-service-s-alarms-call-into-the-running-service.md) | The mesh service's alarms call into the running service, never start it | service, power, reliability |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
