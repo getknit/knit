@@ -99,6 +99,21 @@ jobs:
           meta = yaml.safe_load(pathlib.Path(".fdroid.yml").read_text())
           errs = []
 
+          # versionCode is derived from versionName (ADR 2026-11.7t9z) so a hotfix never outranks the next line's
+          # pre-releases on Play. The build refuses a mismatch too; this names it before two builds are spent.
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("version_code", "scripts/version-code.py")
+          vc = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(vc)
+          try:
+              if code != vc.version_code(version):
+                  errs.append(
+                      f"knit.versionCode {code} != {vc.version_code(version)} derived from {version} — "
+                      "run scripts/version-code.py --write"
+                  )
+          except ValueError as e:
+              errs.append(str(e))
+
           # The versionName alone decides which kind of release this is. A semver pre-release suffix
           # (2.4.0-alpha.0 / -beta.1 / -rc.2) means a sideload-only test build; anything else is a stable
           # release F-Droid will distribute. Everything below that differs between the two follows from

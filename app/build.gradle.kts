@@ -77,6 +77,38 @@ val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toB
 // two install over each other and keep the user's data. Absent, it changes nothing: F-Droid's -P-free rebuild stays
 // identical. See .agents/context/distribution.md.
 val slim = (project.findProperty("slim") as? String)?.toBoolean() == true
+
+// versionCode is derived from versionName (ADR 2026-11.7t9z): major·10⁷ + minor·10⁵ + patch·10³ + stage·10² + n, stage
+// alpha 0, beta 1, rc 2, stable 9. Every hotfix of a line sorts below every pre-release of the next, so a production
+// patch never pulls Play's alpha testers back onto a line that cannot open their database, and a stable outranks its own
+// pre-releases. gradle.properties still stores `knit.versionCode` (fdroiddata's UpdateCheckData reads it from that file,
+// and :wear / :watchface add it to their base), so the build refuses a stored value that disagrees rather than pick
+// one. scripts/version-code.py is the same formula for release.yml's preflight; its tests pin this one's weights.
+val knitVersionName: String = providers.gradleProperty("knit.versionName").get()
+val knitVersionCode: Int =
+    run {
+        val stages = mapOf("alpha" to 0, "beta" to 1, "rc" to 2)
+        val stableStage = 9
+        val m =
+            Regex("""(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?""").matchEntire(knitVersionName)
+                ?: throw GradleException("knit.versionName '$knitVersionName' is not X.Y.Z or X.Y.Z-(alpha|beta|rc).N")
+        val (major, minor, patch) = (1..3).map { m.groupValues[it].toInt() }
+        val stage = stages[m.groupValues[4]] ?: stableStage
+        val n = m.groupValues[5].toIntOrNull() ?: 0
+        // Major stops at 99 so a phone code stays below the watch APKs' 1 000 000 000 base.
+        if (major > 99 || minor > 99 || patch > 99 || n > 99) {
+            throw GradleException("knit.versionName '$knitVersionName' is out of range: each field at most 99")
+        }
+        major * 10_000_000 + minor * 100_000 + patch * 1_000 + stage * 100 + n
+    }.also { derived ->
+        val stored = providers.gradleProperty("knit.versionCode").get()
+        if (stored != derived.toString()) {
+            throw GradleException(
+                "knit.versionCode=$stored but $knitVersionName derives $derived (ADR 2026-11.7t9z): " +
+                    "run scripts/version-code.py --write",
+            )
+        }
+    }
 val offWhenSlim: Boolean? = if (slim) false else null
 
 // Internet (spool) relay plane — the whole feature's visibility switch, read here because both
@@ -312,11 +344,10 @@ android {
         // is confined to 29-32 (maxSdkVersion 32); 33+ stays location-free.
         minSdk = 29
         targetSdk = 36
-        // Single source of truth in gradle.properties (knit.versionCode / knit.versionName). Play App
-        // Signing requires versionCode to strictly increase per upload — CI can inject a monotonic value
-        // with `-Pknit.versionCode=$CI_PIPELINE_IID` without editing this file.
-        versionCode = providers.gradleProperty("knit.versionCode").get().toInt()
-        versionName = providers.gradleProperty("knit.versionName").get()
+        // knit.versionName in gradle.properties is the source of truth; the code is derived from it (see
+        // knitVersionCode above, ADR 2026-11.7t9z).
+        versionCode = knitVersionCode
+        versionName = knitVersionName
         if (slim) versionNameSuffix = "-slim"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
