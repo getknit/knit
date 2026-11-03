@@ -131,6 +131,14 @@ detekt {
     source.setFrom(files("src/main/java", "src/test/java"))
 }
 
+// As :app's detektAll: detekt with type resolution on every source folder — src/main (with the wearstatus codec it
+// compiles from :app's tree) + src/debug, and src/test. Not yet a gate; .agents/context/toolchain.md.
+tasks.register("detektAll") {
+    group = "verification"
+    description = "Run detekt with type resolution on every Kotlin source folder of :wear"
+    dependsOn("detektDebug", "detektDebugUnitTest")
+}
+
 ktlint {
     version.set(libs.versions.ktlint.get())
     reporters {

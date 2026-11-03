@@ -143,6 +143,32 @@ renamed several config keys — `LongParameterList.constructorThreshold/function
 `allowedConstructorParameters/allowedFunctionParameters`, `TooManyFunctions.thresholdIn*` →
 `allowedFunctionsPer*`, and the style rule `UnusedImports` → singular `UnusedImport`.)
 
+### Type-resolved detekt (cutover in progress)
+
+Plain `detekt` misses two things. Every rule that needs types is skipped without a word, and in detekt 2.0 that
+includes `LongParameterList` and `UnusedImport`, which `detekt.yml` tunes. And it never reads `src/debug`,
+`src/release`, `src/androidTest` or `src/screenshotTest`, so the import bans, `HardcodedUiText` and `BarePeriodicLoop`
+don't reach them either.
+
+**`detektAll`** replaces it, on `:app` and `:wear`. It runs the plugin's variant tasks (`detektDebug` for main + debug,
+`detektDebugUnitTest`, `detektDebugAndroidTest`, `detektDebugScreenshotTest`), each against its compilation's
+classpath with the same config, baseline and `knit` rules, plus `detektReleaseStubs`. That last one reads
+`src/release`'s two stubs against debug's classpath, because `detektRelease` would compile all of release and read
+`src/main` a second time. `src/calls`, `src/liveCalls` and `src/stt` hold no Kotlin. Each variant task compiles its
+source set first, so a cold run builds the debug app and its three test kinds.
+
+It is **not a gate yet**: the Stop hook and both CIs run plain `detekt` until `detektAll` is clean. Clear it with
+`scripts/detekt-sweep.sh [--wear]`, which runs every task in one pass and tallies findings by rule and source folder
+into `build/reports/detekt-sweep.md`. Fix findings or turn a rule off in `detekt.yml` with its reason; never baseline
+them. At cutover:
+
+- swap `detekt` for `detektAll` in `.claude/hooks/gradle-checks-stop.sh`, `.gitlab-ci.yml`'s `verify:detekt`,
+  `.github/workflows/ci.yml`'s `verify` job (a workflow edit owes `security-reviewer`), the PR template,
+  `rules/build-and-test.md` and `commands.md`;
+- record an ADR amending ADR 011's "same scope/behaviour as the old CLI", rewrite this section, and update the
+  "without type resolution" lines below and in `detekt.yml`'s ForbiddenImport note, since `knit` rules and
+  `ForbiddenMethodCall` can then use types.
+
 **Knit's own detekt rules live in `:detekt-rules`**: a plain Kotlin JVM module holding the `knit` ruleset
 (`KnitRuleSetProvider`), configured under `knit:` in `detekt.yml` and loaded into `:app`'s detekt task through
 `detektPlugins(project(":detekt-rules"))`, and nowhere else.

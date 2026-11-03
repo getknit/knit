@@ -1234,6 +1234,44 @@ dependencies {
     detektPlugins(project(":detekt-rules"))
 }
 
+// detekt WITH type resolution over every Kotlin source folder the app has — the replacement for the plain
+// `detekt` task above, which reads src/main + src/test alone and silently skips every rule that needs types
+// (LongParameterList and UnusedImport among them in detekt 2.0). Not yet a gate: the Stop hook and both CIs run
+// plain `detekt` until this one is clean (.agents/context/toolchain.md, "Type-resolved detekt"). The variant tasks
+// come from the plugin, each against its compilation's classpath and reusing the extension's config, baseline and
+// rules; each depends on that compilation's compile task, so this compiles the debug app and its three test kinds.
+//   detektDebug               src/main + src/debug
+//   detektDebugUnitTest       src/test + src/testDebug
+//   detektDebugAndroidTest    src/androidTest
+//   detektDebugScreenshotTest src/screenshotTest
+//   detektReleaseStubs        src/release (below)
+// src/calls, src/liveCalls and src/stt hold only manifests and keep rules.
+//
+// src/release holds the no-op demo/keystore stubs that release, staging and nonMinifiedRelease compile in place of
+// src/debug's. detektRelease would compile all of release and read src/main a second time for them, so these two
+// files are read against debug's classpath instead: every type they name is src/main's, there too, and debug's
+// same-named stubs on that classpath only shadow them, which no rule reads.
+val detektReleaseStubs =
+    tasks.register<dev.detekt.gradle.Detekt>("detektReleaseStubs") {
+        group = "verification"
+        description = "Run detekt with type resolution on src/release, against the debug classpath"
+        val debug = tasks.named<dev.detekt.gradle.Detekt>("detektDebug")
+        setSource(files("src/release/java"))
+        classpath.from(debug.map { it.classpath })
+        friendPaths.from(debug.map { it.friendPaths })
+        jvmTarget.convention(debug.flatMap { it.jvmTarget })
+        languageVersion.convention(debug.flatMap { it.languageVersion })
+        apiVersion.convention(debug.flatMap { it.apiVersion })
+        optIn.convention(debug.flatMap { it.optIn })
+        freeCompilerArgs.convention(debug.flatMap { it.freeCompilerArgs })
+    }
+
+tasks.register("detektAll") {
+    group = "verification"
+    description = "Run detekt with type resolution on every Kotlin source folder of :app"
+    dependsOn("detektDebug", "detektDebugUnitTest", "detektDebugAndroidTest", "detektDebugScreenshotTest", detektReleaseStubs)
+}
+
 ktlint {
     // Pin the ktlint *tool* version (libs.versions.ktlint) so rule behavior stays fixed independent of the
     // plugin version. Rules come from the repo-root .editorconfig (auto-discovered), incl. the @Composable

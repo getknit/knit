@@ -10,6 +10,7 @@ plugins), see `context/toolchain.md`.
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — run these after touching mesh/protocol/data
 ./gradlew installDebug              # install on a connected device
 ./gradlew detekt                    # static analysis (dev.detekt plugin; reports in app/build/reports/detekt/)
+scripts/detekt-sweep.sh [--wear]    # ...type-resolved, every source folder (`detektAll`, not yet the gate): tally by rule
 ./gradlew ktlintCheck               # Kotlin style/format lint (ktlint plugin; reports in build/reports/ktlint/)
 ./gradlew ktlintFormat              # ...and autocorrect the mechanical ktlint violations in place
 .claude/hooks/review-gate.sh --checks  # ktlintCheck + detekt + lint + lintorama, skipping a tree that passed; the Stop hook reuses the pass
