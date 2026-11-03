@@ -19,6 +19,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
@@ -28,14 +29,18 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.video.VideoFrames
 import app.getknit.knit.di.CALLS_WIRED
 import app.getknit.knit.di.LIVE_CALLS_WIRED
+import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.di.WALKIE_WIRED
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.protocol.CallPayload
+import app.getknit.knit.mesh.protocol.DeclaredLangs
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.ui.whatsnew.WhatsNew
 import kotlinx.coroutines.flow.first
@@ -362,6 +367,12 @@ class DemoWriter(
                 // never arrives. Writing them here is what the real inbound path would have written.
                 voiceDurationMs = voice?.durationMs,
                 voicePeaks = voice?.peaks,
+                // What a Transcribe tap leaves on the row, only where the build can make one (see DemoMsg.transcript).
+                voiceTranscript = m.transcript?.takeIf { voice != null && STT_WIRED },
+                // What the sender's frame declared, as the inbound path writes it (DemoMsg.lang).
+                bodyLang = DeclaredLangs.of(m.lang, null).lang,
+                // The formatting, canonical against the body as deliverChat leaves a received one (DemoMsg.styles).
+                styles = StyleStore.encode(StyleSpans.normalize(m.body, demoSpans(m))),
             ).withReply(replyRefFor(m)).withVideo(video?.info).let { row ->
                 // A seeded reply quotes a seeded original, so it is written as the inbound path would leave it once
                 // judged (ADR 2026-10.gpa3) — else every demo quote would wear the "unverified" cue.
@@ -376,6 +387,13 @@ class DemoWriter(
             receipts.record(m.id, nodeId(slot), m.via, now - (m.minsAgo - 1) * 60_000L)
         }
     }
+
+    // A message's DemoStyles as UTF-16 ranges over its body: each run where its words first appear, none where they don't.
+    private fun demoSpans(m: DemoMsg): List<StyleSpan> =
+        m.styles.mapNotNull { run ->
+            val at = m.body.indexOf(run.words)
+            if (at < 0 || run.words.isEmpty()) null else StyleSpan(at, at + run.words.length, run.style)
+        }
 
     /** Applies a single reaction now — used by the director to pop a reaction onto an already-written message. */
     suspend fun react(

@@ -2,8 +2,10 @@
 
 package app.getknit.knit.demo
 
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.protocol.BodyStyle
 
 /*
  * Declarative content for the demo-screenshot builds (see [DemoSeeder]). Each [DemoScenario] is one
@@ -98,6 +100,30 @@ data class DemoMsg(
      * description. Mutually exclusive with the other attachments; a missing asset leaves the line text-only.
      */
     val video: String? = null,
+    /**
+     * The language [body] is in, a model registry code (`es`), declared the way a sender's frame declares it (its
+     * `lang`, ADR 2026-10.t2h6): written to the row's `bodyLang` as the inbound path would, which is what puts the
+     * composer's "<name> reads Spanish" hint in the chat. Null for English, which is never declared.
+     */
+    val lang: String? = null,
+    /**
+     * What a voice note says ([voiceSeconds]), stored as the Transcribe tap stores it (`voiceTranscript`, ADR
+     * 2026-10.am8d). Written only in a build with speech wired (`STT_WIRED`), so a listing capture never shows a
+     * transcript a shipped build cannot make. The seeded note itself is silent; the text is data, like its body.
+     */
+    val transcript: String? = null,
+    /**
+     * Formatting (ADR 2026-10.p95v), as the sender's composer would have marked it: each [DemoStyle] styles the first
+     * place its words appear in [body]. Words that do not appear are dropped, the way a receiver drops a span past the
+     * body, so a typo costs the style and never the seed.
+     */
+    val styles: List<DemoStyle> = emptyList(),
+)
+
+/** One formatted run of a [DemoMsg]: [words], a substring of the body, in [style]. */
+data class DemoStyle(
+    val words: String,
+    val style: BodyStyle,
 )
 
 /** A peer contact. [verified] pins a (fake) key + out-of-band confirmation so the DM header shows the
@@ -217,7 +243,40 @@ data class DemoScenario(
     val meshRoom: List<DemoMeshPost> = emptyList(),
     /** The calls the DM threads remember: one live call and one mesh call, so a thread shows both lines. */
     val calls: List<DemoCallRecord> = emptyList(),
+    /**
+     * A DM with a contact who writes in another language ([DemoMsg.lang]), for the translation captures. Seeded only
+     * in a build with translation (`BuildConfig.TRANSLATE`, see [forBuild]): elsewhere nothing could translate it.
+     */
+    val translated: DemoThread? = null,
+    /**
+     * Lines appended to the verified contact's DM ([Slot.DANI]) that crossed a direct Internet link
+     * ([DeliveryPlane.DirectLink], ADR 2026-10.a5yj), so the ✓✓ and the bubbles wear the link's glyph. Seeded only in
+     * a build with direct links (`BuildConfig.DIRECT_LINKS`, see [forBuild]), which no shipped build is yet.
+     */
+    val linked: List<DemoMsg> = emptyList(),
 )
+
+/**
+ * This scenario as the running build can show it: [DemoScenario.translated] joins the DMs where translation is built in,
+ * and [DemoScenario.linked] joins the verified contact's DM where direct links are. A listing build (neither flag) seeds
+ * exactly what it always has, so the store captures never show a feature the shipped app lacks.
+ */
+fun DemoScenario.forBuild(
+    translate: Boolean = BuildConfig.TRANSLATE,
+    directLinks: Boolean = BuildConfig.DIRECT_LINKS,
+): DemoScenario {
+    val withLinks =
+        if (directLinks && linked.isNotEmpty()) {
+            dms.map { if (it.peer == Slot.DANI) it.copy(messages = it.messages + linked) else it }
+        } else {
+            dms
+        }
+    return copy(
+        dms = withLinks + listOfNotNull(translated?.takeIf { translate }),
+        translated = null,
+        linked = emptyList(),
+    )
+}
 
 /**
  * This scenario as [slot]'s phone sees it: their profile is the local one and ours is theirs, in every thread — the
@@ -312,13 +371,27 @@ private val HIKING_SCENARIO =
                     70,
                     mentionsMe = true,
                 ),
-                DemoMsg("demo-nearby-5", Slot.DANI, "Saved you a spot by the fire 🔥", 66),
-                DemoMsg("demo-nearby-6", Slot.ME, "On my way — give me 20.", 64),
+                DemoMsg(
+                    "demo-nearby-5",
+                    Slot.DANI,
+                    "Saved you a spot by the fire at site B12 🔥",
+                    66,
+                    styles = listOf(DemoStyle("B12", BodyStyle.MONOSPACE)),
+                ),
+                // A correction, struck through the way people fix a number in a chat.
+                DemoMsg(
+                    "demo-nearby-6",
+                    Slot.ME,
+                    "On my way — give me 10 20.",
+                    64,
+                    styles = listOf(DemoStyle("10", BodyStyle.STRIKETHROUGH)),
+                ),
                 DemoMsg(
                     "demo-nearby-7",
                     Slot.LENA,
                     "Heads up: bridge near the falls is out, take the upper loop.",
                     40,
+                    styles = listOf(DemoStyle("bridge near the falls is out", BodyStyle.BOLD)),
                     reactions =
                         listOf(
                             DemoReaction(Slot.SAM, "👍", 39),
@@ -329,7 +402,13 @@ private val HIKING_SCENARIO =
                         ),
                 ),
                 DemoMsg("demo-nearby-8", Slot.JONAS, "Good call, thanks for the warning.", 38),
-                DemoMsg("demo-nearby-8b", Slot.JONAS_TWO, "Other Jonas here — the upper loop is icy, bring spikes.", 25),
+                DemoMsg(
+                    "demo-nearby-8b",
+                    Slot.JONAS_TWO,
+                    "Other Jonas here — the upper loop is icy, bring spikes.",
+                    25,
+                    styles = listOf(DemoStyle("bring spikes", BodyStyle.BOLD)),
+                ),
                 // Carried the long way: Theo is over the ridge and out of radio range, so his line came in
                 // over a LoRa board. The bubble wears the board glyph.
                 DemoMsg(
@@ -368,8 +447,20 @@ private val HIKING_SCENARIO =
                         listOf(
                             DemoMsg("demo-dm-dani-1", Slot.DANI, "Hey! Did you make it down okay?", 180),
                             DemoMsg("demo-dm-dani-2", Slot.ME, "Yeah, just got back. That last descent was sketchy 😅", 178),
-                            DemoMsg("demo-dm-dani-3", Slot.DANI, "Told you the trekking poles were worth it 😏", 176),
-                            DemoMsg("demo-dm-dani-4", Slot.ME, "Fine, you were right. Same time next weekend?", 150),
+                            DemoMsg(
+                                "demo-dm-dani-3",
+                                Slot.DANI,
+                                "Told you the trekking poles were worth it 😏",
+                                176,
+                                styles = listOf(DemoStyle("were", BodyStyle.ITALIC)),
+                            ),
+                            DemoMsg(
+                                "demo-dm-dani-4",
+                                Slot.ME,
+                                "Fine, you were right. Same time next weekend?",
+                                150,
+                                styles = listOf(DemoStyle("Same time next weekend?", BodyStyle.BOLD)),
+                            ),
                             DemoMsg("demo-dm-dani-5", Slot.DANI, "Absolutely. I'll bring the good coffee ☕", 148),
                             // Dani has driven home and is off the mesh entirely; her phone acknowledged this
                             // over an Internet relay, so the ✓✓ wears the globe. The one seeded relay
@@ -394,7 +485,14 @@ private val HIKING_SCENARIO =
                             // voice bubble gets the same scrutiny the photo bubble does — and a received
                             // one, since the receive side is where the waveform is derived rather than
                             // carried.
-                            DemoMsg("demo-dm-sam-4", Slot.SAM, "", 5, voiceSeconds = 9),
+                            DemoMsg(
+                                "demo-dm-sam-4",
+                                Slot.SAM,
+                                "",
+                                5,
+                                voiceSeconds = 9,
+                                transcript = "Found it by the trailhead sign. I'll leave it at the ranger station on my way out.",
+                            ),
                         ),
                 ),
             ),
@@ -404,7 +502,13 @@ private val HIKING_SCENARIO =
                 members = listOf(Slot.ME, Slot.SAM, Slot.PRIYA, Slot.THEO),
                 messages =
                     listOf(
-                        DemoMsg("demo-group-1", Slot.SAM, "Trailhead Crew assemble! Saturday 7am?", 300),
+                        DemoMsg(
+                            "demo-group-1",
+                            Slot.SAM,
+                            "Trailhead Crew assemble! Saturday 7am?",
+                            300,
+                            styles = listOf(DemoStyle("Saturday 7am?", BodyStyle.BOLD)),
+                        ),
                         DemoMsg("demo-group-2", Slot.PRIYA, "I'm in 🙌", 298),
                         DemoMsg("demo-group-3", Slot.THEO, "Same. Carpool from the usual spot?", 295),
                         DemoMsg(
@@ -469,6 +573,42 @@ private val HIKING_SCENARIO =
                 DemoCallRecord("demo-call-dani", Slot.DANI, outgoing = true, minsAgo = 100, seconds = 252),
                 // Sam called over the mesh from the col, out of every network's reach, before his messages.
                 DemoCallRecord("demo-call-sam", Slot.SAM, outgoing = false, minsAgo = 14, seconds = 65, walkie = true),
+            ),
+        // Lena writes in Spanish; the translation captures translate her lines with the phone's own model.
+        translated =
+            DemoThread(
+                Slot.LENA,
+                read = true,
+                messages =
+                    listOf(
+                        // Earlier in the day, so the thread fills the screen the captures open on.
+                        DemoMsg(
+                            "demo-dm-lena-0",
+                            Slot.LENA,
+                            "¿Sigues en el sendero? Dicen que va a llover esta tarde 🌧️",
+                            140,
+                            lang = "es",
+                        ),
+                        DemoMsg("demo-dm-lena-0b", Slot.ME, "Almost at the ridge. Thanks for the heads up!", 138),
+                        DemoMsg("demo-dm-lena-1", Slot.LENA, "¡Hola Maya! ¿Llegaste bien al campamento? 🏕️", 46, lang = "es"),
+                        DemoMsg("demo-dm-lena-2", Slot.ME, "Just got in, thanks! Dry socks at last.", 44),
+                        DemoMsg(
+                            "demo-dm-lena-3",
+                            Slot.LENA,
+                            "El puente de las cataratas sigue cerrado. Mañana toma el sendero de arriba, es más seguro.",
+                            41,
+                            lang = "es",
+                        ),
+                        DemoMsg("demo-dm-lena-4", Slot.ME, "Good to know. Upper loop it is.", 39),
+                        DemoMsg("demo-dm-lena-5", Slot.LENA, "Perfecto. Nos vemos en el mirador a las siete ☕", 37, lang = "es"),
+                    ),
+            ),
+        // Home, and too far for the radios: the photo and the thanks crossed a direct link, no relay in between.
+        linked =
+            listOf(
+                DemoMsg("demo-dm-dani-7", Slot.DANI, "Home now. Can you send me the summit shot?", 62, via = DeliveryPlane.DirectLink),
+                DemoMsg("demo-dm-dani-8", Slot.ME, "Here it is 🏔️", 60, image = "summit", via = DeliveryPlane.DirectLink),
+                DemoMsg("demo-dm-dani-9", Slot.DANI, "Wow. That one's going on my wall.", 58, via = DeliveryPlane.DirectLink),
             ),
         meshRoom =
             listOf(
@@ -577,13 +717,27 @@ private val FESTIVAL_SCENARIO =
                     70,
                     mentionsMe = true,
                 ),
-                DemoMsg("fest-nearby-5", Slot.DANI, "Saved you a cushion up top 🛋️", 66),
-                DemoMsg("fest-nearby-6", Slot.ME, "Two mins out, don't leave without me 🏃", 64),
+                DemoMsg(
+                    "fest-nearby-5",
+                    Slot.DANI,
+                    "Saved you a cushion up top, we're at 4:30 & Esplanade 🛋️",
+                    66,
+                    styles = listOf(DemoStyle("4:30 & Esplanade", BodyStyle.MONOSPACE)),
+                ),
+                // A correction, struck through the way people fix a number in a chat.
+                DemoMsg(
+                    "fest-nearby-6",
+                    Slot.ME,
+                    "Five Two mins out, don't leave without me 🏃",
+                    64,
+                    styles = listOf(DemoStyle("Five", BodyStyle.STRIKETHROUGH)),
+                ),
                 DemoMsg(
                     "fest-nearby-7",
                     Slot.LENA,
                     "Dust storm rolling in from the west — goggles up! 🥽",
                     40,
+                    styles = listOf(DemoStyle("goggles up!", BodyStyle.BOLD)),
                     reactions =
                         listOf(
                             DemoReaction(Slot.SAM, "👍", 39),
@@ -594,7 +748,13 @@ private val FESTIVAL_SCENARIO =
                         ),
                 ),
                 DemoMsg("fest-nearby-8", Slot.JONAS, "Whiteout at center camp already, stay safe out there.", 38),
-                DemoMsg("fest-nearby-8b", Slot.JONAS_TWO, "Other Dex — my bike's the one with the blue fur, not the pink.", 25),
+                DemoMsg(
+                    "fest-nearby-8b",
+                    Slot.JONAS_TWO,
+                    "Other Dex — my bike's the one with the blue fur, not the pink.",
+                    25,
+                    styles = listOf(DemoStyle("blue", BodyStyle.BOLD)),
+                ),
                 // Deep playa, kilometres from any other phone: this one crossed a LoRa board.
                 DemoMsg(
                     "fest-nearby-8c",
@@ -629,8 +789,20 @@ private val FESTIVAL_SCENARIO =
                         listOf(
                             DemoMsg("fest-dm-dani-1", Slot.DANI, "Did you find camp okay last night?", 180),
                             DemoMsg("fest-dm-dani-2", Slot.ME, "Eventually 😅 the playa swallowed me for an hour", 178),
-                            DemoMsg("fest-dm-dani-3", Slot.DANI, "Told you to pin a flag on your bike 🚩", 176),
-                            DemoMsg("fest-dm-dani-4", Slot.ME, "Lesson learned. Sunrise set tomorrow?", 150),
+                            DemoMsg(
+                                "fest-dm-dani-3",
+                                Slot.DANI,
+                                "Told you to pin a flag on your bike 🚩",
+                                176,
+                                styles = listOf(DemoStyle("flag", BodyStyle.ITALIC)),
+                            ),
+                            DemoMsg(
+                                "fest-dm-dani-4",
+                                Slot.ME,
+                                "Lesson learned. Sunrise set tomorrow?",
+                                150,
+                                styles = listOf(DemoStyle("Sunrise set tomorrow?", BodyStyle.BOLD)),
+                            ),
                             DemoMsg("fest-dm-dani-5", Slot.DANI, "Always. I'll bring the good chai ☕", 148),
                             // Luna's phone acked from town, over an Internet relay — the globe on the ✓✓.
                             DemoMsg("fest-dm-dani-6", Slot.ME, "Deal.", 120, via = DeliveryPlane.Internet),
@@ -647,7 +819,14 @@ private val FESTIVAL_SCENARIO =
                             DemoMsg("fest-dm-sam-3", Slot.SAM, "Oh and I found your goggles 🥽", 7),
                             // Voice-note parity with the hiking theme: the same route (`chat/samr1v00`) that
                             // the a11y audit and the store capture open shows the voice bubble in both themes.
-                            DemoMsg("fest-dm-sam-4", Slot.SAM, "", 5, voiceSeconds = 9),
+                            DemoMsg(
+                                "fest-dm-sam-4",
+                                Slot.SAM,
+                                "",
+                                5,
+                                voiceSeconds = 9,
+                                transcript = "Your goggles were by the bike rack at the dome. I'll bring them to the temple tonight.",
+                            ),
                         ),
                 ),
             ),
@@ -657,7 +836,13 @@ private val FESTIVAL_SCENARIO =
                 members = listOf(Slot.ME, Slot.SAM, Slot.PRIYA, Slot.THEO),
                 messages =
                     listOf(
-                        DemoMsg("fest-group-1", Slot.SAM, "Camp Lost Horizon meetup — Man burn at 9? 🔥", 300),
+                        DemoMsg(
+                            "fest-group-1",
+                            Slot.SAM,
+                            "Camp Lost Horizon meetup — Man burn at 9? 🔥",
+                            300,
+                            styles = listOf(DemoStyle("Man burn at 9?", BodyStyle.BOLD)),
+                        ),
                         DemoMsg("fest-group-2", Slot.PRIYA, "I'm in 🙌", 298),
                         DemoMsg("fest-group-3", Slot.THEO, "Same. Meet at the bikes?", 295),
                         DemoMsg(
@@ -712,6 +897,42 @@ private val FESTIVAL_SCENARIO =
             listOf(
                 DemoCallRecord("fest-call-luna", Slot.DANI, outgoing = true, minsAgo = 100, seconds = 252),
                 DemoCallRecord("fest-call-kai", Slot.SAM, outgoing = false, minsAgo = 14, seconds = 65, walkie = true),
+            ),
+        // Sage writes in Spanish; the translation captures translate her lines with the phone's own model.
+        translated =
+            DemoThread(
+                Slot.PRIYA,
+                read = true,
+                messages =
+                    listOf(
+                        // Earlier in the day, so the thread fills the screen the captures open on.
+                        DemoMsg(
+                            "fest-dm-sage-0",
+                            Slot.PRIYA,
+                            "¿Necesitas agua? Tengo una nevera llena en el campamento 💧",
+                            140,
+                            lang = "es",
+                        ),
+                        DemoMsg("fest-dm-sage-0b", Slot.ME, "Yes please! I'll swing by on my bike.", 138),
+                        DemoMsg("fest-dm-sage-1", Slot.PRIYA, "¡Zara! ¿Sigues en el templo? 🌅", 46, lang = "es"),
+                        DemoMsg("fest-dm-sage-2", Slot.ME, "Just left, heading to the dome.", 44),
+                        DemoMsg(
+                            "fest-dm-sage-3",
+                            Slot.PRIYA,
+                            "Viene una tormenta de polvo desde el oeste. Lleva tus gafas y mucha agua.",
+                            41,
+                            lang = "es",
+                        ),
+                        DemoMsg("fest-dm-sage-4", Slot.ME, "Got them, thanks Sage 🙏", 39),
+                        DemoMsg("fest-dm-sage-5", Slot.PRIYA, "Te guardo un sitio en la cúpula a medianoche ✨", 37, lang = "es"),
+                    ),
+            ),
+        // Back in the city, and too far for the radios: the photo and the thanks crossed a direct link, no relay.
+        linked =
+            listOf(
+                DemoMsg("fest-dm-luna-7", Slot.DANI, "Back in the city 😢 send me the dragon?", 62, via = DeliveryPlane.DirectLink),
+                DemoMsg("fest-dm-luna-8", Slot.ME, "Here you go 🐉", 60, image = "dragon", via = DeliveryPlane.DirectLink),
+                DemoMsg("fest-dm-luna-9", Slot.DANI, "Instant wallpaper. Miss you all already.", 58, via = DeliveryPlane.DirectLink),
             ),
         meshRoom =
             listOf(
