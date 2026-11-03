@@ -1289,6 +1289,12 @@ data class LabLimits(
      * idle close must allow. [LabNode.blindAdvert] moves it across a restart.
      */
     val blindAdvert: Boolean = false,
+    /**
+     * Whether the node mints and sends its own presence keys, as `BuildConfig.PRESENCE_KEYS` decides (ADR 2026-11.xp6d's
+     * staging): on, every build as shipped; off, a build that reads tags and receives, stores and resolves its contacts'
+     * keys but mints and sends none of its own (`MeshManager.sendsPresenceKeys`).
+     */
+    val sendsPresenceKeys: Boolean = true,
     /** How long a link-up waits before its presence-key reconcile (a random 2–20 s in the field). */
     val presenceLinkUpDelayMs: Long = MeshLab.PRESENCE_LINK_UP_MS,
 ) {
@@ -1450,6 +1456,12 @@ class LabNode internal constructor(
                 while (metrics.keys().let { it.presenceLinkPassesCompleted < it.presenceLinkPassesScheduled }) delay(1)
             } != null
         check(done) { "$name: a link-up presence-key pass never completed (${metrics.keys().presenceLinkPassesScheduled} scheduled)" }
+    }
+
+    // The key engine's debug lines, logged and read for [presenceKeyFrames].
+    private fun onPresenceDebug(line: String) {
+        Log.w("PresenceKeyEngine", "$name: $line")
+        PRESENCE_KEY_FRAME.find(line)?.let { presenceKeyFrames += it.groupValues[1] }
     }
 
     /** This node's direct contacts as its key engine reads them (`contacts/DirectContacts`), rebuilt at each boot. */
@@ -1625,6 +1637,13 @@ class LabNode internal constructor(
      * the send, so a scenario counts a frame's crossings per link-up. The plane's own rule may still drop one.
      */
     val linkFrames = CopyOnWriteArrayList<String>()
+
+    /**
+     * The frame id of every presence-key ctl 11 this node's key engine sealed (its `presence keys sealed to … frame <id>,`
+     * debug line), in seal order: what tells a key frame among [linkFrames] (`awaitLinkIdledOut`), since the ctl rides a
+     * sealed chat frame the plane cannot read.
+     */
+    val presenceKeyFrames = CopyOnWriteArrayList<String>()
 
     /** The node id of every custody digest that arrived over this node's direct-link plane, in arrival order. */
     val linkDigestsFrom = CopyOnWriteArrayList<String>()
@@ -2085,9 +2104,10 @@ class LabNode internal constructor(
                         identity,
                     ).also { directContacts = it },
                 presenceKeyClock = { now() + presenceSkewMs },
+                sendsPresenceKeys = limits.sendsPresenceKeys,
                 presenceLinkUpDelayMs = { limits.presenceLinkUpDelayMs },
                 // The engine's decision lines in every failure report (`MeshLab.report` reads warnings): ids and steps only.
-                presenceDebugLog = { Log.w("PresenceKeyEngine", "$name: $it") },
+                presenceDebugLog = ::onPresenceDebug,
                 blobMetered = { metered },
             )
         countDrainsDownstream()
@@ -3773,6 +3793,9 @@ class LabNode internal constructor(
 
         /** The LoRa log lines worth reading on a failure — the radio's own traffic, not the bridge loop's bookkeeping. */
         val LORA_LOG_KEYS = listOf("rx ", "ready", "direct", "fanout:", "resend", "probe", "too long", "drop", "stale")
+
+        /** The frame id in the key engine's `presence keys sealed to <peer>: frame <id>, <n> generations` debug line. */
+        val PRESENCE_KEY_FRAME = Regex("""presence keys sealed to \S+: frame (\S+),""")
     }
 }
 

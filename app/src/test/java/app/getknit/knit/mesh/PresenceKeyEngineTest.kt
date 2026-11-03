@@ -26,7 +26,9 @@ import org.junit.Test
  * `PresenceKeyPolicyTest`'s; the pair over real stacks is `PresenceKeyLabTest`'s.
  */
 class PresenceKeyEngineTest {
-    private class Rig {
+    private class Rig(
+        sendsOwnKeys: Boolean = true,
+    ) {
         var wall = 1_793_577_600_000L
         var elapsed = 0L
         var direct = setOf("alice", "bob")
@@ -75,6 +77,7 @@ class PresenceKeyEngineTest {
         val engine =
             PresenceKeyEngine(
                 store = store,
+                sendsOwnKeys = sendsOwnKeys,
                 direct = { direct },
                 linked = { links },
                 pinnedCapabilities = { pinned[it] },
@@ -224,6 +227,66 @@ class PresenceKeyEngineTest {
             rig.engine.reconcile("heal")
             assertEquals("the new root reseals, once", 2, rig.handed("alice").size)
             assertEquals("bob's root never moved", 1, rig.handed("bob").size)
+        }
+
+    /**
+     * A build that sends no keys of its own (`BuildConfig.PRESENCE_KEYS` off): nothing minted, nothing sealed
+     * to a capable linked contact, no capability asks a pass — and what is not a key of ours still runs: leavers' stored
+     * keys go, and a restore's link-owed reset is sealed and sent.
+     */
+    @Test
+    fun aBuildThatSendsNoKeysMintsAndSealsNoneButStillDropsLeaversAndSendsLinkOwedResets() =
+        runTest {
+            val rig = Rig(sendsOwnKeys = false)
+            rig.store.peerKeys += setOf("alice", "carol")
+            rig.engine.onRestore(setOf("bob"))
+            rig.confirmed -= "bob"
+            rig.engine.start()
+
+            assertTrue("nothing minted", rig.store.ownKeys().isEmpty())
+            assertEquals("no generation recorded", 0L, rig.store.last)
+            assertTrue("no key sealed to a capable linked contact", rig.sealed.isEmpty())
+            assertEquals("a stranger's stored key goes on the first pass", setOf("alice"), rig.store.peerKeys)
+            assertEquals("the link-owed reset is sealed", listOf("bob"), rig.resetsSealed)
+            assertEquals(listOf("bob"), rig.sentFrames.map { it.first })
+            assertFalse("a capability owes nothing", rig.engine.asksForKeys(Protocol.CAP_BLIND_ADVERT))
+
+            // A removal: the leaver's key goes, still nothing is minted or sealed.
+            rig.direct = setOf("bob")
+            rig.engine.reconcile("contacts")
+            rig.engine.reconcile("heal")
+            assertTrue(rig.store.peerKeys.isEmpty())
+            assertTrue(rig.store.ownKeys().isEmpty())
+            assertTrue(rig.sealed.isEmpty())
+        }
+
+    /**
+     * Keys an earlier build with the flag on minted, on a build with it off: kept as they are — never sealed to a capable
+     * linked contact, never rotated, not even by a removal that would mint a fresh pair with the flag on.
+     */
+    @Test
+    fun aBuildThatSendsNoKeysKeepsAnEarlierBuildsKeysAndNeverSendsThem() =
+        runTest {
+            // The on build, for contrast, mints and hands the capable contact its pair.
+            val on = Rig()
+            on.engine.start()
+            assertTrue(on.engine.asksForKeys(Protocol.CAP_BLIND_ADVERT))
+            assertEquals(1, on.handed("alice").size)
+            val rows = on.store.ownKeys()
+            assertEquals("a current and a next key", 2, rows.size)
+
+            val off = Rig(sendsOwnKeys = false)
+            off.store.applyOwn(rows, emptyList(), rows.map { it.generation }.toSet())
+            off.engine.start()
+            off.engine.reconcile("heal")
+            assertTrue("a leftover key sealed: ${off.sealed.map { it.first }}", off.sealed.isEmpty())
+            assertTrue("a leftover key sent: ${off.sentFrames}", off.sentFrames.isEmpty())
+            assertEquals("the leftover rows changed", rows, off.store.ownKeys())
+
+            off.direct = setOf("bob")
+            off.engine.reconcile("contacts")
+            assertTrue(off.sealed.isEmpty())
+            assertEquals("a removal rotated the leftover rows", rows, off.store.ownKeys())
         }
 
     @Test

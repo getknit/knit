@@ -93,6 +93,8 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
         "BLE_FEED_WINDOW" to BuildConfig.BLE_FEED_WINDOW,
         "WEAR_STATUS" to BuildConfig.WEAR_STATUS,
         "DIRECT_LINKS" to BuildConfig.DIRECT_LINKS,
+        "PRESENCE_KEYS" to BuildConfig.PRESENCE_KEYS,
+        "BLIND_ADVERT" to BuildConfig.BLIND_ADVERT,
         "LIVE_CALLS" to BuildConfig.LIVE_CALLS,
         "MESH_CALLS" to BuildConfig.MESH_CALLS,
         "STT" to BuildConfig.STT,

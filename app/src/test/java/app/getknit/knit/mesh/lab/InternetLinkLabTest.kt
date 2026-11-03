@@ -5,7 +5,6 @@ import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.inet.FakeLinkNet.Nat
 import app.getknit.knit.mesh.inet.LinkDemandPolicy
 import app.getknit.knit.mesh.inet.LinkOutcome
-import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.inet.LinkWhy
 import app.getknit.knit.mesh.inet.PunchPolicy
 import app.getknit.knit.mesh.spool.FakeSpool
@@ -228,9 +227,13 @@ class InternetLinkLabTest {
 
             assertFalse("bob reads as nearby to alice", alice.seesNearby(bob))
             assertFalse("alice reads as nearby to bob", bob.seesNearby(alice))
-            // Gone with its linger or as it was: never stamped anew by what the link carried.
+            // Gone with its linger, as it was, or stamped anew through Carol's radio (a frame of Bob's she still relays,
+            // landing after the snapshot): never stamped by what the link carried.
             val heardAfter = alice.manager.heardIndirectly.value[bob.nodeId]
-            assertTrue("the link made bob heard indirectly: $heardBefore → $heardAfter", heardAfter == null || heardAfter == heardBefore)
+            assertTrue(
+                "the link made bob heard indirectly: $heardBefore → $heardAfter",
+                heardAfter == null || heardAfter == heardBefore || heardAfter.via == carol.nodeId,
+            )
             assertEquals("the link met bob again", metBefore, alice.lastMet(bob))
             // The credit is booked after the radio's send returns, so Carol's copy of Bob's tick can land first: await the
             // booking itself (as ContributionLabTest does). A wrongful link credit for Carol's post would land at the link's
@@ -266,29 +269,9 @@ class InternetLinkLabTest {
             val first = alice.ownMessageId(alice.dmWith(bob), "first")
             assertEquals(DeliveryPlane.DirectLink, bob.receivedVia(bob.dmWith(alice), first))
 
-            // Nothing left to carry: past the idle close on the link's clock, and both ends' links end. A use of the first
-            // exchange can land just after the jump — a sender notes its use once the send returns, after the far end
-            // already stored the frame this scenario saw — and moves the idle close a whole period on, which only the
-            // lab's jump makes that long, and so can the link-up's presence-key ctl 11, noted on each end. So: down, or a
-            // use after the jump, both events; another period only for such a use, at most [LATE_USE_PERIODS], and a link
-            // that stayed up without one fails at once.
-            val bothDown = { checkNotNull(alice.links).links.value.isEmpty() && checkNotNull(bob.links).links.value.isEmpty() }
-            val uses = { alice.linkUses.get() + bob.linkUses.get() }
-            var periods = 0
-            while (true) {
-                val atJump = uses()
-                lab.clock.advance(LinkSession.IDLE_MS)
-                assertTrue(
-                    "the link neither idled out nor carried a use\n${alice.linkLog}\n${bob.linkLog}",
-                    lab.tryAwait(1) { if (bothDown() || uses() > atJump) 1 else 0 },
-                )
-                if (bothDown()) break
-                periods++
-                assertTrue(
-                    "the link kept carrying uses past $LATE_USE_PERIODS idle periods\n${alice.linkLog}\n${bob.linkLog}",
-                    periods <= LATE_USE_PERIODS,
-                )
-            }
+            // Nothing left to carry: past the idle close on the link's clock, and both ends' links end, with nothing but the
+            // late uses `awaitLinkIdledOut` allows.
+            lab.awaitLinkIdledOut(alice, bob)
             // Awaited, not read: `DirectLinks.holdUntilClosed` takes the link out of `links` before it logs its end.
             val idled = lab.tryAwait(1) { if ((alice.linkLog + bob.linkLog).any { "IDLE" in it }) 1 else 0 }
             assertTrue("no idle close was logged: ${alice.linkLog + bob.linkLog}", idled)
@@ -718,10 +701,6 @@ class InternetLinkLabTest {
     }
 
     private companion object {
-        // Idle periods past the first a late use may cost: the last exchange's own, and the link-up's presence-key ctl 11
-        // noted on each end.
-        const val LATE_USE_PERIODS = 3
-
         // A photo the cut lands well inside of on both ends: past what crosses before the network goes dark, and past what
         // the sender's stream then holds unacknowledged (its window, grown on the acks that came back, and its send
         // buffer), so the sender's writer is still blocked on the stream, as on a slow path, when the path dies.

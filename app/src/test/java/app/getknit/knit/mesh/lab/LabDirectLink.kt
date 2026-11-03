@@ -8,12 +8,15 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.inet.DirectLinkTransport
 import app.getknit.knit.mesh.inet.LinkArq
+import app.getknit.knit.mesh.inet.LinkSession
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onEach
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -179,3 +182,66 @@ internal class LabLinkPlane(
             if (accepted) files += "${to.nodeId} ${meta.kind.wire} ${meta.key}" + if (meta.offset > 0) " from ${meta.offset}" else ""
         }
 }
+
+/**
+ * The direct link between [a] and [b], with nothing left to carry, idles out on the link's clock and both ends' links
+ * end. Each jump of [LinkSession.IDLE_MS] ends in both links down or a use after it; a use moves the idle close a whole
+ * period on, which only the lab's jump makes that long. What may land late, and nothing else:
+ *  - the last exchange's own use: a sender notes it once the send returns, after the far end already stored the frame
+ *    the scenario saw, so its frame was handed to the link before the first jump;
+ *  - the link-up's own frames, each end's, sent once the manager acted on the link: its profile push (`FrameId`'s
+ *    `profile-<sender>-…`) and its presence-key ctl 11 ([LabNode.presenceKeyFrames]), noted on each end.
+ *
+ * So another period only for such a use, at most [latePeriods] of them, and after the first jump each end may hand the
+ * link at most one profile of its own and one presence key of its own, nothing else, and no file: a frame re-sent after
+ * the exchange ended would keep the link up inside the period bound, and this is what catches it. A link that stayed up
+ * with no use fails at once.
+ */
+internal suspend fun MeshLab.awaitLinkIdledOut(
+    a: LabNode,
+    b: LabNode,
+    latePeriods: Int = LATE_USE_PERIODS,
+) {
+    val bothDown = { checkNotNull(a.links).links.value.isEmpty() && checkNotNull(b.links).links.value.isEmpty() }
+    val uses = { a.linkUses.get() + b.linkUses.get() }
+    val framesAt = a.linkFrames.size to b.linkFrames.size
+    val filesAt = a.linkFiles.size to b.linkFiles.size
+    val frames = { "${a.name} link frames: ${a.linkFrames.takeLast(20)}\n${b.name} link frames: ${b.linkFrames.takeLast(20)}" }
+    var periods = 0
+    while (true) {
+        val atJump = uses()
+        clock.advance(LinkSession.IDLE_MS)
+        assertTrue(
+            "the link neither idled out nor carried a use\n${a.linkLog}\n${b.linkLog}\n${frames()}\n${report(listOf(a, b))}",
+            tryAwait(1) { if (bothDown() || uses() > atJump) 1 else 0 },
+        )
+        if (bothDown()) break
+        periods++
+        assertTrue(
+            "the link kept carrying uses past $latePeriods idle periods\n${a.linkLog}\n${b.linkLog}\n${frames()}",
+            periods <= latePeriods,
+        )
+    }
+    for ((node, at) in listOf(a to framesAt.first, b to framesAt.second)) {
+        val late = node.linkFrames.drop(at).map { it.substringAfterLast(' ') }
+        val keys = late.filter { it in node.presenceKeyFrames }
+        // By id: the plane records a frame where it is handed, before the link's own once-per-link rule, so the link-up's
+        // push and a digest answer serving the same profile are one profile.
+        val profiles = late.filter { it.startsWith("profile-${node.nodeId}-") }
+        assertTrue(
+            "${node.name} handed the idle link more than its link-up's own profile and presence key after the first " +
+                "jump: $late (its presence-key frames: ${node.presenceKeyFrames})\n${frames()}",
+            late.size == keys.size + profiles.size && keys.size <= 1 && profiles.distinct().size <= 1,
+        )
+    }
+    assertEquals(
+        "a file crossed the idle link after the first jump: ${a.linkFiles.drop(filesAt.first) + b.linkFiles.drop(filesAt.second)}",
+        filesAt,
+        a.linkFiles.size to b.linkFiles.size,
+    )
+}
+
+// Idle periods past the first a late use may cost ([awaitLinkIdledOut]), each late use its own period at worst: the last
+// exchange's (its sender's), and the sender's and receiver's of each end's link-up profile push and presence-key ctl 11.
+// Loose by design: it only ends the loop; what may cross is the frame check's.
+internal const val LATE_USE_PERIODS = 1 + 2 * 2 * 2

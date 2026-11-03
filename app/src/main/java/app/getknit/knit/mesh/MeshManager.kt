@@ -425,6 +425,10 @@ class MeshManager(
     // The wall clock the presence-key engine mints and rotates by: [clock] in production. `mesh/lab` runs one ahead of
     // the node's own clock to stage a clock-ahead mint (B3) without stamping every frame it sends into the future.
     presenceKeyClock: (() -> Long)? = null,
+    // Whether this phone mints and sends its own presence keys (`BuildConfig.PRESENCE_KEYS`, ADR 2026-11.xp6d's staging):
+    // on in every build, independent of writing tags (`BLIND_ADVERT`). Off, contacts' keys are still received, stored and
+    // resolved and a restore's link-owed resets still go. `mesh/lab` models a node with it off.
+    sendsPresenceKeys: Boolean = true,
     // Where the presence-key engine's per-decision lines go (a link-owed reset's step and link epochs; ids and counts,
     // never bytes or a tag): debug in production; `mesh/lab` raises them to a warning so a failed scenario's report holds them.
     presenceDebugLog: (String) -> Unit = { Log.d(TAG, it) },
@@ -880,6 +884,7 @@ class MeshManager(
             val wall = presenceKeyClock ?: clock
             PresenceKeyEngine(
                 store = PresenceKeyEngineStore(presenceKeyStore, settings, clock),
+                sendsOwnKeys = sendsPresenceKeys,
                 direct = contacts::read,
                 // A live link to a proof-capable id is a proven one: an unproven link claiming it is refused or closed
                 // (ADR 2026-11.264w, R1–R4). The frame is sealed to the peer's session anyway, so a squatter reads nothing.

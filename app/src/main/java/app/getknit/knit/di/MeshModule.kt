@@ -570,9 +570,10 @@ val meshModule =
                 homes = get<HomeStore>(),
                 directory = if (BuildConfig.SPOOL_DIRECTORY) AndroidPublicSpoolDirectory(get()) else null,
                 // The presence key (ADR 2026-11.xp6d): handed to direct contacts only, its daily advance floor on a clock that
-                // counts deep sleep.
+                // counts deep sleep. This phone's own keys are minted and sent where the build says (`PRESENCE_KEYS`).
                 directContacts = get(),
                 elapsedRealtime = SystemClock::elapsedRealtime,
+                sendsPresenceKeys = BuildConfig.PRESENCE_KEYS,
             ).also { manager ->
                 // The compact LoRa DM (ADR 2026-10.x9fa), where the build carries the plane: the transport is reached at
                 // call time, the seam the two constructions need one late edge for. Unbound, the profile never claims it.

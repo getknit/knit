@@ -118,8 +118,12 @@ foreground head-start dial and background seeking dial.
   restored after its clock ran ahead). Only direct contacts' keys are listed; a key equal to another listed
   contact's, or to one of ours, is listed for no one and counted. The rotation on block makes a block more than
   presentation for this one key, an exception to ADR 2026-09.bts9 and ADR 2026-11.nsbf.
-- **Staging.** Release N ships every reader and the keys, with writing tags behind `BuildConfig.BLIND_ADVERT` (on in
-  debug, with a runtime switch for the legacy harnesses; off in release). Release N+1 turns writing on.
+- **Staging.** Release N ships every reader and the keys, on two independent flags: `BuildConfig.PRESENCE_KEYS`
+  (minting and sending a phone's own keys; on in every build) and `BuildConfig.BLIND_ADVERT` (writing tags; on in debug,
+  with a runtime switch for the legacy harnesses; off in release). Release N+1 turns writing on, and contacts already
+  hold each other's keys on its first day. Shipping keys first has a cost while links are read in the clear (#286): a
+  ctl 11 at link-up tells a listener the two phones are direct contacts even if they never write, and the frame can be
+  re-wrapped and flooded (item 14). The maintainer accepted that for the head start.
 
 The alternatives: a second, blinded advert beside the clear one (twice the airtime and advertising sets, and no
 privacy until the clear one stops); a random tag with no key (contacts would see each other only once linked); a
@@ -221,3 +225,8 @@ Status: draft, with the reader's change; the caller decides whether it stands.
   generations costs the table at most 420 HMACs a minute (three keys' tags), beside the window's own slide.
 - **`CAP_BLIND_ADVERT` joins `LOCAL_CAPABILITIES`** with the reader. The mesh lab models a build from before it by
   withholding the bit from a node's profile (`MeshManager.withheldCapabilities`); the app withholds nothing.
+- **2026-11-03 (maintainer): keys and writing are switched apart.** Holding keys back until the advert blinds or links
+  are encrypted was weighed and declined; keys ship in N (see Staging). `PresenceKeyEngine`'s `sendsOwnKeys`
+  (`MeshManager.sendsPresenceKeys`, `BuildConfig.PRESENCE_KEYS`) off mints, rotates and seals none, and a capability
+  change asks no pass; leavers' stored keys are still deleted and a restore's link-owed resets still go. Own keys a build
+  with it on minted are left, never sent. `BuildConfig.BLIND_ADVERT` gates the writer alone.

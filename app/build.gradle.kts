@@ -207,6 +207,16 @@ val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 // and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean()
 
+// The blinded advert (ADR 2026-11.xp6d's staging, knit-next #285) — two flags, each overridable on its own. Off, a phone
+// still reads tags, advertises `CAP_BLIND_ADVERT`, and receives, stores and resolves its contacts' presence keys.
+//  - `presenceKeys`: minting and sending this phone's own presence keys to its linked direct contacts. ON in every build,
+//    so contacts hold each other's keys before any of them airs a tag; `-PpresenceKeys=true|false`.
+//  - `blindAdvert`: writing tags (the advert airs a rotating tag in place of the node id). ON in debug, OFF in a shipped
+//    artifact until release N+1; `-PblindAdvert=true|false`.
+// Read once each, in `di/`. Not a code strip, and the defaults live in source so F-Droid's -P-free rebuild stays identical.
+val presenceKeys = (project.findProperty("presenceKeys") as? String)?.toBoolean()
+val blindAdvert = (project.findProperty("blindAdvert") as? String)?.toBoolean()
+
 // Voice calls (docs/VOICE_CALLS.md), speech and Knit Anywhere — four flags, each overridable on its own (ADR
 // 2026-10.swvp). Live calls, mesh calls and Knit Anywhere are introduced: ON in every build since 2.10.0-beta.0 (the
 // ADR's 2026-10-22 amendment). Speech is still an experiment: ON in debug, OFF in a shipped artifact.
@@ -416,6 +426,9 @@ android {
         buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: true).toString())
         // Direct links are ON in debug so the unit suite, the lab and a lab phone run them; see `directLinks` above.
         buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
+        // Presence keys are ON in every build, and writing tags is ON in debug so a lab phone blinds; see `blindAdvert` above.
+        buildConfigField("boolean", "PRESENCE_KEYS", (presenceKeys ?: true).toString())
+        buildConfigField("boolean", "BLIND_ADVERT", (blindAdvert ?: true).toString())
         // Live calls, mesh calls, speech and Knit Anywhere are ON in debug so a lab build runs them; see `calls` above.
         buildConfigField("boolean", "LIVE_CALLS", liveCallsInDebug.toString())
         buildConfigField("boolean", "MESH_CALLS", meshCallsInDebug.toString())
@@ -536,6 +549,9 @@ android {
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
             // Direct links are a spike (ADR 2026-10.a5yj, Proposed): dark in a shipped artifact.
             buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: false).toString())
+            // Presence keys ship ahead of the writer: on in a shipped artifact. Writing tags waits for N+1: dark there.
+            buildConfigField("boolean", "PRESENCE_KEYS", (presenceKeys ?: true).toString())
+            buildConfigField("boolean", "BLIND_ADVERT", (blindAdvert ?: false).toString())
             // Live calls, mesh calls and Knit Anywhere are introduced: on in a shipped artifact, which packages WebRTC and
             // core-telecom. Speech is an experiment: dark there, and Moonshine is not packaged (see `calls` above).
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())

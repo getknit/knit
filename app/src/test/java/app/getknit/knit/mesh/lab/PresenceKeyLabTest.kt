@@ -72,8 +72,8 @@ class PresenceKeyLabTest {
             assertTrue(alice.sendGroup(group, "hi both"))
             lab.await(3) { listOf(carol, dave, erin).count { alice.session(it)?.confirmed == true } }
 
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             assertHandedNothing(from = alice, to = listOf(carol, dave, erin))
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave, erin)) {
                 it.dmWith(
@@ -126,21 +126,21 @@ class PresenceKeyLabTest {
             converse(alice, bob)
             converse(alice, carol)
             converse(alice, dave)
-            listOf(bob, carol, dave).forEach { awaitHoldsKeysOf(it, alice) }
-            listOf(bob, carol, dave).forEach { awaitHoldsKeysOf(alice, it) }
+            listOf(bob, carol, dave).forEach { lab.awaitHoldsKeysOf(it, alice) }
+            listOf(bob, carol, dave).forEach { lab.awaitHoldsKeysOf(alice, it) }
 
             val first = alice.ownPair()
             alice.removeContact(carol)
             lab.await(1) { if (alice.ownPair().first() > first.last()) 1 else 0 }
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(dave, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(dave, alice)
             assertTrue("carol's keys are deleted", alice.presenceKeys.heldBy(carol.nodeId).isEmpty())
             assertHoldsNoneOf(carol, alice, alice.ownPair())
 
             val second = alice.ownPair()
             alice.block(dave)
             lab.await(1) { if (alice.ownPair().first() > second.last()) 1 else 0 }
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             assertTrue("dave's keys are deleted", alice.presenceKeys.heldBy(dave.nodeId).isEmpty())
             assertHoldsNoneOf(dave, alice, alice.ownPair())
 
@@ -150,8 +150,8 @@ class PresenceKeyLabTest {
             alice.restoreFromBackup()
             lab.link(alice, bob)
             lab.await(1) { if (alice.ownPair().firstOrNull()?.let { it > third.last() } == true) 1 else 0 }
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
@@ -168,7 +168,7 @@ class PresenceKeyLabTest {
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             converse(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             val before = alice.ownPair()
 
             lab.unlink(alice, bob)
@@ -179,7 +179,7 @@ class PresenceKeyLabTest {
             assertTrue("bob already holds it, with no link", heldKey(bob, alice, after.first()) contentEquals ownKey(alice, after.first()))
 
             lab.link(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
@@ -196,8 +196,8 @@ class PresenceKeyLabTest {
 
             alice.restoreFromBackup()
             lab.link(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             assertTrue("the carried generation keeps the restore above what it minted", alice.ownPair().first() > ahead.last())
 
             alice.presenceSkewMs = 0L
@@ -205,7 +205,7 @@ class PresenceKeyLabTest {
             alice.heal()
             lab.await(1) { if (alice.ownPair() != stale) 1 else 0 }
             assertTrue("one rotation, in order", alice.ownPair().first() > stale.first())
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             val settled = alice.ownPair()
             alice.heal()
             assertEquals("then quiet", settled, alice.ownPair())
@@ -228,8 +228,8 @@ class PresenceKeyLabTest {
             alice.presenceSkewMs = 0L
             alice.restoreFromBackup()
             lab.link(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             assertTrue("clamped: below the key from the future Bob held of hers", alice.ownPair().last() < ahead.last())
             assertEquals(1L, alice.metrics.keys().presenceKeyGenerationClamped)
             assertFalse(
@@ -249,13 +249,13 @@ class PresenceKeyLabTest {
         converse(alice, bob)
         // Ticks first: a receipt held across a reset is lost by design (ADR 2026-10.8hn6), which is not what this case tests.
         lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
-        awaitHoldsKeysOf(bob, alice)
-        awaitHoldsKeysOf(alice, bob)
+        lab.awaitHoldsKeysOf(bob, alice)
+        lab.awaitHoldsKeysOf(alice, bob)
         val before = alice.ownPair()
         alice.presenceSkewMs = 2 * PresenceKeyPolicy.CLAMP_AHEAD_MS
         alice.heal()
         lab.await(1) { if (alice.ownPair() != before) 1 else 0 }
-        awaitHoldsKeysOf(bob, alice)
+        lab.awaitHoldsKeysOf(bob, alice)
         assertTrue("a next key from the future", alice.ownPair().last() > lab.clock.now() + PresenceKeyPolicy.CLAMP_AHEAD_MS)
         return alice to bob
     }
@@ -288,8 +288,8 @@ class PresenceKeyLabTest {
                     .linkOwedResetsSent
                     .toInt()
             }
-            awaitHoldsKeysOf(carol, alice)
-            awaitHoldsKeysOf(alice, carol)
+            lab.awaitHoldsKeysOf(carol, alice)
+            lab.awaitHoldsKeysOf(alice, carol)
             lab.await(1) { if (alice.presenceKeys.linkOwedResets().isEmpty()) 1 else 0 }
             lab.assertConverged(listOf(alice, carol), atLeast = 0, carriers = listOf(dave)) {
                 it.dmWith(
@@ -318,11 +318,32 @@ class PresenceKeyLabTest {
             assertHandedNothing(from = alice, to = listOf(bob))
 
             assertTrue(alice.sendDm(bob, "hello stranger")) // Bob is Alice's direct contact now: she wrote to him
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             assertHandedNothing(from = bob, to = listOf(alice))
             bob.accept(bob.dmWith(alice)) // and Alice is Bob's, once he accepts the request
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A phone built to send no keys of its own beside one that sends them (ADR 2026-11.xp6d's staging,
+     * `BuildConfig.PRESENCE_KEYS`): Bob's build reads tags and advertises it, so Alice's key reaches him, stored and
+     * listed; it mints and sends no key of its own, so Alice holds none of his and no ctl 11 of his crosses their link.
+     */
+    @Test
+    fun aNodeThatSendsNoKeysStoresItsContactsKeysAndMintsAndSendsNoneOfItsOwn() =
+        runBlocking {
+            val alice = lab.node("alice", limits = blind).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits = blind.copy(sendsPresenceKeys = false)).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            converse(alice, bob)
+
+            lab.awaitHoldsKeysOf(bob, alice)
+            assertHandedNothing(from = bob, to = listOf(alice))
+            assertTrue("bob minted keys of his own: ${bob.ownPair()}", bob.presenceKeys.ownKeys().isEmpty())
+            assertEquals("bob sealed no key", 0L, bob.metrics.keys().presenceKeysSent)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
     /**
@@ -347,7 +368,7 @@ class PresenceKeyLabTest {
             lab.link(alice, bob) { bob.transport.hold(alice.transport) }
             alice.transport.awaitNeighborsHandled()
             bob.transport.release(alice.transport)
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
@@ -374,8 +395,8 @@ class PresenceKeyLabTest {
             val before = pointToPoint()
 
             lab.link(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(dave)) { it.dmWith(if (it === alice) bob else alice) }
             assertEquals("no point-to-point frame between them crossed to dave", before, pointToPoint())
             // The frames the keys crossed in, by id. A count of Dave's custody against a baseline charged the link with a
@@ -437,8 +458,8 @@ class PresenceKeyLabTest {
             }
             alice.transport.release(carol.transport)
             lab.await(1) { if (carol.presenceKeys.linkOwedResets().isEmpty()) 1 else 0 }
-            awaitHoldsKeysOf(alice, carol)
-            awaitHoldsKeysOf(carol, alice)
+            lab.awaitHoldsKeysOf(alice, carol)
+            lab.awaitHoldsKeysOf(carol, alice)
             // With every node's report (the engine's decision lines among its warnings), so a failure names the step taken.
             val nodes = listOf(alice, carol, dave)
             assertEquals("R2 was never resent\n${lab.report(nodes)}", sentBeforeRelink, carol.metrics.keys().linkOwedResetsSent)
@@ -477,8 +498,8 @@ class PresenceKeyLabTest {
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             converse(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
 
             if (senderIsAlice) {
                 keyInFlightAcrossAReset(
@@ -488,8 +509,8 @@ class PresenceKeyLabTest {
             } else {
                 keyInFlightAcrossAReset(sender = bob, resetter = alice)
             }
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             for ((holder, owner) in listOf(bob to alice, alice to bob)) {
                 awaitKeysUnderTheLiveRoot(holder, owner)
                 assertEquals(0L, holder.drops(DropReason.PRESENCE_KEY_REFUSED))
@@ -513,7 +534,7 @@ class PresenceKeyLabTest {
         // sealed under the root the resetter replaced does not open there (its own re-root purged that era's receive state).
         lab.await(2) { sender.transport.held(resetter.transport).count { !it.relay } }
         sender.transport.release(resetter.transport)
-        awaitHoldsKeysOf(resetter, sender)
+        lab.awaitHoldsKeysOf(resetter, sender)
         lab.await(2) { listOf(sender.session(resetter), resetter.session(sender)).count { it?.confirmed == true } }
     }
 
@@ -531,8 +552,8 @@ class PresenceKeyLabTest {
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             converse(alice, bob)
-            awaitHoldsKeysOf(bob, alice)
-            awaitHoldsKeysOf(alice, bob)
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
             // Ticks first: a receipt held across a reset is lost by design (ADR 2026-10.8hn6), which is not what this case tests.
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
             val oldTag =
@@ -556,7 +577,7 @@ class PresenceKeyLabTest {
             assertEquals("the in-flight key lands on the drain, under the old root's tag", oldTag, drained?.rootTag)
 
             alice.transport.release(bob.transport)
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             awaitKeysUnderTheLiveRoot(bob, alice)
             awaitKeysUnderTheLiveRoot(alice, bob)
             assertEquals(0L, bob.drops(DropReason.PRESENCE_KEY_REFUSED))
@@ -601,7 +622,7 @@ class PresenceKeyLabTest {
             alice.presenceSkewMs = PresenceKeyPolicy.WEEK_MS
             alice.heal()
             lab.await(1) { if (alice.ownPair() != before) 1 else 0 }
-            awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(bob, alice)
             lab.assertConverged(listOf(alice, bob), atLeast = 0) { it.dmWith(if (it === alice) bob else alice) }
         }
 
@@ -617,8 +638,8 @@ class PresenceKeyLabTest {
         lab.await(1) { if (of.session(holder)?.hasSession == true) 1 else 0 }
         of.accept(of.dmWith(holder))
         lab.await(2) { listOf(holder.session(of), of.session(holder)).count { it?.confirmed == true } }
-        awaitHoldsKeysOf(holder, of)
-        awaitHoldsKeysOf(of, holder)
+        lab.awaitHoldsKeysOf(holder, of)
+        lab.awaitHoldsKeysOf(of, holder)
     }
 
     // --- helpers ---
@@ -634,110 +655,6 @@ class PresenceKeyLabTest {
         lab.await(2) { a.decrypted(a.dmWith(b)).size }
     }
 
-    /** [owner]'s current and next generations, lowest first. */
-    private suspend fun LabNode.ownPair(): List<Long> {
-        val keys = PresenceKeyPolicy.keysOf(presenceKeys.ownKeys())
-        return listOfNotNull(keys.current?.generation, keys.next?.generation)
-    }
-
-    private suspend fun ownKey(
-        owner: LabNode,
-        generation: Long,
-    ): ByteArray =
-        owner.presenceKeys
-            .ownKeys()
-            .first { it.generation == generation }
-            .key
-
-    private suspend fun heldKey(
-        holder: LabNode,
-        owner: LabNode,
-        generation: Long,
-    ): ByteArray? =
-        holder.presenceKeys
-            .heldBy(owner.nodeId)
-            .firstOrNull { it.generation == generation }
-            ?.key
-
-    /** Whether [holder] stores [owner]'s current and next keys byte for byte, and its read side lists both. */
-    private suspend fun holdsKeysOf(
-        holder: LabNode,
-        owner: LabNode,
-    ): Boolean {
-        val pair = owner.ownPair()
-        if (pair.size != 2) return false
-        val listed =
-            holder.presenceKeys
-                .presenceKeysFor(setOf(owner.nodeId))
-                .first[owner.nodeId]
-                .orEmpty()
-        return pair.all { generation ->
-            val own = ownKey(owner, generation)
-            heldKey(holder, owner, generation)?.contentEquals(own) == true &&
-                listed.any { it.generation == generation && it.key.contentEquals(own) }
-        }
-    }
-
-    private suspend fun awaitHoldsKeysOf(
-        holder: LabNode,
-        owner: LabNode,
-    ) {
-        val held = lab.tryAwait(1) { if (holdsKeysOf(holder, owner)) 1 else 0 }
-        assertTrue(
-            "${holder.name} never held ${owner.name}'s current and next keys (owner ${owner.ownPair()}, held " +
-                "${holder.presenceKeys.heldBy(owner.nodeId).map { it.generation }})\n${lab.report(listOf(holder, owner))}",
-            held,
-        )
-    }
-
-    /** [holder] stores none of [owner]'s [generations]. */
-    private suspend fun assertHoldsNoneOf(
-        holder: LabNode,
-        owner: LabNode,
-        generations: List<Long>,
-    ) {
-        holder.transport.awaitInboundDrained()
-        assertEquals("${owner.name} decided nothing for ${holder.name}", null, owner.manager.presenceKeysSentTo(holder.nodeId))
-        val held = holder.presenceKeys.heldBy(owner.nodeId).map { it.generation }
-        assertTrue("${holder.name} holds ${owner.name}'s fresh keys $held", generations.none { it in held })
-    }
-
-    /**
-     * After a reconcile of [from]'s ran to its end (a heal), none of [to] stores a key of [from]'s or refused one: none
-     * was sent. The heal returns once its basket ran, the reconcile in it included, and a send returns once the far end
-     * holds the frame, so each receiver's drained inbound has handled anything that crossed.
-     */
-    private suspend fun assertHandedNothing(
-        from: LabNode,
-        to: List<LabNode>,
-    ) {
-        from.heal()
-        for (node in to) {
-            assertEquals("${from.name} decided keys for ${node.name}", null, from.manager.presenceKeysSentTo(node.nodeId))
-            node.transport.awaitInboundDrained()
-            assertTrue("${node.name} holds ${from.name}'s keys", node.presenceKeys.heldBy(from.nodeId).isEmpty())
-            assertEquals("${node.name} refused a key", 0L, node.drops(DropReason.PRESENCE_KEY_REFUSED))
-        }
-        assertFalse(
-            "${from.name} handed a key to someone it must not",
-            to.any { node ->
-                from.transport.sent.any {
-                    it.contains(" ${node.nodeId.take(NODE_ID_CHARS)} ") && it.contains("relay=false") &&
-                        it.contains(" chat ")
-                }
-            },
-        )
-    }
-
-    /** The point-to-point chat frames [from] handed [to] — a sealed tick, a presence key, a link-owed reset. */
-    private fun pointToPointChatIds(
-        from: LabNode,
-        to: LabNode,
-    ): Set<String> =
-        from.transport.sent
-            .filter { it.contains(" ${to.nodeId.take(NODE_ID_CHARS)} ") && it.contains(" chat ") && it.contains("relay=false") }
-            .mapTo(HashSet()) { it.substringAfter(" chat ").substringBefore(' ') }
-
     private companion object {
         /** A link-up's presence-key wait no scenario sits out: the case's other triggers have to do the work. */
         const val HELD_OFF_MS = 600_000L
@@ -747,6 +664,5 @@ class PresenceKeyLabTest {
          * link-owed reset and the re-root that replaces it. Every other scenario keeps the field's minute.
          */
         const val SHORT_FLOOR_MS = 1_000L
-        const val NODE_ID_CHARS = 6
     }
 }

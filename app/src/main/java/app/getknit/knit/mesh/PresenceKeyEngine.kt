@@ -52,6 +52,14 @@ import java.util.concurrent.ConcurrentHashMap
  * — unless another reset of ours replaced it, or the peer's prekey moved on ([PresenceKeyPolicy.linkReset]). Nothing about
  * them reaches a relay.
  *
+ * **A build that sends no keys of its own** ([sendsOwnKeys] off: `BuildConfig.PRESENCE_KEYS`, on in every build as
+ * shipped; ADR 2026-11.xp6d's staging) mints, rotates and seals none, so none exists to leak: while links are read in the
+ * clear (#286) a ctl 11 at link-up tells a listener the two phones are direct contacts, and the frame can be re-wrapped
+ * `relay = true` and flooded (`docs/NEXT_WIRE_BREAK.md` item 14). What it still does is not about keys of its own: it
+ * deletes leavers' stored keys and sends a restore's link-owed resets, and the inbound arm still receives, stores and
+ * resolves contacts' keys. Own keys an earlier build with the flag on minted are left as they are, never sent again; a
+ * later build with it on rotates them by the ordinary rules.
+ *
  * **Keys of people who stop being direct contacts** are deleted on the pass that sees them go; the first pass of a
  * session deletes every stored key whose peer is not a direct contact (a removal made while the mesh was stopped).
  *
@@ -60,6 +68,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class PresenceKeyEngine(
     private val store: Store,
+    /** Whether this phone mints, rotates and sends its own keys (the class's "A build that sends no keys of its own"). */
+    private val sendsOwnKeys: Boolean = true,
     /** A fresh read of the direct contacts (`contacts/DirectContacts.read`). */
     private val direct: suspend () -> Set<String>,
     /** The peers with a live proven link now, one entry per peer whatever the planes (`MeshTransport.neighbors`). */
@@ -257,9 +267,10 @@ class PresenceKeyEngine(
     /**
      * Whether a profile carrying [capabilities] asks for a [reconcile]: it carries `CAP_BLIND_ADVERT`, so a linked peer
      * may be owed its keys now. Nothing is remembered per id (a Sybil profile flood grows no set): the reconcile is
-     * idempotent through what was sent, so a second profile with the bit costs a pass and seals nothing.
+     * idempotent through what was sent, so a second profile with the bit costs a pass and seals nothing. Never with
+     * [sendsOwnKeys] off: a capability owes only keys, and a link-owed reset is owed whatever the peer reads.
      */
-    fun asksForKeys(capabilities: Long?): Boolean = capabilities != null && capabilities and Protocol.CAP_BLIND_ADVERT != 0L
+    fun asksForKeys(capabilities: Long?): Boolean = sendsOwnKeys && capabilities != null && capabilities and Protocol.CAP_BLIND_ADVERT != 0L
 
     /**
      * One pass: under [lock], settle the own keys, delete the keys of people who left the direct contacts, seal every
@@ -282,8 +293,9 @@ class PresenceKeyEngine(
     private suspend fun pass(): List<Pair<Peer, Sealed>> {
         val contacts = direct()
         dropLeavers(contacts)
-        settle(contacts)
-        val keys = PresenceKeyPolicy.keysOf(store.ownKeys())
+        // With no keys of our own to send, nothing is minted or rotated, and the keys below are none.
+        if (sendsOwnKeys) settle(contacts)
+        val keys = if (sendsOwnKeys) PresenceKeyPolicy.keysOf(store.ownKeys()) else null
         // Only links the neighbour pass registered: a pass that ran before the pass saw a link would mark a reset sent on an
         // epoch the link-up then moves past, and send it twice on one link. A capability or root trigger that lands before
         // the neighbour pass registers the link is served by the delayed link-up pass and every heal.
@@ -292,13 +304,15 @@ class PresenceKeyEngine(
         val owedResets = store.linkOwedResets()
         // The link-owed resets first: a peer that just took one holds no confirmed session yet, so no key follows it.
         for (peer in peers.filter { it.nodeId in owedResets }) resetFor(peer, owedResets[peer.nodeId])?.let { out += peer to it }
-        for (peer in peers) sealOwed(peer, keys)?.let { out += peer to it }
+        if (keys != null) for (peer in peers) sealOwed(peer, keys)?.let { out += peer to it }
         return out
     }
 
     /**
      * The keys [peer] is owed, sealed, when they differ from what it was last sent — in generations or in the session
-     * root, the seal's own tag — and the record of them; null when nothing is owed or the seal declined.
+     * root, the seal's own tag — and the record of them; null when nothing is owed or the seal declined. Each sealed frame
+     * gets one [debug] line naming its frame id: `mesh/lab`'s idle-link oracle reads the id with `frame (\S+),`, so keep
+     * `frame <id>,` as it is. Ids and counts only, never a key, a tag or a root tag.
      */
     private suspend fun sealOwed(
         peer: Peer,
@@ -315,6 +329,7 @@ class PresenceKeyEngine(
         return sealKeys(peer.nodeId, PresenceKeyFrame.content(owed.map { it.generation to it.key }))?.also {
             sent[peer.nodeId] = Sent(generations, it.rootTag)
             metrics.onPresenceKeySent()
+            debug("presence keys sealed to ${peer.nodeId}: frame ${it.id}, ${generations.size} generations")
         }
     }
 

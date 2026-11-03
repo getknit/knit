@@ -346,7 +346,11 @@ LoRa plane (2026-09.ggq4).
   clock-or-mark advance at most once a day of elapsed time; a mint records its generation before its row. A restore clamps a
   last generation more than a year ahead and sends the direct contacts `wipedPeers` misses their `AFTER_WIPE` reset over
   the first link, sealed once and re-sent verbatim until the session confirms — never the flood. Keys of people who stop
-  being direct contacts are deleted. Never a key, a tag or a root tag in a log line beside a peer id. Regression:
+  being direct contacts are deleted. Minting and sending this phone's own keys ride `BuildConfig.PRESENCE_KEYS`
+  (`MeshManager.sendsPresenceKeys` → `PresenceKeyEngine`'s `sendsOwnKeys`; on in every build as shipped, independent of
+  writing tags, `BLIND_ADVERT`), while receiving, storing, resolving, leavers' deletion and link-owed resets run in every
+  build whatever it says.
+  Never a key, a tag or a root tag in a log line beside a peer id. Regression:
   `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `InboundPipelineTest`'s presence-key cases, `GoldenVectorTest`'s
   `messageContentPresenceKey*`, `PresenceKeyLabTest`.
 
