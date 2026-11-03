@@ -321,6 +321,43 @@
         "reason": "the signature does not cover this transcript"
       }
     },
+    "advert": {
+      "blinded": {
+        "tag": "ce739c7cd904e70887dbc6e38d218d19",
+        "capabilities": "c0009",
+        "digestVersionBeforeZeroing": 20015998343868,
+        "psm": 131,
+        "flags": 12,
+        "serviceData": "09ce739c7cd904e70887dbc6e38d218d190000000000830c",
+        "parsed": {
+          "form": "zzzzy7gzattqrb63y3ry2imnde",
+          "blinded": true,
+          "capabilities": 9,
+          "digestCue": 0,
+          "psm": 131,
+          "aware": true
+        }
+      },
+      "malformed": {
+        "serviceData": "09e08d0d3da73f9fb4ec05b4a84d88f17a00000000008308",
+        "reason": "FLAG_BLINDED over bytes without the tag prefix: dropped before anything is computed"
+      },
+      "clearWithTagBytes": {
+        "serviceData": "09ce739c7cd904e70887dbc6e38d218d1956789abc008300",
+        "blinded": false,
+        "reason": "no FLAG_BLINDED: read as a clear id, never keyed with the tag"
+      }
+    },
+    "tagNext": {
+      "tag": "ce739a64ba5a7baf20b4eb0403e344ed",
+      "slot": 1951223,
+      "restart": 0,
+      "record": "0900000010ce739a64ba5a7baf20b4eb0403e344ed",
+      "wrongLength": {
+        "record": "090000000fce739a64ba5a7baf20b4eb0403e344",
+        "reason": "a TAG_NEXT is exactly 16 bytes; any other length is a framing error that drops the link"
+      }
+    },
     "helloFields": {
       "both": {
         "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",

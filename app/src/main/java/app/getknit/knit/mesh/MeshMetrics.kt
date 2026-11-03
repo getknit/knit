@@ -240,6 +240,33 @@ enum class FastPathDrop {
 }
 
 /**
+ * What the Bluetooth plane dropped or refused for a blinded advert (ADR 2026-11.xp6d, knit-next #285). Counts only,
+ * never a tag or an id. Surfaced in [MeshMetrics.Snapshot.Bluetooth.bleBlindDropsByReason].
+ */
+enum class BleBlindDrop {
+    /** A `FLAG_BLINDED` advert whose bytes 1–16 lack the tag prefix: malformed, dropped on the scan thread. */
+    MALFORMED_ADVERT,
+
+    /**
+     * A well-formed `FLAG_BLINDED` advert, dropped unread: this build parses the flag, but its resolver is not wired
+     * yet, so the tag is kept out of every per-peer map rather than read as an id.
+     */
+    UNREAD_ADVERT,
+
+    /** A `FLAG_BLINDED` GATT payload: no port serves one, and its tag would be forgotten and re-read at every dial. */
+    GATT_BLINDED,
+
+    /** A `TAG_NEXT` from an unproven link, or one whose HELLO lacked `CAP_BLIND_ADVERT`. */
+    TAG_NEXT_UNPROVEN,
+
+    /** A `TAG_NEXT` from a proven, tag-aware link, dropped unread while the resolver is not wired. */
+    TAG_NEXT_UNREAD,
+
+    /** The held-link row refused a dialer whose proven link is held and whose `a` names a blinded form of mine. */
+    HELD_LINK_REFUSED,
+}
+
+/**
  * Why the BLE side channel (`mesh/bluetooth/BleSideChannel`, the extended-advertising page carrier) discarded
  * a frame. Surfaced in [MeshMetrics.Snapshot.Bluetooth.bleSideDropsByReason]: STALE/OVERFLOW climbing means the pages
  * cannot keep up with what is offered (two slots at a ~12 s dwell is the whole capacity); FRAG_TIMEOUT means
@@ -406,6 +433,7 @@ class MeshMetrics {
     private val bleSideReassembled = AtomicLong()
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
+    private val bleBlindDrops: Map<BleBlindDrop, AtomicLong> = BleBlindDrop.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
     private val bleCodedSightings = AtomicLong()
     private val bleCodedDials = AtomicLong()
@@ -1152,6 +1180,11 @@ class MeshMetrics {
         digestsReplaced.incrementAndGet()
     }
 
+    /** The Bluetooth plane dropped or refused something for a blinded advert — see [BleBlindDrop]. */
+    fun onBleBlindDropped(reason: BleBlindDrop) {
+        bleBlindDrops.getValue(reason).incrementAndGet()
+    }
+
     /** The side channel discarded a frame — see [BleSideDrop] for how to read each reason. */
     fun onBleSideDropped(reason: BleSideDrop) {
         bleSideDrops.getValue(reason).incrementAndGet()
@@ -1772,6 +1805,7 @@ class MeshMetrics {
             bleSideReassembled = bleSideReassembled.get(),
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
+            bleBlindDropsByReason = bleBlindDrops.mapValues { it.value.get() }.filterValues { it > 0 },
         )
     }
 
@@ -2087,6 +2121,8 @@ class MeshMetrics {
             val bleSideReassembled: Long = 0,
             val bleSideDeduped: Long = 0,
             val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
+            // ADR 2026-11.xp6d: blinded adverts, GATT payloads and TAG_NEXT records dropped, and held-link refusals.
+            val bleBlindDropsByReason: Map<BleBlindDrop, Long> = emptyMap(),
         )
 
         /** Wi-Fi Aware: serves, owed links, refused accepts, the message plane, and bulk-preference timeouts. */

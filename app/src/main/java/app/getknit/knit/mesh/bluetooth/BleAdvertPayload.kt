@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.BlindTag
 import java.nio.ByteBuffer
 
 /**
@@ -15,10 +16,18 @@ import java.nio.ByteBuffer
  * bytes 1..16  nodeId, 16 raw bytes (NodeId.BYTES = 128 bits), decoded to the 26-char id via NodeId.fromBytes
  * bytes 17..20 digest cue = low 32 bits of StoreDigest.version (BE) — both BLE peers truncate identically
  * bytes 21..22 L2CAP PSM (unsigned 16-bit, BE) so an initiator knows which channel to connect to
- * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS], bit 2 [FLAG_AWARE];
- *              bits 3..7 reserved (0). Optional on the wire: a build before it advertised 23 bytes, and this parser
- *              reads a missing byte as 0. Every shipped parser tests only the bits it knows, so a new bit is additive.
+ * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS], bit 2 [FLAG_AWARE],
+ *              bit 3 [FLAG_BLINDED]; bits 4..7 reserved (0). Optional on the wire: a build before it advertised 23
+ *              bytes, and this parser reads a missing byte as 0. Every shipped parser tests only the bits it knows, so a
+ *              new bit is additive.
  * ```
+ *
+ * **Blinded adverts** (ADR 2026-11.xp6d, knit-next #285): with [FLAG_BLINDED] set, bytes 1–16 are a rotating
+ * [BlindTag], never a node id, and a blinding writer zeroes the digest cue (unchanged it would tie one tag to the next).
+ * [parse] reads such an advert as [Parsed.blinded], its bytes as the tag's 26-char form in [Parsed.nodeId]'s place, and
+ * answers null for one whose bytes lack [BlindTag.hasPrefix] (malformed, dropped before anything is computed; the
+ * caller counts it through [isMalformedBlinded]). A shipped build ignores the bit and reads the tag as an id, which
+ * sorts `zzzz…` above all but about 2⁻²⁰ of real ids, so its ordinary dial leaves the pair to the blinding side.
  *
  * Wi-Fi Aware is said **positively** (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): bit 2 set means "count on
  * my Aware now", and a peer is an Aware candidate only on it. So an advert that never had the byte, and every released
@@ -72,6 +81,13 @@ internal object BleAdvertPayload {
     const val FLAG_AWARE = 0x04
 
     /**
+     * Bytes 1–16 are a rotating tag ([BlindTag]), not the node id (ADR 2026-11.xp6d). A reader resolves the tag through
+     * `AdvertAliases`; nothing keys a tag as an id. This build reads it and never sets it outside tests ([advert]'s
+     * `blinded`): the writer is `BuildConfig.BLIND_ADVERT`'s, not built yet.
+     */
+    const val FLAG_BLINDED = 0x08
+
+    /**
      * The flags byte this node advertises: [FLAG_SIDE_CHANNEL] while its side channel is [sideLive],
      * [FLAG_DIALS_GATT_PEERS] while its GATT reader runs ([gattPeers]), so it never claims a read it cannot make, and
      * [FLAG_AWARE] while a peer may count on this phone's Wi-Fi Aware ([aware]).
@@ -80,12 +96,18 @@ internal object BleAdvertPayload {
         sideLive: Boolean,
         gattPeers: Boolean,
         aware: Boolean,
+        blinded: Boolean = false,
     ): Int =
         (if (sideLive) FLAG_SIDE_CHANNEL else 0) or
             (if (gattPeers) FLAG_DIALS_GATT_PEERS else 0) or
-            (if (aware) FLAG_AWARE else 0)
+            (if (aware) FLAG_AWARE else 0) or
+            (if (blinded) FLAG_BLINDED else 0)
 
-    /** This node's presence advert, [encode] over [flags]: the bytes `BluetoothMeshTransport.readvertise` puts on air. */
+    /**
+     * This node's presence advert, [encode] over [flags]: the bytes `BluetoothMeshTransport.readvertise` puts on air.
+     * [blinded] says [nodeId] is a tag's 26-char form and zeroes the digest cue; this build never sets it outside tests.
+     */
+    @Suppress("LongParameterList") // the advert's fields and its flags, each a different source in the transport
     fun advert(
         nodeId: String,
         capabilities: Long,
@@ -94,7 +116,8 @@ internal object BleAdvertPayload {
         sideLive: Boolean,
         gattPeers: Boolean,
         aware: Boolean,
-    ): ByteArray = encode(nodeId, capabilities, digestVersion, psm, flags(sideLive, gattPeers, aware))
+        blinded: Boolean = false,
+    ): ByteArray = encode(nodeId, capabilities, if (blinded) 0L else digestVersion, psm, flags(sideLive, gattPeers, aware, blinded))
 
     private const val CAP_MASK = 0xFFL
     private const val PSM_MASK = 0xFFFF
@@ -117,6 +140,12 @@ internal object BleAdvertPayload {
          * released build's (2.10.0 and older).
          */
         val aware: Boolean get() = flags and FLAG_AWARE != 0
+
+        /** [nodeId] is a tag's form, not an id ([FLAG_BLINDED]): [form] is what a reader keys it by until it resolves. */
+        val blinded: Boolean get() = flags and FLAG_BLINDED != 0
+
+        /** The advertised form: the id itself for a clear advert, the tag for a blinded one (ADR 2026-11.xp6d). */
+        val form: AdvertOrder.Form get() = AdvertOrder.Form(nodeId, blinded)
     }
 
     fun encode(
@@ -138,12 +167,13 @@ internal object BleAdvertPayload {
     }
 
     /**
-     * Decodes the fixed 23-byte prefix, or null if the data is absent/too short; the flags byte is read when
-     * present and 0 otherwise. Any further trailing bytes from a (future) longer advert are ignored — the fields
-     * live at fixed offsets.
+     * Decodes the fixed 23-byte prefix, or null if the data is absent/too short, or a [FLAG_BLINDED] advert whose bytes
+     * 1–16 lack the tag prefix ([isMalformedBlinded]); the flags byte is read when present and 0 otherwise. Any further
+     * trailing bytes from a (future) longer advert are ignored — the fields live at fixed offsets. Total: never throws.
      */
     fun parse(serviceData: ByteArray?): Parsed? {
         if (serviceData == null || serviceData.size < SIZE_V1) return null
+        if (isMalformedBlinded(serviceData)) return null
         val buf = ByteBuffer.wrap(serviceData)
         val capabilities = buf.get().toLong() and CAP_MASK
         val idBytes = ByteArray(NodeId.BYTES)
@@ -153,5 +183,15 @@ internal object BleAdvertPayload {
         val psm = buf.short.toInt() and PSM_MASK
         val flags = if (serviceData.size > FLAGS_OFFSET) serviceData[FLAGS_OFFSET].toInt() and FLAGS_MASK else 0
         return Parsed(nodeId, capabilities, digestCue, psm, flags)
+    }
+
+    /**
+     * Whether [serviceData] is long enough to parse, says [FLAG_BLINDED], and its bytes 1–16 lack [BlindTag.hasPrefix]:
+     * a malformed blinded advert, which [parse] drops before anything is computed. Total; the scan path counts it.
+     */
+    fun isMalformedBlinded(serviceData: ByteArray?): Boolean {
+        if (serviceData == null || serviceData.size <= FLAGS_OFFSET) return false
+        if (serviceData[FLAGS_OFFSET].toInt() and FLAG_BLINDED == 0) return false
+        return !BlindTag.hasPrefix(serviceData.copyOfRange(1, 1 + NodeId.BYTES))
     }
 }

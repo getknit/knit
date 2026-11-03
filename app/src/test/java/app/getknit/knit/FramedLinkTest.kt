@@ -115,6 +115,7 @@ class FramedLinkTest {
         onKeepalive: () -> Unit = {},
         onKeepaliveWritten: () -> Unit = {},
         onFirstRecord: () -> Unit = {},
+        onTagNext: (ByteArray) -> Unit = {},
     ): Harness {
         val toLink = PipedOutputStream()
         val linkInput = PipedInputStream(toLink, 1 shl 18)
@@ -151,6 +152,7 @@ class FramedLinkTest {
                 onKeepaliveWritten = onKeepaliveWritten,
                 proven = false,
                 onFirstRecord = onFirstRecord,
+                onTagNext = onTagNext,
             )
         link.start()
         return Harness(link, toLink, fromLink, callbacks)
@@ -952,6 +954,23 @@ class FramedLinkTest {
             rec = LinkFraming.read(h.fromLink)
         }
         assertArrayEquals(body, received.toByteArray())
+    }
+
+    @Test
+    fun aTagNextGoesToTheOwnerAloneAndAWrongLengthDropsTheLink() {
+        // ADR 2026-11.xp6d: the Bluetooth plane judges it; a framing error closes the link and never reaches the owner.
+        val clock = AtomicLong(1_000)
+        val heard = LinkedBlockingQueue<ByteArray>()
+        val h = harness(now = clock::get, onTagNext = { heard.add(it) })
+        clock.set(9_000)
+        val tag = ByteArray(LinkFraming.TAG_NEXT_BYTES) { it.toByte() }
+        h.toLink.write(LinkFraming.encodeTagNext(tag))
+        h.toLink.flush()
+        assertArrayEquals(tag, heard.poll(2, TimeUnit.SECONDS))
+        assertEquals("not data: the quiescence clock stays", 1_000L, h.link.lastActivityAt)
+        writeRecord(h.toLink, LinkFraming.Type.TAG_NEXT, ByteArray(LinkFraming.TAG_NEXT_BYTES - 1))
+        assertNotNull("the link went down", h.callbacks.downs.poll(2, TimeUnit.SECONDS))
+        assertNull(heard.poll())
     }
 
     @Test

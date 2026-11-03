@@ -1,6 +1,7 @@
 package app.getknit.knit
 
 import app.getknit.knit.mesh.ConnectFailReason
+import app.getknit.knit.mesh.bluetooth.AdvertOrder
 import app.getknit.knit.mesh.bluetooth.BlePresenceTracker
 import app.getknit.knit.mesh.bluetooth.CodedPhyPolicy
 import app.getknit.knit.mesh.bluetooth.DialPlan
@@ -15,11 +16,17 @@ import org.junit.Test
 
 /** Unit tests for [DialPlan]: which peers the connection engine hands its policies, and how their answers combine. */
 class DialPlanTest {
+    private val mine = AdvertOrder.Mine.clear("mmm")
+
+    /** A blinding phone's forms (ADR 2026-11.xp6d): what the writer will set; this build never does. */
+    private val blinding = AdvertOrder.Mine(AdvertOrder.Form(TAG_MINE, blinded = true))
+
     private fun snap(
         nodeId: String,
         rssi: Double = -60.0,
         psm: Int = 100,
         dwell: Long = 15_000,
+        tag: String? = null,
     ): BlePresenceTracker.Snapshot =
         BlePresenceTracker.Snapshot(
             nodeId = nodeId,
@@ -30,12 +37,14 @@ class DialPlanTest {
             smoothedRssi = rssi,
             dwellMs = dwell,
             lastSeenAgoMs = 0,
+            advertised = tag ?: nodeId,
+            blinded = tag != null,
         )
 
     @Test
     fun theTieBreakDialsOnlySmallerIdsNotLinkedAndNotInFlight() {
         val snaps = listOf(snap("aaa"), snap("bbb"), snap("ccc"), snap("zzz"))
-        val got = DialPlan.ordinaryCandidates("mmm", snaps, linked = setOf("bbb"), inFlight = setOf("ccc")).map { it.nodeId }
+        val got = DialPlan.ordinaryCandidates(mine, snaps, linked = setOf("bbb"), inFlight = setOf("ccc")).map { it.nodeId }
         assertEquals("a larger id is the other side's to dial", listOf("aaa"), got)
     }
 
@@ -48,7 +57,7 @@ class DialPlanTest {
             rssi: Double?,
             linked: Set<String> = emptySet(),
             backoff: Set<String> = emptySet(),
-        ) = DialPlan.promotable("mmm", nodeId, rssi, linked, floor) { it in backoff }
+        ) = DialPlan.promotable(mine, AdvertOrder.Form.clear(nodeId), nodeId, rssi, linked, floor) { it in backoff }
         assertTrue(promotable("aaa", -70.0))
         assertTrue("the floor itself promotes", promotable("aaa", -90.0))
         assertFalse("below the floor", promotable("aaa", -91.0))
@@ -63,17 +72,17 @@ class DialPlanTest {
     fun theBackoffIsReadOnlyForAPeerThatPassesEveryOtherGate() {
         // It takes the transport's lock, on every sighting.
         var reads = 0
-        DialPlan.promotable("mmm", "zzz", -70.0, emptySet(), -90.0) { reads++ == 0 && false }
-        DialPlan.promotable("mmm", "aaa", -95.0, emptySet(), -90.0) { reads++ == 0 && false }
+        DialPlan.promotable(mine, AdvertOrder.Form.clear("zzz"), "zzz", -70.0, emptySet(), -90.0) { reads++ == 0 && false }
+        DialPlan.promotable(mine, AdvertOrder.Form.clear("aaa"), "aaa", -95.0, emptySet(), -90.0) { reads++ == 0 && false }
         assertEquals(0, reads)
-        DialPlan.promotable("mmm", "aaa", -70.0, emptySet(), -90.0) { reads++ == 0 && false }
+        DialPlan.promotable(mine, AdvertOrder.Form.clear("aaa"), "aaa", -70.0, emptySet(), -90.0) { reads++ == 0 && false }
         assertEquals(1, reads)
     }
 
     @Test
     fun theScanCandidatesAreTheSightingsThatPassTheSameGate() {
         val snaps = listOf(snap("aaa", -70.0), snap("bbb", -95.0), snap("ccc", -70.0), snap("ddd", -70.0), snap("zzz", -50.0))
-        val got = DialPlan.scanCandidates("mmm", snaps, linked = setOf("ccc"), backoff = setOf("ddd"), rssiFloorDbm = -90.0)
+        val got = DialPlan.scanCandidates(mine, snaps, linked = setOf("ccc"), backoff = setOf("ddd"), rssiFloorDbm = -90.0)
         assertEquals(setOf("aaa"), got)
     }
 
@@ -92,10 +101,44 @@ class DialPlanTest {
     }
 
     @Test
-    fun onlyADialToALargerIdIsALonelyOne() {
-        assertFalse(DialPlan.lonelyDialInFlight("mmm", setOf("aaa", "bbb")))
-        assertTrue(DialPlan.lonelyDialInFlight("mmm", setOf("aaa", "zzz")))
-        assertFalse(DialPlan.lonelyDialInFlight("mmm", emptySet()))
+    fun aDialIsLonelyByTheKindItRecordedWhenItStartedNeverByTheIdOrder() {
+        val ordinary = DialPlan.DialKind.ORDINARY
+        val lonely = DialPlan.DialKind.LONELY
+        assertFalse(DialPlan.lonelyDialInFlight(mapOf("aaa" to ordinary, "bbb" to ordinary)))
+        assertTrue(DialPlan.lonelyDialInFlight(mapOf("aaa" to ordinary, "zzz" to lonely)))
+        assertFalse(DialPlan.lonelyDialInFlight(emptyMap()))
+        // A blinding phone ordinary-dials a larger clear id, and a lonely dial may go to a tag below it (xp6d).
+        assertFalse("a larger id dialed ordinarily", DialPlan.lonelyDialInFlight(mapOf("zzz" to ordinary)))
+        assertTrue("a smaller form dialed lonely", DialPlan.lonelyDialInFlight(mapOf("aaa" to lonely)))
+    }
+
+    @Test
+    fun aClearPhoneNeverOrdinaryDialsABlindedAdvertWhereverItsTagSorts() {
+        val snaps = listOf(snap("aaa"), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
+        assertEquals(listOf("aaa"), DialPlan.ordinaryCandidates(mine, snaps, emptySet(), emptySet()).map { it.nodeId })
+        assertEquals(setOf("aaa"), DialPlan.scanCandidates(mine, snaps, emptySet(), emptySet(), -90.0))
+        assertFalse(
+            "a tag sorting below my id is still the blinding side's to dial",
+            DialPlan.promotable(mine, AdvertOrder.Form(TAG_LOW, blinded = true), "bbb", -60.0, emptySet(), -90.0) { false },
+        )
+    }
+
+    @Test
+    fun aClearPhoneMayLonelyDialABlindedAdvertAndItsCandidateCarriesTheForm() {
+        val snaps = listOf(snap("bbb", tag = TAG_LOW))
+        val candidates = DialPlan.lonelyCandidates(snaps, emptySet(), emptySet()) { true }
+        assertEquals(listOf(AdvertOrder.Form(TAG_LOW, blinded = true)), candidates.map { it.form })
+        val picked = LonelyDialPolicy.pick(mine, linkCount = 0, aloneForMs = Long.MAX_VALUE, candidates, lonelyDialInFlight = false)
+        assertEquals("the blinding side would not dial me", "bbb", picked?.nodeId)
+    }
+
+    @Test
+    fun aBlindingPhoneOrdinaryDialsEveryClearAdvertAndTheLargerOfTwoTags() {
+        val snaps = listOf(snap("aaa"), snap("zzz"), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
+        assertEquals(
+            listOf("aaa", "zzz", "bbb"),
+            DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet()).map { it.nodeId },
+        )
     }
 
     @Test
@@ -165,8 +208,13 @@ class DialPlanTest {
 
     @Test
     fun onlyAPeerWeDialIsWorthAChase() {
-        assertEquals(setOf("aaa"), DialPlan.initiable("mmm", setOf("aaa", "mmm", "zzz")))
-        assertEquals(emptySet<String>(), DialPlan.initiable("mmm", emptySet()))
+        assertEquals(setOf("aaa"), DialPlan.initiable("mmm", mine, setOf("aaa", "mmm", "zzz")))
+        assertEquals(emptySet<String>(), DialPlan.initiable("mmm", mine, emptySet()))
+        assertEquals(
+            "a blinding phone dials every clear advert",
+            setOf("aaa", "zzz"),
+            DialPlan.initiable("mmm", blinding, setOf("aaa", "mmm", "zzz")),
+        )
     }
 
     @Test
@@ -238,5 +286,12 @@ class DialPlanTest {
         assertFalse("backing off", DialPlan.promotes(far, emptyList(), setOf("far"), config))
         assertTrue("the debug cap is the budget", DialPlan.promotes(far, emptyList(), emptySet(), PromotionConfig(maxLinks = 1)))
         assertFalse(DialPlan.promotes(far, listOf(held("x", -60.0)), emptySet(), PromotionConfig(maxLinks = 1)))
+    }
+
+    private companion object {
+        // Tags as their 26-char forms: each starts `zzzz` (BlindTag's prefix). TAG_MINE sorts between the two.
+        const val TAG_LOW = "zzzzaaaaaaaaaaaaaaaaaaaaaa"
+        const val TAG_MINE = "zzzzmmmmmmmmmmmmmmmmmmmmmm"
+        const val TAG_HIGH = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
     }
 }

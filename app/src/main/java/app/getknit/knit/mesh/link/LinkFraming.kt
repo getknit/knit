@@ -61,6 +61,15 @@ internal object LinkFraming {
          * ([read]) and drops the link.
          */
         PROOF(8),
+
+        /**
+         * The sender's next advertised tag (ADR 2026-11.xp6d, knit-next #285): exactly [TAG_NEXT_BYTES], the Bluetooth
+         * advert bytes 1–16 it will air after its next rotation, so a linked reader recognises it before any link. Any
+         * other length is a framing error ([read] throws, and the link drops, as for a desynced length). Written only to
+         * a proven link whose HELLO carries `Protocol.CAP_BLIND_ADVERT`: every build before it throws on an unknown tag
+         * and drops the link. Read by the Bluetooth plane only; a plane that reads no tags ignores it.
+         */
+        TAG_NEXT(9),
         ;
 
         companion object {
@@ -93,6 +102,15 @@ internal object LinkFraming {
      * (the controller fragments to MPS K-frames regardless — see [BluetoothSocketLink]) and negligible on NAN.
      */
     const val FILE_CHUNK_BYTES = 16 * 1024
+
+    /** A [Type.TAG_NEXT] record's payload: one advertised form, the 16 bytes of a Bluetooth advert's bytes 1–16. */
+    const val TAG_NEXT_BYTES = 16
+
+    /** One [Type.TAG_NEXT] record for [tag] (exactly [TAG_NEXT_BYTES]; a caller's bug otherwise). */
+    fun encodeTagNext(tag: ByteArray): ByteArray {
+        require(tag.size == TAG_NEXT_BYTES) { "a tag-next payload is $TAG_NEXT_BYTES bytes" }
+        return encode(Type.TAG_NEXT, tag)
+    }
 
     /** Encodes one record: `[type][big-endian length][payload]`. */
     fun encode(
@@ -127,7 +145,9 @@ internal object LinkFraming {
         if (tagByte == -1) return null // clean EOF at a record boundary
         val type = Type.fromTag(tagByte.toByte()) ?: throw IOException("unknown record type $tagByte")
         val len = ByteBuffer.wrap(readFully(input, LENGTH_BYTES)).int
-        if (len !in 0..MAX_PAYLOAD_BYTES) throw IOException("record length $len out of range")
+        // A fixed-size record of any other length is a desynced or hostile stream, as an out-of-range length is.
+        val fixed = type == Type.TAG_NEXT && len != TAG_NEXT_BYTES
+        if (len !in 0..MAX_PAYLOAD_BYTES || fixed) throw IOException("record type $tagByte length $len out of range")
         val payload = if (len == 0) EMPTY else readFully(input, len)
         return Message(type, payload)
     }

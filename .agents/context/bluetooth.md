@@ -215,9 +215,10 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
   or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
-- **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`, or any pre-link
-  `localId > nodeId` in the plane:** READ
-  ADR 2026-11.xp6d (Proposed; the pure core is built, the wiring is not). `AdvertOrder.iDial` decides every role
+- **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
+  `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow`,
+  `DialPlan.DialKind`, `CodedPhyPolicy.dialsBack`, `BleBlindDrop`, or any pre-link `localId > nodeId` in the plane:**
+  READ ADR 2026-11.xp6d (Proposed; the pure core is built, the reader's wiring in part, the writer not). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
   two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
@@ -235,6 +236,16 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   only while its link is held, and an unresolved answer never does. The claim tables are capped (unproven voids and
   ended links' announcements evicted first) and expire off a deadline queue; every claim rule is in `AdvertAliases`'
   KDoc, and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`, `ExpectedTagTableTest`, `TagScheduleTest`.
+  The reader's wiring so far (step 5a, part one): every pre-link role reads `AdvertOrder` with my forms as one
+  `AdvertOrder.Mine` snapshot (clear in this build), a dial records its `DialKind` when it starts, and the drop and
+  cold-hunt roles take `dialsBack` while the PHY step stays on the proven ids. The responder judges order on forms, `t`
+  and `a` honoured only on a HELLO that offers (first pass) or proved (late pass) a proof and `t` only with the tag
+  prefix, so a no-proof dialer is judged exactly as before (#275). The held-link row fires only when `a` names a
+  blinded form of mine, never on a held quiet or doorbell link, so it is inert while this phone airs its id and shzv's
+  replace is untouched. A clear dial carries `a`, never `t`. `FLAG_BLINDED` is parsed (a prefixless one dropped as
+  malformed) but a blinded advert, a blinded GATT payload and any `TAG_NEXT` (a wrong length drops the link) are
+  dropped and counted (`BleBlindDrop`) until the resolver runs on its worker; `CAP_BLIND_ADVERT` stays out of
+  `LOCAL_CAPABILITIES` until then, since the bit says "I read tags".
 
 ## Adding an entry
 

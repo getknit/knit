@@ -8,29 +8,50 @@ import app.getknit.knit.mesh.ConnectFailReason
  * Android and of a clock, so [BluetoothMeshTransport]'s choices are asserted on the JVM.
  */
 internal object DialPlan {
-    /** The sighted peers the tie-break has [localId] dial: a smaller id, not [linked], no dial to it [inFlight]. */
+    /**
+     * The kind of a dial in flight, recorded when it starts (ADR 2026-11.xp6d): once adverts can be blinded, a dial's
+     * kind no longer follows from the id order (a blinding phone ordinary-dials every clear advert, larger ids among
+     * them, and a lonely dial may go to a tag), so it is never inferred from it.
+     */
+    enum class DialKind {
+        ORDINARY,
+
+        /** ADR 2026-09.hj4a's lonely dial: at most one in flight. */
+        LONELY,
+    }
+
+    /**
+     * The sighted peers the ordinary order has me dial ([AdvertOrder.iDial] on [mine] against each snapshot's advertised
+     * form: for two clear phones, a smaller id), not [linked], no dial to it [inFlight]. A clear phone never dials a
+     * blinded advert here; the blinding side dials it.
+     */
     fun ordinaryCandidates(
-        localId: String,
+        mine: AdvertOrder.Mine,
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         inFlight: Set<String>,
-    ): List<BlePresenceTracker.Snapshot> = snaps.filter { localId > it.nodeId && it.nodeId !in linked && it.nodeId !in inFlight }
+    ): List<BlePresenceTracker.Snapshot> =
+        snaps.filter { AdvertOrder.iDial(mine.current, it.form) && it.nodeId !in linked && it.nodeId !in inFlight }
 
     /**
-     * Whether a sighted [nodeId] at [smoothedRssi] gives the scan promotion work: one [localId] would dial (a smaller
-     * id), not [linked], at or above [rssiFloorDbm] so it can promote, and not [backingOff] (read last: it takes the
-     * transport's lock). The scan's floor reads the same gate over every sighting ([scanCandidates]) as a fresh
-     * sighting's boost does over one.
+     * Whether a sighted peer advertising [theirs] at [smoothedRssi] gives the scan promotion work: one I, airing [mine],
+     * would dial ([AdvertOrder.iDial]; a smaller id between two clear phones), not [linked], at or above [rssiFloorDbm]
+     * so it can promote, and not [backingOff] (read last: it takes the transport's lock). [linked] and [backingOff] read
+     * [nodeId], the id presence attributes the sighting to. The scan's floor reads the same gate over every sighting
+     * ([scanCandidates]) as a fresh sighting's boost does over one.
      */
     @Suppress("LongParameterList") // the gate's inputs, each a different source in the transport
     fun promotable(
-        localId: String,
+        mine: AdvertOrder.Mine,
+        theirs: AdvertOrder.Form,
         nodeId: String,
         smoothedRssi: Double?,
         linked: Set<String>,
         rssiFloorDbm: Double,
         backingOff: (String) -> Boolean,
-    ): Boolean = localId > nodeId && nodeId !in linked && smoothedRssi != null && smoothedRssi >= rssiFloorDbm && !backingOff(nodeId)
+    ): Boolean =
+        AdvertOrder.iDial(mine.current, theirs) && nodeId !in linked && smoothedRssi != null && smoothedRssi >= rssiFloorDbm &&
+            !backingOff(nodeId)
 
     /**
      * Whether the connect loop's own promotion ([PromotionPolicy.decide] over the [links] it scores, with [backoff] and
@@ -51,19 +72,20 @@ internal object DialPlan {
 
     /** The sighted peers [promotable] keeps: the scan's promotion work. */
     fun scanCandidates(
-        localId: String,
+        mine: AdvertOrder.Mine,
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         backoff: Set<String>,
         rssiFloorDbm: Double,
     ): Set<String> =
         snaps
-            .filter { promotable(localId, it.nodeId, it.smoothedRssi, linked, rssiFloorDbm) { id -> id in backoff } }
+            .filter { promotable(mine, it.form, it.nodeId, it.smoothedRssi, linked, rssiFloorDbm) { id -> id in backoff } }
             .mapTo(HashSet()) { it.nodeId }
 
     /**
      * The sighted peers [LonelyDialPolicy] may pick from: not [linked], advertising a PSM, [dialable] (an address
-     * known), each marked whether it is in [backoff]. The policy applies the id order and its other gates.
+     * known), each marked whether it is in [backoff] and carrying its advertised form. The policy applies the order
+     * ([AdvertOrder.lonelyMayDial]) and its other gates.
      */
     fun lonelyCandidates(
         snaps: List<BlePresenceTracker.Snapshot>,
@@ -73,13 +95,10 @@ internal object DialPlan {
     ): List<LonelyDialPolicy.Candidate> =
         snaps
             .filter { it.nodeId !in linked && it.psm != 0 && dialable(it.nodeId) }
-            .map { LonelyDialPolicy.Candidate(it.nodeId, it.smoothedRssi, it.dwellMs, it.nodeId in backoff) }
+            .map { LonelyDialPolicy.Candidate(it.nodeId, it.smoothedRssi, it.dwellMs, it.nodeId in backoff, it.form) }
 
-    /** Whether a dial to a larger id than [localId] is [inFlight]: the tie-break never dials one, so it is a lonely dial. */
-    fun lonelyDialInFlight(
-        localId: String,
-        inFlight: Set<String>,
-    ): Boolean = inFlight.any { it > localId }
+    /** Whether a lonely dial is [inFlight]: by the kind each dial recorded when it started ([DialKind]), never the order. */
+    fun lonelyDialInFlight(inFlight: Map<String, DialKind>): Boolean = inFlight.values.any { it == DialKind.LONELY }
 
     /**
      * The promotion [ordinary] decided, with [lonely]'s dial added (ADR 2026-09.hj4a), then held to a debug [cap] if one
@@ -114,11 +133,16 @@ internal object DialPlan {
         coded: T?,
     ): Pair<T, Boolean>? = if (viaCoded || oneM == null) coded?.let { it to true } else oneM to false
 
-    /** The peers another plane reports that [localId] would dial (the larger id dials): the only ones worth a chase. */
+    /**
+     * The peers another plane reports that I would dial: the only ones worth a chase. [AdvertOrder.initiable] on
+     * [localId] and whether [mine] blinds: the classic order (the larger id dials) for a phone that airs its id, which
+     * keeps chasing smaller ids even when they blind (that waste is accepted, as its KDoc says).
+     */
     fun initiable(
         localId: String,
+        mine: AdvertOrder.Mine,
         peers: Set<String>,
-    ): Set<String> = peers.filterTo(HashSet()) { localId > it }
+    ): Set<String> = AdvertOrder.initiable(localId, blinding = mine.blinded, peers = peers)
 
     /**
      * Whether a GATT payload read of [address] may start: never an address a link holds ([linkAddresses]), and never

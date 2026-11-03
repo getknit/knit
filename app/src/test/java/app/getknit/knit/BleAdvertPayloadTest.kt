@@ -2,6 +2,7 @@ package app.getknit.knit
 
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
+import app.getknit.knit.mesh.crypto.BlindTag
 import app.getknit.knit.mesh.protocol.Protocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -151,7 +152,8 @@ class BleAdvertPayloadTest {
         assertTrue(p.aware)
         assertTrue(p.sideChannel)
         assertTrue(p.dialsGattPeers)
-        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0xFB))!!
+        // Every other bit but FLAG_BLINDED, which over a clear id is a malformed advert (dropped, xp6d).
+        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0xF3))!!
         assertFalse("the other bits never read as it", side.aware)
     }
 
@@ -191,5 +193,73 @@ class BleAdvertPayloadTest {
         assertFalse(BleAdvertPayload.parse(v1)!!.aware)
         assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x03))!!.aware)
         assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x00))!!.aware)
+    }
+
+    // --- Blinded adverts (ADR 2026-11.xp6d) ---
+
+    private val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, slot = 5, restart = 1))
+
+    @Test
+    fun aBlindedAdvertParsesAsItsTagWithTheCueZeroed() {
+        val bytes =
+            BleAdvertPayload.advert(
+                tag,
+                0x09L,
+                0x1234_5678L,
+                0x83,
+                sideLive = false,
+                gattPeers = true,
+                aware = true,
+                blinded = true,
+            )
+        val p = BleAdvertPayload.parse(bytes)!!
+        assertTrue(p.blinded)
+        assertEquals(tag, p.nodeId)
+        assertEquals(0, p.digestCue)
+        assertTrue(p.aware)
+        assertTrue(p.dialsGattPeers)
+        assertEquals(BleAdvertPayload.FLAG_BLINDED, p.flags and BleAdvertPayload.FLAG_BLINDED)
+        assertTrue(p.form.blinded)
+        assertEquals(tag, p.form.advertised)
+    }
+
+    @Test
+    fun theBlindedBitIsBit3AndAClearAdvertNeverSetsIt() {
+        assertEquals(0x08, BleAdvertPayload.FLAG_BLINDED)
+        assertEquals(0, BleAdvertPayload.flags(sideLive = true, gattPeers = true, aware = true) and BleAdvertPayload.FLAG_BLINDED)
+        val clear = BleAdvertPayload.advert(nodeA, 0L, 7L, 1, sideLive = true, gattPeers = true, aware = true)
+        assertFalse(BleAdvertPayload.parse(clear)!!.blinded)
+        assertEquals("a clear advert keeps its cue", 7, BleAdvertPayload.parse(clear)!!.digestCue)
+    }
+
+    @Test
+    fun aBlindedAdvertWithoutTheTagPrefixIsMalformedAndDropped() {
+        val bytes = BleAdvertPayload.encode(nodeA, 0L, 0L, 1, flags = BleAdvertPayload.FLAG_BLINDED)
+        assertTrue(BleAdvertPayload.isMalformedBlinded(bytes))
+        assertNull(BleAdvertPayload.parse(bytes))
+        assertFalse("a well-formed one is not", BleAdvertPayload.isMalformedBlinded(BleAdvertPayload.encode(tag, 0L, 0L, 1, 0x08)))
+        assertFalse("a clear one never is", BleAdvertPayload.isMalformedBlinded(BleAdvertPayload.encode(nodeA, 0L, 0L, 1)))
+        assertFalse("too short to say", BleAdvertPayload.isMalformedBlinded(ByteArray(3)))
+        assertFalse(BleAdvertPayload.isMalformedBlinded(null))
+    }
+
+    @Test
+    fun aClearAdvertCarryingATagsBytesNeverSharesTheTagsForm() {
+        // A clear advert is its own id whatever its bytes: it must never land on an unresolved tag's entry.
+        val clear = BleAdvertPayload.parse(BleAdvertPayload.encode(tag, 0L, 0L, 1))!!
+        val blinded = BleAdvertPayload.parse(BleAdvertPayload.encode(tag, 0L, 0L, 1, BleAdvertPayload.FLAG_BLINDED))!!
+        assertEquals(clear.nodeId, blinded.nodeId)
+        assertFalse(clear.blinded)
+        assertTrue(clear.form != blinded.form)
+    }
+
+    @Test
+    fun theParserIsTotalOverAnyBytes() {
+        val random = java.util.Random(285)
+        repeat(5_000) {
+            val bytes = ByteArray(random.nextInt(40)).also(random::nextBytes)
+            BleAdvertPayload.isMalformedBlinded(bytes)
+            BleAdvertPayload.parse(bytes)?.let { p -> if (p.blinded) assertTrue(BlindTag.hasPrefix(NodeId.toBytes(p.nodeId))) }
+        }
     }
 }

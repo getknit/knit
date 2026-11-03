@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.protocol
 
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.bluetooth.BleAdvertPayload
 import app.getknit.knit.mesh.crypto.BlindTag
 import app.getknit.knit.mesh.crypto.LinkProof
 import app.getknit.knit.mesh.crypto.LinkProver
@@ -21,7 +22,10 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import java.io.IOException
 import java.nio.ByteBuffer
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -36,7 +40,9 @@ import javax.crypto.spec.SecretKeySpec
  * are, so a change to `Protocol.LOCAL_CAPABILITIES` never moves them; [Protocol.hello] is checked to write the same
  * fields after the nonce.
  *
- * The blinded advert's service data and the `TAG_NEXT` record land with the Bluetooth plane that writes them.
+ * The Bluetooth plane's reader adds `advert` (Alice's blinded service data with its parse, a prefixless one a reader
+ * drops, and a clear advert carrying her tag's bytes, which stays clear) and `tagNext` (the `TAG_NEXT` record naming
+ * her next slot's tag, and a 15-byte one a reader refuses).
  */
 internal class BlindVectors(
     private val alice: VectorParty,
@@ -64,6 +70,7 @@ internal class BlindVectors(
             TagCase("bobNowRestart0", "bob", bobKey, slot, 0)
 
     private val aliceTag = BlindTag.tag(aliceKey, slot, 0)
+    private val aliceNextTag = BlindTag.tag(aliceKey, slot + 1, 0)
     private val aliceTagRestart1 = BlindTag.tag(aliceKey, slot, 1)
     private val bobTag = BlindTag.tag(bobKey, slot, 0)
 
@@ -176,6 +183,8 @@ internal class BlindVectors(
                 }
             }
             put("link", linkJson())
+            put("advert", advertJson())
+            put("tagNext", tagNextJson())
             putJsonObject("helloFields") {
                 for (c in fieldCases) {
                     putJsonObject(c.name) {
@@ -238,6 +247,107 @@ internal class BlindVectors(
                 put("reason", "the signature does not cover this transcript")
             }
         }
+
+    // Alice's blinded presence advert: her tag in bytes 1–16, the digest cue zeroed, FLAG_BLINDED and FLAG_AWARE set.
+    private fun blindedAdvert(): ByteArray =
+        BleAdvertPayload.advert(
+            NodeId.fromBytes(aliceTag),
+            TAG_CAPABILITIES,
+            DIGEST_VERSION,
+            ADVERT_PSM,
+            sideLive = false,
+            gattPeers = false,
+            aware = true,
+            blinded = true,
+        )
+
+    /** The same layout with a prefixless "tag" (Alice's clear id) under FLAG_BLINDED: malformed, dropped unread. */
+    private fun malformedAdvert(): ByteArray =
+        BleAdvertPayload.encode(alice.nodeId, TAG_CAPABILITIES, 0L, ADVERT_PSM, BleAdvertPayload.FLAG_BLINDED)
+
+    /** A clear advert (no FLAG_BLINDED) whose bytes 1–16 are Alice's tag: a clear advert is its own id, whatever its bytes. */
+    private fun clearAdvertWithTagBytes(): ByteArray =
+        BleAdvertPayload.encode(NodeId.fromBytes(aliceTag), TAG_CAPABILITIES, DIGEST_VERSION, ADVERT_PSM, 0)
+
+    private fun advertJson(): JsonObject =
+        buildJsonObject {
+            putJsonObject("blinded") {
+                put("tag", aliceTag.toHex())
+                put("capabilities", TAG_CAPABILITIES.toString(HEX))
+                put("digestVersionBeforeZeroing", DIGEST_VERSION)
+                put("psm", ADVERT_PSM)
+                put("flags", BleAdvertPayload.FLAG_BLINDED or BleAdvertPayload.FLAG_AWARE)
+                put("serviceData", blindedAdvert().toHex())
+                putJsonObject("parsed") {
+                    put("form", NodeId.fromBytes(aliceTag))
+                    put("blinded", true)
+                    put("capabilities", TAG_CAPABILITIES and CAP_BYTE)
+                    put("digestCue", 0)
+                    put("psm", ADVERT_PSM)
+                    put("aware", true)
+                }
+            }
+            putJsonObject("malformed") {
+                put("serviceData", malformedAdvert().toHex())
+                put("reason", "FLAG_BLINDED over bytes without the tag prefix: dropped before anything is computed")
+            }
+            putJsonObject("clearWithTagBytes") {
+                put("serviceData", clearAdvertWithTagBytes().toHex())
+                put("blinded", false)
+                put("reason", "no FLAG_BLINDED: read as a clear id, never keyed with the tag")
+            }
+        }
+
+    private fun tagNextJson(): JsonObject =
+        buildJsonObject {
+            put("tag", aliceNextTag.toHex())
+            put("slot", slot + 1)
+            put("restart", 0)
+            put("record", LinkFraming.encodeTagNext(aliceNextTag).toHex())
+            putJsonObject("wrongLength") {
+                put("record", LinkFraming.encode(LinkFraming.Type.TAG_NEXT, aliceNextTag.copyOf(BlindTag.BYTES - 1)).toHex())
+                put("reason", "a TAG_NEXT is exactly 16 bytes; any other length is a framing error that drops the link")
+            }
+        }
+
+    /** The blinded advert rebuilds byte for byte and parses to its tag; the prefixless one is dropped; a clear one stays clear. */
+    fun assertAdvert(blind: JsonObject) {
+        val advert = blind.obj("advert")
+        val blinded = advert.obj("blinded")
+        assertEquals(blindedAdvert().toHex(), blinded.str("serviceData"))
+        val parsed = checkNotNull(BleAdvertPayload.parse(blinded.str("serviceData").fromHex()))
+        val expected = blinded.obj("parsed")
+        assertTrue(parsed.blinded)
+        assertEquals(expected.str("form"), parsed.nodeId)
+        assertEquals(expected.getValue("capabilities").jsonPrimitive.long, parsed.capabilities)
+        assertEquals(expected.getValue("digestCue").jsonPrimitive.int, parsed.digestCue)
+        assertEquals(expected.getValue("psm").jsonPrimitive.int, parsed.psm)
+        assertEquals(expected.getValue("aware").jsonPrimitive.boolean, parsed.aware)
+        assertTrue(BlindTag.hasPrefix(NodeId.toBytes(parsed.nodeId)))
+
+        val malformed = advert.obj("malformed").str("serviceData").fromHex()
+        assertEquals(malformedAdvert().toHex(), malformed.toHex())
+        assertTrue(BleAdvertPayload.isMalformedBlinded(malformed))
+        assertNull(BleAdvertPayload.parse(malformed))
+
+        val clear = advert.obj("clearWithTagBytes").str("serviceData").fromHex()
+        assertEquals(clearAdvertWithTagBytes().toHex(), clear.toHex())
+        val clearParsed = checkNotNull(BleAdvertPayload.parse(clear))
+        assertFalse(clearParsed.blinded)
+        assertTrue("its form is not the tag's form", clearParsed.form != parsed.form)
+    }
+
+    /** The `TAG_NEXT` record rebuilds byte for byte and reads back; the 15-byte one is refused. */
+    fun assertTagNext(blind: JsonObject) {
+        val tagNext = blind.obj("tagNext")
+        assertEquals(aliceNextTag.toHex(), tagNext.str("tag"))
+        assertEquals(LinkFraming.encodeTagNext(aliceNextTag).toHex(), tagNext.str("record"))
+        val read = checkNotNull(LinkFraming.read(tagNext.str("record").fromHex().inputStream()))
+        assertEquals(LinkFraming.Type.TAG_NEXT, read.type)
+        assertArrayEquals(aliceNextTag, read.payload)
+        val wrong = tagNext.obj("wrongLength").str("record").fromHex()
+        assertTrue(runCatching { LinkFraming.read(wrong.inputStream()) }.exceptionOrNull() is IOException)
+    }
 
     /** Every pinned tag is what [BlindTag] and the layout build, from the pinned MAC input and MAC. */
     fun assertTags(blind: JsonObject) {
@@ -372,6 +482,11 @@ internal class BlindVectors(
         val TAG_CAPABILITIES = 0x9L or Protocol.CAP_LINK_PROOF or Protocol.CAP_BLIND_ADVERT
 
         private const val SLOT_MS = BlindTag.SLOT_MS
+
+        /** The blinded advert's PSM, and the store digest whose low 32 bits a clear advert would carry (zeroed). */
+        private const val ADVERT_PSM = 0x0083
+        private const val DIGEST_VERSION = 0x1234_5678_9ABCL
+        private const val CAP_BYTE = 0xFFL
         private const val ALICE_KEY_SEED = 41
         private const val BOB_KEY_SEED = 42
         private const val HEX = 16

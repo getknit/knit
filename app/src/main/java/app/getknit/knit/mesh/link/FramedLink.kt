@@ -104,6 +104,10 @@ class FramedLink(
     // dialer of a proven link resets its redial streak only here: the responder writes nothing before it has verified our
     // PROOF, so any record from it says the proof held (ADR 2026-11.264w). Wi-Fi Aware and direct links pass nothing.
     private val onFirstRecord: () -> Unit = {},
+    // Called on the reader with a [LinkFraming.Type.TAG_NEXT]'s 16 bytes (ADR 2026-11.xp6d): the peer's next advertised
+    // tag. The Bluetooth plane judges it (a proven link whose HELLO carried `CAP_BLIND_ADVERT`); every other plane passes
+    // nothing and ignores it. A wrong length never gets here: [LinkFraming.read] throws and the link drops.
+    private val onTagNext: (ByteArray) -> Unit = {},
 ) {
     private val outbound = Channel<Outbound>(Channel.UNLIMITED)
 
@@ -606,14 +610,8 @@ class FramedLink(
                         handleDigest(msg.payload)
                     }
 
-                    LinkFraming.Type.KEEPALIVE -> {
-                        // Its arrival is the whole point: the owner reads it as a probe to answer (#203).
-                        onKeepalive()
-                    }
-
-                    LinkFraming.Type.HELLO, LinkFraming.Type.PROOF -> {
-                        // Identity (and its proof) was already consumed by the handshake, before this loop started, so
-                        // ignore any stray.
+                    LinkFraming.Type.KEEPALIVE, LinkFraming.Type.TAG_NEXT, LinkFraming.Type.HELLO, LinkFraming.Type.PROOF -> {
+                        handleControl(msg)
                     }
                 }
             }
@@ -621,6 +619,24 @@ class FramedLink(
             log("read loop ended for $nodeId: ${e.message}")
         } finally {
             callbacks.onLinkDown(nodeId)
+        }
+    }
+
+    /** A record that carries no data, so it moves no quiescence clock. */
+    private fun handleControl(msg: LinkFraming.Message) {
+        when (msg.type) {
+            // Its arrival is the whole point: the owner reads it as a probe to answer (#203).
+            LinkFraming.Type.KEEPALIVE -> {
+                onKeepalive()
+            }
+
+            // The peer's next advertised tag (ADR 2026-11.xp6d): the owner judges it.
+            LinkFraming.Type.TAG_NEXT -> {
+                onTagNext(msg.payload)
+            }
+
+            // Identity (and its proof) was already consumed by the handshake, before this loop started, so ignore any stray.
+            else -> {}
         }
     }
 

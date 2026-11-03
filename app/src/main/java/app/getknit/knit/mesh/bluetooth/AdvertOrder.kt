@@ -3,15 +3,17 @@ package app.getknit.knit.mesh.bluetooth
 /**
  * Who dials before a link exists, once a presence advert can name a rotating tag instead of the node id (ADR
  * 2026-11.xp6d, knit-next #285). It replaces every raw `localId > nodeId` the plane reads to decide who dials or hunts
- * (the wiring moves them; none moves yet):
+ * (the reader's wiring moved each of them onto it, with my forms ([Mine]) as an input, so a phone that airs its id reads
+ * the classic order everywhere and the writer only has to move [Mine]):
  *  - `DialPlan.ordinaryCandidates`, `promotable` and `scanCandidates`, the boost trigger and the scan floor;
- *  - the lonely pick ([lonelyMayDial]) and `DialPlan.lonelyDialInFlight`, which infers a lonely dial from the order:
- *    the wiring marks a dial lonely when it starts instead, and the `bt coded heard … dials=` line moves to [iDial];
+ *  - the lonely pick ([lonelyMayDial]) and `DialPlan.lonelyDialInFlight`, which no longer infers a lonely dial from the
+ *    order: a dial records its kind when it starts (`DialPlan.DialKind`), and the `bt coded heard … dials=` line reads
+ *    [iDial];
  *  - the Aware→BLE chase (`DialPlan.initiable`, [initiable]);
  *  - three roles that today read `CodedPhyPolicy.drives` but decide who dials back or hunts, not who steps a live
  *    link: `fastAdvertAfterDrop`, `huntAfterDrop` and `coldHunt` (with its `DialPlan.promotes` input). Each is judged by
  *    [iDial] on my current form against the peer's last known advertised form, which is the classic order when that
- *    form was clear. Splitting them off `drives` (a `dialsBack` input) is the wiring's.
+ *    form was clear (`CodedPhyPolicy.dialsBack`, the classic order on the real ids when no form is known).
  *
  * Pure, free of Android and of a clock.
  *
@@ -64,6 +66,26 @@ internal object AdvertOrder {
                 helloId: String,
                 told: String?,
             ): Form = if (told == null || told == helloId) clear(helloId) else Form(told, blinded = true)
+        }
+    }
+
+    /**
+     * My own advertised forms, read as one snapshot by every role that judges order ([iDial], the responder's check,
+     * the held-link row): [current] is what I air now, [previous] what I aired before my last rotation (null when none).
+     * The transport holds one in a single reference and replaces it whole, so no reader sees a current from one rotation
+     * beside a previous from another. A phone that never blinds holds `Mine(Form.clear(id), null)` for good; the writer
+     * (ADR 2026-11.xp6d's staging, `BuildConfig.BLIND_ADVERT`) is what will move it.
+     */
+    data class Mine(
+        val current: Form,
+        val previous: Form? = null,
+    ) {
+        /** Whether I air a tag now. */
+        val blinded: Boolean get() = current.blinded
+
+        companion object {
+            /** A phone that airs its id: every pre-link role then reads the classic order. */
+            fun clear(nodeId: String): Mine = Mine(Form.clear(nodeId))
         }
     }
 
@@ -132,3 +154,6 @@ internal object AdvertOrder {
         dialer: Form,
     ): Boolean = iDial(dialedForm(current, previous, dialed) ?: current, dialer)
 }
+
+/** The advertised form of a presence snapshot ([BlePresenceTracker.Snapshot.advertised]): what every pre-link role reads. */
+internal val BlePresenceTracker.Snapshot.form: AdvertOrder.Form get() = AdvertOrder.Form(advertised, blinded)

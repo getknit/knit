@@ -1,5 +1,6 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.bluetooth.AdvertOrder
 import app.getknit.knit.mesh.bluetooth.LonelyDialPolicy
 import app.getknit.knit.mesh.bluetooth.LonelyDialPolicy.Candidate
 import app.getknit.knit.mesh.power.PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS
@@ -24,14 +25,14 @@ class LonelyDialPolicyTest {
         aloneForMs: Long = alone,
         linkCount: Int = 0,
         inFlight: Boolean = false,
-    ) = LonelyDialPolicy.pick(local, linkCount, aloneForMs, candidates, inFlight)?.nodeId
+    ) = LonelyDialPolicy.pick(AdvertOrder.Mine.clear(local), linkCount, aloneForMs, candidates, inFlight)?.nodeId
 
     private fun due(
         candidates: List<Candidate>,
         aloneForMs: Long = alone,
         linkCount: Int = 0,
         inFlight: Boolean = false,
-    ) = LonelyDialPolicy.msUntilDue(local, linkCount, aloneForMs, candidates, inFlight)
+    ) = LonelyDialPolicy.msUntilDue(AdvertOrder.Mine.clear(local), linkCount, aloneForMs, candidates, inFlight)
 
     @Test
     fun underTheWindowNothingIsDialed() {

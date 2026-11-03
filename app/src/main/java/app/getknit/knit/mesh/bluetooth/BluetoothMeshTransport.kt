@@ -26,7 +26,9 @@ import app.getknit.knit.fieldlog.BtDownReason
 import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.mesh.BleBlindDrop
 import app.getknit.knit.mesh.BleSideDrop
 import app.getknit.knit.mesh.ConnectFailReason
 import app.getknit.knit.mesh.FileFeed
@@ -93,6 +95,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * [MeshTransport] over **Bluetooth LE** — the second mesh plane, running simultaneously with
@@ -390,7 +393,10 @@ class BluetoothMeshTransport(
     // Connection bookkeeping guarded by [lock]: in-flight initiator connects + per-peer escalating backoff
     // (streak + next-eligible deadline), reset the moment a link comes up.
     private val lock = Any()
-    private val inFlight = HashSet<String>()
+
+    // Each dial in flight and its kind, recorded when it starts: a lonely dial is never inferred from the id order
+    // (ADR 2026-11.xp6d).
+    private val inFlight = HashMap<String, DialPlan.DialKind>()
     private val backoffs = HashMap<String, ConnectBackoffEntry>()
     private val backoffConfig = BackoffConfig(baseMs = CONNECT_BACKOFF_MS, maxMs = MAX_CONNECT_BACKOFF_MS)
 
@@ -455,6 +461,13 @@ class BluetoothMeshTransport(
     override val radioContended = audioMonitor.contended
 
     private lateinit var localNodeId: String
+
+    // My advertised forms (ADR 2026-11.xp6d), one snapshot every pre-link role reads ([judge], the dial plan): replaced
+    // whole, never field by field. Clear for good in this build; the writer (`BuildConfig.BLIND_ADVERT`) will move it.
+    private val mine = AtomicReference<AdvertOrder.Mine?>(null)
+
+    /** [mine], or the clear form of [localNodeId] before [start] has set it. */
+    private fun mine(): AdvertOrder.Mine = mine.get() ?: AdvertOrder.Mine.clear(localNodeId)
 
     @Volatile private var serverSocket: BluetoothServerSocket? = null
 
@@ -623,6 +636,7 @@ class BluetoothMeshTransport(
         claimsHook = claims.onCapable { id -> scope.launch { closeClaimed(id) } }
         scope.launch {
             localNodeId = identity.nodeId()
+            mine.set(AdvertOrder.Mine.clear(localNodeId))
             noLinkSince = elapsed()
             registerAvailability()
             registerAclEdges()
@@ -774,7 +788,7 @@ class BluetoothMeshTransport(
     override fun onForeignReachable(peers: Set<String>) {
         // Only chase peers we'd initiate to (larger id initiates); a larger-id foreign peer connects to us via
         // our always-on advert, so scanning harder for it wouldn't help. Guard localNodeId until start() sets it.
-        val initiable = if (::localNodeId.isInitialized) DialPlan.initiable(localNodeId, peers) else emptySet()
+        val initiable = if (::localNodeId.isInitialized) DialPlan.initiable(localNodeId, mine(), peers) else emptySet()
         if (initiable == foreignReachable) return
         val rising = initiable.any { it !in foreignReachable }
         foreignReachable = initiable
@@ -1301,15 +1315,26 @@ class BluetoothMeshTransport(
         Log.i(TAG, "bt phy ${status.nodeId} link dropped on ${status.phy} rssi=${status.linkRssi} ($reason)")
         val tuning = CodedPhyDiag.tuning
         if (reason != "eof" || !codedOn()) return
-        if (CodedPhyPolicy.huntAfterDrop(localNodeId, status.nodeId, status.phy, status.linkRssi, tuning)) {
+        // Who dials back is a dial role, on advertised forms; who stepped the link's PHY stays on the real ids (xp6d).
+        val dialsBack = dialsBack(status.nodeId)
+        if (CodedPhyPolicy.huntAfterDrop(localNodeId, status.nodeId, status.phy, status.linkRssi, tuning, dialsBack)) {
             rangeHunt.onDrop(status.nodeId, elapsed())
             Log.i(TAG, "bt hunt ${status.nodeId}: lost at range, for ${tuning.fastHoldMs}ms or ${tuning.huntInUseHoldMs}ms in use")
             wakeScan()
             return
         }
-        if (!CodedPhyPolicy.fastAdvertAfterDrop(localNodeId, status.nodeId, status.phy, status.linkRssi, tuning)) return
+        if (!CodedPhyPolicy.fastAdvertAfterDrop(localNodeId, status.nodeId, status.phy, status.linkRssi, tuning, dialsBack)) return
         codedPace.onDrop(status.nodeId, elapsed(), tuning.fastHoldMs)
         schedulePace(AdvertReassertPolicy.SETTLE_MS)
+    }
+
+    /**
+     * Whether I dial [nodeId] back after its link dropped ([CodedPhyPolicy.dialsBack]): on my form against the form it
+     * last advertised while presence still holds it, else the classic order on the real ids (a never-sighted link).
+     */
+    private fun dialsBack(nodeId: String): Boolean {
+        val theirs = presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.form
+        return CodedPhyPolicy.dialsBack(mine(), theirs, localNodeId, nodeId)
     }
 
     private fun stopCodedAdvert() {
@@ -1644,7 +1669,7 @@ class BluetoothMeshTransport(
 
     /** The addresses our dials in flight target, on either PHY. */
     private fun dialingAddresses(): Set<String> =
-        synchronized(lock) { inFlight.toList() }
+        synchronized(lock) { inFlight.keys.toList() }
             .flatMap { listOfNotNull(deviceFor[it]?.address, codedDeviceFor[it]?.address) }
             .toSet()
 
@@ -2036,6 +2061,7 @@ class BluetoothMeshTransport(
         var started = false
         snaps.filter { it.nodeId in far }.forEach { snap ->
             val id = snap.nodeId
+            val dialsBack = CodedPhyPolicy.dialsBack(mine(), snap.form, localNodeId, id)
             val sighting =
                 ColdSighting(
                     peerNodeId = id,
@@ -2043,9 +2069,10 @@ class BluetoothMeshTransport(
                     linked = id in links.keys || id in inflight,
                     held = id in held,
                     backingOff = id in backoff,
-                    promotes = CodedPhyPolicy.drives(localNodeId, id) && DialPlan.promotes(snap, linkSnaps, backoff, config),
+                    promotes = dialsBack && DialPlan.promotes(snap, linkSnaps, backoff, config),
                 )
-            val action = CodedPhyPolicy.coldHunt(localNodeId, sighting, codedOn = true, lowPower = lowPower, tuning = tuning)
+            val action =
+                CodedPhyPolicy.coldHunt(localNodeId, sighting, codedOn = true, lowPower = lowPower, tuning = tuning, dialsBack = dialsBack)
             if (action != ColdAction.NONE) started = startCold(id, action, snap.smoothedRssi.toInt(), now, tuning) || started
         }
         return ended || started
@@ -2247,7 +2274,7 @@ class BluetoothMeshTransport(
         val now = elapsed()
         val sighted = presence.snapshots(now)
         val backoff = activeBackoff(now)
-        val candidates = DialPlan.scanCandidates(localNodeId, sighted, links.keys, backoff, PROMOTE_RSSI_FLOOR)
+        val candidates = DialPlan.scanCandidates(mine(), sighted, links.keys, backoff, PROMOTE_RSSI_FLOOR)
         val demand =
             ScanDemandPolicy.decide(
                 linkCount = links.size,
@@ -2284,12 +2311,27 @@ class BluetoothMeshTransport(
         val data = record.getServiceData(BleConstants.SERVICE_UUID)
         if (data != null) {
             val coded = result.primaryPhy == BluetoothDevice.PHY_LE_CODED
-            BleAdvertPayload.parse(data)?.let { sight(it, result.device, result.rssi, coded) }
+            // A blinded advert's bytes 1–16 are a tag, never an id (ADR 2026-11.xp6d): a malformed one is dropped here,
+            // before anything is computed, and a well-formed one too until the resolver is wired, so no tag ever lands
+            // in a per-peer map keyed as an id. Counts only.
+            when {
+                BleAdvertPayload.isMalformedBlinded(data) -> metrics.onBleBlindDropped(BleBlindDrop.MALFORMED_ADVERT)
+                else -> BleAdvertPayload.parse(data)?.let { sightClear(it, result, coded) }
+            }
             return
         }
         if (!gattPeers || record.serviceUuids?.contains(BleConstants.SERVICE_UUID) != true) return
         val read = gattPayloads.heard(result.device.address)
         if (read != null) sight(read, result.device, result.rssi, viaGatt = true) else maybeReadGatt(result.device, result.rssi)
+    }
+
+    /** [parsed] from a scan result's service data: sighted when clear, dropped and counted when blinded (unread yet). */
+    private fun sightClear(
+        parsed: BleAdvertPayload.Parsed,
+        result: ScanResult,
+        coded: Boolean,
+    ) {
+        if (parsed.blinded) metrics.onBleBlindDropped(BleBlindDrop.UNREAD_ADVERT) else sight(parsed, result.device, result.rssi, coded)
     }
 
     /** The peer [parsed] names is here, on [device] at [rssi]: presence, the side channel's audience, and the loops. */
@@ -2341,7 +2383,7 @@ class BluetoothMeshTransport(
         healSignal.trySend(Unit) // connectLoop: react to every sighting to drive promotion
         // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
         // is what keeps a settled clique scanning continuously — gating here is what lets the floor engage.
-        if (isBoostTrigger(parsed.nodeId)) scanWake.trySend(Unit)
+        if (isBoostTrigger(parsed.form, parsed.nodeId)) scanWake.trySend(Unit)
     }
 
     /**
@@ -2382,6 +2424,7 @@ class BluetoothMeshTransport(
 
                     GattPayloads.Outcome.Stranger -> {
                         Log.i(TAG, "bt gatt read $address stranger (${result.phase})")
+                        if (result.phase == BleGattPayloadReader.PHASE_BLINDED) metrics.onBleBlindDropped(BleBlindDrop.GATT_BLINDED)
                     }
                 }
                 wake() // the arbiter is free again, and a dial held back for the read may go
@@ -2411,12 +2454,18 @@ class BluetoothMeshTransport(
         gattPayloads.cancel()
     }
 
-    /** A just-sighted peer worth boosting the scan for: one we'd initiate to (larger id), not linked, above the
-     *  RSSI floor (so it can actually promote), and off connect backoff. Mirrors the [floorScan] candidate gate. */
-    private fun isBoostTrigger(nodeId: String): Boolean {
-        // Before the RSSI read, which takes the presence lock: a scan result for a linked or larger peer stops here.
-        return ::localNodeId.isInitialized && localNodeId > nodeId && nodeId !in links.keys &&
-            DialPlan.promotable(localNodeId, nodeId, presence.smoothedRssiFor(nodeId), links.keys, PROMOTE_RSSI_FLOOR) {
+    /** A just-sighted peer worth boosting the scan for: one we'd initiate to ([AdvertOrder.iDial] on its advertised
+     *  [form]), not linked, above the RSSI floor (so it can actually promote), and off connect backoff. Mirrors the
+     *  [floorScan] candidate gate. */
+    private fun isBoostTrigger(
+        form: AdvertOrder.Form,
+        nodeId: String,
+    ): Boolean {
+        if (!::localNodeId.isInitialized) return false
+        val forms = mine()
+        // Before the RSSI read, which takes the presence lock: a scan result for a linked or an order-exempt peer stops here.
+        return AdvertOrder.iDial(forms.current, form) && nodeId !in links.keys &&
+            DialPlan.promotable(forms, form, nodeId, presence.smoothedRssiFor(nodeId), links.keys, PROMOTE_RSSI_FLOOR) {
                 it in activeBackoff(elapsed())
             }
     }
@@ -2450,7 +2499,7 @@ class BluetoothMeshTransport(
 
     /** The sighted peers the tie-break has us dial: a smaller id, not linked, no dial to it in flight. */
     private fun ordinaryCandidates(snaps: List<BlePresenceTracker.Snapshot>): List<BlePresenceTracker.Snapshot> =
-        DialPlan.ordinaryCandidates(localNodeId, snaps, links.keys, inFlightSnapshot())
+        DialPlan.ordinaryCandidates(mine(), snaps, links.keys, inFlightSnapshot())
 
     private fun ordinaryDialDueMs(
         snaps: List<BlePresenceTracker.Snapshot>,
@@ -2490,14 +2539,14 @@ class BluetoothMeshTransport(
         return DialPlan.via(codedOn(), viaCoded)
     }
 
-    /** Whether a dial to a larger id is open: the tie-break never dials one, so it can only be a lonely dial. */
-    private fun lonelyDialInFlight(): Boolean = DialPlan.lonelyDialInFlight(localNodeId, inFlightSnapshot())
+    /** Whether a lonely dial is open, by the kind its dial recorded when it began. */
+    private fun lonelyDialInFlight(): Boolean = DialPlan.lonelyDialInFlight(synchronized(lock) { HashMap(inFlight) })
 
     private fun lonelyDialDueMs(snaps: List<BlePresenceTracker.Snapshot>): Long? =
         if (!::localNodeId.isInitialized || adapter?.isEnabled != true) {
             null
         } else {
-            LonelyDialPolicy.msUntilDue(localNodeId, links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight())
+            LonelyDialPolicy.msUntilDue(mine(), links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight())
         }
 
     /**
@@ -2541,14 +2590,14 @@ class BluetoothMeshTransport(
             synchronized(lock) {
                 // Drop backoff state for a peer that has left and whose window has passed, so a returning peer
                 // starts fresh instead of inheriting a maxed-out streak.
-                ConnectBackoffs.prune(backoffs, now) { id -> id in presentIds || id in links.keys || id in inFlight }
+                ConnectBackoffs.prune(backoffs, now) { id -> id in presentIds || id in links.keys || id in inFlight.keys }
                 ConnectBackoffs.active(backoffs, now)
             }
         val cap = debugCap
         val config = promotionConfig()
         val ordinary = PromotionPolicy.decide(candidates, linkSnaps, backoff, config)
         // Alone past the window: one larger-id peer too, which the responder admits unless it has sighted us (hj4a).
-        val lonely = LonelyDialPolicy.pick(localNodeId, links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight(), config)
+        val lonely = LonelyDialPolicy.pick(mine(), links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight(), config)
         // Under a debug cap, a dial still in flight holds a slot too, so back-to-back ticks can't overshoot it.
         val decision = DialPlan.decision(ordinary, lonely, cap, linkSnaps.size) { inFlightSnapshot().size }
         if (decision.promote.isNotEmpty() || decision.evict.isNotEmpty()) {
@@ -2573,19 +2622,23 @@ class BluetoothMeshTransport(
     ) {
         promote.forEach { id ->
             // Straight before its own `bt initiating to`: the iOS port's interop harness keys off the pair.
-            if (id == lonely?.nodeId) {
+            val isLonely = id == lonely?.nodeId
+            if (isLonely) {
                 Log.i(TAG, "bt lonely dial $id (alone=${aloneForMs()}ms rssi=${lonely.smoothedRssi.toInt()} dwell=${lonely.dwellMs}ms)")
             }
-            initiateTo(id)
+            initiateTo(id, if (isLonely) DialPlan.DialKind.LONELY else DialPlan.DialKind.ORDINARY)
         }
     }
 
     @Suppress("LongMethod") // the connect + watchdog + two-way HELLO is one linear flow; splitting it obscures it
-    private fun initiateTo(nodeId: String) {
+    private fun initiateTo(
+        nodeId: String,
+        kind: DialPlan.DialKind,
+    ) {
         val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId } ?: return
         val (device, viaCoded) = dialTarget(snap) ?: return
         val psm = presence.psmFor(nodeId) ?: return
-        if (!beginConnect(nodeId)) return
+        if (!beginConnect(nodeId, kind)) return
         val rssi = snap.smoothedRssi.toInt()
         Log.i(
             TAG,
@@ -2636,7 +2689,9 @@ class BluetoothMeshTransport(
             // replies, so neither blocks. A BluetoothSocket has no soTimeout, so one 5 s watchdog bounds the whole
             // exchange, the reply and the PROOF read alike, by closing the socket.
             val replyCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
-            val outcome = runCatching { LinkHandshake.dial(link.input, link.output, prover, nodeId) }
+            // `a` = the id dialed (ADR 2026-11.xp6d), so the responder judges order on the form we dialed; `t` absent while
+            // this phone airs its id (absent reads as `t` = id, and saves 34 B a HELLO).
+            val outcome = runCatching { LinkHandshake.dial(link.input, link.output, prover, nodeId, addressed = NodeId.toBytes(nodeId)) }
             val inTime = replyCut.finish()
             val dialed = outcome.getOrNull()?.takeIf { inTime } ?: LinkHandshake.Dialed.NoReply
             val refusal = dialRefusal(nodeId, device, dialed, outcome.exceptionOrNull(), inTime)
@@ -2779,9 +2834,10 @@ class BluetoothMeshTransport(
         // A dialer at an address whose payload names another node took that address: forget the payload before the
         // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
         forgetGattPayloadIfOther(device.address, clientNodeId)
-        val first = judge(hello)
-        if (first.verdict == BleAdmissionPolicy.Verdict.Refuse) {
+        val first = judge(hello, honoured = hello.offersProof)
+        if (first.verdict.refuses) {
             Log.i(TAG, "bt refused client $clientNodeId (${first.fields})")
+            noteHeldRefusal(first.verdict)
             link.close()
             armUnlinked(device, clientNodeId) // most often a sighted lonely dialer (hj4a)
             return
@@ -2822,9 +2878,10 @@ class BluetoothMeshTransport(
             armUnlinked(device, clientNodeId)
             return
         }
-        val late = judge(hello)
-        if (late.verdict == BleAdmissionPolicy.Verdict.Refuse) {
+        val late = judge(hello, honoured = proven)
+        if (late.verdict.refuses) {
             Log.i(TAG, "bt refused client $clientNodeId (${late.fields} late=true)")
+            noteHeldRefusal(late.verdict)
             link.close()
             armUnlinked(device, clientNodeId)
             return
@@ -2851,8 +2908,24 @@ class BluetoothMeshTransport(
         val acceptFields: String,
     )
 
-    /** [BleAdmissionPolicy.decide] on [hello] against the link held to its id now and what presence holds now. */
-    private fun judge(hello: LinkHandshake.ReceivedHello): Judgement {
+    /**
+     * The held-link row refused a dialer ([BleAdmissionPolicy.Verdict.RefuseHeld]): counted. Resending my current form
+     * over the held link as `TAG_NEXT` is the writer's (ADR 2026-11.xp6d); while this phone airs its id the row never
+     * fires.
+     */
+    private fun noteHeldRefusal(verdict: BleAdmissionPolicy.Verdict) {
+        if (verdict == BleAdmissionPolicy.Verdict.RefuseHeld) metrics.onBleBlindDropped(BleBlindDrop.HELD_LINK_REFUSED)
+    }
+
+    /**
+     * [BleAdmissionPolicy.decide] on [hello] against the link held to its id now and what presence holds now. The HELLO's
+     * `t` and `a` count in the order check and the held-link row only when [honoured]: the HELLO offers a proof (the
+     * first pass) or proved it (the late pass), as the security design pass of ADR 2026-11.xp6d requires.
+     */
+    private fun judge(
+        hello: LinkHandshake.ReceivedHello,
+        honoured: Boolean,
+    ): Judgement {
         val advert = hello.wire
         val clientNodeId = advert.nodeId
         val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == clientNodeId }
@@ -2872,6 +2945,20 @@ class BluetoothMeshTransport(
         val heardAgoMs = snap?.lastSeenAgoMs
         val trust = if (doorbell) "" else " doorbellTrusted=false"
         val why = if (claimed) " doorbell=true heardAgoMs=$heardAgoMs inPresence=$sighted$trust" else ""
+        // The order on advertised forms, and the held-link row (ADR 2026-11.xp6d): both read one snapshot of mine. For a
+        // phone that airs its id, the first is the classic `local > dialer` and the second never fires.
+        val forms = mine()
+        val outOfOrder = BleAdmissionPolicy.outOfOrder(forms, clientNodeId, advert.told, advert.addressed, honoured)
+        val heldRow =
+            held != null &&
+                BleAdmissionPolicy.heldLinkRow(
+                    forms,
+                    advert.addressed,
+                    honoured,
+                    heldProven = held.proven,
+                    heldQuiet = silences[held]?.let { elapsed() - it.stamps.lastByteAt >= LinkSilence.QUIET_MS } ?: true,
+                    heldDoorbell = heldDoorbell == true,
+                )
         // The proof rows (ADR 2026-11.264w): R1 was asked already; R3 and R2 read whether the held link is proven.
         val verdict =
             BleAdmissionPolicy.decide(
@@ -2885,10 +2972,14 @@ class BluetoothMeshTransport(
                 heldProven = held?.proven == true,
                 offersProof = hello.offersProof,
                 proofCapable = claims.isProofCapable(clientNodeId),
+                outOfOrder = outOfOrder,
+                heldRow = heldRow,
             )
         val coded = "sighted=$sighted codedOnly=${sighted && !admitSighted}"
         val proof = if (held != null) " heldProven=${held.proven} offersProof=${hello.offersProof}" else ""
-        return Judgement(verdict, sighted, "$coded heldAgeMs=$heldAgeMs atCap=$atCap$why$proof", "$coded$why")
+        // After every existing field, so a harness that reads them keeps matching (interop.py).
+        val heldTag = if (verdict == BleAdmissionPolicy.Verdict.RefuseHeld) " held=resend" else ""
+        return Judgement(verdict, sighted, "$coded heldAgeMs=$heldAgeMs atCap=$atCap$why$proof$heldTag", "$coded$why")
     }
 
     // One registration: the link, its doorbell, its PHY control and the neighbor set, in order; the proof's verdict
@@ -2934,6 +3025,7 @@ class BluetoothMeshTransport(
                 onKeepaliveWritten = { onKeepaliveWritten(events.link) },
                 proven = proven,
                 onFirstRecord = events::onFirstRecord,
+                onTagNext = { onTagNext(proven, advert) },
             )
         events.link = framed
         // Before framed.start(), so the peer's announce finds it. An iPhone's is exempt from the whole check (#203).
@@ -3015,6 +3107,20 @@ class BluetoothMeshTransport(
             // check but before its `links.put` found nothing to close, and will not tell again (bluetooth-reviewer).
             scope.launch { closeClaimed(nodeId) }
         }
+    }
+
+    /**
+     * A `TAG_NEXT` came in on a link whose HELLO was [advert] (ADR 2026-11.xp6d), on its reader. Only a [proven] link
+     * whose HELLO carried `CAP_BLIND_ADVERT` may announce a tag; any other is dropped and counted. A tag-aware one is
+     * counted and dropped unread too until the resolver (`AdvertAliases.onTagNext`, on its confined worker) is wired.
+     * Counts only: the tag is never logged.
+     */
+    private fun onTagNext(
+        proven: Boolean,
+        advert: Protocol.PeerWire,
+    ) {
+        val drop = if (proven && advert.readsTags) BleBlindDrop.TAG_NEXT_UNREAD else BleBlindDrop.TAG_NEXT_UNPROVEN
+        metrics.onBleBlindDropped(drop)
     }
 
     /**
@@ -3228,11 +3334,14 @@ class BluetoothMeshTransport(
         if (close.why.local && address != null) localCloses[address] = LocalClose(nodeId, close.why, elapsed())
     }
 
-    private fun beginConnect(nodeId: String): Boolean {
+    private fun beginConnect(
+        nodeId: String,
+        kind: DialPlan.DialKind,
+    ): Boolean {
         val begun =
             synchronized(lock) {
-                if (!ConnectBackoffs.mayBegin(backoffs, nodeId, links.keys, inFlight, elapsed())) return false
-                inFlight.add(nodeId)
+                if (!ConnectBackoffs.mayBegin(backoffs, nodeId, links.keys, inFlight.keys, elapsed())) return false
+                inFlight[nodeId] = kind
                 true
             }
         if (begun) {
@@ -3483,7 +3592,7 @@ class BluetoothMeshTransport(
      */
     private fun aloneForMs(): Long = if (links.isEmpty()) elapsed() - noLinkSince else 0L
 
-    private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.toSet() }
+    private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.keys.toSet() }
 
     /** Read-only view of peers currently in connect backoff (no [driveConnections] prune side effect). */
     private fun activeBackoff(now: Long): Set<String> = synchronized(lock) { ConnectBackoffs.active(backoffs, now) }
@@ -3607,7 +3716,7 @@ class BluetoothMeshTransport(
                 TAG,
                 "bt coded heard $id hits=${t.hits} rssi=${t.min}..${t.max} last=${t.last} 1m=${t.oneM} " +
                     "eff=${snap?.smoothedRssi?.toInt()} dwell=${snap?.dwellMs}ms promotable=$promotable " +
-                    "dials=${localNodeId > id} backoff=${backoffS}s",
+                    "dials=${snap?.let { AdvertOrder.iDial(mine().current, it.form) } ?: (localNodeId > id)} backoff=${backoffS}s",
             )
         }
     }

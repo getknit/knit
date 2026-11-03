@@ -12,6 +12,12 @@ import app.getknit.knit.mesh.MeshMetrics
  * [deltas] passes them through as they stand.
  */
 object FieldCounters {
+    /** Spreads a reason map as `<prefix>_<REASON>`. */
+    private fun <E : Enum<E>> MutableMap<String, Long>.spread(
+        prefix: String,
+        byReason: Map<E, Long>,
+    ) = byReason.forEach { (reason, n) -> put("${prefix}_${reason.name}", n) }
+
     @Suppress("LongMethod") // One line per counter: the schema reads top to bottom.
     fun flatten(s: MeshMetrics.Snapshot): Map<String, Long> =
         buildMap {
@@ -74,7 +80,8 @@ object FieldCounters {
                 put("bleSideHeard", bleSideHeard)
                 put("bleSideReassembled", bleSideReassembled)
                 put("bleSideDeduped", bleSideDeduped)
-                bleSideDropsByReason.forEach { (reason, n) -> put("bleSideDrop_${reason.name}", n) }
+                spread("bleSideDrop", bleSideDropsByReason)
+                spread("bleBlindDrop", bleBlindDropsByReason)
             }
             with(s.nan) {
                 put("nanServesPeak", nanServesPeak)

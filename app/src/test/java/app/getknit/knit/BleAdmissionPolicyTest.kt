@@ -1,5 +1,7 @@
 package app.getknit.knit
 
+import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.bluetooth.AdvertOrder
 import app.getknit.knit.mesh.bluetooth.BleAdmissionPolicy
 import app.getknit.knit.mesh.bluetooth.BleAdmissionPolicy.ABSENT_LINK_RSSI
 import app.getknit.knit.mesh.bluetooth.BleAdmissionPolicy.DOORBELL_HEARD_MS
@@ -8,6 +10,7 @@ import app.getknit.knit.mesh.bluetooth.BleAdmissionPolicy.Verdict
 import app.getknit.knit.mesh.bluetooth.BlePresenceTracker
 import app.getknit.knit.mesh.bluetooth.CodedPhyPolicy
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
+import app.getknit.knit.mesh.crypto.BlindTag
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -331,4 +334,126 @@ class BleAdmissionPolicyTest {
         assertEquals(Verdict.Replace, verdict(local = high, dialer = low, sighted = sighted, heldLinkAgeMs = REPLACE_MIN_HOLD_MS))
         assertEquals(Verdict.Refuse, verdict(local = high, dialer = low, sighted = sighted, heldLinkAgeMs = REPLACE_MIN_HOLD_MS - 1))
     }
+
+    // --- Blinded adverts (ADR 2026-11.xp6d): the order on forms, and the held-link row ---
+
+    private val reader = AdvertOrder.Mine.clear(high)
+    private val contactTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, slot = 1, restart = 0))
+    private val myTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, slot = 1, restart = 0))
+    private val myPreviousTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, slot = 0, restart = 0))
+
+    // A garbage `t`: a canonical form other than the dialer's id, without the tag prefix.
+    private val garbage = "bbbbbbbbbbbbbbbbbbbbbbbbba"
+
+    private fun outOfOrder(
+        mine: AdvertOrder.Mine = reader,
+        dialer: String = low,
+        told: String? = null,
+        addressed: String? = null,
+        honoured: Boolean = true,
+    ) = BleAdmissionPolicy.outOfOrder(mine, dialer, told, addressed, honoured)
+
+    @Test
+    fun aReaderAdmitsABlindingContactsProvenDialThoughItsRealIdSortsBelowAndItIsSighted() {
+        val order = outOfOrder(told = contactTag, addressed = high)
+        assertFalse("a clear phone never dials a blinded advert, so it should not have dialed this one", order)
+        val v = BleAdmissionPolicy.decide(high, low, sighted = true, heldLinkAgeMs = null, offersProof = true, outOfOrder = order)
+        assertEquals(Verdict.Admit, v)
+    }
+
+    @Test
+    fun aDialerWithNoTOrAIsJudgedExactlyAsToday() {
+        assertTrue(outOfOrder())
+        assertFalse(outOfOrder(dialer = high, mine = AdvertOrder.Mine.clear(low)))
+        // A clear dial carries `a` = the id it dialed (mine): the same answer.
+        assertTrue(outOfOrder(addressed = high))
+        // An `a` naming no form of mine is not honoured.
+        assertTrue(outOfOrder(addressed = low))
+        assertEquals(
+            Verdict.Refuse,
+            BleAdmissionPolicy.decide(high, low, sighted = true, heldLinkAgeMs = null, outOfOrder = outOfOrder()),
+        )
+    }
+
+    @Test
+    fun aNoProofDialerClaimingASightedSmallerIdWithATagIsStillRefused() {
+        // The security pass's Blocking case (#275): `t` and `a` count only on a HELLO that offers a proof.
+        val order = outOfOrder(told = contactTag, addressed = high, honoured = false)
+        assertTrue(order)
+        val v = BleAdmissionPolicy.decide(high, low, sighted = true, heldLinkAgeMs = null, offersProof = false, outOfOrder = order)
+        assertEquals(Verdict.Refuse, v)
+    }
+
+    @Test
+    fun aGarbageToldIsJudgedClear() {
+        assertTrue("a prefixless t is absent", outOfOrder(told = garbage))
+        assertTrue("a t equal to the id is clear", outOfOrder(told = low))
+    }
+
+    @Test
+    fun theHeldLinkRowNeverFiresWhileMineIsClear() {
+        // Every clear dial carries `a` = my id: a row on "a names mine" would take shzv's replace away (design finding 1).
+        assertFalse(heldRow(mine = reader, addressed = high))
+        assertEquals(
+            Verdict.Replace,
+            BleAdmissionPolicy.decide(
+                high,
+                low,
+                sighted = false,
+                heldLinkAgeMs = REPLACE_MIN_HOLD_MS,
+                heldProven = true,
+                offersProof = true,
+                heldRow = heldRow(mine = reader, addressed = high),
+            ),
+        )
+    }
+
+    @Test
+    fun theHeldLinkRowRefusesADialerWhoseAddressedFormIsABlindedOneOfMine() {
+        val blinding = AdvertOrder.Mine(AdvertOrder.Form(myTag, blinded = true), AdvertOrder.Form(myPreviousTag, blinded = true))
+        assertTrue(heldRow(mine = blinding, addressed = myTag))
+        assertTrue("my previous tag too", heldRow(mine = blinding, addressed = myPreviousTag))
+        assertFalse("a form not mine", heldRow(mine = blinding, addressed = contactTag))
+        assertFalse("not honoured", heldRow(mine = blinding, addressed = myTag, honoured = false))
+        assertFalse("an unproven held link", heldRow(mine = blinding, addressed = myTag, heldProven = false))
+        assertFalse("a quiet held link reaches shzv's replace", heldRow(mine = blinding, addressed = myTag, heldQuiet = true))
+        assertFalse("a doorbell link never takes it", heldRow(mine = blinding, addressed = myTag, heldDoorbell = true))
+        // Clear now, blinded before: a dial made against my previous tag still takes the row.
+        val flipped = AdvertOrder.Mine(AdvertOrder.Form.clear(high), AdvertOrder.Form(myPreviousTag, blinded = true))
+        assertTrue(heldRow(mine = flipped, addressed = myPreviousTag))
+        assertFalse(heldRow(mine = flipped, addressed = high))
+
+        val v =
+            BleAdmissionPolicy.decide(
+                high,
+                low,
+                sighted = true,
+                heldLinkAgeMs = REPLACE_MIN_HOLD_MS,
+                heldProven = true,
+                offersProof = true,
+                heldRow = true,
+            )
+        assertEquals(Verdict.RefuseHeld, v)
+        assertTrue(v.refuses)
+        assertFalse(Verdict.Admit.refuses)
+        assertFalse(Verdict.Replace.refuses)
+    }
+
+    @Test
+    fun theProofRowsStillComeBeforeTheHeldLinkRow() {
+        // R1: an unproven claim on a proof-capable id is refused as a claim, never as the held-link row.
+        assertEquals(Verdict.Refuse, BleAdmissionPolicy.decide(high, low, false, 40_000L, proofCapable = true, heldRow = true))
+        // R3: a proof offered against an unproven held link replaces it.
+        assertEquals(Verdict.Replace, BleAdmissionPolicy.decide(high, low, true, 1L, offersProof = true, heldRow = true))
+    }
+
+    @Suppress("LongParameterList") // the row's inputs, named per case
+    private fun heldRow(
+        mine: AdvertOrder.Mine,
+        addressed: String?,
+        honoured: Boolean = true,
+        heldProven: Boolean = true,
+        heldQuiet: Boolean = false,
+        heldDoorbell: Boolean = false,
+    ) = BleAdmissionPolicy.heldLinkRow(mine, addressed, honoured, heldProven, heldQuiet, heldDoorbell)
 }

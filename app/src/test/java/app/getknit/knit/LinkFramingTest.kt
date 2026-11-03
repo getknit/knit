@@ -110,8 +110,26 @@ class LinkFramingTest {
     }
 
     @Test
-    fun theTagAfterProofIsStillUnknownAndThrows() {
-        assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(byteArrayOf(9, 0, 0, 0, 0))) }
+    fun theTagAfterTagNextIsStillUnknownAndThrows() {
+        assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(byteArrayOf(10, 0, 0, 0, 0))) }
+    }
+
+    @Test
+    fun aTagNextRecordRoundTripsUnderTagNine() {
+        // ADR 2026-11.xp6d: written only toward a proven HELLO carrying CAP_BLIND_ADVERT, since every older build throws.
+        val tag = ByteArray(LinkFraming.TAG_NEXT_BYTES) { (0xC0 + it).toByte() }
+        val bytes = LinkFraming.encodeTagNext(tag)
+        assertEquals(9.toByte(), bytes[0])
+        assertEquals(LinkFraming.Message(LinkFraming.Type.TAG_NEXT, tag), LinkFraming.read(ByteArrayInputStream(bytes)))
+    }
+
+    @Test
+    fun aTagNextOfAnyOtherLengthIsAFramingErrorNeverARecord() {
+        for (len in listOf(0, 15, 17, 1024)) {
+            val bytes = LinkFraming.encode(LinkFraming.Type.TAG_NEXT, ByteArray(len))
+            assertThrows("length $len", IOException::class.java) { LinkFraming.read(ByteArrayInputStream(bytes)) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { LinkFraming.encodeTagNext(ByteArray(15)) }
     }
 
     @Test

@@ -272,7 +272,8 @@ object CodedPhyPolicy {
         phy: LinkPhy,
         linkRssi: Int?,
         tuning: PhyTuning,
-    ): Boolean = !drives(localNodeId, peerNodeId) && droppedAtRange(phy, linkRssi, tuning)
+        dialsBack: Boolean = drives(localNodeId, peerNodeId),
+    ): Boolean = !dialsBack && droppedAtRange(phy, linkRssi, tuning)
 
     /**
      * The other half of [fastAdvertAfterDrop]: whether this phone should hunt the peer whose link just went down on its
@@ -287,7 +288,8 @@ object CodedPhyPolicy {
         phy: LinkPhy,
         linkRssi: Int?,
         tuning: PhyTuning,
-    ): Boolean = drives(localNodeId, peerNodeId) && droppedAtRange(phy, linkRssi, tuning)
+        dialsBack: Boolean = drives(localNodeId, peerNodeId),
+    ): Boolean = dialsBack && droppedAtRange(phy, linkRssi, tuning)
 
     /** Whether a link went down where its peer is just out of reach: on Coded, or at or under the step-down as it went. */
     private fun droppedAtRange(
@@ -327,6 +329,7 @@ object CodedPhyPolicy {
      * One-sided by nature: each phone acts on what it hears, so a pair where only one side hears the other cold acts on
      * that side alone (the dialed side's fast advert, or the dialing side's hunt of a slow one).
      */
+    @Suppress("LongParameterList") // the hunt's inputs, each a different source in the transport
     fun coldHunt(
         localNodeId: String,
         sighting: ColdSighting,
@@ -334,12 +337,13 @@ object CodedPhyPolicy {
         lowPower: Boolean,
         tuning: PhyTuning,
         floorDbm: Int = PromotionConfig.DEFAULT_RSSI_FLOOR_DBM,
+        dialsBack: Boolean = drives(localNodeId, sighting.peerNodeId),
     ): ColdAction =
         when {
             !codedOn || !tuning.coldHunt || lowPower -> ColdAction.NONE
             sighting.linked || sighting.held || sighting.backingOff -> ColdAction.NONE
             sighting.smoothedRssi < floorDbm -> ColdAction.NONE
-            !drives(localNodeId, sighting.peerNodeId) -> ColdAction.FAST_ADVERT
+            !dialsBack -> ColdAction.FAST_ADVERT
             sighting.promotes -> ColdAction.HUNT
             else -> ColdAction.NONE
         }
@@ -490,11 +494,29 @@ object CodedPhyPolicy {
         return PaceConfig(share, chunk.coerceIn(MIN_FILE_CHUNK_BYTES.toLong(), LinkFraming.FILE_CHUNK_BYTES.toLong()).toInt())
     }
 
-    /** Which side of a link drives its PHY: the larger node id, the side that dials. The other only watches. */
+    /**
+     * Which side of a live link steps its PHY: the larger of the two node ids the HELLOs proved. The other only watches.
+     * Real ids, never advertised forms, now and after the blinded advert (ADR 2026-11.xp6d): across an old↔new link the
+     * old side reads only real ids, so judging one end on tags would have both ends step. Not who dials: between two
+     * clear phones that is the same side, but who dials back or hunts after a drop is [dialsBack]'s, on forms.
+     */
     fun drives(
         localNodeId: String,
         peerNodeId: String,
     ): Boolean = localNodeId > peerNodeId
+
+    /**
+     * Whether I dial [peerNodeId] back after a drop, or hunt it cold: the `dialsBack` of [fastAdvertAfterDrop],
+     * [huntAfterDrop] and [coldHunt] (ADR 2026-11.xp6d, "Who dials"). [AdvertOrder.iDial] on my current form ([mine])
+     * against the peer's last known advertised form ([theirs]), which is the classic order when that form was clear;
+     * with no form known (a link never sighted, such as an inbound iPhone), the classic order on the real ids.
+     */
+    internal fun dialsBack(
+        mine: AdvertOrder.Mine,
+        theirs: AdvertOrder.Form?,
+        localNodeId: String,
+        peerNodeId: String,
+    ): Boolean = theirs?.let { AdvertOrder.iDial(mine.current, it) } ?: drives(localNodeId, peerNodeId)
 }
 
 /**

@@ -84,6 +84,9 @@ internal class BleGattPayloadReader(
             if (runCatching { gatt?.readCharacteristic(ch) }.getOrNull() != true) return failed("read")
             val bytes = value.await() ?: return failed("read")
             val payload = BleAdvertPayload.parse(bytes) ?: return stranger("value")
+            // No port serves a blinded payload (ADR 2026-11.xp6d), and its tag would never match a HELLO's id, so the
+            // payload would be forgotten and re-read at every dial, spending the read budget (#154).
+            if (payload.blinded) return stranger(PHASE_BLINDED)
             return Result(GattPayloads.Outcome.Read(payload))
         }
 
@@ -149,7 +152,10 @@ internal class BleGattPayloadReader(
         }
     }
 
-    private companion object {
-        const val ARBITER_TAG = "gatt-read"
+    companion object {
+        private const val ARBITER_TAG = "gatt-read"
+
+        /** The phase of a [GattPayloads.Outcome.Stranger] whose payload was blinded (ADR 2026-11.xp6d): counted apart. */
+        const val PHASE_BLINDED = "blinded"
     }
 }

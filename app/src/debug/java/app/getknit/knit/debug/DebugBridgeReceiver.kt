@@ -1717,6 +1717,7 @@ class DebugBridgeReceiver :
             .put("bleSideReassembled", snap.bluetooth.bleSideReassembled)
             .put("bleSideDeduped", snap.bluetooth.bleSideDeduped)
             .put("bleSideDropsByReason", JSONObject(snap.bluetooth.bleSideDropsByReason.mapKeys { it.key.name }))
+            .put("bleBlindDropsByReason", JSONObject(snap.bluetooth.bleBlindDropsByReason.mapKeys { it.key.name }))
             .put("bleLinkDupSkipped", snap.bluetooth.bleLinkDupSkipped)
             .put("bleCodedSightings", snap.bluetooth.bleCodedSightings)
             .put("bleCodedDials", snap.bluetooth.bleCodedDials)

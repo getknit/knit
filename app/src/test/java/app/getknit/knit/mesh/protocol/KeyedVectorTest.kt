@@ -448,6 +448,13 @@ class KeyedVectorTest {
     }
 
     @Test
+    fun `the blinded advert and the TAG_NEXT record are pinned`() {
+        assumeFalse(VectorFiles.writing)
+        blind.assertAdvert(blindJson())
+        blind.assertTagNext(blindJson())
+    }
+
+    @Test
     fun `every pinned HELLO reads the t and a fields the file states`() {
         assumeFalse(VectorFiles.writing)
         blind.assertHelloFields(blindJson())

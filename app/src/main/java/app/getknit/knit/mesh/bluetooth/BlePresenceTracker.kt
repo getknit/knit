@@ -77,6 +77,14 @@ class BlePresenceTracker(
          */
         val oneMFresh: Boolean = rssi1m != null,
         val codedFresh: Boolean = rssiCoded != null,
+        /**
+         * The form the peer advertised (ADR 2026-11.xp6d): [advertised] is advert bytes 1–16 as a 26-char string, its
+         * node id when the advert is clear and a tag when [blinded]. Every pre-link role decides on it
+         * (`AdvertOrder.iDial`), never on [nodeId]. Clear for every entry in this build: a blinded advert never enters
+         * presence until its resolver is wired.
+         */
+        val advertised: String = nodeId,
+        val blinded: Boolean = false,
     )
 
     private class Entry(

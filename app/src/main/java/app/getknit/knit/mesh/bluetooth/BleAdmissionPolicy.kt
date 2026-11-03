@@ -1,5 +1,8 @@
 package app.getknit.knit.mesh.bluetooth
 
+import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.crypto.BlindTag
+
 /**
  * Whether the L2CAP responder keeps a dialer whose HELLO it just read, and what a held link scores for
  * eviction. Pure, so the table is a JVM test ([app.getknit.knit.BleAdmissionPolicyTest]).
@@ -29,6 +32,17 @@ internal object BleAdmissionPolicy {
 
         /** Close the socket without a reply. */
         Refuse,
+
+        /**
+         * The held-link row (ADR 2026-11.xp6d, [heldLinkRow]): close the socket without a reply, and resend my current
+         * form over the held link as a `TAG_NEXT` (the resend is the writer's, not built yet). Its own verdict so it is
+         * logged and counted apart from [Refuse].
+         */
+        RefuseHeld,
+        ;
+
+        /** Whether the dialer is closed without a reply. */
+        val refuses: Boolean get() = this == Refuse || this == RefuseHeld
     }
 
     /**
@@ -61,6 +75,11 @@ internal object BleAdmissionPolicy {
      *   real peer out for good, since this side never dials an id a link already claims.
      * - **R2**: a [heldProven] link is never replaced by a dialer without the bit, and by one with it only under the
      *   rows above (sighted: refused; younger than [REPLACE_MIN_HOLD_MS]: refused; else replaced).
+     *
+     * Blinded adverts (ADR 2026-11.xp6d) change two things, both inert for a phone that never blinds:
+     * - the "sighted and out of order" row reads [outOfOrder], the order judged on advertised forms ([outOfOrder]'s
+     *   function); its default is the classic `local > dialer`, which is what the forms answer for two clear phones;
+     * - the held-link row ([heldLinkRow]), after R2: [heldRow] true refuses with [Verdict.RefuseHeld].
      */
     @Suppress("LongParameterList") // the table's inputs, each a row's
     fun decide(
@@ -74,11 +93,67 @@ internal object BleAdmissionPolicy {
         heldProven: Boolean = false,
         offersProof: Boolean = false,
         proofCapable: Boolean = false,
+        outOfOrder: Boolean = local > dialer,
+        heldRow: Boolean = false,
     ): Verdict =
         when {
             dialer == local -> Verdict.Refuse
             else -> proofRow(heldLinkAgeMs != null, heldProven, offersProof, proofCapable)
-        } ?: unprovenTable(local, dialer, sightedForAdmission(sighted, doorbell, heardAgoMs), heldLinkAgeMs, atCap)
+        } ?: (if (heldRow) Verdict.RefuseHeld else null)
+            ?: unprovenTable(outOfOrder, sightedForAdmission(sighted, doorbell, heardAgoMs), heldLinkAgeMs, atCap)
+
+    /**
+     * The responder's order check on advertised forms (ADR 2026-11.xp6d, [AdvertOrder.responderShouldHaveDialed]):
+     * whether I, airing [mine], should have dialed the dialer whose HELLO names [dialerId], tells [told] (its `t`, the
+     * form it airs) and says it dialed [addressed] (its `a`). True is [decide]'s "sighted and out of order" refusal.
+     *
+     * `t` and `a` are honoured only when [honoured]: on a HELLO that offers a proof (`offersProof` before the proof, and
+     * `proven` after it). Every build that airs a tag proves itself, so honest peers lose nothing; without the gate, any
+     * no-proof dialer writing a `t` would skip the row and squat a sighted smaller legacy id (security design pass,
+     * #275). A `t` other than the id counts as a tag only when it carries [BlindTag.hasPrefix]; a prefixless one is
+     * absent. A dialer with neither field, or not [honoured], is judged as `Form.clear(dialerId)`: for a clear [mine]
+     * that is exactly the classic `local > dialer`.
+     */
+    fun outOfOrder(
+        mine: AdvertOrder.Mine,
+        dialerId: String,
+        told: String?,
+        addressed: String?,
+        honoured: Boolean,
+    ): Boolean {
+        val t = told?.takeIf { honoured && (it == dialerId || isTag(it)) }
+        val a = addressed?.takeIf { honoured }
+        return AdvertOrder.responderShouldHaveDialed(mine.current, mine.previous, a, AdvertOrder.Form.fromHello(dialerId, t))
+    }
+
+    /**
+     * The held-link row (ADR 2026-11.xp6d's responder row, bluetooth design finding 1): a dialer whose proven link this
+     * phone already holds ([heldProven]) and whose honoured HELLO `a` ([addressed], honoured as in [outOfOrder]) names a
+     * **blinded** form of mine, current or previous, missed my rotation: it is refused with no reply and my current form
+     * goes to it over the held link, so a dial-then-duplicate cannot close both links.
+     *
+     * Gated on a blinded form, never on any form of mine: every clear dial carries `a` = the dialed id, so a row on "a
+     * names mine" would fire on every redial after a link died on the dialer's side only (#203), and take away ADR
+     * 2026-09.shzv's replace (minutes of `LinkSilence` on Android, for good on a `CAP_DOORBELL` link). So it never fires
+     * while [mine] is clear. A [heldDoorbell] link never takes it, and nor does a [heldQuiet] one (no byte in for
+     * `LinkSilence.QUIET_MS`): a link dead on the dialer's side reaches shzv's replace instead. The writer may refine
+     * "quiet" (5b's brief); the row stays inert until a phone blinds.
+     */
+    @Suppress("LongParameterList") // the row's inputs, each a different source in the transport
+    fun heldLinkRow(
+        mine: AdvertOrder.Mine,
+        addressed: String?,
+        honoured: Boolean,
+        heldProven: Boolean,
+        heldQuiet: Boolean,
+        heldDoorbell: Boolean,
+    ): Boolean {
+        val live = heldProven && !heldQuiet && !heldDoorbell
+        return honoured && live && AdvertOrder.dialedForm(mine.current, mine.previous, addressed)?.blinded == true
+    }
+
+    /** Whether [form] is a canonical 26-char form whose bytes carry the tag prefix. */
+    private fun isTag(form: String): Boolean = NodeId.toBytesOrNull(form)?.let(BlindTag::hasPrefix) == true
 
     /**
      * The proof rows of [decide], or null where they leave the verdict to [unprovenTable]: R1 refuses an unproven claim
@@ -98,16 +173,18 @@ internal object BleAdmissionPolicy {
             else -> null
         }
 
-    /** The table every build had before link proofs ([decide]'s KDoc), [seen] already through [sightedForAdmission]. */
+    /**
+     * The table every build had before link proofs ([decide]'s KDoc), [seen] already through [sightedForAdmission] and
+     * the order through [outOfOrder] (the classic `local > dialer` for two clear phones).
+     */
     private fun unprovenTable(
-        local: String,
-        dialer: String,
+        outOfOrder: Boolean,
         seen: Boolean,
         heldLinkAgeMs: Long?,
         atCap: Boolean,
     ): Verdict =
         when {
-            seen && local > dialer -> Verdict.Refuse
+            seen && outOfOrder -> Verdict.Refuse
             heldLinkAgeMs == null -> if (atCap) Verdict.Refuse else Verdict.Admit
             seen -> Verdict.Refuse
             heldLinkAgeMs < REPLACE_MIN_HOLD_MS -> Verdict.Refuse
