@@ -66,11 +66,10 @@ class SqlCipherDriverUpgradeTest {
         runBlocking {
             openRawConnection().use { connection ->
                 connection.materialiseSchema(CURRENT_VERSION)
-                connection.execSQL(
-                    // `openToChat` and `lastSeenAt` are NOT NULL with no table-level default (v9 and v19 added them
-                    // with one only on the ALTER), so a column-listed INSERT has to name them — as Room's own insert does.
-                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, lastSeenAt) " +
-                        "VALUES ('${PEER.nodeId}', '${PEER.name}', '', 0, ${PEER.updatedAt}, 0, 0)",
+                connection.insertRow(
+                    CURRENT_VERSION,
+                    "peers",
+                    mapOf("nodeId" to PEER.nodeId, "name" to PEER.name, "updatedAt" to PEER.updatedAt),
                 )
             }
 
@@ -175,6 +174,31 @@ class SqlCipherDriverUpgradeTest {
         val setupQueries = database.getJSONArray("setupQueries")
         for (i in 0 until setupQueries.length()) execSQL(setupQueries.getString(i))
         execSQL("PRAGMA user_version = $version")
+    }
+
+    /**
+     * Inserts one row into [table] as [version]'s schema declares it. Every NOT NULL column [values] does not name
+     * and the schema gives no table-level default is filled with its affinity's zero (`''` or `0`): columns such as
+     * `peers.openToChat`, `lastSeenAt` and `advertisedKnown` carry their default only on the migration's ALTER, so
+     * a hand-listed INSERT broke each time one was added. Room's own insert names every column the same way.
+     */
+    private fun SQLiteConnection.insertRow(
+        version: Int,
+        table: String,
+        values: Map<String, Any>,
+    ) {
+        val entities = schemaJson(version).getJSONObject("database").getJSONArray("entities")
+        val entity = (0 until entities.length()).map(entities::getJSONObject).single { it.getString("tableName") == table }
+        val fields = entity.getJSONArray("fields")
+        val row = LinkedHashMap<String, Any>(values)
+        for (i in 0 until fields.length()) {
+            val field = fields.getJSONObject(i)
+            val column = field.getString("columnName")
+            if (column in row || !field.optBoolean("notNull") || field.has("defaultValue")) continue
+            row[column] = if (field.getString("affinity") == "TEXT") "" else 0
+        }
+        val literals = row.values.map { if (it is String) "'${it.replace("'", "''")}'" else it.toString() }
+        execSQL("INSERT INTO `$table` (${row.keys.joinToString { "`$it`" }}) VALUES (${literals.joinToString()})")
     }
 
     private fun SQLiteConnection.readLong(sql: String): Long =
