@@ -23,6 +23,10 @@ variables:
   # default GC-thrashed pipeline 860 into the job timeout) with Metaspace uncapped, which is ~1.75 GB RSS
   # once Robolectric and the Kover agent have loaded their classes.
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  # The single-use daemon's heap, written into the CI gradle.properties by .android's before_script (the why is
+  # there). Every job that compiles runs on skuld or bigmem; verify:ktlint, which can land on the 2 GB runner and
+  # compiles nothing, keeps the 2 GB profile's 1664m.
+  GRADLE_HEAP: "3g"
   ANDROID_HOME: "${CI_PROJECT_DIR}/.android-sdk"
   ANDROID_SDK_ROOT: "${CI_PROJECT_DIR}/.android-sdk"
   # Pinned tool versions — bump deliberately (see .gitlab-ci notes in the repo plan).
@@ -99,19 +103,23 @@ workflow:
   before_script:
     - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
     - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-    # CI memory profile for the 1 vCPU / 2 GB runner — relies on the host's 2 GB swap being
-    # active. Written to $GRADLE_USER_HOME so it overrides the project gradle.properties.
-    # NO metaspace cap: a 384m cap starved Metaspace and crashed the daemon (job 462). Heap is
-    # 1664m: a clean :app:compileDebugKotlin peaks at ~1.26 GB live (GC log, 2026-10-18), so the old
-    # 1280m OOMed both compiles in pipeline 1121 once the call code landed. Metaspace/native/launcher-JVM
-    # spikes spill to swap instead of tripping the OOM killer. SerialGC because there is only one core
-    # to GC on. Self-contained. preferIPv6Addresses: Maven Central's per-IP, per-file download limit
-    # (nativeruntime-dist-compat, 2026-10-31) blocked skuld's IPv4 address for a day while IPv6 still answered,
-    # and Java dials IPv4 first otherwise; where a container has no IPv6 route Gradle falls through to IPv4.
+    # CI memory profile, written to $GRADLE_USER_HOME so it overrides the project gradle.properties.
+    # NO metaspace cap: a 384m cap starved Metaspace and crashed the daemon (job 462). Heap is $GRADLE_HEAP,
+    # 3g wherever Gradle compiles: a cold :app:compileDebugKotlin + compileDebugUnitTestKotlin in one daemon
+    # holds ~1.65 GB live (GC log, 2026-11-03; ~1.26 GB on 2026-10-18), past the 1608 MB a 1664m heap can
+    # use, so 1664m GC-thrashed and OOMed compileDebugUnitTestKotlin (jobs 11790, 11792, 11810) on every job
+    # that missed build:debug's build cache. Splitting main and test compiles into two invocations is no
+    # cure: each alone holds ~1.5 GB. 3g halves a cold compile (4m48s to 2m12s locally) and fits skuld's 8 GiB
+    # job container with the test JVM after it, since the compile daemon exits first (.compile-unit-tests).
+    # 1664m was the 1 vCPU / 2 GB runner's profile (1280m OOMed in pipeline 1121), which relied on the host's
+    # 2 GB swap. SerialGC because there was only one core to GC on. Self-contained. preferIPv6Addresses: Maven
+    # Central's per-IP, per-file download limit (nativeruntime-dist-compat, 2026-10-31) blocked skuld's IPv4
+    # address for a day while IPv6 still answered, and Java dials IPv4 first otherwise; where a container has no
+    # IPv6 route Gradle falls through to IPv4.
     - |
       mkdir -p "$GRADLE_USER_HOME"
-      cat > "$GRADLE_USER_HOME/gradle.properties" <<'EOF'
-      org.gradle.jvmargs=-Xmx1664m -XX:+UseSerialGC -Dfile.encoding=UTF-8 -Djava.net.preferIPv6Addresses=true
+      cat > "$GRADLE_USER_HOME/gradle.properties" <<EOF
+      org.gradle.jvmargs=-Xmx${GRADLE_HEAP} -XX:+UseSerialGC -Dfile.encoding=UTF-8 -Djava.net.preferIPv6Addresses=true
       org.gradle.workers.max=1
       kotlin.compiler.execution.strategy=in-process
       org.gradle.daemon=false
@@ -602,6 +610,8 @@ verify:ktlint:
   stage: verify
   needs: []
   allow_failure: true
+  variables:
+    GRADLE_HEAP: "1664m"
   script:
     - ./gradlew ktlintCheck --stacktrace --console=plain
   artifacts:
