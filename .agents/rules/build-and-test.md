@@ -24,9 +24,18 @@ so the reviewers the Stop hook spawns at once read in parallel and take turns at
 systemd scope of CPU weight 20, so the daemon it starts and that daemon's test JVMs yield the CPU to the IDE and the
 terminals.
 
+## Code checks run before any review
+
+The code checks are the static ones whose fix moves code: `ktlintCheck`, `detekt`, Android `lint` and lintorama, not
+the tests. Run them with `.claude/hooks/review-gate.sh --checks`, never by hand beside it: it runs Gradle through
+`scripts/gradle-turn.sh`, skips a check whose tree already passed, and records the pass, so the Stop hook reuses it
+and no tree is checked twice. The Stop hook (`review-gate.sh`) runs the same checks in order before it asks for any
+reviewer, and blocks the stop on a finding instead of asking: a ktlint or detekt fix after a review moves lines the
+reviewer read and forces a second round. lintorama runs on every stop with a change; the Gradle checks take minutes,
+so only when a reviewer is about to be asked. CI runs them all again on every push.
+
 ## ktlint autocorrects; detekt doesn't
 
-Both run as `Stop` hooks (`./gradlew ktlintCheck` / `./gradlew detekt`) alongside `./gradlew lint`.
 **`./gradlew ktlintFormat` autocorrects** the mechanical ktlint violations in place — run it, then
 re-check. detekt has no autofix; fix its findings by hand. The two tools can disagree: ktlint's
 one-arg-per-line wrapping can push a function past detekt's `LongMethod=60` — **suppress `LongMethod` on

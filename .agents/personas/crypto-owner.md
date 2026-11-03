@@ -143,12 +143,13 @@ Find those classes with `grep -rlw '<TouchedClass>' app/src/test --include='*Tes
 `RatchetEngineTest`, `RatchetCryptoTest`, `GroupRatchetEngineTest`, `GroupRatchetCryptoTest`; the facades' are
 `RatchetSessionsResetTest`, `SessionTransactorOrderTest`, `PendingGroupKeysTest`, `IntroSyncTest`; the soaks are
 `RatchetSoakTest` and `GroupRatchetSoakTest`; a wire touch runs `WireSerializationTest`, `GoldenVectorTest`,
-`KeyedVectorTest` and `IosEmittedVectorTest`; a schema touch runs `KnitDatabaseMigrationTest`. Add or extend a test
-for every decision you put in an engine. For a lab scenario in scope, run `scripts/lab-chaos.sh --tests '<Class>'`
-once your edits are in. Run `./gradlew ktlintFormat`, then `ktlintCheck` and `detekt`, and fix what they report. Do
-that before any chaos sweep: the sweep is your last step that moves `app/`, so the reviewers' `--reuse` answers from
-it instead of sweeping again (`.agents/rules/review-rounds.md`, section 6). Don't run the whole suite or a
-whole-package chaos sweep unless the brief asks: two concurrent Gradle runs have taken this machine down.
+`KeyedVectorTest` and `IosEmittedVectorTest`; a schema touch runs `KnitDatabaseMigrationTest`. Add or extend a test for
+every decision you put in an engine. For a lab scenario in scope, run `scripts/lab-chaos.sh --tests '<Class>'` once your
+edits are in. Run `./gradlew ktlintFormat`, then `.claude/hooks/review-gate.sh --checks` (ktlint, detekt, lint,
+lintorama), and fix what it reports. Do that before any chaos sweep: the sweep is your last step that moves `app/`, so
+the reviewers' `--reuse` answers from it instead of sweeping again (`.agents/rules/review-rounds.md`, section 6). Don't
+run the whole suite or a whole-package chaos sweep unless the brief asks: two concurrent Gradle runs have taken this
+machine down.
 
 ## Step 5: record decisions
 

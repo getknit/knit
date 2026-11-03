@@ -12,6 +12,7 @@ plugins), see `context/toolchain.md`.
 ./gradlew detekt                    # static analysis (dev.detekt plugin; reports in app/build/reports/detekt/)
 ./gradlew ktlintCheck               # Kotlin style/format lint (ktlint plugin; reports in build/reports/ktlint/)
 ./gradlew ktlintFormat              # ...and autocorrect the mechanical ktlint violations in place
+.claude/hooks/review-gate.sh --checks  # ktlintCheck + detekt + lint + lintorama, skipping a tree that passed; the Stop hook reuses the pass
 ./gradlew :app:validateDebugScreenshotTest # Compose preview screenshot tests vs committed PNGs (report: app/build/reports/screenshotTest/preview/debug/)
 ./gradlew :app:updateDebugScreenshotTest   # ...re-render the reference PNGs in app/src/screenshotTestDebug/reference/ (review the diff)
 python3 scripts/gen-screenshot-tests.py     # ...after adding/renaming a @Preview: regenerate the wrappers (--check to verify)
@@ -28,7 +29,7 @@ bash scripts/ide-diagnostics.sh --list          # changed .kt/.kts/.java files â
 bash scripts/ide-diagnostics.sh <file>          # ...focus one in the RUNNING Studio, then read it via getDiagnostics
 bash scripts/qodana.sh                          # the SAME engine over the whole tree, headless in Docker (~14 GB, slow)
 bash scripts/qodana.sh --baseline               # ...accept today's findings as qodana.sarif.json, so later runs show only new ones
-docker run --rm -v "$PWD":/code zaventh/lintorama:9  # YAML/shell/Markdown/Python/workflow/editorconfig lint, as the Stop hook and CI's `lintorama` jobs run it
+docker run --rm -v "$PWD":/code zaventh/lintorama:9  # YAML/shell/Markdown/Python/workflow/editorconfig lint, as the Stop hook (via review-gate.sh) and CI's `lintorama` jobs run it
 bash scripts/egress-check.sh                    # fresh install, default settings, emulator only: fail on any byte over IP
 bash scripts/egress-check.sh --variant debug --control  # ...the debug build, then prove the check sees Knit's own dial
 # Accessibility (ATF) suite â€” same checks as the Play pre-launch report; needs API 34+ (@SdkSuppress skips below):

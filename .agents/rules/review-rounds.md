@@ -3,7 +3,8 @@
 How a change in a reviewed subsystem meets its reviewer personas (`.agents/personas/*-reviewer.md`): when each one
 looks, what a pass reads, which findings hold the change up, and when to stop patching. The main session reads it
 before it spawns a reviewer or relays one's findings; every reviewer reads it to learn which pass it is on. The Stop
-hook (`.claude/hooks/review-gate.sh`) enforces the order and hands a follow-up pass its delta.
+hook (`.claude/hooks/review-gate.sh`) runs the code checks first, enforces the order and hands a follow-up pass its
+delta.
 
 Why it exists: #195 took five full rounds of three reviewers each. The first design guessed, on each phone, whether
 a pull ask came from the phone that wanted the blob or from an echo, and every round closed one loop and found the
@@ -22,7 +23,13 @@ findings unrelated to the last round kept arriving, and the test reviewers tight
   owner designs against them.
 - Skip it for a fix of a few lines whose shape the issue already names.
 
-## 2. The subsystem reviewer goes first, the test reviewers after
+## 2. The code checks go first, then the subsystem reviewer, then the test reviewers
+
+- No reviewer reads code the code checks would still move. The Stop hook runs ktlint, detekt, Android lint and
+  lintorama before it asks for any reviewer, and blocks the stop on a finding; the caller fixes it (most ktlint
+  findings with `./gradlew ktlintFormat`) and stops again, and only then are the reviewers asked. An owner runs
+  `.claude/hooks/review-gate.sh --checks` as its last edit, and the hook reuses that pass rather than running Gradle
+  again on the same tree.
 
 - Stage 1 is the subsystem reviewers (`bluetooth`, `wifi-aware`, `lora`, `crypto`, `blobs`) and `security`; stage 2
   is the test reviewers (`mesh-lab-reviewer`, `unit-test-reviewer`). `review-gate.conf` records each reviewer's stage.
@@ -78,8 +85,10 @@ owner write more code.
 
 - `scripts/lab-chaos.sh --reuse` answers from the last sweep on the same tree. Its fingerprint covers `app/`,
   `gradle/` and the root build files, so `.agents/` and `docs/` edits keep it. The owner runs the sweep as its last
-  step that moves `app/`, after `ktlintFormat`, `ktlintCheck` and `detekt` are clean. Nothing edits `app/` between
-  that sweep and the reviews.
+  step that moves `app/`, after `ktlintFormat` and `.claude/hooks/review-gate.sh --checks` are clean. Nothing edits
+  `app/` between that sweep and the reviews.
+- `review-gate.sh --checks` records each check's pass by the tree it read, and the Stop hook skips a check that
+  passed on the same tree. A doc or ADR edit keeps the Gradle pass.
 - A reviewer reruns a test class only when the change it reviews (the delta, on a follow-up pass) touched that class
   or the code it drives. On a follow-up pass, the sweep and the stress cover only the classes the delta touched, at
   `--runs 10` and `--runs 8`, and mutation or `unit-prefix` runs cover only new or changed tests.

@@ -12,15 +12,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/lintorama-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Running lintorama"
-          },
-          {
-            "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/review-gate.sh\"",
-            "timeout": 30,
-            "statusMessage": "Checking for changes a reviewer owns"
+            "timeout": 1200,
+            "statusMessage": "Running the code checks, then checking for changes a reviewer owns"
           },
           {
             "type": "command",

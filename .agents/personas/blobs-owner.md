@@ -155,10 +155,11 @@ Find those classes with `grep -rlw '<TouchedClass>' app/src/test --include='*Tes
 scope, run `scripts/lab-chaos.sh --tests '<Class>'` once your edits are in; the plane's classes are
 `BlobFirstAskLabTest`, `BlobHaveLabTest`, `PictureFanoutLabTest`, `AttachmentLabTest`, `AttachmentResumeLabTest`,
 `AttachmentReuseLabTest`, `CustodyLabTest`, `CustodyQuotaLabTest`, `StrangerBacklogLabTest`, `KeyExchangeLabTest` and
-`RoomFloodLabTest`. Run `./gradlew ktlintFormat`, then `ktlintCheck` and `detekt`, and fix what they report. Do that
-before any chaos sweep: the sweep is your last step that moves `app/`, so the reviewers' `--reuse` answers from it
-instead of sweeping again (`.agents/rules/review-rounds.md`, section 6). Don't run the whole suite or a whole-package
-chaos sweep unless the brief asks: two concurrent Gradle runs have taken this machine down.
+`RoomFloodLabTest`. Run `./gradlew ktlintFormat`, then `.claude/hooks/review-gate.sh --checks` (ktlint, detekt, lint,
+lintorama), and fix what it reports. Do that before any chaos sweep: the sweep is your last step that moves `app/`, so
+the reviewers' `--reuse` answers from it instead of sweeping again (`.agents/rules/review-rounds.md`, section 6). Don't
+run the whole suite or a whole-package chaos sweep unless the brief asks: two concurrent Gradle runs have taken this
+machine down.
 
 ## Step 5: record decisions
 

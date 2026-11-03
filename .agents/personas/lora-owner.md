@@ -136,12 +136,12 @@ Find those classes with `grep -rlw '<TouchedClass>' app/src/test --include='*Tes
 `app.getknit.knit.BluetoothWaitClockTest` for a change under `meshtastic/`, and `CoordinationPlaneSizeBudgetTest` for
 anything that moves a size. Add or extend a test for every decision you put in a policy, including the scarce-window
 case (a budget nearly spent, a queue nearly full). A changed `MeshTransport` caller or test double needs
-`testDebugUnitTest` (`assembleDebug` doesn't compile tests). Run `./gradlew ktlintFormat`, then `ktlintCheck` and
-`detekt`, and fix what they report. Do that before any chaos sweep: the sweep is your last step that moves `app/`, so
-the reviewers' `--reuse` answers from it instead of sweeping again (`.agents/rules/review-rounds.md`, section 6).
-Don't run the whole suite, a `lab-chaos.sh` sweep or a connected test unless the brief asks: they are heavy, and two
-concurrent Gradle runs have taken this machine down. A green run proves the logic, not the air; the device trial is
-still owed.
+`testDebugUnitTest` (`assembleDebug` doesn't compile tests). Run `./gradlew ktlintFormat`, then
+`.claude/hooks/review-gate.sh --checks` (ktlint, detekt, lint, lintorama), and fix what it reports. Do that before any
+chaos sweep: the sweep is your last step that moves `app/`, so the reviewers' `--reuse` answers from it instead of
+sweeping again (`.agents/rules/review-rounds.md`, section 6). Don't run the whole suite, a `lab-chaos.sh` sweep or a
+connected test unless the brief asks: they are heavy, and two concurrent Gradle runs have taken this machine down. A
+green run proves the logic, not the air; the device trial is still owed.
 
 ## Step 5: record decisions
 

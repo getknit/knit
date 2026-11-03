@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Stop hook: an uncommitted change under a reviewer's paths gets that reviewer before Claude finishes the turn.
+# Stop hook: the code checks pass, and then an uncommitted change under a reviewer's paths gets that reviewer, before
+# Claude finishes the turn. The two run here in that order, in one hook, because Claude Code runs a Stop event's hooks
+# in parallel: as separate hooks, lintorama or a ktlint fix landed after the reviewers had read the code, and moved
+# enough lines to force a second review of the same change. lintorama runs on every stop with a change (it replaces its
+# own Stop hook, lintorama-stop.sh, which this calls); ktlintCheck, detekt and lint run only when a reviewer is about to
+# be asked, since they take minutes. `--checks` runs them all for an agent and records the pass (run_checks below).
 #
 # Each reviewer persona (`.agents/personas/<name>.md`) hunts one class of defect from a catalogue of the ones
 # this codebase has already shipped and fixed. review-gate.conf maps each to the paths it owns and its stage; this
@@ -21,7 +26,8 @@
 #
 # `--stamp <name>` records what a review approved: each reviewer runs it as its last step, so the few-line
 # edits that apply its findings don't ask for a review of the review. The state lives in the git dir, so each
-# worktree keeps its own. Honors `stop_hook_active`, so the enforced round can always end.
+# worktree keeps its own. Honors `stop_hook_active`, so the enforced round can always end, except after a stop the
+# checks blocked: that stop's continuation comes back to ask for the reviewers.
 
 set -uo pipefail
 
@@ -71,6 +77,72 @@ fingerprint() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
 # each `index` line, which would otherwise count as changes of their own.
 content() { grep -v -e '^index ' -e '^@@ '; }
 
+# The code checks: every static check whose fix moves code a reviewer reads (ktlint, detekt, Android lint, lintorama),
+# never the tests, which the reviewers run themselves. Each check runs once per tree it reads and records a pass in the
+# state dir, so `--checks` run by an agent, an owner or a reviewer satisfies the Stop hook and the hook never runs the
+# same check again on the same tree. Gradle reads the modules and build files, not the docs, the agent library, the hooks
+# or the store text, so an ADR written after a pass keeps it; lintorama reads everything. Gradle goes through
+# scripts/gradle-turn.sh, so it takes turns with every other Gradle run in this worktree instead of racing it.
+gradle_tree() {
+  worktree_tree . ':(exclude)*.md' ':(exclude).agents' ':(exclude)docs' ':(exclude).claude' ':(exclude)fastlane' \
+    ':(exclude).github'
+}
+
+# run_checks [gradle]: lintorama always, the Gradle checks only when asked. Prints the findings; returns 0 clean, 1 on a
+# finding, 75 when Gradle's turn stayed busy past GRADLE_TURN_WAIT (the checks are unknown, not failed).
+run_checks() {
+  local out="" status=0 tree lint_out gradle_out gradle_status
+  mkdir -p "$state"
+  tree=$(worktree_tree .)
+  if [ "$(cat "$state/lintorama.pass" 2>/dev/null)" != "$tree" ]; then
+    if lint_out=$(printf '{}' | bash "$project_dir/.claude/hooks/lintorama-stop.sh" 2>&1); then
+      printf '%s\n' "$tree" >"$state/lintorama.pass"
+    else
+      out+="$lint_out"$'\n'
+      status=1
+    fi
+  fi
+  [ "${1:-}" = gradle ] || {
+    printf '%s' "$out"
+    return "$status"
+  }
+  tree=$(gradle_tree)
+  if [ "$(cat "$state/gradle-checks.pass" 2>/dev/null)" != "$tree" ]; then
+    gradle_out=$(GRADLE_TURN_WAIT="${GRADLE_TURN_WAIT:-600}" "$project_dir/scripts/gradle-turn.sh" \
+      ./gradlew ktlintCheck detekt lint --continue --console=plain 2>&1)
+    gradle_status=$?
+    if [ "$gradle_status" -eq 0 ]; then
+      printf '%s\n' "$tree" >"$state/gradle-checks.pass"
+    elif [ "$gradle_status" -eq 75 ]; then
+      out+="The Gradle checks did not run: another Gradle run held this worktree past the wait."$'\n'
+      [ "$status" -ne 0 ] || status=75
+    else
+      out+="\`./gradlew ktlintCheck detekt lint\` failed (exit $gradle_status). Most ktlint findings autocorrect with"
+      out+=" \`./gradlew ktlintFormat\`; fix detekt and lint findings by hand:"$'\n'
+      out+=$(printf '%s\n' "$gradle_out" |
+        grep -iE '\.kts?:[0-9]+:[0-9]+:|weighted issues|error:|Lint found|lint-results|FAILURE' ||
+        printf '%s\n' "$gradle_out" | tail -n 30)
+      out+=$'\n'
+      status=1
+    fi
+  fi
+  printf '%s' "$out"
+  return "$status"
+}
+
+# `--checks` runs every code check now, skipping one whose tree already passed: what an agent runs in place of
+# `./gradlew ktlintCheck detekt lint` and lintorama, so the Stop hook finds the pass instead of running them again.
+if [ "${1:-}" = "--checks" ]; then
+  out=$(run_checks gradle)
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    echo "review-gate: code checks clean"
+    exit 0
+  fi
+  printf '%s\n' "$out" >&2
+  exit 2
+fi
+
 # `--owed <base>` lists the reviewers the commits since <base> owe, for a pull request nobody reviewed in Claude Code
 # (.github/workflows/review-gates.yml): one line per reviewer, `<name>\t<stage>\t<files, space-separated>`, stage 1
 # first. It reads and writes no state: CI has no stamps, so every reviewer whose paths the range touches is owed.
@@ -106,8 +178,12 @@ if [ "${1:-}" = "--stamp" ]; then
 fi
 
 input=$(cat)
+# A stop the pre-review checks blocked is not a finished round: the next stop, though `stop_hook_active`, comes back to
+# ask for the reviewers once the checks pass. Any other continued stop ends the round.
 if [ "$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
-  exit 0
+  [ -f "$state/checks.blocked" ] || exit 0
+else
+  rm -f "$state/checks.blocked"
 fi
 
 # Pass 1: which reviewers have a review pending, and the earliest stage among them.
@@ -131,13 +207,9 @@ while IFS=$'\t' read -r name stage follow_up paths relay <&3; do
   if [ -z "$first_stage" ] || [ "$stage" -lt "$first_stage" ]; then first_stage=$stage; fi
 done 3< <(reviewers)
 
-[ ${#pending[@]} -gt 0 ] || exit 0
-
-# Pass 2: ask for the pending reviewers of that stage, unless this same state was asked for already (they may be
-# running now). A later stage waits, owed or not, until the earlier one has stamped.
-owed=""
-relays=""
-followups=""
+# Pass 2: the pending reviewers of that stage still owed an ask: not when this same state was asked for already (they
+# may be running now). A later stage waits, owed or not, until the earlier one has stamped.
+to_ask=()
 later=""
 for entry in "${pending[@]}"; do
   IFS=$'\t' read -r name stage paths relay same_round <<<"$entry"
@@ -148,7 +220,59 @@ for entry in "${pending[@]}"; do
   read -ra specs <<<"$paths"
   print=$(fingerprint "$(snapshot "${specs[@]}")")
   [ "$(cat "$state/$name.asked" 2>/dev/null)" = "$print" ] && continue
-  mkdir -p "$state"
+  # The fingerprint goes first: `read` folds an empty same_round's tab into the next field.
+  to_ask+=("$print"$'\t'"$entry")
+done
+
+# Pass 3: the code checks, before any reviewer reads the code and one after another, never beside the review. A
+# ktlintFormat, detekt, lint or lintorama fix after a review moves lines it read, and past its follow-up slack that
+# forces a second review of the same change. lintorama runs on every stop, as its own hook did; the Gradle checks only
+# when a reviewer is about to be asked. A failure blocks the stop instead of the ask. After CHECK_ROUNDS blocked stops in
+# a row, or when the tree hasn't moved since the last failure, the reviewers are asked anyway with the findings named, so
+# a check nobody can fix never holds the review or traps the session.
+CHECK_ROUNDS=3
+mkdir -p "$state"
+checks_note=""
+tree=$(worktree_tree .)
+rounds=$(sed -n 1p "$state/checks.blocked" 2>/dev/null)
+rounds=${rounds:-0}
+if [ "$(sed -n 2p "$state/checks.blocked" 2>/dev/null)" = "$tree" ] || [ "$rounds" -ge "$CHECK_ROUNDS" ]; then
+  checks_note="The code checks still fail and were left unfixed; tell the user. Their last report:"$'\n'
+  checks_note+=$(cat "$state/checks.out" 2>/dev/null)
+else
+  if [ ${#to_ask[@]} -gt 0 ]; then
+    out=$(run_checks gradle)
+  else
+    out=$(run_checks)
+  fi
+  status=$?
+  if [ "$status" -eq 1 ]; then
+    printf '%s\n%s\n' "$((rounds + 1))" "$tree" >"$state/checks.blocked"
+    printf '%s\n' "$out" >"$state/checks.out"
+    {
+      echo "Stop blocked: the code checks fail. Fix these, then stop again:"
+      echo
+      printf '%s\n' "$out"
+      if [ ${#to_ask[@]} -gt 0 ]; then
+        echo "Owed a review once the checks pass (a fix after a review moves the lines it read and forces another"
+        echo "round):$(for e in "${to_ask[@]}"; do printf ' %s' "$(cut -f2 <<<"$e")"; done)."
+      fi
+      echo "Rerun them with \`.claude/hooks/review-gate.sh --checks\`: it records the pass, so this hook won't run them again."
+    } >&2
+    exit 2
+  fi
+  [ "$status" -eq 75 ] && checks_note=$out
+fi
+rm -f "$state/checks.blocked" "$state/checks.out"
+
+[ ${#to_ask[@]} -gt 0 ] || exit 0
+
+owed=""
+relays=""
+followups=""
+for entry in "${to_ask[@]}"; do
+  IFS=$'\t' read -r print name stage paths relay same_round <<<"$entry"
+  read -ra specs <<<"$paths"
   printf '%s\n' "$print" >"$state/$name.asked"
 
   label="$name:"
@@ -182,5 +306,9 @@ done
   echo "apply the non-blocking ones in the same batch or list them for the user as follow-ups. Then give the user"
   echo "the findings and, from each report:"
   printf '%s' "$relays"
+  if [ -n "$checks_note" ]; then
+    echo
+    printf '%s\n' "$checks_note"
+  fi
 } >&2
 exit 2
