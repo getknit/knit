@@ -320,6 +320,7 @@ class MeshLab {
         b: LabNode,
         arm: () -> Unit = {},
     ) {
+        listOf(a, b).forEach { check(!it.meshPaused) { "${it.name}'s mesh is paused: its radios are down until resumeMesh()" } }
         a.transport.connect(b.transport, arm = arm)
     }
 
@@ -1365,6 +1366,14 @@ class LabNode internal constructor(
     var linksQuiet = false
 
     /**
+     * Whether this node's mesh is paused ([pauseMesh] until [resumeMesh]): the manager is down in a process that lives on,
+     * and the direct links are held off as a pause holds them (`DirectLinks.enabled` false, `DirectLinkWiring`).
+     */
+    @Volatile
+    var meshPaused = false
+        private set
+
+    /**
      * Whether this phone's network is metered, as `InternetGate.isMetered` answers its blob exchange and its direct links: a
      * fast-only want then never asks over a direct link, and waits for the tap (ADR 2026-10.js2p, 2026-10.a5yj); and its
      * links' signals carry `m`, so none is made beside a radio (L-7-11). Unmetered unless a scenario says.
@@ -1509,7 +1518,7 @@ class LabNode internal constructor(
                 selfId = { nodeId },
                 datagrams = phone.datagrams,
                 peers = ManagerLinkPeers(),
-                enabled = { linksOn && !linksQuiet },
+                enabled = { linksOn && !linksQuiet && !meshPaused },
                 scope = scope,
                 declining = { !linksOn },
                 // This node's network as the scenario sets it ([metered]), and its radios, as `di/DirectLinkWiring` reads them.
@@ -1984,10 +1993,60 @@ class LabNode internal constructor(
      * [MeshLab.unlink]). [whileDown] runs between the two: a settings edit made while the mesh was stopped.
      */
     suspend fun restart(whileDown: suspend LabNode.() -> Unit = {}) {
+        check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restart" }
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         whileDown()
         timedBoot()
+    }
+
+    /**
+     * The notification's Pause (ADR 2026-09.wz99): `MeshService.applyPause` stops the manager in place, and the process
+     * lives on with everything it holds in memory. A [restart] cannot model that, since it builds a new stack: here the
+     * same `MeshManager`, `BlobRepository`, database and settings come back on [resumeMesh]. The radios go down with the
+     * manager, so the links go as [restart]'s do, with every peer handed the departure first. The direct links close and
+     * stay held off ([meshPaused]), as `DirectLinkWiring`'s pause collector holds them. Link the node again only after
+     * [resumeMesh].
+     *
+     * The stopped session is joined before this returns. The phone does not wait for it, but there a pause and its resume
+     * are two taps apart, so the old session's last deliveries (ADR 2026-10.f82h) are done before the next start runs.
+     * The lab can resume at once, and the join keeps the two from overlapping.
+     */
+    suspend fun pauseMesh() {
+        check(!meshPaused) { "$name's mesh is already paused" }
+        meshPaused = true
+        val peers = transport.disconnectAll()
+        transport.detach()
+        links?.stop()
+        manager.stop()
+        val job = checkNotNull(scope) { "$name is not booted" }.coroutineContext.job
+        val joined =
+            withTimeoutOrNull(SCOPE_JOIN_MS) {
+                job.children
+                    .filter { it.isCancelled }
+                    .toList()
+                    .joinAll()
+            }
+        check(joined != null) { "$name: stopped session still running $SCOPE_JOIN_MS ms after the pause: ${job.children.toList()}" }
+        awaitPeersSettled(peers)
+    }
+
+    /**
+     * The notification's Resume (ADR 2026-09.wz99): the paused manager starts again on everything the process kept.
+     * Returns once every plane's flows are collected, as [boot] does. The start's sweeps (`MeshManager.startSweepsDone`)
+     * are still running then, so a scenario can act inside them or wait them out. Bringing the links back
+     * ([MeshLab.link]) is the scenario's job.
+     */
+    suspend fun resumeMesh() {
+        check(meshPaused) { "$name's mesh is not paused" }
+        meshPaused = false
+        manager.start()
+        withContext(Dispatchers.Default) {
+            withTimeout(MeshLab.AWAIT_MS) {
+                while (!collecting) delay(1)
+                transport.joinPages()
+            }
+        }
     }
 
     /**
@@ -2012,6 +2071,7 @@ class LabNode internal constructor(
      * The snapshot is taken at the moment of the call; nothing this node held in memory survives.
      */
     suspend fun restoreFromBackup() {
+        check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restore" }
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
@@ -2433,10 +2493,26 @@ class LabNode internal constructor(
         text: String = "",
         to: LabNode? = null,
         groupId: String? = null,
-    ): Boolean {
+    ): Boolean = sendPicked(pickImage(bytes), text, to, groupId)
+
+    /**
+     * The picker's half of [sendImage]: [bytes] go into the blob store as the composer stages them, and no message names
+     * them until [sendPicked] sends what this returns. Until then the bytes are an orphan that a start's collection
+     * (`BlobRepository.deleteOrphans`) must leave alone, since this process stored them (#288).
+     */
+    suspend fun pickImage(bytes: ByteArray): AttachmentStore.Ingested {
         val hash = sha256Hex(bytes)
         blobs.insert(hash, IMAGE_MIME, bytes)
-        val attachment = AttachmentStore.Ingested(hash = hash, mime = IMAGE_MIME, sizeBytes = bytes.size)
+        return AttachmentStore.Ingested(hash = hash, mime = IMAGE_MIME, sizeBytes = bytes.size)
+    }
+
+    /** The composer's send of a picture [pickImage] staged, as [sendImage] sends it. */
+    suspend fun sendPicked(
+        attachment: AttachmentStore.Ingested,
+        text: String = "",
+        to: LabNode? = null,
+        groupId: String? = null,
+    ): Boolean {
         val group = groupId?.let { checkNotNull(groups.find(it)) { "$name holds no group $it" }.toGroupInfo() }
         return spaced {
             manager.sendChat(

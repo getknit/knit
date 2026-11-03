@@ -606,6 +606,14 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - **Restart is real.** `node.restart()` tears the live stack down and rebuilds it over the same identity, DB
   and settings — every in-memory structure (`PendingInbound`, `PendingGroupKeys`, ratchet caches, seen set)
   starts empty.
+- **A pause keeps the process.** `node.pauseMesh()` / `resumeMesh()` are the notification's Pause and Resume (ADR
+  2026-09.wz99): the same `MeshManager` stops and starts again, and every in-memory structure the process holds
+  (`BlobRepository`'s stored-this-process marks, `BlobExchange`'s memos) carries over, which a `restart()` cannot
+  show. The links go as a restart's do, the direct links stay held off, and `MeshLab.link` refuses a paused node.
+  `resumeMesh` returns once the planes are collected, with the start's sweeps still running (`startSweepsDone`).
+  `MeshPauseLabTest` is the home for what one process carries across a pause. The pausing node's own departure hooks
+  may or may not run before its session is cancelled (production's `applyPause` races the same way), and a direct-link
+  peer's close is not awaited; a scenario whose oracle depends on either must pin it itself.
 - **A departure is observed, not timed.** `neighbors` is a conflating `StateFlow`, so a link taken down and
   brought back while `MeshManager.watchNeighbors` is still inside its body is a link that never went down to
   it — no newcomer, no profile push, no digest exchange. `LabTransport` records the generation each collector
