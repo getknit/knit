@@ -887,6 +887,12 @@ class BadgeEntry(
  * and phase-specific, per docs/WIRE_COMPAT.md rule 1; [key] is base64 rather than `@ByteString` for that
  * document's no-defaulted-ByteArray rule. [name] is sender-supplied text and is normalized through
  * [AttachmentName] at the decode boundary, exactly like `MessageContent.attachmentName`.
+ *
+ * [md] marks the transfer as translation models (ADR 2026-11.ejn8): each entry is a direction's pin
+ * (`TranslateDirection.pin`, an unsigned 32-bit number), the set offered on an OFFER and the subset taken on its
+ * ACCEPT. The OFFER is still a whole file offer, an archive of the models, so a build that ignores [md] takes it as
+ * that file and its ACCEPT, naming none, is sent the whole archive. Absent from every plain file transfer's frame,
+ * which encodes as it did before the field existed.
  */
 @Serializable
 data class TransferPayload(
@@ -900,6 +906,7 @@ data class TransferPayload(
     val port: Int? = null,
     val key: String? = null,
     val reason: Int? = null,
+    val md: List<Long>? = null,
 ) {
     companion object {
         const val PHASE_OFFER = 1

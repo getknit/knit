@@ -62,6 +62,18 @@ class TranslateDirection(
     /** Every file's bytes together: what a download costs. */
     val bytes: Long get() = files.sumOf { it.bytes }
 
+    /**
+     * The direction's name on the wire, where a direct transfer offers it to a contact (ADR 2026-11.ejn8): the first four
+     * bytes of its weights' SHA-256 as an unsigned 32-bit number, the same eight hex digits its [id] ends in. It only
+     * picks a row of this table; every byte that arrives is still checked against [files] whole.
+     */
+    val pin: Long =
+        files
+            .first { it.name == model }
+            .sha256
+            .take(PIN_HEX)
+            .toLong(HEX)
+
     fun urlOf(file: SttFile): String = baseUrl + file.name
 
     override fun toString(): String = "${from.code}->${to.code}"
@@ -86,6 +98,12 @@ class TranslateDirection(
             from: TranslateLang,
             to: TranslateLang,
         ): TranslateDirection? = ALL.firstOrNull { it.from == from && it.to == to }
+
+        /** The direction this table names by [pin], or null when it pins none: another build's model. */
+        fun ofPin(pin: Long): TranslateDirection? = ALL.firstOrNull { it.pin == pin }
+
+        private const val PIN_HEX = 8
+        private const val HEX = 16
     }
 }
 

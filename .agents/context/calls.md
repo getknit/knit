@@ -106,7 +106,7 @@ lines.
   `SttKeytermFeed` (the names the model listens for),
   `call/VoiceNoteTranscript.kt` (`VoiceNoteTranscriber`, `VoiceNoteSpeech`), `VoiceAudio.speechPcm`, `messages.voiceTranscript`
   and the voice bubble's Transcribe (also ADR 2026-10.am8d),
-  `call/SttModel.kt` (the pins, `SttModelInstaller`), `ui/call/stt/` (`MoonshineSpeech`, `MoonshineRuntime`, `JniMoonshine`,
+  `call/SttModel.kt` (the pins, `SttModelInstaller`; its `adopt` installs staged files for ADR 2026-11.ejn8), `ui/call/stt/` (`MoonshineSpeech`, `MoonshineRuntime`, `JniMoonshine`,
   `SttModelFiles`, `SttModelStore`,
   `SttDownloadService`), the Calls screen's transcripts section (`data/settings/TranscriptStore`), `TalkPlayer`'s `TalkPcmTap`,
   `WalkieTranscriptCard`, `ModelLoadGuard.STT`, the `moonshineVoice` pin or `scripts/stt-model.py`:** READ ADR

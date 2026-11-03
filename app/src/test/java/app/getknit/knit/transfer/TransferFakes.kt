@@ -1,11 +1,15 @@
 package app.getknit.knit.transfer
 
+import app.getknit.knit.call.SttFile
 import app.getknit.knit.mesh.protocol.TransferPayload
+import app.getknit.knit.translate.ModelArchive
+import app.getknit.knit.translate.ModelBundleSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -14,8 +18,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.Collections
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /**
@@ -225,6 +233,141 @@ class FakeTransferFiles : TransferFiles {
             pos += n
             return n
         }
+    }
+}
+
+/**
+ * Translation models as pinned byte arrays (ADR 2026-11.ejn8), shared by both sides as one generated table would be:
+ * each pin is a direction of two files, and a bundle is their [ModelArchive], as on a phone. The receiver's sink is the
+ * real [ModelBundleSink] staged under [root], so the pins are checked as on a phone; its adopt records what landed.
+ */
+class FakeTransferModels(
+    private val root: File,
+    private val table: Map<Long, List<Pair<SttFile, ByteArray>>>,
+) : TransferModels {
+    /** What this side has installed; the sender sends from it, the receiver takes what it lacks. */
+    val held: MutableSet<Long> = Collections.synchronizedSet(mutableSetOf())
+
+    /** Pins whose bytes the sender serves with one byte flipped: a peer's copy that does not match the pins. */
+    val corrupt: MutableSet<Long> = Collections.synchronizedSet(mutableSetOf())
+
+    /** Pins put in place by a commit, in order. */
+    val installed: MutableList<Long> = CopyOnWriteArrayList()
+
+    /** Every staging directory a sink was given. */
+    val stages: MutableList<File> = CopyOnWriteArrayList()
+
+    var adoptFails = false
+
+    /** When set, the sink's commit throws before it does anything, its own cleanup included: only the manager can discard. */
+    var commitThrows = false
+
+    /** When set, the receiver's check waits for this to open: the sender has sent every byte and awaits the verdict. */
+    var checkGate: CountDownLatch? = null
+
+    /** When set, the sender's stream stops after its first file until this opens: a transfer held mid-stream. */
+    var hold: CountDownLatch? = null
+
+    override fun wanted(pins: List<Long>): ModelsWanted {
+        val take = pins.filter { it in table && it !in held }
+        return ModelsWanted(take, archiveSize(take), label = "models:${take.size}")
+    }
+
+    /** What the archive of [pins] costs, as both ends work it out from the pins. */
+    fun archiveSize(pins: List<Long>): Long = ModelArchive.size(plan(pins))
+
+    /** The archive of [pins] as the sender writes it. */
+    fun archive(pins: List<Long>): ByteArray =
+        ModelArchive.stream(plan(pins)) { dir, file -> ByteArrayInputStream(bytesOf(dir, file)) }.readBytes()
+
+    override fun bundle(pins: List<Long>): TransferSource? {
+        if (!pins.all { it in held && it in table }) return null
+        return TransferSource(ModelArchive.FILE_NAME, archiveSize(pins), ModelArchive.MIME) {
+            val gate = hold
+            var opened = 0
+            ModelArchive.stream(plan(pins)) { dir, file ->
+                val pin = table.keys.single { dirOf(it) == dir }
+                val bytes = bytesOf(dir, file).let { if (pin in corrupt) flipped(it) else it }
+                if (opened++ == 1 && gate != null) HeldInput(ByteArrayInputStream(bytes), gate) else ByteArrayInputStream(bytes)
+            }
+        }
+    }
+
+    override suspend fun sink(pins: List<Long>): TransferSink? {
+        val stage = File(root, "incoming/${UUID.randomUUID()}").also { stages += it }
+        val sink = bundleSink(stage, pins)
+        val gate = checkGate
+        val throws = commitThrows
+        if (!throws && gate == null) return sink
+        return object : TransferSink by sink {
+            override suspend fun check(): Boolean {
+                // On the receiver's io dispatcher, so blocking here holds only this transfer.
+                gate?.await(GATE_S, TimeUnit.SECONDS)
+                return sink.check()
+            }
+
+            override suspend fun commit() {
+                if (throws) throw IOException("commit failed before its own cleanup")
+                sink.commit()
+            }
+        }
+    }
+
+    private fun bundleSink(
+        stage: File,
+        pins: List<Long>,
+    ): TransferSink =
+        ModelBundleSink(
+            stage = stage,
+            plan = plan(pins),
+            adopt = { staged ->
+                if (adoptFails) throw IOException("rename failed")
+                pins.forEach { pin -> check(checkNotNull(staged[dirOf(pin)]).listFiles().orEmpty().size == 2) }
+                installed += pins
+                held += pins
+            },
+        )
+
+    private fun plan(pins: List<Long>) = pins.map { pin -> dirOf(pin) to table.getValue(pin).map { it.first } }
+
+    private fun bytesOf(
+        dir: String,
+        file: SttFile,
+    ): ByteArray = table.getValue(table.keys.single { dirOf(it) == dir }).single { it.first == file }.second
+
+    private fun flipped(bytes: ByteArray) = bytes.copyOf().also { it[it.size / 2] = (it[it.size / 2] + 1).toByte() }
+
+    private class HeldInput(
+        private val inner: InputStream,
+        private val gate: CountDownLatch,
+    ) : InputStream() {
+        override fun read(): Int {
+            gate.await(GATE_S, TimeUnit.SECONDS)
+            return inner.read()
+        }
+
+        override fun read(
+            b: ByteArray,
+            off: Int,
+            len: Int,
+        ): Int {
+            gate.await(GATE_S, TimeUnit.SECONDS)
+            return inner.read(b, off, len)
+        }
+    }
+
+    companion object {
+        private const val GATE_S = 10L
+
+        fun dirOf(pin: Long) = "dir-%08x".format(pin)
+
+        /** A direction of two pinned files from [seed], the second short enough to end mid-chunk. */
+        fun direction(seed: Int): List<Pair<SttFile, ByteArray>> =
+            listOf(TransferStream.CHUNK_BYTES + 77, 1_003).mapIndexed { i, n ->
+                val bytes = Random(seed * 10 + i).nextBytes(n)
+                val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+                SttFile("f$i.bin", n.toLong(), sha) to bytes
+            }
     }
 }
 

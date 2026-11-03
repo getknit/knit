@@ -618,6 +618,23 @@ class MessageContentTest {
     }
 
     @Test
+    fun aModelsOfferCarriesOnlyItsPinsAndAFileOfferPaysNothingForThem() {
+        // ADR 2026-11.ejn8: pins are unsigned 32-bit, so the top of the range survives a Long round trip.
+        val offer = TransferPayload(id = "t2", phase = TransferPayload.PHASE_OFFER, md = listOf(0x3b1c3995L, 0xFFFF_FFFFL))
+        val decoded = MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = offer).encode())!!
+        assertEquals(offer, decoded.xf)
+        // Two pins cost 14 bytes over a bare {id, phase}: the "md" key (3), an array header (1), two uint32s (5 each).
+        val bare = TransferPayload(id = "t2", phase = TransferPayload.PHASE_OFFER)
+
+        fun size(p: TransferPayload) = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = p).encode().size
+        assertEquals(14, size(offer) - size(bare))
+        // A file offer leaves the field out entirely (the golden vector messageContentTransferOffer pins its bytes).
+        val file = TransferPayload(id = "t3", phase = TransferPayload.PHASE_OFFER, name = "a.bin", size = 9L)
+        val bytes = MessageContent(body = "", ctl = MessageContent.CTL_TRANSFER, xf = file).encode()
+        assertFalse(bytes.toList().windowed(3).any { it == listOf(0x62.toByte(), 'm'.code.toByte(), 'd'.code.toByte()) })
+    }
+
+    @Test
     fun theCallPayloadRoundTripsEveryFieldAndStaysOffOrdinaryMessages() {
         val cands =
             CallPayload(

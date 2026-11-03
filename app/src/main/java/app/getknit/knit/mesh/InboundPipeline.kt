@@ -118,6 +118,7 @@ import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
 import app.getknit.knit.notifications.reactionNotificationKey
+import app.getknit.knit.transfer.TransferNotice
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -272,7 +273,7 @@ class InboundPipeline(
     private val onPeerFrameOpened: suspend (senderId: String, initEph: ByteArray?, resetFlagged: Boolean) -> Unit = { _, _, _ -> },
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, handed on
     // post-commit like the rest. True when it admitted a live incoming OFFER, which is what earns a notification.
-    private val onTransferCtl: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> Boolean = { _, _, _ -> false },
+    private val onTransferCtl: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> TransferNotice? = { _, _, _ -> null },
     // A sealed CTL_CALL landed (call/CallManager.onSignal; experimental, docs/VOICE_CALLS.md): voice-call signaling,
     // handed on post-commit from an accepted thread only. The call layer owns ringing and every notification, and the
     // hook must return without waiting — it runs on this frame's inbound path.
@@ -4108,16 +4109,17 @@ class InboundPipeline(
     ) {
         if (!isAccepted(env.senderId, me)) return
         val admitted = onTransferCtl(env.senderId, payload, env.sentAt)
-        if (admitted && payload.phase == TransferPayload.PHASE_OFFER) {
+        if (admitted != null && payload.phase == TransferPayload.PHASE_OFFER) {
             // Its own notification rather than a line in the thread's, so it can wear the transfer mark
-            // instead of an emoji standing in for one — see Notifier.notifyTransferOffer.
+            // instead of an emoji standing in for one — see Notifier.notifyTransferOffer. The name and size are
+            // the manager's reading of the offer: a models offer's are this phone's own words (ADR 2026-11.ejn8).
             val peer = peers.find(env.senderId)
             notifier.notifyTransferOffer(
                 peerId = env.senderId,
                 peerName = peers.labelIndex().labelFor(env.senderId, peer?.name).text,
                 peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
-                fileName = payload.name.orEmpty(),
-                sizeBytes = payload.size,
+                fileName = admitted.name,
+                sizeBytes = admitted.size,
             )
         }
     }

@@ -148,6 +148,34 @@ class SttModelInstaller(
         marker.writeText(id)
     }
 
+    /**
+     * Installs the model from files already staged on this filesystem: a direct transfer's bundle (ADR 2026-11.ejn8),
+     * where the bytes came from a contact's phone. [staged] names where each file waits. Each is checked against its
+     * size and hash here, whatever the stager checked, and renamed into place. A file already in place at its pins is
+     * kept, and its staged copy is left for the caller to throw away. The marker goes last, as for [install].
+     * True when any file was put in place. Throws [Refused] when a staged file fails its pins.
+     */
+    suspend fun adopt(staged: (SttFile) -> File): Boolean =
+        withContext(Dispatchers.IO) {
+            if (installed()) return@withContext false
+            if (!dir.isDirectory && !dir.mkdirs()) throw Refused("Couldn't make the model's folder")
+            marker.delete()
+            var moved = false
+            for (file in files) {
+                ensureActive()
+                val target = pathOf(file)
+                if (target.length() == file.bytes && sha256(target) == file.sha256) continue
+                val from = staged(file)
+                refuseUnless(from.isFile && from.length() == file.bytes) { "${file.name} came short" }
+                refuseUnless(sha256(from) == file.sha256) { "${file.name} failed its checksum" }
+                target.delete()
+                refuseUnless(from.renameTo(target)) { "Couldn't put ${file.name} in place" }
+                moved = true
+            }
+            marker.writeText(id)
+            moved
+        }
+
     /** Removes the model: the marker first, so a delete cut short leaves a model that is not installed. */
     fun delete() {
         marker.delete()

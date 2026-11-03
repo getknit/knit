@@ -160,6 +160,7 @@ import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.transfer.DirectHostGuard
 import app.getknit.knit.transfer.OfferOutcome
 import app.getknit.knit.transfer.TransferManager
+import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.ui.call.CallActivity
 import app.getknit.knit.ui.call.DefaultPath
 import app.getknit.knit.ui.call.DirectNetworkDetector
@@ -175,6 +176,7 @@ import app.getknit.knit.ui.call.stt.WalkieClipFiles
 import app.getknit.knit.ui.chat.ChatWindow
 import app.getknit.knit.ui.chat.quoteLabels
 import app.getknit.knit.ui.invite.prepareKnitApk
+import app.getknit.knit.ui.translate.TranslateModelStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -3624,6 +3626,26 @@ class DebugBridgeReceiver :
         }
         val to = intent.getStringExtra("to")
         val path = intent.getStringExtra("path")
+        // Translation models as one bundle (ADR 2026-11.ejn8): direction ids, comma-separated, or "all" installed here.
+        val models = intent.getStringExtra("models")
+        if (to != null && models != null) {
+            val store = getKoin().getOrNull<TranslateModelStore>() ?: return reply("error", "this build has no translation")
+            store.start()
+            val directions =
+                if (models == "all") {
+                    TranslateDirection.ALL.filter { store.state(it).value == SttModelState.Ready }
+                } else {
+                    models.split(',').map { id ->
+                        TranslateDirection.ALL.firstOrNull { it.id == id.trim() }
+                            ?: return reply("error", "no direction $id")
+                    }
+                }
+            if (directions.isEmpty()) return reply("error", "no model installed")
+            return when (val outcome = transfers.offerModels(to, directions.map { it.pin })) {
+                is OfferOutcome.Started -> reply("ok", "offered ${outcome.id}: ${directions.joinToString()}").put("id", outcome.id)
+                is OfferOutcome.Refused -> reply("refused", outcome.refusal.name)
+            }
+        }
         if (to != null && path != null) {
             return when (val outcome = transfers.offer(to, Uri.fromFile(File(path)).toString())) {
                 is OfferOutcome.Started -> reply("ok", "offered ${outcome.id}").put("id", outcome.id)
@@ -3641,7 +3663,8 @@ class DebugBridgeReceiver :
                     .put("size", s.size)
                     .put("phase", s.phase.name)
                     .put("bytes", s.bytes)
-                    .put("reason", s.reason ?: JSONObject.NULL),
+                    .put("reason", s.reason ?: JSONObject.NULL)
+                    .put("models", s.models?.let { pins -> JSONArray(pins.map { "%08x".format(it) }) } ?: JSONObject.NULL),
             )
         }
         val rows = JSONArray()

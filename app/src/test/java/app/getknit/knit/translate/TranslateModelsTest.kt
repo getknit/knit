@@ -27,6 +27,29 @@ class TranslateModelsTest {
     }
 
     @Test
+    fun eachDirectionsPinIsItsIdsSuffixAndNamesItAlone() {
+        // The pin a direct transfer offers (ADR 2026-11.ejn8): the weights' hash prefix, which translate-model.py
+        // also writes into the id. Distinct across the table, so a pin picks one row.
+        for (direction in TranslateDirection.ALL) {
+            assertEquals(direction.id.substringAfterLast('-'), "%08x".format(direction.pin))
+            assertTrue(direction.pin in 0..0xFFFF_FFFFL)
+            assertEquals(direction, TranslateDirection.ofPin(direction.pin))
+        }
+        assertEquals(
+            TranslateDirection.ALL.size,
+            TranslateDirection.ALL
+                .map { it.pin }
+                .toSet()
+                .size,
+        )
+        assertEquals(0x3b1c3995L, TranslateDirections.EN_ES.pin)
+        assertNull(TranslateDirection.ofPin(0L))
+        // Every direction's files fit a ustar header's name, so the whole table travels as one archive.
+        val plan = TranslateDirection.ALL.map { it.id to it.files }
+        assertTrue(ModelArchive.size(plan) > TranslateDirection.ALL.sumOf { it.bytes })
+    }
+
+    @Test
     fun everyLanguageShipsBothDirections() {
         for (lang in TranslateDirection.languages - TranslateLang.EN) {
             assertNotNull("$lang->en", TranslateDirection.of(lang, TranslateLang.EN))

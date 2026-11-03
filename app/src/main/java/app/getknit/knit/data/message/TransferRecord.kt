@@ -37,6 +37,9 @@ enum class TransferPhase {
  * means nothing anywhere else. [retried] marks a record whose Retry already started a newer transfer, so the old
  * card stops offering it.
  *
+ * A bundle of translation models (ADR 2026-11.ejn8) keeps its direction pins in [models], which the card reads
+ * through this phone's own table; [name] is only the label that went with it, and Retry re-offers the pins.
+ *
  * Progress is not here either — the row is rewritten only on a phase change, and the card reads live bytes
  * from the manager's state. A non-terminal record with no live state (the process died mid-transfer) is
  * what the card draws as interrupted.
@@ -53,6 +56,7 @@ data class TransferRecord(
     val reason: Int? = null,
     val sourceUri: String? = null,
     val retried: Boolean = false,
+    val models: List<Long>? = null,
 ) {
     fun encode(): String = json.encodeToString(this)
 
@@ -64,7 +68,7 @@ data class TransferRecord(
      */
     fun retryable(live: Boolean): Boolean =
         outgoing &&
-            sourceUri != null &&
+            (sourceUri != null || models != null) &&
             !retried &&
             !live &&
             phase != TransferPhase.Done &&

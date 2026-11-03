@@ -53,6 +53,12 @@ lines.
   amendment): one tap replaces the draft, which the person reads and may edit before sending, never automatically.
   Each loaded model lives on a thread of its own that ends with it (`SlimtEngine`): slimt caches ruy's packed weights
   per thread by address and never clears them, so a reload on a reused thread reads the old model's packs.
+- **When touching `TranslateDirection.pin` / `ofPin`, `ModelArchive`, `ModelBundleSink`, `TranslateTransferModels`,
+  `TranslateModelStore.bundle` / `receiver` / its `incoming/` sweep, `SttModelInstaller.adopt`, or the chat's
+  `DirectSendSheet` / `TranslationModelsBody`:** READ ADR 2026-11.ejn8 (models sent to a contact over Direct Send).
+  The bundle is a deterministic tar the receiver writes from its own pins and compares against, never parses; staging
+  is named locally; a models offer is never answered automatically; there is no capability bit, so a build without
+  translation takes the archive as a file. See also `context/direct-transfer.md`.
 - **When touching `location/`, the chat overflow's "Send location" item, or anything that reads the device's
   position:** READ ADR 2026-09.tss4. A shared position is a `geo:` line in the message body (no wire field,
   no capability bit); it is read only between the pin tap and the send, by `ChatViewModel.startLocation`,

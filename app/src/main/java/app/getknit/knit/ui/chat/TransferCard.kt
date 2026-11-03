@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
@@ -27,13 +29,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import app.getknit.knit.R
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.mesh.protocol.TransferPayload
+import app.getknit.knit.ui.theme.KnitTheme
 
 /**
  * The chat card for a direct Wi-Fi file transfer ([TransferView]): the file's icon, name and size, where the
@@ -71,10 +76,24 @@ fun TransferCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(ICON_SLOT)) {
-                        Icon(fileIconFor(view.mime, view.name), contentDescription = null)
+                        Icon(
+                            if (view.models !=
+                                null
+                            ) {
+                                Icons.Filled.Translate
+                            } else {
+                                fileIconFor(view.mime, view.name)
+                            },
+                            contentDescription = null,
+                        )
                     }
                     Column(modifier = Modifier.padding(start = 10.dp)) {
-                        Text(view.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            transferTitle(context, view),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         Text(
                             "$size · ${transferStatusText(view)}",
                             style = MaterialTheme.typography.labelSmall,
@@ -94,6 +113,9 @@ fun TransferCard(
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
+                if (view.incomingModelsOffer) {
+                    ModelsOfferLines(view)
+                }
                 if (view.risky && view.phase == TransferPhase.Offered && !view.outgoing) {
                     Text(
                         stringResource(R.string.chat_file_risky_body, view.name),
@@ -112,6 +134,25 @@ fun TransferCard(
     }
 }
 
+/**
+ * What an incoming models offer means for this phone (ADR 2026-11.ejn8), read from its own table and models: what it
+ * already holds, what its version of Knit does not use, or that nothing in it is new. Only the card says so; the
+ * sender learns nothing until someone taps.
+ */
+@Composable
+private fun ModelsOfferLines(view: TransferView) {
+    val style = MaterialTheme.typography.labelSmall
+    val lines =
+        buildList {
+            if (view.modelsNew == 0) add(stringResource(R.string.chat_transfer_models_nothing_new))
+            if (view.modelsHeld > 0) add(pluralStringResource(R.plurals.chat_transfer_models_held, view.modelsHeld, view.modelsHeld))
+            if (view.modelsUnknown > 0) {
+                add(pluralStringResource(R.plurals.chat_transfer_models_unknown, view.modelsUnknown, view.modelsUnknown))
+            }
+        }
+    lines.forEach { Text(it, style = style, modifier = Modifier.padding(top = 4.dp)) }
+}
+
 @Composable
 private fun TransferActions(
     view: TransferView,
@@ -128,8 +169,11 @@ private fun TransferActions(
                 TextButton(onClick = onDecline, modifier = Modifier.testTag("transfer_decline")) {
                     Text(stringResource(R.string.chat_transfer_decline))
                 }
-                TextButton(onClick = onAccept, modifier = Modifier.testTag("transfer_accept")) {
-                    Text(stringResource(R.string.chat_transfer_accept))
+                // A models offer with nothing new for this phone has nothing to accept.
+                if (view.models == null || view.modelsNew > 0) {
+                    TextButton(onClick = onAccept, modifier = Modifier.testTag("transfer_accept")) {
+                        Text(stringResource(R.string.chat_transfer_accept))
+                    }
                 }
             }
 
@@ -164,6 +208,10 @@ private fun transferStatusText(view: TransferView): String =
             stringResource(R.string.chat_transfer_interrupted)
         }
 
+        view.phase == TransferPhase.Offered && !view.outgoing && view.models != null -> {
+            stringResource(R.string.chat_transfer_models_incoming)
+        }
+
         view.phase == TransferPhase.Offered -> {
             stringResource(if (view.outgoing) R.string.chat_transfer_offered else R.string.chat_transfer_incoming)
         }
@@ -174,6 +222,10 @@ private fun transferStatusText(view: TransferView): String =
 
         view.phase == TransferPhase.Transferring -> {
             stringResource(if (view.outgoing) R.string.chat_transfer_sending else R.string.chat_transfer_receiving)
+        }
+
+        view.phase == TransferPhase.Done && !view.outgoing && view.models != null -> {
+            stringResource(R.string.chat_transfer_models_installed)
         }
 
         view.phase == TransferPhase.Done -> {
@@ -232,3 +284,33 @@ internal fun openSavedFile(
 
 private val CARD_WIDTH = 240.dp
 private val ICON_SLOT = 36.dp
+
+@Preview(showBackground = true)
+@Composable
+fun TransferCardModelsOfferPreview() {
+    // An incoming bundle of three (ADR 2026-11.ejn8): two new to this phone, one already here.
+    KnitTheme {
+        TransferCard(
+            view =
+                TransferView(
+                    id = "x",
+                    outgoing = false,
+                    name = "knit-translation-models.tar",
+                    size = 110_000_000L,
+                    mime = null,
+                    phase = TransferPhase.Offered,
+                    bytes = 0L,
+                    savedUri = null,
+                    reason = null,
+                    interrupted = false,
+                    models = listOf(0x3b1c3995L, 0x4aed7734L, 0xed8bb4a8L),
+                    modelsNew = 2,
+                    modelsHeld = 1,
+                ),
+            mine = false,
+            onAccept = {},
+            onDecline = {},
+            onCancel = {},
+        )
+    }
+}

@@ -8,9 +8,14 @@ import app.getknit.knit.call.SttModelInstaller
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.net.AndroidInternetGate
 import app.getknit.knit.net.InternetGate
+import app.getknit.knit.transfer.TransferSink
+import app.getknit.knit.transfer.TransferSource
+import app.getknit.knit.translate.ModelArchive
+import app.getknit.knit.translate.ModelBundleSink
 import app.getknit.knit.translate.TranslateDirection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +27,8 @@ import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.URI
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.HttpsURLConnection
 
@@ -58,6 +65,10 @@ class TranslateModelStore(
     private val lock = Any()
     private val started = AtomicBoolean()
 
+    // A direct transfer's staging (ADR 2026-11.ejn8): one directory per transfer, named here, never by a peer.
+    private val incoming = File(root, INCOMING)
+    private val liveStages: MutableSet<File> = ConcurrentHashMap.newKeySet()
+
     private fun slot(direction: TranslateDirection): Slot = checkNotNull(slots[direction]) { "no slot for $direction" }
 
     /** Where [direction]'s model stands; [SttModelState.Ready] only once every file is in and checked. */
@@ -72,6 +83,12 @@ class TranslateModelStore(
         for (slot in slots.values) {
             if (slot.state.value == SttModelState.Absent && slot.installer.installed()) slot.state.value = SttModelState.Ready
         }
+        // What a transfer cut short by a process death left: every child of incoming/, never a name read from anywhere.
+        incoming
+            .listFiles()
+            .orEmpty()
+            .filter { it !in liveStages }
+            .forEach { it.deleteRecursively() }
     }
 
     /** [direction]'s files by name, while it is [SttModelState.Ready]. */
@@ -80,6 +97,74 @@ class TranslateModelStore(
         val slot = slot(direction)
         if (slot.state.value != SttModelState.Ready) return null
         return direction.files.associate { it.name to slot.installer.pathOf(it) }
+    }
+
+    /**
+     * [directions]' files as one [ModelArchive], for a direct transfer to a contact (ADR 2026-11.ejn8), while every one
+     * is [SttModelState.Ready]; null otherwise. Named and typed as the archive it is, so a phone that takes it as a
+     * file saves something any archive tool opens. Nothing is opened until the bytes are due.
+     */
+    fun bundle(directions: List<TranslateDirection>): TransferSource? {
+        start()
+        if (directions.isEmpty() || directions.any { slot(it).state.value != SttModelState.Ready }) return null
+        if (directions.any { d -> d.files.any { f -> slot(d).installer.pathOf(f).length() != f.bytes } }) return null
+        val plan = plan(directions)
+        val byId = directions.associateBy { it.id }
+        return TransferSource(ModelArchive.FILE_NAME, ModelArchive.size(plan), ModelArchive.MIME) {
+            ModelArchive.stream(plan) { dir, file -> slot(byId.getValue(dir)).installer.pathOf(file).inputStream() }
+        }
+    }
+
+    /**
+     * A staging sink for a bundle of [directions] arriving from a contact (ADR 2026-11.ejn8), in a directory this phone
+     * names under `incoming/`. Its commit installs each direction through [SttModelInstaller.adopt], which checks every
+     * file against its pins again.
+     */
+    fun receiver(directions: List<TranslateDirection>): TransferSink {
+        // Sweep first, so the sweep can never meet a stage this process is filling.
+        start()
+        val stage = File(incoming, UUID.randomUUID().toString())
+        liveStages += stage
+        return ModelBundleSink(
+            stage = stage,
+            plan = plan(directions),
+            adopt = { staged -> adoptAll(directions, staged) },
+            release = { liveStages -= it },
+        )
+    }
+
+    // Installs each staged direction as its slot's job, so a Download tap meanwhile returns early; a direction already
+    // Ready, or one a download is fetching, is left to what holds it. Throws when one could not be installed.
+    private suspend fun adoptAll(
+        directions: List<TranslateDirection>,
+        staged: Map<String, File>,
+    ) {
+        val failed = directions.filterNot { adopt(it, checkNotNull(staged[it.id])) }
+        if (failed.isNotEmpty()) throw IOException("couldn't install ${failed.joinToString()}")
+    }
+
+    private suspend fun adopt(
+        direction: TranslateDirection,
+        from: File,
+    ): Boolean {
+        val slot = slot(direction)
+        val job =
+            synchronized(lock) {
+                if (slot.job?.isActive == true || slot.state.value == SttModelState.Ready) return true
+                scope
+                    .launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                        try {
+                            if (slot.installer.adopt { file -> File(from, file.name) }) slot.generation++
+                            log("translate: ${direction.id} installed from a direct transfer")
+                        } catch (e: IOException) {
+                            log("translate: adopting ${direction.id} failed: ${e.javaClass.simpleName}: ${e.message}")
+                        } finally {
+                            slot.state.value = if (slot.installer.installed()) SttModelState.Ready else SttModelState.Absent
+                        }
+                    }.also { slot.job = it }
+            }
+        job.join()
+        return slot.state.value == SttModelState.Ready
     }
 
     /** Whether a download now would ride mobile data or a Data Saver route. */
@@ -162,8 +247,12 @@ class TranslateModelStore(
         }
     }
 
-    private companion object {
-        const val CONNECT_TIMEOUT_MS = 15_000
-        const val READ_TIMEOUT_MS = 30_000
+    companion object {
+        /** A bundle's layout: each direction's files under its id, in the order given. */
+        fun plan(directions: List<TranslateDirection>): List<Pair<String, List<SttFile>>> = directions.map { it.id to it.files }
+
+        private const val INCOMING = "incoming"
+        private const val CONNECT_TIMEOUT_MS = 15_000
+        private const val READ_TIMEOUT_MS = 30_000
     }
 }

@@ -151,6 +151,7 @@ import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.presence.OpenToChatPolicy
 import app.getknit.knit.presence.OpenToChatWatch
+import app.getknit.knit.transfer.TransferNotice
 import app.getknit.knit.transfer.TransferSignals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -344,7 +345,7 @@ class MeshManager(
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, late-bound
     // like publicChannel because the manager sends through this class. The default admits nothing. Not a
     // property: the only reader is [pipeline]'s initializer, which hands it straight to onTransferCtl.
-    onTransferSignal: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> Boolean = { _, _, _ -> false },
+    onTransferSignal: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> TransferNotice? = { _, _, _ -> null },
     // A sealed CTL_CALL landed (call/CallManager.onSignal; experimental, docs/VOICE_CALLS.md): voice-call signaling,
     // late-bound for onTransferSignal's reason. Called on the inbound path, so the far end must return without
     // waiting on the network or the media. The default ignores it — every test, and every build without calls.

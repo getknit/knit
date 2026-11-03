@@ -10,6 +10,7 @@ import app.getknit.knit.ui.chat.ChatScreenGroupTypingPreview
 import app.getknit.knit.ui.chat.ChatScreenReplyDraftPreview
 import app.getknit.knit.ui.chat.ChatScreenRoomEmptyPreview
 import app.getknit.knit.ui.chat.ChatSkeletonPreview
+import app.getknit.knit.ui.chat.DirectSendChooserPreview
 import app.getknit.knit.ui.chat.EmojiPickerSheetEmptySearchPreview
 import app.getknit.knit.ui.chat.EmojiPickerSheetLoadingPreview
 import app.getknit.knit.ui.chat.EmojiPickerSheetPreview
@@ -48,6 +49,8 @@ import app.getknit.knit.ui.chat.SystemNoticePreview
 import app.getknit.knit.ui.chat.TapToDownloadBluetoothOnlyPreview
 import app.getknit.knit.ui.chat.TapToDownloadFilePreview
 import app.getknit.knit.ui.chat.TapToDownloadPhotoPreview
+import app.getknit.knit.ui.chat.TransferCardModelsOfferPreview
+import app.getknit.knit.ui.chat.TranslationModelsPreview
 import app.getknit.knit.ui.chat.VideoBubbleHeldPreview
 import app.getknit.knit.ui.chat.VideoBubbleTapToDownloadPreview
 import app.getknit.knit.ui.chat.VideoEncodingTilePreview
@@ -196,6 +199,16 @@ fun ChatScreenReplyDraft() = ChatScreenReplyDraftPreview()
 @PreviewTest
 @ComponentShots
 @Composable
+fun DirectSendChooser() = DirectSendChooserPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun TranslationModels() = TranslationModelsPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
 fun EmojiPickerSheet() = EmojiPickerSheetPreview()
 
 @PreviewTest
@@ -282,6 +295,11 @@ fun TapToDownloadPhoto() = TapToDownloadPhotoPreview()
 @ComponentShots
 @Composable
 fun TapToDownloadBluetoothOnly() = TapToDownloadBluetoothOnlyPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun TransferCardModelsOffer() = TransferCardModelsOfferPreview()
 
 @PreviewTest
 @ComponentShots

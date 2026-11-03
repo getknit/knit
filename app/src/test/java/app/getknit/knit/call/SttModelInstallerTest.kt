@@ -3,6 +3,7 @@ package app.getknit.knit.call
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -141,6 +142,66 @@ class SttModelInstallerTest {
             installer.delete()
             assertFalse(installer.installed())
             assertFalse(dir.exists())
+        }
+
+    // ---- adopt: a direct transfer's staged files (ADR 2026-11.ejn8) ----
+
+    private val stage = Files.createTempDirectory("stage").toFile()
+
+    @After
+    fun cleanUp() {
+        stage.deleteRecursively()
+    }
+
+    private fun staged(
+        name: String,
+        bytes: ByteArray,
+    ) = File(stage, name).also { it.writeBytes(bytes) }
+
+    @Test
+    fun stagedFilesAreRenamedIntoPlaceAndMarked() =
+        runTest {
+            staged("encoder.ort", encoder)
+            staged("tokens.txt", tokens)
+            assertTrue(installer.adopt { File(stage, it.name) })
+            assertTrue(installer.installed())
+            assertArrayEquals(tokens, installer.pathOf(model.files[1]).readBytes())
+            // Renamed, not copied: the stage is empty.
+            assertTrue(stage.listFiles().orEmpty().isEmpty())
+        }
+
+    @Test
+    fun aStagedFileThatFailsItsPinsIsRefusedAndNothingCounts() =
+        runTest {
+            staged("encoder.ort", encoder)
+            staged("tokens.txt", tokens.copyOf().also { it[3] = (it[3] + 1).toByte() })
+            val refusal = runCatching { installer.adopt { File(stage, it.name) } }.exceptionOrNull()
+            assertTrue("$refusal", refusal is SttModelInstaller.Refused)
+            assertTrue(refusal!!.message!!.contains("checksum"))
+            assertFalse(installer.installed())
+            assertFalse(installer.pathOf(model.files[1]).exists())
+        }
+
+    @Test
+    fun aMissingOrShortStagedFileIsRefused() =
+        runTest {
+            staged("encoder.ort", encoder.copyOf(encoder.size - 1))
+            val short = runCatching { installer.adopt { File(stage, it.name) } }.exceptionOrNull()
+            assertTrue(short!!.message!!.contains("short"))
+            staged("encoder.ort", encoder)
+            val missing = runCatching { installer.adopt { File(stage, it.name) } }.exceptionOrNull()
+            assertTrue("$missing", missing is SttModelInstaller.Refused)
+            assertFalse(installer.installed())
+        }
+
+    @Test
+    fun anInstalledModelAdoptsNothingAndLeavesTheStage() =
+        runTest {
+            installer.install(::source)
+            staged("encoder.ort", encoder)
+            assertFalse(installer.adopt { File(stage, it.name) })
+            assertTrue(File(stage, "encoder.ort").exists())
+            assertTrue(installer.installed())
         }
 
     @Test

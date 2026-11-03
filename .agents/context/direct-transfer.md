@@ -38,6 +38,14 @@ before changing behaviour — this file is the map, they are the reasoning.
 - Signaling is one sealed DM ctl (`MessageContent.CTL_TRANSFER` + `xf`), gated on
   `Protocol.CAP_DIRECT_TRANSFER`. The chat row is `MessageEntity.KIND_FILE_TRANSFER` carrying a JSON
   `TransferRecord`. No DB migration; no wire break.
+- **Translation models ride it too** (ADR 2026-11.ejn8): `offerModels`, the `TransferModels` seam (null in a build
+  without translation), `TransferPayload.md`, `TransferState`/`TransferRecord.models`, `TransferSink.check()` before
+  the verdict, `OfferReading` (the pin lists and the subset ACCEPT), `TransferEnds` (file or bundle, never one for
+  the other) and `TransferDialer` (the receiver's join and connect retries, split out for LargeClass like
+  `TransferListener`). The OFFER is a whole file offer of a tar with the pins beside it, so a build that ignores `md`
+  takes a file and its ACCEPT without pins gets the whole archive. A models offer gets no automatic answer.
+- **`onSignal` refuses an id that is not a canonical `FrameId`, in every phase** (ADR 2026-11.ejn8). The id keys the
+  row and, before that check, nothing validated it.
 
 ## What will bite you
 
@@ -57,6 +65,10 @@ before changing behaviour — this file is the map, they are the reasoning.
 - **Retry reads the record's `sourceUri`, and the chat checks it before drawing the button.** The picker's grant is
   taken as persistable in `AndroidTransferFiles.openSource`, so it outlives a reboot. It is never released, and
   Retry depends on it.
+- **Once every byte is out, the verdict decides the sender's card** (ADR 2026-11.ejn8, the maintainer's rule). The
+  receiver writes its verdict before it commits, so a failed commit's CANCEL used to race the sender's Done.
+  `awaitingVerdict` goes up as the last chunk leaves, before the trailer, and a CANCEL that lands then is kept
+  (`peerCancel`) and used only if no OK verdict comes.
 - **The receiver may hold no IPv4 address at all.** IP provisioning mode is the *client's* choice (API 34,
   not 33 — lint is right and AOSP's `@RequiresApi` is wrong) and the host is never told which was used, so
   the host binds every address on the group interface. Interface names differ per phone, so re-pin a

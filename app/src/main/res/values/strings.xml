@@ -575,6 +575,22 @@
     <string name="chat_transfer_consent_cannot_body">Knit pauses its Wi‑Fi mesh connection, so other messages may be delayed. Keep both phones nearby until the transfer finishes.</string>
     <string name="chat_transfer_consent_scope_send">The file is encrypted while it travels. They will see its name and size before deciding whether to receive it, and either of you can stop the transfer at any time.</string>
     <string name="chat_transfer_consent_scope_receive">The file is encrypted while it travels, then saved normally in your Downloads folder without Knit’s encryption. Knit does not scan files for harmful content, so only accept files you trust.</string>
+    <string name="chat_transfer_consent_scope_receive_models">The models are encrypted while they travel. Knit checks every file against its own checksums before installing it, and nothing is saved to your Downloads folder.</string>
+    <string name="chat_transfer_choose_title">Send directly</string>
+    <string name="chat_transfer_choose_file">A file</string>
+    <string name="chat_transfer_choose_models">Translation models</string>
+    <string name="chat_transfer_choose_models_body">So they can translate offline without downloading anything</string>
+    <string name="chat_transfer_models_incoming">Wants to send you translation models</string>
+    <string name="chat_transfer_models_installed">Installed</string>
+    <string name="chat_transfer_models_nothing_new">Nothing new for this phone</string>
+    <plurals name="chat_transfer_models_held">
+        <item quantity="one">%d is already on this phone</item>
+        <item quantity="other">%d are already on this phone</item>
+    </plurals>
+    <plurals name="chat_transfer_models_unknown">
+        <item quantity="one">%d is for a different version of Knit</item>
+        <item quantity="other">%d are for a different version of Knit</item>
+    </plurals>
     <string name="chat_transfer_consent_accept">Continue</string>
     <string name="chat_transfer_consent_decline">Not now</string>
     <!-- The direct-transfer offer heads-up. Its own notification, so it wears the transfer mark. -->
@@ -2104,6 +2120,18 @@
     <string name="translate_not_language">Not %1$s?</string>
     <string name="translate_model_title">Download the translation model?</string>
     <string name="translate_metered_note">This download uses mobile data.</string>
+    <string name="translate_models_direction">%1$s → %2$s</string>
+    <plurals name="translate_models_count">
+        <item quantity="one">%d translation model</item>
+        <item quantity="other">%d translation models</item>
+    </plurals>
+    <string name="translate_models_send_title">Send translation models</string>
+    <string name="translate_models_send_body">They can then translate offline without downloading anything.</string>
+    <string name="translate_models_select_all">Select all</string>
+    <plurals name="translate_models_total">
+        <item quantity="one">%1$d model · %2$s</item>
+        <item quantity="other">%1$d models · %2$s</item>
+    </plurals>
     <string name="settings_translation_title">Translation</string>
     <string name="settings_translation_subtitle">Translate messages on this phone, offline. What you send also tells people the language you type in and the one you read.</string>
     <string name="settings_translate_into_title">Translate messages into</string>

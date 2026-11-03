@@ -469,6 +469,24 @@
     <string name="chat_transfer_consent_cannot_body">O Knit pausa a conexão Wi‑Fi da rede mesh, então outras mensagens podem atrasar. Mantenha os dois celulares por perto até a transferência terminar.</string>
     <string name="chat_transfer_consent_scope_send">O arquivo é criptografado durante o envio. A pessoa verá o nome e o tamanho dele antes de decidir se vai recebê-lo, e qualquer um de vocês pode parar a transferência a qualquer momento.</string>
     <string name="chat_transfer_consent_scope_receive">O arquivo é criptografado durante o envio e depois salvo normalmente na sua pasta Downloads, sem a criptografia do Knit. O Knit não verifica se os arquivos têm conteúdo nocivo, então só aceite arquivos em que você confia.</string>
+    <string name="chat_transfer_consent_scope_receive_models">Os modelos são criptografados durante o envio. O Knit confere cada arquivo com as próprias somas de verificação antes de instalar, e nada é salvo na sua pasta Downloads.</string>
+    <string name="chat_transfer_choose_title">Enviar diretamente</string>
+    <string name="chat_transfer_choose_file">Um arquivo</string>
+    <string name="chat_transfer_choose_models">Modelos de tradução</string>
+    <string name="chat_transfer_choose_models_body">Para a pessoa traduzir offline sem baixar nada</string>
+    <string name="chat_transfer_models_incoming">Quer enviar modelos de tradução para você</string>
+    <string name="chat_transfer_models_installed">Instalação concluída</string>
+    <string name="chat_transfer_models_nothing_new">Nada novo para este celular</string>
+    <plurals name="chat_transfer_models_held">
+        <item quantity="one">%d já está neste celular</item>
+        <item quantity="many">%d já estão neste celular</item>
+        <item quantity="other">%d já estão neste celular</item>
+    </plurals>
+    <plurals name="chat_transfer_models_unknown">
+        <item quantity="one">%d é para outra versão do Knit</item>
+        <item quantity="many">%d são para outra versão do Knit</item>
+        <item quantity="other">%d são para outra versão do Knit</item>
+    </plurals>
     <string name="chat_transfer_consent_accept">Continuar</string>
     <string name="chat_transfer_consent_decline">Agora não</string>
     <string name="notif_transfer_offer">Quer enviar %1$s para você</string>
@@ -1762,6 +1780,20 @@
     <string name="translate_not_language">Não é %1$s?</string>
     <string name="translate_model_title">Baixar o modelo de tradução?</string>
     <string name="translate_metered_note">Este download usa dados móveis.</string>
+    <string name="translate_models_direction">%1$s → %2$s</string>
+    <plurals name="translate_models_count">
+        <item quantity="one">%d modelo de tradução</item>
+        <item quantity="many">%d modelos de tradução</item>
+        <item quantity="other">%d modelos de tradução</item>
+    </plurals>
+    <string name="translate_models_send_title">Enviar modelos de tradução</string>
+    <string name="translate_models_send_body">Assim, a pessoa pode traduzir offline sem baixar nada.</string>
+    <string name="translate_models_select_all">Selecionar tudo</string>
+    <plurals name="translate_models_total">
+        <item quantity="one">%1$d modelo · %2$s</item>
+        <item quantity="many">%1$d modelos · %2$s</item>
+        <item quantity="other">%1$d modelos · %2$s</item>
+    </plurals>
     <string name="settings_translation_title">Tradução</string>
     <string name="settings_translation_subtitle">Traduza mensagens neste celular, offline. O que você envia também informa o idioma em que você digita e o idioma que você lê.</string>
     <string name="settings_translate_into_title">Idioma da tradução</string>

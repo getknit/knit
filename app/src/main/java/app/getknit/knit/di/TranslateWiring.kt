@@ -14,6 +14,7 @@ import app.getknit.knit.location.GeoUri
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.net.AndroidInternetGate
+import app.getknit.knit.transfer.TransferModels
 import app.getknit.knit.translate.AuthorLanguages
 import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.LanguagePick
@@ -25,6 +26,7 @@ import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.translate.VerbatimSpans
 import app.getknit.knit.ui.translate.SlimtEngine
 import app.getknit.knit.ui.translate.TranslateModelStore
+import app.getknit.knit.ui.translate.TranslateTransferModels
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -54,6 +56,8 @@ fun translateModule(): Module? = if (TRANSLATE_WIRED) translateGraph() else null
 private fun translateGraph(): Module =
     module {
         single { TranslateModelStore(androidContext(), get<AndroidInternetGate>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+        // The models a direct transfer sends and takes (ADR 2026-11.ejn8); TransferManager resolves it with getOrNull.
+        single<TransferModels> { TranslateTransferModels(androidContext(), get()) }
         single { SlimtEngine(get(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
         single {
             val engine = get<SlimtEngine>()

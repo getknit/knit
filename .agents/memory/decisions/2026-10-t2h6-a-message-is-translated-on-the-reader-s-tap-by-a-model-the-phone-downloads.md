@@ -448,3 +448,11 @@ bench) still runs through en→es and says so, with "Not English?" to correct it
 
 **Owed.** The tester's confirmation on the next alpha, on a phone set to Spanish that has sent English; and a phone
 in English that sends three drafts translated into Spanish and still offers Translate on the replies.
+
+## Amendment 2026-11-02: a model can come from a contact
+
+**What changed.** A direction can also arrive from a nearby contact over Direct Send, as a bundle of one or more
+models (ADR 2026-11.ejn8). It installs exactly as a download does: every file must match this build's pins, checked
+in `SttModelInstaller.adopt`, so the sending phone is trusted with no more than getknit.app is. The "One direction per
+download" bullet above still holds for the download itself.
+

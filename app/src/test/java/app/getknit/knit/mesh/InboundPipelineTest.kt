@@ -115,6 +115,7 @@ import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.reactionNotificationKey
+import app.getknit.knit.transfer.TransferNotice
 import com.google.crypto.tink.InsecureSecretKeyAccess
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
@@ -367,7 +368,9 @@ class InboundPipelineTest {
 
         // The publish stamps of our own profile looping back — what the clone watch is handed (ADR 2026-09.ypcc).
         val selfProfileStamps = mutableListOf<Long>()
-        var admitTransfer = true
+
+        // What the transfer manager makes of an offer: by default the payload's own name and size.
+        var transferNotice: (TransferPayload) -> TransferNotice? = { TransferNotice(it.name.orEmpty(), it.size ?: 0L) }
         val forwardSync = ForwardSync(transport, forwardStore, clock = { 0L })
 
         // A spy so a test can verify what the pipeline asked to pull (the transport has no neighbor to ask).
@@ -645,7 +648,7 @@ class InboundPipelineTest {
                     onGroupRootCtl = { sender, gk, adopted -> rootCtls += Triple(sender, gk, adopted) },
                     onTransferCtl = { sender, xf, at ->
                         transferSignals += Triple(sender, xf, at)
-                        admitTransfer
+                        transferNotice(xf)
                     },
                     onCallCtl = { sender, cl, at -> callSignals += Triple(sender, cl, at) },
                     onCallTalk = { sender, _, _, _, hop, kind -> talkHops += Triple(sender, hop, kind) },
@@ -4724,9 +4727,10 @@ class InboundPipelineTest {
             rig.pin(alice)
             rig.settings.accepted.value = setOf(alice.nodeId)
             val author = V2Author(alice, rig)
-            rig.admitTransfer = false
+            val admit = rig.transferNotice
+            rig.transferNotice = { null }
             rig.deliver(alice, author.dm("xf-2", "", ctl = MessageContent.CTL_TRANSFER, xf = offerPayload("t2")))
-            rig.admitTransfer = true
+            rig.transferNotice = admit
             rig.deliver(
                 alice,
                 author.dm(
@@ -4739,6 +4743,31 @@ class InboundPipelineTest {
 
             assertEquals(listOf(TransferPayload.PHASE_OFFER, TransferPayload.PHASE_ACCEPT), rig.transferSignals.map { it.second.phase })
             coVerify(exactly = 0) { rig.notifier.notifyTransferOffer(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aTransferNotificationNamesWhatTheManagerReadNotThePayloadsText() =
+        runTest {
+            // A models offer carries no name (ADR 2026-11.ejn8): the heads-up wears this phone's own label for it.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            val author = V2Author(alice, rig)
+            rig.transferNotice = { TransferNotice("English → Spanish", 36_000_000L) }
+            val offer = TransferPayload(id = "t5", phase = TransferPayload.PHASE_OFFER, name = "from the wire", md = listOf(0x3b1c3995L))
+
+            rig.deliver(alice, author.dm("xf-5", "", ctl = MessageContent.CTL_TRANSFER, xf = offer))
+
+            coVerify {
+                rig.notifier.notifyTransferOffer(
+                    peerId = alice.nodeId,
+                    peerName = any(),
+                    peerAvatarBytes = any(),
+                    fileName = "English → Spanish",
+                    sizeBytes = 36_000_000L,
+                )
+            }
         }
 
     @Test

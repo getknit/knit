@@ -477,6 +477,26 @@
     <string name="chat_transfer_consent_cannot_body">Knit призупиняє своє з’єднання з mesh-мережею через Wi‑Fi, тож інші повідомлення можуть затримуватися. Тримайте обидва телефони поруч, доки передавання не завершиться.</string>
     <string name="chat_transfer_consent_scope_send">Файл шифрується під час передавання. Перш ніж вирішити, чи приймати його, співрозмовник побачить його назву й розмір, а будь-хто з вас може будь-коли зупинити передавання.</string>
     <string name="chat_transfer_consent_scope_receive">Файл шифрується під час передавання, а потім зберігається як звичайний файл у папці «Завантаження» без шифрування Knit. Knit не перевіряє файли на шкідливий вміст, тож приймайте лише файли, яким довіряєте.</string>
+    <string name="chat_transfer_consent_scope_receive_models">Моделі шифруються під час передавання. Перед установленням Knit перевіряє кожен файл за власними контрольними сумами, і нічого не зберігається в папці «Завантаження».</string>
+    <string name="chat_transfer_choose_title">Надіслати напряму</string>
+    <string name="chat_transfer_choose_file">Файл</string>
+    <string name="chat_transfer_choose_models">Моделі перекладу</string>
+    <string name="chat_transfer_choose_models_body">Щоб співрозмовник міг перекладати без інтернету й нічого не завантажувати</string>
+    <string name="chat_transfer_models_incoming">Хоче надіслати вам моделі перекладу</string>
+    <string name="chat_transfer_models_installed">Установлено</string>
+    <string name="chat_transfer_models_nothing_new">Нічого нового для цього телефона</string>
+    <plurals name="chat_transfer_models_held">
+        <item quantity="one">%d вже є на цьому телефоні</item>
+        <item quantity="few">%d вже є на цьому телефоні</item>
+        <item quantity="many">%d вже є на цьому телефоні</item>
+        <item quantity="other">%d вже є на цьому телефоні</item>
+    </plurals>
+    <plurals name="chat_transfer_models_unknown">
+        <item quantity="one">%d — для іншої версії Knit</item>
+        <item quantity="few">%d — для іншої версії Knit</item>
+        <item quantity="many">%d — для іншої версії Knit</item>
+        <item quantity="other">%d — для іншої версії Knit</item>
+    </plurals>
     <string name="chat_transfer_consent_accept">Продовжити</string>
     <string name="chat_transfer_consent_decline">Не зараз</string>
     <string name="notif_transfer_offer">Хоче надіслати вам %1$s</string>
@@ -1792,6 +1812,22 @@
     <string name="translate_not_language">Не %1$s?</string>
     <string name="translate_model_title">Завантажити модель перекладу?</string>
     <string name="translate_metered_note">Це завантаження використовує мобільний інтернет.</string>
+    <string name="translate_models_direction">%1$s → %2$s</string>
+    <plurals name="translate_models_count">
+        <item quantity="one">%d модель перекладу</item>
+        <item quantity="few">%d моделі перекладу</item>
+        <item quantity="many">%d моделей перекладу</item>
+        <item quantity="other">%d моделі перекладу</item>
+    </plurals>
+    <string name="translate_models_send_title">Надіслати моделі перекладу</string>
+    <string name="translate_models_send_body">Тоді співрозмовник зможе перекладати без інтернету й нічого не завантажувати.</string>
+    <string name="translate_models_select_all">Вибрати все</string>
+    <plurals name="translate_models_total">
+        <item quantity="one">%1$d модель · %2$s</item>
+        <item quantity="few">%1$d моделі · %2$s</item>
+        <item quantity="many">%1$d моделей · %2$s</item>
+        <item quantity="other">%1$d моделі · %2$s</item>
+    </plurals>
     <string name="settings_translation_title">Переклад</string>
     <string name="settings_translation_subtitle">Перекладати повідомлення на цьому телефоні без інтернету. Ваші повідомлення також указують мову, якою ви набираєте текст, і мову, якою ви читаєте.</string>
     <string name="settings_translate_into_title">Мова перекладу</string>

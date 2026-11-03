@@ -902,6 +902,24 @@ under a v3 label, 3 B under a named key, 4–6 B for both (each value one byte b
 the body, and it partly gives away a translated draft (an English post by a Spanish reader); sealed, only the members
 see it, but the seal does not pad, so a declaring message is a few bytes longer than the same words undeclared.
 
+**Precedent — translation models beside a file offer (`TransferPayload.md`, ADR 2026-11.ejn8).** A direct transfer
+can carry translation models. Its OFFER stays a whole file offer, `knit-translation-models.tar` with its size and
+`application/x-tar`, and gains `md`: a CBOR array of uints, each a direction's pin (the first four bytes of its
+weights' SHA-256, an unsigned 32-bit number). On the ACCEPT, `md` is the subset the receiver takes. Rule 1: nullable
+and absent from every plain file transfer, whose OFFER is still the golden vector `messageContentTransferOffer`, byte
+for byte. Rule 6 does not apply, since `md` is a list of scalars, not a nested type.
+
+There is **no capability bit**. A build that ignores the key (an older one, one without translation, the iOS port)
+takes the offer as the archive file it also is, and its ACCEPT, naming no pins, is sent the whole archive. A receiver
+treats the pins as a claim only:
+
+- It refuses the list unless it holds 1–64 entries, each in `0..0xFFFFFFFF` and none repeated.
+- It reads each pin through its own table, and installs nothing its pins do not match.
+- A sender reads an ACCEPT's pins only through its own offer's list.
+
+*Metadata cost:* 14 B for two pins (key 3, array header 1, five a pin), pinned in `MessageContentTest`, and 0 B on
+every other frame. No vector moved, and no paired change was needed.
+
 **Precedent — the reserved ctl spent (`CTL_SCOPE_CONFIG = 7`, `MessageContent.sc`, docs/SPOOL_PROTOCOL.md §5,
 ADR 2026-10.8kfx).** The value the `CTL_PROFILE` precedent above held back is now on the wire: `sc:
 ScopeConfigPayload?` beside `ctl = 7`, naming a conversation's relays and bounds, sealed in the DM form or the group

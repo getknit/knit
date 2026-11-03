@@ -3351,8 +3351,8 @@ class ChatViewModelTest {
                 phase = TransferPhase.Failed,
                 sourceUri = source,
             ).toEntity(peerId = "bob", selfId = "me", sentAt = if (id == "moved") 5L else 6L)
-            coEvery { transfers.sourceReadable("content://docs/kept") } returns true
-            coEvery { transfers.sourceReadable("content://docs/moved") } returns false
+            coEvery { transfers.retryReadable(match { it.sourceUri == "content://docs/kept" }) } returns true
+            coEvery { transfers.retryReadable(match { it.sourceUri == "content://docs/moved" }) } returns false
             val vm = vm("bob")
             collectState(vm)
             val events = mutableListOf<Int>()
@@ -3369,7 +3369,7 @@ class ChatViewModelTest {
             advanceUntilIdle()
             assertFalse("a file that can no longer be read offers no Retry", retryable("moved"))
             assertTrue(retryable("kept"))
-            coVerify(exactly = 1) { transfers.sourceReadable("content://docs/kept") }
+            coVerify(exactly = 1) { transfers.retryReadable(match { it.sourceUri == "content://docs/kept" }) }
 
             // Gone between the check and the tap: the refusal is said and the button goes.
             coEvery { transfers.retry("kept") } returns OfferOutcome.Refused(TransferRefusal.Unreadable)

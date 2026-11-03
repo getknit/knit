@@ -21,6 +21,13 @@ interface TransferSink {
     /** The one stream the bytes go to; opened lazily, closed by [commit]/[discard]. */
     fun stream(): OutputStream
 
+    /**
+     * Whether what was written may be kept, asked once the stream's own trailer verified and before the verdict byte
+     * goes back, so a refusal here reads as a corrupt transfer on both cards. A plain file has nothing more to check;
+     * a model bundle checks every file against this phone's pins (ADR 2026-11.ejn8). Throws only [java.io.IOException].
+     */
+    suspend fun check(): Boolean = true
+
     /** Flushes, closes and makes the file visible. */
     suspend fun commit()
 

@@ -479,7 +479,33 @@ data class TypingPeer(
 data class TransferConsent(
     val incoming: Boolean,
     val transferId: String? = null,
+    /** The offer being answered is a bundle of translation models (ADR 2026-11.ejn8), which is installed, not saved. */
+    val models: Boolean = false,
 )
+
+/** One translation model this phone could send (ADR 2026-11.ejn8): a direction, its wire pin and its size. */
+data class ModelChoice(
+    val pin: Long,
+    val from: TranslateLang,
+    val to: TranslateLang,
+    val bytes: Long,
+)
+
+/**
+ * The direct-send sheet after the overflow item, where this phone holds translation models the peer can take (ADR
+ * 2026-11.ejn8): first the choice between a file and models, then the model list.
+ */
+sealed interface DirectSendSheet {
+    val models: List<ModelChoice>
+
+    data class Choose(
+        override val models: List<ModelChoice>,
+    ) : DirectSendSheet
+
+    data class PickModels(
+        override val models: List<ModelChoice>,
+    ) : DirectSendSheet
+}
 
 /**
  * One pinned message as the bar under the chat's title draws it (#42): who wrote it, named as the thread names them
@@ -1645,7 +1671,7 @@ class ChatViewModel(
                             if (m.kind ==
                                 MessageEntity.KIND_FILE_TRANSFER
                             ) {
-                                transferViewFor(m, liveTransfers) { retrySources[it] == true }
+                                transferViewFor(m, liveTransfers, { retrySources[it] == true }, ::modelStanding)
                             } else {
                                 null
                             },
@@ -3136,6 +3162,11 @@ class ChatViewModel(
      */
     val transferPickerNeeded: SharedFlow<Unit> = _transferPickerNeeded.asSharedFlow()
 
+    private val _directSend = MutableStateFlow<DirectSendSheet?>(null)
+
+    /** The file-or-models sheet on screen (ADR 2026-11.ejn8), or null. Never shown where no model could go. */
+    val directSend: StateFlow<DirectSendSheet?> = _directSend.asStateFlow()
+
     /**
      * The overflow item was tapped. Refuse here rather than after the picker: somebody who hunts down a 2 GB
      * video and is only then told this thread cannot take one has been made to work for nothing. Then the
@@ -3148,10 +3179,70 @@ class ChatViewModel(
                 return@launch
             }
             if (settings.directTransferConsented.first()) {
-                _transferPickerNeeded.tryEmit(Unit)
+                chooseWhatToSend()
             } else {
                 _showTransferConsent.value = TransferConsent(incoming = false)
             }
+        }
+    }
+
+    /**
+     * The picker, unless this phone holds translation models the peer can take: then the sheet asks which first
+     * (ADR 2026-11.ejn8). Read at the tap, so a model downloaded a moment ago is offered.
+     */
+    private suspend fun chooseWhatToSend() {
+        val models = sendableModels()
+        if (models.isEmpty()) _transferPickerNeeded.tryEmit(Unit) else _directSend.value = DirectSendSheet.Choose(models)
+    }
+
+    /**
+     * The models this phone may offer: none unless translation is packaged and switched on. Every peer that takes a
+     * direct transfer can be offered them, since a build that cannot install them takes the archive as a file.
+     */
+    private fun sendableModels(): List<ModelChoice> {
+        val translation = translation ?: return emptyList()
+        if (!translationOn.value) return emptyList()
+        return translation.models.value
+            .filterValues { it == SttModelState.Ready }
+            .keys
+            .sortedWith(compareBy({ it.from.code }, { it.to.code }))
+            .map { ModelChoice(it.pin, it.from, it.to, it.bytes) }
+    }
+
+    // Where one pin of a models offer stands on this phone, for its card (ADR 2026-11.ejn8): a direction already here
+    // or downloading is held; one this build's table does not pin is another version's.
+    private fun modelStanding(pin: Long): ModelStanding {
+        val direction = TranslateDirection.ofPin(pin) ?: return ModelStanding.Unknown
+        val state = translation?.models?.value?.get(direction)
+        return if (state == SttModelState.Ready || state is SttModelState.Downloading) ModelStanding.Held else ModelStanding.New
+    }
+
+    /** The sheet's "A file": on to the document picker. */
+    fun chooseFileToSend() {
+        _directSend.value = null
+        _transferPickerNeeded.tryEmit(Unit)
+    }
+
+    /** The sheet's "Translation models": on to the list. */
+    fun chooseModelsToSend() {
+        _directSend.update { sheet -> sheet?.let { DirectSendSheet.PickModels(it.models) } }
+    }
+
+    fun dismissDirectSend() {
+        _directSend.value = null
+    }
+
+    /** Offers the translation models [pins] to this DM's peer as one bundle over a direct link (ADR 2026-11.ejn8). */
+    fun offerModels(pins: List<Long>) {
+        _directSend.value = null
+        if (pins.isEmpty()) return
+        viewModelScope.launch {
+            refusalForTransfer()?.let {
+                _events.tryEmit(it)
+                return@launch
+            }
+            val outcome = transfers.offerModels(conversationId, pins)
+            if (outcome is OfferOutcome.Refused) _events.tryEmit(transferRefusalMessage(outcome.refusal))
         }
     }
 
@@ -3166,7 +3257,7 @@ class ChatViewModel(
             settings.acceptDirectTransferConsent()
             _showTransferConsent.value = null
             val id = request.transferId
-            if (id == null) _transferPickerNeeded.tryEmit(Unit) else startAccept(id)
+            if (id == null) chooseWhatToSend() else startAccept(id)
         }
     }
 
@@ -3262,7 +3353,8 @@ class ChatViewModel(
             if (settings.directTransferConsented.first()) {
                 startAccept(id)
             } else {
-                _showTransferConsent.value = TransferConsent(incoming = true, transferId = id)
+                val models = transfers.states.value[id]?.models != null
+                _showTransferConsent.value = TransferConsent(incoming = true, transferId = id, models = models)
             }
         }
     }
@@ -3309,12 +3401,13 @@ class ChatViewModel(
                     window.messages
                         .filter { it.kind == MessageEntity.KIND_FILE_TRANSFER }
                         .mapNotNull { row -> TransferRecord.decode(row.body)?.takeIf { it.retryable(live = false) } }
-                        .associate { it.id to checkNotNull(it.sourceUri) }
+                        .associateBy { it.id }
                 }.distinctUntilChanged()
                 .collect { candidates ->
-                    candidates.forEach { (id, uri) ->
+                    candidates.forEach { (id, record) ->
                         if (id !in retrySources.value) {
-                            val readable = transfers.sourceReadable(uri)
+                            // The file still readable, or every model still installed (ADR 2026-11.ejn8).
+                            val readable = transfers.retryReadable(record)
                             retrySources.update { it + (id to readable) }
                         }
                     }

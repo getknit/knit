@@ -9,6 +9,8 @@ import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.transfer.TransferRefusal
 import app.getknit.knit.transfer.TransferState
+import app.getknit.knit.translate.TranslateDirection
+import app.getknit.knit.ui.translate.TranslateTransferModels
 
 /**
  * A direct-transfer row as the card draws it: the persisted [TransferRecord]'s facts overlaid with the
@@ -29,26 +31,42 @@ data class TransferView(
     val reason: Int?,
     val interrupted: Boolean,
     val retryable: Boolean = false,
+    /** A bundle of translation models' pins (ADR 2026-11.ejn8), null for a file. */
+    val models: List<Long>? = null,
+    /** Of an incoming models offer: how many this phone lacks, already holds, and does not know (another version). */
+    val modelsNew: Int = 0,
+    val modelsHeld: Int = 0,
+    val modelsUnknown: Int = 0,
 ) {
     /** An archive or executable: nothing on the device can look inside it, and the card says so before Accept. */
-    val risky: Boolean get() = FileTypes.isRisky(mime, name)
+    val risky: Boolean get() = models == null && FileTypes.isRisky(mime, name)
+
+    /** An open models offer from the other phone (ADR 2026-11.ejn8): the card says what it means for this one. */
+    val incomingModelsOffer: Boolean get() = models != null && phase == TransferPhase.Offered && !outgoing && !interrupted
 
     /** An app package: never offered an "Open", so Knit is never the install source (the roadmap's rule). */
     val installable: Boolean get() = FileTypes.isInstallable(mime, name)
 }
 
+/** Where one pin of a models offer stands on this phone (ADR 2026-11.ejn8), as its card counts them. */
+enum class ModelStanding { New, Held, Unknown }
+
 /**
  * The card for a [MessageEntity.KIND_FILE_TRANSFER] row, or null when its body is not a record this build reads.
  * [sourceReadable] answers, by transfer id, whether the file a Retry would send was found readable. It is false
- * until the chat has looked, so the button never appears and then vanishes.
+ * until the chat has looked, so the button never appears and then vanishes. [standing] reads each pin of a models
+ * offer against this phone's own table and models; only the card reads it, and nothing is answered by it.
  */
 fun transferViewFor(
     row: MessageEntity,
     live: Map<String, TransferState>,
     sourceReadable: (transferId: String) -> Boolean = { false },
+    standing: (pin: Long) -> ModelStanding = { ModelStanding.Unknown },
 ): TransferView? {
     val record = TransferRecord.decode(row.body) ?: return null
     val state = live[record.id]
+    val models = state?.models ?: record.models
+    val standings = models.orEmpty().map(standing)
     return TransferView(
         id = record.id,
         outgoing = record.outgoing,
@@ -61,7 +79,28 @@ fun transferViewFor(
         reason = state?.reason ?: record.reason,
         interrupted = state == null && !record.phase.terminal,
         retryable = record.retryable(live = state != null) && sourceReadable(record.id),
+        models = models,
+        modelsNew = standings.count { it == ModelStanding.New },
+        modelsHeld = standings.count { it == ModelStanding.Held },
+        modelsUnknown = standings.count { it == ModelStanding.Unknown },
     )
+}
+
+/**
+ * What a transfer is called on its card and in the chat list: the file's name, or for a bundle of translation models
+ * this phone's own words for it, read from its table rather than the label stored when it arrived (ADR 2026-11.ejn8).
+ */
+fun transferTitle(
+    context: Context,
+    view: TransferView,
+): String {
+    val pins = view.models ?: return view.name
+    val known = pins.mapNotNull(TranslateDirection::ofPin)
+    return if (known.size == pins.size && known.isNotEmpty()) {
+        TranslateTransferModels.label(context, known)
+    } else {
+        context.resources.getQuantityString(R.plurals.translate_models_count, pins.size, pins.size)
+    }
 }
 
 /** The sentence for a refusal, as a string resource id. */
@@ -97,7 +136,7 @@ fun transferPreview(
     live: Map<String, TransferState>,
 ): String? {
     val view = transferViewFor(row, live) ?: return null
-    return context.getString(transferPreviewText(view), view.name)
+    return context.getString(transferPreviewText(view), transferTitle(context, view))
 }
 
 /**

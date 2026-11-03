@@ -110,6 +110,7 @@ import app.getknit.knit.transfer.DirectWifi
 import app.getknit.knit.transfer.DirectWifiLease
 import app.getknit.knit.transfer.TransferFiles
 import app.getknit.knit.transfer.TransferManager
+import app.getknit.knit.transfer.TransferModels
 import app.getknit.knit.transfer.TransferSignals
 import app.getknit.knit.ui.chat.notificationLabels
 import app.getknit.knit.ui.devview.EventConsole
@@ -603,6 +604,8 @@ val meshModule =
                 selfId = { get<Identity>().nodeId() },
                 peerNearby = { id -> get<MeshController>().neighbors.value.any { it.nodeId == id } },
                 log = { Log.i("KnitTransfer", it) },
+                // Translation models over the same link (ADR 2026-11.ejn8), where the build packages translation.
+                models = getOrNull<TransferModels>(),
             )
         }
         // One place that turns settings + `spoolStatus()` into the relay facts the chat indicator, the

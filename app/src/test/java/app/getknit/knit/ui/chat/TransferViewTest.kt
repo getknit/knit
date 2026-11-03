@@ -49,7 +49,7 @@ class TransferViewTest {
             r: TransferRecord,
             live: Map<String, TransferState> = emptyMap(),
             readable: Boolean = true,
-        ) = checkNotNull(transferViewFor(r.toEntity("bob", "me", 1L), live) { readable }).retryable
+        ) = checkNotNull(transferViewFor(r.toEntity("bob", "me", 1L), live, sourceReadable = { readable })).retryable
 
         for (phase in listOf(TransferPhase.Failed, TransferPhase.Expired, TransferPhase.Cancelled)) {
             assertTrue("$phase", retryable(sent.copy(phase = phase)))

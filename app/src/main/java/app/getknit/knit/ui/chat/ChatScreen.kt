@@ -366,6 +366,7 @@ fun ChatScreen(
     val meshCallFirst by viewModel.meshCallFirst.collectAsStateWithLifecycle()
     val showLocationConsent by viewModel.showLocationConsent.collectAsStateWithLifecycle()
     val showTransferConsent by viewModel.showTransferConsent.collectAsStateWithLifecycle()
+    val directSend by viewModel.directSend.collectAsStateWithLifecycle()
     val freeUploadOffer by viewModel.freeUploadOffer.collectAsStateWithLifecycle()
     val voiceRecording by viewModel.voiceRecording.collectAsStateWithLifecycle()
     val voicePlayback by viewModel.voicePlayback.collectAsStateWithLifecycle()
@@ -704,6 +705,11 @@ fun ChatScreen(
         showTransferConsent = showTransferConsent,
         onAcceptTransferConsent = viewModel::acceptTransferConsent,
         onDismissTransferConsent = viewModel::dismissTransferConsent,
+        directSend = directSend,
+        onChooseFileToSend = viewModel::chooseFileToSend,
+        onChooseModelsToSend = viewModel::chooseModelsToSend,
+        onSendModels = viewModel::offerModels,
+        onDismissDirectSend = viewModel::dismissDirectSend,
         onAcceptTransfer = viewModel::acceptTransfer,
         onDeclineTransfer = viewModel::declineTransfer,
         onCancelTransfer = viewModel::cancelTransfer,
@@ -1021,6 +1027,12 @@ internal fun ChatScreenContent(
     showTransferConsent: TransferConsent? = null,
     onAcceptTransferConsent: () -> Unit = {},
     onDismissTransferConsent: () -> Unit = {},
+    // What to send directly when this phone holds translation models the peer can take (ADR 2026-11.ejn8).
+    directSend: DirectSendSheet? = null,
+    onChooseFileToSend: () -> Unit = {},
+    onChooseModelsToSend: () -> Unit = {},
+    onSendModels: (pins: List<Long>) -> Unit = {},
+    onDismissDirectSend: () -> Unit = {},
     onAcceptTransfer: (id: String) -> Unit = {},
     onDeclineTransfer: (id: String) -> Unit = {},
     onCancelTransfer: (id: String) -> Unit = {},
@@ -2078,6 +2090,27 @@ internal fun ChatScreenContent(
             }
         }
 
+        directSend?.let { sheet ->
+            ModalBottomSheet(
+                onDismissRequest = onDismissDirectSend,
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) {
+                when (sheet) {
+                    is DirectSendSheet.Choose -> {
+                        DirectSendChooserBody(onFile = onChooseFileToSend, onModels = onChooseModelsToSend)
+                    }
+
+                    is DirectSendSheet.PickModels -> {
+                        TranslationModelsBody(
+                            sheet.models,
+                            onSend = onSendModels,
+                            onCancel = onDismissDirectSend,
+                        )
+                    }
+                }
+            }
+        }
+
         showTransferConsent?.let { request ->
             ModalBottomSheet(
                 onDismissRequest = onDismissTransferConsent,
@@ -2085,6 +2118,7 @@ internal fun ChatScreenContent(
             ) {
                 DirectTransferConsentBody(
                     incoming = request.incoming,
+                    models = request.models,
                     onAccept = onAcceptTransferConsent,
                     onDecline = onDismissTransferConsent,
                 )
@@ -2539,6 +2573,7 @@ private fun DirectTransferConsentBody(
     incoming: Boolean,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
+    models: Boolean = false,
 ) {
     Column(
         // Scrollable, unlike the two sheets above: this one has the most to say, and on a short screen or at
@@ -2558,7 +2593,15 @@ private fun DirectTransferConsentBody(
         Text(stringResource(R.string.chat_transfer_consent_can_body), style = MaterialTheme.typography.bodyMedium)
         Text(stringResource(R.string.chat_transfer_consent_cannot_title), style = MaterialTheme.typography.titleSmall)
         Text(stringResource(R.string.chat_transfer_consent_cannot_body), style = MaterialTheme.typography.bodyMedium)
-        val scope = if (incoming) R.string.chat_transfer_consent_scope_receive else R.string.chat_transfer_consent_scope_send
+        val scope =
+            when {
+                // Models are checked against this build's own pins and installed, never saved to Downloads.
+                incoming && models -> R.string.chat_transfer_consent_scope_receive_models
+
+                incoming -> R.string.chat_transfer_consent_scope_receive
+
+                else -> R.string.chat_transfer_consent_scope_send
+            }
         Text(
             text = stringResource(scope),
             style = MaterialTheme.typography.bodySmall,

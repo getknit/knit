@@ -287,7 +287,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   = add to BOTH the `when` and the debug manifest `<intent-filter>`.)
 - `…debug.XFER` — drives a **direct file transfer** (`transfer/TransferManager`: a whole file over a one-shot
   Wi-Fi Direct link, never the mesh), the only way to run one on a locked lab device. `--es to <peerNodeId>
-  --es path <file the app can read>` offers a file, `--es accept|decline|cancel <transferId>` answers one,
+  --es path <file the app can read>` offers a file, `--es to <peerNodeId> --es models <direction id,…|all>` offers
+  installed translation models as one archive (ADR 2026-11.ejn8; each live transfer then lists its `models` pins),
+  `--es accept|decline|cancel <transferId>` answers one,
   `--ez sweep true` clears a group a dead process left on air, and no extras dumps `refusal` plus every live
   transfer — add `--es conv <peerId>` for that thread's `xfer:` rows. Stage the file the SENDIMG way (`run-as`
   into the app's own storage): scoped storage means the app cannot read a `/sdcard` path. The bridge steps

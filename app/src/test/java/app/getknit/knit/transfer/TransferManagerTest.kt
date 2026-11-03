@@ -4,7 +4,9 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.TransferPayload
+import app.getknit.knit.translate.ModelArchive
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -27,9 +29,12 @@ import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.file.Files
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import kotlin.random.Random
 
 /**
@@ -37,6 +42,7 @@ import kotlin.random.Random
  * loopback socket pair. Timers are shrunk through [TransferTimings] and everything runs in real time on
  * [Dispatchers.Default], so each case waits on the rows the managers write rather than on virtual time.
  */
+@Suppress("LargeClass") // two managers back to back through every phase and failure path; the models cases share the rig
 class TransferManagerTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clock = { System.currentTimeMillis() }
@@ -89,6 +95,7 @@ class TransferManagerTest {
     private fun side(
         name: String,
         timings: TransferTimings = fast,
+        models: FakeTransferModels? = null,
     ): Side {
         val log = SideLog(name)
         val trace = Collections.synchronizedList(mutableListOf<String>())
@@ -116,6 +123,7 @@ class TransferManagerTest {
                 clock = clock,
                 newPort = FakeDirectWifi::freeLoopbackPort,
                 log = { trace += "${clock()} $it" },
+                models = models,
             )
         side = Side(name, log, wifi, files, signals, rows, manager, trace)
         sides += side
@@ -143,13 +151,20 @@ class TransferManagerTest {
         what: String,
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,
+    ) = await({ what }, timeoutMs, condition)
+
+    /** As above, with [what] worded at the timeout, so the message says what was seen then, not at the start. */
+    private suspend fun await(
+        what: () -> String,
+        timeoutMs: Long = 8_000,
+        condition: () -> Boolean,
     ) {
         val met =
             withTimeoutOrNull(timeoutMs) {
                 while (!condition()) delay(10)
                 true
             }
-        if (met == null) fail("$what (timed out after $timeoutMs ms)\n${dump()}")
+        if (met == null) fail("${what()} (timed out after $timeoutMs ms)\n${dump()}")
     }
 
     /** Everything both sides did, for a case that timed out on CI where only the report survives. */
@@ -164,7 +179,7 @@ class TransferManagerTest {
         side: Side,
         id: String,
         phase: TransferPhase,
-    ) = await("${side.name} reaches $phase, saw ${side.phases(id)}") { side.record(id)?.phase == phase }
+    ) = await({ "${side.name} reaches $phase, saw ${side.phases(id)}" }) { side.record(id)?.phase == phase }
 
     /** Bob has both admitted the offer (live) and written its row — the row lands just after the live state. */
     private suspend fun awaitIncoming(
@@ -179,7 +194,10 @@ class TransferManagerTest {
     private suspend fun offer(a: Side): String = (a.manager.offer("bob", "uri:clip") as OfferOutcome.Started).id
 
     @After
-    fun tearDown() = scope.cancel()
+    fun tearDown() {
+        scope.cancel()
+        if (modelRootLazy.isInitialized()) modelRoot.deleteRecursively()
+    }
 
     @Test
     fun aFileCrossesFromAliceToBobAndBothRecordIt() =
@@ -402,6 +420,8 @@ class TransferManagerTest {
             assertEquals(OfferOutcome.Refused(TransferRefusal.Gone), b.manager.retry(first))
 
             a.signals.drop = { false }
+            // The row lands just before the transfer leaves the live map, and Retry asks the map.
+            await("alice drops it from the live map") { first !in a.manager.states.value }
             val second = (a.manager.retry(first) as OfferOutcome.Started).id
             assertTrue(second != first)
             assertTrue(a.record(first)!!.retried)
@@ -613,7 +633,11 @@ class TransferManagerTest {
             assertEquals(1, a.rows.size)
             awaitIncoming(b, id)
             // A busy receiver declines a second offer for the peer.
-            b.manager.onSignal("carol", TransferPayload(id = "other", phase = TransferPayload.PHASE_OFFER, name = "x", size = 5), clock())
+            b.manager.onSignal(
+                "carol",
+                TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, name = "x", size = 5),
+                clock(),
+            )
             assertTrue(b.signals.sent.any { it.phase == TransferPayload.PHASE_DECLINE && it.reason == TransferPayload.REASON_BUSY })
         }
 
@@ -641,15 +665,19 @@ class TransferManagerTest {
         runBlocking {
             val b = side("bob")
             val now = clock()
-            assertFalse(b.manager.onSignal("alice", TransferPayload(id = "t1", phase = TransferPayload.PHASE_OFFER, size = 5), now))
-            assertFalse(
-                b.manager.onSignal("alice", TransferPayload(id = "t2", phase = TransferPayload.PHASE_OFFER, name = "x", size = 0), now),
+            assertNull(b.manager.onSignal("alice", TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, size = 5), now))
+            assertNull(
+                b.manager.onSignal(
+                    "alice",
+                    TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, name = "x", size = 0),
+                    now,
+                ),
             )
-            assertFalse(
+            assertNull(
                 b.manager.onSignal(
                     "alice",
                     TransferPayload(
-                        id = "t3",
+                        id = FrameId.new(),
                         phase = TransferPayload.PHASE_OFFER,
                         name = "x",
                         size =
@@ -658,17 +686,17 @@ class TransferManagerTest {
                     now,
                 ),
             )
-            assertFalse(
+            assertNull(
                 b.manager.onSignal(
                     "alice",
-                    TransferPayload(id = "t4", phase = TransferPayload.PHASE_OFFER, name = "x", size = 5),
+                    TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, name = "x", size = 5),
                     now - TransferManager.STALE_OFFER_MS - 1,
                 ),
             )
-            assertFalse(
+            assertNull(
                 b.manager.onSignal(
                     "alice",
-                    TransferPayload(id = "t5", phase = TransferPayload.PHASE_READY, ssid = "DIRECT-ab", passphrase = "12345678"),
+                    TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_READY, ssid = "DIRECT-ab", passphrase = "12345678"),
                     now,
                 ),
             )
@@ -713,4 +741,365 @@ class TransferManagerTest {
                     ?.phase,
             )
         }
+
+    // ---- translation models (ADR 2026-11.ejn8) ----
+
+    // Made only by the models cases, and removed after each.
+    private val modelRootLazy = lazy { Files.createTempDirectory("models").toFile() }
+    private val modelRoot by modelRootLazy
+    private val table = mapOf(P1 to FakeTransferModels.direction(1), P2 to FakeTransferModels.direction(2))
+
+    /**
+     * The models cases' timings: [fast], with an offer that outlives a throttled runner's gap between the offer and the
+     * tap. A 400 ms one expired before Bob accepted under a CPU quota, and the sender answered his ACCEPT with CANCEL.
+     */
+    private val modelTimings = fast.copy(offerTtlMs = 5_000)
+
+    private fun modelPair(timings: TransferTimings = modelTimings): Triple<Side, Side, Pair<FakeTransferModels, FakeTransferModels>> {
+        val am = FakeTransferModels(File(modelRoot, "alice"), table).also { it.held += listOf(P1, P2) }
+        val bm = FakeTransferModels(File(modelRoot, "bob"), table)
+        val a = side("alice", timings, models = am)
+        val b = side("bob", timings, models = bm)
+        a.signals.peer = b.manager
+        b.signals.peer = a.manager
+        return Triple(a, b, am to bm)
+    }
+
+    /** What the archive of [pins] costs on the link: both ends work it out from the pins. */
+    private fun bytesOf(vararg pins: Long) =
+        ModelArchive.size(
+            pins.map {
+                FakeTransferModels.dirOf(it) to
+                    table.getValue(it).map { f -> f.first }
+            },
+        )
+
+    private suspend fun offerModels(
+        a: Side,
+        pins: List<Long>,
+    ): String = (a.manager.offerModels("bob", pins) as OfferOutcome.Started).id
+
+    @Test
+    fun aBundleOfModelsCrossesAndIsInstalledOnlyOnceItsPinsCheck() =
+        runBlocking {
+            val (a, b, shelves) = modelPair()
+            val id = offerModels(a, listOf(P1, P2))
+            // The OFFER is a whole file offer, the archive, with the pins beside it; a build that can install them reads
+            // names and sizes off its own table instead.
+            val sentOffer = a.signals.sent.single { it.phase == TransferPayload.PHASE_OFFER }
+            assertEquals(listOf(P1, P2), sentOffer.md)
+            assertEquals(ModelArchive.FILE_NAME, sentOffer.name)
+            assertEquals(bytesOf(P1, P2), sentOffer.size)
+            assertEquals(ModelArchive.MIME, sentOffer.mime)
+            awaitIncoming(b, id)
+            // The receiver names it in its own words, never the sender's file name.
+            assertEquals("models:2", b.record(id)!!.name)
+            assertEquals(listOf(P1, P2), b.record(id)!!.models)
+            assertEquals(bytesOf(P1, P2), b.record(id)!!.size)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Done)
+            awaitPhase(b, id, TransferPhase.Done)
+            assertEquals(listOf(P1, P2), shelves.second.installed)
+            assertEquals(
+                listOf(P1, P2),
+                b.signals.sent
+                    .single { it.phase == TransferPayload.PHASE_ACCEPT }
+                    .md,
+            )
+            // Installed, not saved: no Downloads entry, nothing for the card to open, and the stage is gone.
+            assertTrue(b.files.sinks.isEmpty())
+            assertNull(b.record(id)!!.savedUri)
+            await("the stage is removed") { shelves.second.stages.none { it.exists() } }
+        }
+
+    @Test
+    fun aReceiverTakesOnlyWhatItLacksAndTheSenderSendsOnlyThat() =
+        runBlocking {
+            val (a, b, shelves) = modelPair()
+            shelves.second.held += P1
+            val id = offerModels(a, listOf(P1, P2))
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            assertEquals(
+                listOf(P2),
+                b.signals.sent
+                    .single { it.phase == TransferPayload.PHASE_ACCEPT }
+                    .md,
+            )
+            awaitPhase(a, id, TransferPhase.Done)
+            awaitPhase(b, id, TransferPhase.Done)
+            assertEquals(listOf(P2), shelves.second.installed)
+            // Both records narrow to what went, sized by the pins.
+            assertEquals(listOf(P2), a.record(id)!!.models)
+            assertEquals(bytesOf(P2), a.record(id)!!.size)
+            assertEquals(listOf(P2), b.record(id)!!.models)
+        }
+
+    @Test
+    fun aModelsOfferGetsNoAutomaticAnswerEvenWithNothingNew() =
+        runBlocking {
+            // A phone that holds P1 and does not know P3: the card says so, and nothing goes back until someone taps.
+            val b = side("bob", models = FakeTransferModels(File(modelRoot, "bob"), table).also { it.held += P1 })
+            val id = FrameId.new()
+            val offer = TransferPayload(id = id, phase = TransferPayload.PHASE_OFFER, md = listOf(P1, P3))
+            assertNull("nothing new is worth a notification", b.manager.onSignal("alice", offer, clock()))
+            assertEquals(listOf(P1, P3), b.record(id)!!.models)
+            assertTrue(b.signals.sent.isEmpty())
+            assertEquals(TransferRefusal.Gone, b.manager.accept(id))
+            assertTrue(b.signals.sent.isEmpty())
+            // An offer with something new is.
+            val fresh = TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, md = listOf(P2))
+            val other = side("bob2", models = FakeTransferModels(File(modelRoot, "b2"), table))
+            assertEquals(TransferNotice("models:1", bytesOf(P2)), other.manager.onSignal("alice", fresh, clock()))
+        }
+
+    @Test
+    fun aModelsOfferFromFarAwayIsDropped() =
+        runBlocking {
+            val b = side("bob", models = FakeTransferModels(File(modelRoot, "bob"), table))
+            b.nearby = false
+            val offer =
+                TransferPayload(
+                    id = FrameId.new(),
+                    phase = TransferPayload.PHASE_OFFER,
+                    name = ModelArchive.FILE_NAME,
+                    size = bytesOf(P1),
+                    md = listOf(P1),
+                )
+            assertNull(b.manager.onSignal("alice", offer, clock()))
+            assertTrue(b.rows.isEmpty())
+            assertTrue(b.signals.sent.isEmpty())
+        }
+
+    @Test
+    fun aPhoneThatCannotInstallModelsTakesTheArchiveAsAFile() =
+        runBlocking {
+            // Bob's build has no models shelf, as an older build or one without translation: the offer is the file it
+            // also is, his plain ACCEPT names no pins, and Alice sends him the whole archive.
+            val am = FakeTransferModels(File(modelRoot, "alice"), table).also { it.held += listOf(P1, P2) }
+            val a = side("alice", modelTimings, models = am)
+            val b = side("bob", modelTimings)
+            a.signals.peer = b.manager
+            b.signals.peer = a.manager
+            val id = offerModels(a, listOf(P1, P2))
+            awaitIncoming(b, id)
+            assertEquals(ModelArchive.FILE_NAME, b.record(id)!!.name)
+            assertNull(b.record(id)!!.models)
+            assertNull(b.manager.accept(id))
+            assertNull(
+                b.signals.sent
+                    .single { it.phase == TransferPayload.PHASE_ACCEPT }
+                    .md,
+            )
+            awaitPhase(a, id, TransferPhase.Done)
+            awaitPhase(b, id, TransferPhase.Done)
+            assertArrayEquals(
+                am.archive(listOf(P1, P2)),
+                b.files.sinks
+                    .single()
+                    .buffer
+                    .toByteArray(),
+            )
+            assertEquals(listOf(P1, P2), a.record(id)!!.models)
+        }
+
+    @Test
+    fun malformedPinListsAndPeerWrittenIdsAreDropped() =
+        runBlocking {
+            val b = side("bob", models = FakeTransferModels(File(modelRoot, "bob"), table))
+            val now = clock()
+            for (md in listOf(
+                emptyList(),
+                listOf(P1, P1),
+                listOf(-1L),
+                listOf(0x1_0000_0000L),
+                List(OfferReading.MAX_MODELS + 1) { it.toLong() },
+            )) {
+                assertNull(
+                    "$md",
+                    b.manager.onSignal("alice", TransferPayload(id = FrameId.new(), phase = TransferPayload.PHASE_OFFER, md = md), now),
+                )
+            }
+            // An id is a canonical FrameId or nothing, whatever the phase: it keys the row and must never name a path.
+            val phases =
+                listOf(
+                    TransferPayload.PHASE_OFFER,
+                    TransferPayload.PHASE_ACCEPT,
+                    TransferPayload.PHASE_DECLINE,
+                    TransferPayload.PHASE_CANCEL,
+                    TransferPayload.PHASE_READY,
+                )
+            for (id in listOf("../../x", "a/b", "x".repeat(22), FrameId.new() + "=")) {
+                assertNull(
+                    id,
+                    b.manager.onSignal("alice", TransferPayload(id = id, phase = TransferPayload.PHASE_OFFER, md = listOf(P1)), now),
+                )
+                for (phase in phases) {
+                    val signal =
+                        TransferPayload(id = id, phase = phase, name = "x", size = 5, ssid = "DIRECT-ab-x", passphrase = "p".repeat(12))
+                    val before = synchronized(b.trace) { b.trace.size }
+                    assertNull("$id $phase", b.manager.onSignal("alice", signal, now))
+                    // This call's own line, not one an earlier id left: for DECLINE, CANCEL and READY it is the only trace.
+                    val said = synchronized(b.trace) { b.trace.drop(before) }
+                    assertEquals("$id $phase", 1, said.size)
+                    assertTrue("$id $phase", said.single().contains("refused a non-canonical id from alice (phase $phase)"))
+                }
+            }
+            assertTrue(b.rows.isEmpty())
+            assertTrue(b.signals.sent.isEmpty())
+            assertTrue(
+                b.manager.states.value
+                    .isEmpty(),
+            )
+            assertFalse(File(modelRoot, "bob").exists())
+        }
+
+    @Test
+    fun anAcceptNamingModelsThatWereNotOfferedIsCancelledAndNothingIsHosted() =
+        runBlocking {
+            for (md in listOf(listOf(P2), listOf(P1, P1), emptyList())) {
+                val (a, b, _) = modelPair()
+                b.signals.rewrite = { if (it.phase == TransferPayload.PHASE_ACCEPT) it.copy(md = md) else it }
+                val id = offerModels(a, listOf(P1))
+                awaitIncoming(b, id)
+                assertNull(b.manager.accept(id))
+                awaitPhase(a, id, TransferPhase.Failed)
+                await("alice cancels for $md") { a.signals.sent.any { it.phase == TransferPayload.PHASE_CANCEL } }
+                assertFalse("$md", "host" in a.log.events)
+            }
+        }
+
+    @Test
+    fun aFileAcceptCarryingPinsIsStillAFile() =
+        runBlocking {
+            val (a, b, _) = modelPair()
+            a.withClip()
+            b.signals.rewrite = { if (it.phase == TransferPayload.PHASE_ACCEPT) it.copy(md = listOf(P1)) else it }
+            val id = offer(a)
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Done)
+            awaitPhase(b, id, TransferPhase.Done)
+            assertArrayEquals(
+                payload,
+                b.files.sinks
+                    .single()
+                    .buffer
+                    .toByteArray(),
+            )
+            assertNull(a.record(id)!!.models)
+        }
+
+    @Test
+    fun aModelThatFailsItsPinsIsCorruptOnBothCardsAndNothingIsInstalled() =
+        runBlocking {
+            val (a, b, shelves) = modelPair()
+            shelves.first.corrupt += P2
+            val id = offerModels(a, listOf(P1, P2))
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(a, id, TransferPhase.Failed)
+            awaitPhase(b, id, TransferPhase.Failed)
+            // The stream's own seal passed: the pins are what refused it, before the verdict went back.
+            assertEquals(TransferPayload.REASON_CORRUPT, a.record(id)!!.reason)
+            assertEquals(TransferPayload.REASON_CORRUPT, b.record(id)!!.reason)
+            assertTrue(shelves.second.installed.isEmpty())
+            await("the stage is removed") { shelves.second.stages.none { it.exists() } }
+        }
+
+    @Test
+    fun aCancelMidStreamOrAnInstallThatFailsLeavesNoStaging() =
+        runBlocking {
+            val (a, b, shelves) = modelPair()
+            val gate = CountDownLatch(1).also { shelves.first.hold = it }
+            val id = offerModels(a, listOf(P1))
+            awaitIncoming(b, id)
+            assertNull(b.manager.accept(id))
+            awaitPhase(b, id, TransferPhase.Transferring)
+            await("bob has staged something") { shelves.second.stages.any { it.exists() } }
+            b.manager.cancel(id)
+            gate.countDown()
+            awaitPhase(b, id, TransferPhase.Cancelled)
+            await("a cancelled stage is removed") { shelves.second.stages.none { it.exists() } }
+            assertTrue(shelves.second.installed.isEmpty())
+
+            // A commit that throws after the verdict, before the sink's own cleanup could run: the sender stays Done
+            // whichever of the verdict and the receiver's CANCEL lands first, the receiver failed, and only finish's
+            // discard can have removed the stage.
+            shelves.first.hold = null
+            shelves.second.commitThrows = true
+            await("the first transfer ends on alice's side too") {
+                a.manager.states.value
+                    .isEmpty() &&
+                    b.manager.states.value
+                        .isEmpty()
+            }
+            val again = offerModels(a, listOf(P1))
+            awaitIncoming(b, again)
+            assertNull(b.manager.accept(again))
+            awaitPhase(a, again, TransferPhase.Done)
+            awaitPhase(b, again, TransferPhase.Failed)
+            await("a stage whose install failed is removed") { shelves.second.stages.none { it.exists() } }
+            await("alice is done with it") { again !in a.manager.states.value }
+            assertFalse("the sender heard the verdict and keeps Done", TransferPhase.Failed in a.phases(again))
+        }
+
+    @Test
+    fun aCancelAfterTheLastByteWaitsForTheVerdict() =
+        runBlocking {
+            // Bob holds his verdict while a CANCEL reaches Alice, who has sent every byte: the verdict decides, and she
+            // ends Done. This is the maintainer's rule, for a file and models alike: a receiver that read it intact
+            // and then could not keep it says so on its own card.
+            // Alice's one verdict read must outlast the held window on a starved runner, or she times out into Failed.
+            val (a, b, shelves) = modelPair(modelTimings.copy(verdictWaitMs = 10_000))
+            val gate = CountDownLatch(1).also { shelves.second.checkGate = it }
+            try {
+                val id = offerModels(a, listOf(P1))
+                awaitIncoming(b, id)
+                assertNull(b.manager.accept(id))
+                await("alice has sent every byte") {
+                    a.manager.states.value[id]
+                        ?.let { it.bytes == it.size } == true
+                }
+                val cancel = TransferPayload(id = id, phase = TransferPayload.PHASE_CANCEL, reason = TransferPayload.REASON_CONNECTION)
+                assertNull(a.manager.onSignal("bob", cancel, clock()))
+                assertEquals("the cancel waits for the verdict", TransferPhase.Transferring, a.record(id)!!.phase)
+                gate.countDown()
+                awaitPhase(a, id, TransferPhase.Done)
+                awaitPhase(b, id, TransferPhase.Done)
+                assertEquals(listOf(P1), shelves.second.installed)
+                assertFalse(TransferPhase.Failed in a.phases(id))
+                assertTrue("alice sends no CANCEL back", a.signals.sent.none { it.phase == TransferPayload.PHASE_CANCEL })
+            } finally {
+                gate.countDown()
+            }
+        }
+
+    @Test
+    fun aRetryOfModelsOffersTheSamePinsAgain() =
+        runBlocking {
+            // Its offer must expire, so this case keeps the short TTL.
+            val (a, b, _) = modelPair(fast)
+            a.signals.drop = { it.phase == TransferPayload.PHASE_OFFER }
+            val id = offerModels(a, listOf(P2))
+            awaitPhase(a, id, TransferPhase.Expired)
+            assertTrue(a.manager.retryReadable(a.record(id)!!))
+            a.signals.drop = { false }
+            await("alice drops it from the live map") { id !in a.manager.states.value }
+            val retried = a.manager.retry(id) as OfferOutcome.Started
+            assertEquals(
+                listOf(P2),
+                a.signals.sent
+                    .last { it.phase == TransferPayload.PHASE_OFFER }
+                    .md,
+            )
+            awaitIncoming(b, retried.id)
+            assertTrue(a.record(id)!!.retried)
+        }
+
+    private companion object {
+        const val P1 = 0x1111_1111L
+        const val P2 = 0x2222_2222L
+        const val P3 = 0x3333_3333L
+    }
 }

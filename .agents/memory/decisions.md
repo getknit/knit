@@ -310,6 +310,7 @@ carries; never renumber an old one.
 | [2026-11.4ckq](decisions/2026-11-4ckq-a-peer-s-advertised-photo-is-stored-at-once-and-re-wanted-from-the-database.md) | a peer's advertised photo is stored at once and re-wanted from the database | blobs, contacts |
 | [2026-11.82s7](decisions/2026-11-82s7-the-mesh-service-s-alarms-call-into-the-running-service.md) | The mesh service's alarms call into the running service, never start it | service, power, reliability |
 | [2026-11.b37x](decisions/2026-11-b37x-hiding-a-known-node-is-presentation-only.md) | Hiding a known node is presentation only | contacts, diagnostics, ui |
+| [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |
 | [2026-11.sfms](decisions/2026-11-sfms-a-reset-the-replacement-floor-refuses-is-re-opened-when-the-floor-ends.md) | A reset the replacement floor refuses is re-opened when the floor ends | crypto, pfs, recovery |
