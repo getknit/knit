@@ -131,6 +131,7 @@ internal val CAPABILITY_BITS: List<Pair<String, Long>> =
         "CAP_LORA_DIRECT" to Protocol.CAP_LORA_DIRECT,
         "CAP_INET_LINK" to Protocol.CAP_INET_LINK,
         "CAP_LINK_PROOF" to Protocol.CAP_LINK_PROOF,
+        "CAP_BLIND_ADVERT" to Protocol.CAP_BLIND_ADVERT,
     )
 
 /** The bits [mask] holds with their names, lowest first; a bit with no name is named by its hex value. */
