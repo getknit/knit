@@ -338,9 +338,12 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   and segments presumed lost that were acknowledged before going again) with a bare `LINK` once `measuring` is false. The peer's `drained` (bytes its
   end of each peer's stream read) must reach the same count. A link idles out 180 s after the run.
   Links also open by themselves (L-7-7, the spool first): a message of ours a contact has not ticked in 20 s, with no
-  radio between the phones, has the demand offer them a link — logcat `KnitLink: link demand <id6>: <outcome>`. The
-  offer rides a spool too, so only a spool that carries casts but not the message (a pair scope homed at a relay one
-  phone does not dial, #210) shows it in the field. What keeps an up link from its idle close is in logcat too: each
+  radio between the phones and both switches on, has the demand offer them a link — logcat
+  `KnitLink: link demand <id6> <why>: <outcome>`, and `tries[].why` `TICK`. The offer rides the spools' `sig` lane, so
+  any spool both phones dial carries it: a tick that is merely late (the contact's phone back online just after the
+  send, or slow to tick) opens a link as readily as a message no spool delivers, and the offering phone cannot tell the two apart
+  (spool push/pull is not in logcat, a receipt's `notedAt` is not in the bridge; the field log's `spool`, `link_try`
+  and `link_end` lines are the record). What keeps an up link from its idle close is in logcat too: each
   content frame that crossed it logs `KnitLink: link <id6>: tx|rx <type> …<the frame id's last 6>`, with ` (not use)` for a frame handed back to the phone that wrote it (custody's re-serve) (a sealed tick reads as `chat`,
   as on the wire; digests, acks and blob asks log nothing; a frame crosses a link once, however many paths hand it over), and each file `file …` / `rx …`.
 - `…debug.CALL` — drives an **experimental voice call** (`call/CallManager`, a debug build with a call kind on,
