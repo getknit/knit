@@ -1960,6 +1960,8 @@ class LabNode internal constructor(
                     ).also { directContacts = it },
                 presenceKeyClock = { now() + presenceSkewMs },
                 presenceLinkUpDelayMs = { limits.presenceLinkUpDelayMs },
+                // The engine's decision lines in every failure report (`MeshLab.report` reads warnings): ids and steps only.
+                presenceDebugLog = { Log.w("PresenceKeyEngine", "$name: $it") },
                 blobMetered = { metered },
             )
         countDrainsDownstream()

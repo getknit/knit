@@ -409,8 +409,18 @@ class PresenceKeyLabTest {
                     .linkOwedResetsSent
                     .toInt()
             }
+            val keptTag = checkNotNull(carol.presenceKeys.linkOwedResets()[alice.nodeId]?.rootTag) { "carol kept no R2" }
             lab.unlink(alice, carol)
-            lab.await(1) { if (carol.resetSession(alice) == null) 1 else 0 }
+            val sentBeforeRelink = carol.metrics.keys().linkOwedResetsSent
+            // A new root, not a marker under the held one (a null from resetSession can be either; a marker makes RESEND right).
+            lab.await(1) {
+                if (carol.rootTagFor(alice) != keptTag) {
+                    1
+                } else {
+                    carol.resetSession(alice)
+                    0
+                }
+            }
 
             // Alice's answer to R3 is held until Carol's link-up pass has judged the kept R2, so that pass meets an
             // unconfirmed session: the superseded branch is what runs, whatever the link-up wait picks.
@@ -425,8 +435,10 @@ class PresenceKeyLabTest {
             lab.await(1) { if (carol.presenceKeys.linkOwedResets().isEmpty()) 1 else 0 }
             awaitHoldsKeysOf(alice, carol)
             awaitHoldsKeysOf(carol, alice)
-            assertEquals("R2 was never resent", 1L, carol.metrics.keys().linkOwedResetsSent)
-            assertEquals("dropped as superseded, once", 1L, carol.metrics.keys().linkOwedResetsSuperseded)
+            // With every node's report (the engine's decision lines among its warnings), so a failure names the step taken.
+            val nodes = listOf(alice, carol, dave)
+            assertEquals("R2 was never resent\n${lab.report(nodes)}", sentBeforeRelink, carol.metrics.keys().linkOwedResetsSent)
+            assertEquals("dropped as superseded, once\n${lab.report(nodes)}", 1L, carol.metrics.keys().linkOwedResetsSuperseded)
             lab.assertConverged(listOf(alice, carol), atLeast = 0, carriers = listOf(dave)) {
                 it.dmWith(
                     if (it ===

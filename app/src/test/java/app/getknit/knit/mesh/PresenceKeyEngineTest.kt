@@ -445,6 +445,28 @@ class PresenceKeyEngineTest {
             assertEquals("once on the one link", 1, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
         }
 
+    /**
+     * The departure's async clear running late: depart, relink, a pass marks the reset sent on the new link, and only then
+     * the stale clear runs. It never touches a mark of the link held now, so another pass on that link sends nothing.
+     */
+    @Test
+    fun aStaleDepartureClearNeverResendsOnTheLinkHeldNow() =
+        runTest {
+            val rig = Rig()
+            rig.confirmed.clear()
+            rig.engine.onRestore(setOf("alice"))
+            rig.engine.start()
+            assertEquals(1, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+
+            rig.engine.onLinkDepart(listOf("alice"))
+            rig.engine.onLinkUp(listOf("alice"))
+            rig.engine.reconcile("link")
+            assertEquals("the new link gets it", 2, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+            rig.engine.onLinksDown(listOf("alice")) // the departure's clear, late
+            rig.engine.reconcile("heal")
+            assertEquals("and only once", 2, rig.sentFrames.count { it.first == "alice" && it.second.startsWith("reset") })
+        }
+
     @Test
     fun aDeclinedLinkResetIsDroppedAndAnUncoveredContactThatLeavesIsDroppedToo() =
         runTest {

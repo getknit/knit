@@ -208,12 +208,18 @@ class PresenceKeyEngine(
     /**
      * [ids]' last live link dropped. What they were sent is kept: a relink with the same root and generations owes them
      * nothing, so no ctl 11 goes under a root the peer may have left while apart (its restore) — sealed there, it would
-     * fail to open and count toward the peer's reset heuristic. Only the link-owed resets, which go once per link until
-     * the session confirms, start over.
+     * fail to open and count toward the peer's reset heuristic. Whether a link-owed reset went on the link held now is the
+     * epoch compare in [resetFor] ([onLinkDepart] / [onLinkUp] move the epoch synchronously), so this only forgets marks
+     * of links no longer held — memory hygiene. It runs async, maybe after a relink's pass marked the new link: a mark of
+     * the epoch held now is never touched, or a later pass on that same link would resend the reset.
      */
     suspend fun onLinksDown(ids: Collection<String>) {
         if (ids.isEmpty()) return
-        lock.withLock { ids.forEach { resetSentThisLink.remove(it) } }
+        lock.withLock {
+            for (id in ids) {
+                if (resetSentThisLink[id] != presentLinks[id]) resetSentThisLink.remove(id)
+            }
+        }
     }
 
     /** The generations last sealed to [nodeId], or null when none was (a diagnostic: what the engine decided, not what landed). */

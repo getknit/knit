@@ -417,6 +417,9 @@ class MeshManager(
     // The wall clock the presence-key engine mints and rotates by: [clock] in production. `mesh/lab` runs one ahead of
     // the node's own clock to stage a clock-ahead mint (B3) without stamping every frame it sends into the future.
     presenceKeyClock: (() -> Long)? = null,
+    // Where the presence-key engine's per-decision lines go (a link-owed reset's step and link epochs; ids and counts,
+    // never bytes or a tag): debug in production; `mesh/lab` raises them to a warning so a failed scenario's report holds them.
+    private val presenceDebugLog: (String) -> Unit = { Log.d(TAG, it) },
     // How long a link-up waits before its presence-key reconcile (the brief: a random 2–20 s, so the ctl does not ride
     // the link's first second). `mesh/lab` shortens it.
     private val presenceLinkUpDelayMs: () -> Long = {
@@ -881,7 +884,7 @@ class MeshManager(
                 elapsed = elapsedRealtime,
                 metrics = metrics,
                 log = { Log.i(TAG, it) },
-                debug = { Log.d(TAG, it) },
+                debug = presenceDebugLog,
             )
         }
 
