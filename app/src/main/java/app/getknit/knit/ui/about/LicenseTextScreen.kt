@@ -47,7 +47,7 @@ fun LicenseTextScreen(
     val context = LocalContext.current
     val paragraphs by
         produceState<List<String>?>(initialValue = null, license) {
-            value = readLicenseText(context.assets, license)?.let(::licenseParagraphs) ?: emptyList()
+            value = readLicenseText(context.assets, license)?.let(::licenseParagraphs).orEmpty()
         }
     LicenseTextScreenContent(license = license, paragraphs = paragraphs, onBack = onBack)
 }

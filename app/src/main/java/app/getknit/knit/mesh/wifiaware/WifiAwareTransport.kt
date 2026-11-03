@@ -4710,7 +4710,7 @@ class WifiAwareTransport(
 
     /** Our Wi-Fi network went away. Handler thread. [network] is null only from the debug injector. */
     private fun onStaLost(network: Network?) {
-        Log.i(TAG, "Wi-Fi network lost${network?.let { " ($it)" } ?: ""}")
+        Log.i(TAG, "Wi-Fi network lost${network?.let { " ($it)" }.orEmpty()}")
         initiatorPolicy.noteWifiLost()
     }
 
@@ -4722,7 +4722,7 @@ class WifiAwareTransport(
             NanInitiatorPolicy.Verdict.Strike -> {
                 Log.w(
                     TAG,
-                    "Wi-Fi dropped and came back${network?.let { " ($it)" } ?: ""} within two minutes of an initiate of ours " +
+                    "Wi-Fi dropped and came back${network?.let { " ($it)" }.orEmpty()} within two minutes of an initiate of ours " +
                         "with no link between — strike ${initiatorPolicy.strikes}/${NanInitiatorPolicy.STRIKES_TO_LATCH}",
                 )
             }

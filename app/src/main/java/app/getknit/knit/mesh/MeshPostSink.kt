@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.mesh.crypto.XeddsaVerify
+import java.util.Locale
 
 /**
  * Delivers a post the bound board heard on its own primary (slot 0) channel into the Meshtastic room —
@@ -131,7 +132,7 @@ data class MeshPostOrigin(
  * are all on the far side of the seam — the chat list, the bubble, the notification — and none of them may
  * depend on the radio package.
  */
-fun meshNodeLabel(node: Long): String = "!%08x".format(node and MESH_NODE_MASK)
+fun meshNodeLabel(node: Long): String = "!%08x".format(Locale.ROOT, node and MESH_NODE_MASK)
 
 /** A Meshtastic node number is 32 unsigned bits; mask so a widened negative can never print sixteen digits. */
 private const val MESH_NODE_MASK = 0xFFFFFFFFL

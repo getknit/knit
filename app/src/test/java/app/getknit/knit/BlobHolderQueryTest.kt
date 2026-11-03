@@ -59,7 +59,7 @@ class BlobHolderQueryTest {
         private val dir: File,
     ) : BlobStore {
         val blobs = ConcurrentHashMap<String, ByteArray>()
-        val storingNow = ConcurrentHashMap.newKeySet<String>()
+        val storingNow: MutableSet<String> = ConcurrentHashMap.newKeySet<String>()
         val lying = ConcurrentHashMap<String, Long>()
 
         // Runs at every [has], before it answers: a read that throws, or the session stopped mid-step.
@@ -2220,7 +2220,7 @@ class BlobHolderQueryTest {
         for (minute in from..to) {
             at(minute * 60_000L, a, b)
             val before = heard()
-            a.exchange.wantAll(listOf(hash to null), until = until(minute)?.let { mapOf(hash to it) } ?: emptyMap())
+            a.exchange.wantAll(listOf(hash to null), until = until(minute)?.let { mapOf(hash to it) }.orEmpty())
             a.exchange.reask()
             if (heard() > before) opened += minute
         }

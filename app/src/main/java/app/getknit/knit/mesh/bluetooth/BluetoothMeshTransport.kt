@@ -2748,7 +2748,7 @@ class BluetoothMeshTransport(
      * registration hands the channel to [armUnlinked], as the old refusals did (#142).
      */
     @Suppress("LongMethod", "ReturnCount") // read, refuse, answer, re-judge, register: one linear flow of early exits
-    private suspend fun superviseAccepted(socket: BluetoothSocket) {
+    private fun superviseAccepted(socket: BluetoothSocket) {
         val link = BluetoothSocketLink(socket)
         // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
         val helloCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
@@ -3643,7 +3643,7 @@ class BluetoothMeshTransport(
                 (if (gattPeers) gattDiag() else "") +
                 (if (codedOn()) " phy=${codedMode.wire} coded=$codedAdvert phyLinks=${phyControls.size} hunt=$hunting" else "") +
                 (if (codedOn()) fadeDiag() else "") +
-                (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: "") +
+                sideChannel?.let { " ${it.diag()} $sideDecision" }.orEmpty() +
                 " linkScores=${links.values.joinToString(",") { "${it.nodeId}:${linkScore(it, rssiByNode).toInt()}" }}" +
                 // ble-link-trial.py reads `links=` then `reach=` at its head; near= and the fields after it carry bare ids.
                 " near=${_near.value.map { it.nodeId }}" +

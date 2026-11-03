@@ -38,7 +38,7 @@ class HomeSpoolsLabTest {
 
     private fun url(n: Int) = PublicSpools.urlOf(LabPublicRelays.host(n))
 
-    private suspend fun LabNode.relaysDialled(): Set<String> = manager.spoolStatus().mapTo(HashSet()) { it.url }
+    private fun LabNode.relaysDialled(): Set<String> = manager.spoolStatus().mapTo(HashSet()) { it.url }
 
     /**
      * Alice on public-2 and Bob on public-3 meet over the radio, so each holds a confirmed session, and part: on return

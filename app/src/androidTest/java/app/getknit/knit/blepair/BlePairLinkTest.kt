@@ -94,7 +94,7 @@ class BlePairLinkTest : BlePairTest() {
                 val delivered = System.currentTimeMillis()
                 note(
                     "held ${(delivered - outAt) / MS_PER_S} s out of range" +
-                        (backAt?.let { ", delivered both ways ${delivered - it} ms after coming back" } ?: ""),
+                        backAt?.let { ", delivered both ways ${delivered - it} ms after coming back" }.orEmpty(),
                 )
             } finally {
                 if (!isSmaller) bridge(JSONObject().put("cmd", "clear"))

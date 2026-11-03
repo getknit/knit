@@ -50,11 +50,11 @@ class MessageInspectViewModel(
     private val blobs: BlobRepository,
     private val verdicts: BlobVerdictDao,
     private val holders: AttachmentHolderDao,
-    private val mesh: MeshController,
+    mesh: MeshController,
     settings: SettingsStore,
     identity: IdentitySource,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val tickMs: Long = TICK_MS,
+    tickMs: Long = TICK_MS,
 ) : ViewModel() {
     private val selfNodeId = MutableStateFlow<String?>(null)
 

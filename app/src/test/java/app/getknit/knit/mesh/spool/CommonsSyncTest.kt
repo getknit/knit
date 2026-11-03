@@ -11,7 +11,6 @@ import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
-import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.frameIdOf
 import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.ExperimentalCoroutinesApi

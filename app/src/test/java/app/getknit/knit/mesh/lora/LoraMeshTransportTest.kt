@@ -5,7 +5,6 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicPostRefusal
-import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -20,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -67,26 +65,6 @@ class LoraMeshTransportTest {
         sig[1] = sigCounter.toByte()
         sigCounter++
         return WireEnvelope(relay = relay, sig = sig, signed = WireCodec.encodeEnvelope(env))
-    }
-
-    /**
-     * The unsigned form (ADR 059): a `relay = false` DM-form chat from [sender] to [to] with an EMPTY sig — the
-     * v3 live-link tick as the transport sees it (it never verifies; the policy admits it by shape).
-     */
-    private fun unsignedTick(
-        sender: String,
-        to: String,
-    ): WireEnvelope {
-        val env =
-            RelayEnvelope(
-                type = FrameType.CHAT,
-                id = "tick-$sigCounter",
-                senderId = sender,
-                recipientId = to,
-                payload = WireCodec.encodePayload(ChatContent(body = "")),
-            )
-        sigCounter++
-        return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
     /** A decodable broadcast chat around a hand-built [payload] (the transport only decodes the envelope, never the content). */

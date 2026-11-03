@@ -132,11 +132,11 @@ class MessageRequestsViewModel(
         val isGroup = Conversations.kindFor(conversationId) == ConversationKind.GROUP
         // A group we've already left (or that has no roster row yet) isn't an active request.
         if (isGroup && (group == null || group.left)) return null
-        val memberIds = if (isGroup) GroupMembersStore.decode(group?.members ?: "") else emptyList()
+        val memberIds = if (isGroup) GroupMembersStore.decode(group?.members.orEmpty()) else emptyList()
         val title =
             if (isGroup) {
                 groupTitle(
-                    storedName = group?.name ?: "",
+                    storedName = group?.name.orEmpty(),
                     memberIds = memberIds,
                     selfId = me,
                     fallback = context.getString(R.string.group_unnamed),

@@ -56,7 +56,7 @@ class SessionTransactorOrderTest {
         private var chain: GroupRatchetEngine.SendChain? = null
 
         private suspend fun guard(what: String) {
-            check(currentCoroutineContext()[InTransaction] != null) {
+            checkNotNull(currentCoroutineContext()[InTransaction]) {
                 "$what touched the store with no enclosing transaction — the mutex was taken first, " +
                     "which is the inversion that deadlocks against the decrypt path"
             }
@@ -138,7 +138,7 @@ class SessionTransactorOrderTest {
     /** The DM store under the same guard: the reads [RatchetSessions.retiredBase] makes on the decrypt-failure path. */
     private inner class GuardedRatchetStore : RatchetStore {
         private suspend fun guard(what: String) {
-            check(currentCoroutineContext()[InTransaction] != null) { "$what touched the store with no enclosing transaction" }
+            checkNotNull(currentCoroutineContext()[InTransaction]) { "$what touched the store with no enclosing transaction" }
             synchronized(order) { order.add(what) }
             yield()
         }

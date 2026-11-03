@@ -158,7 +158,7 @@ class PartialBlobs(
     var onMarked: (hash: String, holder: String) -> Unit = { _, _ -> }
 
     /** The holders passed over for [hash] under its per-hash ceiling this session ([markHolder]). */
-    fun markedHolders(hash: String): Set<String> = synchronized(lock) { marked[hash]?.toSet() ?: emptySet() }
+    fun markedHolders(hash: String): Set<String> = synchronized(lock) { marked[hash]?.toSet().orEmpty() }
 
     /** [hash] is refused as a profile photo for the rest of the session: a held copy of it was over the ceiling. */
     fun refuse(hash: String) =

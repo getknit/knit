@@ -134,19 +134,19 @@ class DiagnosticsViewModel(
     private val meshManager: MeshController,
     identity: Identity,
     private val settings: SettingsStore,
-    private val metrics: MeshMetrics,
+    metrics: MeshMetrics,
     relayStatus: RelayStatusRepository,
     private val crashes: CrashReports,
     private val modelGuard: ModelLoadGuard,
     // Which phone radios this device has — a static fact, probed once at wiring. No default: a test states
     // the device it is describing.
-    private val radios: RadioSupport,
+    radios: RadioSupport,
     // The LoRa plane as the UI sees it (`LoraStatusRepository.facts`): tells "no board bound" from "board
     // out of reach", which the transport's health folds together.
     loraFacts: Flow<LoraFacts>,
     // Wall clock, for ageing the Internet plane's per-scope presence stamps. Injected so a test can drive
     // the linger; the combine re-runs on the [REFRESH_MS] metrics ticker, so an expiry lands within a tick.
-    private val clock: () -> Long = System::currentTimeMillis,
+    clock: () -> Long = System::currentTimeMillis,
     // Whether this phone may host a Wi-Fi Direct group (ADR 2026-10.w3dw). Null in a test that never shows the row.
     private val hostGuard: DirectHostGuard? = null,
     // Which microphone path calls record from (ADR 2026-10.kw29). Null in a build without calls, and in most tests.

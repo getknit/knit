@@ -73,6 +73,7 @@ import app.getknit.knit.ui.chat.attachmentWaitTitle
 import app.getknit.knit.ui.chat.stopped
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
+import java.util.Locale
 
 /*
  * The voice-note surfaces: the waveform, the bubble a received/sent note renders as, and the review row the
@@ -696,7 +697,7 @@ fun formatDuration(millis: Int): String {
     // Round to the nearest second rather than truncating: a 6.9 s note reading "0:06" looks like the last
     // second was lost, and the counter would sit on 0:00 for a whole second at the start of playback.
     val totalSeconds = (millis.coerceAtLeast(0) + MILLIS_PER_SECOND / 2) / MILLIS_PER_SECOND
-    return "%d:%02d".format(totalSeconds / SECONDS_PER_MINUTE, totalSeconds % SECONDS_PER_MINUTE)
+    return "%d:%02d".format(Locale.getDefault(), totalSeconds / SECONDS_PER_MINUTE, totalSeconds % SECONDS_PER_MINUTE)
 }
 
 private const val MILLIS_PER_SECOND = 1000

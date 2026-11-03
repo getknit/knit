@@ -199,7 +199,8 @@ class WalkieMeterTest {
     }
 
     // [packets] 20 ms SILK wideband packets (TOC config 9, one frame) of 20 bytes, joined as a chunk carries them.
-    private fun audio(packets: Int): ByteArray = OpusPackets.join(List(packets) { ByteArray(20).also { it[0] = SILK_WB_20MS } })
+    private fun audio(packets: Int): ByteArray =
+        OpusPackets.join(List(packets) { ByteArray(20).also { packet -> packet[0] = SILK_WB_20MS } })
 
     private fun chunk(
         b: Int = 0,

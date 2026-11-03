@@ -241,11 +241,11 @@ class ForwardRepositoryTest : RoomDbTest() {
             repo.store(chatRaw("d3", "peer", 4L, byteArrayOf(-1, -1, -1)), ForwardStore.ORIGIN_RELAY, now = 0L)
 
             val byId = dao.allRows().associateBy { it.id }
-            assertEquals("CT", byId["d1"]!!.attachmentHash)
-            assertEquals("PT", byId["b1"]!!.attachmentHash)
-            assertEquals(null, byId["d2"]!!.attachmentHash)
+            assertEquals("CT", byId.getValue("d1").attachmentHash)
+            assertEquals("PT", byId.getValue("b1").attachmentHash)
+            assertEquals(null, byId.getValue("d2").attachmentHash)
             assertTrue("an undecodable payload must not drop the frame", dao.exists("d3"))
-            assertEquals(null, byId["d3"]!!.attachmentHash)
+            assertEquals(null, byId.getValue("d3").attachmentHash)
             assertEquals(1, dao.countByAttachmentHash("CT"))
             // The denormalized column must not perturb the content digest — it folds only the id set.
             assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
@@ -278,8 +278,8 @@ class ForwardRepositoryTest : RoomDbTest() {
 
             assertTrue(dao.exists("r1") && dao.exists("r2"))
             val byId = dao.allRows().associateBy { it.id }
-            assertEquals(null, byId["r1"]!!.attachmentHash)
-            assertEquals(null, byId["r2"]!!.attachmentHash)
+            assertEquals(null, byId.getValue("r1").attachmentHash)
+            assertEquals(null, byId.getValue("r2").attachmentHash)
             assertEquals(mapOf("PIC" to "peer"), repo.attachmentsNeedingFetch(now = 0L))
             assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
         }

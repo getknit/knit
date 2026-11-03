@@ -1,6 +1,7 @@
 package app.getknit.knit.identity
 
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * A stable, app-scoped per-**device** tag used *only* for soft block-list continuity.
@@ -24,7 +25,7 @@ object DeviceTag {
                 .getInstance("SHA-256")
                 .digest((SALT + id).encodeToByteArray())
                 .take(TAG_BYTES)
-                .joinToString("") { "%02x".format(it) }
+                .joinToString("") { "%02x".format(Locale.ROOT, it) }
         }
 
     /** App-specific salt; keeps the tag from being the raw device id and domain-separates it. */

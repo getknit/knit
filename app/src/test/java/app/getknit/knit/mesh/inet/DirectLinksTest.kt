@@ -547,14 +547,14 @@ class DirectLinksTest {
             val links = DirectLinks.EMPTY_ANSWERS_PER_HOUR + 3
             repeat(links) {
                 assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
-                b.links.links.first { a.id in it }
+                b.links.links.first { ids -> a.id in ids }
                 assertTrue(
                     a.links.links.value
                         .getValue(b.id)
                         .sendData(byteArrayOf(it.toByte())),
                 )
                 a.links.close(b.id)
-                b.links.links.first { a.id !in it }
+                b.links.links.first { ids -> a.id !in ids }
             }
             assertEquals(links, tries(b).count { it.outcome == LinkOutcome.UP })
         }
@@ -566,9 +566,9 @@ class DirectLinksTest {
             val (a, b) = pair(net.phone(Nat.PORT_RESTRICTED, v4(81, 2, 3, 4)), net.phone(Nat.PORT_RESTRICTED, v4(91, 5, 6, 7)))
             repeat(DirectLinks.EMPTY_ANSWERS_PER_HOUR) {
                 assertEquals(LinkOutcome.UP, a.links.offer(b.id, force = true))
-                b.links.links.first { a.id in it }
+                b.links.links.first { ids -> a.id in ids }
                 a.links.close(b.id)
-                b.links.links.first { a.id !in it }
+                b.links.links.first { ids -> a.id !in ids }
             }
             assertEquals(LinkOutcome.NO_ANSWER, a.links.offer(b.id, force = true))
             assertEquals(DirectLinks.EMPTY_ANSWERS_PER_HOUR, answered(b))

@@ -5,11 +5,9 @@ import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.TransferPayload
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -24,7 +22,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.io.InputStream
-import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
 import java.util.Base64

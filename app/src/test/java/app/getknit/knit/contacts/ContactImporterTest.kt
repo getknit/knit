@@ -40,7 +40,7 @@ class ContactImporterTest {
     private class Party(
         seed: Int,
     ) {
-        val signing = Ed25519Sign.KeyPair.newKeyPairFromSeed(ByteArray(32) { ((it * 7 + seed) and 0xFF).toByte() })
+        val signing: Ed25519Sign.KeyPair = Ed25519Sign.KeyPair.newKeyPairFromSeed(ByteArray(32) { ((it * 7 + seed) and 0xFF).toByte() })
         val bundle =
             PublicKeyBundle.fromRaw(
                 signing.publicKey,

@@ -146,7 +146,7 @@ interface CallDirect {
 
     /** No direct leg, ever: a build or a test without the radio. */
     object None : CallDirect {
-        private val none = MutableStateFlow<DirectLink?>(null)
+        private val noLink = MutableStateFlow<DirectLink?>(null)
 
         override suspend fun invite(
             callId: String,
@@ -189,6 +189,6 @@ interface CallDirect {
 
         override val inbound: Flow<LaneEvent> = emptyFlow()
 
-        override val link: StateFlow<DirectLink?> = none.asStateFlow()
+        override val link: StateFlow<DirectLink?> = noLink.asStateFlow()
     }
 }

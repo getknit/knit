@@ -102,11 +102,11 @@ class SqlCipherKeyTest {
         ): SqlCipherKey.KeyedFile {
             val form = if (key.contentEquals(passphrase)) Key.PASSPHRASE else Key.RAW
             tried += form
-            if (form !in opens) throw IllegalStateException("file is not a database")
+            if (form !in opens) error("file is not a database")
             return object : SqlCipherKey.KeyedFile {
                 // A copy: upgrade wipes its raw-key array once the rekey returns.
-                override fun rekey(key: ByteArray) {
-                    rekeys += key.copyOf()
+                override fun rekey(newKey: ByteArray) {
+                    rekeys += newKey.copyOf()
                 }
 
                 override fun close() {

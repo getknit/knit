@@ -101,7 +101,7 @@ class KeyExchangeTest {
     @Test
     fun wantEmitsSignedPointToPointRequestForMissingKey() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.transport.connect(n.transport)
@@ -139,7 +139,7 @@ class KeyExchangeTest {
     @Test
     fun selfAndAlreadyHeldKeysAreNotRequested() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.transport.connect(n.transport)
@@ -158,7 +158,7 @@ class KeyExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             // Topology: a — b — c. b holds a's profile (it's a's direct neighbor); c, two hops from a, is
             // missing a's key — the exact field gap this recovers.
-            var clock = 0L
+            val clock = 0L
             val a = Node(A, backgroundScope) { clock }
             val b = Node("b", backgroundScope) { clock }
             val c = Node("c", backgroundScope) { clock }
@@ -180,7 +180,7 @@ class KeyExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             // a — b — c again, but b has restarted since it pinned a: nothing in its cache, only the signed
             // frame its pin came from. c's request is answered from there, and b asks nobody else for it.
-            var clock = 0L
+            val clock = 0L
             val a = Node(A, backgroundScope) { clock }
             val b = Node("b", backgroundScope, stored = mapOf(A to profileWire(A, "KEY_A"))) { clock }
             val c = Node("c", backgroundScope) { clock }
@@ -199,7 +199,7 @@ class KeyExchangeTest {
     @Test
     fun serveKeyHandsTheStoredProfileOverPointToPointAndNothingWhenNoneIsHeld() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val b = Node("b", backgroundScope, stored = mapOf(A to profileWire(A, "KEY_A"))) { clock }
             val c = Node("c", backgroundScope) { clock }
             b.transport.connect(c.transport)
@@ -220,7 +220,7 @@ class KeyExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             // Topology: a — b — c — d. Only b holds a's profile; d (three hops away, via c which also lacks it)
             // recovers it through the same hop-by-hop recursion as a blob pull.
-            var clock = 0L
+            val clock = 0L
             val a = Node(A, backgroundScope) { clock }
             val b = Node("b", backgroundScope) { clock }
             val c = Node("c", backgroundScope) { clock }
@@ -244,7 +244,7 @@ class KeyExchangeTest {
     @Test
     fun newNeighborIsAskedForEveryOutstandingMissingKey() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.start(backgroundScope)
@@ -264,7 +264,7 @@ class KeyExchangeTest {
     @Test
     fun missingGlobalCapEvictsOldestFirst() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope, maxMissing = 2) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.start(backgroundScope)
@@ -320,7 +320,7 @@ class KeyExchangeTest {
     @Test
     fun newNeighborBatchIsChunkedUnderThePayloadLimit() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope, maxIdsPerReq = 2) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.start(backgroundScope)
@@ -345,7 +345,7 @@ class KeyExchangeTest {
     @Test
     fun retryMissingChunksBatches() =
         runTest(UnconfinedTestDispatcher()) {
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope, maxIdsPerReq = 2) { clock }
             val n = Node("n", backgroundScope) { clock }
             r.start(backgroundScope)
@@ -368,7 +368,7 @@ class KeyExchangeTest {
     fun onRequestCapsInboundIds() =
         runTest(UnconfinedTestDispatcher()) {
             // A hostile peer sends more ids than we'll process; only the first maxRequestIds are recursed.
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope, maxRequestIds = 2) { clock }
             val holder = Node("holder", backgroundScope) { clock }
             r.transport.connect(holder.transport)
@@ -391,7 +391,7 @@ class KeyExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             // Raw peers (no KeyExchange/router) so r's recursive want() doesn't loop back and re-populate the
             // evicted wanters key — we only observe what r serves once each profile is pinned.
-            var clock = 0L
+            val clock = 0L
             val r = Node("r", backgroundScope, maxWanters = 2) { clock }
             r.start(backgroundScope)
             val peers =

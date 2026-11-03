@@ -30,8 +30,8 @@ import kotlinx.coroutines.flow.map
  * for no measurable saving. The singleton exists to share the *derivation*, not a subscription.
  */
 class RelayStatusRepository(
-    private val settings: SettingsStore,
-    private val mesh: MeshController,
+    settings: SettingsStore,
+    mesh: MeshController,
 ) {
     /**
      * Live per-spool status, re-read on a slow ticker. Empty whenever the plane is parked.

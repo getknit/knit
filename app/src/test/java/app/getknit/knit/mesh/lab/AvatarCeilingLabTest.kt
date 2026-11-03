@@ -102,7 +102,7 @@ class AvatarCeilingLabTest {
     ) = holder.transport.files.count { it == "${to.nodeId} ATTACHMENT $hash" }
 
     /** Why [holder] sent Bob more than one copy: Bob's asks to it, its sends, Bob's marks and every line naming [hash]. */
-    private suspend fun copyState(
+    private fun copyState(
         m: Mesh,
         holder: LabNode,
         hash: String,

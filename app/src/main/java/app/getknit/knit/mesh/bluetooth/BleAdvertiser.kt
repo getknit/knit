@@ -59,7 +59,7 @@ internal class BleAdvertiser(
     private val onStartStatus: (Int) -> Unit = {},
     // Every enable outcome the stack reports for the live set, asked for or not: the stack's own re-enable after a
     // connection to the set, and each [reassert]. `enabled` false is a disable nobody here asked for.
-    private val onEnableStatus: (enabled: Boolean, status: Int) -> Unit = { _, _ -> },
+    onEnableStatus: (enabled: Boolean, status: Int) -> Unit = { _, _ -> },
     // An interval change ([setInterval]) the stack would not make: the interval asked for and the failing step's status.
     // The set stays on its old interval, and [setInterval] has to be asked again to try once more.
     private val onIntervalRefused: (interval: Int, status: Int) -> Unit = { _, _ -> },

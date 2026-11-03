@@ -224,7 +224,7 @@ internal class GroupWorld(
         actor: String,
         at: Long,
     ): Map<String, TranscriptFrame> {
-        check(roots[actor]?.root != null) { "$actor holds no root to gossip" }
+        checkNotNull(roots[actor]?.root) { "$actor holds no root to gossip" }
         val seeds = t.party(actor).groupSessions.currentSeeds(groupId)
         return checkNotNull(held[actor]).members.filter { it != actor }.associateWith {
             check(floorOpen(actor, it, at)) { "$actor's seed floor toward $it is closed: a scenario may not cross it" }

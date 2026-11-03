@@ -30,7 +30,7 @@ class DirectWifiTest {
             assertTrue(GroupCredentials.isValid(minted.ssid, minted.passphrase))
             assertTrue(GroupCredentials.isOurs(minted.ssid))
             assertEquals(24, minted.passphrase.length)
-            assertTrue(minted.passphrase, minted.passphrase.all { it.isLetterOrDigit() && it.code < 128 })
+            assertTrue(minted.passphrase, minted.passphrase.all { c -> c.isLetterOrDigit() && c.code < 128 })
         }
     }
 

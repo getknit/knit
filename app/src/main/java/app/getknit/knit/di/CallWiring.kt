@@ -187,13 +187,13 @@ private fun callGraph(): Module =
                 context,
                 peers = { get() },
                 scope = get<CoroutineScope>(),
-                log = { Log.i(TAG, it) },
+                log = { line -> Log.i(TAG, line) },
                 onAnswered = { CallService.startAnswered(context) },
             )
         }
         single<SystemCalls> { get<TelecomCalls>() }
         single<CallControl> { get<CallManager>() }
-        single { SystemCallSync(calls = get(), system = get(), scope = get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+        single { SystemCallSync(calls = get(), system = get(), scope = get<CoroutineScope>(), log = { line -> Log.i(TAG, line) }) }
         // C-3.13-12 (ADR 2026-10.kw29): which microphone path a call, live or walkie, records from — the fallback on a
         // generic system image over an older vendor, or once a call here captured only zeros. Read from the store on the
         // app scope; until then, the image's own answer.
@@ -264,7 +264,7 @@ private fun Module.recordGraph() {
             messages = { get<MessageRepository>() },
             selfId = { get<Identity>().nodeId() },
             scope = get<CoroutineScope>(),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
     single { CallFaces(androidContext(), peers = { get() }, blobs = { get() }, theme = { get() }) }
@@ -305,7 +305,7 @@ private fun Module.liveGraph() {
     // C-3.13-14: the caller's ringback, busy and end tones, which the system plays none of for a self-managed call.
     single {
         val scope = get<CoroutineScope>()
-        CallToneSync(calls = get(), player = ToneGeneratorPlayer(scope, log = { Log.w(TAG, it) }), scope = scope)
+        CallToneSync(calls = get(), player = ToneGeneratorPlayer(scope, log = { line -> Log.w(TAG, line) }), scope = scope)
     }
     // §3.10 (ADR 2026-10.kxnw): a call between neighbours rides a Wi-Fi Direct group, on the radio the transfer
     // shares through one lease. "Directly linked" is the transfer's own gate, a mesh neighbour now.
@@ -320,7 +320,7 @@ private fun Module.liveGraph() {
             // API 29-32 refuses Wi-Fi Direct to an app off screen; 33+ gates it on NEARBY_WIFI_DEVICES alone.
             mayJoinWhileRinging = { Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU || get<AppVisibility>().visible.value },
             enabled = { !directOff.value },
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
             field = fieldLog(),
         )
     }
@@ -330,7 +330,7 @@ private fun Module.liveGraph() {
             get<CoroutineScope>(),
             link = get<DirectCallPath>().link,
             capture = get(),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
             // C-3.7-5: a live call's captions, where speech is wired.
             captions = if (STT_WIRED) get<CallCaptioner>() else null,
             field = fieldLog(),
@@ -345,7 +345,7 @@ private fun Module.liveGraph() {
             read = { reconnecting -> get<WebRtcCallMedia>().fieldSample(reconnecting) },
             field = fieldLog(),
             scope = get<CoroutineScope>(),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
     // C-7.6-51 to C-7.6-54: the ranking of the TURN servers the spools name, measured by STUN Binding on every network
@@ -358,7 +358,7 @@ private fun Module.liveGraph() {
         val settingUp =
             get<CallManager>()
                 .state
-                .map { it?.phase in SETTING_UP }
+                .map { call -> call?.phase in SETTING_UP }
                 .stateIn(scope, SharingStarted.Eagerly, false)
         TurnMeasure(
             ranking = get(),
@@ -367,7 +367,7 @@ private fun Module.liveGraph() {
             routeChanges = get<InternetGate>().routeChanges,
             callWaiting = settingUp,
             scope = scope,
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
     // The Calls screen's Test (C-3.14-5): the same factory, and refused while a call holds it.
@@ -378,7 +378,7 @@ private fun Module.liveGraph() {
         val relayAll =
             get<SettingsStore>()
                 .callsRelayAll
-                .map<Boolean, Boolean?> { it }
+                .map<Boolean, Boolean?> { on -> on }
                 .stateIn(get<CoroutineScope>(), SharingStarted.Eagerly, null)
         RelayAllCalls { relayAll.value ?: true }
     }
@@ -407,7 +407,7 @@ private fun Module.liveGraph() {
         val ownIce =
             get<OwnIceStore>()
                 .ownIce
-                .map { it.effective() }
+                .map { ice -> ice.effective() }
                 .stateIn(get<CoroutineScope>(), SharingStarted.Eagerly, CustomIce.NONE)
         OverridingTurnSource(custom = { ownIce.value }, spool = spool)
     }
@@ -426,10 +426,10 @@ private fun Module.speechGraph() {
             get<AndroidInternetGate>(),
             get<CoroutineScope>(),
             keepAlive = { SttDownloadService.start(androidContext()) },
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
-    single { MoonshineSpeech(get<SttModelStore>(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+    single { MoonshineSpeech(get<SttModelStore>(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { line -> Log.i(TAG, line) }) }
     // The names a call is likely to carry, for the model to listen for: read as a call begins, never logged.
     single {
         SttKeytermFeed(
@@ -440,7 +440,7 @@ private fun Module.speechGraph() {
             messages = get(),
             settings = get(),
             scope = get<CoroutineScope>(),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
     if (LIVE_CALLS_WIRED) {
@@ -457,7 +457,7 @@ private fun Module.speechGraph() {
                 enabled = { on.value },
                 // One model call at a time, in the order the audio came, off the media's audio thread.
                 dispatcher = Dispatchers.Default.limitedParallelism(1),
-                log = { Log.i(TAG, it) },
+                log = { line -> Log.i(TAG, line) },
             )
         }
     }
@@ -478,7 +478,7 @@ private fun Module.speechGraph() {
             callActive = { calls.state.value?.let { it.phase != CallPhase.Ended } == true },
             scope = get<CoroutineScope>(),
             dispatcher = Dispatchers.Default.limitedParallelism(1),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
         )
     }
     single<VoiceNoteSpeech> {
@@ -518,7 +518,7 @@ private fun Module.speechGraph() {
                         "gain" to if (line.mine) get<TalkRecorder>().applyGain else null,
                     )
                 },
-                log = { Log.i(TAG, it) },
+                log = { line -> Log.i(TAG, line) },
             )
         }
         single {
@@ -531,7 +531,7 @@ private fun Module.speechGraph() {
                 enabled = { on.value },
                 // One model call at a time, in the order the audio came, off the player's and the recorder's threads.
                 dispatcher = Dispatchers.Default.limitedParallelism(1),
-                log = { Log.i(TAG, it) },
+                log = { line -> Log.i(TAG, line) },
                 clips = get<WalkieClipFiles>(),
             )
         }
@@ -560,7 +560,7 @@ private fun Module.walkieGraph() {
                     ?: { peerId, chunk, peerTicketed, castToo -> get<MeshManager>().sendCallTalk(peerId, chunk, peerTicketed, castToo) },
             links = talkLinks(),
             scope = get<CoroutineScope>(),
-            log = { Log.i(TAG, it) },
+            log = { line -> Log.i(TAG, line) },
             // A burst is spoken into the headset that has the call (§3.13), else the phone's own microphone.
             headset = {
                 get<SystemCallSync>()
@@ -570,7 +570,7 @@ private fun Module.walkieGraph() {
             },
             transcript = if (STT_WIRED) get<WalkieTranscriber>() else null,
             field = fieldLog(),
-            cue = walkieCue(ToneGeneratorPlayer(get<CoroutineScope>(), log = { Log.w(TAG, it) })),
+            cue = walkieCue(ToneGeneratorPlayer(get<CoroutineScope>(), log = { line -> Log.w(TAG, line) })),
         )
     }
 }

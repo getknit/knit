@@ -76,7 +76,7 @@ private fun isObfuscated(): Boolean = CrashEnvironment::class.java.name != "app.
 /** `ro.board.platform` has no public API; `SOC_*` is the closest public equivalent, and only from API 31. */
 private fun socName(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        listOf(Build.SOC_MANUFACTURER, Build.SOC_MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
+        listOf<String?>(Build.SOC_MANUFACTURER, Build.SOC_MODEL).filter { !it.isNullOrBlank() }.joinToString(" ")
     } else {
         ""
     }

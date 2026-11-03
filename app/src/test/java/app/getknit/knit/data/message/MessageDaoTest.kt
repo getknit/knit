@@ -335,9 +335,9 @@ class MessageDaoTest : RoomDbTest() {
             dao.upsert(msg("b", conversationId = "t", sentAt = 9L))
             dao.upsert(msg("c", conversationId = "u", sentAt = 3L))
             val byId = dao.conversationActivity().associateBy { it.conversationId }
-            assertEquals(2, byId["t"]!!.count)
-            assertEquals(9L, byId["t"]!!.lastSentAt)
-            assertEquals(1, byId["u"]!!.count)
+            assertEquals(2, byId.getValue("t").count)
+            assertEquals(9L, byId.getValue("t").lastSentAt)
+            assertEquals(1, byId.getValue("u").count)
         }
 
     @Suppress("LongParameterList") // a test data builder — optional params with defaults, not a real API surface

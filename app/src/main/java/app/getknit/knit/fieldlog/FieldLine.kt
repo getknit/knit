@@ -1,6 +1,7 @@
 package app.getknit.knit.fieldlog
 
 import java.security.SecureRandom
+import java.util.Locale
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -30,7 +31,7 @@ class Pseudonyms(
             val digest = mac.doFinal(key.toByteArray(Charsets.UTF_8))
             buildString(prefix.length + HEX_CHARS) {
                 append(prefix)
-                for (i in 0 until HEX_CHARS / 2) append("%02x".format(digest[i].toInt() and BYTE_MASK))
+                for (i in 0 until HEX_CHARS / 2) append("%02x".format(Locale.ROOT, digest[i].toInt() and BYTE_MASK))
             }
         }
 

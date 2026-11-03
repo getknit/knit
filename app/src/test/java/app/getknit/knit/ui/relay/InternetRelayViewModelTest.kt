@@ -93,7 +93,7 @@ class InternetRelayViewModelTest {
         every { settings.disabledSpoolUrls } returns flowOf(emptySet())
         every { relayStatus.statuses } returns flowOf(emptyList())
         every { commons.observeAll() } returns rooms
-        coEvery { commons.find(any()) } answers { rooms.value.firstOrNull { it.conversationId == firstArg() }?.toRoom() }
+        coEvery { commons.find(any()) } answers { rooms.value.firstOrNull { room -> room.conversationId == firstArg() }?.toRoom() }
         coEvery { applier.preview(any(), any()) } returns preview
     }
 

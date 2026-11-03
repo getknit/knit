@@ -76,6 +76,7 @@ import app.getknit.knit.ui.preview.KnitPreview
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Base64
+import java.util.Locale
 
 // The video bubble's width, matched to a picture's so a thread of both lines up; its height follows the video's own
 // aspect, capped so a portrait clip does not fill the screen (ADR 2026-10.hmfe).
@@ -91,7 +92,7 @@ private const val TAG = "VideoBubbles"
 /** "0:42" / "1:01" for a duration in milliseconds: what a video badge and the player's clock read. */
 internal fun formatVideoDuration(ms: Long): String {
     val seconds = (ms.coerceAtLeast(0) + MS_PER_S / 2) / MS_PER_S
-    return "%d:%02d".format(seconds / S_PER_MIN, seconds % S_PER_MIN)
+    return "%d:%02d".format(Locale.getDefault(), seconds / S_PER_MIN, seconds % S_PER_MIN)
 }
 
 /** The width-to-height ratio a video's bubble is drawn at: its own when it says, else portrait. */

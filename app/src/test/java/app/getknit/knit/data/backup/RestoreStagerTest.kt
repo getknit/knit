@@ -83,14 +83,14 @@ class RestoreStagerTest {
         val file = File(dir, fileName)
         return mockk {
             every { store(any(), any()) } answers {
-                wrapThrows?.let { throw it }
+                wrapThrows?.let { e -> throw e }
                 file.writeBytes(byteArrayOf(WRAP_TAG) + firstArg<ByteArray>())
             }
             every { read() } answers {
                 val plain = file.readBytes().copyOfRange(1, file.length().toInt())
                 when {
                     readBackRefused -> Unwrapped.Unavailable(GeneralSecurityException("keystore unavailable"))
-                    wrapReadsBackWrong -> Unwrapped.Present(plain.also { it[0] = (it[0] + 1).toByte() })
+                    wrapReadsBackWrong -> Unwrapped.Present(plain.also { bytes -> bytes[0] = (bytes[0] + 1).toByte() })
                     else -> Unwrapped.Present(plain)
                 }
             }
@@ -339,7 +339,7 @@ class RestoreStagerTest {
             var stored: ByteArray? = null
             val secret =
                 mockk<KeystoreSecret> {
-                    every { read() } answers { stored?.let { Unwrapped.Present(it.copyOf()) } ?: Unwrapped.Absent }
+                    every { read() } answers { stored?.let { bytes -> Unwrapped.Present(bytes.copyOf()) } ?: Unwrapped.Absent }
                     every { store(any(), any()) } answers { stored = firstArg<ByteArray>().copyOf() }
                 }
             IdentityKeyStore(secret).keys()

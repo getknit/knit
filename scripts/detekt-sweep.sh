@@ -41,8 +41,8 @@ trap 'rm -f "$marker"' EXIT
 log=build/reports/detekt-sweep.log
 mkdir -p build/reports
 if ! $reuse; then
-  # A report older than the run's start means its task never analysed; checked below. --continue so one variant's
-  # findings never stop the next from running.
+  # A report older than the run's start means its task never analysed, unless Gradle skipped it as up to date; checked
+  # below. --continue so one variant's findings never stop the next from running.
   touch "$marker"
   scripts/gradle-turn.sh ./gradlew "${tasks[@]}" "${props[@]}" --continue --console=plain >"$log" 2>&1 || true
 fi
@@ -51,7 +51,12 @@ stale=()
 files=()
 for r in "${reports[@]}"; do
   xml="${r%%:*}/build/reports/detekt/${r#*:}.xml"
-  if [[ ! -f "$xml" ]] || { ! $reuse && [[ ! "$xml" -nt "$marker" ]]; }; then
+  name="${r#*:}"
+  task=":${r%%:*}:detekt${name^}"
+  # A task Gradle skipped as UP-TO-DATE (or restored FROM-CACHE) left the report its unchanged inputs produce: current,
+  # though no newer than the marker. A clean variant is always skipped on the next run, since only failures rerun.
+  if [[ ! -f "$xml" ]] || { ! $reuse && [[ ! "$xml" -nt "$marker" ]] &&
+    ! grep -qxE "> Task ${task} (UP-TO-DATE|FROM-CACHE)" "$log"; }; then
     stale+=("$xml")
   else
     files+=("$xml")

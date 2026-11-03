@@ -288,6 +288,9 @@ internal object TranslateBridge : KoinComponent {
         out: File,
     ): JSONObject {
         engine.unload()
+        // The bench reads the native heap and PSS on either side of a load: collect the unloaded model first, or the
+        // "before" still holds it.
+        @Suppress("ExplicitGarbageCollectionCall")
         System.gc()
         val heapBefore = Debug.getNativeHeapAllocatedSize()
         val pssBefore = Debug.getPss()
@@ -309,7 +312,7 @@ internal object TranslateBridge : KoinComponent {
                         val detection = engine.detect(words)
                         val pick = LanguagePolicy.pick(detection, words)
                         val t0 = SystemClock.elapsedRealtime()
-                        val output = engine.translate(direction, line) ?: ""
+                        val output = engine.translate(direction, line).orEmpty()
                         val ms = SystemClock.elapsedRealtime() - t0
                         val kept = VerbatimSpans.spans(line).all { output.contains(it) }
                         val usable = TranslationCheck.usable(line, output)

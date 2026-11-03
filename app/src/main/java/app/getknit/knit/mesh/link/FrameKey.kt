@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.link
 
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import java.util.Locale
 
 /**
  * The per-frame dedup key the Bluetooth plane's carriers share — the side channel's heard set
@@ -29,6 +30,6 @@ object FrameKey {
 
     private fun ofSig(sig: ByteArray): String {
         val n = minOf(SIG_KEY_BYTES, sig.size)
-        return buildString(n * 2) { for (i in 0 until n) append("%02x".format(sig[i])) }
+        return buildString(n * 2) { for (i in 0 until n) append("%02x".format(Locale.ROOT, sig[i])) }
     }
 }

@@ -148,7 +148,7 @@ class BackupViewModel(
     }
 
     fun cancelRestore() {
-        when (val phase = _restore.value) {
+        when (_restore.value) {
             is RestorePhase.Staging, RestorePhase.Restarting -> return
             is RestorePhase.Staged -> stager.discard()
             else -> Unit

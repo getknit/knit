@@ -40,6 +40,7 @@ import org.koin.core.Koin
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
@@ -99,7 +100,7 @@ object DemoCalls {
             "c=IN IP4 0.0.0.0",
             "a=mid:0",
             "a=setup:actpass",
-            "a=fingerprint:sha-256 " + (1..32).joinToString(":") { "%02X".format(it * 7) },
+            "a=fingerprint:sha-256 " + (1..32).joinToString(":") { "%02X".format(Locale.ROOT, it * 7) },
             "a=rtpmap:111 opus/48000/2",
         ).joinToString("\r\n", postfix = "\r\n")
 

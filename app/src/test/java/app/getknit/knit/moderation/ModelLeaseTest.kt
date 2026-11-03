@@ -34,7 +34,7 @@ class ModelLeaseTest {
         scope: CoroutineScope,
         clock: () -> Long,
         idleMs: Long,
-        private val loader: suspend () -> String? = { "engine" },
+        loader: suspend () -> String? = { "engine" },
     ) {
         var loads = 0
         val closed = mutableListOf<String>()
@@ -58,7 +58,7 @@ class ModelLeaseTest {
     fun `loads once and hands the same engine to every use`() =
         runTest {
             val rig = rig()
-            val seen = List(3) { rig.lease.use { it } }
+            val seen = List(3) { rig.lease.use { engine -> engine } }
             assertEquals(listOf("engine", "engine", "engine"), seen)
             assertEquals(1, rig.loads)
             assertTrue(rig.lease.isLoaded)

@@ -233,7 +233,7 @@ class IdentityKeyStore(
         val pair = RatchetCrypto.generateKeyPair()
         val nextId = (state.stored.prekeys?.maxOfOrNull { it.id } ?: 0) + 1
         val fresh = StoredPrekey(id = nextId, priv = pair.priv, createdAt = now)
-        val kept = ((state.stored.prekeys ?: emptyList()) + fresh).sortedByDescending { it.id }.take(SPK_KEEP)
+        val kept = (state.stored.prekeys.orEmpty() + fresh).sortedByDescending { it.id }.take(SPK_KEEP)
         val next = Loaded(state.keys, Stored(state.stored.hybridPriv, state.stored.sigPriv, kept))
         persist(next)
         cached = next

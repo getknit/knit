@@ -55,8 +55,8 @@ class FakeDirectWifi(
 
     /** Which loopback family the receiver dials — the stand-in for a client that took an IPv6 link-local. */
     var joinOverIpv6 = false
-    val released = Collections.synchronizedList(mutableListOf<Unit>())
-    val swept = Collections.synchronizedList(mutableListOf<Unit>())
+    val released: MutableList<Unit> = Collections.synchronizedList(mutableListOf())
+    val swept: MutableList<Unit> = Collections.synchronizedList(mutableListOf())
 
     override fun refusal(): TransferRefusal? = refusal
 
@@ -80,7 +80,7 @@ class FakeDirectWifi(
     }
 
     /** Whether each join asked for an IPv4 lease, in order. */
-    val joinIpv4 = Collections.synchronizedList(mutableListOf<Boolean>())
+    val joinIpv4: MutableList<Boolean> = Collections.synchronizedList(mutableListOf())
 
     override suspend fun join(
         credentials: GroupCredentials,
@@ -196,7 +196,7 @@ class FakeTransferFiles : TransferFiles {
     }
 
     val sources = mutableMapOf<String, Entry>()
-    val sinks = Collections.synchronizedList(mutableListOf<Sink>())
+    val sinks: MutableList<Sink> = Collections.synchronizedList(mutableListOf())
     var free = Long.MAX_VALUE
     var sinkFails = false
 
@@ -392,7 +392,7 @@ class FakeTransferSignals(
 
     /** What the peer receives in place of each signal sent: a sender's own build writing its fields differently. */
     var rewrite: (TransferPayload) -> TransferPayload = { it }
-    val sent = Collections.synchronizedList(mutableListOf<TransferPayload>())
+    val sent: MutableList<TransferPayload> = Collections.synchronizedList(mutableListOf())
 
     override suspend fun sendTransferSignal(
         peerId: String,

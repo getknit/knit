@@ -1,7 +1,6 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.settings.CloneWatchSettings
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals

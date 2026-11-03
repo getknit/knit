@@ -17,8 +17,8 @@ import kotlinx.coroutines.flow.flowOf
  * keep three collectors alive per open chat for a value that cannot change.
  */
 internal class LoraStatusRepository(
-    private val settings: SettingsStore,
-    private val lora: LoraPlaneStatus,
+    settings: SettingsStore,
+    lora: LoraPlaneStatus,
 ) {
     /** The flattened facts the chat header, the DM notice and the composer hint read. */
     val facts: Flow<LoraFacts> =

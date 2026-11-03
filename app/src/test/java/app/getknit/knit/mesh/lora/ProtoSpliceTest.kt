@@ -17,8 +17,6 @@ class ProtoSpliceTest {
             .map { it.toInt(16).toByte() }
             .toByteArray()
 
-    private fun ByteArray.hex(): String = joinToString(" ") { "%02X".format(it) }
-
     @Test
     fun replacesAnExistingFieldInPlace() {
         val raw = ProtoWriter().varint(1, 2).varint(7, 900).toByteArray()

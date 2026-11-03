@@ -47,6 +47,7 @@ import app.getknit.knit.ui.shareText
 import app.getknit.knit.ui.theme.knitColors
 import app.getknit.knit.ui.util.countText
 import kotlinx.coroutines.flow.Flow
+import java.util.Locale
 
 // What the relay list and a relay's own screen both say about one relay, so neither re-derives it.
 
@@ -73,7 +74,7 @@ internal fun RelayEventsEffect(
         events.collect { event ->
             when (event) {
                 is InternetRelayEvent.ShareInvite -> {
-                    shareText(context, shareMessage.format(event.url), shareTitle)
+                    shareText(context, shareMessage.format(Locale.getDefault(), event.url), shareTitle)
                 }
 
                 is InternetRelayEvent.CopyInvite -> {
@@ -86,7 +87,7 @@ internal fun RelayEventsEffect(
                 }
 
                 is InternetRelayEvent.InviteApplied -> {
-                    snackbarHostState.showSnackbar(appliedMessage.format(event.host))
+                    snackbarHostState.showSnackbar(appliedMessage.format(Locale.getDefault(), event.host))
                 }
 
                 is InternetRelayEvent.Moved -> {

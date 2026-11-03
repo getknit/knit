@@ -290,6 +290,7 @@ internal object FrameTranscoder {
     )
 
     /** One walk over one source buffer: the scanning both directions share. */
+    @Suppress("AbstractClassCanBeConcreteClass") // a base for the two walks, never a walk of its own
     private abstract class Walk(
         protected val src: ByteArray,
     ) {

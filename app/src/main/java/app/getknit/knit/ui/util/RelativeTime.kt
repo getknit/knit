@@ -62,11 +62,11 @@ fun compactTimeAgo(
         }
 
         diff < HOUR_MS -> {
-            labels.minutes.format(diff / MINUTE_MS)
+            labels.minutes.format(Locale.getDefault(), diff / MINUTE_MS)
         }
 
         diff < DAY_MS -> {
-            labels.hours.format(diff / HOUR_MS)
+            labels.hours.format(Locale.getDefault(), diff / HOUR_MS)
         }
 
         else -> {

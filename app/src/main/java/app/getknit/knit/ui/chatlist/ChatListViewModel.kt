@@ -1,6 +1,5 @@
 package app.getknit.knit.ui.chatlist
 
-import android.annotation.SuppressLint
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -171,14 +170,13 @@ class ChatListViewModel(
     // `advanceUntilIdle()` could never let go idle.
     relayFacts: Flow<RelayFacts>,
     loraFacts: Flow<LoraFacts>,
-    // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity.
-    @field:SuppressLint("StaticFieldLeak") private val context: Context,
+    context: Context,
     // The joined commons (§7.4): a row per room from the join on, and the leave behind "delete". Nullable and
     // last so the positional test rigs still compile; production always passes it.
     private val commons: CommonsRepository? = null,
     // Reactions to our own messages, for the row a reaction heads (ADR 2026-10.59fu). Nullable and last for the
     // same reason as [commons].
-    private val reactions: ReactionRepository? = null,
+    reactions: ReactionRepository? = null,
     // Settings › Chats › Translation, which shows a translation the reader made in its message's place; never on in a
     // build without translation (TRANSLATE_WIRED). A parameter so a test can turn it on in either build.
     translationOn: Flow<Boolean> = if (TRANSLATE_WIRED) settings.translationEnabled else flowOf(false),

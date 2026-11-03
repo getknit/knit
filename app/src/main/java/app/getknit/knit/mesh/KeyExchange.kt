@@ -60,8 +60,8 @@ class KeyExchange(
     private val requestCooldownMs: Long = REQUEST_COOLDOWN_MS,
     // Bounds (all overridable so tests can exercise eviction with small values, like PendingInbound).
     private val missingTtlMs: Long = MISSING_TTL_MS,
-    private val maxMissing: Int = MAX_MISSING,
-    private val maxWanters: Int = MAX_WANTERS,
+    maxMissing: Int = MAX_MISSING,
+    maxWanters: Int = MAX_WANTERS,
     private val maxIdsPerReq: Int = MAX_IDS_PER_REQ,
     private val maxRequestIds: Int = MAX_REQUEST_IDS,
     // The signed profile frame a pinned peer's key came from, as the pin store keeps it (`PeerRepository`), or
@@ -69,7 +69,7 @@ class KeyExchange(
     private val storedProfile: suspend (nodeId: String) -> WireEnvelope? = { null },
     // The longest `signed` a profile may have (`ForwardStore.maxProfileSignedBytes`, #234): none longer is cached or served.
     private val maxProfileSignedBytes: Int = ForwardRepository.DEFAULT_MAX_PROFILE_SIGNED_BYTES,
-    private val maxCached: Int = MAX_CACHED,
+    maxCached: Int = MAX_CACHED,
 ) {
     // Guards `cache`, `missing` and `wanters` (all mutated across coroutines). A dedicated monitor, not `this`, and
     // held only for short map ops — never across a suspend send (see the send-outside-the-lock methods below).

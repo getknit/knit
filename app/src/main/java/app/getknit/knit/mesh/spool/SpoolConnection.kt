@@ -782,7 +782,7 @@ class SpoolConnection(
         close(SpoolCloseCode.NORMAL, code)
     }
 
-    private suspend fun onHello(bytes: ByteArray) {
+    private fun onHello(bytes: ByteArray) {
         if (negotiated) return // a post-negotiation hello is in-band noise; ignore rather than tear down
         val hello = SpoolCodec.decode<SpoolHello>(bytes)
         val theirMax = hello?.v ?: 0

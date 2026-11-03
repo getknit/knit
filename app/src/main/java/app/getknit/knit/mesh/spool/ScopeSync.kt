@@ -1703,7 +1703,7 @@ class ScopeSync(
          * commons goes first: it is what a private relay exists for, and the one scope nobody else can
          * carry for us.
          */
-        private suspend fun subscribe(
+        private fun subscribe(
             conn: SpoolConnection,
             wanted: List<Scope>,
         ) {

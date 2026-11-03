@@ -646,9 +646,10 @@ data class ChatUiState(
  * `AttachmentLabels.kt`, and the reply snippet lives in `ReplyFormatting.kt`. What is left needs the same
  * repositories, the same `viewModelScope` and the same one-shot event channel; splitting it would mean two
  * owners of one screen's state, which is the shape `MeshtasticSession` avoids for the same reason.
- * `TooManyFunctions` for the same reason: each public function is one action on that one screen.
+ * `TooManyFunctions` for the same reason: each public function is one action on that one screen, and
+ * `LongParameterList`: each constructor parameter is one collaborator Koin hands that screen.
  */
-@Suppress("LargeClass", "TooManyFunctions")
+@Suppress("LargeClass", "LongParameterList", "TooManyFunctions")
 class ChatViewModel(
     private val conversationId: String,
     private val messages: MessageRepository,
@@ -665,7 +666,7 @@ class ChatViewModel(
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
     private val blobs: BlobRepository,
-    private val imageScreening: ImageScreeningService,
+    imageScreening: ImageScreeningService,
     private val gallerySaver: GallerySaver,
     // App-scoped on purpose: any number of voice-note bubbles can be on screen and only one may sound, so
     // arbitration can't live in a per-screen ViewModel.
@@ -683,9 +684,9 @@ class ChatViewModel(
     // Flow<RelayFacts> and nothing else, and the production flow is an infinite poller — under a test's
     // virtual clock its `delay` is instant, so a test that drives this VM with `advanceUntilIdle()` could
     // never reach idle. Taking the flow lets a test supply a finite one.
-    private val relayFacts: Flow<RelayFacts>,
+    relayFacts: Flow<RelayFacts>,
     // The LoRa plane's facts, the same way (a pushed flow in production, but a test still supplies its own).
-    private val loraFacts: Flow<LoraFacts>,
+    loraFacts: Flow<LoraFacts>,
     // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity.
     @field:SuppressLint("StaticFieldLeak") private val context: Context,
     // Direct Wi-Fi transfers: the app-wide state machine whose live states overlay this thread's records.
@@ -1223,11 +1224,11 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
-        calls?.takeIf { it.walkieEnabled }?.let { calls ->
+        calls?.takeIf { it.walkieEnabled }?.let { walkie ->
             viewModelScope.launch {
                 chatForeground.collectLatest { foreground ->
                     while (foreground) {
-                        autoMeshFirst.value = calls.prefersWalkie(conversationId)
+                        autoMeshFirst.value = walkie.prefersWalkie(conversationId)
                         delay(MESH_CALL_RECHECK_MS)
                     }
                 }
@@ -1240,9 +1241,10 @@ class ChatViewModel(
         // the table does not re-walk the thread.
         viewModelScope.launch {
             combine(windowed.filterNotNull(), blobState) { window, blob ->
-                window.messages
-                    .filter { it.attachmentMime == LinkPreviewBlob.MIME && it.attachmentHash != null && it.attachmentHash in blob.sizes }
-                    .map { it.attachmentHash!! to it.attachmentKey }
+                window.messages.mapNotNull { m ->
+                    val hash = m.attachmentHash
+                    if (m.attachmentMime == LinkPreviewBlob.MIME && hash != null && hash in blob.sizes) hash to m.attachmentKey else null
+                }
             }.distinctUntilChanged().collect { held ->
                 held.forEach { (hash, key) -> linkCards.ensure(hash, key) }
             }
@@ -3190,7 +3192,7 @@ class ChatViewModel(
      * The picker, unless this phone holds translation models the peer can take: then the sheet asks which first
      * (ADR 2026-11.ejn8). Read at the tap, so a model downloaded a moment ago is offered.
      */
-    private suspend fun chooseWhatToSend() {
+    private fun chooseWhatToSend() {
         val models = sendableModels()
         if (models.isEmpty()) _transferPickerNeeded.tryEmit(Unit) else _directSend.value = DirectSendSheet.Choose(models)
     }

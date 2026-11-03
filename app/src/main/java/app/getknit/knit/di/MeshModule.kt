@@ -213,7 +213,7 @@ val meshModule =
         single { MeshBlobStore(get(), get(), get(), File(androidContext().cacheDir, "blobtx")) }
         // The prefixes of attachments a link drop cut off, one store for both radios and BlobExchange (#116):
         // session-scoped (MeshManager.start purges it beside the blobtx copies), so no plaintext outlives a session.
-        single { PartialBlobs(File(androidContext().cacheDir, "blob-partials"), log = { Log.d("PartialBlobs", it) }) }
+        single { PartialBlobs(File(androidContext().cacheDir, "blob-partials"), log = { line -> Log.d("PartialBlobs", line) }) }
         // Demo-screenshot builds (debug-only, `-PseedDemo=true`) swap in a no-op transport that just reports a
         // few connected neighbors (so the UI looks "connected" against the seeded data); the seam returns null
         // in release, where the demo classes don't ship (see the per-variant di/DemoWiring). Production wraps
@@ -378,7 +378,7 @@ val meshModule =
                 spkPrivFor = identityKeys::prekeyPrivFor,
                 mutex = get(ratchetMutex),
                 transact = get(),
-                log = { Log.w("RatchetSessions", it) },
+                log = { line -> Log.w("RatchetSessions", line) },
                 onReclaimed = { metrics.onRatchetReclaimed() },
             )
         }
@@ -389,7 +389,12 @@ val meshModule =
         // All lazy — resolved only when BuildConfig.LORA_PLANE adds the child, so release never instantiates them.
         single<MeshtasticGattDialer> { MeshtasticGatt(androidContext(), get()) }
         single<MeshtasticLink> {
-            MeshtasticSession(dialer = get(), scope = get(), now = SystemClock::elapsedRealtime, log = { Log.d("MeshtasticLink", it) })
+            MeshtasticSession(
+                dialer = get(),
+                scope = get(),
+                now = SystemClock::elapsedRealtime,
+                log = { line -> Log.d("MeshtasticLink", line) },
+            )
         }
         // Demo builds fake the bonded list (no adapter on an emulator); production reads the real one.
         single<BoardDirectory> { demoBoardDirectoryOrNull() ?: BondedBoardDirectory(androidContext()) }
@@ -423,7 +428,7 @@ val meshModule =
                 // The compact-DM seams (ADR 2026-10.x9fa). Everything MeshManager owns is reached late, at call time, since
                 // the manager is built over the composite this transport is a child of.
                 crypto = get<LoraDirectSeal>(),
-                inbox = LoraDirectInbox { get<MeshManager>().deliverLoraDirect(it) },
+                inbox = LoraDirectInbox { frame -> get<MeshManager>().deliverLoraDirect(frame) },
                 source =
                     object : LoraDirectSource {
                         override suspend fun unackedTo(
@@ -435,10 +440,10 @@ val meshModule =
                     },
                 // Collected at start(), and only while a board is configured, when the manager exists.
                 boardMap = flow { emitAll(get<MeshManager>().loraBoardMap()) },
-                onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
+                onPublicPost = { post -> get<MeshPostSink>().onPublicPostHeard(post) },
                 // The bound board's node number and its CRC-bound key, persisted so the profile can advertise them
                 // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
-                onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.key) },
+                onBoardBound = { board -> settings.setLoraBoard(board.nodeNum.toLong(), board.key) },
                 // The destination's board acked one of our compact DMs: the chat's "reached their LoRa radio" (ADR 040's
                 // 2026-10-31 amendment). Runs on the plane's outcome collector; the manager's side is one lock-free update.
                 onRadioReached = { frameId, late -> get<MeshManager>().onLoraRadioReached(frameId, late) },
@@ -454,7 +459,7 @@ val meshModule =
                 // re-serve and never re-airs (ADR 2026-10.ug4a), while one typed before the plane was first resolved
                 // still goes.
                 processStartWall = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()),
-                log = { Log.d("LoraMeshTransport", it) },
+                log = { line -> Log.d("LoraMeshTransport", line) },
             )
         }
         // The Internet (spool) plane's socket factory. Cleartext `ws://` is a debug-build affordance for a
@@ -591,7 +596,7 @@ val meshModule =
                 stamp = modelGuardStamp(BuildConfig.VERSION_CODE, Build.FINGERPRINT.orEmpty()),
                 genericImage = get<DeviceImage>().genericOnOlderVendor,
                 elapsed = SystemClock::elapsedRealtime,
-                log = { Log.i("KnitTransfer", it) },
+                log = { line -> Log.i("KnitTransfer", line) },
             )
         }
         single { DirectWifiLease(AndroidDirectWifi(androidContext(), get<MeshTransport>()), gate = get<DirectHostGuard>()) }
@@ -607,7 +612,7 @@ val meshModule =
                 scope = get<CoroutineScope>(),
                 selfId = { get<Identity>().nodeId() },
                 peerNearby = { id -> get<MeshController>().neighbors.value.any { it.nodeId == id } },
-                log = { Log.i("KnitTransfer", it) },
+                log = { line -> Log.i("KnitTransfer", line) },
                 // Translation models over the same link (ADR 2026-11.ejn8), where the build packages translation.
                 models = getOrNull<TransferModels>(),
             )

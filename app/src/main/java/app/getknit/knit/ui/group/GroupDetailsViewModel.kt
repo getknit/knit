@@ -1,6 +1,5 @@
 package app.getknit.knit.ui.group
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
@@ -84,8 +83,7 @@ class GroupDetailsViewModel(
     private val avatars: AvatarStore,
     private val blobs: BlobRepository,
     identity: Identity,
-    // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity.
-    @field:SuppressLint("StaticFieldLeak") private val context: Context,
+    context: Context,
 ) : ViewModel() {
     private val me = MutableStateFlow<String?>(null)
 

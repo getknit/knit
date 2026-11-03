@@ -118,7 +118,7 @@ class LowPowerSource(
     power: Flow<PowerState>,
     scope: CoroutineScope,
     // Injected logger (the class stays Android-free): DI passes android.util.Log; tests default silent.
-    private val log: (String) -> Unit = {},
+    log: (String) -> Unit = {},
     // [LOW_POWER_OFFERED]; a parameter so the posture's rules stay testable while the mode is not offered.
     private val offered: Boolean = LOW_POWER_OFFERED,
 ) {

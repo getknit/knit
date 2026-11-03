@@ -71,7 +71,7 @@ class MessageRequestNotificationUiAutomatorTest : SeededUiAutomatorTest() {
     private fun openShadeAndFind(text: String): UiObject2? {
         repeat(SHADE_ATTEMPTS) {
             device.openNotification()
-            waitText(text, SHADE_POLL_MS)?.let { return it }
+            waitText(text, SHADE_POLL_MS)?.let { found -> return found }
         }
         return null
     }

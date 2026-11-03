@@ -22,8 +22,8 @@ class PeerBadges(
     rows: Flow<List<PeerBadgeEntity>>,
     scope: CoroutineScope,
     // Defaulted to the production pins: the DI passes this build's own list (`BadgeKeys.forBuild`).
-    private val keys: List<PinnedBadgeKey> = BadgeKeys.forBuild(debug = false),
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    keys: List<PinnedBadgeKey> = BadgeKeys.forBuild(debug = false),
+    clock: () -> Long = { System.currentTimeMillis() },
     private val maxSleepMs: Long = MAX_SLEEP_MS,
 ) {
     /** Each peer's verified badges in its own order, by node id; a peer with none is absent. */

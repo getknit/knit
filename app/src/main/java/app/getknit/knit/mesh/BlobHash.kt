@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * A blob's content address is the lowercase-hex SHA-256 of its bytes — exactly 64 hex characters.
@@ -17,7 +18,8 @@ private val BLOB_HASH_REGEX = Regex("^[0-9a-f]{64}$")
 fun isValidBlobHash(s: String): Boolean = BLOB_HASH_REGEX.matches(s)
 
 /** Lowercase-hex SHA-256 of [bytes] — the canonical content address used across the mesh blob layer. */
-fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
 
 /**
  * The extension a blob's short-lived transfer file gets, from its [mime].

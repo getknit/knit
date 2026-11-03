@@ -59,11 +59,11 @@ class RelayInviteApplierTest {
         coEvery { commons.roots() } answers { roots.toList() }
         coEvery { commons.find(any()) } answers
             {
-                roots.firstOrNull { it.conversationId == firstArg() }?.let {
+                roots.firstOrNull { root -> root.conversationId == firstArg() }?.let { root ->
                     CommonsRoom(
-                        it.conversationId,
-                        it.spoolUrl,
-                        it.secret,
+                        root.conversationId,
+                        root.spoolUrl,
+                        root.secret,
                         "Home",
                     )
                 }

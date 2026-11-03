@@ -117,14 +117,14 @@ class FieldLog(
         name: String,
         sample: (() -> List<FieldEvent>)?,
     ) {
-        if (sample == null) samplers.remove(name) else samplers[name] = sample
+        if (sample == null) samplers -= name else samplers[name] = sample
     }
 
     override fun follower(
         name: String,
         edges: (() -> Flow<FieldEvent>)?,
     ) {
-        if (edges == null) followers.remove(name) else followers[name] = edges
+        if (edges == null) followers -= name else followers[name] = edges
     }
 
     override fun record(event: FieldEvent) {
@@ -150,7 +150,9 @@ class FieldLog(
             is FieldEvent.BtDown -> {
                 event.also {
                     // Strangers who never come back would grow it for days: past the cap the oldest go.
-                    if (downAt.size >= MAX_DOWN_PEERS) downAt.entries.minByOrNull { it.value }?.let { downAt.remove(it.key) }
+                    if (downAt.size >= MAX_DOWN_PEERS) {
+                        downAt.entries.minByOrNull { entry -> entry.value }?.let { oldest -> downAt.remove(oldest.key) }
+                    }
                     downAt[event.peer] = at
                 }
             }

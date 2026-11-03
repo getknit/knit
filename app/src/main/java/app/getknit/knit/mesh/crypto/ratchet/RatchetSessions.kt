@@ -261,6 +261,7 @@ class RatchetSessions(
      * Returns false when the frame no longer opens (a concurrent delivery already consumed it, or
      * state moved on) — benign; the caller's exists/isNew gates make the visible outcome idempotent.
      */
+    @Suppress("LongParameterList") // peekOpen's frame inputs, which this re-opens under the lock, and the row write
     suspend fun commitOpen(
         selfNodeId: String,
         peerId: String,

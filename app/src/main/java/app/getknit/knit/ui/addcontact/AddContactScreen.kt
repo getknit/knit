@@ -68,6 +68,7 @@ import app.getknit.knit.ui.shareText
 import app.getknit.knit.ui.verify.EncryptionSection
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
+import java.util.Locale
 
 /**
  * "Add contact": the one screen that turns someone into a contact, whichever way they are reachable
@@ -121,7 +122,7 @@ fun AddContactScreen(
                 }
 
                 is AddContactEvent.Mismatch -> {
-                    snackbarHostState.showSnackbar(mismatchMessage.format(event.displayName))
+                    snackbarHostState.showSnackbar(mismatchMessage.format(Locale.getDefault(), event.displayName))
                 }
 
                 AddContactEvent.Invalid -> {
@@ -140,7 +141,7 @@ fun AddContactScreen(
                 }
 
                 is AddContactEvent.ShareLink -> {
-                    shareText(context, shareMessage.format(event.url), shareTitle)
+                    shareText(context, shareMessage.format(Locale.getDefault(), event.url), shareTitle)
                 }
 
                 is AddContactEvent.CopyLink -> {
@@ -149,7 +150,7 @@ fun AddContactScreen(
                 }
 
                 is AddContactEvent.RelayAdded -> {
-                    snackbarHostState.showSnackbar(relayAddedMessage.format(event.host))
+                    snackbarHostState.showSnackbar(relayAddedMessage.format(Locale.getDefault(), event.host))
                 }
 
                 AddContactEvent.RelayRefused -> {

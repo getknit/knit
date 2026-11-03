@@ -274,12 +274,12 @@ class MeshLab {
         lan: LabInternet.Lan? = null,
     ): LabNode {
         val started = System.nanoTime()
-        val board = air ?: boardsAir?.takeIf { board }
+        val boardAir = air ?: boardsAir?.takeIf { board }
         // A boards-everywhere run holds a DM's tick a second, not the field's 45 s: the scenarios' own waits are the lab's.
-        // Only on a node it gives a board (`board` is the shared air here): one built `board = false` is a plain node.
+        // Only on a node it gives a board (`boardAir` is the shared air here): one built `board = false` is a plain node.
         val held =
             if (air == null &&
-                board != null
+                boardAir != null
             ) {
                 limits.copy(dmAckHoldMs = minOf(limits.dmAckHoldMs, BOARDS_ACK_HOLD_MS))
             } else {
@@ -291,7 +291,7 @@ class MeshLab {
                 context,
                 File(dir, name).apply { mkdirs() },
                 held,
-                board,
+                boardAir,
                 spool,
                 spoolOptIn,
                 commons,
@@ -543,7 +543,7 @@ class MeshLab {
      * swallowed exception is visible nowhere else. Robolectric records every `Log` call per test.
      */
     fun report(nodes: List<LabNode>): String =
-        (chaos?.let { "$it\n" } ?: "") +
+        chaos?.let { "$it\n" }.orEmpty() +
             nodes.joinToString("\n") { it.metricsLine() } + "\n" +
             nodes.joinToString("\n") { n -> "  ${n.name} sent: ${n.transport.sent}" } + "\n" +
             "  warnings:\n" +
@@ -551,7 +551,7 @@ class MeshLab {
                 .getLogs()
                 .filter { it.type >= Log.WARN }
                 .takeLast(WARNINGS_KEPT)
-                .joinToString("\n") { "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" } ?: ""}" }
+                .joinToString("\n") { "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" }.orEmpty()}" }
 
     /**
      * The universal oracle, in four parts, each awaited (the thing under test is exactly whether it happens)
@@ -1361,7 +1361,7 @@ class LabNode internal constructor(
     private var secretBytes: ByteArray? = seedIdentity?.copyOf()
     private val secret =
         mockk<KeystoreSecret> {
-            every { read() } answers { secretBytes?.let { Unwrapped.Present(it.copyOf()) } ?: Unwrapped.Absent }
+            every { read() } answers { secretBytes?.let { bytes -> Unwrapped.Present(bytes.copyOf()) } ?: Unwrapped.Absent }
             every { store(any(), any()) } answers { secretBytes = firstArg<ByteArray>().copyOf() }
         }
     private val keyStore = IdentityKeyStore(secret)
@@ -2112,7 +2112,7 @@ class LabNode internal constructor(
                     .toList()
                     .joinAll()
             }
-        check(joined != null) { "$name: stopped session still running $SCOPE_JOIN_MS ms after the pause: ${job.children.toList()}" }
+        checkNotNull(joined) { "$name: stopped session still running $SCOPE_JOIN_MS ms after the pause: ${job.children.toList()}" }
         awaitPeersSettled(peers)
     }
 
@@ -2209,7 +2209,7 @@ class LabNode internal constructor(
                         job.cancelAndJoin()
                     }
                 }
-            check(joined != null) { "$name: session scope still running $SCOPE_JOIN_MS ms after cancel: ${job.children.toList()}" }
+            checkNotNull(joined) { "$name: session scope still running $SCOPE_JOIN_MS ms after cancel: ${job.children.toList()}" }
         }
         scope = null
         return linked
@@ -2262,7 +2262,7 @@ class LabNode internal constructor(
             "$name's profile edit was never published: version ${settings.profileVersion.first()}, " +
                 "stamp ${settings.profilePublishedAt.first()}, custody $held\n  warnings:\n" +
                 ShadowLog.getLogs().filter { it.type >= Log.WARN }.takeLast(MeshLab.WARNINGS_KEPT).joinToString("\n") {
-                    "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" } ?: ""}"
+                    "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" }.orEmpty()}"
                 }
         }
     }
@@ -2725,7 +2725,7 @@ class LabNode internal constructor(
     ): Boolean {
         val picked = attachments.ingestPicked(bytes, IMAGE_MIME)
         val attachment = (picked as? AttachmentStore.IngestResult.Success)?.ingested
-        check(attachment?.reuse != null) { "$name holds no identity for those bytes: $picked" }
+        checkNotNull(attachment?.reuse) { "$name holds no identity for those bytes: $picked" }
         val group = groupId?.let { checkNotNull(groups.find(it)) { "$name holds no group $it" }.toGroupInfo() }
         return spaced {
             manager.sendChat(

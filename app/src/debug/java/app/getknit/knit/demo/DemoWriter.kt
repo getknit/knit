@@ -41,6 +41,7 @@ import app.getknit.knit.ui.whatsnew.WhatsNew
 import kotlinx.coroutines.flow.first
 import org.koin.core.Koin
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * Shared write primitives for the demo builds: they persist a [DemoScenario]'s content through the same
@@ -234,7 +235,7 @@ class DemoWriter(
                     now - YOUR_MESH_SINCE_MS,
             )
         }
-        val strangers = (1..YOUR_MESH_STRANGERS).map { "stranger-%02d".format(it) }
+        val strangers = (1..YOUR_MESH_STRANGERS).map { "stranger-%02d".format(Locale.ROOT, it) }
         metPeers.recordMet(scenario.peers.map { nodeId(it.slot) } + strangers, now)
         repeat(YOUR_MESH_CARRYING) { i ->
             forwardDao.insert(
@@ -430,7 +431,7 @@ class DemoWriter(
     private suspend fun avatar(key: String): String? =
         runCatching {
             val bytes = context.assets.open("demo/avatars/${scenario.theme}/${avatarAlias[key] ?: key}.jpg").use { it.readBytes() }
-            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
             blobs.insert(hash, "image/jpeg", bytes)
             hash
         }.getOrNull()
@@ -448,7 +449,7 @@ class DemoWriter(
         runCatching {
             val ext = if (mime == "image/webp") "webp" else "jpg"
             val bytes = context.assets.open("demo/images/${scenario.theme}/$name.$ext").use { it.readBytes() }
-            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
             blobs.insert(hash, mime, bytes)
             hash
         }.getOrNull()
@@ -475,7 +476,7 @@ class DemoWriter(
                     image = picture,
                     imageMime = picture?.let { "image/jpeg" },
                 ).encode()
-            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
             blobs.insert(hash, LinkPreviewBlob.MIME, bytes)
             hash
         }.getOrNull()
@@ -507,7 +508,7 @@ class DemoWriter(
             val bytes = context.assets.open("demo/videos/${scenario.theme}/$name.mp4").use { it.readBytes() }
             val meta = VideoFrames.meta(bytes) ?: return@runCatching null
             val poster = VideoFrames.poster(bytes) ?: ByteArray(0)
-            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
             blobs.insert(hash, DEMO_VIDEO_MIME, bytes)
             SeededVideo(hash, bytes.size.toLong(), VideoInfo(meta.durationMs, meta.width, meta.height, poster))
         }.getOrNull()
@@ -543,7 +544,7 @@ class DemoWriter(
                 bytes[o + 5] = (((SEEDED_VOICE_FRAME_BYTES and 0x07) shl 5) or 0x1F).toByte()
                 bytes[o + 6] = 0xFC.toByte()
             }
-            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
             blobs.insert(hash, VoiceAudio.MIME, bytes)
             val bars =
                 ByteArray(VoiceAudio.PEAK_COUNT) { i ->

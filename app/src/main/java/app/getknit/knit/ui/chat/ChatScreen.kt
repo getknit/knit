@@ -26,7 +26,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
-import androidx.compose.foundation.content.TransferableContent
 import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
@@ -152,7 +151,6 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
@@ -4728,10 +4726,11 @@ private fun MessageInput(
             null
         } else {
             remember(onReceiveImage) {
-                object : ReceiveContentListener {
-                    override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
-                        if (!transferableContent.hasMediaType(MediaType.Image)) return transferableContent
-                        return transferableContent.consume { item ->
+                ReceiveContentListener { transferableContent ->
+                    if (!transferableContent.hasMediaType(MediaType.Image)) {
+                        transferableContent
+                    } else {
+                        transferableContent.consume { item ->
                             val uri = item.uri
                             if (uri != null) {
                                 onReceiveImage(uri)

@@ -184,6 +184,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -273,7 +274,7 @@ class MeshManager(
     // What this phone does for other people's messages, credited at the two hand-off points below (the
     // router's relay fan-out and the custody re-serve) and flushed on the metrics tick + [stop].
     private val ledger: ContributionLedger,
-    private val db: KnitDatabase,
+    db: KnitDatabase,
     // Opens WebSocket sessions to spools for [scopeSync]. Null (the default) means the app is built
     // without the Internet plane at all — which is what every unit test wants, and what keeps the mesh
     // seam free of any transitive knowledge of it. A plain parameter: only the [scopeSync] initializer reads it.
@@ -286,15 +287,15 @@ class MeshManager(
     // The TURN servers this phone would measure (C-7.6-52), each time the Internet plane's set changes: the call graph's
     // `TurnMeasure` follows them (di/CallWiring). The default listens to nothing, as every test and a build with no
     // live calls want.
-    private val onTurnHosts: (List<String>) -> Unit = {},
+    onTurnHosts: (List<String>) -> Unit = {},
     // Whether the phone has a validated Internet route this instant (`InternetGate.isOnline`): the Internet
     // plane reads it before every dial, so a relay is never dialled — and never counted as failing — over
     // no route at all. The default always says yes, which is every test and every build without the plane.
-    private val online: () -> Boolean = { true },
+    online: () -> Boolean = { true },
     // Whether this phone's current network is metered (`InternetGate.isMetered`): a fast-only blob want asks over a
     // contact's direct link only from an unmetered one (ADR 2026-10.js2p, a5yj). The default says unmetered, which is
     // every test, `mesh/lab` unless a node sets it, and every build without the platform gate.
-    private val blobMetered: () -> Boolean = { false },
+    blobMetered: () -> Boolean = { false },
     // The commons (docs/SPOOL_PROTOCOL.md §7.4): the joined rooms, their outbox and their members. Null —
     // every test, and a build with no Internet plane — derives no commons scope and refuses a commons send.
     private val commons: CommonsStore? = null,
@@ -309,7 +310,7 @@ class MeshManager(
     tickDebounceMs: Long = AckSync.TICK_BATCH_DEBOUNCE_MS,
     // How long a room tick waits for a ride before it is sealed and sent by itself
     // ([AckSync.RIDE_HOLD_MS], ADR 2026-09.y5f3). Injectable for `mesh/lab` exactly like [tickDebounceMs].
-    private val rideHoldMs: Long = AckSync.RIDE_HOLD_MS,
+    rideHoldMs: Long = AckSync.RIDE_HOLD_MS,
     // How long the ✓✓ for a DM that arrived over the LoRa board batches ([DmAckCoalescer.HOLD_MS], ADR 054).
     // Injectable for `mesh/lab` exactly like [tickDebounceMs].
     dmAckHoldMs: Long = DmAckCoalescer.HOLD_MS,
@@ -320,7 +321,7 @@ class MeshManager(
     spoolAttachmentRetryMs: Long = ScopeSync.ATTACHMENT_RETRY_MS,
     // How long a blob round's first ask has before every other neighbour is asked ([BlobExchange.FIRST_ASK_GRACE_MS],
     // ADR 2026-10.f7gg). Injectable for `mesh/lab`, whose scenarios must not hang an assertion on a wall-clock race.
-    private val firstAskGraceMs: Long = BlobExchange.FIRST_ASK_GRACE_MS,
+    firstAskGraceMs: Long = BlobExchange.FIRST_ASK_GRACE_MS,
     // How long a send of ours with nothing else to defer on holds for its proof round
     // ([AttachmentDeferPolicy.PROOF_WAIT_MS], ADR 2026-10.vy27). Injectable for `mesh/lab`, whose wall-clock hold a stall
     // must not outlast.
@@ -369,14 +370,14 @@ class MeshManager(
     // One plaintext, one identity (ADR 2026-10.mptm): handed to the inbound pipeline, which records each sealed
     // attachment's plaintext name and makes a room copy from a sealed one this phone holds. Stateless over [messages]
     // and [blobs], so the default is what every test wants; production hands in the Koin single.
-    private val identities: AttachmentIdentities = AttachmentIdentities(messages, blobs),
+    identities: AttachmentIdentities = AttachmentIdentities(messages, blobs),
     // Judges an inbound reply's quote against the original it names (ADR 2026-10.gpa3): handed to the inbound
     // pipeline, and run over the held backlog once per start. The default labels rebuilt quotes in English, which is
     // what every test wants; production hands in the Koin single, which reads the reader's own strings.
     private val quotes: QuoteVerifier = QuoteVerifier(messages),
     // What a notification says in place of a body it cannot show — handed to the inbound pipeline. English by
     // default, which every test wants; production reads the reader's own strings (`notificationLabels(context)`).
-    private val notificationLabels: () -> NotificationLabels = { NotificationLabels.ENGLISH },
+    notificationLabels: () -> NotificationLabels = { NotificationLabels.ENGLISH },
     // The field log (ADR 2026-10.a239): each session's start, stop, power and radio status, and the counters'
     // quarter-hourly movement. Null — every test — keeps none.
     private val fieldLog: FieldLog? = null,
@@ -392,12 +393,12 @@ class MeshManager(
     // The customer keys' device keys (docs/VOICE_CALLS.md C-7.6-39, ADR 2026-10.wk3m), which sign every request a
     // customer key makes. Null with the rest of tickets, and in every test that signs nothing.
     deviceKeys: DeviceKeyring? = null,
-    private val allowCleartext: Boolean = false,
+    allowCleartext: Boolean = false,
     // The supporter badge (docs/SUPPORTER_BADGE.md, ADR 2026-10.r99s): the holder's toggle and held badges, read into the
     // sealed profile, and the issuer that signs them. The journal is wired in every build (a release build simply never
     // holds a badge); the refresher runs only where tickets are wired, since earning one takes a customer key.
     private val badgeJournal: BadgeJournal? = null,
-    private val badgeIssuer: BadgeIssuer? = null,
+    badgeIssuer: BadgeIssuer? = null,
     badgePins: List<PinnedBadgeKey> = emptyList(),
     // This phone's home relay and the public directory it is picked from (ADR 2026-10.8kfx). Null in a test that keeps
     // none; [directory] is null where the build reads no directory (`BuildConfig.SPOOL_DIRECTORY`), and the home then
@@ -413,13 +414,13 @@ class MeshManager(
     private val directContacts: DirectContacts? = null,
     // A monotonic clock that counts deep sleep (`SystemClock.elapsedRealtime`): the presence-key engine's once-a-day floor
     // on a clock-or-mark advance. The default is the JVM's monotonic clock, which every rig wants.
-    private val elapsedRealtime: () -> Long = { System.nanoTime() / NANOS_PER_MS },
+    elapsedRealtime: () -> Long = { System.nanoTime() / NANOS_PER_MS },
     // The wall clock the presence-key engine mints and rotates by: [clock] in production. `mesh/lab` runs one ahead of
     // the node's own clock to stage a clock-ahead mint (B3) without stamping every frame it sends into the future.
     presenceKeyClock: (() -> Long)? = null,
     // Where the presence-key engine's per-decision lines go (a link-owed reset's step and link epochs; ids and counts,
     // never bytes or a tag): debug in production; `mesh/lab` raises them to a warning so a failed scenario's report holds them.
-    private val presenceDebugLog: (String) -> Unit = { Log.d(TAG, it) },
+    presenceDebugLog: (String) -> Unit = { Log.d(TAG, it) },
     // How long a link-up waits before its presence-key reconcile (the brief: a random 2–20 s, so the ctl does not ride
     // the link's first second). `mesh/lab` shortens it.
     private val presenceLinkUpDelayMs: () -> Long = {
@@ -1782,7 +1783,7 @@ class MeshManager(
     ): Boolean {
         val isRoom = recipientId == null && group == null
         // Whoever built it, a frame carries only what the wire does not imply: English by an English reader costs 0.
-        val declared = declared.normalized()
+        val langs = declared.normalized()
         if (isRoom && isTextFlagged(text, "outgoing", isRoom = true)) return false
         // Indexed by the caller against exactly this text (it rebases across its own trim): normalised, never shifted.
         val spans = StyleSpans.normalize(text, styles)
@@ -1821,8 +1822,8 @@ class MeshManager(
                     attachmentSourceHash = attachment?.sourceHash,
                     attachmentSize = roomSize,
                     styles = StyleStore.encode(spans),
-                    bodyLang = declared.lang,
-                    authorReads = declared.reads,
+                    bodyLang = langs.lang,
+                    authorReads = langs.reads,
                     // Local only: what the reader's language reads in place of a translated body (ADR 2026-10.t2h6).
                     draftTranslatedFrom = draftTranslatedFrom,
                 ).withReply(replyTo)
@@ -1842,8 +1843,8 @@ class MeshManager(
                     // Cleartext in the room like the body (ADR 2026-10.p95v); absent while empty.
                     styles = spans,
                     // Cleartext in the room too (ADR 2026-10.t2h6's 2026-10-29 amendment); absent while implied.
-                    lang = declared.langIndex,
-                    reads = declared.readsIndex,
+                    lang = langs.langIndex,
+                    reads = langs.readsIndex,
                 )
             originateSigned(chatEnvelope(id, me, sentAt, recipientId = null, group = null, content))
             return true
@@ -1897,8 +1898,8 @@ class MeshManager(
                 pendingKey = false,
                 // Sealed off the row with the rest ([sealedContent]); the shell below never carries them.
                 styles = StyleStore.encode(spans),
-                bodyLang = declared.lang,
-                authorReads = declared.reads,
+                bodyLang = langs.lang,
+                authorReads = langs.reads,
                 // Local only, never framed: the frame reads the declared pair alone (ADR 2026-10.t2h6).
                 draftTranslatedFrom = draftTranslatedFrom,
             ).withReply(replyTo)
@@ -1908,7 +1909,7 @@ class MeshManager(
         // it for DMs that came over the board, in place of a standalone tick that would cost ~3 s of LoRa
         // air. Attached only in the v2 arm of the seal; a v1 fallback or a parked DM gives them back.
         val inlineAcks =
-            inlineAcksFor(recipientId, group, text, spans, declared, replying = replyTo != null, attached = attachment != null)
+            inlineAcksFor(recipientId, group, text, spans, langs, replying = replyTo != null, attached = attachment != null)
         val inlineIds = inlineAcks.ids
         val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
         if (inlineIds.isNotEmpty() && recipientId != null) {
@@ -2196,7 +2197,7 @@ class MeshManager(
             val rootDue = heldVersion != null && lastRootGossipVersion[group.groupId to memberId] != heldVersion
             if (!seedDue && !rootDue) return@forEach
             if (!seedSendFloorOpen(group.groupId, memberId)) return@forEach
-            val seeds = if (seedDue) listOfNotNull(chain) else emptyList()
+            val seeds = if (seedDue) listOf(chain) else emptyList()
             sendSeedDm(group.groupId, memberId, groupKeyPayload(group.groupId, seeds), seeds.firstOrNull()?.epoch, me)
         }
     }
@@ -3512,11 +3513,11 @@ class MeshManager(
         frames
             .groupBy { it.hash }
             .mapNotNull { (hash, named) ->
-                val sent = named.map { it.sentAt }
-                if (named.any { it.recipientId == null } || sent.any { it == null }) {
+                val sent = named.mapNotNull { it.sentAt }
+                if (named.any { it.recipientId == null } || sent.size < named.size) {
                     null
                 } else {
-                    hash to sent.maxOf { it!! } + ForwardRepository.DEFAULT_TTL_MS
+                    hash to sent.max() + ForwardRepository.DEFAULT_TTL_MS
                 }
             }.toMap()
 
@@ -3798,7 +3799,7 @@ class MeshManager(
             }
         session.launch {
             try {
-                for (due in relinkDue) neighborPassLock.withLock { neighborPass(neighborsHanded) }
+                relinkDue.receiveAsFlow().collect { neighborPassLock.withLock { neighborPass(neighborsHanded) } }
             } finally {
                 displaced.close()
             }
@@ -5224,7 +5225,7 @@ class MeshManager(
         draftTranslatedFrom: String?,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
-        val declared = declared.normalized()
+        val langs = declared.normalized()
         val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
         val id = FrameId.new()
@@ -5260,8 +5261,8 @@ class MeshManager(
                                     attachmentName = attachment?.name,
                                     attachmentKey = sealedAttachment?.key,
                                     styles = spans,
-                                    lang = declared.langIndex,
-                                    reads = declared.readsIndex,
+                                    lang = langs.langIndex,
+                                    reads = langs.readsIndex,
                                 ),
                         ),
                     ),
@@ -5290,8 +5291,8 @@ class MeshManager(
                 attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
                 attachmentSourceHash = attachment?.sourceHash,
                 styles = StyleStore.encode(spans),
-                bodyLang = declared.lang,
-                authorReads = declared.reads,
+                bodyLang = langs.lang,
+                authorReads = langs.reads,
                 // Local only, never framed: the frame reads the declared pair alone (ADR 2026-10.t2h6).
                 draftTranslatedFrom = draftTranslatedFrom,
             ).withReply(replyTo)

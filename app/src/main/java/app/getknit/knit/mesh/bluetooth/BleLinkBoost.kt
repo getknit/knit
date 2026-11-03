@@ -124,7 +124,7 @@ internal class BleLinkBoost(
         val mtu = if (step.mtu) LinkBoostPolicy.MTU else null
         val sent = usableTuner()?.enqueue(LinkTuneRequest(node = nodeId, priority = priority, mtu = mtu)) == true
         val what = if (ask == LinkBoostPolicy.Ask.HIGH) "high" else "release"
-        Log.i(TAG, "bt boost $nodeId $what${mtu?.let { " mtu=$it" } ?: ""}${if (sent) "" else " (no tuner)"}")
+        Log.i(TAG, "bt boost $nodeId $what${mtu?.let { " mtu=$it" }.orEmpty()}${if (sent) "" else " (no tuner)"}")
     }
 
     private companion object {

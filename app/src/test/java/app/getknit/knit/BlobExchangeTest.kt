@@ -689,7 +689,7 @@ class BlobExchangeTest {
             val r = FakeLoopTransport("r")
             val c = FakeLoopTransport("c").also(r::connect)
             val b = FakeLoopTransport("b")
-            var now = 0L
+            val now = 0L
             val exchange =
                 BlobExchange(
                     transport = r,
@@ -1522,7 +1522,7 @@ class BlobExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             val r = FakeLoopTransport("r")
             val author = FakeLoopTransport("author").also(r::connect)
-            val asker = FakeLoopTransport("asker").also(r::connect)
+            FakeLoopTransport("asker").also(r::connect)
             val exchange = exchangeOn(r)
             val toAuthor = backgroundScope.requestsArrivingAt(author)
 
@@ -1537,7 +1537,7 @@ class BlobExchangeTest {
         runTest(UnconfinedTestDispatcher()) {
             val h = FakeLoopTransport("h")
             val source = FakeLoopTransport("source").also(h::connect)
-            val asker = FakeLoopTransport("asker").also(h::connect)
+            FakeLoopTransport("asker").also(h::connect)
             h.bulkRoutes["asker"] = BulkRoute.Linked
             val exchange = exchangeOn(h)
             val toSource = backgroundScope.requestsArrivingAt(source)
@@ -1566,7 +1566,7 @@ class BlobExchangeTest {
     fun aHolderServesAFastOnlyAskOnlyOverAWifiAwareRouteAndForgetsACopyTheTransportDropped() =
         runTest(UnconfinedTestDispatcher()) {
             val h = FakeLoopTransport("h")
-            val n = FakeLoopTransport("n").also(h::connect)
+            FakeLoopTransport("n").also(h::connect)
             val store =
                 FakeBlobStore(
                     Files.createTempDirectory("blob-fast-serve").toFile(),
@@ -1860,7 +1860,7 @@ class BlobExchangeTest {
             // holder whose link never comes up.
             val r = FakeLoopTransport("r")
             val reach = FakeLoopTransport("reach").also(r::connect)
-            val sync = FakeLoopTransport("sync").also(r::connect)
+            FakeLoopTransport("sync").also(r::connect)
             r.bulkRoutes["reach"] = BulkRoute.Reachable
             var now = 0L
             val exchange = exchangeOn(r, now = { now })
@@ -1952,7 +1952,7 @@ class BlobExchangeTest {
             // The blobs review: a holder already linked over Bluetooth that gains the Wi-Fi Aware link changes no
             // neighbour set, so only the edge itself ([BlobExchange.fastLinkUp]) can ask it again before the cycle ends.
             val r = FakeLoopTransport("r")
-            val a = FakeLoopTransport("a").also(r::connect)
+            FakeLoopTransport("a").also(r::connect)
             val b = FakeLoopTransport("b").also(r::connect)
             r.bulkRoutes["a"] = BulkRoute.Reachable
             r.bulkRoutes["b"] = BulkRoute.Reachable
@@ -2072,7 +2072,7 @@ class BlobExchangeTest {
     fun theLinkWaitIsThePairsPerBlobAndNeverTheAskersOwnState() =
         runTest(UnconfinedTestDispatcher()) {
             val r = FakeLoopTransport("r")
-            val h = FakeLoopTransport("h").also(r::connect)
+            FakeLoopTransport("h").also(r::connect)
             val c = FakeLoopTransport("c").also(r::connect)
             r.freeLinkMays += "h"
             r.linkViews["h"] = BlobsView(setOf("H"))

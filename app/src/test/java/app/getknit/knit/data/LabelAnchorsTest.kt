@@ -35,12 +35,12 @@ class LabelAnchorsTest {
                         left = rng.nextInt(3) == 0,
                     )
                 }
-            val groupIds = groups.map { it.groupId }.toSet()
+            val groupIds = groups.map { group -> group.groupId }.toSet()
             val conversations = some() + groupIds + Conversations.NEARBY
             val authored = some().filterTo(HashSet()) { rng.nextBoolean() } + groupIds.filter { rng.nextBoolean() }
             val accepted = some() + groupIds.filter { rng.nextBoolean() }
             val verified = some()
-            val groupSenders = groups.associate { it.groupId to some() }
+            val groupSenders = groups.associate { group -> group.groupId to some() }
             val contacts = contactIds(conversations, authored, groups, groupSenders, accepted, verified, emptySet(), "me")
             val anchors = labelAnchors(accepted, authored, groups) + verified
             assertTrue("$contacts ⊄ $anchors", anchors.containsAll(contacts))

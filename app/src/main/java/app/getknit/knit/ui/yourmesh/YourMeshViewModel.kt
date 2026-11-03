@@ -55,9 +55,9 @@ class YourMeshViewModel(
     meshManager: MeshController,
     ledger: ContributionLedger,
     metPeers: MetPeerRepository,
-    private val forward: ForwardRepository,
+    forward: ForwardRepository,
     identity: Identity,
-    private val clock: () -> Long = System::currentTimeMillis,
+    clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 

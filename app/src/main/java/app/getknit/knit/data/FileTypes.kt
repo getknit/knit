@@ -91,7 +91,7 @@ object FileTypes {
     /** The lowercase extension in [name] without its dot, or "" when it has none. */
     fun extensionOf(name: String?): String {
         val dot = name?.lastIndexOf('.') ?: -1
-        return if (dot <= 0) "" else name!!.substring(dot + 1).lowercase()
+        return if (name == null || dot <= 0) "" else name.substring(dot + 1).lowercase()
     }
 
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean = matchesAt(prefix, 0)

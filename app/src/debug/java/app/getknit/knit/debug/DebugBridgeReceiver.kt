@@ -195,6 +195,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -355,10 +356,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   `--ez coldHunt false` no hunt or fast advert for a cold far sighting (the 2026-10-20 amendment's A/B),
  *   `--ei codedPace|codedChunk N` a file's feed rate in B/s
  *   and chunk on a link on Coded (1024, 2048; a windowed feed's fallback there), `--ei codedWindowChunk N` a windowed
- *   feed's smallest chunk on Coded, which sizes the window's floors (1024; 1024 to 8192 — ADR 2026-10.5buf's Coded amendment), and `--ei filePace N` the file budget the links on 1M or 2M share, split
- *   among those feeding (4096; 0 unbounded; a share's chunk is two seconds of it, 2048 to 16384 — ADR 2026-10.8jwn),
+ *   feed's smallest chunk on Coded, which sizes the window's floors (1024; 1024 to 8192 — ADR 2026-10.5buf's Coded
+ *   amendment), and `--ei filePace N` the file budget the links on 1M or 2M share, split among those feeding (4096; 0
+ *   unbounded; a share's chunk is two seconds of it, 2048 to 16384 — ADR 2026-10.8jwn),
  *   and `--ei fade|fadeExit|fadeExitHoldMs|fadeStaleReads N` when a link counts as fading (−95, −90, 10000, 3 — ADR
- *   2026-10.79yb's ninth amendment), until the process dies (`--ez resetTuning true` restores them). The reply: `mode`, `supported`, `advert`
+ *   2026-10.79yb's ninth amendment), until the process dies (`--ez resetTuning true` restores them). The reply: `mode`,
+ *   `supported`, `advert`
  *   (off|starting|live|dark <status>), `txPower`, the tuning (with `fileChunk`, a lone 1M/2M feed's chunk), `links[]`
  *   (nodeId, phy, linkRssi, drives, attached, switches, gaveUp, fading) and `peers[]` (nodeId, rssi on the 1M scale,
  *   oneMSeenAgoMs, codedSeenAgoMs, each PHY's own rssi1m / rssiCoded, and codedLagMs — the 1M listening its Coded hits
@@ -383,7 +386,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   life, so it would block either side's stepper: set `…debug.PHY --es mode off` on both phones first). The reply:
  *   `filePace`, `fileChunk`, `boostPace`, `crowdedPace`, `leLinks` (this phone's LE connections), `boost`, `arm`, `feed`,
  *   `windowQueueMs`, `feeding`
- *   (links feeding a file now), `earned` (every one of them earned the boost) and `links[]` (nodeId, address, attached, txPhy, rxPhy, intervalUs / latency / timeoutMs —
+ *   (links feeding a file now), `earned` (every one of them earned the boost) and `links[]` (nodeId, address, attached,
+ *   txPhy, rxPhy, intervalUs / latency / timeoutMs —
  *   reported only on a change after the client attached — paramsStatus, mtu and mtuAsked — from Android 14 the first
  *   ask on an ACL settles on 517 whatever it names — rssi, codedOwned, refused, and the link's boost's boosting and
  *   earned, null before its first file). The `bt tune <id> …` and `bt boost <id> …` log lines carry the same, and the
@@ -709,8 +713,8 @@ class DebugBridgeReceiver :
     /** `start,length,code` triples ([BodyStyle] codes) as [StyleSpan]s, or null when [raw] is not whole triples. */
     private fun parseStyleTriples(raw: String): List<StyleSpan>? {
         val numbers = raw.split(',').map { it.trim().toIntOrNull() ?: return null }
-        if (numbers.size % 3 != 0) return null
-        return numbers.chunked(3).map { (start, length, code) ->
+        if (numbers.size % STYLE_TRIPLE != 0) return null
+        return numbers.chunked(STYLE_TRIPLE).map { (start, length, code) ->
             val style = BodyStyle.entries.firstOrNull { it.code == code } ?: return null
             StyleSpan(start, start + length, style)
         }
@@ -876,7 +880,8 @@ class DebugBridgeReceiver :
                 asFile -> attachments.ingestFile(Uri.fromFile(file))
                 else -> attachments.ingest(Uri.fromFile(file), fitBytes = fitBytes)
             }
-        if (asVideo && isRoom && picked is AttachmentStore.IngestResult.Success && picked.flagged) {
+        val roomVideo = asVideo && isRoom
+        if (roomVideo && picked is AttachmentStore.IngestResult.Success && picked.flagged) {
             blobs.deleteIfUnreferenced(picked.ingested.hash)
             return reply("blocked", "video blocked by on-device content filter").put("conversation", conv).put("flagged", true)
         }
@@ -1054,7 +1059,7 @@ class DebugBridgeReceiver :
         val fps = intent.getIntExtra("fps", GIF_MAX_FPS)
         val quality = intent.getIntExtra("q", WEBP_PROBE_QUALITY)
         val movie = Movie.decodeByteArray(bytes, 0, bytes.size)
-        if (movie == null || movie.width() <= 0 || movie.height() <= 0 || movie.duration() <= 0) {
+        if (movie == null || minOf(movie.width(), movie.height(), movie.duration()) <= 0) {
             return reply("error", "Movie could not decode it / unknown size/timing")
         }
 
@@ -1173,7 +1178,7 @@ class DebugBridgeReceiver :
 
         val reachable = JSONArray()
         mesh.neighbors.value.forEach { peer ->
-            reachable.put(JSONObject().put("nodeId", peer.nodeId).put("name", nameByNode[peer.nodeId] ?: ""))
+            reachable.put(JSONObject().put("nodeId", peer.nodeId).put("name", nameByNode[peer.nodeId].orEmpty()))
         }
 
         // The radio mesh's indirect reach (ADR 2026-10.fw8g): authors another phone handed us a fresh frame from,
@@ -1185,7 +1190,7 @@ class DebugBridgeReceiver :
             indirect.put(
                 JSONObject()
                     .put("nodeId", nodeId)
-                    .put("name", nameByNode[nodeId] ?: "")
+                    .put("name", nameByNode[nodeId].orEmpty())
                     .put("via", via)
                     .put("agoMs", now - heard.getValue(nodeId).heardAt),
             )
@@ -1280,7 +1285,7 @@ class DebugBridgeReceiver :
         val reactionsByMessage = reactions.observeReactions().first().groupBy { it.messageId }
         val arr = JSONArray()
         rows.forEach { m ->
-            val from = if (m.senderId == selfId) selfName else nameByNode[m.senderId] ?: ""
+            val from = if (m.senderId == selfId) selfName else nameByNode[m.senderId].orEmpty()
             val rx = JSONObject()
             reactionsByMessage[m.id].orEmpty().forEach { r -> r.emoji?.let { rx.put(r.reactorNodeId, it) } }
             val verdict = m.attachmentHash?.let { verdicts.find(it) }
@@ -1932,7 +1937,7 @@ class DebugBridgeReceiver :
         gaps.forEach { g ->
             gapJson.put(
                 JSONObject()
-                    .put("gapS", g.gapMs / 1_000L)
+                    .put("gapS", g.gapMs / MS_PER_S)
                     .put("outRtt", g.outRttMs ?: JSONObject.NULL)
                     .put("inMs", g.inMs ?: JSONObject.NULL)
                     .put("roamed", g.roamed),
@@ -2516,7 +2521,7 @@ class DebugBridgeReceiver :
             .put("address", settings.loraDeviceAddress.first() ?: JSONObject.NULL)
             .put("channel", settings.loraChannelIndex.first())
             .put("state", status.state::class.simpleName)
-            .put("boardNodeNum", status.boardNodeNum?.let { "!%08x".format(it.toInt()) } ?: JSONObject.NULL)
+            .put("boardNodeNum", status.boardNodeNum?.let { "!%08x".format(Locale.ROOT, it.toInt()) } ?: JSONObject.NULL)
             .put("snr", status.lastSnr?.toDouble() ?: JSONObject.NULL)
             .put("rssi", status.lastRssi ?: JSONObject.NULL)
             .put("queueFree", status.queueFree ?: JSONObject.NULL)
@@ -2786,7 +2791,7 @@ class DebugBridgeReceiver :
     ): JSONObject {
         if (!BuildConfig.SEED_DEMO) return reply("error", "not a demo build (-PseedDemo / -PdemoDirector)")
         val calls = getKoin().getOrNull<CallManager>() ?: return reply("error", "this build wires no calls")
-        when (val op = intent.getStringExtra("op") ?: "") {
+        when (val op = intent.getStringExtra("op").orEmpty()) {
             "ring" -> {
                 val peer = intent.getStringExtra("peer") ?: return reply("error", "missing 'peer' extra")
                 DemoCalls.ring(peer, walkie = intent.getBooleanExtra("walkie", false))
@@ -3263,11 +3268,13 @@ class DebugBridgeReceiver :
      * default) dumps both; `download` fetches the model from its host as the card's and Settings' buttons do,
      * `sideload --es dir <dir>` installs it from the files pushed there (world-readable, e.g. under /data/local/tmp;
      * `scripts/stt-model.py --out` stages them), each checked against the same pins; `cancel`, `delete` and `unload`
-     * (release the model now) do what they say. `pcm --es path <file>` streams (in the background; poll `status`) a raw 16 kHz mono s16le file through the
+     * (release the model now) do what they say. `pcm --es path <file>` streams (in the background; poll `status`) a
+     * raw 16 kHz mono s16le file through the
      * model in 100 ms chunks, as fast as it will take them, looking as a burst does, and replies with the text, the looks,
      * the model's time over it all and the time its last look took — the time from a burst's end to its text — with no
      * call and no radio; `--ez continuous true` opens the stream a live call's captions do (C-3.7-5), split at pauses,
-     * for the cost of the two side by side. `status` also dumps the live call's captions (`captions`). `loop --es path <file>` sends that file the whole walkie way but the radio — the recorder's Opus
+     * for the cost of the two side by side. `status` also dumps the live call's captions (`captions`). `loop --es path
+     * <file>` sends that file the whole walkie way but the radio — the recorder's Opus
      * encoder at 8 kbps, the player's decoder and its tap, the transcriber — as burst [LOOP_BURST] of a fresh transcript,
      * in real time, and replies at once; poll `status` for its two lines, the spoken one (`mine`, the file before Opus)
      * and the heard one (after it), whose texts differ by the codec, and whose `live` shows the text while it streams. It
@@ -3557,7 +3564,7 @@ class DebugBridgeReceiver :
         runCatching {
             val bytes = file.readBytes()
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            if (bytes.size >= WAV_HEADER && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") buffer.position(WAV_HEADER)
+            if (bytes.size >= WAV_HEADER && String(bytes, 0, RIFF.length, Charsets.US_ASCII) == RIFF) buffer.position(WAV_HEADER)
             val shorts = buffer.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
             FloatArray(shorts.remaining()) { shorts.get(it) / PCM_FULL_SCALE }
         }.getOrNull()
@@ -3567,7 +3574,7 @@ class DebugBridgeReceiver :
         runCatching {
             val bytes = file.readBytes()
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            if (bytes.size >= WAV_HEADER && String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF") buffer.position(WAV_HEADER)
+            if (bytes.size >= WAV_HEADER && String(bytes, 0, RIFF.length, Charsets.US_ASCII) == RIFF) buffer.position(WAV_HEADER)
             val shorts = buffer.slice().order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
             ShortArray(shorts.remaining()).also(shorts::get)
         }.getOrNull()
@@ -3664,7 +3671,7 @@ class DebugBridgeReceiver :
                     .put("phase", s.phase.name)
                     .put("bytes", s.bytes)
                     .put("reason", s.reason ?: JSONObject.NULL)
-                    .put("models", s.models?.let { pins -> JSONArray(pins.map { "%08x".format(it) }) } ?: JSONObject.NULL),
+                    .put("models", s.models?.let { pins -> JSONArray(pins.map { "%08x".format(Locale.ROOT, it) }) } ?: JSONObject.NULL),
             )
         }
         val rows = JSONArray()
@@ -3790,8 +3797,9 @@ class DebugBridgeReceiver :
         }
         val group = intent.getStringExtra(EXTRA_GROUP)?.trim()
         var groupDropped = false
-        if (!dry && group != null && group.startsWith(Conversations.GROUP_ID_PREFIX) && groups.find(group) != null) {
-            groups.delete(group)
+        val doomed = group?.takeIf { !dry && it.startsWith(Conversations.GROUP_ID_PREFIX) }
+        if (doomed != null && groups.find(doomed) != null) {
+            groups.delete(doomed)
             groupDropped = true
         }
         return reply("ok", if (dry) "would purge $matched" else "purged $deleted")
@@ -3871,7 +3879,7 @@ class DebugBridgeReceiver :
         return reply("ok", if (cycle) "storm sent (alternating edges)" else "storm sent (repeated available)")
             .put("sent", count)
             .put("elapsedMs", elapsed)
-            .put("ratePerSec", if (elapsed > 0) count * 1_000L / elapsed else -1)
+            .put("ratePerSec", if (elapsed > 0) count * MS_PER_S / elapsed else -1)
             .put("failuresBefore", before?.total ?: -1)
             .put("failuresAfter", after?.total ?: -1)
             .put("attachesAllowed", (after?.total ?: 0) - (before?.total ?: 0))
@@ -4573,6 +4581,14 @@ private const val PCM_FULL_SCALE = 32_768f
 
 // The canonical header `wavOf` writes a walkie clip with.
 private const val WAV_HEADER = 44
+
+// A WAV file's first four bytes.
+private const val RIFF = "RIFF"
+
+// A message's style ranges on the command line: start, length, code.
+private const val STYLE_TRIPLE = 3
+
+private const val MS_PER_S = 1_000L
 
 // The burst number `…debug.STT --es op loop` gives its one burst.
 private const val LOOP_BURST = 0

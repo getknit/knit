@@ -99,7 +99,7 @@ abstract class BlePairTest {
         assumeFalse("a seeded build fakes its peers", BuildConfig.SEED_DEMO)
         // Once the pair has lost each other, every later test would sit out its own link timeout and then the
         // rendezvous's; one failure says it, and the rest skip.
-        assumeTrue("the pair lost each other in ${lostIn ?: ""}", lostIn == null)
+        assumeTrue("the pair lost each other in ${lostIn.orEmpty()}", lostIn == null)
         // `am instrument` restarts the process, so the service the launch started is gone; the runner exempts the
         // battery optimisation (ble-pair-test.sh), which is what lets an off-screen start claim the foreground.
         assertTrue("MeshService.start refused (is Knit battery-exempt?)", MeshService.start(context))
@@ -166,7 +166,7 @@ abstract class BlePairTest {
             }
         return found.getOrElse {
             val rows = messages.observeNewestMessages(conversation, WINDOW).first()
-            val seen = rows.joinToString("\n") { "  ${it.senderId.take(8)} received=${it.received} ${it.body.take(80)}" }
+            val seen = rows.joinToString("\n") { row -> "  ${row.senderId.take(8)} received=${row.received} ${row.body.take(80)}" }
             throw AssertionError("no $what within $timeoutMs ms; $conversation holds:\n$seen", it)
         }
     }

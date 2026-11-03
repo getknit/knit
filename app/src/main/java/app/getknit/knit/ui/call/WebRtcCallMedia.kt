@@ -418,7 +418,7 @@ private class WebRtcSession(
     private val log: (String) -> Unit,
     private val path: DefaultPath,
     private val captions: CallCaptioner?,
-    private val field: FieldRecorder,
+    field: FieldRecorder,
     private val onClosed: (WebRtcSession) -> Unit,
 ) : CallSession {
     // Two locks, because libwebrtc's observer runs on its signaling thread and a getStats or setConfiguration call

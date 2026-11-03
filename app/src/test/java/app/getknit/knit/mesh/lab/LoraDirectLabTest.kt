@@ -1,6 +1,5 @@
 package app.getknit.knit.mesh.lab
 
-import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.crypto.MessageContent

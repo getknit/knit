@@ -37,6 +37,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -2517,7 +2518,7 @@ internal class LoraMeshTransport(
 
     private fun sigKey(wire: WireEnvelope): String {
         val n = minOf(SIG_KEY_BYTES, wire.sig.size)
-        return buildString(n * 2) { for (i in 0 until n) append("%02x".format(wire.sig[i])) }
+        return buildString(n * 2) { for (i in 0 until n) append("%02x".format(Locale.ROOT, wire.sig[i])) }
     }
 
     /** Tuning constants; not private so the JVM tests can assert against the numbers rather than restate them. */

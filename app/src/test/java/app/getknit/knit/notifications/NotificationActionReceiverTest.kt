@@ -75,7 +75,7 @@ class NotificationActionReceiverTest {
                     single { identity }
                     single { mockk<BlobRepository>(relaxed = true) }
                     single { notifier }
-                    single<ConversationGate> { ConversationGate { it !in gone } }
+                    single<ConversationGate> { ConversationGate { id -> id !in gone } }
                     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Unconfined) }
                 },
             )

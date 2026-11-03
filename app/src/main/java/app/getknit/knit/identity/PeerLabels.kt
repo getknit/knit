@@ -130,7 +130,7 @@ private class Universe(
     ) {
         val texts = HashMap<String, String>()
         for ((id, k) in consumed) texts[id] = text(id, k)
-        for (round in 0 until Alias.MAX_TOKENS) {
+        repeat(Alias.MAX_TOKENS) { _ ->
             val colliding =
                 texts.entries
                     .groupBy({ it.value }, { it.key })

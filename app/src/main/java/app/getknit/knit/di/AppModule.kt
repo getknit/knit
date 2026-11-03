@@ -197,7 +197,7 @@ val appModule =
                 screenImage = get<ImageScreeningService>()::isImageExplicit,
                 textFlagged = { text, isRoom -> get<ScopedTextModerator>().classify(text, isRoom).flagged },
                 shrink = PreviewImage::shrink,
-                log = { Log.i(OkHttpPreviewFetcher.TAG, it) },
+                log = { line -> Log.i(OkHttpPreviewFetcher.TAG, line) },
             )
         }
         // Where the composer's "Send location" reads the device's position: the one android.location importer,
@@ -212,7 +212,7 @@ val appModule =
         // database for it, and MainActivity resolves the sync on the main thread.
         single { ConversationShortcuts(androidContext(), get()) }
         single<Notifier> { MessageNotifier(androidContext(), get()) }
-        single { ConversationFaces(get(), get(), get(), commonsTitle = { get<CommonsRepository>().find(it)?.name }) }
+        single { ConversationFaces(get(), get(), get(), commonsTitle = { id -> get<CommonsRepository>().find(id)?.name }) }
         single {
             OfferedConversations(
                 androidContext(),

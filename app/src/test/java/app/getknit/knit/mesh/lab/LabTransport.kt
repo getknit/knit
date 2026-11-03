@@ -785,8 +785,9 @@ class LabTransport(
     override fun arrivingFiles(): Map<String, ArrivingFile> =
         (
             pipes.values.flatMap { link ->
-                link.target.pipes[nodeId]?.let { toMe -> synchronized(toMe.heldFiles) { toMe.heldFiles.mapNotNull { it.arriving } } }
-                    ?: emptyList()
+                link.target.pipes[nodeId]
+                    ?.let { toMe -> synchronized(toMe.heldFiles) { toMe.heldFiles.mapNotNull { it.arriving } } }
+                    .orEmpty()
             } + landing.values // parked, then landing: the order a file moves in, read so it is never in neither
         ).furthestByKey()
 

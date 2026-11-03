@@ -12,6 +12,7 @@ import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.decodeFromByteArray
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.Locale
 
 /**
  * A badge signing key this build trusts (docs/SUPPORTER_BADGE.md §4): its [kid] (the first 8 bytes of SHA-256 of the
@@ -223,7 +224,7 @@ object Badges {
 
 internal fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
-internal fun hexOf(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+internal fun hexOf(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
 
 internal fun hex(text: String): ByteArray = text.chunked(2).map { it.toInt(HEX_RADIX).toByte() }.toByteArray()
 

@@ -60,10 +60,10 @@ internal class RatchetGroupVectors(
         t.field(
             "pipelineReceivers",
             buildJsonArray {
-                for ((name, ownSeals) in receivers) {
+                for ((receiver, ownSeals) in receivers) {
                     add(
                         buildJsonObject {
-                            put("name", name)
+                            put("name", receiver)
                             put("replaysOwnSeals", ownSeals)
                         },
                     )
@@ -75,9 +75,9 @@ internal class RatchetGroupVectors(
             t.field("groupId", JsonPrimitive(it.groupId))
             t.field(
                 "founders",
-                buildJsonArray { FOUNDERS.forEach { name -> add(name) } },
+                buildJsonArray { FOUNDERS.forEach { founder -> add(founder) } },
             )
-            t.field("holdsAtStart", buildJsonArray { holdsAtStart.sorted().forEach { name -> add(name) } })
+            t.field("holdsAtStart", buildJsonArray { holdsAtStart.sorted().forEach { holder -> add(holder) } })
         }
     }
 

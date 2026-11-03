@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /** A bonded board the user can bind the LoRa plane to. */
 data class BoardOption(
@@ -165,7 +166,7 @@ data class LoraRadioUiState(
 internal class LoraRadioViewModel(
     private val settings: SettingsStore,
     private val lora: LoraPlaneStatus,
-    private val boards: BoardDirectory,
+    boards: BoardDirectory,
     private val notifier: Notifier,
 ) : ViewModel() {
     // Transient, action-driven UI state (the provisioning spinner + its outcome) that isn't in a settings flow.
@@ -234,7 +235,7 @@ internal class LoraRadioViewModel(
                 boardAddress = address,
                 channel = channel,
                 connection = status.state.toConnState(),
-                boardNodeNum = status.boardNodeNum?.let { "!%08x".format(it.toInt()) },
+                boardNodeNum = status.boardNodeNum?.let { "!%08x".format(Locale.ROOT, it.toInt()) },
                 snr = status.lastSnr,
                 rssi = status.lastRssi,
                 heard = status.heard,

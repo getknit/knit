@@ -77,7 +77,7 @@ internal class WearStatusSource(
     ledger: ContributionLedger,
     forward: ForwardRepository,
     identity: Identity,
-    private val clock: () -> Long = System::currentTimeMillis,
+    clock: () -> Long = System::currentTimeMillis,
 ) {
     private val meshSide: Flow<Triple<Boolean, Long?, Pair<Int, List<TransportStatus>>>> =
         combine(settings.meshEnabled, settings.meshPausedUntil, mesh.neighborCount, mesh.transportStatuses) {

@@ -44,7 +44,7 @@ class CallManagerTest {
         var accepted: String? = null
         var accepts = 0
         var answeredOffer: String? = null
-        val added = Collections.synchronizedList(mutableListOf<String>())
+        val added: MutableList<String> = Collections.synchronizedList(mutableListOf())
         var micOff = false
         var closed = false
 
@@ -70,8 +70,8 @@ class CallManagerTest {
         }
 
         // §3.8: each restart's (or restart answer's) ICE servers, and the restart offers this side answered.
-        val restarts = Collections.synchronizedList(mutableListOf<List<TurnServer>>())
-        val reanswered = Collections.synchronizedList(mutableListOf<String>())
+        val restarts: MutableList<List<TurnServer>> = Collections.synchronizedList(mutableListOf())
+        val reanswered: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
         override suspend fun restart(servers: List<TurnServer>): String? = sdp().also { restarts += servers }
 
@@ -106,7 +106,7 @@ class CallManagerTest {
     }
 
     private class FakeMedia : CallMedia {
-        val sessions = Collections.synchronizedList(mutableListOf<FakeSession>())
+        val sessions: MutableList<FakeSession> = Collections.synchronizedList(mutableListOf())
         var sdp: String? = SDP
         var throwOnOpen = false
 
@@ -146,10 +146,10 @@ class CallManagerTest {
         var joinable = true
         var prewarmAllowed = true
         var laneUp = false
-        val joins = Collections.synchronizedList(mutableListOf<String>())
-        val hosts = Collections.synchronizedList(mutableListOf<String>())
-        val ends = Collections.synchronizedList(mutableListOf<Pair<String, CallPayload?>>())
-        val laneCands = Collections.synchronizedList(mutableListOf<String>())
+        val joins: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val hosts: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val ends: MutableList<Pair<String, CallPayload?>> = Collections.synchronizedList(mutableListOf())
+        val laneCands: MutableList<String> = Collections.synchronizedList(mutableListOf())
         private val legs = Collections.synchronizedSet(mutableSetOf<String>())
         private val ended = Collections.synchronizedSet(mutableSetOf<String>())
         private val events = MutableSharedFlow<LaneEvent>(extraBufferCapacity = 64)
@@ -288,10 +288,10 @@ class CallManagerTest {
 
         // C-7.6-54's ask for one named server: (peer, entry) → its credential, or none. Each ask is recorded.
         var turnFor: suspend (String, String) -> TurnServer? = { _, _ -> null }
-        val turnForAsks = Collections.synchronizedList(mutableListOf<String>())
+        val turnForAsks: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
         // The manager's log lines, in order: what a lab trial reads, so a case can pin a line's wording.
-        val logs = Collections.synchronizedList(mutableListOf<String>())
+        val logs: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
         // "Relay all calls" (C-3.7-3), as the manager reads it at each call.
         var relay = false
@@ -1215,7 +1215,7 @@ class CallManagerTest {
     @Test
     fun anAnswerToASupersededRestartIsIgnored() =
         runTest {
-            val (net, alice, bob) = connected()
+            val (net, alice, _) = connected()
             var held: CallPayload? = null
             net.drop = { from, p ->
                 (from == BOB && p.ph == CallPayload.PHASE_ANSWER && p.gen == 1).also { if (it) held = p }

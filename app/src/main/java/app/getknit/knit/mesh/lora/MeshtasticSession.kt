@@ -418,7 +418,7 @@ internal class MeshtasticSession(
         }
     }
 
-    private suspend fun dispatch(
+    private fun dispatch(
         fr: FromRadio?,
         awaitId: UInt?,
     ): Signal =
@@ -460,7 +460,7 @@ internal class MeshtasticSession(
             }
         }
 
-    private suspend fun onPacket(packet: MeshPacket) {
+    private fun onPacket(packet: MeshPacket) {
         // `rx_snr`/`rx_rssi` are deliberately NOT recorded here. This runs ahead of every filter below, and
         // the board hands the phone the whole air: strangers relayed off its public primary channel, and a
         // synthetic POSITION/TELEMETRY per NodeDB entry replayed at each handshake (a stale per-node SNR and

@@ -6,6 +6,7 @@ import app.getknit.knit.ellipsizeToUtf16
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.normalizeSingleLine
+import java.util.Locale
 
 /** Max characters of the quoted body snapshotted into a [app.getknit.knit.mesh.protocol.ReplyRef]; the quote UI ellipsizes further. */
 const val REPLY_SNIPPET_MAX = 120
@@ -82,7 +83,7 @@ fun quoteSnippet(
         flagged,
         attachmentLabel =
             when {
-                attachmentName != null -> labels.fileFormat.format(attachmentName)
+                attachmentName != null -> labels.fileFormat.format(Locale.getDefault(), attachmentName)
                 VoiceAudio.isVoice(attachmentMime) -> labels.voice
                 animated -> labels.gif
                 else -> null

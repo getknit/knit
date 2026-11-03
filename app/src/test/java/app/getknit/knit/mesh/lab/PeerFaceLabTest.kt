@@ -383,7 +383,10 @@ class PeerFaceLabTest {
             repeat(3) {
                 alice.reoffer()
                 val wanted = alice.manager.wantedBlobs()
-                assertTrue("an attachment's want went: ${attachments.count { it !in wanted }} missing", wanted.containsAll(attachments))
+                assertTrue(
+                    "an attachment's want went: ${attachments.count { hash -> hash !in wanted }} missing",
+                    wanted.containsAll(attachments),
+                )
                 assertTrue("faces took ${wanted.size - attachments.size} places", wanted.size <= MAX_WANTS)
             }
             // A background re-arm that read fewer rows (one racing the inserts) may have let faces in; they give their places

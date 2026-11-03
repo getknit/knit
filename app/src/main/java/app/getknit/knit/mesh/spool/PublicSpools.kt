@@ -109,7 +109,8 @@ object PublicSpools {
             repeat(entry.weight) { i ->
                 val digest = slotDigest(nodeId, entry.host, i)
                 val order = best?.let { compareUnsigned(digest, it) } ?: 1
-                if (order > 0 || (order == 0 && entry.host < bestHost!!)) {
+                // A tie means a slot is held, and bestHost was set beside it.
+                if (order > 0 || (order == 0 && entry.host < checkNotNull(bestHost))) {
                     best = digest
                     bestHost = entry.host
                 }

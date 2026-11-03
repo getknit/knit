@@ -38,7 +38,7 @@ class PendingGroupKeys(
     private val now: () -> Long = { System.currentTimeMillis() },
     private val metrics: MeshMetrics = MeshMetrics(),
     private val holdTtlMs: Long = HOLD_TTL_MS,
-    private val maxFrames: Int = MAX_FRAMES,
+    maxFrames: Int = MAX_FRAMES,
     private val maxPerGroup: Int = MAX_PER_GROUP,
 ) {
     private class Parked(

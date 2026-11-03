@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.crypto.b64d
+import java.util.Locale
 import java.util.zip.CRC32
 
 /**
@@ -251,7 +252,7 @@ internal class LoraContactPolicy(
             val long = stored?.longName?.takeIf { it.isNotBlank() }
             val short = stored?.shortName?.takeIf { it.isNotBlank() }
             return ProtoWriter()
-                .string(MeshtasticProto.USER_ID, "!%08x".format(node.toLong()))
+                .string(MeshtasticProto.USER_ID, "!%08x".format(Locale.ROOT, node.toLong()))
                 .string(MeshtasticProto.USER_LONG_NAME, fitUtf8(long ?: knit.longName, LONG_NAME_BYTES))
                 .string(MeshtasticProto.USER_SHORT_NAME, fitUtf8(short ?: knit.shortName, SHORT_NAME_BYTES))
                 .bytes(MeshtasticProto.USER_PUBLIC_KEY, key)

@@ -462,9 +462,9 @@ class CompositeMeshTransport(
         children.forEach { it.onFileProgress(nodeId, key, held, ms) }
     }
 
-    override val fileProgress: Flow<FileProgress> = merge(*children.map { it.fileProgress }.toTypedArray())
+    override val fileProgress: Flow<FileProgress> = children.map { it.fileProgress }.merge()
 
-    override val fileFeedsChanged: Flow<Unit> = merge(*children.map { it.fileFeedsChanged }.toTypedArray())
+    override val fileFeedsChanged: Flow<Unit> = children.map { it.fileFeedsChanged }.merge()
 
     /**
      * The load of the plane an attachment to [nodeId] would ride: the high-throughput child when it holds a link to

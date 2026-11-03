@@ -20,7 +20,7 @@ import org.junit.Test
 class PendingInboundTest {
     @Test
     fun heldFrameIsReleasedForItsSender() {
-        var clock = 0L
+        val clock = 0L
         val buffer = PendingInbound(now = { clock })
         buffer.hold(wireFor("m1", "alice"), envFor("m1", "alice"), fromNodeId = "n")
 
@@ -60,7 +60,7 @@ class PendingInboundTest {
 
     @Test
     fun duplicateFrameIdIsParkedOnce() {
-        var clock = 0L
+        val clock = 0L
         val buffer = PendingInbound(now = { clock })
         buffer.hold(wireFor("m1", "alice"), envFor("m1", "alice"), "n")
         buffer.hold(wireFor("m1", "alice"), envFor("m1", "alice"), "n")

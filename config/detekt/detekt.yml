@@ -23,14 +23,23 @@
 #    decode of peer-supplied image bytes can't reappear (ADR 051). It is an *import* rule rather than
 #    ForbiddenMethodCall because detekt runs here without type resolution, which that rule requires.
 #    scripts/dex-bitmap-gate.sh is the matching check on the release dex, where library code is visible.
+#  - Rules that need types (detektAll, .agents/context/toolchain.md) run on every source folder. Those that guard
+#    production behaviour (a user's locale, an ignored result) skip the test folders, and the size rules skip
+#    src/debug, the adb bridge and demo harness. Each list below says why.
 
 complexity:
   CyclomaticComplexMethod:
     ignoreAnnotated: ['Composable']
+    excludes: &debugHarness                # the adb bridge and the demo director: one handler per action, one put per field
+      - '**/src/debug/**'
+  LargeClass:
+    excludes: *debugHarness
   LongMethod:
     ignoreAnnotated: ['Composable']
+    excludes: *debugHarness
   LongParameterList:
     ignoreAnnotated: ['Composable']
+    ignoreDefaultParameters: true      # a defaulted one is a seam only tests pass (a clock, a limit, a callback)
     allowedConstructorParameters: 15   # Koin DI constructors (ChatViewModel = 14 args incl. group repo + avatar store)
     allowedFunctionParameters: 8       # the 6-arg Notifier functions are fine
   TooManyFunctions:
@@ -39,6 +48,10 @@ complexity:
     allowedFunctionsPerFile: 20
     allowedFunctionsPerObject: 15
     allowedFunctionsPerInterface: 14   # Notifier: one method per notification kind, plus its visibility/dismissal hooks
+    excludes:                          # detekt's own test excludes (setting the key replaces them), and the debug harness
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/src/debug/**'
 
 naming:
   FunctionNaming:
@@ -102,6 +115,24 @@ style:
   ReturnCount:
     max: 4
     excludeGuardClauses: true
+    excludes: *debugHarness                # a bridge handler answers each bad extra with its own error reply
+  AbstractClassCanBeConcreteClass:
+    excludes: &testSources                 # a test base class is abstract so the runner never runs it on its own
+      - '**/test/**'
+      - '**/testDebug/**'
+      - '**/androidTest/**'
+      - '**/screenshotTest/**'
+
+potential-bugs:
+  ImplicitDefaultLocale:
+    excludes: *testSources                 # a test's formatted string is an id it compares with itself, or a failure message
+  IgnoredReturnValue:
+    excludes: *testSources                 # mockk's verify { } calls a Flow-returning stub to record it, not to read it
+
+coroutines:
+  InjectDispatcher:
+    active: false                          # a blocking call hops to Dispatchers.IO / Default where it blocks; a class whose
+                                           # test drives that hop takes a dispatcher (MessageTranslator, the transcripts)
 
 # Knit's own rules, from the :detekt-rules module (loaded through :app's detektPlugins; .agents/context/toolchain.md).
 knit:
@@ -110,15 +141,7 @@ knit:
     guards:                                # calls that run their block and catch what it throws
       - 'runCatching'
       - 'runRound'                         # mesh/MeshCoroutines.kt, what everyRound runs each round through
-    excludes:                              # a test's loop ending early fails that test; production loops are the hazard
-      - '**/test/**'                       # every test source folder, which detektAll reads (plain detekt: test only)
-      - '**/testDebug/**'
-      - '**/androidTest/**'
-      - '**/screenshotTest/**'
+    excludes: *testSources                 # a test's loop ending early fails that test; production loops are the hazard
   HardcodedUiText:
     active: true                           # a literal the user reads never reaches a translator (MissingTranslation is an error)
-    excludes:                              # no user reads a test's literal; the same test source folders as above
-      - '**/test/**'
-      - '**/testDebug/**'
-      - '**/androidTest/**'
-      - '**/screenshotTest/**'
+    excludes: *testSources                 # no user reads a test's literal

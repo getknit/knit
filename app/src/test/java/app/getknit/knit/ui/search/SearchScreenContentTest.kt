@@ -21,7 +21,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
 import app.getknit.knit.data.message.ConversationKind
-import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule

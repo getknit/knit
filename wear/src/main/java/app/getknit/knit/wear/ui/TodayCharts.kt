@@ -38,11 +38,11 @@ fun NearbySparkline(
         val usable = size.height - stroke
         drawLine(base, Offset(0f, size.height - stroke / 2), Offset(size.width, size.height - stroke / 2), 1.dp.toPx())
         val runs = mutableListOf<List<Offset>>()
-        var run = mutableListOf<Offset>()
+        val run = mutableListOf<Offset>()
         for ((i, v) in values.withIndex()) {
             if (v == null) {
-                if (run.isNotEmpty()) runs += run
-                run = mutableListOf()
+                if (run.isNotEmpty()) runs += run.toList()
+                run.clear()
             } else {
                 run += Offset(i * stepX, stroke / 2 + usable * (1 - v / top))
             }

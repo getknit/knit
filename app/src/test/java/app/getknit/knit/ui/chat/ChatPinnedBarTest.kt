@@ -78,7 +78,7 @@ class ChatPinnedBarTest {
                     onCopy = {},
                     onSaveAttachment = { _, _, _ -> },
                     pinned = pinned,
-                    onSetPinned = { id, pinned -> asked += id to pinned },
+                    onSetPinned = { id, isPinned -> asked += id to isPinned },
                 )
             }
         }

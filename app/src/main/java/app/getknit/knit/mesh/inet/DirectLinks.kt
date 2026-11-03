@@ -1000,7 +1000,7 @@ class DirectLinks(
         sentMs: Long? = null,
         queued: Long? = null,
     ) {
-        val rtt = rttMs?.let { " rtt ${it}ms" } ?: ""
+        val rtt = rttMs?.let { " rtt ${it}ms" }.orEmpty()
         log("link $outcome ${if (offerer) "→" else "←"} ${peerId.take(SHORT)} ${path ?: ""} ${ms}ms$rtt ${why ?: ""}")
         lastTries[peerId] = Try(clock(), offerer, outcome, path, peerNet, ms, rttMs, why)
         fieldLog.record(

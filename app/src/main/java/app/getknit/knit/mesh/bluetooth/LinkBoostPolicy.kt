@@ -127,7 +127,7 @@ internal object LinkBoostPolicy {
             if (busy && !boosting && idleSinceRelease) releasedAt = null
             return when {
                 !eligible && boosting -> release(now)
-                eligible && busy && !boosting -> boost(now)
+                eligible && busy && !boosting -> startBoost(now)
                 else -> onTick(now) // a release's settle check runs on a dark screen too
             }
         }
@@ -196,7 +196,7 @@ internal object LinkBoostPolicy {
         /** No report has answered the release, nothing streams, and a re-ask is left. */
         private fun releaseUnanswered(): Boolean = !releaseAnswered && !busy && releaseReasks < maxReasks
 
-        private fun boost(now: Long): Step {
+        private fun startBoost(now: Long): Step {
             boosting = true
             askedAt = now
             reasks = 0

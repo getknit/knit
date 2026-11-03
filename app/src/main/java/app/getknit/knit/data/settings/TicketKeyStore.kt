@@ -43,7 +43,7 @@ import kotlinx.serialization.json.Json
  */
 class TicketKeyStore(
     private val dataStore: DataStore<Preferences>,
-    private val seededIssuers: Map<String, String> = emptyMap(),
+    seededIssuers: Map<String, String> = emptyMap(),
     // The Keystore under the device keys (C-7.6-39, ADR 2026-10.wk3m), null in a build without Knit Anywhere.
     keystore: DeviceKeystore? = null,
     // The device keys' set-aside clock: a monotonic one that counts sleep (`SystemClock.elapsedRealtime` on a phone).

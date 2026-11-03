@@ -113,7 +113,7 @@ private fun directLinkGraph(): Module =
                 onBulk = { peer -> getKoin().getOrNull<DirectLinks>()?.raiseBulk(peer) ?: false },
                 bulkMay = { peer -> getKoin().getOrNull<DirectLinks>()?.mayRaiseBulk(peer) ?: false },
                 bulkRaising = { peer -> getKoin().getOrNull<DirectLinks>()?.bulkUnderWay(peer) ?: false },
-                log = { Log.d(TAG, it) },
+                log = { line -> Log.d(TAG, line) },
                 // Each link up is proven by its lane: the radios close an unproven link claiming the same peer (R3).
                 claims = get(),
             )
@@ -131,7 +131,7 @@ private fun Module.directLinks() =
         val identity = get<Identity>()
         val on = settings.directLinksEnabled.stateIn(scope, SharingStarted.Eagerly, false)
         val pausedUntil = settings.meshPausedUntil.stateIn(scope, SharingStarted.Eagerly, null)
-        val lowPower = get<LowPowerSource>().posture.map { it.active }.stateIn(scope, SharingStarted.Eagerly, false)
+        val lowPower = get<LowPowerSource>().posture.map { posture -> posture.active }.stateIn(scope, SharingStarted.Eagerly, false)
         val links =
             DirectLinks(
                 selfId = { identity.nodeId() },
@@ -147,13 +147,13 @@ private fun Module.directLinks() =
                 // Each signal's `m` and each link's free stamp (L-2-7, L-7-11), and the radios a link beside is made
                 // free for: the composite resolved late, as the demand does.
                 metered = get<InternetGate>()::isMetered,
-                radioLinked = { getKoin().get<MeshTransport>().radioLinked(it) },
+                radioLinked = { peer -> getKoin().get<MeshTransport>().radioLinked(peer) },
                 clock = System::currentTimeMillis,
                 // Each up link's stream goes to the transport, the offerer writing the first HELLO.
                 onStream = { peer, socket, offerer -> get<DirectLinkTransport>().adopt(peer, socket, offerer) },
                 linkBusy = { peer -> get<DirectLinkTransport>().busy(peer) },
                 fieldLog = FieldRecorder { event -> get<FieldLog>().record(event) },
-                log = { Log.d(TAG, it) },
+                log = { line -> Log.d(TAG, line) },
             )
         // Switched off or paused: every link closes and every pending attempt ends. A new default network: every
         // backoff starts over — collected only while the switch is on, so an off phone registers no callback.
@@ -186,25 +186,25 @@ private fun Module.linkDemand() =
                 stuck = { peer, hash -> getKoin().get<MeshManager>().attachmentStuck(peer, hash) },
                 wantedSince = { _, hash -> getKoin().get<MeshManager>().attachmentWantedSince(hash) },
                 // A want held for a fast route may call for a link beside a radio (L-7-11); a plain one never does.
-                fastHeld = { getKoin().get<MeshManager>().attachmentFastHeld(it) },
+                fastHeld = { hash -> getKoin().get<MeshManager>().attachmentFastHeld(hash) },
             )
         LinkDemand(
             pending = { since, until -> pending.between(identity.nodeId(), since, until) },
             offer = { peer, why -> links.offer(peer, why = why) },
             up = { links.links.value.keys },
             lastUpAt = links::lastUpAt,
-            radioLinked = { getKoin().get<MeshTransport>().radioLinked(it) },
+            radioLinked = { peer -> getKoin().get<MeshTransport>().radioLinked(peer) },
             active = { transport.running },
             scope = get(),
             clock = System::currentTimeMillis,
-            log = { Log.d(TAG, it) },
+            log = { line -> Log.d(TAG, line) },
             // The sender's proof of a photo the link carried because no spool would take it (L-7-7, ADR 2026-10.vy27).
             prove = { peers -> getKoin().getOrNull<MeshManager>()?.proveStuckOverLinks(peers) },
             declinedAt = links::declinedAt,
             meteredAt = links::meteredAt,
             idleSince = links::idleSince,
             yieldLink = { peer -> links.close(peer, LinkSession.EndReason.YIELDED) },
-        ).also { it.start() }
+        ).also { demand -> demand.start() }
     }
 
 // A walkie call's hold on its link to [peerId] (docs/VOICE_CALLS.md C-3.11-8, ADR 2026-10.a5yj's walkie amendment): held

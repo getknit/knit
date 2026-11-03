@@ -50,15 +50,18 @@ const val TRANSLATE_WIRED: Boolean = BuildConfig.TRANSLATE
 
 private const val TAG = "Translate"
 
+// What the graph's classes log through, a line at a time.
+private val logLine: (String) -> Unit = { line -> Log.i(TAG, line) }
+
 /** The translation graph, or null in a build without it ([TRANSLATE_WIRED]). */
 fun translateModule(): Module? = if (TRANSLATE_WIRED) translateGraph() else null
 
 private fun translateGraph(): Module =
     module {
-        single { TranslateModelStore(androidContext(), get<AndroidInternetGate>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+        single { TranslateModelStore(androidContext(), get<AndroidInternetGate>(), get<CoroutineScope>(), log = logLine) }
         // The models a direct transfer sends and takes (ADR 2026-11.ejn8); TransferManager resolves it with getOrNull.
         single<TransferModels> { TranslateTransferModels(androidContext(), get()) }
-        single { SlimtEngine(get(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
+        single { SlimtEngine(get(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = logLine) }
         single {
             val engine = get<SlimtEngine>()
             val messages = get<MessageDao>()
@@ -107,7 +110,7 @@ private fun translateGraph(): Module =
                 scope = get<CoroutineScope>(),
                 dispatcher = Dispatchers.Default.limitedParallelism(1),
                 clock = SystemClock::elapsedRealtime,
-                log = { Log.i(TAG, it) },
+                log = logLine,
                 authors = get(),
                 save = { id, done -> messages.setTranslation(id, done.text, done.from.code, done.to.code, done.flagged, done.guessed) },
             )

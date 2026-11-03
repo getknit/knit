@@ -568,7 +568,7 @@ class FramedLink(
         onFirstRecord()
     }
 
-    private suspend fun readLoop(input: java.io.InputStream) {
+    private fun readLoop(input: java.io.InputStream) {
         try {
             while (scope.isActive && !closed) {
                 val msg = LinkFraming.read(input) ?: break
@@ -837,7 +837,7 @@ class FramedLink(
                 // A resume (#116): the asker holds the bytes before the offset, so the stream starts there. Up to the
                 // whole length — a prefix that is already complete gets an empty tail and its end — and anything
                 // else is a whole file. FileInputStream reads from its channel's position.
-                val offset = meta.offset.takeIf { it in 1..length } ?: 0L
+                val offset = meta.offset.takeIf { start -> start in 1..length } ?: 0L
                 if (offset > 0) input.channel.position(offset)
                 val bytes = length - offset
                 txLeft = bytes
@@ -847,7 +847,8 @@ class FramedLink(
                 }
                 // The stream's length rides the header so the receiver can show how far it has got (#115), and so
                 // does the byte it starts at when it is the rest of a cut transfer.
-                val header = FileHeaderWire(meta.kind.wire, meta.key, meta.mime, size = bytes, offset = offset.takeIf { it > 0 })
+                val header =
+                    FileHeaderWire(meta.kind.wire, meta.key, meta.mime, size = bytes, offset = offset.takeIf { start -> start > 0 })
                 LinkFraming.write(out, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(header))
                 val end = feedChunks(out, input)
                 LinkFraming.write(out, LinkFraming.Type.FILE_END)
@@ -863,7 +864,7 @@ class FramedLink(
                 // A windowed feed names the rate its window last measured where a paced one names its pace, and says so
                 // last, so every parse of the line before it holds.
                 val measured = if (end.windowed) synchronized(pendingLock) { inFlight.rate } else 0
-                val rate = measured.takeIf { it > 0 } ?: end.pace.bytesPerSec
+                val rate = measured.takeIf { r -> r > 0 } ?: end.pace.bytesPerSec
                 val clocked = if (end.windowed) " window" else ""
                 log("file ${meta.kind.wire}/${meta.key} ${bytes}B in ${now() - startedAt}ms @$rate → $nodeId$from$clocked")
             }

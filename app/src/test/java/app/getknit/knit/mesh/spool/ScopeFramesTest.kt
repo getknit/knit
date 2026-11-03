@@ -527,7 +527,6 @@ class ScopeFramesTest {
 
     @Test
     fun `only our own frames are pushable into a commons`() {
-        val scope = commonsScope()
         assertTrue(ScopeFrames.pushableToCommons(profileFrame("me", alice).envelope, alice, commonsId))
         assertTrue(ScopeFrames.pushableToCommons(commonsFrame("p1", alice, commonsId).envelope, alice, commonsId))
         assertFalse(ScopeFrames.pushableToCommons(profileFrame("pr", bob).envelope, alice, commonsId))

@@ -127,7 +127,7 @@ class AttachmentDeferPolicy(
     private val windowMs: Long = RADIO_WINDOW_MS,
     private val lastCallMs: Long = LAST_CALL_MS,
     private val ackGraceMs: Long = ACK_GRACE_MS,
-    private val maxRadioArrivals: Int = MAX_RADIO_ARRIVALS,
+    maxRadioArrivals: Int = MAX_RADIO_ARRIVALS,
     private val proofWaitMs: Long = PROOF_WAIT_MS,
 ) {
     // nodeId -> when we last saw it on the presence plane. In memory by design: the plane persists

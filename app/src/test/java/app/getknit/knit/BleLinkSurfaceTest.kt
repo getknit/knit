@@ -89,14 +89,14 @@ class BleLinkSurfaceTest {
     // --- LinkParamsCallback ---
 
     private class Heard : LinkParamsCallback() {
-        val heard = mutableListOf<Triple<LinkParams, Boolean, Int>>()
+        val calls = mutableListOf<Triple<LinkParams, Boolean, Int>>()
 
         override fun onLinkParams(
             params: LinkParams,
             ok: Boolean,
             status: Int,
         ) {
-            heard += Triple(params, ok, status)
+            calls += Triple(params, ok, status)
         }
     }
 
@@ -104,15 +104,15 @@ class BleLinkSurfaceTest {
     fun anUpdateIsReportedInMicrosecondsAndMillisecondsNotHciUnits() {
         val cb = Heard()
         cb.onConnectionUpdated(mockk(), interval = 12, latency = 0, timeout = 500, status = BluetoothGatt.GATT_SUCCESS)
-        assertEquals(Triple(LinkParams(intervalUs = 15_000, latency = 0, timeoutMs = 5_000), true, 0), cb.heard.single())
+        assertEquals(Triple(LinkParams(intervalUs = 15_000, latency = 0, timeoutMs = 5_000), true, 0), cb.calls.single())
     }
 
     @Test
     fun aFailedUpdateIsReportedNotOk() {
         val cb = Heard()
         cb.onConnectionUpdated(mockk(), interval = 36, latency = 0, timeout = 500, status = 0x3B)
-        assertFalse(cb.heard.single().second)
-        assertEquals(0x3B, cb.heard.single().third)
+        assertFalse(cb.calls.single().second)
+        assertEquals(0x3B, cb.calls.single().third)
     }
 
     // --- BleLinkBoost ---

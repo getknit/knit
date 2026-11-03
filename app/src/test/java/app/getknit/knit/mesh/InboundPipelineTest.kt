@@ -112,7 +112,6 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.fromHex
 import app.getknit.knit.mesh.protocol.toHex
-import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.NotifConversation
@@ -483,8 +482,8 @@ class InboundPipelineTest {
         /** When set, decides each classification from its text instead of [flagText]. */
         var flagWhen: ((String) -> Boolean)? = null
 
-        /** When armed, records the `isRoom` scope each inbound classification ran under. */
-        var classifyScopes: MutableList<Boolean>? = null
+        /** When set, hears the `isRoom` scope each inbound classification ran under. */
+        var onClassifyScope: ((isRoom: Boolean) -> Unit)? = null
 
         /** `(name, body)` for every post the pipeline handed to the foreign public channel. */
         val pipeline: InboundPipeline
@@ -500,19 +499,19 @@ class InboundPipelineTest {
             coEvery { peers.profileFrame(any()) } answers { heldProfiles[firstArg()]?.first }
             // The rows that decided on a photo and do not show it yet (ADR 2026-11.4ckq), over the same fake map.
             coEvery { peers.awaitingAvatar(any()) } answers {
-                peerMap.values.filter { it.advertisedAvatar == firstArg<String>() && it.avatarHash != it.advertisedAvatar }
+                peerMap.values.filter { peer -> peer.advertisedAvatar == firstArg<String>() && peer.avatarHash != peer.advertisedAvatar }
             }
             coEvery { peers.advertisedUnknown() } answers {
-                peerMap.values.filter { !it.advertisedKnown && heldProfiles.containsKey(it.nodeId) }.map { it.nodeId }
+                peerMap.values.filter { peer -> !peer.advertisedKnown && heldProfiles.containsKey(peer.nodeId) }.map { peer -> peer.nodeId }
             }
             // The real query orders claimants by updatedAt DESC and takes the first; the fake does the same.
             coEvery { peers.findByLoraNode(any()) } answers {
                 val node = firstArg<Long>()
-                peerMap.values.filter { it.loraNode == node }.maxByOrNull { it.updatedAt }
+                peerMap.values.filter { peer -> peer.loraNode == node }.maxByOrNull { peer -> peer.updatedAt }
             }
             // isAccepted now reads the batch "verified" signal; derive it from the same fake map the repo backs.
-            coEvery { peers.verifiedNodeIds() } answers { peerMap.values.filter { it.verified }.map { it.nodeId } }
-            coEvery { peers.labelIndex() } answers { PeerLabels.index(peerMap.values.map { it.nodeId to it.name }) }
+            coEvery { peers.verifiedNodeIds() } answers { peerMap.values.filter { peer -> peer.verified }.map { peer -> peer.nodeId } }
+            coEvery { peers.labelIndex() } answers { PeerLabels.index(peerMap.values.map { peer -> peer.nodeId to peer.name }) }
             coEvery { messages.exists(any()) } answers { msgMap.containsKey(firstArg<String>()) }
             coEvery { messages.save(any()) } answers { msgMap[firstArg<MessageEntity>().id] = firstArg() }
             coEvery { messages.saveIfAbsent(any()) } answers {
@@ -525,24 +524,24 @@ class InboundPipelineTest {
             coEvery { messages.attachmentFetchRows(any(), any()) } answers {
                 val me = secondArg<String>()
                 msgMap.values
-                    .filter { it.attachmentHash == firstArg<String>() }
-                    .sortedWith(compareBy({ it.sentAt }, { it.id }))
-                    .map {
+                    .filter { msg -> msg.attachmentHash == firstArg<String>() }
+                    .sortedWith(compareBy({ msg -> msg.sentAt }, { msg -> msg.id }))
+                    .map { msg ->
                         AttachmentFetchRow(
-                            it.attachmentHash!!,
-                            it.senderId,
-                            it.attachmentSize,
-                            it.attachmentFetchApproved,
-                            it.senderId == me,
+                            msg.attachmentHash!!,
+                            msg.senderId,
+                            msg.attachmentSize,
+                            msg.attachmentFetchApproved,
+                            msg.senderId == me,
                         )
                     }
             }
             coEvery { messages.repliesAwaiting(any(), any(), any()) } answers {
                 msgMap.values
-                    .filter {
-                        it.replyToId == firstArg<String>() &&
-                            it.replyCheck == MessageEntity.REPLY_UNCHECKED &&
-                            it.senderId != secondArg<String>()
+                    .filter { msg ->
+                        msg.replyToId == firstArg<String>() &&
+                            msg.replyCheck == MessageEntity.REPLY_UNCHECKED &&
+                            msg.senderId != secondArg<String>()
                     }.take(thirdArg())
             }
             coEvery { messages.applyQuoteVerdict(any(), any()) } answers {
@@ -569,21 +568,21 @@ class InboundPipelineTest {
             coEvery { groups.upsert(any()) } answers { groupMap[firstArg<GroupEntity>().groupId] = firstArg() }
             coEvery { groups.awaitingPhoto(any()) } answers {
                 val hash = firstArg<String>()
-                groupMap.values.filter { !it.left && it.photoHash == hash && it.photoShownHash != hash }
+                groupMap.values.filter { group -> !group.left && group.photoHash == hash && group.photoShownHash != hash }
             }
             // isAccepted's group branch reads the thread's senders; back it with the fake message map.
             // Status notices are excluded exactly as the real query is: a notice's senderId is the
             // event's subject, not an author, so it must not make anyone count as having spoken here.
             coEvery { messages.sendersIn(any()) } answers {
                 msgMap.values
-                    .filter { it.conversationId == firstArg<String>() && !it.isStatusNotice }
-                    .map { it.senderId }
+                    .filter { msg -> msg.conversationId == firstArg<String>() && !msg.isStatusNotice }
+                    .map { msg -> msg.senderId }
                     .distinct()
             }
             // The gate on writing a peer status notice — an ordinary message must already exist in the
             // thread. Mirrors the real query, status rows included in what does NOT satisfy it.
             coEvery { messages.hasMessagesIn(any()) } answers {
-                msgMap.values.any { it.conversationId == firstArg<String>() && !it.isStatusNotice }
+                msgMap.values.any { msg -> msg.conversationId == firstArg<String>() && !msg.isStatusNotice }
             }
             // Realistic "nothing held" defaults: relaxed mockk otherwise returns "" for a String? and a bare
             // Object (not a byte[]) for a ByteArray?, which would crash the attachment-screen path in onObtained.
@@ -638,7 +637,7 @@ class InboundPipelineTest {
                     flushPending = { flushed += it },
                     classifyText = { text, _, isRoom ->
                         if (failClassify) error("moderation boom")
-                        classifyScopes?.add(isRoom)
+                        onClassifyScope?.invoke(isRoom)
                         flagWhen?.invoke(text) ?: flagText
                     },
                     resealUnacked = { resealed += it },
@@ -2581,11 +2580,11 @@ class InboundPipelineTest {
     private fun Rig.backAuthoredByMessages() {
         coEvery { messages.conversationsIAuthoredIn(any()) } answers {
             msgMap.values
-                .filter { it.senderId == firstArg<String>() && it.originNode == null }
-                .map { it.conversationId }
+                .filter { msg -> msg.senderId == firstArg<String>() && msg.originNode == null }
+                .map { msg -> msg.conversationId }
                 .distinct()
         }
-        coEvery { messages.distinctConversations() } answers { msgMap.values.map { it.conversationId }.distinct() }
+        coEvery { messages.distinctConversations() } answers { msgMap.values.map { msg -> msg.conversationId }.distinct() }
     }
 
     @Test
@@ -2738,7 +2737,7 @@ class InboundPipelineTest {
 
             rig.deliver(alice, rig.groupChat(alice, forged, id = "gm-smuggle", body = "hi"))
 
-            assertEquals(members, GroupMembersStore.decode(rig.groupMap[id]!!.members))
+            assertEquals(members, GroupMembersStore.decode(rig.groupMap.getValue(id).members))
             assertFalse("a frame with a smuggled member must not deliver", rig.msgMap.containsKey("gm-smuggle"))
             assertEquals(1L, rig.drops(DropReason.GROUP_ROSTER_REFUSED))
         }
@@ -2759,7 +2758,7 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.groupChat(alice, shrunk, id = "gm-shrunk", body = "hi"))
 
             assertEquals("hi", rig.msgMap["gm-shrunk"]?.body)
-            assertEquals(members, GroupMembersStore.decode(rig.groupMap[id]!!.members))
+            assertEquals(members, GroupMembersStore.decode(rig.groupMap.getValue(id).members))
         }
 
     @Test
@@ -2778,7 +2777,7 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.groupChat(alice, cutOut, id = "gm-cut", body = "still ours"))
 
             assertEquals("still ours", rig.msgMap["gm-cut"]?.body)
-            assertEquals(members, GroupMembersStore.decode(rig.groupMap[id]!!.members))
+            assertEquals(members, GroupMembersStore.decode(rig.groupMap.getValue(id).members))
         }
 
     @Test
@@ -2843,7 +2842,7 @@ class InboundPipelineTest {
 
             rig.deliver(alice, rig.groupUpdate(alice, full))
 
-            assertEquals(founding, GroupMembersStore.decode(rig.groupMap[id]!!.members))
+            assertEquals(founding, GroupMembersStore.decode(rig.groupMap.getValue(id).members))
         }
 
     @Test
@@ -4228,7 +4227,7 @@ class InboundPipelineTest {
                 rig.broadcastChat(bob, id = "r1", body = "lol", replyTo = ReplyRef("o1", alice.nodeId, "Alice", "I hate you all")),
             )
 
-            val reply = rig.msgMap["r1"]!!
+            val reply = rig.msgMap.getValue("r1")
             assertEquals(MessageEntity.REPLY_VERIFIED, reply.replyCheck)
             assertEquals("Meet at the trailhead", reply.replyToSnippet)
             assertFalse(reply.replyToFlagged)
@@ -4250,14 +4249,14 @@ class InboundPipelineTest {
                 bob,
                 rig.broadcastChat(bob, id = "r1", body = "lol", replyTo = ReplyRef("o1", alice.nodeId, "Alice", "something vile")),
             )
-            val early = rig.msgMap["r1"]!!
+            val early = rig.msgMap.getValue("r1")
             assertEquals(MessageEntity.REPLY_UNCHECKED, early.replyCheck)
             assertTrue("the unverified words were screened", early.replyToFlagged)
             assertEquals(MessageEntity.MODERATION_NONE, early.moderation)
 
             rig.deliver(alice, rig.broadcastChat(alice, id = "o1", body = "Meet at the trailhead"))
 
-            val settled = rig.msgMap["r1"]!!
+            val settled = rig.msgMap.getValue("r1")
             assertEquals(MessageEntity.REPLY_VERIFIED, settled.replyCheck)
             assertEquals("Meet at the trailhead", settled.replyToSnippet)
             assertFalse("judged on the original's own words now", settled.replyToFlagged)
@@ -4279,7 +4278,7 @@ class InboundPipelineTest {
                 rig.broadcastChat(bob, id = "r1", body = "lol", replyTo = ReplyRef("o1", carol.nodeId, "Carol", "words Carol never said")),
             )
 
-            val reply = rig.msgMap["r1"]!!
+            val reply = rig.msgMap.getValue("r1")
             assertEquals(MessageEntity.REPLY_MISMATCH, reply.replyCheck)
             assertEquals("", reply.replyToSnippet)
         }
@@ -4302,7 +4301,7 @@ class InboundPipelineTest {
             )
 
             assertEquals(listOf("Message hidden", "Message hidden"), bodies)
-            val reply = rig.msgMap["x2"]!!
+            val reply = rig.msgMap.getValue("x2")
             assertEquals("its own words were not flagged", MessageEntity.MODERATION_NONE, reply.moderation)
             assertTrue(reply.replyToFlagged)
             // The quote keeps the original's words for a reader who turns filtering off.
@@ -4322,8 +4321,8 @@ class InboundPipelineTest {
                 rig.broadcastChat(bob, id = "r2", body = "lol", replyTo = ReplyRef("o9", "someone", "A".repeat(500), "w".repeat(5_000))),
             )
 
-            assertNull(rig.msgMap["r1"]!!.replyToId)
-            val cut = rig.msgMap["r2"]!!
+            assertNull(rig.msgMap.getValue("r1").replyToId)
+            val cut = rig.msgMap.getValue("r2")
             assertEquals(REPLY_SNIPPET_MAX, cut.replyToSnippet!!.length)
             assertEquals(TextLimits.DISPLAY_NAME, cut.replyToAuthor!!.length)
         }
@@ -5470,7 +5469,7 @@ class InboundPipelineTest {
             val alice = party()
             rig.deliver(alice, rig.profile(alice, name = "Alice"))
             val scopes = mutableListOf<Boolean>()
-            rig.classifyScopes = scopes
+            rig.onClassifyScope = { scopes += it }
             val notification = slot<NotifMessage>()
             val conversation = slot<NotifConversation>()
             coEvery { rig.notifier.notify(capture(notification), capture(conversation), any(), any(), any()) } returns Unit
@@ -5778,7 +5777,7 @@ class InboundPipelineTest {
             // `isRoom = true` Nearby gets, which is what `Conversations.isPublicRoom` is for.
             val rig = Rig(backgroundScope)
             val scopes = mutableListOf<Boolean>()
-            rig.classifyScopes = scopes
+            rig.onClassifyScope = { scopes += it }
 
             rig.pipeline.deliverMeshPost(heardPost("hi"))
             advanceUntilIdle()
@@ -5796,7 +5795,7 @@ class InboundPipelineTest {
             val alice = party()
             rig.pin(alice)
             val scopes = mutableListOf<Boolean>()
-            rig.classifyScopes = scopes
+            rig.onClassifyScope = { scopes += it }
 
             rig.deliver(alice, rig.broadcastChat(alice, id = "b1", body = "hello room"))
             rig.deliver(alice, rig.broadcastChat(alice, id = "b1", body = "hello room"))
@@ -6232,7 +6231,7 @@ class InboundPipelineTest {
             rig.deliver(alice, env)
 
             // Bounded on the pipeline's own clock, so the edge is exact rather than "somewhere below".
-            assertEquals(rig.nowMs + Protocol.MAX_FUTURE_SKEW_MS, rig.msgMap["fut"]!!.sentAt)
+            assertEquals(rig.nowMs + Protocol.MAX_FUTURE_SKEW_MS, rig.msgMap.getValue("fut").sentAt)
         }
 
     // Every sender-supplied last-writer-wins clock the pipeline stores is bounded by the same window as

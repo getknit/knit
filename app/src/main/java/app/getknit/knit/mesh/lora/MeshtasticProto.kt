@@ -542,7 +542,7 @@ internal object MeshtasticProto {
         var ackProof = AckProof.ABSENT
         while (reader.hasMore) {
             val tag = reader.readTag()
-            when (val field = tag ushr WireType.FIELD_SHIFT) {
+            when (tag ushr WireType.FIELD_SHIFT) {
                 MP_FROM -> {
                     from = reader.readFixed32()
                 }

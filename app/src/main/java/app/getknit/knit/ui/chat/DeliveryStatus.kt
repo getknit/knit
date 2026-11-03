@@ -97,6 +97,7 @@ data class DeliveryText(
 
 /** Formats a [DeliveryText] against the current resources. */
 @Composable
+@Suppress("SpreadOperator") // stringResource takes varargs; args stays a List so a DeliveryText compares by value
 fun DeliveryText.resolve(): String = stringResource(resId, *args.toTypedArray())
 
 /**

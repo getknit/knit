@@ -150,7 +150,7 @@ internal object ConnectBackoffs {
  */
 internal object ConnectFailClassifier {
     fun classify(cause: Throwable?): ConnectFailReason {
-        val msg = (cause?.message ?: "").lowercase()
+        val msg = cause?.message.orEmpty().lowercase()
         return when {
             cause is java.net.SocketTimeoutException -> ConnectFailReason.TIMEOUT
             "radio" in msg || "enomem" in msg || "no resources" in msg || "busy" in msg -> ConnectFailReason.RADIO

@@ -32,6 +32,6 @@ private fun devViewGraph(): Module =
         }
         viewModel { MeshHudViewModel(get(), get(), get<ForwardDao>(), get(), get()) }
         // The event console (the ADR's slice 2): the field log's tap, following the view's switch for the process.
-        single { EventConsole().also { it.follow(get<SettingsStore>().debugDevView, get<CoroutineScope>()) } }
+        single { EventConsole().also { console -> console.follow(get<SettingsStore>().debugDevView, get<CoroutineScope>()) } }
         viewModel { EventConsoleViewModel(get(), get()) }
     }

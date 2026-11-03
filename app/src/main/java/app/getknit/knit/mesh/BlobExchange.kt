@@ -160,7 +160,7 @@ class BlobExchange(
     private val now: () -> Long = System::currentTimeMillis,
     // Bounds (overridable so tests can exercise eviction with small values).
     private val maxFetching: Int = MAX_FETCHING,
-    private val maxServeMemo: Int = MAX_SERVE_MEMO,
+    maxServeMemo: Int = MAX_SERVE_MEMO,
     private val fetchTtlMs: Long = FETCH_TTL_MS,
     // How long an ask has to bring a header in before the next holder is tried ([FIRST_ASK_GRACE_MS]). Injectable so
     // `mesh/lab` can hold one open past any wall-clock stall of its own; production takes the default.
@@ -1231,12 +1231,13 @@ class BlobExchange(
         val best = askableHolders.minWithOrNull(byTier(w, kept))?.takeIf { asked.isEmpty() }
         if (best != null && widenGate == null && answersIn(w, best, kept, answering)) {
             val tier = tierOf(w, best, kept)
-            w.fetch = Fetch(best.id, w.hash8, tier, t, graceFor(w, best, kept))
+            val fetch = Fetch(best.id, w.hash8, tier, t, graceFor(w, best, kept))
+            w.fetch = fetch
             w.askedAt[best.id] = t
             p.ask(best.peer, arm = tier == Tier.FastArm, line = "fetch")
             p.why = "${tier.label}, load ${w.answers.getValue(best.id).load}"
             p.events += BlobEvent.Fetch
-            p.waitFor(w.fetch!!.graceMs)
+            p.waitFor(fetch.graceMs)
             return true
         }
         if (holders.isEmpty() && answering.isEmpty()) return false
@@ -1532,7 +1533,7 @@ class BlobExchange(
             }
         // Appended, never woven in: the trials grep the lines above as they stand (`first (…)`, `widened`). The budget
         // and the deadline every ask carries (#195) go last.
-        val reach = " [pull ${plan.pull}${plan.until?.let { ", until $it" } ?: ""}]"
+        val reach = " [pull ${plan.pull}${plan.until?.let { ", until $it" }.orEmpty()}]"
         return (if (plan.fastOnly) "$line [fast-only]" else line) + reach
     }
 
@@ -1541,7 +1542,7 @@ class BlobExchange(
      * the store ([BlobStore.storing]). Read in that order, the path's own backwards — a file joins the next stage
      * before it leaves the last, so a blob moving on between the two reads is seen by the second (#138).
      */
-    private suspend fun onTheWay(hash: String): Boolean = hash in transport.arrivingFiles() || store.storing(hash)
+    private fun onTheWay(hash: String): Boolean = hash in transport.arrivingFiles() || store.storing(hash)
 
     /** [onTheWay], or already held: read last, for the same reason. */
     private suspend fun onTheWayOrHeld(hash: String): Boolean = onTheWay(hash) || store.has(hash)
@@ -1843,8 +1844,8 @@ class BlobExchange(
             onEvent(BlobEvent.AnswerIgnored)
             return
         }
-        val idPart = content.re?.let { " #${it.take(LOG_ID_CHARS)}" } ?: ""
-        val inMs = latency?.let { " in $it ms" } ?: ""
+        val idPart = content.re?.let { " #${it.take(LOG_ID_CHARS)}" }.orEmpty()
+        val inMs = latency?.let { " in $it ms" }.orEmpty()
         log("blob answer ← $from$idPart$inMs: ${touched.joinToString { itemLabel(it) }} load=${content.load ?: 0}")
         val linked = linkedNow()
         stepping { touched.forEach { step(it.hash, linked) } }
@@ -1970,7 +1971,7 @@ class BlobExchange(
             return
         }
         onEvent(BlobEvent.ProofAnswerTaken)
-        val idPart = content.re?.let { " #${it.take(LOG_ID_CHARS)}" } ?: ""
+        val idPart = content.re?.let { " #${it.take(LOG_ID_CHARS)}" }.orEmpty()
         log("blob proof ← $from$idPart: ${items.joinToString { itemLabel(it) }}")
         // An unknown state is never HAVE (ADR 2026-10.6e5t); FETCHING is bytes still on their way in, unchecked.
         for ((hash) in items.filter { it.state in HELD }) {
@@ -2784,8 +2785,9 @@ class BlobExchange(
                 w.until = reach.until
             }
 
-            w.until != null -> {
-                w.until = reach.until?.let { maxOf(it, w.until!!) }
+            else -> {
+                val held = w.until
+                if (held != null) w.until = reach.until?.let { maxOf(it, held) }
             }
         }
     }
@@ -3603,6 +3605,6 @@ class BlobExchange(
             }
 
         private fun itemLabel(item: BlobHasItem): String =
-            "${item.hash.take(LOG_HASH_CHARS)} ${stateLabel(item.state)}${item.size?.let { " ${it}B" } ?: ""}"
+            "${item.hash.take(LOG_HASH_CHARS)} ${stateLabel(item.state)}${item.size?.let { " ${it}B" }.orEmpty()}"
     }
 }

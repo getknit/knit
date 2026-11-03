@@ -453,7 +453,7 @@ class LinkArq(
                 inq.addLast(payload)
                 rcvNext++
                 while (ooo.isNotEmpty() && ooo.firstKey() == rcvNext) {
-                    inq.addLast(ooo.remove(rcvNext)!!)
+                    inq.addLast(checkNotNull(ooo.remove(rcvNext)))
                     rcvNext++
                 }
                 ackOwed++

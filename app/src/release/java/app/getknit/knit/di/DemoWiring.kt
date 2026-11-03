@@ -1,3 +1,6 @@
+// Each seam returns a constant here because it is a stand-in for src/debug's function of the same signature.
+@file:Suppress("FunctionOnlyReturningConstant")
+
 package app.getknit.knit.di
 
 import app.getknit.knit.call.CallMedia

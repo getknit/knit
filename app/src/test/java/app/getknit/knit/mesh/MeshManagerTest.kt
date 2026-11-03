@@ -121,7 +121,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -345,7 +344,7 @@ class MeshManagerTest {
         // The trimmed hashes go first: the re-arm steps its wants in this order, so a test whose control is the last
         // carried hash has stepped every held one by the time its ask is seen.
         override suspend fun attachmentsNeedingFetch(now: Long): Map<String, String> =
-            trimmed + carried.associate { it.hash to (it.senderId ?: "") }
+            trimmed + carried.associate { it.hash to it.senderId.orEmpty() }
 
         override suspend fun carriedAttachments(now: Long): List<CarriedAttachment> = carried
 

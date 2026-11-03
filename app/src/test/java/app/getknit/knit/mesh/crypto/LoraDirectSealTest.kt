@@ -34,7 +34,7 @@ class LoraDirectSealTest {
     private val alice = Party(1)
     private val bob = Party(2)
     private val carol = Party(3)
-    private var now = 1_800_000_000_000L
+    private val now = 1_800_000_000_000L
 
     /** [self]'s seal with every party in [pinned] indexed by its key. */
     private fun sealFor(

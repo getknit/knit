@@ -325,7 +325,10 @@ class InternetRelayViewModel(
                                     emptyList()
                                 },
                             takesRooms = commons != null && live?.adverts?.runsAny == true,
-                            calls = stores?.let { live?.let { relayCalls(it, SpoolUrl.hostname(url)?.let(stores.tickets::get), clock()) } },
+                            calls =
+                                stores?.let {
+                                    live?.let { status -> relayCalls(status, SpoolUrl.hostname(url)?.let(stores.tickets::get), clock()) }
+                                },
                             account = stores?.let { relayAccount(SpoolUrl.hostname(url), stores.keys, stores.keyStates) },
                             freeUploads = stores?.let { SpoolUrl.hostname(url)?.let(stores.free::get) },
                             maxAttachBytes = live?.maxAttachBytes,

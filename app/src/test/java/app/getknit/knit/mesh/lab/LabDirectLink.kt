@@ -136,7 +136,7 @@ internal class LabLinkRecord(
 internal class LabLinkPlane(
     private val plane: DirectLinkTransport,
     private val files: MutableList<String>,
-    private val handOff: LabFileGate,
+    handOff: LabFileGate,
     private val record: LabLinkRecord,
 ) : MeshTransport by plane {
     private val collectors = LabCollectors()

@@ -44,7 +44,7 @@ class DirectCallPathTest {
         val wifi = FakeDirectWifi(log)
         val lease = DirectWifiLease(wifi)
         val lines = mutableListOf<String>()
-        val field = Collections.synchronizedList(mutableListOf<FieldEvent>())
+        val field: MutableList<FieldEvent> = Collections.synchronizedList(mutableListOf())
 
         @Volatile var enabled = true
         val path =

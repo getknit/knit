@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * Ingests picked/keyboard/captured images into the encrypted, content-addressed `blobs` table (see
@@ -672,7 +673,8 @@ class AttachmentStore(
             stripped.frames <= ANIMATED_PASS_MAX_FRAMES &&
             stripped.bytes.size <= ANIMATED_PASS_MAX_BYTES
 
-    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it) }
 
     private companion object {
         const val TAG = "AttachmentStore"

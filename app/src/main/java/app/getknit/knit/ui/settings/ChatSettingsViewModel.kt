@@ -24,7 +24,7 @@ import java.util.Locale
  */
 class ChatSettingsViewModel(
     private val settings: SettingsStore,
-    private val reader: ReaderLanguage? = null,
+    reader: ReaderLanguage? = null,
 ) : ViewModel() {
     /** Whether this phone sends and shows typing indicators on every plane (on by default — see the store's KDoc). */
     val typingIndicatorsEnabled: StateFlow<Boolean> =

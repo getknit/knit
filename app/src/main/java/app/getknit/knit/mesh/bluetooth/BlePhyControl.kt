@@ -69,7 +69,7 @@ internal class BlePhyControl(
     // After every PHY report — the first read and each change — so the transport can republish what links are on.
     private val onPhyKnown: () -> Unit = {},
     // On the client's loss ([lostAt]), off every lock: the silent-link check probes and looks again (#203).
-    private val onLost: () -> Unit = {},
+    onLost: () -> Unit = {},
 ) {
     private val stepper = PhyStepper(tuning)
     private val fade = LinkFade(tuning)

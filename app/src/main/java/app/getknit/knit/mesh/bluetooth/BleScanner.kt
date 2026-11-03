@@ -37,7 +37,7 @@ internal class BleScanner(
     // The presence scan's second filter, on the UUID in a service-UUID list: how an iPhone is found. Never the side
     // channel's, whose pages always carry service data.
     private val matchesServiceUuid: Boolean = false,
-    private val onFailed: (Int) -> Unit = {},
+    onFailed: (Int) -> Unit = {},
 ) {
     private val callback =
         object : ScanCallback() {

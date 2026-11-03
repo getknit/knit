@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.protocol
 
 import java.util.Base64
+import java.util.Locale
 
 /**
  * The canonical text forms the wire carries for bytes — a lowercase 64-hex content hash, a `g-` + 24-hex
@@ -100,7 +101,7 @@ internal object CanonicalText {
         return bytes?.takeIf { hex(it) == hex }
     }
 
-    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
 
     /** A definite-length CBOR text item for a short ASCII [s] (≤ 23 chars: one header byte). */
     private fun cborText(s: String): ByteArray = byteArrayOf((CBOR_TEXT_BASE + s.length).toByte()) + s.encodeToByteArray()

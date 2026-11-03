@@ -107,7 +107,7 @@ internal object SqlCipherKey {
 
     /** An open, keyed file; [rekey] re-encrypts every page under [key]. */
     interface KeyedFile : Closeable {
-        fun rekey(key: ByteArray)
+        fun rekey(newKey: ByteArray)
     }
 
     private object NativeOpen : KeyedOpen {
@@ -118,7 +118,7 @@ internal object SqlCipherKey {
             // Keying is verified inside the open (SQLCipher reads sqlite_schema), so a wrong key throws here.
             val db = SQLiteDatabase.openDatabase(file.absolutePath, key, null, SQLiteDatabase.OPEN_READWRITE, KeepFiles, null)
             return object : KeyedFile {
-                override fun rekey(key: ByteArray) = db.changePassword(key)
+                override fun rekey(newKey: ByteArray) = db.changePassword(newKey)
 
                 override fun close() = db.close()
             }

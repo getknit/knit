@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -387,7 +388,7 @@ class DeviceKeys(
             digest.update(host.toByteArray(Charsets.UTF_8))
             digest.update(0)
             digest.update(key.toByteArray(Charsets.US_ASCII))
-            return digest.digest().joinToString("") { "%02x".format(it) }.take(SLOT_HEX_CHARS)
+            return digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it) }.take(SLOT_HEX_CHARS)
         }
 
         /** Every pair of [slot] has an alias starting with this. */

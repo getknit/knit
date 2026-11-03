@@ -145,6 +145,7 @@ class VideoScreeningInstrumentedTest {
      * score in clip order, how many of the 12 frames differ, the verdict.
      */
     @Test
+    @Suppress("CyclomaticComplexMethod") // one pass over the corpus, a branch for each verdict it reports
     fun aPushedCorpusIsScreenedAsItWouldBeSent() {
         val root = InstrumentationRegistry.getArguments().getString("clipDir") ?: CORPUS
         val clips =

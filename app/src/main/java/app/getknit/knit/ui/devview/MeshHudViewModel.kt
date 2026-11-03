@@ -25,12 +25,12 @@ import kotlinx.coroutines.flow.stateIn
 class MeshHudViewModel(
     private val mesh: MeshController,
     private val metrics: MeshMetrics,
-    private val forward: ForwardDao,
+    forward: ForwardDao,
     private val settings: SettingsStore,
     private val startGate: MeshStartGate,
-    private val clock: () -> Long = System::currentTimeMillis,
-    private val tickMs: Long = TICK_MS,
-    private val custodyEvery: Int = CUSTODY_EVERY,
+    clock: () -> Long = System::currentTimeMillis,
+    tickMs: Long = TICK_MS,
+    custodyEvery: Int = CUSTODY_EVERY,
 ) : ViewModel() {
     val reading: StateFlow<HudReading?> =
         flow {

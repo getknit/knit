@@ -150,6 +150,7 @@ class BackupRoundTripTest {
      * carry the person's choices but not the phone-bound keys, with the two a restore sets.
      */
     @Test
+    @Suppress("LongMethod") // one restore end to end, checked at every reader the relaunched process builds
     fun aRestoreReplacesAnotherPhoneAndTheAppsOwnReadersFindTheFirst() =
         runBlocking {
             val first = SandboxContext(context, File(root, "first"))

@@ -63,7 +63,7 @@ class LinkArqTest {
         private val departures = ArrayDeque<Long>()
 
         // Each data segment's seq the first time it is sent, in the order it reached the path.
-        val firstSends = java.util.Collections.synchronizedList(ArrayList<Long>())
+        val firstSends: MutableList<Long> = java.util.Collections.synchronizedList(ArrayList<Long>())
         private val seen = java.util.Collections.synchronizedSet(HashSet<Long>())
 
         fun send(datagram: ByteArray): Boolean {

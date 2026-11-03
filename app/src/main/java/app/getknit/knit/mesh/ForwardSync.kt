@@ -306,7 +306,7 @@ class ForwardSync(
  */
 internal class LinkPushRounds(
     private val lapseMs: Long = SeenSet.DEFAULT_TTL_MS,
-    private val maxPeers: Int = MAX_PEERS,
+    maxPeers: Int = MAX_PEERS,
 ) {
     private class Memo {
         // The ids the last round handed to `send` for this peer.

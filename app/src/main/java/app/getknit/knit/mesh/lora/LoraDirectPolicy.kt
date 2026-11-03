@@ -373,7 +373,7 @@ internal class LoraDirectPolicy(
 
     /** Takes what is parked for [peerId]: to offer again on an ack, or to drop on a failure. */
     @Synchronized
-    fun unpark(peerId: String): List<Parked> = parked.remove(peerId)?.toList() ?: emptyList()
+    fun unpark(peerId: String): List<Parked> = parked.remove(peerId)?.toList().orEmpty()
 
     /**
      * Forgets every mark, parked offer and held frame — the board is gone, and with it the route each was about. A held

@@ -40,7 +40,7 @@ internal class BleLinkTuner(
     // The elapsed clock (`SystemClock.elapsedRealtime`): the second close's wait runs on it.
     private val now: () -> Long,
     // Every update the link reports, whoever asked (binder thread), and the loop's end: whether it had attached.
-    private val onParams: (LinkParams, ok: Boolean) -> Unit = { _, _ -> },
+    onParams: (LinkParams, ok: Boolean) -> Unit = { _, _ -> },
     private val onEnded: (attached: Boolean) -> Unit = {},
     // When set, called instead of [onEnded] for a loop that ended without making a client (the link was gone, or
     // `connectGatt` refused): nothing can register late, so an arm's slot is free at once (#150). Unset, [onEnded] hears it.

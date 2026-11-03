@@ -40,7 +40,7 @@ class SpoolWorkerStopLabTest {
         lab.close()
     }
 
-    private suspend fun LabNode.dmScopeWith(peer: LabNode) =
+    private fun LabNode.dmScopeWith(peer: LabNode) =
         manager
             .spoolStatus()
             .flatMap { it.scopes }

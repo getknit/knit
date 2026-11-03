@@ -19,7 +19,7 @@ import java.nio.ByteOrder
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CallCaptionerTest {
-    private var now = 1_000L
+    private val now = 1_000L
     private var modelReady = true
     private var switchedOn = true
 

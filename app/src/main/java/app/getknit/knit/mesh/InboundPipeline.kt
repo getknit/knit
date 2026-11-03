@@ -126,6 +126,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
@@ -1741,7 +1742,7 @@ class InboundPipeline(
     ): suspend (MessageEntity) -> Unit =
         { row ->
             commit {
-                val compactFirst = loraSeen.find(env.id)?.takeIf { it.peerId == env.senderId } != null
+                val compactFirst = loraSeen.find(env.id)?.takeIf { seen -> seen.peerId == env.senderId } != null
                 if (compactFirst) {
                     loraSeen.markRatchetDone(env.id)
                 } else {
@@ -2923,7 +2924,7 @@ class InboundPipeline(
      * happened in [verifyInbound] (the frame signature covers the whole envelope), so this only needs
      * our own hybrid private key.
      */
-    private suspend fun decrypt(
+    private fun decrypt(
         env: RelayEnvelope,
         enc: EncEnvelope,
         me: String,
@@ -4221,7 +4222,7 @@ class InboundPipeline(
      * 2026-10.9rh6), this is where a DM's or a group's flagged text would otherwise land in the shade.
      * Attachment-only messages have a blank body, so a placeholder names the attachment and they still notify.
      */
-    private suspend fun notificationBody(
+    private fun notificationBody(
         content: ChatContent,
         fileName: String?,
         hidden: Boolean,
@@ -4335,7 +4336,7 @@ class InboundPipeline(
         when {
             hash == null -> null
             video -> labels.video
-            fileName != null -> labels.file.format(fileName)
+            fileName != null -> labels.file.format(Locale.getDefault(), fileName)
             VoiceAudio.isVoice(mime) -> labels.voice
             mime == LinkPreviewBlob.MIME -> labels.link
             mime == "image/gif" -> labels.gif
@@ -4389,7 +4390,7 @@ class InboundPipeline(
                         ),
                 )
             }
-        notifyWithBody(env, target.conversationId, labels.reaction.format(emoji, snippet), key = key)
+        notifyWithBody(env, target.conversationId, labels.reaction.format(Locale.getDefault(), emoji, snippet), key = key)
     }
 
     /** Whether [nodeId] reads [conversationId]: the DM's peer, a member on the group's roster, anyone in a room. */

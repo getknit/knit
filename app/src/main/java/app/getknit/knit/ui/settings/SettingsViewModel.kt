@@ -108,8 +108,8 @@ class SettingsViewModel(
     lowPowerPosture: Flow<LowPowerPosture>,
     // C-3.3-7: which incoming calls the person takes, and the kinds this build wires, for the Calls row.
     intake: Flow<CallIntake> = flowOf(CallIntake()),
-    private val liveCalls: Boolean = true,
-    private val meshCalls: Boolean = false,
+    liveCalls: Boolean = true,
+    meshCalls: Boolean = false,
     // The person's Settings › Wi-Fi Aware switch (GitHub #44); null reads on and writes nothing (tests that skip it).
     private val awareSwitch: AwareSwitch? = null,
 ) : ViewModel() {

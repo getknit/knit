@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.protocol
 
 import app.getknit.knit.identity.NodeId
+import java.util.Locale
 
 /**
  * The mesh protocol version and capability registry, plus the codec for the endpoint-info advert string.
@@ -354,7 +355,7 @@ object Protocol {
     private fun formOf(hex: String): String =
         NodeId.fromBytes(ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(RADIX).toByte() })
 
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(Locale.ROOT, it) }
 
     private const val RADIX = 16
 }

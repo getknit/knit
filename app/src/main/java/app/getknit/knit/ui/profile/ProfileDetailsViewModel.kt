@@ -203,7 +203,7 @@ class ProfileDetailsViewModel(
     // The same dependency, for the same reason, that `GroupDetailsViewModel` takes.
     // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity.
     @field:SuppressLint("StaticFieldLeak") private val context: Context,
-    private val clock: () -> Long = System::currentTimeMillis,
+    clock: () -> Long = System::currentTimeMillis,
     // Voice calls (experimental, di/CallWiring): null in a build that wires none, which hides the Call button.
     private val calls: CallManager? = null,
     // Pinned messages (ADR 2026-10.2r7e): blocking this peer unpins what they sent. Null in a rig that wires none.

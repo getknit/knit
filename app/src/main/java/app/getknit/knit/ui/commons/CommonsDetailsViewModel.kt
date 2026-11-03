@@ -1,6 +1,5 @@
 package app.getknit.knit.ui.commons
 
-import android.annotation.SuppressLint
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -52,8 +51,7 @@ class CommonsDetailsViewModel(
     private val meshManager: MeshController,
     relayFacts: Flow<RelayFacts>,
     identity: Identity,
-    // StaticFieldLeak: Koin hands every ViewModel the application context (`androidContext()`), never an Activity.
-    @field:SuppressLint("StaticFieldLeak") private val context: Context,
+    context: Context,
 ) : ViewModel() {
     private val me = MutableStateFlow<String?>(null)
 

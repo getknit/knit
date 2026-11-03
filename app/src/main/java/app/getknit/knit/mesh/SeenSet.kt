@@ -8,7 +8,7 @@ package app.getknit.knit.mesh
  * has elapsed. [clock] is injectable for deterministic tests.
  */
 class SeenSet(
-    private val maxSize: Int = 4096,
+    maxSize: Int = 4096,
     private val ttlMillis: Long = DEFAULT_TTL_MS,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {

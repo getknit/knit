@@ -1,17 +1,6 @@
 package app.getknit.knit.mesh.lab
 
-import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
-import app.getknit.knit.mesh.BlobExchange
-import app.getknit.knit.mesh.BulkRoute
-import app.getknit.knit.mesh.Peer
-import app.getknit.knit.mesh.protocol.BlobReqContent
-import app.getknit.knit.mesh.protocol.FrameId
-import app.getknit.knit.mesh.protocol.FrameType
-import app.getknit.knit.mesh.protocol.RelayEnvelope
-import app.getknit.knit.mesh.protocol.WireCodec
-import app.getknit.knit.mesh.protocol.WireEnvelope
-import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -298,14 +287,14 @@ class StrandedAttachmentLabTest : StrandedLabBase() {
                 val before = pulls(st.bob, st.carol) to pulls(st.carol, st.bob)
                 lab.unlink(st.bob, st.carol)
                 lab.clock.advance(FLAP_MS)
-                two.forEach { it.sweepExpired() }
+                two.forEach { node -> node.sweepExpired() }
                 val digests = st.bob.transport.digestsSent.size to st.carol.transport.digestsSent.size
                 lab.link(st.bob, st.carol)
                 // The link-up batch's last send is its digest: its re-arm, query and newcomer pull went ahead of it.
                 lab.await(1) {
                     if (st.bob.transport.digestsSent.size > digests.first && st.carol.transport.digestsSent.size > digests.second) 1 else 0
                 }
-                two.forEach { it.reoffer() }
+                two.forEach { node -> node.reoffer() }
                 quiesce(two)
                 perRound += (pulls(st.bob, st.carol) - before.first) to (pulls(st.carol, st.bob) - before.second)
             }

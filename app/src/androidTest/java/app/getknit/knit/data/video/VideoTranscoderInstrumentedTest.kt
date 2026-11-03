@@ -32,7 +32,8 @@ import java.io.File
  * The source is made here, by Transformer, from a drawn still, so the test needs no video asset. Runs on the emulator
  * (the platform's software HEVC encoder) and on hardware, where the encode time it logs is the number that matters.
  *
- *     ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=app.getknit.knit.data.video.VideoTranscoderInstrumentedTest
+ *     ./gradlew :app:connectedDebugAndroidTest \
+ *         -Pandroid.testInstrumentationRunnerArguments.class=app.getknit.knit.data.video.VideoTranscoderInstrumentedTest
  */
 @OptIn(UnstableApi::class)
 class VideoTranscoderInstrumentedTest {

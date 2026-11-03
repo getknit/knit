@@ -16,7 +16,7 @@ package app.getknit.knit.mesh.bluetooth
  * Pure and thread-safe: the scan loop starts and cancels spells, the transport's link edges end them.
  */
 internal class ColdSightings(
-    private val maxPeers: Int = MAX_PEERS,
+    maxPeers: Int = MAX_PEERS,
 ) {
     private class Spell(
         val peer: String,

@@ -52,7 +52,7 @@ internal class DemoLoraPlane : LoraPlaneStatus {
         const val CHANNEL_INDEX = 1
 
         /** Node number → the `!` id on the screen, the `Knit 9f2c` mesh name, and the board-name check. */
-        private val NODE_NUM = 0xDA3C9F2Cu
+        private const val NODE_NUM = 0xDA3C9F2Cu
 
         /** The board's firmware. Shown on the screen, and what decides the identity a setup writes it. */
         private const val FIRMWARE = "2.5.20.4c97351"

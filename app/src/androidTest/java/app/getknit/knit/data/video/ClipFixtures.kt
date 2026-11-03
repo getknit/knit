@@ -91,12 +91,12 @@ object ClipFixtures {
                 .addListener(
                     object : Transformer.Listener {
                         override fun onCompleted(
-                            composition: Composition,
+                            exported: Composition,
                             exportResult: ExportResult,
                         ) = done.countDown()
 
                         override fun onError(
-                            composition: Composition,
+                            exported: Composition,
                             exportResult: ExportResult,
                             exportException: ExportException,
                         ) {

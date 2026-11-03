@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.security.MessageDigest
+import java.util.Locale
 
 /**
  * One published conversation shortcut as [planShortcuts] reads it. [live] is the copy the launcher's long-press
@@ -110,7 +111,7 @@ internal fun shortcutFingerprint(
         field(name)
         bytes(avatarBytes)
     }
-    return digest.digest().take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
+    return digest.digest().take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(Locale.ROOT, it) }
 }
 
 /** The published shortcuts at one moment: their [states], and the push stamp ([epoch]) read with them. */

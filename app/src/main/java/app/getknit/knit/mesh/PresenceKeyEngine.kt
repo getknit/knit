@@ -379,7 +379,7 @@ class PresenceKeyEngine(
         repeat(MAX_STEPS) {
             val rows = store.ownKeys()
             val now = wall()
-            val allowed = lastClockAdvanceAt?.let { elapsed() - it >= PresenceKeyPolicy.DAY_MS } ?: true
+            val allowed = lastClockAdvanceAt?.let { advancedAt -> elapsed() - advancedAt >= PresenceKeyPolicy.DAY_MS } ?: true
             val due = PresenceKeyPolicy.due(rows, contacts, now, allowed, BlindTag::slotOf, BlindTag.WINDOW_AHEAD_SLOTS)
             if (due == PresenceKeyPolicy.Due.None) return
             if (!apply(due, rows, contacts, now)) return

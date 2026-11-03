@@ -37,7 +37,7 @@ class BleScannerTest {
         val scanner =
             mockk<BluetoothLeScanner>(relaxed = true).also { s ->
                 every { s.startScan(any<List<ScanFilter>>(), any(), any<ScanCallback>()) } answers {
-                    if (throws) throw IllegalStateException("BT adapter is not turned ON")
+                    if (throws) error("BT adapter is not turned ON")
                     filters += arg<List<ScanFilter>>(0)
                     settings += arg<ScanSettings>(1)
                     callbacks += arg<ScanCallback>(2)

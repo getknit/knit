@@ -52,7 +52,7 @@ class PeerRepositoryTest : RoomDbTest() {
         val groups = MutableStateFlow(emptyList<GroupEntity>())
         var now = NOW
         val ticks = MutableSharedFlow<Unit>(replay = 1).apply { tryEmit(Unit) }
-        val fade =
+        val labelFade =
             LabelFade(
                 anchors = LabelAnchors(accepted, authored, groups, scope),
                 clock = { now },
@@ -65,7 +65,7 @@ class PeerRepositoryTest : RoomDbTest() {
             every { profile.displayName } returns flowOf(myName)
             val identity = mockk<IdentitySource>(relaxed = true)
             coEvery { identity.nodeId() } returns "me"
-            return PeerRepository(db.peerDao(), profile, identity, fade = fade)
+            return PeerRepository(db.peerDao(), profile, identity, fade = labelFade)
         }
     }
 
@@ -257,7 +257,7 @@ class PeerRepositoryTest : RoomDbTest() {
             fade.accepted.value = setOf("c", "s")
             // The anchors are a shared flow: the accept reaches `current()` once the share has re-judged it, which a
             // query that returns fast can beat. Wait for it rather than for the scheduler's order.
-            fade.fade.anchors
+            fade.labelFade.anchors
                 .observe()
                 .first { "s" in it }
             assertEquals(Alias.aliasFor("c"), repo.labelIndex().labelFor("c").discriminator)
