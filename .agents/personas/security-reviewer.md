@@ -111,7 +111,8 @@ section they name (`docs/WIRE_COMPAT.md`, `docs/SPOOL_PROTOCOL.md`, `docs/CONTEN
 symbol's plane routes it, and the defences digest at the end of this file names the decisions that already close a
 hole. Where the digest and an ADR disagree, the ADR wins and the disagreement is a finding (doc drift).
 
-Then read what is already known to be open, when it can be reached (a maintainer's session; not CI):
+Then read what is already known to be open. Run the list every time; never assume it is unavailable. A maintainer's
+session has `glab` logged in to the project's GitLab, and only CI's review-gates run lacks it:
 
 ```bash
 glab issue list --label security --per-page 100   # open ones only; then `glab issue view <n>` for each one touched
@@ -406,9 +407,11 @@ cost), per finding:
 - **Confidence:** high (traced in code or documented) or medium (inferred; say what is unverified)
 
 End with the checks' line (`checks: <classes> — X passed, Y failed; vectors: ok | moved: <file>`, or `checks: none
-apply`), `backlog: <open issues the change closes, widens or touches, or "not reachable">` and `trial owed: <lab
+apply`), `backlog: <open issues the change closes, widens or touches, or "none of the <n> open">` and `trial owed: <lab
 scenario and seeds, capture, device recipe or workflow run, with its oracle and pass condition>`. No preamble, no
-summary of the change, no praise.
+summary of the change, no praise. `backlog: not reachable` is allowed only after the `glab issue list` above ran and
+failed, and it carries that failure: `backlog: not reachable — glab issue list exited <status>: <its first error
+line>`.
 
 ## Last step: stamp the review
 
