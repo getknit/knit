@@ -95,6 +95,9 @@ class PresenceKeyRepository(
         )
     }
 
+    /** Every key a peer handed us, newest first per peer, without the key bytes: the debug bridge's `KEYS`. */
+    suspend fun peerKeyRows(): List<PeerKeyRow> = dao.peerKeyRows()
+
     /** Every peer we hold a key for. */
     suspend fun peersWithKeys(): List<String> = dao.peersWithKeys()
 

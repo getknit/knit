@@ -99,6 +99,21 @@ class PresenceKeyRepositoryTest : RoomDbTest() {
             assertEquals(0L, metrics.keys().presenceMarkNotFull)
         }
 
+    /** The debug bridge's `KEYS` listing: every peer key's generation and arrival, per peer newest first, no key bytes. */
+    @Test
+    fun peerKeyRowsListEveryHeldGenerationPerPeerNewestFirst() =
+        runTest {
+            repo.applyHeld("carol", listOf(held(7)), now = 70)
+            repo.applyHeld("bob", listOf(held(3), held(5)), now = 50)
+
+            val rows = repo.peerKeyRows()
+
+            assertEquals(listOf("bob" to 5L, "bob" to 3L, "carol" to 7L), rows.map { it.nodeId to it.generation })
+            assertEquals(listOf(50L, 50L, 70L), rows.map { it.receivedAt })
+        }
+
+    private fun held(generation: Long) = PresenceKeyPolicy.Held(generation, ByteArray(32) { generation.toByte() }, rootTag = 1L)
+
     /** A current key (generation 100) and a next one (101), as the engine's first mint writes them. */
     private suspend fun mintPair(): Pair<Long, Long> {
         repo.applyOwn(listOf(own(100, activatedAt = 100), own(101, activatedAt = null)), emptyList(), keep = setOf(100, 101))

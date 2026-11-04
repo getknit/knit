@@ -42,6 +42,7 @@ import app.getknit.knit.call.TurnRanking
 import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.WalkieStats
 import app.getknit.knit.call.WalkieTranscriber
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
@@ -69,6 +70,7 @@ import app.getknit.knit.data.message.quoteHasAttachment
 import app.getknit.knit.data.message.quoteSnippet
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.settings.AwareSwitch
@@ -408,6 +410,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   refusal with a `why` (`radio down`, `pending`, `clear`, `settling`, `announced`, `holding`, `grace`, `throttled`);
  *   the reply is `rotated`, `epochBefore` / `epochAfter`, then [ACTION_ADVERT]'s fields. Each one spends one of the
  *   slot's restarts.
+ * - [ACTION_KEYS] — the **presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
+ *   (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
+ *   `audience` ids, the advertiser's `markSlot`); `direct` (the direct contacts as `DirectContacts.read` gives them) and,
+ *   per contact, `listed` (the generations the resolver lists for it) or `excluded`; `held[]` per peer that handed us keys
+ *   (`generations` with `receivedAt`, and `direct`: whether it is a direct contact now); `linkOwed` (a restore's resets
+ *   still owed over a link); and the `STATE` counts (`presenceKeysSent`, `presenceKeysStored`, …).
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -438,6 +446,8 @@ class DebugBridgeReceiver :
     private val startGate: MeshStartGate by inject()
     private val identity: Identity by inject()
     private val settings: SettingsStore by inject()
+    private val presenceKeys: PresenceKeyRepository by inject()
+    private val directContacts: DirectContacts by inject()
     private val lowPower: LowPowerSource by inject()
     private val lowPowerSwitch: LowPowerSwitch by inject()
     private val awareSwitch: AwareSwitch by inject()
@@ -691,6 +701,10 @@ class DebugBridgeReceiver :
 
                         ACTION_ADVERT_ROTATE -> {
                             handleAdvertRotate()
+                        }
+
+                        ACTION_KEYS -> {
+                            handleKeys()
                         }
 
                         ACTION_NANICM -> {
@@ -1695,6 +1709,17 @@ class DebugBridgeReceiver :
             // demoted or deleted first (expected now and then).
             .put("presenceMarkNotFull", snap.keys.presenceMarkNotFull)
             .put("presenceMarkRefused", snap.keys.presenceMarkRefused)
+            // The presence keys themselves (ADR 2026-11.xp6d): ctl 11 frames sent and keys stored, eras replaced, keys left
+            // out of the resolver's listing, our own rotations, a restored generation clamped. `KEYS` has the per-key view.
+            .put("presenceKeysSent", snap.keys.presenceKeysSent)
+            .put("presenceKeysStored", snap.keys.presenceKeysStored)
+            .put("presenceKeysReplaced", snap.keys.presenceKeysReplaced)
+            .put("presenceKeysExcluded", snap.keys.presenceKeysExcluded)
+            .put("presenceKeyRotations", snap.keys.presenceKeyRotations)
+            .put("presenceKeyGenerationClamped", snap.keys.presenceKeyGenerationClamped)
+            .put("linkOwedResetsSent", snap.keys.linkOwedResetsSent)
+            .put("presenceLinkPassesScheduled", snap.keys.presenceLinkPassesScheduled)
+            .put("presenceLinkPassesCompleted", snap.keys.presenceLinkPassesCompleted)
             .put("dmSealedV3", snap.seals.dmSealedV3)
             .put("ticksUnsigned", snap.receipts.ticksUnsigned)
             .put("groupSealedRatchet", snap.groups.groupSealedRatchet)
@@ -4003,6 +4028,81 @@ class DebugBridgeReceiver :
         return putAdvert(out)
     }
 
+    /**
+     * [ACTION_KEYS]: our own presence-key generations and their audiences, what the resolver lists for each direct contact,
+     * every key a peer handed us and the counts (ADR 2026-11.xp6d). Generations, ids and times only: never a key byte.
+     */
+    private suspend fun handleKeys(): JSONObject {
+        val own = presenceKeys.ownKeys()
+        val current = own.filter { it.activatedAt != null }.maxByOrNull { it.generation }?.generation
+        val direct = directContacts.read()
+        val (listed, excluded) = presenceKeys.presenceKeysFor(direct)
+        val held = presenceKeys.peerKeyRows().groupBy { it.nodeId }
+        val k = metrics.snapshot().keys
+        val ownJson =
+            JSONArray(
+                own.map {
+                    val role =
+                        when {
+                            it.generation == current -> "current"
+                            it.activatedAt == null -> "next"
+                            else -> "previous"
+                        }
+                    JSONObject()
+                        .put("generation", it.generation)
+                        .put("role", role)
+                        .put("mintedAt", it.mintedAt)
+                        .put("activatedAt", it.activatedAt ?: JSONObject.NULL)
+                        .put("audience", JSONArray(it.audience.sorted()))
+                        .put("markSlot", it.markSlot ?: JSONObject.NULL)
+                },
+            )
+        val directJson =
+            JSONArray(
+                direct.sorted().map { id ->
+                    JSONObject()
+                        .put("nodeId", id)
+                        .put("listed", JSONArray(listed[id].orEmpty().map { it.generation }))
+                        .put("held", held.containsKey(id))
+                },
+            )
+        val heldJson =
+            JSONArray(
+                held.map { (id, rows) ->
+                    JSONObject()
+                        .put("nodeId", id)
+                        .put("direct", id in direct)
+                        .put(
+                            "generations",
+                            JSONArray(rows.map { JSONObject().put("generation", it.generation).put("receivedAt", it.receivedAt) }),
+                        )
+                },
+            )
+        return JSONObject()
+            .put("status", "ok")
+            .put("sendsOwnKeys", BuildConfig.PRESENCE_KEYS)
+            .put("own", ownJson)
+            .put("direct", directJson)
+            .put("excluded", excluded)
+            .put("held", heldJson)
+            .put("linkOwed", JSONArray(presenceKeys.linkOwedResets().keys.sorted()))
+            .put(
+                "counts",
+                JSONObject()
+                    .put("sent", k.presenceKeysSent)
+                    .put("stored", k.presenceKeysStored)
+                    .put("replaced", k.presenceKeysReplaced)
+                    .put("excluded", k.presenceKeysExcluded)
+                    .put("rotations", k.presenceKeyRotations)
+                    .put("generationClamped", k.presenceKeyGenerationClamped)
+                    .put("linkOwedResetsSent", k.linkOwedResetsSent)
+                    .put("linkOwedResetsDeclined", k.linkOwedResetsDeclined)
+                    .put("linkOwedResetsSuperseded", k.linkOwedResetsSuperseded)
+                    .put("linkPassesScheduled", k.presenceLinkPassesScheduled)
+                    .put("linkPassesCompleted", k.presenceLinkPassesCompleted),
+            )
+    }
+
     /** [ACTION_ADVERT_ROTATE]: one forced rotation, or the reason it was refused, then [ACTION_ADVERT]'s report. */
     private suspend fun handleAdvertRotate(): JSONObject {
         val out = JSONObject().put("status", "ok").put("build", BuildConfig.BLIND_ADVERT)
@@ -4520,6 +4620,7 @@ class DebugBridgeReceiver :
         const val ACTION_LINKTUNE = "app.getknit.knit.debug.LINKTUNE"
         const val ACTION_ADVERT = "app.getknit.knit.debug.ADVERT"
         const val ACTION_ADVERT_ROTATE = "app.getknit.knit.debug.ADVERT_ROTATE"
+        const val ACTION_KEYS = "app.getknit.knit.debug.KEYS"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

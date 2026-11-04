@@ -917,6 +917,17 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   tag-aware peer. **It burns the slot's restarts durably** (`BlindTag.RESTARTS` = 4):
   past them every rotation or bring-up in that slot airs a random tag no contact resolves until the edge (linked peers are
   unharmed), so a timed trial never mixes `ADVERT_ROTATE` with its reps inside one 15-minute slot.
+- `…debug.KEYS` — **the presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
+  (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
+  `audience` ids, `markSlot`); `direct[]` per direct contact (`listed`: the generations the Bluetooth resolver lists for
+  it; `held`: whether it handed us any key); `excluded` (keys left out of the listing as equal to another's); `held[]`
+  per peer that handed us keys (`generations` with `receivedAt`, and whether it is a `direct` contact now); `linkOwed`
+  (a restore's resets still owed over a link); `counts` (ctl 11 frames `sent` and keys `stored`, eras `replaced`,
+  `rotations`, the link-owed resets, the link-up passes). Oracle for key delivery between two contacts: the sender's
+  `counts.sent` rises and the receiver's `held[]` gains the sender's current generation, once per link-up with
+  something new; a removal or block makes the remover's `own[]` current generation move (a fresh pair) and the removed
+  phone never gains it. `STATE` carries the same counts as `presenceKeys*`. The engine's debug trail
+  (`presence keys sealed to …`, `presence key fresh: current g=…`) is in a debug build's logcat.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

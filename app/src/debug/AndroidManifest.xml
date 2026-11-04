@@ -45,6 +45,7 @@
                 <action android:name="app.getknit.knit.debug.LINKTUNE" />
                 <action android:name="app.getknit.knit.debug.ADVERT" />
                 <action android:name="app.getknit.knit.debug.ADVERT_ROTATE" />
+                <action android:name="app.getknit.knit.debug.KEYS" />
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />

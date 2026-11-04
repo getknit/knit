@@ -75,6 +75,10 @@ interface PresenceKeyDao {
     @Query("SELECT nodeId || ':' || generation FROM peer_presence_keys UNION ALL SELECT ':' || generation FROM own_presence_keys")
     fun observeKeyRows(): Flow<List<String>>
 
+    /** Every peer key's row without its key, for the debug bridge's `KEYS`. */
+    @Query("SELECT nodeId, generation, receivedAt FROM peer_presence_keys ORDER BY nodeId, generation DESC")
+    suspend fun peerKeyRows(): List<PeerKeyRow>
+
     /** Every peer we hold a key for. */
     @Query("SELECT DISTINCT nodeId FROM peer_presence_keys")
     suspend fun peersWithKeys(): List<String>

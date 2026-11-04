@@ -61,3 +61,10 @@ data class LinkOwedResetEntity(
     val rootTag: Long?,
     val owedSince: Long,
 )
+
+/** One key a peer handed us, without the key: what the debug bridge's `KEYS` lists ([PresenceKeyDao.peerKeyRows]). */
+data class PeerKeyRow(
+    val nodeId: String,
+    val generation: Long,
+    val receivedAt: Long,
+)
