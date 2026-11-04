@@ -203,17 +203,19 @@
             android:foregroundServiceType="connectedDevice|location"
             tools:ignore="ForegroundServicePermission" />
 
-        <!-- Restart the always-on mesh after a device reboot, unless the user manually stopped it
-             (mesh_enabled=false). BOOT_COMPLETED is delivered post-unlock, so the credential-encrypted
-             settings DataStore is readable, and its receipt is an exemption to the background
-             foreground-service-start restrictions; connectedDevice is a boot-permitted FGS type.
-             exported=true because the system delivers this from outside the app; BOOT_COMPLETED is a
-             protected broadcast that only the system can send. -->
+        <!-- Restart the always-on mesh after a device reboot or an update of Knit, unless the user manually
+             stopped it (mesh_enabled=false). BOOT_COMPLETED is delivered post-unlock, so the credential-encrypted
+             settings DataStore is readable; MY_PACKAGE_REPLACED goes to the new version after an update, which
+             stops the old one's service with no sticky restart (ADR 2026-11.f8pg). Receipt of either is an
+             exemption to the background foreground-service-start restrictions; connectedDevice is a
+             boot-permitted FGS type. exported=true because the system delivers these from outside the app;
+             both are protected broadcasts that only the system can send. -->
         <receiver
             android:name=".mesh.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

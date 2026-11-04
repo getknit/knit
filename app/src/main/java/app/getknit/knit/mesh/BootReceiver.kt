@@ -15,21 +15,24 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
 /**
- * Restarts the mesh foreground service after a device reboot — **unless the user manually stopped it
- * beforehand**. The mesh is otherwise dark until the app is next opened: it is only started from the UI
- * ([app.getknit.knit.ui.KnitApp]) and `START_STICKY` doesn't survive a reboot.
+ * Restarts the mesh foreground service after a device reboot or an update of Knit itself — **unless the user
+ * manually stopped it beforehand**. The mesh is otherwise dark until the app is next opened: it is only started
+ * from the UI ([app.getknit.knit.ui.KnitApp]), and neither a reboot nor an update leaves a `START_STICKY`
+ * restart behind (an update stops the whole package, services included).
  *
  * Gated on the persisted [SettingsStore.meshEnabled] flag (which the service sets false on a manual Stop
  * and true whenever it starts), the radio permissions, and `!SEED_DEMO`. Registered for
  * `BOOT_COMPLETED` — delivered post-unlock, so the credential-encrypted settings DataStore is readable,
  * and an exemption to the Android 12+ background foreground-service-start restrictions (the mesh's
- * `connectedDevice` type is boot-permitted). That exemption is the platform's, though, and
- * [MeshService.start]'s process-state pre-check cannot read it — a receiver process reads as
- * `IMPORTANCE_SERVICE`, which it refuses — so the start goes through [MeshService.startFromBoot], which
- * skips the pre-check and keeps the call-site catch (ADR 2026-09.29dw). The outcome is recorded in
- * [MeshStartGate] like every other caller's, so a boot start the system did refuse shows as deferred in
- * `…debug.STATE`. Suspending work (a DataStore read + the FGS start) is kept alive with [goAsync] on the
- * app-lifetime mesh [scope], mirroring [app.getknit.knit.notifications.NotificationActionReceiver].
+ * `connectedDevice` type is boot-permitted) — and for `MY_PACKAGE_REPLACED`, delivered to the new version
+ * after a store or sideloaded update and a listed exemption of its own (ADR 2026-11.f8pg). Those exemptions
+ * are the platform's, though, and [MeshService.start]'s process-state pre-check cannot read them — a
+ * receiver process reads as `IMPORTANCE_SERVICE`, which it refuses — so the start goes through
+ * [MeshService.startFromBoot], which skips the pre-check and keeps the call-site catch (ADR 2026-09.29dw).
+ * The outcome is recorded in [MeshStartGate] like every other caller's, so a start the system did refuse
+ * shows as deferred in `…debug.STATE`. Suspending work (a DataStore read + the FGS start) is kept alive
+ * with [goAsync] on the app-lifetime mesh [scope], mirroring
+ * [app.getknit.knit.notifications.NotificationActionReceiver].
  */
 class BootReceiver :
     BroadcastReceiver(),
@@ -42,11 +45,11 @@ class BootReceiver :
         context: Context,
         intent: Intent,
     ) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action !in RESTART_ACTIONS) return
         // Delivered into a restricted-backup-mode process (a setup-wizard restore can straddle boot): there is
         // no graph to inject from, and the mesh is a job for a normal process — see [isKoinStarted].
         if (!isKoinStarted()) {
-            Log.w(TAG, "boot broadcast in a process without the app graph — ignoring")
+            Log.w(TAG, "${intent.action} in a process without the app graph — ignoring")
             return
         }
         val appContext = context.applicationContext
@@ -56,18 +59,21 @@ class BootReceiver :
                 if (shouldStartMeshOnBoot(appContext, settings)) {
                     startGate.record(MeshService.startFromBoot(appContext))
                 }
-            }.onFailure { Log.w(TAG, "boot mesh start failed", it) }
+            }.onFailure { Log.w(TAG, "${intent.action} mesh start failed", it) }
             pending.finish()
         }
     }
 
     private companion object {
         const val TAG = "KnitBoot"
+
+        /** The broadcasts that leave the mesh down with no sticky restart, each an FGS-start exemption. */
+        val RESTART_ACTIONS = setOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED)
     }
 }
 
 /**
- * Whether to start the mesh on boot: only if it was left enabled, the radio permissions are still granted
+ * Whether to start the mesh on boot or after an update: only if it was left enabled, the radio permissions are still granted
  * (notifications are optional and never a gate), and this isn't a seeded demo build. A top-level function
  * so the decision is unit-testable without a Koin bootstrap (the receiver just resolves its dependencies
  * and delegates here).
