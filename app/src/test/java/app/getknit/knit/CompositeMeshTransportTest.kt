@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.OwnPresenceKey
 import app.getknit.knit.mesh.PairView
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
@@ -167,6 +168,22 @@ class CompositeMeshTransportTest {
 
         override fun coveredByInternet(peers: Set<String>) {
             internetCalls += peers
+        }
+
+        val ownKeys = mutableListOf<OwnPresenceKey?>()
+        var tagNextRecipients: ((String) -> Boolean)? = null
+        var ownKeySource: (() -> OwnPresenceKey?)? = null
+
+        override fun onOwnPresenceKeySource(read: () -> OwnPresenceKey?) {
+            ownKeySource = read
+        }
+
+        override fun onOwnPresenceKey(key: OwnPresenceKey?) {
+            ownKeys += key
+        }
+
+        override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
+            tagNextRecipients = hears
         }
 
         override fun onForeignReachable(peers: Set<String>) {
@@ -1256,6 +1273,32 @@ class CompositeMeshTransportTest {
             assertEquals(listOf(setOf("p", "q")), bt.internetCalls)
             assertEquals(listOf(setOf("p", "q")), lora.internetCalls)
             assertTrue("a cover is never a link", bt.suppressCalls.all { it.isEmpty() } && lora.suppressCalls.all { it.isEmpty() })
+        }
+
+    @Test
+    fun theOwnPresenceKeyAndTheTagNextPredicateReachTheBluetoothPlaneAlone() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-11.xp6d, step 5b: only the Bluetooth plane airs tags, so no other plane is handed the key.
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val lora = FakeChild(hasFastPlane = true, kind = TransportKind.LoRa, shortRange = false)
+            val composite = CompositeMeshTransport(listOf(bt, nan, lora), backgroundScope)
+            val key = OwnPresenceKey(7, ByteArray(32) { 1 })
+            composite.onOwnPresenceKey(null)
+            composite.onOwnPresenceKey(key)
+            val hears: (String) -> Boolean = { it == "p" }
+            composite.onTagNextRecipients(hears)
+            val read: () -> OwnPresenceKey? = { key }
+            composite.onOwnPresenceKeySource(read)
+
+            assertEquals(listOf(null, key), bt.ownKeys)
+            assertTrue(bt.tagNextRecipients === hears)
+            assertTrue(bt.ownKeySource === read)
+            for (other in listOf(nan, lora)) {
+                assertTrue("a plane that airs no tag got the key", other.ownKeys.isEmpty())
+                assertTrue(other.tagNextRecipients == null)
+                assertTrue(other.ownKeySource == null)
+            }
         }
 
     @Test

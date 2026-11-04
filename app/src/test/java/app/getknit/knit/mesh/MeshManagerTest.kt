@@ -1,7 +1,9 @@
 package app.getknit.knit.mesh
 
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.room3.Room
 import androidx.test.core.app.ApplicationProvider
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
@@ -150,6 +152,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Drives the **real** [MeshManager] outbound send-and-originate workflow — `sendChat` and the origination
@@ -267,6 +270,18 @@ class MeshManagerTest {
             to: Peer,
         ) {
             fastSends += wire to to
+        }
+
+        /** The `TAG_NEXT` predicate and the own keys the manager handed this radio (ADR 2026-11.xp6d, step 5b). */
+        @Volatile var tagNext: ((String) -> Boolean)? = null
+        val ownKeysHanded = CopyOnWriteArrayList<OwnPresenceKey?>()
+
+        override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
+            tagNext = hears
+        }
+
+        override fun onOwnPresenceKey(key: OwnPresenceKey?) {
+            ownKeysHanded += key
         }
 
         override fun coveredByInternet(peers: Set<String>) {
@@ -448,6 +463,8 @@ class MeshManagerTest {
         val commons: FakeCommonsStore? = null,
         // When set, stands in for the ratchet facade's `rootChanges`, so a test can say "a root moved" for a peer.
         private val rootChanges: MutableSharedFlow<String>? = null,
+        // When set, the manager runs a presence-key engine over it (ADR 2026-11.xp6d); null runs none, as before.
+        private val directContacts: DirectContacts? = null,
     ) {
         val me = party()
         val bob = party()
@@ -631,6 +648,7 @@ class MeshManagerTest {
                 },
                 commons = commons,
                 extraCapabilities = extraCapabilities,
+                directContacts = directContacts,
             )
 
         /**
@@ -4451,6 +4469,118 @@ class MeshManagerTest {
 
             val left = listOf("kept", "blocked", "gone").filter { rig.db.pinDao().isPinned(it) }
             assertEquals("pins left after the startup sweep", listOf("kept"), left)
+            rig.manager.stop()
+        }
+
+    // --- Who hears TAG_NEXT (ADR 2026-11.xp6d, step 5b's W5) ---
+
+    /** The block-list inputs [MeshManager.hearsTagNext] reads, as drivable flows; [tags] emits nothing until a test says. */
+    private class TagNextInputs(
+        val blocked: MutableStateFlow<Set<String>> = MutableStateFlow(setOf("mallory")),
+        val tags: MutableSharedFlow<Set<String>> = MutableSharedFlow(replay = 1),
+        val pinned: MutableStateFlow<List<PeerEntity>> = MutableStateFlow(listOf(PeerEntity("trent", deviceTag = "tag-t"))),
+    )
+
+    private fun Rig.stubTagNext(inputs: TagNextInputs = TagNextInputs()): TagNextInputs {
+        coEvery { settings.blockedNodeIds } returns inputs.blocked
+        coEvery { settings.blockedDeviceTags } returns inputs.tags
+        coEvery { peers.observePeers() } returns inputs.pinned
+        stubProfileState(MutableStateFlow(0L))
+        coEvery { groups.observeGroups() } returns flowOf(emptyList())
+        return inputs
+    }
+
+    private suspend fun awaitTrue(what: () -> Boolean) =
+        withContext(Dispatchers.Default) { withTimeout(AWAIT_MS) { while (!what()) delay(POLL_MS) } }
+
+    /**
+     * The radio's `TAG_NEXT` predicate is the manager's: no until the session has read the block list, then never to a
+     * blocked node id, an id whose pinned device tag is blocked, or one pinned under a blocked tag after the block.
+     */
+    @Test
+    fun tagNextIsRefusedBeforeTheBlockListIsReadAndToABlockedOrTagBlockedId() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val inputs = rig.stubTagNext()
+            assertFalse("nothing read before a start", rig.manager.hearsTagNext("stranger"))
+
+            rig.manager.start()
+            val hears = checkNotNull(rig.transport.tagNext) { "the start installs the predicate" }
+            assertFalse("the device-tag block list is not read yet", hears("stranger"))
+
+            inputs.tags.emit(setOf("tag-t"))
+            awaitTrue { hears("stranger") }
+            assertFalse("a blocked node id", hears("mallory"))
+            assertFalse("a node whose pinned device tag is blocked", hears("trent"))
+            assertTrue(hears("ursula"))
+
+            // Ursula is pinned later under the blocked tag: the peer table's change re-reads it.
+            inputs.pinned.value = inputs.pinned.value + PeerEntity("ursula", deviceTag = "tag-t")
+            awaitTrue { !hears("ursula") }
+            inputs.blocked.value = setOf("mallory", "victor")
+            awaitTrue { !hears("victor") }
+            rig.manager.stop()
+        }
+
+    /**
+     * A new session starts with both halves unread ([MeshManager.clearOwnPresenceKey]): the radio is handed no key, and
+     * `TAG_NEXT` goes to no one until this session has read the block list again and the key engine's first pass has run.
+     * The second session's engine pass runs while its block list is still unread: the last session's list (which allowed
+     * the stranger) must not answer for it.
+     */
+    @Test
+    fun aNewSessionRefusesTagNextUntilItReadsTheBlockListAndTheEngineHasPassed() =
+        runTest(UnconfinedTestDispatcher()) {
+            val secondPass = CompletableDeferred<Unit>()
+            val session = AtomicInteger()
+            val contacts = mockk<DirectContacts>()
+            every { contacts.observe() } returns MutableStateFlow(emptySet())
+            coEvery { contacts.read() } coAnswers {
+                if (session.get() > 1) secondPass.await()
+                emptySet()
+            }
+            val rig = Rig(backgroundScope, directContacts = contacts)
+            val last = AtomicLong()
+            coEvery { rig.settings.presenceKeyLastGeneration() } answers { last.get() }
+            coEvery { rig.settings.setPresenceKeyLastGeneration(any()) } answers {
+                last.set(firstArg())
+                emptyPreferences()
+            }
+            rig.stubTagNext(TagNextInputs(tags = MutableSharedFlow<Set<String>>(replay = 1).apply { tryEmit(emptySet()) }))
+            session.set(1)
+            rig.manager.start()
+            awaitTrue { rig.transport.tagNext?.invoke("stranger") == true }
+            awaitTrue { rig.transport.ownKeysHanded.any { it != null } }
+            rig.manager.stop()
+
+            // This session's device-tag list says nothing until the test emits: only the start's reset can make the
+            // predicate say no once the engine has passed, since the last session's list and departures both allowed it.
+            val later = MutableSharedFlow<Set<String>>(replay = 1)
+            coEvery { rig.settings.blockedDeviceTags } returns later
+            val handedBefore = rig.transport.ownKeysHanded.size
+            session.set(2)
+            rig.manager.start()
+            val hears = checkNotNull(rig.transport.tagNext)
+            assertNull("the radio is handed no key at the start", rig.transport.ownKeysHanded[handedBefore])
+            assertFalse("neither half read yet", hears("stranger"))
+            assertTrue(
+                "no key before the engine's pass",
+                rig.transport.ownKeysHanded
+                    .drop(handedBefore)
+                    .all { it == null },
+            )
+
+            secondPass.complete(Unit)
+            awaitTrue {
+                rig.transport.ownKeysHanded
+                    .drop(handedBefore)
+                    .any { it != null }
+            }
+            assertFalse("the engine has passed, this session's block list is unread", hears("stranger"))
+
+            later.emit(emptySet())
+            awaitTrue { hears("stranger") }
+            assertFalse(hears("mallory"))
             rig.manager.stop()
         }
 

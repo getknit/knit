@@ -9,9 +9,13 @@ import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * This phone's presence keys and their delivery to linked direct contacts (ADR 2026-11.xp6d, "The presence key";
@@ -184,6 +188,83 @@ class PresenceKeyEngine(
     @Volatile
     private var started = false
 
+    // Written under [lock] by [pass], cleared lock-free by [beginSession]; see [ownKey] and [departed].
+    private val ownKeyState = MutableStateFlow<OwnPresenceKey?>(null)
+    private val departedState = MutableStateFlow<Set<String>?>(null)
+
+    // Moved by [beginSession]: a pass that took the lock under an earlier session publishes nothing.
+    private val sessionEpoch = AtomicLong()
+
+    // Makes [publish]'s epoch check and its writes one step against [beginSession]'s. Never held across a suspension.
+    private val published = Any()
+
+    /**
+     * The current own key, published at the end of each pass's settle under [lock] (step 5b, A1): the Bluetooth plane's
+     * one source for the key its tags are derived from, through `MeshManager`. Null from [beginSession] until the
+     * session's first settle, so the plane never airs a tag under a key the settle is about to replace: a removal or a
+     * block made while the mesh was stopped is a fresh pair before the first value, and the person who left never sees a
+     * tag they can resolve. Never read from Room: `transport.start()` runs before the first settle. Changes only when the
+     * current generation does ([OwnPresenceKey]'s equality): a mark write, a grow and a peer's key change no row of the
+     * current key's that it compares, so they emit nothing, and a weekly, clock or mark advance or a fresh pair emits
+     * once. With [sendsOwnKeys] off it stays null.
+     *
+     * A settle that cannot reach nothing-due (a fresh pair or a first mint with no generation left) publishes null. One
+     * that throws publishes nothing new; the advertiser's mark write is conditional on the generation still being the
+     * current one (`PresenceKeyRepository.markStore`), so a key a half-applied rotation demoted airs nothing. Read the
+     * value synchronously where a tag is about to air (`MeshTransport.onOwnPresenceKeySource`): the feed's collector is a
+     * dispatch away from it.
+     */
+    val ownKey: StateFlow<OwnPresenceKey?> = ownKeyState.asStateFlow()
+
+    /**
+     * The ids that left an own key's audience while a kept generation was live ([PresenceKeyPolicy.departed]), published
+     * with [ownKey] at the end of each pass, against that pass's fresh direct-contact read: half of the `TAG_NEXT`
+     * recipient predicate (`MeshManager.hearsTagNext`). Null from [beginSession] until the session's first pass. Published
+     * whatever [sendsOwnKeys] says.
+     */
+    val departed: StateFlow<Set<String>?> = departedState.asStateFlow()
+
+    /**
+     * A mesh session is starting (`MeshManager.start`, before the transport): [ownKey] and [departed] go back to null
+     * until this session's first pass, so a key the last session published is never handed to an advertiser starting
+     * under keys a removal or block made while stopped has since replaced. Lock-free and synchronous, so it lands before
+     * the session's collectors subscribe; a pass of an earlier session still holding the lock publishes nothing after it.
+     */
+    fun beginSession() {
+        synchronized(published) {
+            sessionEpoch.incrementAndGet()
+            ownKeyState.value = null
+            departedState.value = null
+        }
+    }
+
+    /**
+     * Publishes [rows]' departures, then their current key, unless [beginSession] ran since the pass read [epoch]. The
+     * departures go first, so a `TAG_NEXT` the advertiser sends right after a fresh key reaches it never reads the set
+     * from before the rotation. A settle that did not reach [PresenceKeyPolicy.Due.None] ([settled] false: a fresh pair
+     * or a first mint whose generation could not be minted) publishes no key at all (the advertiser airs random tags)
+     * and keeps the departures it had: the rows still hold the key a leaver holds as the current one.
+     */
+    private fun publish(
+        epoch: Long,
+        rows: List<PresenceKeyPolicy.Own>,
+        contacts: Set<String>,
+        settled: Boolean,
+    ) {
+        synchronized(published) {
+            if (sessionEpoch.get() != epoch) return
+            if (settled) departedState.value = PresenceKeyPolicy.departed(rows, contacts)
+            if (sendsOwnKeys) {
+                ownKeyState.value =
+                    PresenceKeyPolicy
+                        .keysOf(rows)
+                        .current
+                        ?.takeIf { settled }
+                        ?.let { OwnPresenceKey(it.generation, it.key) }
+            }
+        }
+    }
+
     /**
      * The first start after a restore (`MeshManager.finishRestore`), before [start]: clamps a restored last generation
      * more than a year past the clock ([PresenceKeyPolicy.clampRestored]) and records [linkOwed] — the direct contacts
@@ -279,7 +360,7 @@ class PresenceKeyEngine(
      */
     suspend fun reconcile(cause: String) {
         if (!started) return
-        val outgoing = lock.withLock { if (started) pass() else emptyList() }
+        val outgoing = lock.withLock { if (started) pass(cause) else emptyList() }
         // One peer's failed send never loses the others', and forgets what that peer was sent, so the next pass resends.
         val failed = outgoing.filter { (peer, frame) -> runCatchingUnlessCancelled { send(peer, frame) }.isFailure }.map { it.first.nodeId }
         if (failed.isNotEmpty()) onSendFailed(failed)
@@ -290,12 +371,17 @@ class PresenceKeyEngine(
         }
     }
 
-    private suspend fun pass(): List<Pair<Peer, Sealed>> {
+    private suspend fun pass(cause: String): List<Pair<Peer, Sealed>> {
+        val epoch = sessionEpoch.get()
         val contacts = direct()
         dropLeavers(contacts)
         // With no keys of our own to send, nothing is minted or rotated, and the keys below are none.
-        if (sendsOwnKeys) settle(contacts)
-        val keys = if (sendsOwnKeys) PresenceKeyPolicy.keysOf(store.ownKeys()) else null
+        val settled = !sendsOwnKeys || settle(contacts)
+        val rows = store.ownKeys()
+        publish(epoch, rows, contacts, settled)
+        // Counts only: which trigger ran a pass, on how many direct contacts, and whether it settled (`mesh/lab` reports it).
+        debug("presence-key pass ($cause): ${contacts.size} direct contacts, ${if (settled) "settled" else "unsettled"}")
+        val keys = if (sendsOwnKeys) PresenceKeyPolicy.keysOf(rows) else null
         // Only links the neighbour pass registered: a pass that ran before the pass saw a link would mark a reset sent on an
         // epoch the link-up then moves past, and send it twice on one link. A capability or root trigger that lands before
         // the neighbour pass registers the link is served by the delayed link-up pass and every heal.
@@ -386,6 +472,9 @@ class PresenceKeyEngine(
     private suspend fun dropLeavers(contacts: Set<String>) {
         val before = lastDirect
         lastDirect = contacts
+        // A session's first pass also forgets what it sent anyone no longer a direct contact: one who left while the
+        // mesh was stopped and never handed us a key is in no store it can read leavers from.
+        if (before == null) sent.keys.retainAll(contacts)
         val leavers = if (before == null) store.peersWithKeys().filterNot { it in contacts } else (before - contacts).toList()
         if (leavers.isEmpty()) return
         store.deletePeerKeys(leavers)
@@ -395,17 +484,22 @@ class PresenceKeyEngine(
         log("presence keys of ${leavers.size} former direct contacts deleted")
     }
 
-    /** Applies [PresenceKeyPolicy.due] until nothing is due. Bounded: each step settles what made it due. */
-    private suspend fun settle(contacts: Set<String>) {
+    /**
+     * Applies [PresenceKeyPolicy.due] until nothing is due. Bounded: each step settles what made it due. True once it
+     * reached [PresenceKeyPolicy.Due.None]; false when a step could not be applied (no generation left to mint) or the
+     * bound ran out, so [publish] airs no key a pending fresh pair was about to replace.
+     */
+    private suspend fun settle(contacts: Set<String>): Boolean {
         repeat(MAX_STEPS) {
             val rows = store.ownKeys()
             val now = wall()
             val allowed = lastClockAdvanceAt?.let { advancedAt -> elapsed() - advancedAt >= PresenceKeyPolicy.DAY_MS } ?: true
             val due = PresenceKeyPolicy.due(rows, contacts, now, allowed, BlindTag::slotOf, BlindTag.WINDOW_AHEAD_SLOTS)
-            if (due == PresenceKeyPolicy.Due.None) return
-            if (!apply(due, rows, contacts, now)) return
+            if (due == PresenceKeyPolicy.Due.None) return true
+            if (!apply(due, rows, contacts, now)) return false
         }
         log("presence keys did not settle in $MAX_STEPS steps")
+        return false
     }
 
     /** One rotation's writes: new generations, moved ones, and the generations kept. */

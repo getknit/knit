@@ -230,3 +230,40 @@ Status: draft, with the reader's change; the caller decides whether it stands.
   (`MeshManager.sendsPresenceKeys`, `BuildConfig.PRESENCE_KEYS`) off mints, rotates and seals none, and a capability
   change asks no pass; leavers' stored keys are still deleted and a restore's link-owed resets still go. Own keys a build
   with it on minted are left, never sent. `BuildConfig.BLIND_ADVERT` gates the writer alone.
+
+## Amendment 2026-11-03: the writer's key side (step 5b, Part A, draft)
+
+Status: draft, with the key side of the writer's change; the caller decides whether it stands. The writer's own wiring
+is its own section.
+
+- **The advertiser's key is the engine's published value, never a Room read.** `PresenceKeyEngine.ownKey` (an
+  `OwnPresenceKey`, whose `toString` shows the generation alone) is set at the end of each pass's settle, under the
+  engine's lock, and goes back to null at every session start (`beginSession`, before the transport starts), so a
+  removal or a block made while the mesh was stopped is a fresh pair before the first key the radio is handed: the
+  transport starts before the first settle, and a Room read there would air a tag under the key the leaver holds.
+  `MeshManager` hands the transport null before every `start`, then the engine's value and each change
+  (`MeshTransport.onOwnPresenceKey`); the composite hands it to the Bluetooth plane alone. Equal values are no change:
+  equality is the generation and the key bytes, so a mark write, a grow or a peer's key (rows that change, a current
+  generation that does not) never restart the advertiser — a feed keyed on the rows would, through its own mark write.
+  A build that sends no keys of its own publishes none, and neither does a settle that could not reach nothing-due (a
+  fresh pair or a first mint with no generation left): the rows would still name the leaver's key as the current one.
+  The collector is a dispatch behind the engine, so the transport also gets a synchronous read of the value
+  (`MeshTransport.onOwnPresenceKeySource`) to check a tag against just before it airs.
+- **`TAG_NEXT` goes to no one blocked or departed.** `MeshTransport.onTagNextRecipients` hands the transport
+  `MeshManager.hearsTagNext`: not blocked (node ids and pinned device tags, kept in memory) and not in
+  `PresenceKeyEngine.departed` — everyone a kept own key's audience names who is no longer a direct contact
+  (`PresenceKeyPolicy.departed`; settled, the previous key's leavers: the departures behind the last fresh pair, gone at
+  the next advance). The departures are published before the key they go with, so a send right after a fresh key reads
+  the new set. The tag-blocked ids are re-read when a block setting or any peer's device tag changes, so a peer pinned
+  later under a blocked tag is refused; an input that fails leaves the list unread. In-memory reads, answered at each
+  send; no until the session has read both. A leaver who held only a discarded next key (never aired) is not named: no
+  kept row records it.
+- **The advertiser's mark write is durable and conditional** (`PresenceKeyRepository.markStore`, `PresenceKeyDao.setCurrentMark`):
+  never inside a transaction (refused at once); `PRAGMA synchronous=FULL` outside one; then the write transaction, whose
+  first statement reads `PRAGMA synchronous` on the committing connection and refuses anything but FULL, and whose update
+  lands only while the generation is the newest activated one (a generation a fresh pair demoted marks nothing, so
+  nothing airs under it); `NORMAL` again after, its failure counted. Not `wal_checkpoint`, not a separate file. No
+  refusal names the generation (a dated line would date a removal or a block). STATE counts a commit refused for not
+  running at FULL (`presenceMarkNotFull`, a fault) apart from a write refused for a key gone or demoted
+  (`presenceMarkRefused`, a rotation's race); `presenceMarkNotFull == 0` with `presenceMarksDurable > 0` is the device
+  check the JVM cannot make (framework SQLite in memory there, SQLCipher in WAL on a phone).

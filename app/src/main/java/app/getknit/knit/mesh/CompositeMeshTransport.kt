@@ -752,6 +752,20 @@ class CompositeMeshTransport(
         for (child in children) child.onPresenceKeys(keys)
     }
 
+    // The own key and the TAG_NEXT predicate go to the Bluetooth plane alone (ADR 2026-11.xp6d, step 5b): no other plane
+    // airs a tag, and a key handed to a plane that has no use for it is one more place it lives.
+    override fun onOwnPresenceKey(key: OwnPresenceKey?) {
+        for (child in children) if (child.kind == TransportKind.Bluetooth) child.onOwnPresenceKey(key)
+    }
+
+    override fun onOwnPresenceKeySource(read: () -> OwnPresenceKey?) {
+        for (child in children) if (child.kind == TransportKind.Bluetooth) child.onOwnPresenceKeySource(read)
+    }
+
+    override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
+        for (child in children) if (child.kind == TransportKind.Bluetooth) child.onTagNextRecipients(hears)
+    }
+
     // A live frame (a walkie chunk) rides the high-throughput child when it holds a link to [to]: an NDP's latency is
     // a Wi-Fi radio's, not a connection interval's. Everything else keeps the Bluetooth-first order of [send].
     override suspend fun sendLive(

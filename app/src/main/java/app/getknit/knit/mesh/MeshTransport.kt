@@ -447,6 +447,38 @@ interface MeshTransport {
     fun onPresenceKeys(keys: Map<String, List<ByteArray>>) {}
 
     /**
+     * This phone's own current presence key, the one its advert tags derive from (ADR 2026-11.xp6d, step 5b), as the key
+     * engine publishes it ([PresenceKeyEngine.ownKey]); null while there is none to air (before the session's first
+     * settle, or a build that sends no keys of its own). Driven by `MeshManager`: null once before every [start], then on
+     * the session the engine's value (null again until its first settle) and each change of the current generation. A
+     * value equal to the one held ([OwnPresenceKey]'s equality) is no change. Never logged beyond its generation, and
+     * never read from storage by a transport: what is held at a bring-up is the last value handed here. Forwarded by
+     * [CompositeMeshTransport] to the Bluetooth plane alone. Default no-op: only the Bluetooth plane writes tags.
+     */
+    fun onOwnPresenceKey(key: OwnPresenceKey?) {}
+
+    /**
+     * A synchronous read of the own key the engine holds now ([PresenceKeyEngine.ownKey]'s value), with no dispatch
+     * between the engine and the caller: what a tag about to air is checked against (step 5b). [onOwnPresenceKey]'s
+     * collector is a coroutine hop behind the engine, so a fresh pair that lands inside that hop could air one reserved
+     * tag under the demoted key; comparing the generation [read] answers just before airing closes it. Null exactly when
+     * the feed's value is. Non-suspending, lock-free, safe from any thread. Set by `MeshManager` before every [start];
+     * forwarded by [CompositeMeshTransport] to the Bluetooth plane alone. Default no-op.
+     */
+    fun onOwnPresenceKeySource(read: () -> OwnPresenceKey?) {}
+
+    /**
+     * Who may be sent this phone's next advert tag over a live link (`TAG_NEXT`, ADR 2026-11.xp6d, step 5b's W5):
+     * [hears] answers for a node id, at the moment of each send (never cached at link-up), true when the id is neither
+     * blocked nor among those who left the own key's audience while a kept generation was live
+     * (`PresenceKeyPolicy.hearsTagNext`). Fast, non-suspending and safe from any thread: it reads in-memory snapshots,
+     * never Room or the key engine's lock. It answers false until the session has read the block list and the engine's
+     * first pass has run. Set by `MeshManager` before every [start]; forwarded by [CompositeMeshTransport] to the
+     * Bluetooth plane alone. Default no-op.
+     */
+    fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {}
+
+    /**
      * Lends the Wi-Fi radio to another **same-app** role — the one-shot Wi-Fi Direct group of a direct file
      * transfer (`transfer/`). On Android 12+ two interface requests from one app carry equal priority and
      * neither evicts the other, so a transport whose radio cannot share (Wi-Fi Aware) has to let go of its

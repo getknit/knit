@@ -239,6 +239,41 @@ class PresenceKeyPolicyTest {
         assertEquals("lost, and on a prekey the peer left", PresenceKeyPolicy.LinkReset.SEAL, step(null, TAG_A, true, false))
     }
 
+    /**
+     * Step 5b's `TAG_NEXT` exclusion: after a fresh pair, the previous key's audience less the direct contacts — the
+     * leaver; after the next advance (the previous key now one that never named them), no one; a leaver who is a direct
+     * contact again, no longer.
+     */
+    @Test
+    fun theDepartedAreThoseAKeptKeyNamesWhoAreNoLongerDirectContacts() {
+        val previous = own(1, now - day, setOf("alice", "bob", "carol"))
+        val current = own(2, now, setOf("alice", "carol"))
+        val next = own(3, null, setOf("alice", "carol"))
+        assertEquals(setOf("bob"), PresenceKeyPolicy.departed(listOf(previous, current, next), setOf("alice", "carol")))
+        assertEquals(
+            "bob is a contact again",
+            emptySet<String>(),
+            PresenceKeyPolicy.departed(listOf(previous, current, next), setOf("alice", "bob", "carol")),
+        )
+        val advanced = listOf(current, next.copy(activatedAt = now + 7 * day), own(4, null, setOf("alice", "carol")))
+        assertEquals(
+            "the generation bob left under went",
+            emptySet<String>(),
+            PresenceKeyPolicy.departed(advanced, setOf("alice", "carol")),
+        )
+        assertEquals(emptySet<String>(), PresenceKeyPolicy.departed(emptyList(), setOf("alice")))
+    }
+
+    @Test
+    fun tagNextGoesToNoOneBlockedOrDepartedAndToNoOneBeforeBothAreRead() {
+        val hears = PresenceKeyPolicy::hearsTagNext
+        assertTrue("a stranger still hears it (the ADR's accepted cost)", hears("stranger", setOf("mallory"), setOf("bob")))
+        assertFalse("blocked", hears("mallory", setOf("mallory"), setOf("bob")))
+        assertFalse("departed", hears("bob", setOf("mallory"), setOf("bob")))
+        assertFalse("the block list not read yet", hears("stranger", null, emptySet()))
+        assertFalse("the engine's first pass not run yet", hears("stranger", emptySet(), null))
+    }
+
     private companion object {
         const val TAG_A = 0x0A0AL
         const val TAG_B = 0x0B0BL

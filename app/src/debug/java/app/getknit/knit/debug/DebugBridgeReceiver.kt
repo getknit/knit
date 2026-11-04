@@ -1662,6 +1662,15 @@ class DebugBridgeReceiver :
             .put("dmSealedV2", snap.seals.dmSealedV2)
             // A race loser moved back onto its own init the peer answered (rule C, ADR 2026-10.4mjm).
             .put("ratchetSwappedBack", snap.keys.ratchetSwappedBack)
+            // The advertiser's mark writes and those committed at synchronous=FULL (ADR 2026-11.xp6d, step 5b): a healthy
+            // phone shows durable > 0 and notFull 0; restore failures leave a connection at FULL. Counts only.
+            .put("presenceMarkWrites", snap.keys.presenceMarkWrites)
+            .put("presenceMarksDurable", snap.keys.presenceMarksDurable)
+            .put("presenceMarkSyncRestoreFailed", snap.keys.presenceMarkSyncRestoreFailed)
+            // A commit that would not have run at FULL (a fault; 0 on a healthy phone), and a write to a key a rotation
+            // demoted or deleted first (expected now and then).
+            .put("presenceMarkNotFull", snap.keys.presenceMarkNotFull)
+            .put("presenceMarkRefused", snap.keys.presenceMarkRefused)
             .put("dmSealedV3", snap.seals.dmSealedV3)
             .put("ticksUnsigned", snap.receipts.ticksUnsigned)
             .put("groupSealedRatchet", snap.groups.groupSealedRatchet)

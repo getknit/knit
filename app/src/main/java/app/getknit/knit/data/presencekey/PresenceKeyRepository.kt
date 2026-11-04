@@ -1,7 +1,11 @@
 package app.getknit.knit.data.presencekey
 
+import android.annotation.SuppressLint
+import androidx.room3.Transactor
+import androidx.room3.useWriterConnection
 import androidx.room3.withWriteTransaction
 import app.getknit.knit.data.KnitDatabase
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PresenceKeyEngine
 import app.getknit.knit.mesh.bluetooth.TagSchedule
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
@@ -19,8 +23,9 @@ import kotlinx.coroutines.runBlocking
  *  - **The inbound arm** (`InboundPipeline`, a `CTL_PRESENCE_KEY`) reads and writes a peer's keys through [heldBy] and
  *    [applyHeld] inside the ratchet commit that opened the frame: Room only, the caller's transaction, never the
  *    engine's lock.
- *  - **The read side** ([presenceKeysFor], [ownCurrent], [markStore]) reads; the mark store writes the mark columns
- *    alone.
+ *  - **The read side** ([presenceKeysFor], [markStore]) reads; the mark store writes the mark columns alone, outside
+ *    any transaction. The advertiser's own key is never read here: it is the engine's published value
+ *    (`PresenceKeyEngine.ownKey`), so no tag airs under a key the engine's first settle is about to replace.
  */
 class PresenceKeyRepository(
     private val db: KnitDatabase,
@@ -169,18 +174,33 @@ class PresenceKeyRepository(
      */
     fun keyChanges(): Flow<List<String>> = dao.observeKeyRows().distinctUntilChanged()
 
-    /** Our own current key — the one the advertiser airs — as (generation, key), or null before the first mint. */
-    suspend fun ownCurrent(): Pair<Long, ByteArray>? = PresenceKeyPolicy.keysOf(ownKeys()).current?.let { it.generation to it.key }
-
     /**
      * [TagSchedule.MarkStore] over the own key rows: the mark of a generation lives in that key's row, written and deleted
      * with it, never in a backup. [TagSchedule.MarkStore.read] throws on a store error and answers null only for a row
-     * with no mark (or no row); [TagSchedule.MarkStore.write] throws when the row is gone, so nothing is aired under a
-     * mark that did not land. Blocking (the contract's): the advertiser calls it on the transport's worker, never on the
-     * main thread. Durable against power loss is the wiring's to add with it (step 5): the row is written in an
-     * ordinary WAL commit here.
+     * with no mark (or no row). Blocking (the contract's): the advertiser calls it on the transport's worker, never on the
+     * main thread. [metrics] counts the writes ([MeshMetrics.onPresenceMarkWrite]), the ones that committed at FULL
+     * ([MeshMetrics.onPresenceMarkDurable]), the commits refused for not running at FULL
+     * ([MeshMetrics.onPresenceMarkNotFull]) and the writes refused because the key was gone or demoted
+     * ([MeshMetrics.onPresenceMarkRefused], an expected race with a rotation): the device check the JVM cannot make is
+     * `presenceMarkNotFull == 0` with `presenceMarksDurable > 0`. No refusal message names the generation.
+     *
+     * [TagSchedule.MarkStore.write] (ADR 2026-11.xp6d, step 5b, A3) is durable against power loss and conditional:
+     *  1. Never inside a transaction: SQLite refuses to change the safety level inside one, and a write that joined an
+     *     enclosing transaction would commit only with it. One there throws at once ([check]).
+     *  2. `PRAGMA synchronous=FULL`, outside any transaction. It carries an argument, so the pool sends it to the primary
+     *     connection, the one that commits.
+     *  3. The write transaction. Its first statement reads `PRAGMA synchronous` and throws unless it is FULL: inside the
+     *     transaction it runs on the connection that will commit, so this is the guarantee whatever the pool did with
+     *     step 2 (another reader, a reopened primary). Then the mark, only while [generation] is still the current key
+     *     ([PresenceKeyDao.setCurrentMark]): a rotation that demoted it (a fresh pair after a removal or a block) leaves 0
+     *     rows, which throws, so nothing airs under a key the leaver holds. In WAL mode a FULL commit syncs the log, and
+     *     with it every earlier commit not yet synced.
+     *  4. Always, `PRAGMA synchronous=NORMAL` again; a failure there is counted and swallowed (the connection stays at
+     *     FULL: slower, never unsafe).
+     * Not `wal_checkpoint` (a reader holding an old snapshot stops a PASSIVE one; a FULL one blocks on readers), and not
+     * a separate synced file (the mark is its key row's). Cost: one fsync per mark write, ~100–200 a day.
      */
-    internal fun markStore(): TagSchedule.MarkStore =
+    internal fun markStore(metrics: MeshMetrics): TagSchedule.MarkStore =
         object : TagSchedule.MarkStore {
             override fun read(generation: Long): TagSchedule.Mark? =
                 runBlocking {
@@ -193,10 +213,47 @@ class PresenceKeyRepository(
                 generation: Long,
                 mark: TagSchedule.Mark,
             ) {
-                val written = runBlocking { db.withWriteTransaction { dao.setMark(generation, mark.slot, mark.restart) } }
-                check(written == 1) { "no presence key of generation $generation to mark" }
+                metrics.onPresenceMarkWrite()
+                check(!inRoomTransaction()) { "a presence-key mark is never written inside a transaction" }
+                runBlocking { writeDurably(generation, mark) }
+                metrics.onPresenceMarkDurable()
+            }
+
+            private suspend fun writeDurably(
+                generation: Long,
+                mark: TagSchedule.Mark,
+            ) = db.useWriterConnection { connection ->
+                connection.usePrepared("PRAGMA synchronous=FULL") { it.step() }
+                try {
+                    val written =
+                        connection.withTransaction(Transactor.SQLiteTransactionType.IMMEDIATE) {
+                            val level = usePrepared("PRAGMA synchronous") { if (it.step()) it.getLong(0) else -1L }
+                            if (level != SYNCHRONOUS_FULL) {
+                                metrics.onPresenceMarkNotFull()
+                                error("the mark's commit would not run at synchronous=FULL")
+                            }
+                            dao.setCurrentMark(generation, mark.slot, mark.restart)
+                        }
+                    // Never the generation in the message: a logged "generation N refused" line dates a removal or block.
+                    if (written != 1) {
+                        metrics.onPresenceMarkRefused()
+                        error("the presence key to mark is gone or no longer the current one")
+                    }
+                } finally {
+                    runCatching { connection.usePrepared("PRAGMA synchronous=NORMAL") { it.step() } }
+                        .onFailure { metrics.onPresenceMarkSyncRestoreFailed() }
+                }
             }
         }
+
+    /**
+     * Whether the calling thread runs inside one of Room's suspending transactions: the thread-local Room's own blocking
+     * DAO path reads to join one. A blocking call from there that hopped to the query dispatcher would wait for the
+     * connection the transaction holds while the transaction waits for it — a wedge, not an error — so [markStore]'s
+     * write refuses it first.
+     */
+    @SuppressLint("RestrictedApi") // the one signal Room offers for "this thread is inside a transaction" (DBUtil.android)
+    private fun inRoomTransaction(): Boolean = db.suspendingTransactionContext.get() != null
 
     private fun OwnPresenceKeyEntity.toOwn() =
         PresenceKeyPolicy.Own(
@@ -210,6 +267,9 @@ class PresenceKeyRepository(
 
     private companion object {
         const val SQL_CHUNK = 500
+
+        /** `PRAGMA synchronous`'s FULL (2); NORMAL is 1. */
+        const val SYNCHRONOUS_FULL = 2L
     }
 }
 

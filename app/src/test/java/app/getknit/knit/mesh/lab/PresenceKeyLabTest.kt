@@ -61,7 +61,7 @@ class PresenceKeyLabTest {
             lab.linkAll(alice to bob, alice to carol, alice to dave, alice to erin)
             lab.awaitAcquainted(alice, bob, carol, dave, erin)
 
-            converse(alice, bob)
+            lab.converse(alice, bob)
             // Carol and Erin each write to Alice, who never writes back: a confirmed session, a request thread.
             assertTrue(carol.sendDm(alice, "hello from carol"))
             alice.settings.acceptFromCommons(erin.nodeId) // what a commons sighting writes (MeshManager.onCommonsMember)
@@ -123,9 +123,9 @@ class PresenceKeyLabTest {
             val dave = lab.node("dave", limits = blind).apply { setDisplayName("Dave") }
             lab.linkAll(alice to bob, alice to carol, alice to dave)
             lab.awaitAcquainted(alice, bob, carol, dave)
-            converse(alice, bob)
-            converse(alice, carol)
-            converse(alice, dave)
+            lab.converse(alice, bob)
+            lab.converse(alice, carol)
+            lab.converse(alice, dave)
             listOf(bob, carol, dave).forEach { lab.awaitHoldsKeysOf(it, alice) }
             listOf(bob, carol, dave).forEach { lab.awaitHoldsKeysOf(alice, it) }
 
@@ -167,7 +167,7 @@ class PresenceKeyLabTest {
             val bob = lab.node("bob", limits = blind).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
-            converse(alice, bob)
+            lab.converse(alice, bob)
             lab.awaitHoldsKeysOf(bob, alice)
             val before = alice.ownPair()
 
@@ -246,7 +246,7 @@ class PresenceKeyLabTest {
         val bob = lab.node("bob", limits = blind).apply { setDisplayName("Bob") }
         lab.link(alice, bob)
         lab.awaitAcquainted(alice, bob)
-        converse(alice, bob)
+        lab.converse(alice, bob)
         // Ticks first: a receipt held across a reset is lost by design (ADR 2026-10.8hn6), which is not what this case tests.
         lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         lab.awaitHoldsKeysOf(bob, alice)
@@ -337,7 +337,7 @@ class PresenceKeyLabTest {
             val bob = lab.node("bob", limits = blind.copy(sendsPresenceKeys = false)).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
-            converse(alice, bob)
+            lab.converse(alice, bob)
 
             lab.awaitHoldsKeysOf(bob, alice)
             assertHandedNothing(from = bob, to = listOf(alice))
@@ -357,7 +357,7 @@ class PresenceKeyLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
-            converse(alice, bob)
+            lab.converse(alice, bob)
             alice.heal()
             assertHandedNothing(from = alice, to = listOf(bob))
 
@@ -385,7 +385,7 @@ class PresenceKeyLabTest {
             val dave = lab.node("dave", limits = blind).apply { setDisplayName("Dave") }
             lab.linkAll(alice to dave, dave to bob)
             lab.awaitAcquainted(alice, bob, dave)
-            converse(alice, bob)
+            lab.converse(alice, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(dave)) { it.dmWith(if (it === alice) bob else alice) }
             alice.heal()
             bob.heal()
@@ -497,7 +497,7 @@ class PresenceKeyLabTest {
             val bob = lab.node("bob", limits = blind).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
-            converse(alice, bob)
+            lab.converse(alice, bob)
             lab.awaitHoldsKeysOf(bob, alice)
             lab.awaitHoldsKeysOf(alice, bob)
 
@@ -551,7 +551,7 @@ class PresenceKeyLabTest {
             val bob = lab.node("bob", limits = blind).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
-            converse(alice, bob)
+            lab.converse(alice, bob)
             lab.awaitHoldsKeysOf(bob, alice)
             lab.awaitHoldsKeysOf(alice, bob)
             // Ticks first: a receipt held across a reset is lost by design (ADR 2026-10.8hn6), which is not what this case tests.
@@ -643,17 +643,6 @@ class PresenceKeyLabTest {
     }
 
     // --- helpers ---
-
-    /** Two DMs, one each way, landed: each side has written in the thread, so each is the other's direct contact. */
-    private suspend fun converse(
-        a: LabNode,
-        b: LabNode,
-    ) {
-        assertTrue(a.sendDm(b, "hi ${b.name}"))
-        lab.await(1) { b.decrypted(b.dmWith(a)).size }
-        assertTrue(b.sendDm(a, "hi ${a.name}"))
-        lab.await(2) { a.decrypted(a.dmWith(b)).size }
-    }
 
     private companion object {
         /** A link-up's presence-key wait no scenario sits out: the case's other triggers have to do the work. */

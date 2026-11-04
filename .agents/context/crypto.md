@@ -330,8 +330,10 @@ LoRa plane (2026-09.ggq4).
   no-session tick and reaction cases, `RestoreLabTest` under `KNIT_LAB_BOARDS=1`.
 
 - **When touching `MessageContent.CTL_PRESENCE_KEY` / `pk`, `PresenceKeyPayload`, `PresenceKeyFrame`, `PresenceKeyPolicy`,
-  `PresenceKeyEngine` / `PresenceKeyEngineStore`, `PresenceKeyRepository` (its `markStore`, `presenceKeysFor`, `ownCurrent`,
-  `applyHeld`), `InboundPipeline.applyPresenceKey`, `RatchetSessions.OpenedUnder` / `OpenDelta.openedRootTag`,
+  `PresenceKeyEngine` / `PresenceKeyEngineStore` (its `ownKey`, `departed`, `beginSession`), `OwnPresenceKey`,
+  `PresenceKeyRepository` (its `markStore`, `presenceKeysFor`, `applyHeld`), `PresenceKeyDao.setCurrentMark`,
+  `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` / `onTagNextRecipients`, `MeshManager.hearsTagNext`, `PresenceKeyPolicy.departed` /
+  `hearsTagNext`, `InboundPipeline.applyPresenceKey`, `RatchetSessions.OpenedUnder` / `OpenDelta.openedRootTag`,
   `MeshManager.sealPresenceKeys` / `sealLinkReset` / `watchPresenceKeys`, the link-owed resets (`SettingsStore.linkOwedResets`,
   `finishRestore`'s split, `sendSessionReset`'s `deliver`), or `DropReason.PRESENCE_KEY_REFUSED`:** READ ADR 2026-11.xp6d
   ("The presence key", "What it costs"), then ADR 2026-09.pz9g and ADR 2026-09.qerd. Keys go only to direct contacts
@@ -350,9 +352,21 @@ LoRa plane (2026-09.ggq4).
   (`MeshManager.sendsPresenceKeys` → `PresenceKeyEngine`'s `sendsOwnKeys`; on in every build as shipped, independent of
   writing tags, `BLIND_ADVERT`), while receiving, storing, resolving, leavers' deletion and link-owed resets run in every
   build whatever it says.
-  Never a key, a tag or a root tag in a log line beside a peer id. Regression:
-  `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `InboundPipelineTest`'s presence-key cases, `GoldenVectorTest`'s
-  `messageContentPresenceKey*`, `PresenceKeyLabTest`.
+  The advertiser's own key is `PresenceKeyEngine.ownKey`, published at the end of a settle under the lock, null from
+  `beginSession` (every `MeshManager.start`, before the transport) until the session's first settle, compared by
+  generation and key bytes so a mark, a grow or a peer key never restarts the advertiser; never a Room read (a block
+  made while stopped would air under the leaver's key); null when a settle cannot reach nothing-due; read synchronously
+  through `onOwnPresenceKeySource` where a tag is about to air. `TAG_NEXT` recipients are `MeshManager.hearsTagNext`: not
+  blocked (node ids, and device tags re-read on any peer's tag change), not `departed` (published before the key), in
+  memory, no until both are read. No mark refusal names a generation. `watchPresenceKeys` turns each direct-contact
+  change into a conflated kick that a loop of its own runs as a pass, never a pass inside the `DirectContacts.observe`
+  collector: a busy collector let combine and distinct fold an add and a removal away, and the fresh pair waited for a
+  heal. The mark write (`markStore`) is never inside a
+  transaction, commits only after an in-transaction `PRAGMA synchronous` reads FULL, and only while its generation is
+  the newest activated (xp6d's step 5b key-side amendment). Never a key, a tag or a root tag in a log line beside a peer
+  id. Regression: `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `PresenceKeyRepositoryTest`, `InboundPipelineTest`'s
+  presence-key cases, `GoldenVectorTest`'s `messageContentPresenceKey*`, `CompositeMeshTransportTest`'s own-key case,
+  `PresenceKeyLabTest`, `PresenceKeyFeedLabTest` (the key handed to the radio and the `TAG_NEXT` predicate).
 
 ## Adding an entry
 

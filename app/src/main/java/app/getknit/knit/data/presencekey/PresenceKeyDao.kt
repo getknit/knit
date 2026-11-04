@@ -42,9 +42,17 @@ interface PresenceKeyDao {
     @Query("SELECT markSlot, markRestart FROM own_presence_keys WHERE generation = :generation")
     suspend fun mark(generation: Long): OwnMark?
 
-    /** Sets the mark under [generation]; 0 when the row is gone (the caller treats that as a failed write). */
-    @Query("UPDATE own_presence_keys SET markSlot = :slot, markRestart = :restart WHERE generation = :generation")
-    suspend fun setMark(
+    /**
+     * Sets the mark under [generation] only while it is the current key: activated and the newest activated (ADR
+     * 2026-11.xp6d, step 5b). 0 when the row is gone or a rotation demoted it to the previous key, which is never aired
+     * again; the caller treats that as a failed write, so no tag goes on air under a key a leaver holds.
+     */
+    @Query(
+        "UPDATE own_presence_keys SET markSlot = :slot, markRestart = :restart WHERE generation = :generation " +
+            "AND activatedAt IS NOT NULL " +
+            "AND generation = (SELECT MAX(generation) FROM own_presence_keys WHERE activatedAt IS NOT NULL)",
+    )
+    suspend fun setCurrentMark(
         generation: Long,
         slot: Long,
         restart: Int,

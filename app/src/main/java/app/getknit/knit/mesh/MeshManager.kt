@@ -58,6 +58,7 @@ import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
@@ -167,12 +168,14 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -875,6 +878,9 @@ class MeshManager(
     // so onDeliver targets it.
     private var router = newRouter(scope)
 
+    // The block list as [hearsTagNext] reads it (node ids and tag-blocked ids), null until this session read it.
+    private val tagNextBlocked = MutableStateFlow<Set<String>?>(null)
+
     /**
      * This phone's presence keys and their delivery to linked direct contacts (ADR 2026-11.xp6d): null without a
      * direct-contact source. Its lock is taken outside any transaction and never by the inbound path (its KDoc).
@@ -1315,6 +1321,7 @@ class MeshManager(
                 linkClaims.seed(peers.withCapabilities(Protocol.CAP_LINK_PROOF))
             }
         }
+        clearOwnPresenceKey()
         transport.start()
         watchNeighbors(session)
         // A link that ended a file's stream frees its parked asks at once (ADR 2026-10.g24x).
@@ -1370,7 +1377,15 @@ class MeshManager(
         val failed: (Exception) -> Unit = { Log.w(TAG, "presence keys failed: ${it.message}") }
         // Subscribed before the engine arms, so no change lands between its first pass and the collectors (a trigger
         // before [PresenceKeyEngine.start] is a no-op that the first pass covers).
-        session.launch { contacts.observe().collect { runRound(failed) { engine.reconcile("contacts") } } }
+        // The contacts collector only kicks, and a loop of its own runs the pass. Run inline, a pass held on the engine
+        // lock or a link send kept the collector busy, and `DirectContacts.observe` (a combine, then distinct) folded a
+        // contact added and removed meanwhile into the value it last saw: no pass followed the removal, while another
+        // trigger's pass had already put the contact in the key's audience, so the fresh pair waited for a heal (mesh
+        // lab, PresenceKeyFeedLabTest, about 1 run in 200). A conflated kick is never lost and needs no distinct value:
+        // every pass reads the direct contacts afresh, so one pass after the last change is all the change needs.
+        val contactKicks = Channel<Unit>(Channel.CONFLATED)
+        session.launch { contacts.observe().collect { contactKicks.trySend(Unit) } }
+        session.launch { contactKicks.consumeEach { runRound(failed) { engine.reconcile("contacts") } } }
         session.launch { ratchet.rootChanges.collect { runRound(failed) { engine.reconcile("root") } } }
         session.launch {
             seeded.join()
@@ -1381,9 +1396,11 @@ class MeshManager(
     /**
      * The Bluetooth plane's resolver reads the direct contacts' presence keys (ADR 2026-11.xp6d's key feed): the store's
      * listing, re-read on every change of the keys or of the direct contacts, goes whole to the transport, which bounds a
-     * contact's churn itself. Keys a collision left out are counted as they rise. Never logs a key.
+     * contact's churn itself. Keys a collision left out are counted as they rise. Never logs a key. This phone's own key and
+     * the `TAG_NEXT` block list go too ([feedOwnPresenceKey]).
      */
     private fun feedPresenceKeys(session: CoroutineScope) {
+        feedOwnPresenceKey(session)
         val contacts = directContacts ?: return
         val failed: (Exception) -> Unit = { Log.w(TAG, "presence key feed failed: ${it.message}") }
         session.launch {
@@ -1397,6 +1414,68 @@ class MeshManager(
                 }
             }
         }
+    }
+
+    /**
+     * Before every [transport] start: the own key and the `TAG_NEXT` predicate start the session unread (ADR 2026-11.xp6d,
+     * step 5b). The advertiser holds no key from the last session at its bring-up, so a removal or a block made while the
+     * mesh was stopped never airs a tag under the key the leaver holds; the engine's first settle hands it the fresh one
+     * ([feedOwnPresenceKey]).
+     */
+    private fun clearOwnPresenceKey() {
+        presenceKeys?.beginSession()
+        tagNextBlocked.value = null
+        transport.onOwnPresenceKey(null)
+        transport.onOwnPresenceKeySource { presenceKeys?.ownKey?.value }
+        transport.onTagNextRecipients(::hearsTagNext)
+    }
+
+    /**
+     * The Bluetooth plane's own key and its `TAG_NEXT` predicate's block list (ADR 2026-11.xp6d, step 5b). The key is the
+     * engine's published value ([PresenceKeyEngine.ownKey]), never a Room read: it changes only with the current
+     * generation, and is null until the session's first settle. The block list (node ids, and the ids whose pinned device
+     * tag is blocked) is kept in memory for [hearsTagNext], which the transport calls at each send from its own worker;
+     * it is re-read when either block setting changes and when any peer's device tag does, so a peer pinned later under
+     * a blocked tag is refused from then on. A failed own-key round costs that value alone; a block-list input that
+     * fails leaves the list unread, so no one is sent `TAG_NEXT` until the next session. Never logs a key.
+     */
+    private fun feedOwnPresenceKey(session: CoroutineScope) {
+        presenceKeys?.let { engine ->
+            session.launch {
+                engine.ownKey.collect { key ->
+                    runRound({ Log.w(TAG, "own presence key feed failed: ${it.message}") }) { transport.onOwnPresenceKey(key) }
+                }
+            }
+        }
+        session.launch {
+            // Every peer's (node id, device tag), so a tag pinned after its block is resolved too; distinct, so a presence
+            // or name write to the table costs no re-read.
+            val tagged =
+                peers
+                    .observePeers()
+                    .map { rows -> rows.mapNotNullTo(HashSet()) { row -> row.deviceTag?.let { row.nodeId to it } } }
+                    .distinctUntilChanged()
+            combine(settings.blockedNodeIds, settings.blockedDeviceTags, tagged) { ids, tags, pinned ->
+                ids + pinned.filter { (_, tag) -> tag in tags }.map { (id, _) -> id }
+            }.catch {
+                // An input that fails ends the list: no TAG_NEXT to anyone until the next session reads it again.
+                Log.w(TAG, "tag-next block list failed: ${it.message}")
+                tagNextBlocked.value = null
+            }.collect { tagNextBlocked.value = it }
+        }
+    }
+
+    /**
+     * Whether [nodeId] may be sent this phone's next advert tag (`TAG_NEXT`, ADR 2026-11.xp6d, step 5b's W5): neither
+     * blocked nor among those who left the own key's audience while a kept generation was live
+     * ([PresenceKeyPolicy.hearsTagNext]). In-memory reads only, safe from the transport's worker; false until this session
+     * has read the block list and the engine's first pass has run. With no key engine (a rig with no direct-contact
+     * source) no one has departed.
+     */
+    internal fun hearsTagNext(nodeId: String): Boolean {
+        val engine = presenceKeys
+        val departed = if (engine == null) emptySet() else engine.departed.value
+        return PresenceKeyPolicy.hearsTagNext(nodeId, tagNextBlocked.value, departed)
     }
 
     /**

@@ -9,6 +9,17 @@ import org.junit.Assert.assertTrue
 // The presence-key oracles the key scenarios share (ADR 2026-11.xp6d, "The presence key"; `PresenceKeyLabTest`): who
 // stores whose current and next keys, byte for byte, and that nothing about them reached someone it must not.
 
+/** Two DMs, one each way, landed: each side has written in the thread, so each is the other's direct contact. */
+internal suspend fun MeshLab.converse(
+    a: LabNode,
+    b: LabNode,
+) {
+    assertTrue(a.sendDm(b, "hi ${b.name}"))
+    await(1) { b.decrypted(b.dmWith(a)).size }
+    assertTrue(b.sendDm(a, "hi ${a.name}"))
+    await(2) { a.decrypted(a.dmWith(b)).size }
+}
+
 /** [owner]'s current and next generations, lowest first. */
 internal suspend fun LabNode.ownPair(): List<Long> {
     val keys = PresenceKeyPolicy.keysOf(presenceKeys.ownKeys())

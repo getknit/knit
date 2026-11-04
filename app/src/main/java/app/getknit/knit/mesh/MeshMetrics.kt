@@ -366,6 +366,11 @@ class MeshMetrics {
     private val presenceKeysExcluded = AtomicLong()
     private val presenceKeyRotations = AtomicLong()
     private val presenceKeyGenerationClamped = AtomicLong()
+    private val presenceMarkWrites = AtomicLong()
+    private val presenceMarksDurable = AtomicLong()
+    private val presenceMarkSyncRestoreFailed = AtomicLong()
+    private val presenceMarkNotFull = AtomicLong()
+    private val presenceMarkRefused = AtomicLong()
     private val linkOwedResetsSent = AtomicLong()
     private val linkOwedResetsDeclined = AtomicLong()
     private val linkOwedResetsSuperseded = AtomicLong()
@@ -644,6 +649,35 @@ class MeshMetrics {
     /** A restored `presence_key_last_generation` more than a year past the clock, clamped to the clock. */
     fun onPresenceKeyGenerationClamped() {
         presenceKeyGenerationClamped.incrementAndGet()
+    }
+
+    /**
+     * The advertiser asked for a mark write (`PresenceKeyRepository.markStore`, ADR 2026-11.xp6d's step 5b, A3). Each
+     * ends durable ([onPresenceMarkDurable]), refused for not running at FULL ([onPresenceMarkNotFull], a fault), refused
+     * for a key gone or demoted ([onPresenceMarkRefused]), or refused inside a transaction (a wiring fault). Counts only.
+     */
+    fun onPresenceMarkWrite() {
+        presenceMarkWrites.incrementAndGet()
+    }
+
+    /** A mark commit whose in-transaction check read `synchronous` = FULL on the committing connection. */
+    fun onPresenceMarkDurable() {
+        presenceMarksDurable.incrementAndGet()
+    }
+
+    /** A mark commit refused because the committing connection did not read `synchronous` = FULL: a durability fault. */
+    fun onPresenceMarkNotFull() {
+        presenceMarkNotFull.incrementAndGet()
+    }
+
+    /** A mark write refused because its key row was gone or no longer the current key: a rotation won the race, expected. */
+    fun onPresenceMarkRefused() {
+        presenceMarkRefused.incrementAndGet()
+    }
+
+    /** Setting `synchronous` back to NORMAL after a mark write failed: that connection stays at FULL (slow, never unsafe). */
+    fun onPresenceMarkSyncRestoreFailed() {
+        presenceMarkSyncRestoreFailed.incrementAndGet()
     }
 
     /** A restore's session reset to a direct contact no flooded reset covers, sent point to point over a link. */
@@ -1706,6 +1740,11 @@ class MeshMetrics {
             presenceKeysExcluded = presenceKeysExcluded.get(),
             presenceKeyRotations = presenceKeyRotations.get(),
             presenceKeyGenerationClamped = presenceKeyGenerationClamped.get(),
+            presenceMarkWrites = presenceMarkWrites.get(),
+            presenceMarksDurable = presenceMarksDurable.get(),
+            presenceMarkSyncRestoreFailed = presenceMarkSyncRestoreFailed.get(),
+            presenceMarkNotFull = presenceMarkNotFull.get(),
+            presenceMarkRefused = presenceMarkRefused.get(),
             linkOwedResetsSent = linkOwedResetsSent.get(),
             linkOwedResetsDeclined = linkOwedResetsDeclined.get(),
             linkOwedResetsSuperseded = linkOwedResetsSuperseded.get(),
@@ -2006,6 +2045,13 @@ class MeshMetrics {
             val presenceKeysExcluded: Long = 0,
             val presenceKeyRotations: Long = 0,
             val presenceKeyGenerationClamped: Long = 0,
+            // Step 5b's durable mark write: asked for, committed with the FULL check passed, NORMAL not restored, refused
+            // for not running at FULL (a fault), and refused for a key gone or demoted (a rotation's race, expected).
+            val presenceMarkWrites: Long = 0,
+            val presenceMarksDurable: Long = 0,
+            val presenceMarkSyncRestoreFailed: Long = 0,
+            val presenceMarkNotFull: Long = 0,
+            val presenceMarkRefused: Long = 0,
             val linkOwedResetsSent: Long = 0,
             val linkOwedResetsDeclined: Long = 0,
             val linkOwedResetsSuperseded: Long = 0,

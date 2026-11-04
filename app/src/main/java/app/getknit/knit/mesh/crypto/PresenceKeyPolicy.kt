@@ -186,6 +186,32 @@ object PresenceKeyPolicy {
         keys: Keys,
     ): List<Own> = listOfNotNull(keys.current?.takeIf { peer in it.audience }, keys.next?.takeIf { peer in it.audience })
 
+    /**
+     * Who left an own key's audience while a kept generation was live (step 5b's `TAG_NEXT` exclusion): everyone named in
+     * a kept row's audience who is not in [direct], the direct contacts read now. Settled with own keys on, the current
+     * and next audiences hold direct contacts only, so this is the previous key's audience less the direct contacts: the
+     * departures that caused the last fresh pair. It empties when that generation goes (the next advance), and an id that
+     * becomes a direct contact again leaves it at once. A leaver who held only a discarded next key (never aired) is not
+     * named: no kept row records it, and it holds no key that ever aired. Read with own keys off too (rows an earlier
+     * build minted): anyone they name who is no longer a direct contact.
+     */
+    fun departed(
+        rows: List<Own>,
+        direct: Set<String>,
+    ): Set<String> = rows.flatMapTo(HashSet()) { it.audience } - direct
+
+    /**
+     * Whether a linked peer may be sent this phone's next advert tag (`TAG_NEXT`, ADR 2026-11.xp6d's step 5b, W5): not
+     * [blocked] and not [departed]. A null input is one not read yet this session, and answers no: a send the predicate
+     * refuses costs a linked peer one dial of an unannounced tag, while a send to someone just blocked or removed hands
+     * them the tag the fresh rotation was for.
+     */
+    fun hearsTagNext(
+        nodeId: String,
+        blocked: Set<String>?,
+        departed: Set<String>?,
+    ): Boolean = blocked != null && departed != null && nodeId !in blocked && nodeId !in departed
+
     /** What a restore's link-owed reset does on a link ([linkReset]). */
     enum class LinkReset {
         /** Resend the kept frame verbatim: its root is still the session's and its init still against the pinned prekey. */

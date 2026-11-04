@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.OwnPresenceKey
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
@@ -938,6 +939,35 @@ class LabTransport(
     override fun stop() = Unit
 
     override fun heal() = Unit
+
+    /**
+     * Every own presence key the manager handed this radio, in order, nulls included (ADR 2026-11.xp6d, step 5b): the
+     * key a Bluetooth plane would derive its tags from. Recorded only when this transport is the manager's own; a node
+     * whose radio sits in a composite (a board or a link plane beside it) records nothing, as the composite hands the key
+     * to the Bluetooth plane alone.
+     */
+    val ownKeysHanded = CopyOnWriteArrayList<OwnPresenceKey?>()
+
+    /** The manager's `TAG_NEXT` predicate, as the Bluetooth plane would hold it. */
+    @Volatile
+    private var tagNext: ((String) -> Boolean)? = null
+
+    /** The ids [tagNextAtHandOff] asks the predicate about at each key handed, as a send right after it would. */
+    @Volatile
+    var tagNextProbe: Set<String> = emptySet()
+
+    /** Each key handed with the predicate's answer for each [tagNextProbe] id, read in the same call: no hop between. */
+    val tagNextAtHandOff = CopyOnWriteArrayList<Pair<OwnPresenceKey?, Map<String, Boolean>>>()
+
+    override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
+        tagNext = hears
+    }
+
+    override fun onOwnPresenceKey(key: OwnPresenceKey?) {
+        ownKeysHanded += key
+        val hears = tagNext
+        tagNextAtHandOff += key to tagNextProbe.associateWith { hears?.invoke(it) == true }
+    }
 
     override suspend fun send(
         wire: WireEnvelope,

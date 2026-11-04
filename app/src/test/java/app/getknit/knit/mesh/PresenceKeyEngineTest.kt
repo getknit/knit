@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.crypto.BlindTag
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.PresenceKeyFrame
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
@@ -11,11 +12,13 @@ import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -142,6 +145,24 @@ class PresenceKeyEngineTest {
             }
 
         suspend fun keys() = PresenceKeyPolicy.keysOf(store.ownKeys())
+
+        /** The current own key as the feed would publish it. */
+        suspend fun currentKey(): OwnPresenceKey = checkNotNull(keys().current).let { OwnPresenceKey(it.generation, it.key) }
+
+        /** The advertiser's mark under the current key, at the slot now: what `TagSchedule` writes at a rotation. */
+        suspend fun markCurrent() {
+            val current = checkNotNull(keys().current)
+            val marked =
+                PresenceKeyPolicy.Own(
+                    current.generation,
+                    current.key,
+                    current.mintedAt,
+                    current.activatedAt,
+                    current.audience,
+                    markSlot = BlindTag.slotOf(wall),
+                )
+            store.applyOwn(emptyList(), listOf(marked), store.ownKeys().mapTo(HashSet()) { it.generation })
+        }
 
         private fun wire() = WireEnvelope(relay = false, sig = ByteArray(64), signed = ByteArray(8))
 
@@ -712,6 +733,164 @@ class PresenceKeyEngineTest {
             assertEquals(1, rig.sentFrames.count { it.first == "alice" })
             assertEquals(2, rig.handed("alice").size)
         }
+
+    /**
+     * Step 5b's own-key feed (A1): null until the first settle, then one value per change of the current generation. A
+     * mark write, a grow and a peer's stored key change rows but not the current generation, so they emit nothing (a feed
+     * keyed on the rows would restart the advertiser on its own mark write, design5b's loop); a weekly advance and a fresh
+     * pair emit once each. The departures published beside it name the leaver of the fresh pair, and no one after a weekly
+     * advance.
+     */
+    @Test
+    fun theOwnKeyFeedEmitsOncePerCurrentGenerationAndNothingOnAMarkAGrowOrAPeerKey() =
+        runTest {
+            val rig = Rig()
+            val seen = ownKeysSeen(rig.engine)
+            rig.engine.reconcile("heal") // before start: no pass, nothing published
+            assertEquals(listOf<OwnPresenceKey?>(null), seen)
+            assertNull(rig.engine.departed.value)
+
+            rig.engine.start()
+            assertEquals(listOf(null, rig.currentKey()), seen)
+            assertEquals(emptySet<String>(), rig.engine.departed.value)
+
+            rig.markCurrent()
+            rig.engine.reconcile("heal")
+            rig.direct = rig.direct + "carol" // a grow: carol joins the next key and, a day young, the current one
+            rig.engine.reconcile("contacts")
+            assertTrue("carol" in rig.keys().current!!.audience)
+            rig.store.peerKeys += "alice" // a peer's ctl 11 landed
+            rig.engine.reconcile("root")
+            assertEquals("a mark, a grow and a peer key emit nothing", 2, seen.size)
+
+            val promoted = rig.keys().next!!.generation
+            rig.wall += PresenceKeyPolicy.WEEK_MS
+            rig.engine.reconcile("heal")
+            assertEquals(3, seen.size)
+            assertEquals("the weekly advance airs the next key", promoted, seen.last()?.generation)
+            assertEquals(rig.currentKey(), seen.last())
+            assertEquals("no one left", emptySet<String>(), rig.engine.departed.value)
+
+            rig.direct = rig.direct - "bob"
+            rig.engine.reconcile("contacts")
+            rig.engine.reconcile("heal")
+            assertEquals(4, seen.size)
+            assertEquals(rig.currentKey(), seen.last())
+            assertEquals("bob left while the old current was live", setOf("bob"), rig.engine.departed.value)
+        }
+
+    /**
+     * A removal made while the mesh was stopped (design5b's block-while-paused): the next session's feed is null from
+     * [PresenceKeyEngine.beginSession] until its first settle, and that settle's fresh pair is the first value, never the
+     * key the leaver holds.
+     */
+    @Test
+    fun aContactRemovedWhileStoppedMakesTheFreshKeyTheFirstValueOfTheNextSession() =
+        runTest {
+            val rig = Rig()
+            rig.engine.start()
+            val before = rig.currentKey()
+
+            rig.engine.beginSession()
+            assertNull("the last session's key is gone at the start", rig.engine.ownKey.value)
+            assertNull(rig.engine.departed.value)
+            val seen = ownKeysSeen(rig.engine)
+            rig.direct = setOf("alice") // bob removed while stopped
+            rig.engine.start()
+
+            val fresh = rig.currentKey()
+            assertNotEquals(before, fresh)
+            assertEquals("null, then the fresh key and nothing between", listOf(null, fresh), seen)
+            assertEquals(setOf("bob"), rig.engine.departed.value)
+        }
+
+    /** A pass of an earlier session still inside the lock when the next session begins publishes nothing after it. */
+    @OptIn(ExperimentalCoroutinesApi::class) // runCurrent
+    @Test
+    fun aPassOfAnEarlierSessionPublishesNothingAfterTheNextBegins() =
+        runTest {
+            val rig = Rig()
+            val gate = CompletableDeferred<Unit>()
+            rig.store.gate = gate
+            val pass = launch { rig.engine.start() }
+            testScheduler.runCurrent() // the pass now waits inside its mint, holding the lock
+
+            rig.engine.beginSession()
+            gate.complete(Unit)
+            pass.join()
+            assertNull("the earlier session's settle published nothing", rig.engine.ownKey.value)
+            assertNull(rig.engine.departed.value)
+
+            rig.engine.reconcile("heal")
+            assertEquals(rig.currentKey(), rig.engine.ownKey.value)
+        }
+
+    /** A build that sends no keys of its own publishes no own key, whatever its rows; the departures are still read. */
+    @Test
+    fun aBuildThatSendsNoKeysPublishesNoOwnKey() =
+        runTest {
+            val rig = Rig(sendsOwnKeys = false)
+            val seen = ownKeysSeen(rig.engine)
+            rig.engine.start()
+            rig.direct = setOf("alice")
+            rig.engine.reconcile("contacts")
+            rig.wall += PresenceKeyPolicy.WEEK_MS
+            rig.engine.reconcile("heal")
+            assertEquals(listOf<OwnPresenceKey?>(null), seen)
+            assertEquals(emptySet<String>(), rig.engine.departed.value)
+        }
+
+    /**
+     * A settle that cannot reach nothing-due publishes no key: a removal whose fresh pair cannot be minted (no generation
+     * left) leaves the rows with the key the leaver holds as the current one, so the feed goes null (random tags) and the
+     * departures stay as they were. A first mint that cannot be minted publishes nothing at all.
+     */
+    @Test
+    fun aSettleThatCannotMintPublishesNoKeyAndKeepsTheDepartures() =
+        runTest {
+            val rig = Rig()
+            rig.engine.start()
+            assertEquals(rig.currentKey(), rig.engine.ownKey.value)
+            val departedBefore = rig.engine.departed.value
+
+            rig.store.last = Long.MAX_VALUE
+            rig.direct = setOf("alice")
+            rig.engine.reconcile("contacts")
+            assertTrue("the fresh pair never landed", "bob" in rig.keys().current!!.audience)
+            assertNull("a pending fresh pair airs no key", rig.engine.ownKey.value)
+            assertEquals("the departures from before stand", departedBefore, rig.engine.departed.value)
+
+            val never = Rig()
+            never.store.last = Long.MAX_VALUE
+            never.engine.start()
+            assertTrue(never.store.ownKeys().isEmpty())
+            assertNull(never.engine.ownKey.value)
+            assertNull("no settled pass, no departures read", never.engine.departed.value)
+        }
+
+    /** A contact who left while the mesh was stopped and never handed us a key loses its sent record at the first pass. */
+    @Test
+    fun aContactWhoLeftWhileStoppedWithNoStoredKeyLosesItsSentRecord() =
+        runTest {
+            val rig = Rig()
+            rig.engine.start()
+            assertTrue(rig.store.peerKeys.isEmpty())
+            assertEquals(2, rig.engine.sentTo("bob")?.size)
+
+            rig.engine.beginSession()
+            rig.direct = setOf("alice")
+            rig.engine.start()
+            assertNull(rig.engine.sentTo("bob"))
+            assertEquals("alice's record moved to the fresh pair", 2, rig.engine.sentTo("alice")?.size)
+        }
+
+    /** Every value [engine]'s own-key feed takes from now on, in order (the current one first). */
+    @OptIn(ExperimentalCoroutinesApi::class) // UnconfinedTestDispatcher: the collector sees each value as it is set
+    private fun TestScope.ownKeysSeen(engine: PresenceKeyEngine): List<OwnPresenceKey?> {
+        val seen = mutableListOf<OwnPresenceKey?>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { engine.ownKey.collect { seen += it } }
+        return seen
+    }
 
     /** The engine's store in memory, logging each write so a test can read their order. */
     private class MemoryStore(

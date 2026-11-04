@@ -1679,6 +1679,9 @@ class LabNode internal constructor(
     /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
 
+    /** Whether the manager runs on [transport] itself, with no composite between: what [LabTransport.ownKeysHanded] needs. */
+    internal val radioAlone: Boolean get() = composite == null
+
     /** This session's composite children over [lora] and [link], their collectors counted; null with no such plane. */
     private var boardPlane: LabBoardPlane? = null
     private var linkPlane: LabLinkPlane? = null
