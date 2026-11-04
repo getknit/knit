@@ -44,7 +44,9 @@ import org.robolectric.Shadows.shadowOf
  * importance (`IMPORTANCE_SERVICE`) and no battery exemption. That is the state [canReclaimForegroundService]
  * refuses, and before work item #76 the refusal happened in the receiver: the mesh never came back after a
  * reboot on any phone without the exemption until Knit was opened. The start has to reach the system, and
- * the receiver has to record that it did (ADR 2026-09.29dw).
+ * the receiver has to record that it did (ADR 2026-09.29dw). The same holds for `MY_PACKAGE_REPLACED`: an
+ * update stops the old version's service with no sticky restart, and the broadcast to the new version is the
+ * only thing that brings the mesh back before Knit is opened (ADR 2026-11.f8pg).
  */
 @RunWith(AndroidJUnit4::class)
 class BootReceiverTest {
@@ -83,7 +85,15 @@ class BootReceiverTest {
         }
 
     @Test
-    fun `a boot broadcast starts the mesh from a receiver process without the battery exemption`() {
+    fun `a boot broadcast starts the mesh from a receiver process without the battery exemption`() =
+        assertBroadcastStartsMesh(Intent.ACTION_BOOT_COMPLETED)
+
+    @Test
+    fun `an update of Knit starts the mesh from a receiver process without the battery exemption`() =
+        assertBroadcastStartsMesh(Intent.ACTION_MY_PACKAGE_REPLACED)
+
+    /** Sends [action] to the manifest-registered receiver, as the system does, and requires the service start. */
+    private fun assertBroadcastStartsMesh(action: String) {
         grantRadioPermissions()
         // What ActivityManager reports for a process whose only work is a broadcast receiver.
         val info =
@@ -105,7 +115,7 @@ class BootReceiverTest {
             )
         }
 
-        app.sendBroadcast(Intent(Intent.ACTION_BOOT_COMPLETED))
+        app.sendBroadcast(Intent(action))
         shadowOf(Looper.getMainLooper()).idle()
 
         val started = shadowOf(app).nextStartedService

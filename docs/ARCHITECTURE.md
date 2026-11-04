@@ -779,7 +779,7 @@ A typed foreground service hosts `MeshManager` so the mesh survives backgroundin
   where the store says. Two inexact resume alarms (`setAndAllowWhileIdle` + a 10-min `setWindow`, both
   `ACTION_RESUME`) plus an expiry check on every start bring it back; no exact-alarm permission.
 - **Stop is sticky:** `SettingsStore.meshEnabled` is the user's switch, and every starter honours it —
-  `BootReceiver` after a reboot, and `KnitApp`'s route and resume effects through `shouldStartMeshFromUi`
+  `BootReceiver` after a reboot or an update of Knit (ADR 2026-11.f8pg), and `KnitApp`'s route and resume effects through `shouldStartMeshFromUi`
   (`ui/MeshStartPolicy.kt`, deciding on a fresh store read — a lifecycle-collected copy is stale on the
   resume after a Stop). The chat list's "Mesh stopped — Start" banner writes the flag back and the route
   effect does the start.

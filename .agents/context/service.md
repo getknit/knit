@@ -23,7 +23,9 @@ lines.
   2026-10.47rw). The foreground deadline is 30 s on Android 15 (10 s before), and
   `getForegroundServiceType()` cannot tell you it was lost. `BootReceiver` starts through
   `MeshService.startFromBoot`, never `start` — ADR 2026-09.29dw: the pre-check reads process state, a
-  receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. Regression:
+  receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. It takes `MY_PACKAGE_REPLACED`
+  as well as `BOOT_COMPLETED` (ADR 2026-11.f8pg): an update stops the service with no sticky restart, and
+  since 82s7 no alarm outlives the process to bring it back. Regression:
   `MeshServiceForegroundReclaimTest`, `MeshServiceGraphOffMainTest`, `GraphlessProcessTest`,
   `MeshServiceStartTest`, `BootReceiverTest`.
   **When touching the heartbeat or the revive alarm (`scheduleHeartbeat`, `heartbeatListener`, `onHeartbeat`,
