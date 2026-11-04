@@ -254,7 +254,7 @@ class StatusTextTest {
         // A library string of the same name brings its own translations, which win over ours wherever we ship
         // none: wear-compose's "state_off" once turned the mesh's "Off" into "Desactivado" on a Spanish watch.
         // Several languages Knit does not ship, since a library is not translated into all of them.
-        for (tag in listOf("ja", "it", "nl", "ru", "pl", "tr", "ko", "zh-CN", "ar", "hi")) {
+        for (tag in listOf("ja", "it", "nl", "ru", "pl", "tr", "ko", "vi", "ar", "hi")) {
             val unshipped = resourcesIn(Locale.forLanguageTag(tag))
             for (field in R.string::class.java.fields) {
                 val id = field.getInt(null)
@@ -292,6 +292,10 @@ class StatusTextTest {
     @Test
     @Config(qualifiers = "uk")
     fun `Ukrainian short texts fit`() = assertShortTextsFit(res)
+
+    @Test
+    @Config(qualifiers = "zh-rCN")
+    fun `Simplified Chinese short texts fit`() = assertShortTextsFit(res)
 
     private companion object {
         const val HOURS_8 = 8 * 60 * 60_000L

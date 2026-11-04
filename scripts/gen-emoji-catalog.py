@@ -101,6 +101,7 @@ LOCALES: dict[str, list[str]] = {
     "fr": ["fr"],
     "pt": ["pt"],
     "uk": ["uk"],
+    "zh-CN": ["zh"],
 }
 CLDR_INHERIT = "↑↑↑"
 CLDR_URL_TEMPLATE = "https://raw.githubusercontent.com/unicode-org/cldr/{release}/{path}"

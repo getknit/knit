@@ -12,7 +12,7 @@ names and keywords in its per-language overlays `emoji_<tag>.tsv` (the `LOCALES`
     sha256 `8511aadd046fdba2f0ffe590266ced8bbf48175ad139b2675d85d7141057b235`
   - `annotationsDerived-en.xml` ← `common/annotationsDerived/en.xml`,
     sha256 `d76bd041c8c9e7b00b716aff8b7d9dbf509877010e191d5efd068be2553e066e`
-  - `annotations-<locale>.xml` and `annotationsDerived-<locale>.xml` for `de`, `es`, `es_419`, `fr`, `pt`, `uk`,
+  - `annotations-<locale>.xml` and `annotationsDerived-<locale>.xml` for `de`, `es`, `es_419`, `fr`, `pt`, `uk`, `zh`,
     from the same paths (sha256 of each is stamped into the overlay that reads it):
 
     | file | sha256 |
@@ -29,7 +29,9 @@ names and keywords in its per-language overlays `emoji_<tag>.tsv` (the `LOCALES`
     | `annotationsDerived-pt.xml` | `8810bb38da561be161413f6292a6ce4a81d815ae9b6906a16a5b38d89f398496` |
     | `annotations-uk.xml` | `05ed3c0d065f33108745abbd5a49a6375a144acd3786c262683e9270093e5352` |
     | `annotationsDerived-uk.xml` | `2cf4358a657874830c19a60907f224a4d41309c6929bc2f97170e1a0ab237b8a` |
-- **Retrieved:** 2026-11-01
+    | `annotations-zh.xml` | `92389f71659998736530c72d4dcc86e453fe0be170cde5c5ad27094cab2a2de8` |
+    | `annotationsDerived-zh.xml` | `777acebb7c4ed103c34f5605881a2537656e0a17d9d1127518da7cd54f612bcc` |
+- **Retrieved:** 2026-11-01 (`zh` 2026-11-04)
 - **License:** Unicode License v3 (SPDX `Unicode-3.0`), © Unicode, Inc. — see [`LICENSE`](LICENSE) in this
   directory, copied verbatim from the release tag's `LICENSE`
 

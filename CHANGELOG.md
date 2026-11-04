@@ -25,8 +25,8 @@ document:
 - In the US, Australia and New Zealand, you can now set a LoRa board up on a frequency only Knit boards use.
   Knit then uses the full airtime your region allows, but other people's Meshtastic radios no longer pass
   your messages on.
-- Knit now comes in Brazilian Portuguese, Spanish, Ukrainian, French and German: it follows a phone set to
-  one of them, and on Android 13 and later you can pick one for Knit alone in
+- Knit now comes in Brazilian Portuguese, Spanish, Ukrainian, French, German and Simplified Chinese: it
+  follows a phone set to one of them, and on Android 13 and later you can pick one for Knit alone in
   Settings › Apps › Knit › Language. Native speakers are still checking them on Weblate, where anyone can
   suggest a fix.
 - Emoji names and emoji search follow Knit's language too: in Portuguese, "polegar" finds thumbs up and

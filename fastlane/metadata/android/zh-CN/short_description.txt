@@ -1,0 +1,1 @@
+通过 Wi-Fi Aware 和 Bluetooth 加密 Mesh 聊天，无需互联网和服务器。

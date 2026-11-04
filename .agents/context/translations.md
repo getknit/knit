@@ -11,6 +11,9 @@ the fourth: a neutral base for every French speaker, written with vous, the typo
 no-break space (U+00A0) before `:` `;` `!` `?` and inside « ». German (`values-de/`, machine pass 2026-10-28,
 awaiting native review) is the fifth: a neutral base for Germany, Austria and Switzerland, written with du (as
 Android's own German and German messengers use it), „ “ quotes, and WLAN for plain Wi-Fi as Android names it.
+Simplified Chinese (`values-zh-rCN/`, machine pass 2026-11-04, awaiting native review) is the sixth: mainland
+Putonghua, written with 你 (not 您), full-width punctuation and “ ” quotes, a half-width space between Han and a
+Latin word or a number, WLAN for plain Wi-Fi, and one plural form (`other`) carrying the number.
 Argentine Spanish (`values-es-rAR/`, 2026-10-31) is the first regional overlay: it landed empty, so it reads as
 `values-es/` until Argentine translators override single strings on Weblate (`es_AR`).
 Progress per language is GitHub issue #43.

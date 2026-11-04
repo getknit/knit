@@ -111,12 +111,43 @@ locale's own section before adding strings to it (mode B). A new pass adds its s
   pausieren, wenn die App nicht verwendet wird“, „Vollbildbenachrichtigungen zulassen“; „Relay“ vs. a German word
   for ordinary users.
 
+## zh-CN: Simplified Chinese
+
+- **Folder** `values-zh-rCN` (phone and watch), listing `fastlane/metadata/android/zh-CN/`, Play `zh-CN` (`gpc` dry
+  run 2026-11-04). Emoji overlay `emoji_zh-CN.tsv` from CLDR `zh`, tagged zh-CN so a Traditional (zh-TW, zh-HK) phone
+  keeps the English names. Machine pass 2026-11-04.
+- **Scope:** mainland Putonghua in Simplified characters; no Taiwan or Hong Kong vocabulary (软件, 网络, 消息, 视频,
+  默认).
+- **Register:** 你, never 您; 点按, never 点击. No 他 / 她 for a placeholder person: the name, 对方 or no pronoun.
+- **Typography:** full-width ，。：；！？（） and “ ” quotes; a half-width space between Han and a Latin word or a number
+  (and before a measure word after `%d`), none beside a `%s` that holds a name, a language or a sentence; no `—`; `…`
+  single. A Settings path is one quoted span: “设置 › 通话”.
+- **Plurals:** `other` only, keeping the number, with the right measure word (条消息, 个联系人, 部手机, 台设备, 块开发板).
+  `_zero` strings keep their `%d` too ("%d 名成员", "对话：%d 个").
+- **Words:** plain Wi-Fi = WLAN (Android's name), Wi-Fi Aware / Direct kept; mesh = Mesh 网络, short Mesh; Nearby =
+  附近, quoted in a sentence (“附近”聊天室); room = 聊天室; commons = 公共聊天室; relay = 中继 (the server 中继服务器);
+  "Relay all calls" = “所有通话经由服务器”, route pill 经由服务器, a TURN allocation 转发, a mesh or radio node passing
+  frames on 转发 / 中转; carry = 代传; direct link = 直连 (Wi-Fi Direct's own Android name is WLAN 直连); board = 开发板;
+  LoRa radio = 电台, the phone's radios = 无线模块; the Meshtastic channel = 频道, the LoRa air channel = 信道; airtime
+  = 发射时间; walkie-talkie = 对讲机 for the idea, 对讲 for the mode and its calls; voice note = 语音消息; transcript =
+  转写文本; profile photo = 头像; identity = Knit 身份 (账号 only in "no account"); sign out = 退出登录; missed call =
+  未接来电; Dismiss = 忽略, Close = 关闭; Not now = 以后再说; forward secrecy = 前向保密; supporter = 支持者, perks =
+  支持者答谢; ticket = 通行证; Internet = 互联网; this phone = 这部手机; backup = 备份 (translated).
+- **Android's words:** 设置, 附近的设备, 位置信息, 省电模式, 勿扰模式, 流量节省程序, 飞行模式; battery page
+  “应用电池用量” with “不受限制 / 优化 / 受限”; unused-app switch “如果未使用，则暂停应用活动”; “允许全屏通知”;
+  “已被管理员停用”; Family Link “控制 › 已登录的设备 › 应用权限”; Quick Share = 快速分享. All unverified.
+- **Final-read sweeps:** Traditional characters (a set of 軟體網訊預設螢幕們這個還麼為說時區開關後臺電話號碼與從會來對發應點擊);
+  `您`; `点击`; ASCII punctuation after Han `[\u4e00-\u9fff][,.:;!?()]`; Han and Latin touching
+  `[\u4e00-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u4e00-\u9fff]` (expected beside a `%s` language name); `—`.
+- **Open:** every Android, Family Link and Quick Share label above; 你 against 您; compact chat-list times with 前
+  (“5 分钟前”); 群组照片 against 群头像; the watch's “9时59分” short duration.
+
 ## The watch app (all locales)
 
-- **Files** `wear/src/main/res/values-<dir>/strings.xml`, machine pass 2026-10-28 for every shipped locale at once,
-  one translator per language, the phone's wording reused for every shared term (`translations.md`, "The watch app").
+- **Files** `wear/src/main/res/values-<dir>/strings.xml`, machine pass 2026-10-28 for every shipped locale at once
+  (zh-CN 2026-11-04, with its phone pass), one translator per language, the phone's wording reused for every shared term (`translations.md`, "The watch app").
 - **Seven characters** forced short words: Linked = de „Im Mesh“, es «Enlace», fr « Relié », pt "Em rede", uk
-  «Зв’язок»; Paused = „Pause“ / «Pausa» / « Pause » (de, es, fr); `aged_title_short` = just `^1` everywhere (the library writes "12 Min." in German, "12min" in pt);
+  «Зв’язок»; Paused = „Pause“ / «Pausa» / « Pause » (de, es, fr); `aged_title_short` = just `^1` everywhere but zh-CN, where `^1前` fits (the library writes "12 Min." in German, "12min" in pt);
   `allow_short` is a noun where the verb is too long (Zugriff, Permiso, Accès, Дозвіл; pt "Permita").
 - **Relayed** (passed on) is the phone's verb, never the relay server's noun: weitergegeben, reenviados, relayés,
   retransmitidas, передано. The glossary's relay row flags each as a warning; leave it.
