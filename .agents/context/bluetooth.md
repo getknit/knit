@@ -277,12 +277,12 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `bringUp`, `rotate`, `rotationLoop`, `acceptLoop`, `advertStatus`, `forceRotate`, `awaitAdvertSwitch` or `dialedByMe`, or
   `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` on
   the Bluetooth side:** READ ADR 2026-11.xp6d, its "writer on the air" amendment (step 5b, Part B1) above all, and its
-  step-6 amendment for the bridge (`…debug.ADVERT` / `ADVERT_ROTATE`: never a cause, tag source, `resolvable` or
-  generation in a reply, all of which are logged with a time). The writer airs a tag only under `BLIND_ADVERT` (passed
+  step-6 amendment for the bridge (`…debug.ADVERT` / `ADVERT_ROTATE`: debug replies carry the cause, tag source,
+  `resolvable` / `stale` and generations, never a key or a full tag). The writer airs a tag only under `BLIND_ADVERT` (passed
   in, the one seam), the runtime switch (on by default in debug since step 6, `ADVERT --ez blind false` for a harness
   that needs the classic order) and
   extended advertising (null until read, sticky once read true). The bridge's view (`AdvertDiag`, a debug build only) is
-  built by `AdvertStatus.of`, which takes no cause, source or generation; `ADVERT_ROTATE` runs through `rotate` with
+  built by `AdvertStatus.of`, which copies no tag out of the forms it reads; `ADVERT_ROTATE` runs through `rotate` with
   `Cause.FORCED` only when `ForcedRotation.refusal` passes (a tag on the air, nothing pending, settling, announced or held,
   no retired server in its 30 s grace, no live link sent a form inside the receiver's two-minute limit). `RotationTurn`'s every pass suspends on the worker, and a rotation that
   does not install looks again only a recheck later (the radio down: not until a wake). Every

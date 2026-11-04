@@ -578,8 +578,10 @@ class BluetoothMeshTransport internal constructor(
     // Read by the debug bridge's `ADVERT` (`links[].dialedByMe`).
     private val dialedByMe: MutableSet<FramedLink> = ConcurrentHashMap.newKeySet()
 
-    // When the last rotation installed (elapsed clock, the worker's): `ADVERT_ROTATE`'s grace floor.
+    // When the last rotation installed (elapsed clock, the worker's): `ADVERT_ROTATE`'s grace floor. [lastInstall]: what
+    // the last install was (its cause, its tag's source), for the debug bridge's `ADVERT` alone; the worker's.
     private var lastInstallAt: Long? = null
+    private var lastInstall: AdvertStatus.Install? = null
 
     // How a stale mark asks the key engine for a pass (`MeshTransport.onPresenceKeyPassRequester`).
     @Volatile private var keyPassRequester: () -> Unit = {}
@@ -1295,12 +1297,22 @@ class BluetoothMeshTransport internal constructor(
         val presence = writer.presence()?.takeIf { reuse } ?: newPresenceAdvertiser()
         val coded = writer.coded()?.takeIf { reuse } ?: newCodedAdvertiser().also { it.setInterval(codedInterval()) }
         val clear = AdvertOrder.Form.clear(localNodeId)
-        writer.up(pendingTag = false, clear = AdvertWriter.Aired(presence, coded, clear, server.psm), ::encode, ::write)
-        mine.set(AdvertOrder.Mine.clear(localNodeId))
+        var stamped = 0L
+        val aired = AdvertWriter.Aired(presence, coded, clear, server.psm)
+        // `mine` is set under the writer's lock with the stamp, as `rotate` does, so two installs set it in the order they
+        // stamped, whichever threads they ran on (bluetooth-reviewer, 2026-11-04).
+        writer.up(pendingTag = false, clear = aired, ::encode, ::write, onStamped = {
+            stamped = it
+            mine.set(AdvertOrder.Mine.clear(localNodeId))
+        })
+        // On the worker, after this (main-thread) install: a worker rotation may have installed and recorded a tag in
+        // between, and this late task must not stop its turn, clear its own tags or overwrite its facts.
         scope.launch(worker) {
+            if (stamped == 0L || !AdvertStatus.Install.mayRecord(lastInstall, stamped)) return@launch
             aliases.setOwnTags(null, null)
             rotation.onStopped()
             airedGeneration = null
+            lastInstall = AdvertStatus.Install(stamped, AdvertRotation.Cause.BRINGUP, null, null, null, null)
         }
     }
 
@@ -1443,14 +1455,22 @@ class BluetoothMeshTransport internal constructor(
             val old = writer.form()
             val choice = chooseTag(announced, wall)
             val form = choice?.form ?: AdvertOrder.Form.clear(localNodeId)
-            installed = installFresh(token, form)
+            var stamped = 0L
+            val previous = old?.takeIf { it != form }
+            // `mine` is set under the writer's lock with the stamp, as `upClear` does, so two installs set it in the order
+            // they stamped, whichever threads they ran on (bluetooth-reviewer, 2026-11-04).
+            installed =
+                installFresh(token, form) {
+                    stamped = it
+                    mine.set(AdvertOrder.Mine(form, previous))
+                }
             if (!installed) {
                 // The radio went down first, or no server would open: nothing new airs, and the writer goes back to the
                 // snapshot on the air (none after a teardown: a bring-up's then stays dark until the next one).
                 metrics.onBleAdvertWrite(BleAdvertWrite.INSTALL_STALE)
                 return false
             }
-            afterInstall(cause, old, form, choice, wall)
+            afterInstall(cause, old, previous, form, choice, wall, stamped)
             return true
         } finally {
             // Never a pending writer left behind: a rotation that did not install (or threw before it) hands pushes back.
@@ -1463,16 +1483,17 @@ class BluetoothMeshTransport internal constructor(
     private fun afterInstall(
         cause: AdvertRotation.Cause,
         old: AdvertOrder.Form?,
+        previous: AdvertOrder.Form?,
         form: AdvertOrder.Form,
         choice: TagChoice.Choice?,
         wall: Long,
+        stamped: Long,
     ) {
-        val previous = old?.takeIf { it != form }
-        mine.set(AdvertOrder.Mine(form, previous))
         aliases.setOwnTags(form.takeIf { it.blinded }?.advertised, previous?.takeIf { it.blinded }?.advertised)
         if (form.blinded || old?.blinded == true) sideChannel?.rotate()
         airedGeneration = choice?.generation
         lastInstallAt = elapsed()
+        lastInstall = AdvertStatus.Install(stamped, cause, choice?.generation, choice?.source, choice?.resolvable, choice?.stale)
         if (form.blinded) rotation.onRotated(wall) else rotation.onStopped()
         announcedTag = null // aired now, or passed by
         metrics.onBleRotation(BleRotation.valueOf(cause.name))
@@ -1503,6 +1524,7 @@ class BluetoothMeshTransport internal constructor(
     private fun installFresh(
         token: Int,
         form: AdvertOrder.Form,
+        onStamped: (Long) -> Unit,
     ): Boolean {
         var fresh: BluetoothServerSocket? = null
         val installed =
@@ -1515,7 +1537,7 @@ class BluetoothMeshTransport internal constructor(
                 if (!codedAdvert.startsWith("dark")) codedAdvert = "off"
                 val coded = newCodedAdvertiser().also { it.setInterval(codedInterval()) }
                 server?.let { AdvertWriter.Aired(newPresenceAdvertiser(), coded, form, it.psm) }
-            }, ::encode, ::write)
+            }, ::encode, ::write, onStamped)
         if (fresh != null) closeRetiredServersAfterGrace()
         return installed
     }
@@ -1713,8 +1735,8 @@ class BluetoothMeshTransport internal constructor(
     // --- The debug bridge's view of the writer (step 6; bound in a debug build only, AdvertDiag) ---
 
     /**
-     * `…debug.ADVERT`'s status, read on the worker (the turn's fields are the worker's; the writer's snapshot is one
-     * reference). Nothing in it names a cause, a tag source, a generation or a tag ([AdvertStatus]).
+     * `…debug.ADVERT`'s status, read in one task on the worker (the turn's fields, the generations and the last install
+     * are the worker's; the writer's snapshot is one reference). Never a key or a tag ([AdvertStatus]).
      */
     private suspend fun advertStatus(): AdvertStatus =
         withContext(worker) {
@@ -1726,10 +1748,11 @@ class BluetoothMeshTransport internal constructor(
                 blinding = blinding(),
                 extendedAdvertising = extAdvSupported,
                 keyHeld = ownKey != null,
+                keyGeneration = ownKey?.generation,
+                install = lastInstall,
                 turn = rotation.view(),
                 mine = mine().current,
                 sightings = presence.snapshots(elapsed()),
-                linkedIds = linked.mapTo(HashSet()) { it.nodeId },
                 links =
                     linked.map {
                         AdvertStatus.Link(
@@ -1737,6 +1760,7 @@ class BluetoothMeshTransport internal constructor(
                             proven = it.proven,
                             dialedByMe = it in dialedByMe,
                             tagAware = it.peer.capabilities and Protocol.CAP_BLIND_ADVERT != 0L,
+                            form = linkForms[it],
                         )
                     },
             )

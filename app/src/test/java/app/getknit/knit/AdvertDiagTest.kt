@@ -24,11 +24,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The debug bridge's view of the blinded advert (ADR 2026-11.xp6d's step-6 amendment): [AdvertStatus] never carries a
- * tag, its hex, a key generation, a rotation cause or a tag source (every reply is mirrored to logcat with a time), hides
- * the PSM while blinded, never marks a handle linked and reports `iDial` as [AdvertOrder] decides it; [ForcedRotation]'s
- * refusal rule; [AdvertSwitch]'s verdict; `FORCED` counted; and the transport's `dialedByMe` dropped wherever a link's
- * form is (the wiring, pinned on the source as [BleEndOfWindowTest] pins its own).
+ * The debug bridge's view of the blinded advert (ADR 2026-11.xp6d's step-6 amendment, and the maintainer's 2026-11-04
+ * call that debug replies carry the diagnostics): [AdvertStatus] reports the generations, the last install's cause, tag
+ * source, `resolvable` and `stale`, the PSM and which link a handle is, and never a tag, its hex or a prefix past `zzzz`;
+ * `iDial` as [AdvertOrder] decides it; [ForcedRotation]'s refusal rule; [AdvertSwitch]'s verdict; `FORCED` counted; and
+ * the transport's `dialedByMe` dropped wherever a link's form is (the wiring, pinned on the source as [BleEndOfWindowTest]
+ * pins its own).
  */
 class AdvertDiagTest {
     private class Sink : AdvertWriter.Sink {
@@ -53,11 +54,12 @@ class AdvertDiagTest {
     }
 
     private val wall = 1_800_000_123_000L
-    private val generation = 1_799_000_456_789L // a generation is minted from the wall clock: distinct from every time here
+    private val generation = 1_799_000_456_789L
     private val key = OwnPresenceKey(generation, ByteArray(BlindTag.KEY_BYTES) { 5 })
     private val localId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it * 3).toByte() })
     private val contactId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 40).toByte() })
     private val clearId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 90).toByte() })
+    private val strangerId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 120).toByte() })
     private val schedule = TagSchedule(Store())
 
     /** A tag the schedule chose under [key] for the slot of [wall]: a known tag under a known generation. */
@@ -90,13 +92,19 @@ class AdvertDiagTest {
             sighting(clearId, clearId, blinded = false), // an old build
         )
 
+    private val links =
+        listOf(
+            AdvertStatus.Link(contactId, proven = true, dialedByMe = true, tagAware = true, form = AdvertOrder.Form(contactTag, true)),
+            AdvertStatus.Link(clearId, proven = false, dialedByMe = false, tagAware = false, form = AdvertOrder.Form.clear(clearId)),
+        )
+
     private fun writerAiring(form: AdvertOrder.Form): AdvertWriter<Sink> {
         val writer = AdvertWriter<Sink>(wallMs = { wall }) { localId }
         val clear = AdvertWriter.Aired(Sink(), Sink(), AdvertOrder.Form.clear(localId), 0x81)
         writer.up(pendingTag = false, clear = clear, encode = ::payload, write = { _, _ -> })
         if (form.blinded) {
             val token = writer.begin()
-            assertTrue(writer.install(token, { AdvertWriter.Aired(Sink(), Sink(), form, 0x9A) }, ::payload) { _, _ -> })
+            assertTrue(writer.install(token, { AdvertWriter.Aired(Sink(), Sink(), form, 0x9A) }, ::payload, write = { _, _ -> }))
         }
         return writer
     }
@@ -107,11 +115,13 @@ class AdvertDiagTest {
     ) = app.getknit.knit.mesh.bluetooth.BleAdvertPayload
         .advert(form.advertised, 0x0FL, 0L, psm, sideLive = false, gattPeers = false, aware = false, blinded = form.blinded)
 
+    @Suppress("LongParameterList")
     private fun status(
         writer: AdvertWriter<Sink>,
         mine: AdvertOrder.Form,
         rotation: AdvertRotation = AdvertRotation(),
-        linkedIds: Set<String> = setOf(contactId, clearId),
+        install: AdvertStatus.Install? = null,
+        links: List<AdvertStatus.Link> = this.links,
     ) = AdvertStatus.of(
         aired = writer.aired(),
         radioUp = writer.isUp(),
@@ -119,75 +129,149 @@ class AdvertDiagTest {
         blinding = mine.blinded,
         extendedAdvertising = true,
         keyHeld = true,
+        keyGeneration = generation,
+        install = install,
         turn = rotation.view(),
         mine = mine,
         sightings = sightings,
-        linkedIds = linkedIds,
-        links =
-            listOf(
-                AdvertStatus.Link(contactId, proven = true, dialedByMe = true, tagAware = true),
-                AdvertStatus.Link(clearId, proven = false, dialedByMe = false, tagAware = false),
-            ),
+        links = links,
     )
 
-    /**
-     * Every cause and tag-source name, matched as printed (an enum's `toString`). None collides with a legitimate value:
-     * the reply's values are ids, handles, `clear` / `tag`, numbers and booleans, and its keys are lower camel case.
-     */
-    private val enumNames =
-        (AdvertRotation.Cause.entries + TagChoice.Source.entries + BleRotation.entries).map { it.name }.distinct()
-
-    /** Words whose presence in any key or value, any case, would mean a cause, a source or a key's age got in. */
-    private val forbiddenWords = listOf("cause", "source", "generation", "resolvable", "stale")
+    /** What the transport's `afterInstall` keeps for a blinded install made from [choice], stamped [installs]. */
+    private fun installOf(
+        cause: AdvertRotation.Cause,
+        choice: TagChoice.Choice,
+        installs: Long = 2,
+    ) = AdvertStatus.Install(installs, cause, choice.generation, choice.source, choice.resolvable, choice.stale)
 
     private fun hex(tag: String) = NodeId.toBytes(tag).joinToString("") { "%02x".format(it) }
 
-    @Test
-    fun theStatusCarriesNoTagNoGenerationNoCauseAndNoSource() {
-        // The tag on the air came from the schedule under a known generation; a key change then aired a KEY_MOVED tag
-        // (and its rotation counted FRESH): none of it may reach a reply.
-        val slotted = TagChoice.choose(schedule, key, key, announced = false, wallMs = wall)
-        assertEquals(TagChoice.Source.SLOTTED, slotted.source)
-        assertEquals(myTag, slotted.form.advertised)
-        val moved = TagChoice.choose(schedule, key, OwnPresenceKey(generation + 1, key.key), announced = false, wallMs = wall)
-        assertEquals(TagChoice.Source.KEY_MOVED, moved.source)
-        val metrics = MeshMetrics().also { it.onBleRotation(BleRotation.FRESH) }
-        assertEquals(1L, metrics.snapshot().bluetooth.bleRotationsByCause[BleRotation.FRESH])
-
-        for (form in listOf(slotted.form, moved.form)) {
-            val rotation = AdvertRotation().also { it.onRotated(wall) }
-            val s = status(writerAiring(form), form, rotation)
-            val printed = listOf(s.toString(), s.fields().toString())
-            val secrets =
-                listOf(myTag, form.advertised, contactTag, strangerTag, hex(myTag), hex(form.advertised), hex(contactTag)) +
-                    listOf(generation.toString(), (generation + 1).toString()) +
-                    enumNames
-            for (text in printed) {
-                for (secret in secrets) assertFalse("`$secret` in $text", secret in text)
-                for (word in forbiddenWords) assertFalse("`$word` in $text", text.contains(word, ignoreCase = true))
-                // No prefix of a tag past `zzzz`.
-                for (tag in listOf(form.advertised, contactTag, strangerTag)) assertFalse(text, tag.take(5) in text)
+    /** The standing limit: no tag, no tag's hex, no prefix of one past `zzzz`, in either printed form. */
+    private fun assertNoTag(
+        s: AdvertStatus,
+        vararg tags: String,
+    ) {
+        for (text in listOf(s.toString(), s.fields().toString())) {
+            for (tag in tags) {
+                assertFalse("a tag in $text", tag in text)
+                assertFalse("a tag's hex in $text", hex(tag) in text)
+                assertFalse("a tag's prefix past zzzz in $text", tag.take(5) in text)
             }
-            assertEquals("tag", s.form)
-            assertNull("no PSM while blinded: a PSM sequence ties one tag to the next", s.psm)
-            assertEquals(2L, s.epoch) // the clear bring-up, then the rotation
-            assertEquals(wall, s.rotatedAtMs)
-            assertEquals((BlindTag.slotOf(wall) + 1) * BlindTag.SLOT_MS, s.nextEdgeAtMs)
         }
     }
 
     @Test
-    fun aClearAdvertShowsItsPsmAndPeersReadTheirOrderAndLinks() {
+    fun aSlottedInstallReportsItsCauseSourceAndGenerationsAndNoTag() {
+        val slotted = TagChoice.choose(schedule, key, key, announced = false, wallMs = wall)
+        assertEquals(TagChoice.Source.SLOTTED, slotted.source)
+        assertEquals(myTag, slotted.form.advertised)
+        val rotation = AdvertRotation().also { it.onRotated(wall) }
+        val s =
+            status(
+                writerAiring(slotted.form),
+                slotted.form,
+                rotation,
+                installOf(AdvertRotation.Cause.SLOT, slotted),
+            )
+        assertEquals("tag", s.form)
+        assertEquals(generation, s.keyGeneration)
+        assertEquals(generation, s.airedGeneration)
+        assertEquals("SLOT", s.lastCause)
+        assertEquals("SLOTTED", s.source)
+        assertEquals(true, s.resolvable)
+        assertEquals(false, s.stale)
+        assertEquals("the PSM, blinded too: a debug read", 0x9A, s.psm)
+        assertEquals(2L, s.epoch) // the clear bring-up, then the rotation
+        assertEquals(wall, s.rotatedAtMs)
+        assertEquals((BlindTag.slotOf(wall) + 1) * BlindTag.SLOT_MS, s.nextEdgeAtMs)
+        val f = s.fields()
+        assertEquals(generation, f["keyGeneration"])
+        assertEquals("SLOTTED", f["source"])
+        assertNoTag(s, myTag, contactTag, strangerTag)
+    }
+
+    @Test
+    fun aKeyMovedInstallReportsARandomUnresolvableTagUnderNoGeneration() {
+        val moved = TagChoice.choose(schedule, key, OwnPresenceKey(generation + 1, key.key), announced = false, wallMs = wall)
+        assertEquals(TagChoice.Source.KEY_MOVED, moved.source)
+        val s =
+            status(
+                writerAiring(moved.form),
+                moved.form,
+                AdvertRotation().also { it.onRotated(wall) },
+                installOf(AdvertRotation.Cause.FRESH, moved),
+            )
+        assertEquals("tag", s.form)
+        assertEquals(generation, s.keyGeneration)
+        assertNull("a random tag was made under no generation", s.airedGeneration)
+        assertEquals("FRESH", s.lastCause)
+        assertEquals("KEY_MOVED", s.source)
+        assertEquals(false, s.resolvable)
+        assertEquals(false, s.stale)
+        assertNoTag(s, moved.form.advertised, myTag, contactTag, strangerTag)
+    }
+
+    @Test
+    fun aClearInstallHasACauseAndNoTagFacts() {
         val clear = AdvertOrder.Form.clear(localId)
-        val s = status(writerAiring(clear), clear)
+        val s = status(writerAiring(clear), clear, install = AdvertStatus.Install(1, AdvertRotation.Cause.FLIP, null, null, null, null))
         assertEquals("clear", s.form)
         assertEquals(0x81, s.psm)
         assertEquals(1L, s.epoch)
+        assertEquals("FLIP", s.lastCause)
+        assertNull(s.source)
+        assertNull(s.resolvable)
+        assertNull(s.stale)
+        assertNull(s.airedGeneration)
         assertNull("nothing blinded on the air: no edge", s.nextEdgeAtMs)
+        assertNull("nothing installed by a rotation yet", status(writerAiring(clear), clear).lastCause)
+        assertNoTag(s, contactTag, strangerTag)
+    }
+
+    @Test
+    fun anInstallsFactsAreReportedOnlyWithTheSnapshotTheyDescribe() {
+        // The clear bring-up stamped 1 on the main thread; its worker task has not recorded yet, so the facts held are an
+        // earlier install's (stamped 0 here: a tag's), or a rotation's stamped 2 against a snapshot stamped 1.
+        val slotted = TagChoice.choose(schedule, key, key, announced = false, wallMs = wall)
+        val clear = AdvertOrder.Form.clear(localId)
+        for (stale in listOf(installOf(AdvertRotation.Cause.SLOT, slotted, installs = 0), installOf(AdvertRotation.Cause.SLOT, slotted))) {
+            val s = status(writerAiring(clear), clear, install = stale)
+            assertEquals(1L, s.epoch)
+            assertEquals("clear", s.form)
+            for (field in listOf(s.lastCause, s.source, s.resolvable, s.stale, s.airedGeneration)) {
+                assertNull("in flight: ${stale.installs} against 1", field)
+            }
+            assertEquals("the key's own generation is no install's", generation, s.keyGeneration)
+        }
+        // The same facts against the snapshot they describe are reported.
+        val tagged = status(writerAiring(slotted.form), slotted.form, install = installOf(AdvertRotation.Cause.SLOT, slotted))
+        assertEquals("SLOT", tagged.lastCause)
+        assertEquals(generation, tagged.airedGeneration)
+    }
+
+    @Test
+    fun aLateBringUpTaskNeverUndoesALaterInstall() {
+        // `upClear` stamps on the main thread and records on the worker later; a worker rotation in between records first.
+        val rotated = AdvertStatus.Install(5, AdvertRotation.Cause.FLIP, generation, TagChoice.Source.SLOTTED, true, false)
+        assertFalse(
+            "a later install was recorded: the clear task leaves its facts, turn and own tags",
+            AdvertStatus.Install.mayRecord(rotated, 4),
+        )
+        assertFalse("the same install twice", AdvertStatus.Install.mayRecord(rotated, 5))
+        assertTrue("nothing later: the clear bring-up records", AdvertStatus.Install.mayRecord(rotated, 6))
+        assertTrue("nothing recorded yet", AdvertStatus.Install.mayRecord(null, 1))
+    }
+
+    @Test
+    fun peersReadTheirOrderAndWhichLinkTheyAre() {
+        val clear = AdvertOrder.Form.clear(localId)
+        val s = status(writerAiring(clear), clear)
         val byPeer = s.peers.associateBy { it.peer }
         assertEquals(setOf(contactId, handle, clearId), byPeer.keys)
         assertTrue(byPeer.getValue(contactId).resolved && byPeer.getValue(contactId).linked)
+        assertEquals(contactId, byPeer.getValue(contactId).linkedAs)
         assertFalse("a handle is never resolved", byPeer.getValue(handle).resolved)
+        assertFalse("no link has the stranger's form", byPeer.getValue(handle).linked)
         assertTrue(byPeer.getValue(clearId).resolved && byPeer.getValue(clearId).linked)
         // iDial is AdvertOrder's on my current form against theirs: a clear phone never dials a tag.
         for (p in s.peers) {
@@ -196,19 +280,25 @@ class AdvertDiagTest {
         }
         assertFalse(byPeer.getValue(contactId).iDial)
         assertEquals(localId > clearId, byPeer.getValue(clearId).iDial)
+        assertEquals(listOf(true, false), s.links.map { it.blinded })
     }
 
     @Test
-    fun aHandleIsNeverLinkedEvenWhenTheLinkedSetNamesIt() {
+    fun aHandleIsLinkedAsTheLinkWhoseFormIsItsTag() {
+        // A stranger linked before its tag resolved: the link's known form is the handle's tag.
         val mine = AdvertOrder.Form(myTag, blinded = true)
-        val s = status(writerAiring(mine), mine, linkedIds = setOf(handle, contactId))
+        val strangerLink =
+            AdvertStatus.Link(strangerId, proven = true, dialedByMe = false, tagAware = true, form = AdvertOrder.Form(strangerTag, true))
+        val s = status(writerAiring(mine), mine, links = links + strangerLink)
         val stranger = s.peers.single { it.peer == handle }
-        assertFalse(stranger.linked)
         assertFalse(stranger.resolved)
+        assertTrue(stranger.linked)
+        assertEquals(strangerId, stranger.linkedAs)
         // While blinding I dial every clear advert, and between two tags the larger dials.
         assertTrue(s.peers.single { it.peer == clearId }.iDial)
         assertEquals(myTag > contactTag, s.peers.single { it.peer == contactId }.iDial)
         assertEquals(myTag > strangerTag, stranger.iDial)
+        assertNoTag(s, myTag, contactTag, strangerTag)
     }
 
     @Test
@@ -217,29 +307,30 @@ class AdvertDiagTest {
         val leaky = listOf(sighting(strangerTag, strangerTag, blinded = true))
         val s =
             AdvertStatus.of(
-                writerAiring(mine).aired(),
-                true,
-                false,
-                true,
-                true,
-                true,
-                AdvertRotation().view(),
-                mine,
-                leaky,
-                setOf(strangerTag),
-                emptyList(),
+                aired = writerAiring(mine).aired(),
+                radioUp = true,
+                pending = false,
+                blinding = true,
+                extendedAdvertising = true,
+                keyHeld = true,
+                keyGeneration = generation,
+                install = null,
+                turn = AdvertRotation().view(),
+                mine = mine,
+                sightings = leaky,
+                links = emptyList(),
             )
         val peer = s.peers.single()
         assertEquals("~zzzz…", peer.peer)
         assertFalse(peer.resolved || peer.linked)
-        assertFalse(strangerTag in s.fields().toString())
+        assertNoTag(s, strangerTag, myTag)
     }
 
     @Test
     fun theFieldsKeepTheNamesTheHarnessesRead() {
         val mine = AdvertOrder.Form(myTag, blinded = true)
         val f = status(writerAiring(mine), mine).fields()
-        // Exactly these: a new field fails here until a review has asked whether a dated reply may carry it.
+        // Exactly these: a new field fails here until it has been reviewed (still never a key or a tag).
         assertEquals(
             listOf(
                 "extendedAdvertising",
@@ -250,6 +341,12 @@ class AdvertDiagTest {
                 "form",
                 "epoch",
                 "rotatedAtMs",
+                "keyGeneration",
+                "airedGeneration",
+                "lastCause",
+                "source",
+                "resolvable",
+                "stale",
                 "nextEdgeAtMs",
                 "announced",
                 "holding",
@@ -259,15 +356,14 @@ class AdvertDiagTest {
             ),
             f.keys.toList(),
         )
-        for (key in f.keys) for (word in forbiddenWords) assertFalse(key, key.contains(word, ignoreCase = true))
 
         @Suppress("UNCHECKED_CAST")
         val peer = (f.getValue("peers") as List<Map<String, Any?>>).first()
-        assertEquals(setOf("peer", "resolved", "blinded", "iDial", "linked"), peer.keys)
+        assertEquals(listOf("peer", "resolved", "blinded", "iDial", "linked", "linkedAs"), peer.keys.toList())
 
         @Suppress("UNCHECKED_CAST")
         val link = (f.getValue("links") as List<Map<String, Any?>>).first()
-        assertEquals(setOf("nodeId", "proven", "dialedByMe", "tagAware"), link.keys)
+        assertEquals(listOf("nodeId", "proven", "dialedByMe", "tagAware", "blinded"), link.keys.toList())
     }
 
     // --- ADVERT_ROTATE's refusal rule ---
@@ -414,5 +510,30 @@ class AdvertDiagTest {
         assertTrue("AdvertDiag.status = ::advertStatus" in transport.substringAfter("private fun bindDebugDiags()"))
         assertTrue("unbindDebugDiags()" in transport.substringAfter("override fun stop()").substringBefore("tearDownRadio()"))
         assertTrue("AdvertDiag.status = null" in transport.substringAfter("private fun unbindDebugDiags()"))
+    }
+
+    @Test
+    fun bothInstallsSetMineUnderTheWritersLockAndALateBringUpTaskStandsDown() {
+        // A clear bring-up (main) and a rotation (worker) each set `mine` inside the writer's stamp callback, so the two
+        // land in the order they stamped; set after the call returns, a clear bring-up could overwrite a later tag's.
+        val upClear = transport.substringAfter("private fun upClear()").substringBefore("\n    }\n")
+        val rotate = transport.substringAfter("private fun rotate(").substringBefore("\n    }\n")
+        for ((name, body, set) in listOf(
+            Triple("upClear", upClear, "mine.set(AdvertOrder.Mine.clear(localNodeId))"),
+            Triple("rotate", rotate, "mine.set(AdvertOrder.Mine(form, previous))"),
+        )) {
+            val callback = body.substringAfter("stamped = it").substringBefore("}")
+            assertTrue("$name sets mine inside the stamp callback", set in callback)
+            assertEquals("$name sets mine once", 1, body.split(set).size - 1)
+        }
+        assertFalse(
+            "afterInstall leaves mine to the callback",
+            "mine.set" in transport.substringAfter("private fun afterInstall(").substringBefore("\n    }\n"),
+        )
+        // The deferred bring-up task stands down when a later install was recorded (the pure rule: Install.mayRecord).
+        assertTrue(
+            "upClear's late task is guarded",
+            "if (stamped == 0L || !AdvertStatus.Install.mayRecord(lastInstall, stamped)) return@launch" in upClear,
+        )
     }
 }

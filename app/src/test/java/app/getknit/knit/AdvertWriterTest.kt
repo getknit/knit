@@ -344,13 +344,20 @@ class AdvertWriterTest {
         var now = wall
         val stamped = AdvertWriter<FakeSink>(wallMs = { now }) { localId }
         assertNull(stamped.aired())
-        stamped.up(pendingTag = false, clear = clearAired(), ::encode, ::write)
+        var told = 0L
+        stamped.up(pendingTag = false, clear = clearAired(), ::encode, ::write, onStamped = { told = it })
         assertEquals(1L, stamped.aired()!!.installs)
+        assertEquals("the caller is told the stamp it got", 1L, told)
         assertEquals(wall, stamped.aired()!!.installedAtMs)
         now += 5_000
         val form = TagChoice.choose(schedule, key, key, false, wall).form
-        assertTrue(stamped.install(stamped.begin(), { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9C) }, ::encode, ::write))
+        assertTrue(
+            stamped.install(stamped.begin(), { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9C) }, ::encode, ::write) {
+                told = it
+            },
+        )
         val aired = stamped.aired()!!
+        assertEquals(2L, told)
         assertEquals(2L, aired.installs)
         assertEquals(wall + 5_000, aired.installedAtMs)
         assertEquals(form, aired.form)
@@ -363,7 +370,9 @@ class AdvertWriterTest {
         // A stale install (the radio went down first) stamps nothing.
         val token = stamped.begin()
         stamped.down()
-        assertFalse(stamped.install(token, { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9D) }, ::encode, ::write))
+        told = -1L // so a callback with the unchanged count (2) would show too
+        assertFalse(stamped.install(token, { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9D) }, ::encode, ::write) { told = it })
         assertEquals(2L, stamped.aired()!!.installs)
+        assertEquals("a stale install tells no stamp", -1L, told)
     }
 }

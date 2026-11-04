@@ -402,15 +402,17 @@ Status: draft, with step 6's code; the caller decides whether it stands.
   branch on a controller with extended advertising airs tags from its first bring-up. `…debug.ADVERT --ez blind false`
   stores it off (the advert goes clear at the next flip), `--ez clear true` puts the default back, and the reply's
   `switch.stored` shows a value a harness left behind. A release build still has no writer and reads the switch as on.
-- **What the bridge may say.** `…debug.ADVERT` reports the gates (build flag, switch, extended advertising, a key held),
+- **What the bridge says.** `…debug.ADVERT` reports the gates (build flag, switch, extended advertising, a key held),
   the aired form (`clear` or `tag`), a per-process rotation count (`epoch`) and the last install's time, the turn (next
-  edge, an announcement standing, a hold), the PSM while clear, each sighted peer's pre-link order (`iDial`, under its
-  id or its handle) and each link's direction (`dialedByMe`). Every bridge reply is mirrored to logcat with a time, so
-  neither reply carries a rotation cause, a tag source, `resolvable`/`stale`, a key generation, a tag or a handle beside
-  an id: each of those, dated, would date a removal, a block or a clock move ("Counts, never dated causes", B1). A
-  harness reads causes from `STATE`'s counts around the call. Extended advertising reads `null` until the adapter has
-  been on (still sticky once true), and with no transport running both actions answer `status: ok` with the reason, so
-  a harness can store the switch before the mesh starts.
+  edge, an announcement standing, a hold), the PSM, each sighted peer's pre-link order (`iDial`, under its id or its
+  handle) and the link it is (`linkedAs`, a handle's included), each link's direction (`dialedByMe`) and the kind of
+  form its peer is known by, and the diagnostics: the held key's generation and the aired tag's, the last rotation's
+  cause, and its tag's source, `resolvable` and `stale`. Every bridge reply is mirrored
+  to logcat with a time, so in a debug build those fields date a removal, a block or a clock move; the maintainer ruled
+  (2026-11-04) that debug builds are for development, not privacy, and wants them for device trials. The bridge exists
+  only in debug builds. No reply carries a key or a full tag (nor its hex, nor a prefix past `zzzz`). Extended
+  advertising reads `null` until the adapter has been on (still sticky once true), and with no transport running both
+  actions answer `status: ok` with the reason, so a harness can store the switch before the mesh starts.
 - **No dated key lines in a release build** (security-reviewer, 2026-11-04, on Part A's code). The engine logged
   `presence key <step>: current g=<n>` at each new generation, `presence keys of <n> former direct contacts deleted` at
   each leaver sweep and `presence keys (<cause>): <n> frames…` at each pass that sent, all at Log.i with a time: a dated

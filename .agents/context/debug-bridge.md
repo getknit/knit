@@ -878,22 +878,27 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   matches what the writer should air (`blinding`, not the switch: without extended advertising, or with the radio down, it
   stays clear), then says `applied: true`, or `false` with `why`: `transport not running` (the switch is stored and applies
   at the next start; still `status: ok`, which `scripts/ble-pair-test.sh` relies on), `radio down` (applies at the next
-  bring-up), `no extended advertising`, `no mark store` (answered at once: the writer never blinds without one), `pending` (a rotation's tag was still pending: its install re-runs
-  the flip), `timeout`, or `build` (a build without `BLIND_ADVERT`, which only stores). The reply: `build`, `switch`
+  bring-up), `no extended advertising`, `no mark store` (answered at once: the writer never blinds without one),
+  `pending` (a rotation's tag was still pending: its install re-runs the flip), `timeout`, or `build` (a build without `BLIND_ADVERT`, which only stores). The reply: `build`, `switch`
   (`value`, and `stored`: null while the default stands, so a switch a harness left off is visible), `running` (the
   Bluetooth transport runs), then the transport's fields: `extendedAdvertising` (null until read with the adapter on,
   sticky once true), `keyHeld` (an own presence key), `radioUp`, `pending`, `blinding`, `form` (`clear` | `tag`, null
   before the first install), `epoch` (snapshots this process installed: every rotation, bring-up and flip adds one) and
-  `rotatedAtMs` (the last install's wall clock), the turn (`nextEdgeAtMs`, the global slot edge; `announced`, the coming
-  slot's announcement made; `holding`, a due rotation waiting on a hold or a settle), `psm` (the advertised PSM while
-  clear, null while blinding, as `bt state`'s `psm=rotating`), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>`
-  while unresolved, never a tag; `resolved`; `blinded`, their form; `iDial`; `linked`, never true for a handle) and
-  `links[]` (`nodeId` as the HELLO named it, `proven` (264w), `dialedByMe`, `tagAware`: its HELLO carried
-  `CAP_BLIND_ADVERT`). `iDial` is `AdvertOrder.iDial` on my current form against theirs: the pre-link order alone, which
+  `rotatedAtMs` (the last install's wall clock), `keyGeneration` (the held own key's, null with none), `airedGeneration`
+  (the generation the aired tag was made under; null for a random tag or a clear advert), the last install's `lastCause`
+  (`AdvertRotation.Cause`: SLOT, BRINGUP, FRESH, FLIP, FORCED; a clear bring-up reads BRINGUP; null before the first),
+  `source` (`TagChoice.Source`: ANNOUNCED, SLOTTED, NO_KEY, KEY_MOVED, MARK_FAILED), `resolvable` and `stale` (all three
+  null for a clear install), the turn (`nextEdgeAtMs`, the global slot edge; `announced`, the coming slot's announcement
+  made; `holding`, a due rotation waiting on a hold or a settle), `psm` (the advertised PSM, blinded or clear: the old one
+  keeps accepting 30 s after a rotation), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>` while unresolved,
+  never a tag; `resolved`; `blinded`, their form; `iDial`; `linked` and `linkedAs`, the live link's node id this entry
+  is: its own, or for a handle the link whose known form is that tag) and `links[]` (`nodeId` as the HELLO named it,
+  `proven` (264w), `dialedByMe`, `tagAware`: its HELLO carried `CAP_BLIND_ADVERT`; `blinded`: the kind of the form its
+  peer is known to advertise, null when none is known). `iDial` is `AdvertOrder.iDial` on my current form against theirs: the pre-link order alone, which
   between two tags turns with every slot and bring-up; a lonely dial, a Coded hunt or an iPhone's doorbell can still make the
-  other side dial, so the observed dialer is `links[].dialedByMe` (or `bt connect ok` in logcat). The reply is mirrored to
-  `KnitBridge:I` with a time, so it never carries a rotation cause, a tag source, `resolvable`/`stale`, a key generation, a
-  tag or a handle beside an id; read causes from `STATE`'s `bleRotationsByCause` and `bleTagsUnresolvable` around a call.
+  other side dial, so the observed dialer is `links[].dialedByMe` (or `bt connect ok` in logcat). Debug is for development
+  (the maintainer, 2026-11-04): the reply, mirrored to `KnitBridge:I` with a time, carries these diagnostics, which release
+  logs and the field log keep as counts only; it never carries a key, or a tag, its hex or a prefix past `zzzz`.
   The oracle for the switch: `form` and `epoch`, and `bt state … psm=` stops (or starts) saying `rotating`. The knit-ios
   `interop.py` keys peers off advert bytes 1–16 until its paired half lands: a phone it drives needs `ADVERT --ez blind
   false` first, restored with `--ez clear true` after. Any harness that turns the switch off clears it in a `finally`.

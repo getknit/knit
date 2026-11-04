@@ -118,14 +118,16 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
 
     /**
      * The radio came up. Blinding ([pendingTag]), a rotation will [install] the tag: nothing airs until then. Otherwise
-     * [clear] (the clear snapshot, its instances reused) goes on the air now through [write]. Returns the epoch token a
-     * rotation's [install] must carry.
+     * [clear] (the clear snapshot, its instances reused) goes on the air now through [write], and [onStamped] is told,
+     * under the lock, the install count it was stamped with ([Aired.installs]). Returns the epoch token a rotation's
+     * [install] must carry.
      */
     fun up(
         pendingTag: Boolean,
         clear: Aired<S>?,
         encode: (AdvertOrder.Form, Int) -> ByteArray,
         write: (Aired<S>, ByteArray) -> Unit,
+        onStamped: (Long) -> Unit = {},
     ): Int =
         synchronized(lock) {
             up = true
@@ -135,6 +137,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
                 if (clear.form.blinded) error("a clear bring-up names a clear form")
                 aired?.let { old -> retireReplaced(old, clear) }
                 aired = clear.stamped(++installs, wallMs())
+                onStamped(installs)
                 stale = false
                 pushLocked(encode, write)
             }
@@ -190,12 +193,15 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
         prepare: () -> Aired<S>?,
         encode: (AdvertOrder.Form, Int) -> ByteArray,
         write: (Aired<S>, ByteArray) -> Unit,
+        // Told, under the lock, the install count the new snapshot was stamped with ([Aired.installs]).
+        onStamped: (Long) -> Unit = {},
     ): Boolean =
         synchronized(lock) {
             if (token != epoch || !up) return false
             val next = prepare() ?: return false
             aired?.let { old -> retireReplaced(old, next) }
             aired = next.stamped(++installs, wallMs())
+            onStamped(installs)
             stale = false
             pending = false
             pushWanted = false
@@ -295,7 +301,10 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
  *    fault) gives a random tag: nothing is aired under a mark that is not durable, and never the id.
  */
 internal object TagChoice {
-    /** Why the tag is what it is: counted, never logged beside a time. */
+    /**
+     * Why the tag is what it is: counted, never logged beside a time (release logs and the field log); a debug build's
+     * `…debug.ADVERT` reports the last one's with its `resolvable` and `stale` (the maintainer, 2026-11-04).
+     */
     enum class Source { ANNOUNCED, SLOTTED, NO_KEY, KEY_MOVED, MARK_FAILED }
 
     /** [generation] is the key generation the rotation aired under (null with no key, or one the engine moved past). */

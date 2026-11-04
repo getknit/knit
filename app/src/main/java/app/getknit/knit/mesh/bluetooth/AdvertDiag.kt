@@ -7,12 +7,11 @@ package app.getknit.knit.mesh.bluetooth
  * `MeshTransport` seam for a debug lever. Every lambda runs its reads on the transport's confined worker. Null while the
  * transport is not running: the bridge then answers with a reason, never a wait.
  *
- * **What no reply carries.** The receiver mirrors every reply to logcat (`KnitBridge:I`) with a time, and a bug report
- * keeps it, so a reply is held to the writer's logging rule (ADR 2026-11.xp6d's "Counts, never dated causes"): never a
- * rotation's cause, a tag's source (`TagChoice.Source`), `resolvable` / `stale`, or a key generation (a dated fresh key or
- * generation step dates a removal or a block, a dated unresolvable tag dates a clock move), and never a tag, a prefix of
- * one past `zzzz`, or a handle beside a node id. [AdvertStatus] takes none of them as input. A harness that wants to know
- * what a forced rotation aired diffs STATE's counts (`bleTagsUnresolvable`, `bleRotationsByCause`) around the call.
+ * **What a reply carries.** A debug build is for development, not for privacy (the maintainer, 2026-11-04): the replies
+ * carry the diagnostics the writer's logging rule keeps out of release logs and the field log (a rotation's cause, the
+ * tag's source, `resolvable` / `stale`, key generations, the PSM while blinding, which link a handle is), though the
+ * receiver mirrors each reply to logcat with a time. The one standing limit: never a key, and never a tag, its hex or a
+ * prefix of one past `zzzz`, in any reply. [AdvertStatus] copies no tag out of the forms it reads.
  */
 internal object AdvertDiag {
     /** The advert's gates, form, turn, peers and links now ([AdvertStatus]). */
@@ -30,18 +29,24 @@ internal object AdvertDiag {
 
 /**
  * The blinded advert as `…debug.ADVERT` reports it (step 6). Built by [of] from the writer's one snapshot, the slot turn's
- * [AdvertRotation.View], my current form, the presence snapshots and the live links: inputs that carry no cause, no tag
- * source and no generation, and a tag only inside forms this class reads for an order or a kind and never copies out.
+ * [AdvertRotation.View], the last install's facts ([Install]), my current form, the presence snapshots and the live
+ * links, all read in one worker task. Tags reach it only inside forms, which it reads for an order, a kind or a match and
+ * never copies out.
  *
  *  - The gates, each its own field so a dark writer says why: [extendedAdvertising] (null until read with the adapter on,
  *    sticky once true) and [keyHeld] (an own presence key is held). The build flag and the switch are the bridge's to add.
  *  - [blinding]: what the writer should air now; [form]: what the snapshot on the air carries, `clear` or `tag` (null
  *    before the first install); [radioUp] and [pending] (a rotation's tag is being chosen): why the two may differ.
  *  - [epoch] and [rotatedAtMs]: how many snapshots this process installed (every rotation, bring-up and flip adds one), and
- *    the wall clock of the last. The advertiser's own start and stop lines already date every restart (B1).
+ *    the wall clock of the last.
+ *  - The key: [keyGeneration] (the held own key's, null with none) and [airedGeneration] (the one the aired tag was made
+ *    under; null for a random tag or a clear advert).
+ *  - The last install ([Install]): [lastCause], and its tag's [source], [resolvable] and [stale] (null for a clear one).
+ *    These and [airedGeneration] are null while the install's facts are in flight: the facts recorded are reported only
+ *    when their stamp is the snapshot on the air's ([AdvertWriter.Aired.installs]).
  *  - The turn ([AdvertRotation.View]): [nextEdgeAtMs], [announced], [holding].
- *  - [psm]: the advertised PSM while clear, null while blinding (as `bt state`'s `psm=rotating`: a PSM sequence would tie
- *    one tag to the next).
+ *  - [psm]: the advertised PSM, blinded or clear (`bt state` still logs `psm=rotating` while blinding; the reply is a
+ *    debug read).
  *  - [peers]: one per presence snapshot ([Peer]); [links]: one per live link ([Link]).
  */
 internal data class AdvertStatus(
@@ -53,6 +58,12 @@ internal data class AdvertStatus(
     val form: String?,
     val epoch: Long,
     val rotatedAtMs: Long?,
+    val keyGeneration: Long?,
+    val airedGeneration: Long?,
+    val lastCause: String?,
+    val source: String?,
+    val resolvable: Boolean?,
+    val stale: Boolean?,
     val nextEdgeAtMs: Long?,
     val announced: Boolean,
     val holding: Boolean,
@@ -61,11 +72,39 @@ internal data class AdvertStatus(
     val links: List<Link>,
 ) {
     /**
+     * What the last install was: the writer's stamp for it ([installs], [AdvertWriter.Aired.installs]), its rotation
+     * [cause], the key generation its tag was made under ([airedGeneration]; null for a random tag or a clear install) and,
+     * for a blinded one, its [TagChoice.Choice]'s source, resolvable and stale (null for a clear install). Kept by the
+     * transport on its worker; never the tag.
+     */
+    data class Install(
+        val installs: Long,
+        val cause: AdvertRotation.Cause,
+        val airedGeneration: Long?,
+        val source: TagChoice.Source?,
+        val resolvable: Boolean?,
+        val stale: Boolean?,
+    ) {
+        companion object {
+            /**
+             * Whether an install stamped [stamped] may record its facts and run its follow-ups over [last], the install
+             * recorded so far: only when nothing later has been recorded. A clear bring-up stamps on the main thread and
+             * records on the worker afterwards, so a worker rotation can install, and record, in between; the bring-up's
+             * late task must then leave the later install's facts, turn and own tags alone.
+             */
+            fun mayRecord(
+                last: Install?,
+                stamped: Long,
+            ): Boolean = (last?.installs ?: 0L) < stamped
+        }
+    }
+
+    /**
      * One sighted peer. [peer] is its resolved node id, or its form's handle (`~zzzz…<n>`, [FormKeys]) while unresolved,
      * never a tag; [resolved] says which. [blinded] is their form's kind. [iDial] is [AdvertOrder.iDial] on my current form
      * against theirs: the pre-link order alone, so a lonely dial, a Coded hunt or an iPhone's doorbell can still make the
-     * other side the dialer. [linked] reads the entry's own key only: a handle is never linked, so no reply pairs a handle
-     * with a node id in [links].
+     * other side the dialer. [linkedAs] is the node id of the live link this entry is: its own id, or for a handle the link
+     * whose form is that tag (a stranger linked before it resolved); null when unlinked. [linked] is `linkedAs != null`.
      */
     data class Peer(
         val peer: String,
@@ -73,19 +112,28 @@ internal data class AdvertStatus(
         val blinded: Boolean,
         val iDial: Boolean,
         val linked: Boolean,
+        val linkedAs: String?,
     )
 
     /**
      * One live link: [nodeId] as its HELLO named it, [proven] (ADR 2026-11.264w: an unproven link names an id it has not
-     * proved), [dialedByMe] (this phone dialed it, recorded at the link's registration; never a successor's role), and
-     * [tagAware] (its HELLO carried `CAP_BLIND_ADVERT`).
+     * proved), [dialedByMe] (this phone dialed it, recorded at the link's registration; never a successor's role),
+     * [tagAware] (its HELLO carried `CAP_BLIND_ADVERT`) and [blinded] (the kind of the form the link's peer is known to
+     * advertise, `linkForms`; null when none is known). [form] is that form, used for a handle's [Peer.linkedAs] match and
+     * never printed.
      */
     data class Link(
         val nodeId: String,
         val proven: Boolean,
         val dialedByMe: Boolean,
         val tagAware: Boolean,
-    )
+        val form: AdvertOrder.Form? = null,
+    ) {
+        val blinded: Boolean? get() = form?.blinded
+
+        override fun toString(): String =
+            "Link(nodeId=$nodeId, proven=$proven, dialedByMe=$dialedByMe, tagAware=$tagAware, blinded=$blinded)"
+    }
 
     /** The reply's fields in order, as plain values, maps and lists: the bridge turns them into JSON as they stand. */
     fun fields(): Map<String, Any?> =
@@ -98,6 +146,12 @@ internal data class AdvertStatus(
             "form" to form,
             "epoch" to epoch,
             "rotatedAtMs" to rotatedAtMs,
+            "keyGeneration" to keyGeneration,
+            "airedGeneration" to airedGeneration,
+            "lastCause" to lastCause,
+            "source" to source,
+            "resolvable" to resolvable,
+            "stale" to stale,
             "nextEdgeAtMs" to nextEdgeAtMs,
             "announced" to announced,
             "holding" to holding,
@@ -110,6 +164,7 @@ internal data class AdvertStatus(
                         "blinded" to it.blinded,
                         "iDial" to it.iDial,
                         "linked" to it.linked,
+                        "linkedAs" to it.linkedAs,
                     )
                 },
             "links" to
@@ -119,6 +174,7 @@ internal data class AdvertStatus(
                         "proven" to it.proven,
                         "dialedByMe" to it.dialedByMe,
                         "tagAware" to it.tagAware,
+                        "blinded" to it.blinded,
                     )
                 },
         )
@@ -129,8 +185,9 @@ internal data class AdvertStatus(
 
         /**
          * The status from the transport's state, read on its worker. [aired] is the writer's one snapshot ([AdvertWriter.aired]),
-         * so the form and the PSM come from one reference; [mine] my current form; [linkedIds] the node ids a live link is
-         * held under.
+         * so the form and the PSM come from one reference; [keyGeneration] the held own key's; [install] the last install's
+         * facts recorded (null before the first), reported only when they are [aired]'s own (the same stamp): null while
+         * the install's facts are in flight; [mine] my current form.
          */
         @Suppress("LongParameterList") // the status's sources, each a different reader in the transport
         fun of(
@@ -140,13 +197,15 @@ internal data class AdvertStatus(
             blinding: Boolean,
             extendedAdvertising: Boolean?,
             keyHeld: Boolean,
+            keyGeneration: Long?,
+            install: Install?,
             turn: AdvertRotation.View,
             mine: AdvertOrder.Form,
             sightings: List<BlePresenceTracker.Snapshot>,
-            linkedIds: Set<String>,
             links: List<Link>,
-        ): AdvertStatus =
-            AdvertStatus(
+        ): AdvertStatus {
+            val facts = install?.takeIf { aired != null && it.installs == aired.installs }
+            return AdvertStatus(
                 extendedAdvertising = extendedAdvertising,
                 keyHeld = keyHeld,
                 radioUp = radioUp,
@@ -155,29 +214,43 @@ internal data class AdvertStatus(
                 form = aired?.let { if (it.form.blinded) FORM_TAG else FORM_CLEAR },
                 epoch = aired?.installs ?: 0L,
                 rotatedAtMs = aired?.takeIf { it.installs > 0 }?.installedAtMs,
+                keyGeneration = keyGeneration,
+                airedGeneration = facts?.airedGeneration,
+                lastCause = facts?.cause?.name,
+                source = facts?.source?.name,
+                resolvable = facts?.resolvable,
+                stale = facts?.stale,
                 nextEdgeAtMs = turn.nextEdgeAtMs,
                 announced = turn.announced,
                 holding = turn.holding,
-                psm = aired?.takeIf { !it.form.blinded }?.psm,
-                peers = sightings.map { peer(it, mine, linkedIds) },
+                psm = aired?.psm,
+                peers = sightings.map { peer(it, mine, links) },
                 links = links,
             )
+        }
 
         private fun peer(
             s: BlePresenceTracker.Snapshot,
             mine: AdvertOrder.Form,
-            linkedIds: Set<String>,
+            links: List<Link>,
         ): Peer {
             // A blinded sighting is keyed by its resolved id or its handle, never its tag (FormKeys). Should one ever be
-            // keyed by the tag itself, it is shown as a handle-shaped redaction and counts as unresolved and unlinked.
+            // keyed by the tag itself, it is shown as a handle-shaped redaction and counts as unresolved.
             val keyedByTag = s.blinded && s.nodeId == s.advertised
             val handle = keyedByTag || FormKeys.isForm(s.nodeId)
+            val linkedAs =
+                if (handle) {
+                    links.firstOrNull { it.form?.blinded == true && it.form.advertised == s.advertised }?.nodeId
+                } else {
+                    links.firstOrNull { it.nodeId == s.nodeId }?.nodeId
+                }
             return Peer(
                 peer = if (keyedByTag) "${FormKeys.MARK}${FormKeys.shown(s.advertised)}" else s.nodeId,
                 resolved = !handle,
                 blinded = s.blinded,
                 iDial = AdvertOrder.iDial(mine, s.form),
-                linked = !handle && s.nodeId in linkedIds,
+                linked = linkedAs != null,
+                linkedAs = linkedAs,
             )
         }
     }

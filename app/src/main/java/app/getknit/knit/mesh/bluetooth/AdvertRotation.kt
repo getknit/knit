@@ -68,17 +68,17 @@ internal class AdvertRotation(
     }
 
     /**
-     * Why a rotation ran: counted (`bleRotations`), never logged beside a time, a generation or a slot, and never in a
-     * debug-bridge reply (each one is mirrored to logcat with a time). [FORCED] is the bridge's `…debug.ADVERT_ROTATE`
-     * (step 6): a debug build's one rotation on demand, through the ordinary path.
+     * Why a rotation ran: counted (`bleRotations`), never logged beside a time, a generation or a slot (release logs and
+     * the field log); a debug build's `…debug.ADVERT` reports the last one (`lastCause`; debug is for development, the
+     * maintainer, 2026-11-04). [FORCED] is the bridge's `…debug.ADVERT_ROTATE` (step 6): a debug build's one rotation on
+     * demand, through the ordinary path.
      */
     enum class Cause { SLOT, BRINGUP, FRESH, FLIP, FORCED }
 
     /**
      * The turn as the debug bridge reads it (step 6), on the worker: when the slot on the air ends ([nextEdgeAtMs], a
      * global wall-clock edge, null with nothing blinded on the air), whether the coming slot's announcement has been made
-     * ([announced]), and whether a rotation that came due waited on a hold or a settle ([holding]). Nothing in it names a
-     * cause, a tag or a generation.
+     * ([announced]), and whether a rotation that came due waited on a hold or a settle ([holding]).
      */
     data class View(
         val nextEdgeAtMs: Long?,
