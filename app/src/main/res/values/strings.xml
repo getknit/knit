@@ -4,6 +4,10 @@
          "Contact · in Climbing", "Relayed · Wi-Fi". Change the separator, or the order, if your language reads
          them another way. -->
     <string name="joined_with_dot">%1$s · %2$s</string>
+    <!-- Joins two items of a list the user reads, such as group names ("Climbing, Lab") or what a relay ticket
+         unlocks ("TURN, walkie, files"); a longer list joins pairwise left to right. Use your language's list
+         separator (Chinese: 、). -->
+    <string name="list_join">%1$s, %2$s</string>
 
     <!-- Notification channel groups -->
     <string name="notif_group_messages">Messages</string>

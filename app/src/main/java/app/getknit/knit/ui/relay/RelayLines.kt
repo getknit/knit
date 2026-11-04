@@ -46,6 +46,7 @@ import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.shareText
 import app.getknit.knit.ui.theme.knitColors
 import app.getknit.knit.ui.util.countText
+import app.getknit.knit.ui.util.joinedList
 import kotlinx.coroutines.flow.Flow
 import java.util.Locale
 
@@ -303,8 +304,8 @@ internal fun ticketGrantRows(ticket: RelayTicket.Live): List<Pair<String, String
             ticket.ab?.let { add(stringResource(R.string.relays_calls_files_day, Formatter.formatShortFileSize(context, it))) }
         }
     return buildList {
-        if (grants.isNotEmpty()) add(stringResource(R.string.relays_detail_ticket_grants) to grants.joinToString(", "))
-        if (limits.isNotEmpty()) add(stringResource(R.string.relays_detail_ticket_limits) to limits.joinToString(", "))
+        if (grants.isNotEmpty()) add(stringResource(R.string.relays_detail_ticket_grants) to joinedList(context, grants))
+        if (limits.isNotEmpty()) add(stringResource(R.string.relays_detail_ticket_limits) to joinedList(context, limits))
     }
 }
 

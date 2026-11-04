@@ -12,6 +12,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.ui.contacts.contactStanding
 import app.getknit.knit.ui.contacts.observeContactSignals
+import app.getknit.knit.ui.util.joinedList
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 
@@ -94,7 +95,7 @@ private fun groupsLine(
     context: Context,
     names: List<String>,
 ): String {
-    val shown = names.take(NAMED_GROUPS).joinToString(", ")
+    val shown = joinedList(context, names.take(NAMED_GROUPS))
     val rest = names.size - NAMED_GROUPS
     return if (rest >
         0
