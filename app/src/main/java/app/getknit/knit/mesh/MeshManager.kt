@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import android.util.Log
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.TextLimits
 import app.getknit.knit.badge.BadgeIssuer
 import app.getknit.knit.badge.BadgeJournal
@@ -434,10 +435,11 @@ class MeshManager(
     // resolved and a restore's link-owed resets still go. `mesh/lab` models a node with it off.
     sendsPresenceKeys: Boolean = true,
     // Where the presence-key engine's per-decision lines go (each pass's direct-contact count, whom keys were sealed to, a
-    // link-owed reset's step; ids and counts, never bytes or a tag): nowhere in production, since a dated count that
-    // drops, or a dated seal to every contact, says when the user removed or blocked someone (ADR 2026-11.xp6d, "Counts,
-    // never dated causes"); `mesh/lab` keeps them as warnings so a failed scenario's report holds them.
-    presenceDebugLog: (String) -> Unit = {},
+    // new generation, a leaver sweep, a link-owed reset's step; ids, counts and generations, never bytes or a tag): a debug
+    // build's logcat, for device trials (the maintainer, 2026-11-04), and never a release build's, since a dated count
+    // that drops, or a dated fresh generation, says when the user removed or blocked someone (ADR 2026-11.xp6d, step 6);
+    // `mesh/lab` keeps them as warnings so a failed scenario's report holds them.
+    presenceDebugLog: (String) -> Unit = { if (BuildConfig.DEBUG) Log.d(TAG, it) },
     // How long a link-up waits before its presence-key reconcile (the brief: a random 2–20 s, so the ctl does not ride
     // the link's first second). `mesh/lab` shortens it.
     private val presenceLinkUpDelayMs: () -> Long = {

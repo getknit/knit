@@ -101,7 +101,11 @@ class PresenceKeyEngine(
     private val elapsed: () -> Long,
     private val metrics: MeshMetrics = MeshMetrics(),
     private val log: (String) -> Unit = {},
-    /** Per-decision diagnostics (a link-owed reset's step and link epochs); ids and counts only, never bytes or a tag. */
+    /**
+     * Per-decision diagnostics (each pass's count, seals, a new generation, a leaver sweep, a link-owed reset's step); ids,
+     * counts and generations, never bytes or a tag. Dated, these say when the user removed or blocked someone, so they go
+     * to a debug build's logcat and the lab only, never [log] (ADR 2026-11.xp6d, step 6).
+     */
     private val debug: (String) -> Unit = {},
     private val newKey: () -> ByteArray = { BlindTag.newKey() },
 ) {
@@ -394,8 +398,8 @@ class PresenceKeyEngine(
         // One peer's failed send never loses the others', and forgets what that peer was sent, so the next pass resends.
         val failed = outgoing.filter { (peer, frame) -> runCatchingUnlessCancelled { send(peer, frame) }.isFailure }.map { it.first.nodeId }
         if (failed.isNotEmpty()) onSendFailed(failed)
-        // The per-decision trail only (nowhere in production): a dated `contacts` pass that seals to every linked contact
-        // says when the user removed or blocked someone (ADR 2026-11.xp6d, "Counts, never dated causes").
+        // The per-decision trail only (a debug build's logcat and the lab; never a release build's): a dated `contacts` pass
+        // that seals to every linked contact says when the user removed or blocked someone (ADR 2026-11.xp6d, step 6).
         if (outgoing.isNotEmpty()) {
             debug("presence keys ($cause): ${outgoing.size - failed.size} frames to linked contacts, ${failed.size} failed")
         }
@@ -510,8 +514,9 @@ class PresenceKeyEngine(
         store.deletePeerKeys(leavers)
         val owed = store.linkOwedResets().keys
         leavers.filter { it in owed }.forEach { store.dropLinkOwedReset(it) }
-        // No line: a dated "former direct contacts deleted" says when someone was removed or blocked.
         leavers.forEach { sent.remove(it) }
+        // The trail only (debug builds and the lab): a dated sweep says when someone was removed or blocked.
+        debug("presence keys of ${leavers.size} former direct contacts deleted")
     }
 
     /**
@@ -549,9 +554,13 @@ class PresenceKeyEngine(
         val change = changeFor(due, rows, contacts, now) ?: return false
         store.applyOwn(change.inserted, change.updated, change.keep)
         if (due is PresenceKeyPolicy.Due.Advance && due.cause != PresenceKeyPolicy.AdvanceCause.WEEKLY) lastClockAdvanceAt = elapsed()
-        // Counted, never logged: a dated line naming the step or the generation says when the user removed or blocked
-        // someone (ADR 2026-11.xp6d, "Counts, never dated causes").
-        if (change.inserted.isNotEmpty()) metrics.onPresenceKeyRotated()
+        if (change.inserted.isNotEmpty()) {
+            metrics.onPresenceKeyRotated()
+            // The trail only (debug builds and the lab), never `log`: a dated step or generation says when the user removed
+            // or blocked someone (ADR 2026-11.xp6d, step 6).
+            val current = PresenceKeyPolicy.keysOf(store.ownKeys()).current?.generation
+            debug("presence key ${due.javaClass.simpleName.lowercase()}: current g=$current")
+        }
         return true
     }
 

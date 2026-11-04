@@ -411,11 +411,14 @@ Status: draft, with step 6's code; the caller decides whether it stands.
   harness reads causes from `STATE`'s counts around the call. Extended advertising reads `null` until the adapter has
   been on (still sticky once true), and with no transport running both actions answer `status: ok` with the reason, so
   a harness can store the switch before the mesh starts.
-- **No dated key lines either** (security-reviewer, 2026-11-04, on Part A's code). The engine logged
-  `presence key <step>: current g=<n>` at each new generation and `presence keys of <n> former direct contacts deleted`
-  at each leaver sweep, both with a time: a dated fresh pair or sweep says when the user removed or blocked someone.
-  Both are gone (the rotation stays counted), and the engine's per-decision trail (each pass's direct-contact count,
-  whom keys were sealed to, how many frames a pass sent) goes nowhere in production; the mesh lab keeps it for its reports.
+- **No dated key lines in a release build** (security-reviewer, 2026-11-04, on Part A's code). The engine logged
+  `presence key <step>: current g=<n>` at each new generation, `presence keys of <n> former direct contacts deleted` at
+  each leaver sweep and `presence keys (<cause>): <n> frames…` at each pass that sent, all at Log.i with a time: a dated
+  fresh pair, sweep or fan-out says when the user removed or blocked someone. They now go to the engine's per-decision
+  trail with each pass's direct-contact count and whom keys were sealed to, and that trail goes to logcat only in a
+  debug build (`BuildConfig.DEBUG`), for device trials, and to the mesh lab's reports. A release build logs none of it;
+  the rotation stays counted. The maintainer accepted the debug cost (2026-11-04): a debug phone's logcat or bug report
+  dates its removals and blocks, as the lab phones' have since Part A.
 - **A forced rotation** (`…debug.ADVERT_ROTATE`, `AdvertRotation.Cause.FORCED`) is one unannounced rotation through
   the ordinary path, refused unless a tag is on the air with nothing pending, settling, announced or held, and none
   within the retired server's 30 s grace, so a loop cannot pile up servers or spend an announcement. It spends the slot's
