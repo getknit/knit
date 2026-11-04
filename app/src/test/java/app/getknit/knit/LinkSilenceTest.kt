@@ -474,4 +474,19 @@ class LinkSilenceTest {
         assertTrue(link.onEdge(5_000))
         assertEquals(Action.None, link.step(5_000, 4_000, null, null))
     }
+
+    @Test
+    fun aHeldLinkDialProbesAtMostOncePerAnswerWaitAndNeverAnExemptOrSilentPeer() {
+        val link = answering()
+        assertTrue(link.onHeldDial(5_000))
+        assertFalse("a run is going", link.onHeldDial(5_001))
+        assertEquals(Action.Probe(1, LinkSilence.Trigger.EDGE), link.step(5_000, 4_000, null, null))
+        link.onKeepaliveWritten(5_010)
+        link.onKeepaliveIn()
+        link.step(5_100, 5_050, null, null) // answered: the run ends
+        assertFalse("inside the answer wait of the last", link.onHeldDial(5_000 + p - 1))
+        assertTrue(link.onHeldDial(5_000 + p))
+        assertFalse(LinkSilence(exempt = true, uptime = up::get).onHeldDial(5_000))
+        assertFalse("a peer that never answered", LinkSilence(exempt = false, uptime = up::get).onHeldDial(5_000))
+    }
 }

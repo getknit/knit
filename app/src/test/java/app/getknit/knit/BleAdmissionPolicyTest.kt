@@ -482,4 +482,77 @@ class BleAdmissionPolicyTest {
         heldQuiet: Boolean = false,
         heldDoorbell: Boolean = false,
     ) = BleAdmissionPolicy.heldLinkRow(mine, addressed, honoured, heldProven, heldQuiet, heldDoorbell)
+
+    @Test
+    fun whileBlindingADialerThatReadsNoTagsIsRefusedWithNoReplyAheadOfEveryRow() {
+        // Step 5b's W6: the blinding-only row. `refuses` is the transport's "close with no reply": no HELLO is written.
+        val v = BleAdmissionPolicy.decide(high, low, sighted = false, heldLinkAgeMs = null, blinding = true, readsTags = false)
+        assertEquals(Verdict.RefuseLegacy, v)
+        assertTrue(v.refuses)
+        // Ahead of the proof rows and the held-link row: a legacy dialer offering a proof against an unproven link.
+        assertEquals(
+            Verdict.RefuseLegacy,
+            BleAdmissionPolicy.decide(high, low, true, 1L, offersProof = true, heldRow = true, blinding = true, readsTags = false),
+        )
+        // Never while this phone airs its id, and never for a tag-aware dialer.
+        assertEquals(Verdict.Admit, BleAdmissionPolicy.decide(high, low, false, null, blinding = false, readsTags = false))
+        assertEquals(Verdict.Admit, BleAdmissionPolicy.decide(high, low, false, null, blinding = true, readsTags = true))
+    }
+
+    @Test
+    fun aForgedDialOnAHeldLinkWhoseProbeGoesUnansweredAndWhoseProofFailsLeavesTheLinkHeld() {
+        // Step 5b's W5, the security pass: a forged dial claiming X, X's link proven and held. While the held link is not
+        // quiet the row refuses (RefuseHeld) and the probe is poked; the probe going unanswered makes the link quiet, and
+        // the forged dial then reaches shzv's replace, which the transport applies only after the dialer's proof verifies
+        // (R3/R2: a proven held link is displaced only by a verified proof). The proof fails: the late pass never runs.
+        val mine = AdvertOrder.Mine(AdvertOrder.Form(myTag, blinded = true))
+        val live = heldRow(mine = mine, addressed = myTag, heldQuiet = false)
+        assertTrue(live)
+        assertEquals(
+            Verdict.RefuseHeld,
+            BleAdmissionPolicy.decide(high, low, false, REPLACE_MIN_HOLD_MS, heldProven = true, offersProof = true, heldRow = live),
+        )
+        val quiet = heldRow(mine = mine, addressed = myTag, heldQuiet = true)
+        assertFalse(quiet)
+        val first =
+            BleAdmissionPolicy.decide(high, low, false, REPLACE_MIN_HOLD_MS, heldProven = true, offersProof = true, heldRow = quiet)
+        assertEquals("a replace pending the proof, never a close of the held link by itself", Verdict.Replace, first)
+        // A dialer that offers no proof never displaces a proven held link (R2), whatever its probe did.
+        assertEquals(
+            Verdict.Refuse,
+            BleAdmissionPolicy.decide(high, low, false, REPLACE_MIN_HOLD_MS, heldProven = true, offersProof = false, heldRow = quiet),
+        )
+    }
+
+    @Test
+    fun aHundredFreshIdsBuyOneLegacyBoostPerCooldown() {
+        val boost =
+            app.getknit.knit.mesh.bluetooth
+                .LegacyDialerBoost(cooldownMs = 300_000L)
+        var now = 1_000L
+        var boosts = 0
+        repeat(100) { i ->
+            if (boost.take(now, "fresh$i")) boosts++
+            now += 1_000 // a fresh id and address a second
+        }
+        assertEquals("phone-wide, never per claimed id", 1, boosts)
+        assertTrue(boost.take(1_000L + 300_000L, "another"))
+    }
+
+    @Test
+    fun oneUnlinkableLegacyDialerBuysOneBoostPerHalfHour() {
+        // The bluetooth review: an old phone this one cannot link keeps dialing; it must not boost every five minutes.
+        val boost =
+            app.getknit.knit.mesh.bluetooth
+                .LegacyDialerBoost()
+        val cooldown = app.getknit.knit.mesh.bluetooth.LegacyDialerBoost.COOLDOWN_MS
+        var boosts = 0
+        var now = 0L
+        while (now < 3_600_000L) {
+            if (boost.take(now, "old-android")) boosts++
+            now += 60_000
+        }
+        assertEquals("two in an hour, not twelve", 2, boosts)
+        assertTrue("another dialer is not held back by its bound", boost.take(3_600_000L + cooldown, "another"))
+    }
 }

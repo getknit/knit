@@ -479,6 +479,15 @@ interface MeshTransport {
     fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {}
 
     /**
+     * How the advertiser asks the key engine for a pass (ADR 2026-11.xp6d, step 5b): its tag schedule's mark stands past
+     * the window's lead (a clock pushed ahead, then corrected), so a new key generation should start, and the engine's
+     * pass reads the same persisted mark (`PresenceKeyPolicy.AdvanceCause.MARK`). [request] is non-suspending and
+     * launches one pass on the session; the transport calls it at most once per key generation. Set by `MeshManager`
+     * before every [start]; forwarded by [CompositeMeshTransport] to the Bluetooth plane alone. Default no-op.
+     */
+    fun onPresenceKeyPassRequester(request: () -> Unit) {}
+
+    /**
      * Lends the Wi-Fi radio to another **same-app** role — the one-shot Wi-Fi Direct group of a direct file
      * transfer (`transfer/`). On Android 12+ two interface requests from one app carry equal priority and
      * neither evicts the other, so a transport whose radio cannot share (Wi-Fi Aware) has to let go of its

@@ -271,6 +271,19 @@ class FramedLink(
         }
 
     /**
+     * Enqueue one [LinkFraming.Type.TAG_NEXT] naming [tag] (ADR 2026-11.xp6d's writer, step 5b's W5): this phone's next or
+     * current advertised form, for a proven tag-aware peer. A control record like a keepalive: it goes out ahead of a
+     * file's next chunk, never touches [lastActivityAt], and is no frame, so nothing rings for it. False once the link is
+     * closed. The tag is never logged.
+     */
+    fun sendTagNext(tag: ByteArray): Boolean {
+        require(tag.size == LinkFraming.TAG_NEXT_BYTES) { "a tag-next payload is ${LinkFraming.TAG_NEXT_BYTES} bytes" }
+        return outbound.trySend(Outbound.TagNext(tag.copyOf())).isSuccess.also {
+            if (it) wake.trySend(Unit) // a windowed writer waiting for room drains it first
+        }
+    }
+
+    /**
      * Enqueue a store-and-forward custody digest ([LinkFraming.Type.DIGEST]) for this peer. A link holds at most
      * one digest not yet written: while one waits, [ids] replaces its id set where it stands in the queue
      * (ADR 2026-09.tjfb). A digest is a snapshot of custody's live ids, so the newer one says everything the
@@ -692,6 +705,11 @@ class FramedLink(
                         writeKeepalive(out)
                     }
 
+                    is Outbound.TagNext -> {
+                        writeRecordSafely(out, LinkFraming.Type.TAG_NEXT, item.tag)
+                        out.flush()
+                    }
+
                     is Outbound.FileSend -> {
                         if (beginOrSkip(item.meta.key)) {
                             streamFile(out, item)
@@ -945,6 +963,12 @@ class FramedLink(
                     writeKeepalive(out)
                 }
 
+                // A control record, written between chunks like a frame (and flushed with them).
+                is Outbound.TagNext -> {
+                    writeRecordSafely(out, LinkFraming.Type.TAG_NEXT, item.tag)
+                    wrote = true
+                }
+
                 is Outbound.FileSend -> {
                     stash.addLast(item)
                 }
@@ -989,6 +1013,11 @@ class FramedLink(
 
         // One empty keepalive record, a probe or its answer (#203).
         data object Keepalive : Outbound
+
+        // This phone's next or current advertised form (ADR 2026-11.xp6d), 16 bytes.
+        class TagNext(
+            val tag: ByteArray,
+        ) : Outbound
 
         class FileSend(
             val file: File,

@@ -238,4 +238,31 @@ class AdvertOrderTest {
         const val PAIRS = 200
         const val SLOTS = 1_000_000
     }
+
+    @Test
+    fun theRoleWalkWithMyFormsBlinded() {
+        // Step 5b's W6, the bluetooth design pass's role walk, pinned for a phone whose writer airs a tag.
+        val myId = id()
+        val mine = AdvertOrder.Mine(Form(tag(), blinded = true), Form(tag(), blinded = true))
+        repeat(50) {
+            val clear = Form.clear(id())
+            // Ordinary dial and promotable: every clear advert, whatever the id order (a tag sorts above them all).
+            assertTrue(AdvertOrder.iDial(mine.current, clear))
+            // Lonely dial: never to a clear advert (I dial those anyway).
+            assertFalse(AdvertOrder.lonelyMayDial(mine.current, clear))
+            // The responder: a clear dialer is one I should have dialed (refused when sighted; an unsighted one is
+            // admitted by shzv's rows, and a legacy one met by the blinding-only row first).
+            assertTrue(AdvertOrder.responderShouldHaveDialed(mine.current, mine.previous, null, clear))
+            // Two blinded adverts: exactly one side dials, the larger tag; the lonely dial only toward the larger one.
+            val theirs = Form(tag(), blinded = true)
+            assertTrue(AdvertOrder.iDial(mine.current, theirs) != AdvertOrder.iDial(theirs, mine.current))
+            assertEquals(!AdvertOrder.iDial(mine.current, theirs), AdvertOrder.lonelyMayDial(mine.current, theirs))
+        }
+        // The chase: every foreign id while blinding, the classic order otherwise.
+        val foreign = List(20) { id() }.toSet()
+        assertEquals(foreign, AdvertOrder.initiable(myId, blinding = true, peers = foreign))
+        assertEquals(foreign.filter { myId > it }.toSet(), AdvertOrder.initiable(myId, blinding = false, peers = foreign))
+        // A dial made against my previous tag is judged as the dialer saw it.
+        assertEquals(mine.previous, AdvertOrder.dialedForm(mine.current, mine.previous, mine.previous!!.advertised))
+    }
 }

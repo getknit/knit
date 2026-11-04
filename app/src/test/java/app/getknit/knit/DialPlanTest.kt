@@ -484,4 +484,30 @@ class DialPlanTest {
         const val BETWEEN = "zzzzzzzzzz"
         const val ABOVE_MINE = "zzzzzzzzzzzzzz"
     }
+
+    @Test
+    fun aFailedDialToASupersededFormNeverBacksOffThePeersNewForm() {
+        // Step 5b's W6: a dial to the form a peer aired before its rotation fails (the set is gone). It was booked under
+        // that form's handle and address, so the snapshot under the new form, at its new address, is not backed off,
+        // and no failed tag dial ever books the resolved id.
+        val handles = mapOf("zzzzold" to "~zzzz…1", "zzzznew" to "~zzzz…2")
+        val newer =
+            BlePresenceTracker.Snapshot(
+                nodeId = "bob",
+                protoVersion = 1,
+                capabilities = 0L,
+                psm = 0x81,
+                digestCue = 0,
+                smoothedRssi = -60.0,
+                dwellMs = 20_000,
+                lastSeenAgoMs = 0,
+                advertised = "zzzznew",
+                blinded = true,
+            )
+        val oldDialKey = DialKeys.dialKey(newer.copy(advertised = "zzzzold"), { handles.getValue(it) }, "AA:AA")
+        val active = setOf(oldDialKey)
+        val backed = DialKeys.backedOff(listOf(newer), active) { DialKeys.dialKey(it, { f -> handles.getValue(f) }, "BB:BB") }
+        assertFalse("bob" in backed)
+        assertFalse(oldDialKey == "bob")
+    }
 }

@@ -50,7 +50,8 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   `anySyncOwed` / `anyReachableSyncOwed` / `corroboratedPresent`, `onForeignReachable` / `onForeignNear` /
   `foreignNear`, `NanSyncPolicy.corroborated` / `evidence`, `MeshTransport.near`, `Action.DeferRestart` (`decide`'s
   `visible` / `callLive`), `NanWatchdogPolicy.Tier2Notes`, or the Tier-2 kill's
-  `canReclaimForegroundService` gate:** READ ADR 2026-09.9dnk (its 2026-10-20 amendment) and ADR 043. The watchdog's
+  `canReclaimForegroundService` gate:** READ ADR 2026-09.9dnk (its 2026-10-20 and 2026-11-03 amendments) and ADR 043.
+  While peers blind their Bluetooth adverts (ADR 2026-11.xp6d), `near` holds no unresolved strangers. The watchdog's
   clock is an **owed episode** (a sync owed to a reachable peer with no link forming), never time since the last
   link. Tier 1 (45 s) is a session cycle, uncorroborated so the smallest id — everyone's pure responder — heals itself
   with Bluetooth dark, capped at three per episode so Tier 2 stays reachable; Tier 2 (180 s) is a process kill, only

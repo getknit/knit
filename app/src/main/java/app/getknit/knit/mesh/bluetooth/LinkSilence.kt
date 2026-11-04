@@ -135,6 +135,9 @@ class LinkSilence(
     // A hint that the connection may be gone (an ACL disconnect for the link's address, its PHY client's loss): probe now.
     private var edgeAt: Long? = null
 
+    // When a held-link dial last started a probe ([onHeldDial]).
+    private var heldDialAt: Long? = null
+
     // When, on [uptime], a look first found the first probe due for the silence that began at [dueRxAt]; null before.
     // Not a probe: nothing counts until one is queued. A byte in starts a new silence, and a new wait.
     private var dueSinceUp: Long? = null
@@ -195,6 +198,25 @@ class LinkSilence(
         if (edgeAt == null) edgeAt = now
         return true
     }
+
+    /**
+     * A dialer took the held-link row against this link (ADR 2026-11.xp6d, step 5b's W5): the peer redialing it may have
+     * lost it, so probe now, as an edge does. True only when this starts a probe run: a peer that answers, no run or
+     * probe going, and none started by a held dial in the last [Config.answerMs], so dials (forged ones too, at any rate)
+     * cost at most one probe per answer wait and never close the link by themselves. Never on an [exempt] link.
+     */
+    @Synchronized
+    fun onHeldDial(now: Long): Boolean {
+        if (exempt || !answers || probing()) return false
+        val last = heldDialAt
+        if (last != null && now - last < config.answerMs) return false
+        heldDialAt = now
+        edgeAt = now
+        return true
+    }
+
+    /** Whether a probe run is going or about to: an edge noted, a probe sent or one queued. */
+    private fun probing(): Boolean = edgeAt != null || probesSent > 0 || Kind.PROBE in queued
 
     /**
      * What to do at [now], given the link's last byte in at [rxAt], the write it sits in since [blockedSince] (null

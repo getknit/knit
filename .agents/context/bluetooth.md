@@ -221,8 +221,7 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `dialsBackAfterDrop`, `FormKeys`, `BlindQueue`, `LinkEventStamps`, `BlindSightings`, `ReplayMarks`, `KeyChurnLimiter`,
   `BtLines`, `ScanPlan.published`, `MeshTransport.onPresenceKeys`, `BleBlindDrop`, `Protocol.CAP_BLIND_ADVERT`, or any
   pre-link `localId > nodeId` in the plane:**
-  READ ADR 2026-11.xp6d (Proposed; the pure core, the reader and the writer's air half are built; `TAG_NEXT` sent and
-  the blinding admission rows are not). `AdvertOrder.iDial` decides every role
+  READ ADR 2026-11.xp6d (Proposed; the pure core, the reader and the writer are built, behind `BLIND_ADVERT`). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
   two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
@@ -292,9 +291,26 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   throwaways (`PsmRotation`), the old one accepting 30 s more; the side channel's slots get fresh sets and the pages on the
   air at the edge are not re-aired, nor any frame already started. Rotation causes and writer events are counts in STATE only (`bleRotationsByCause`,
   `bleAdvertWritesByEvent`), never logged beside a time, a generation or a slot, never in the field log. `TAG_NEXT` sent,
-  the held-row resend and the blinding-only admission row are Part B2's: the seams (`sendCurrentFormOnce`, `announceTag`)
-  are no-ops, so every B1 rotation is unannounced on the air. Tests: `AdvertWriterTest`, `AdvertRotationTest`,
+  the held-row resend and the blinding-only admission row are Part B2's (the next entry). Tests: `AdvertWriterTest`, `AdvertRotationTest`,
   `PsmRotationTest`, `RotationTurnTest`, `TagScheduleTest`, `SideCarouselTest`, `BleAdvertiserTest`, `BleSideChannelReassertTest`.
+
+- **When touching `TagNextSends`, `LinkFormNotes`, `LinkSilence.onHeldDial`, `AdvertAliases.stillAnnounced`,
+  `FramedLink.sendTagNext`, `BleAdmissionPolicy.Verdict.RefuseLegacy` / `RefuseHeld`'s
+  follow-ups, `LegacyDialerBoost`, `ScanDemandPolicy.endEarly` / `decide`'s `boostUntil`, `KeyChurnLimiter`'s
+  relisting, `AdvertRotation.announceDueAt`, the transport's `sendForm` / `announceTag` / `sendCurrentFormOnce` /
+  `noteHeldRefusal` / `noteLinkFormAtEdge` / `noteHandleSighted`, or `MeshTransport.onTagNextRecipients` /
+  `onPresenceKeyPassRequester` on the Bluetooth side:** READ ADR 2026-11.xp6d's "announced rotations and the blinding
+  rows" amendment (step 5b, Part B2). `TAG_NEXT` is a link record outside `DoorbellPolicy.rings`, sent only to a proven
+  `CAP_BLIND_ADVERT` link whose peer the session's predicate hears at the send, and never while the own key is null.
+  The lead announcement never moves; a post-rotation send and the held row's resend keep the receiver's two-minute
+  per-link limit, never land inside it before a due announcement, and never go while an announcement stands.
+  `RefuseHeld` probes the held link's silence (`LinkSilence.onHeldDial`: one probe per answer wait, never a doorbell
+  link), never a shorter wait; an excluded peer gets no resend. While blinding, a dialer without `CAP_BLIND_ADVERT` meets
+  `RefuseLegacy` first (no reply), and the scan boost it buys is one per five minutes phone-wide and one per half hour
+  per claimed id. A handle first sighted after a chase began ends it (expired, kept, not re-armed), once per five
+  minutes. A peer's accepted announced tag becomes its link's form at the edge, one note and one wait per link. `Next.resolvable` / `stale` reach the field log as counts only. Tests:
+  `TagNextSendsTest`, `LinkSilenceTest`, `BleAdmissionPolicyTest`, `ScanDemandPolicyTest`, `KeyChurnLimiterTest`, `DialPlanTest`,
+  `AdvertOrderTest`, `CodedDialsBackTest`, `FramedLinkTest`, `CompositeMeshTransportTest`.
 
 ## Adding an entry
 

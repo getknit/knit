@@ -116,3 +116,17 @@ sighting or a link change, so an entry outlived its freshness for as long as not
 also republishes at the end of every presence window (`endWindow()`), so a peer that left drops out within one gap.
 A due kill therefore lands only on a check that finds the peer still near. In a gap longer than 90 s the corroboration
 can lapse between windows, which makes Tier 2 a slower last resort, never a strand: Tier 1 and its caps are unchanged.
+
+## Amendment 2026-11-03 — a blinded stranger corroborates nothing (ADR 2026-11.xp6d, step 5b, draft)
+
+Status: draft, with the blinded advert's writer; the caller decides whether it stands. No Aware code changes.
+
+Corroboration is per owed peer: an episode reaches Tier 2 only when the peer the sync is owed to is corroborated
+(`NanSyncPolicy.anySyncOwed` with `corroboratedPresent`: linked here, or in `foreignNear`). Once peers blind their
+Bluetooth adverts (ADR 2026-11.xp6d, behind `BuildConfig.BLIND_ADVERT`), the Bluetooth plane's `near` carries only
+resolved and linked peers, and a peer resolves only for its direct contacts. So Tier 2 is gone for an episode owed only
+to blinding strangers: a stranger corroborates only its own episode, only once resolved (contacts only) or NAN-linked,
+and a Bluetooth link to it suppresses its NAN sync (`suppressDataPath`, `digestSyncWanted`) instead of corroborating it.
+Tier 1, its 45 s clock and its three-per-episode cap are unchanged, so the cost is no last resort where another Aware
+client holds NAN up; where Knit is the sole Aware client, Tier 1's session cycle is already a NAN restart. Nothing in
+`mesh/wifiaware/` moves: the rule reads `near` as before, and the narrowing is what the Bluetooth plane puts in it.

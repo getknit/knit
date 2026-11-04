@@ -14,7 +14,12 @@ package app.getknit.knit.mesh.bluetooth
  *
  * A contact that leaves the listing and comes back within [dayMs] is counted against what it gained before. So a
  * contact streaming generations costs the table at most three new keys' tags, 420 HMACs, per [minIntervalMs], whether
- * or not it drops out between them (the window's own slide, a slot's tags per listed key, is beside that). Pure, on the
+ * or not it drops out between them (the window's own slide, a slot's tags per listed key, is beside that).
+ *
+ * **A re-entry with keys it held is a relisting, not a gain** (step 5b's W7): a contact that left (a `DirectContacts`
+ * flap) and comes back with only keys it had applied when it left relists at most once per [minIntervalMs] and never
+ * counts toward [dailyCap]; it gained nothing new to the resolver. Otherwise a contact flapping 25 times a day would be
+ * held for the rest of the day at its 25th return, unrecognised by a contact who did nothing wrong. Pure, on the
  * elapsed clock the caller passes; single-threaded with the resolver's worker.
  */
 internal class KeyChurnLimiter(
@@ -26,14 +31,27 @@ internal class KeyChurnLimiter(
         var applied: List<ByteArray>,
     ) {
         var pending: List<ByteArray>? = null
+
+        // The held listing is a relisting ([KeyChurnLimiter]'s KDoc): only the interval applies to it.
+        var pendingRelist = false
         val gains = ArrayDeque<Long>()
+
+        // When a listing last went to the resolver (a gain or a relisting): the interval runs from it.
+        var listedAt: Long? = null
     }
+
+    // What a contact that left held: its gains, the keys applied when it left, and when it was last listed.
+    private class Departed(
+        val gains: ArrayDeque<Long>,
+        val keys: List<ByteArray>,
+        val listedAt: Long?,
+    )
 
     private val contacts = HashMap<String, State>()
 
     // The gains of contacts that left the listing (a DirectContacts flap, every key colliding), kept a day: a re-entry
     // counts against them, so leaving and coming back never escapes the bound. At most one per contact that left.
-    private val departed = HashMap<String, ArrayDeque<Long>>()
+    private val departed = HashMap<String, Departed>()
 
     /** Changes held for a window, and held changes a newer one replaced. */
     var held = 0L
@@ -50,9 +68,9 @@ internal class KeyChurnLimiter(
         listing: Map<String, List<ByteArray>>,
         now: Long,
     ): Map<String, List<ByteArray>>? {
-        departed.values.removeAll { gains -> gains.lastOrNull()?.let { now - it >= dayMs } != false }
+        departed.values.removeAll { d -> (d.listedAt ?: d.gains.lastOrNull())?.let { now - it >= dayMs } != false }
         val leaving = contacts.keys - listing.keys
-        leaving.forEach { id -> contacts.remove(id)?.let { departed[id] = it.gains } }
+        leaving.forEach { id -> contacts.remove(id)?.let { departed[id] = Departed(it.gains, it.applied, it.listedAt) } }
         var changed = leaving.isNotEmpty()
         for ((id, keys) in listing) {
             val state = contacts[id]
@@ -67,10 +85,12 @@ internal class KeyChurnLimiter(
         var changed = false
         for (state in contacts.values) {
             val pending = state.pending
-            if (pending != null && gainAllowed(state, now)) {
+            if (pending != null && now >= dueAt(state)) {
                 state.pending = null
                 state.applied = pending
-                state.gains.addLast(now)
+                if (!state.pendingRelist) state.gains.addLast(now)
+                state.pendingRelist = false
+                state.listedAt = now
                 changed = true
             }
         }
@@ -83,14 +103,22 @@ internal class KeyChurnLimiter(
         now: Long,
     ): Boolean {
         val state = State(emptyList())
-        departed.remove(id)?.let(state.gains::addAll)
+        val before = departed.remove(id)
+        before?.let {
+            state.gains.addAll(it.gains)
+            state.listedAt = it.listedAt
+        }
         contacts[id] = state
-        if (gainAllowed(state, now)) {
+        // Only keys it held when it left: a relisting, under the interval alone.
+        state.pendingRelist = before != null && keys.all { k -> before.keys.any { it.contentEquals(k) } }
+        if (now >= dueAt(state)) {
             state.applied = keys
-            state.gains.addLast(now)
+            if (!state.pendingRelist) state.gains.addLast(now)
+            state.pendingRelist = false
+            state.listedAt = now
             return true
         }
-        // Back inside its window: held like any other gain, with nothing listed meanwhile.
+        // Back inside its window: held like any other change, with nothing listed meanwhile.
         state.pending = keys
         held++
         return false
@@ -107,19 +135,25 @@ internal class KeyChurnLimiter(
         if (same(state.applied, keys)) {
             if (state.pending != null) coalesced++
             state.pending = null
+            state.pendingRelist = false
             return false
         }
+        // The listing held already, offered again: it stays held as it was (a relisting stays one).
+        if (state.pending?.let { same(it, keys) } == true) return false
         val gains = keys.any { k -> state.applied.none { it.contentEquals(k) } }
         if (!gains) {
             // A pure drop: never delayed.
             state.applied = keys
             state.pending = null
+            state.pendingRelist = false
             return true
         }
-        if (gainAllowed(state, now)) {
+        state.pendingRelist = false
+        if (now >= dueAt(state)) {
             state.applied = keys
             state.pending = null
             state.gains.addLast(now)
+            state.listedAt = now
             return true
         }
         if (state.pending != null) coalesced++ else held++
@@ -131,14 +165,12 @@ internal class KeyChurnLimiter(
         return true
     }
 
-    private fun gainAllowed(
-        state: State,
-        now: Long,
-    ): Boolean = now >= dueAt(state)
-
+    /** When [state]'s next listing may go: the interval from its last one, and for a gain the daily cap too. */
     private fun dueAt(state: State): Long {
         while (state.gains.size > dailyCap) state.gains.removeFirst()
-        val interval = state.gains.lastOrNull()?.let { it + minIntervalMs } ?: Long.MIN_VALUE
+        val last = maxOf(state.listedAt ?: Long.MIN_VALUE, state.gains.lastOrNull() ?: Long.MIN_VALUE)
+        val interval = if (last == Long.MIN_VALUE) Long.MIN_VALUE else last + minIntervalMs
+        if (state.pendingRelist) return interval
         val daily = if (state.gains.size >= dailyCap) state.gains.first() + dayMs else Long.MIN_VALUE
         return maxOf(interval, daily)
     }

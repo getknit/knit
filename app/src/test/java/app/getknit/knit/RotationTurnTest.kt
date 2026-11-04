@@ -45,6 +45,8 @@ class RotationTurnTest {
             announce = {},
             rotate = {
                 attempts++
+                // A spin regression fails here instead of hanging the test fork.
+                if (attempts > 50) throw AssertionError("spin: $attempts rotation attempts")
                 rotate()
             },
             onFailure = { failures++ },
@@ -77,6 +79,7 @@ class RotationTurnTest {
             assertEquals(1, failures)
             advanceTimeBy(2 * AdvertRotation.HOLD_RECHECK_MS + 1)
             assertEquals(3, attempts)
+            assertEquals(3, failures)
             job.cancel()
             runCurrent()
             assertTrue(job.isCompleted)
@@ -115,6 +118,8 @@ class RotationTurnTest {
             assertEquals(1, attempts)
             advanceTimeBy(BlindTag.SLOT_MS / 2)
             assertEquals("nothing more inside the new slot", 1, attempts)
+            advanceTimeBy(BlindTag.SLOT_MS)
+            assertEquals("the next edge rotates again", 2, attempts)
             job.cancel()
         }
 }

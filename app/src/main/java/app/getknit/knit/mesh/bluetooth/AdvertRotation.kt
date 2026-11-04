@@ -109,6 +109,16 @@ internal class AdvertRotation(
         announcedSlot = null
     }
 
+    /**
+     * When the next announcement is due (wall clock): the coming edge less the lead, while it has not been made; null
+     * with nothing on the air or the announcement already made. A resend keeps out of the receiver's limit before it.
+     */
+    fun announceDueAt(): Long? {
+        val aired = airedSlot ?: return null
+        if (announcedAt != null && announcedSlot == aired + 1) return null
+        return (aired + 1) * BlindTag.SLOT_MS - leadMs
+    }
+
     /** Whether a blinded form is on the air, so the turn has an edge to wait for. */
     val turning: Boolean get() = airedSlot != null
 
@@ -274,7 +284,12 @@ internal class RotationTurn(
             }
 
             AdvertRotation.Step.Announce -> {
-                announce()
+                // Marked announced whatever [announce] managed: a turn that could not reserve must not ask again at once.
+                try {
+                    announce()
+                } finally {
+                    rotation.onAnnounced(wall)
+                }
                 0L
             }
 

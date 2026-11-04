@@ -279,6 +279,12 @@ enum class BleBlindDrop {
 
     /** The held-link row refused a dialer whose proven link is held and whose `a` names a blinded form of mine. */
     HELD_LINK_REFUSED,
+
+    /** While blinding, a dialer whose HELLO lacked `CAP_BLIND_ADVERT` was refused with no reply (the blinding-only row). */
+    LEGACY_DIALER_REFUSED,
+
+    /** While blinding, a chase ended early on an unresolved handle first sighted after it began. */
+    CHASE_ENDED_BY_HANDLE,
 }
 
 /**
@@ -337,6 +343,33 @@ enum class BleAdvertWrite {
      * that one reaches the field log, where a sampled count would date the rotation.
      */
     SIDE_FRAME_DROPPED,
+
+    /** A `TAG_NEXT` went: the lead announcement (to each eligible link, and to one that came up while it stood). */
+    TAG_NEXT_ANNOUNCED,
+
+    /** A `TAG_NEXT` went: the form just aired, to a link after a rotation nobody was told of. */
+    TAG_NEXT_CURRENT,
+
+    /** A `TAG_NEXT` went: the held-link row's resend. */
+    TAG_NEXT_RESENT,
+
+    /** A send refused: one went to that link inside the receiver's two-minute limit. */
+    TAG_NEXT_THROTTLED,
+
+    /** A resend refused: an announcement is due inside the receiver's limit, and must not be the one dropped. */
+    TAG_NEXT_BEFORE_ANNOUNCE,
+
+    /** A send refused: no own key held (a random tag is never announced). */
+    TAG_NEXT_NO_KEY,
+
+    /** A send refused: the link is unproven, not tag-aware, or its peer is blocked or departed. */
+    TAG_NEXT_INELIGIBLE,
+
+    /** A held-link refusal poked the held link's silence probe (never a doorbell link's). */
+    HELD_PROBED,
+
+    /** A refused legacy dialer bought a scan boost (at most one per cooldown, phone-wide). */
+    LEGACY_BOOST,
 }
 
 /**
@@ -512,6 +545,8 @@ class MeshMetrics {
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
     private val bleBlindDrops: Map<BleBlindDrop, AtomicLong> = BleBlindDrop.entries.associateWith { AtomicLong() }
+    private val bleTagsUnresolvable = AtomicLong()
+    private val bleTagsStale = AtomicLong()
     private val bleRotations: Map<BleRotation, AtomicLong> = BleRotation.entries.associateWith { AtomicLong() }
     private val bleAdvertWrites: Map<BleAdvertWrite, AtomicLong> = BleAdvertWrite.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
@@ -1294,6 +1329,19 @@ class MeshMetrics {
         bleBlindDrops.getValue(reason).incrementAndGet()
     }
 
+    /**
+     * The tag schedule answered a rotation with a tag no contact resolves ([unresolvable]: the clock behind the mark, the
+     * slot's restarts spent) and/or a stale mark ([stale]): `TagSchedule.Next`'s diagnostics, as counts (the field log
+     * carries them; never a timestamped event, which would say when the clock moved).
+     */
+    fun onBleTagScheduled(
+        unresolvable: Boolean,
+        stale: Boolean,
+    ) {
+        if (unresolvable) bleTagsUnresolvable.incrementAndGet()
+        if (stale) bleTagsStale.incrementAndGet()
+    }
+
     /** A blinding phone's advert rotated — see [BleRotation]. A count, never a dated event. */
     fun onBleRotation(cause: BleRotation) {
         bleRotations.getValue(cause).incrementAndGet()
@@ -1930,6 +1978,8 @@ class MeshMetrics {
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
             bleBlindDropsByReason = bleBlindDrops.mapValues { it.value.get() }.filterValues { it > 0 },
+            bleTagsUnresolvable = bleTagsUnresolvable.get(),
+            bleTagsStale = bleTagsStale.get(),
             bleRotationsByCause = bleRotations.mapValues { it.value.get() }.filterValues { it > 0 },
             bleAdvertWritesByEvent = bleAdvertWrites.mapValues { it.value.get() }.filterValues { it > 0 },
         )
@@ -2258,6 +2308,9 @@ class MeshMetrics {
             val bleBlindDropsByReason: Map<BleBlindDrop, Long> = emptyMap(),
             // ADR 2026-11.xp6d's writer: rotations by cause and the writer's other events. STATE only, never the field log
             // (a sampled count dates a fresh rotation, and through it a removal or a block).
+            // `TagSchedule.Next.resolvable` false and `stale` true, as counts: the field log carries these two.
+            val bleTagsUnresolvable: Long = 0,
+            val bleTagsStale: Long = 0,
             val bleRotationsByCause: Map<BleRotation, Long> = emptyMap(),
             val bleAdvertWritesByEvent: Map<BleAdvertWrite, Long> = emptyMap(),
         )

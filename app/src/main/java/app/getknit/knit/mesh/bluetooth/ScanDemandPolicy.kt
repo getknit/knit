@@ -46,7 +46,10 @@ object ScanDemandPolicy {
      * @param chase current per-peer chase deadlines (see [onForeign])
      * @param bleSighted / [bleLinked] so a foreign peer we can now see or already serve on BLE stops counting as a
      *   chase (its promotion is driven by [promotableCandidates] / an existing link instead)
+     * @param boostUntil a boost bought by a refused legacy dialer while this phone blinds (`LegacyDialerBoost`, ADR
+     *   2026-11.xp6d): Boost before it, to find that dialer's clear advert
      */
+    @Suppress("LongParameterList") // the decision's inputs, each a different source in the transport
     fun decide(
         linkCount: Int,
         promotableCandidates: Set<String>,
@@ -54,10 +57,38 @@ object ScanDemandPolicy {
         bleSighted: Set<String>,
         bleLinked: Set<String>,
         now: Long,
+        boostUntil: Long = Long.MIN_VALUE,
     ): Demand {
         if (linkCount == 0) return Demand.Boost // isolated → never Floor (lonely rejoin)
         if (promotableCandidates.isNotEmpty()) return Demand.Boost // promotion work right in front of us
+        if (now < boostUntil) return Demand.Boost // a refused legacy dialer's clear advert to find
         return if (chasing(chase, bleSighted, bleLinked, now)) Demand.Boost else Demand.Floor
+    }
+
+    /**
+     * The chase's early end while this phone blinds (ADR 2026-11.xp6d, step 5b's W6): it chases every foreign id, and a
+     * blinding peer among them never shows under its id, only as an unresolved tag's handle. A handle **first** sighted
+     * ([firstSightedAt], the sighting's capture stamp, not when the worker resolved it) after a chase began is likely the
+     * peer the chase is for, so every chase that began before it ends. A stationary blinded stranger is re-sighted every
+     * window and gets a new handle every rotation, so this ends a chase at most once per [cooldownMs] ([lastEndAt]): a
+     * hostile radio airing fresh fake tags ends live chases at most that often, which only delays a link to a stranger.
+     * An ended chase keeps its entry, expired at [now], so it is not re-armed while its id stays foreign. Returns the
+     * state left, or null when nothing ends.
+     */
+    fun endEarly(
+        state: ChaseState,
+        chaseMs: Long,
+        firstSightedAt: Long,
+        lastEndAt: Long?,
+        cooldownMs: Long,
+        now: Long,
+    ): ChaseState? {
+        if (lastEndAt != null && now - lastEndAt < cooldownMs) return null
+        val ended = state.deadlines.filter { (_, until) -> now < until && until - chaseMs < firstSightedAt }.keys
+        if (ended.isEmpty()) return null
+        // Expired, not removed: [onForeign] keeps a deadline while its id stays in the foreign set, so the ended chase is
+        // not re-armed at the next reach change.
+        return ChaseState(state.deadlines.mapValues { (id, until) -> if (id in ended) now else until })
     }
 
     /**

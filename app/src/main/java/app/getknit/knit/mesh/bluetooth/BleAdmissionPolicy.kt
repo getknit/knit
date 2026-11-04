@@ -35,14 +35,23 @@ internal object BleAdmissionPolicy {
 
         /**
          * The held-link row (ADR 2026-11.xp6d, [heldLinkRow]): close the socket without a reply, and resend my current
-         * form over the held link as a `TAG_NEXT` (the resend is the writer's, not built yet). Its own verdict so it is
-         * logged and counted apart from [Refuse].
+         * form over the held link as a `TAG_NEXT` (throttled, `TagNextSends`), poking the held link's silence probe. Its
+         * own verdict so it is logged and counted apart from [Refuse].
          */
         RefuseHeld,
+
+        /**
+         * The blinding-only row (ADR 2026-11.xp6d, "The handshake"): while this phone blinds, a dialer whose HELLO lacks
+         * `CAP_BLIND_ADVERT` dialed a tag it cannot have meant (an old Android's lonely dial, an un-updated iPhone's head
+         * start or seeking dial) and would fail on `WrongPeer` at our reply. Closed with no reply, no HELLO written, and
+         * no streak bumped on either side's account here; the transport boosts its scan (phone-wide, [LegacyDialerBoost])
+         * to find that dialer's clear advert, which a blinding phone dials. Counted apart.
+         */
+        RefuseLegacy,
         ;
 
         /** Whether the dialer is closed without a reply. */
-        val refuses: Boolean get() = this == Refuse || this == RefuseHeld
+        val refuses: Boolean get() = this == Refuse || this == RefuseHeld || this == RefuseLegacy
     }
 
     /**
@@ -80,6 +89,9 @@ internal object BleAdmissionPolicy {
      * - the "sighted and out of order" row reads [outOfOrder], the order judged on advertised forms ([outOfOrder]'s
      *   function); its default is the classic `local > dialer`, which is what the forms answer for two clear phones;
      * - the held-link row ([heldLinkRow]), after R2: [heldRow] true refuses with [Verdict.RefuseHeld].
+     *
+     * While this phone blinds ([blinding]), a dialer that does not read tags ([readsTags] false: no `CAP_BLIND_ADVERT`)
+     * is refused first with [Verdict.RefuseLegacy], ahead of every row but the self-check (step 5b's W6).
      */
     @Suppress("LongParameterList") // the table's inputs, each a row's
     fun decide(
@@ -95,9 +107,12 @@ internal object BleAdmissionPolicy {
         proofCapable: Boolean = false,
         outOfOrder: Boolean = local > dialer,
         heldRow: Boolean = false,
+        blinding: Boolean = false,
+        readsTags: Boolean = true,
     ): Verdict =
         when {
             dialer == local -> Verdict.Refuse
+            blinding && !readsTags -> Verdict.RefuseLegacy
             else -> proofRow(heldLinkAgeMs != null, heldProven, offersProof, proofCapable)
         } ?: (if (heldRow) Verdict.RefuseHeld else null)
             ?: unprovenTable(outOfOrder, sightedForAdmission(sighted, doorbell, heardAgoMs), heldLinkAgeMs, atCap)
@@ -273,4 +288,60 @@ internal object BleAdmissionPolicy {
 
     /** A sighted peer that has left presence: the weakest link, first to evict. */
     const val ABSENT_LINK_RSSI = -127.0
+}
+
+/**
+ * The scan boost a refused legacy dialer buys ([BleAdmissionPolicy.Verdict.RefuseLegacy], step 5b's W6), bounded
+ * phone-wide: the refusal rests on a HELLO claim (the missing bit) under any id and any address, so a limit per claimed
+ * id or per address would let a flood of fresh ids buy a boost each. At most one boost per [cooldownMs], whatever the
+ * dialers. Pure, on the elapsed clock the caller passes; thread-safe (dialers are judged on IO threads).
+ */
+internal class LegacyDialerBoost(
+    private val cooldownMs: Long = COOLDOWN_MS,
+    private val perDialerMs: Long = PER_DIALER_MS,
+    maxDialers: Int = MAX_DIALERS,
+) {
+    private var lastAt: Long? = null
+
+    // When each claimed id last bought a boost: an old phone this one cannot link (heard one way only) keeps dialing, and
+    // must not buy a boost every cooldown for as long as it stays. Bounded: the oldest goes first.
+    private val byDialer =
+        object : LinkedHashMap<String, Long>(maxDialers, LOAD_FACTOR, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > maxDialers
+        }
+
+    /**
+     * Whether a refusal of [dialer] (its claimed id) at [now] boosts the scan: at most once per [cooldownMs] phone-wide,
+     * and for one claimed id at most once per [perDialerMs] under that. The per-id bound only ever refuses more: a flood of
+     * fresh ids still buys one boost per [cooldownMs].
+     */
+    @Synchronized
+    fun take(
+        now: Long,
+        dialer: String,
+    ): Boolean {
+        val last = lastAt
+        if (last != null && now - last < cooldownMs) return false
+        val before = byDialer[dialer]
+        if (before != null && now - before < perDialerMs) return false
+        lastAt = now
+        byDialer[dialer] = now
+        return true
+    }
+
+    companion object {
+        /** At most one legacy-dialer boost per five minutes, phone-wide. */
+        const val COOLDOWN_MS = 300_000L
+
+        /** How long one boost runs: a chase window. */
+        const val BOOST_MS = 60_000L
+
+        /** One claimed id buys at most one boost per half hour. */
+        const val PER_DIALER_MS = 1_800_000L
+
+        /** The claimed ids remembered for [PER_DIALER_MS]. */
+        const val MAX_DIALERS = 256
+
+        private const val LOAD_FACTOR = 0.75f
+    }
 }

@@ -82,6 +82,9 @@ object FieldCounters {
                 put("bleSideDeduped", bleSideDeduped)
                 spread("bleSideDrop", bleSideDropsByReason)
                 spread("bleBlindDrop", bleBlindDropsByReason)
+                // The tag schedule's diagnostics (ADR 2026-11.xp6d): counts only, never a dated event.
+                put("bleTagsUnresolvable", bleTagsUnresolvable)
+                put("bleTagsStale", bleTagsStale)
             }
             with(s.nan) {
                 put("nanServesPeak", nanServesPeak)

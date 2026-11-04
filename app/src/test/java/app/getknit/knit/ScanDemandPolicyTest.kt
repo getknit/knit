@@ -102,4 +102,69 @@ class ScanDemandPolicyTest {
         val back = ScanDemandPolicy.onForeign(gone, setOf("z"), now = 90_000, chaseMs = 60_000)
         assertEquals("a returning peer arms a fresh window", 150_000L, back.deadlines["z"])
     }
+
+    // --- the blinding writer (ADR 2026-11.xp6d, step 5b's W6) ---
+
+    @Test
+    fun aRefusedLegacyDialersBoostRunsUntilItsEnd() {
+        assertEquals(Demand.Floor, decide(linkCount = 1, now = 10))
+        assertEquals(
+            Demand.Boost,
+            ScanDemandPolicy.decide(1, emptySet(), ScanDemandPolicy.ChaseState(), emptySet(), emptySet(), 10, boostUntil = 11),
+        )
+        assertEquals(
+            Demand.Floor,
+            ScanDemandPolicy.decide(1, emptySet(), ScanDemandPolicy.ChaseState(), emptySet(), emptySet(), 11, boostUntil = 11),
+        )
+    }
+
+    @Test
+    fun aHandleFirstSightedAfterAChaseBeganEndsItEarlyAtMostOncePerCooldown() {
+        val chaseMs = 60_000L
+        // Two chases: one began at 1 000, one at 30 000.
+        val state = ScanDemandPolicy.ChaseState(mapOf("a" to 1_000L + chaseMs, "b" to 30_000L + chaseMs))
+        // A handle first sighted at 20 000 (its capture stamp): it ends the chase that began before it, not the later one.
+        val ended = ScanDemandPolicy.endEarly(state, chaseMs, firstSightedAt = 20_000, lastEndAt = null, cooldownMs = 300_000, now = 25_000)
+        assertEquals("ended: expired at now, kept", 25_000L, ended!!.deadlines["a"])
+        assertEquals(30_000L + chaseMs, ended.deadlines["b"])
+        // A handle sighted before every chase began ends nothing (a stationary stranger seen all along).
+        assertEquals(
+            null,
+            ScanDemandPolicy.endEarly(state, chaseMs, firstSightedAt = 500, lastEndAt = null, cooldownMs = 300_000, now = 25_000),
+        )
+        // Inside the cooldown of the last early end: nothing, however new the handle.
+        assertEquals(
+            null,
+            ScanDemandPolicy.endEarly(state, chaseMs, firstSightedAt = 40_000, lastEndAt = 0, cooldownMs = 300_000, now = 45_000),
+        )
+        // An expired chase is not "ended".
+        assertEquals(
+            null,
+            ScanDemandPolicy.endEarly(state, chaseMs, firstSightedAt = 40_000, lastEndAt = null, cooldownMs = 300_000, now = 200_000),
+        )
+    }
+
+    @Test
+    fun anEndedChaseIsNotReArmedByTheNextReachChange() {
+        val chaseMs = 60_000L
+        val state = ScanDemandPolicy.onForeign(ScanDemandPolicy.ChaseState(), setOf("a"), now = 1_000, chaseMs = chaseMs)
+        val ended = ScanDemandPolicy.endEarly(state, chaseMs, firstSightedAt = 5_000, lastEndAt = null, cooldownMs = 300_000, now = 6_000)!!
+        // Aware's reach moves: the same id plus a new one.
+        val next = ScanDemandPolicy.onForeign(ended, setOf("a", "b"), now = 7_000, chaseMs = chaseMs)
+        assertFalse(
+            "the ended chase stays ended",
+            ScanDemandPolicy.chasing(
+                ScanDemandPolicy.ChaseState(
+                    next.deadlines.filterKeys {
+                        it ==
+                            "a"
+                    },
+                ),
+                emptySet(),
+                emptySet(),
+                7_000,
+            ),
+        )
+        assertTrue("the new one is chased", ScanDemandPolicy.chasing(next, emptySet(), emptySet(), 7_000))
+    }
 }

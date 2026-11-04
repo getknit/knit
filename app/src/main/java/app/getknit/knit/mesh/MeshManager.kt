@@ -1436,6 +1436,14 @@ class MeshManager(
         transport.onOwnPresenceKey(null)
         transport.onOwnPresenceKeySource { presenceKeys?.ownKey?.value }
         transport.onTagNextRecipients(::hearsTagNext)
+        // The advertiser's stale mark (step 5b): one engine pass on the session, which reads the same persisted mark.
+        transport.onPresenceKeyPassRequester {
+            sessionScope?.launch {
+                runRound({ Log.w(TAG, "presence key pass for a stale mark failed: ${it.javaClass.simpleName}") }) {
+                    presenceKeys?.reconcile("mark")
+                }
+            }
+        }
     }
 
     /**

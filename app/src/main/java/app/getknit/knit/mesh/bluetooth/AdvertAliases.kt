@@ -478,6 +478,17 @@ internal class AdvertAliases<L : Any>(
     }
 
     /**
+     * Whether [tag], which [link] (proven as [provenId]) announced, still stands for it: held pending under that link,
+     * claimed by it since it was heard, or what a contact's key already says of [provenId]. The wiring reads it when the
+     * announced tag reaches its edge, before it makes the tag the link's form.
+     */
+    fun stillAnnounced(
+        link: L,
+        provenId: String,
+        tag: String,
+    ): Boolean = pending[tag]?.link == link || claims[tag]?.link == link || keyAnswer(tag) == provenId
+
+    /**
      * [link] ended: its hint goes, being unproven past the link. Its claim and any announced tag, which never lapse while
      * the link is held, live one [Config.claimLifetimeMs] from now. The wiring calls it for every link it named in a
      * handshake event, or that link's entries never lapse.

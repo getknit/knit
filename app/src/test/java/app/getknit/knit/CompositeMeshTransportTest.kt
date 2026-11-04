@@ -186,6 +186,12 @@ class CompositeMeshTransportTest {
             tagNextRecipients = hears
         }
 
+        var passRequester: (() -> Unit)? = null
+
+        override fun onPresenceKeyPassRequester(request: () -> Unit) {
+            passRequester = request
+        }
+
         override fun onForeignReachable(peers: Set<String>) {
             foreignCalls += peers
         }
@@ -1290,14 +1296,18 @@ class CompositeMeshTransportTest {
             composite.onTagNextRecipients(hears)
             val read: () -> OwnPresenceKey? = { key }
             composite.onOwnPresenceKeySource(read)
+            val request: () -> Unit = {}
+            composite.onPresenceKeyPassRequester(request)
 
             assertEquals(listOf(null, key), bt.ownKeys)
             assertTrue(bt.tagNextRecipients === hears)
             assertTrue(bt.ownKeySource === read)
+            assertTrue(bt.passRequester === request)
             for (other in listOf(nan, lora)) {
                 assertTrue("a plane that airs no tag got the key", other.ownKeys.isEmpty())
                 assertTrue(other.tagNextRecipients == null)
                 assertTrue(other.ownKeySource == null)
+                assertTrue(other.passRequester == null)
             }
         }
 

@@ -1470,4 +1470,23 @@ class FramedLinkTest {
         offset: Long? = null,
     ) = app.getknit.knit.mesh.link
         .FileHeaderWire(kind = kind, key = key, mime = "image/jpeg", size = size, offset = offset)
+
+    @Test
+    fun aTagNextSentIsOneControlRecordThatMovesNoClock() {
+        // ADR 2026-11.xp6d's writer (step 5b's W5): a link record beside the keepalive, never a frame, never data.
+        val clock = AtomicLong(1_000)
+        val h = harness(now = clock::get)
+        val tag = ByteArray(LinkFraming.TAG_NEXT_BYTES) { (it + 1).toByte() }
+        clock.set(9_000)
+        assertTrue(h.link.sendTagNext(tag))
+        val rec = LinkFraming.read(h.fromLink)!!
+        assertEquals(LinkFraming.Type.TAG_NEXT, rec.type)
+        assertArrayEquals(tag, rec.payload)
+        assertEquals("a control record touches no activity clock", 1_000L, h.link.lastActivityAt)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun aTagNextOfTheWrongSizeIsRefused() {
+        harness().link.sendTagNext(ByteArray(LinkFraming.TAG_NEXT_BYTES - 1))
+    }
 }

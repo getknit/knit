@@ -21,11 +21,14 @@ class PsmRotationTest {
     private val events = ArrayList<String>()
     private var nextPsm = 0x80
     private var failNext = false
+    private var opens = 0
+    private val failOpens = HashSet<Int>()
 
     private val rotation =
         PsmRotation(
             open = {
-                if (failNext) {
+                opens++
+                if (failNext || opens in failOpens) {
                     events += "open failed"
                     null
                 } else {
@@ -42,7 +45,7 @@ class PsmRotationTest {
         events.clear()
         val second = rotation.rotate(now = 1_000, throwaways = 3)!!
         assertEquals(listOf("open S129", "close S129", "open S130", "close S130", "open S131", "close S131", "open S132"), events)
-        assertEquals("not the old PSM + 1", 0x84, second.psm)
+        assertEquals("the advertised server opens after the throwaways", 0x84, second.psm)
         assertEquals(second, rotation.current)
         assertTrue("the old server is not closed at the rotation", events.none { it == "close $first" })
     }
@@ -81,5 +84,15 @@ class PsmRotationTest {
         assertEquals(setOf(first, second), rotation.closeAll().toSet())
         assertNull(rotation.current)
         assertNull(rotation.nextDueAt())
+    }
+
+    @Test
+    fun aThrowawayThatWillNotOpenMidwayStillLeavesTheAdvertisedServerLast() {
+        rotation.rotate(now = 0, throwaways = 0)
+        events.clear()
+        failOpens += opens + 2 // the second throwaway's open fails
+        val fresh = rotation.rotate(now = 1_000, throwaways = 3)!!
+        assertEquals(listOf("open S129", "close S129", "open failed", "open S130", "close S130", "open S131"), events)
+        assertEquals(fresh, rotation.current)
     }
 }

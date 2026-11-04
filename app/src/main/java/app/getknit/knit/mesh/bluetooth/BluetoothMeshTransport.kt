@@ -556,6 +556,33 @@ class BluetoothMeshTransport internal constructor(
     // When the last ACL edge landed: a slot rotation runs at least SETTLE_MS after one (9utz), within its hold's bound.
     @Volatile private var lastAclEdgeAt = Long.MIN_VALUE / 2
 
+    // `TAG_NEXT` sent (step 5b's W5): who may hear it ([tagNextHears], `MeshTransport.onTagNextRecipients`, read at each
+    // send), the per-link throttle ([tagNextSends], the worker's) and the tag the standing announcement named
+    // ([announcedTag], the worker's; null when none stands), sent to a link that comes up before the rotation.
+    @Volatile private var tagNextHears: (String) -> Boolean = { false }
+    private val tagNextSends = TagNextSends<FramedLink>()
+    private var announcedTag: ByteArray? = null
+
+    // A peer's accepted announcement waiting for its edge to become its link's form: one note and one wait per link, the
+    // worker's ([noteLinkForm]).
+    private val linkFormNotes = LinkFormNotes<FramedLink>()
+    private val linkFormJobs = HashMap<FramedLink, Job>()
+
+    // How a stale mark asks the key engine for a pass (`MeshTransport.onPresenceKeyPassRequester`).
+    @Volatile private var keyPassRequester: () -> Unit = {}
+
+    // The blinding-only row's scan boost, bounded phone-wide (step 5b's W6), and the boost it bought (elapsed clock).
+    private val legacyBoost = LegacyDialerBoost()
+
+    @Volatile private var legacyBoostUntil = Long.MIN_VALUE
+
+    // While blinding, when each unresolved handle was first sighted (capture stamp), and when a chase last ended early on
+    // one (step 5b's W6). [chaseLock] makes each change of [chase] one step, from the composite's thread or the worker.
+    private val handleFirstSeen = ConcurrentHashMap<String, Long>()
+
+    @Volatile private var chaseEarlyEndAt: Long? = null
+    private val chaseLock = Any()
+
     // The slot turn's wake: a key change, a clock change, a bring-up, a flip. Its wait runs on the wall clock, elapsed-
     // aware (a privacy bound: a tag must not outlive its slot by however long the CPU slept).
     private val rotationWake = Channel<Unit>(Channel.CONFLATED)
@@ -907,7 +934,7 @@ class BluetoothMeshTransport internal constructor(
         if (initiable == foreignReachable) return
         val rising = initiable.any { it !in foreignReachable }
         foreignReachable = initiable
-        chase = ScanDemandPolicy.onForeign(chase, initiable, elapsed(), PROMOTE_CHASE_MS)
+        synchronized(chaseLock) { chase = ScanDemandPolicy.onForeign(chase, initiable, elapsed(), PROMOTE_CHASE_MS) }
         if (rising) wakeScan() // a new foreign peer appeared → re-evaluate demand now (don't wait out the floor)
     }
 
@@ -933,6 +960,16 @@ class BluetoothMeshTransport internal constructor(
     override fun onOwnPresenceKey(key: OwnPresenceKey?) {
         ownKey = key
         scope.launch(worker) { onOwnKeyChanged(key) }
+    }
+
+    /** Who may be sent `TAG_NEXT` (step 5b's W5): read at each send, never cached at link-up. */
+    override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
+        tagNextHears = hears
+    }
+
+    /** How a stale mark asks the key engine for a pass ([requestKeyPass]). */
+    override fun onPresenceKeyPassRequester(request: () -> Unit) {
+        keyPassRequester = request
     }
 
     /** The engine's own value, read just before a tag airs ([TagChoice]): a fresh pair inside the feed's hop airs nothing. */
@@ -1286,6 +1323,11 @@ class BluetoothMeshTransport internal constructor(
         scope.launch(worker) {
             tagSchedule?.dropReservations()
             rotation.onStopped()
+            announcedTag = null
+            tagNextSends.clear()
+            linkFormNotes.clear()
+            linkFormJobs.values.forEach(Job::cancel)
+            linkFormJobs.clear()
         }
     }
 
@@ -1404,6 +1446,7 @@ class BluetoothMeshTransport internal constructor(
         if (form.blinded || old?.blinded == true) sideChannel?.rotate()
         airedGeneration = choice?.generation
         if (form.blinded) rotation.onRotated(wall) else rotation.onStopped()
+        announcedTag = null // aired now, or passed by
         metrics.onBleRotation(BleRotation.valueOf(cause.name))
         if (choice?.source != TagChoice.Source.ANNOUNCED) {
             metrics.onBleAdvertWrite(BleAdvertWrite.UNANNOUNCED)
@@ -1460,6 +1503,9 @@ class BluetoothMeshTransport internal constructor(
                 TagChoice.Source.SLOTTED -> if (choice.resolvable) null else BleAdvertWrite.RANDOM_SCHEDULED
             }
         event?.let(metrics::onBleAdvertWrite)
+        if (choice.source == TagChoice.Source.SLOTTED || choice.source == TagChoice.Source.ANNOUNCED) {
+            metrics.onBleTagScheduled(unresolvable = !choice.resolvable, stale = choice.stale)
+        }
         // `Next.stale` and `resolvable` reach nothing aired or synced: counts only, here and in STATE.
         val generation = choice.generation ?: return
         if (staleLatch.offer(generation, choice.stale)) {
@@ -1469,27 +1515,88 @@ class BluetoothMeshTransport internal constructor(
     }
 
     /**
-     * The B2 seam (step 5b's W5, not built in B1): after a rotation nobody was told of (a late wake, a key change, a flip),
-     * send the current form once to each eligible link (`MeshTransport.onTagNextRecipients`' predicate, read at the send;
-     * none while the own key is null), so linked strangers do not dial the new tag. B1 sends nothing: every rotation in
-     * B1 is unannounced on the air.
+     * After a rotation nobody was told of (a late wake, a key change, a flip), the form now on the air once to each
+     * eligible link ([sendForm]), so linked strangers do not dial the new tag. On the worker. Nothing for a clear form.
      */
-    private fun sendCurrentFormOnce() = Unit
+    private fun sendCurrentFormOnce() {
+        val form = writer.form()?.takeIf { it.blinded } ?: return
+        val tag = NodeId.toBytes(form.advertised)
+        links.values.toList().forEach { sendForm(it, TagNextSends.Kind.CURRENT, tag) }
+    }
 
     /**
-     * The B2 seam (step 5b's W5, not built in B1): the lead announcement, [next]'s tag in `TAG_NEXT` to each eligible
-     * proven `CAP_BLIND_ADVERT` link, as a link record outside `DoorbellPolicy.rings`. B1 reserves the tag (so the
-     * rotation airs exactly it) and sends nothing.
+     * The lead announcement (step 5b's W5): [next]'s tag in `TAG_NEXT` to each eligible link, as a link record outside
+     * `DoorbellPolicy.rings` (a rotation never rings a suspended iPhone). It stands until the rotation airs it, for a link
+     * that comes up meanwhile ([announcedTag]). On the worker.
      */
-    @Suppress("UnusedParameter") // B2 sends it
-    private fun announceTag(next: TagSchedule.Next) = Unit
+    private fun announceTag(next: TagSchedule.Next) {
+        val tag = next.tag.copyOf()
+        announcedTag = tag
+        links.values.toList().forEach { sendForm(it, TagNextSends.Kind.ANNOUNCE, tag) }
+    }
 
     /**
-     * A stale advertiser mark asks the key engine for a pass (a MARK advance), once per generation ([staleLatch]). No
-     * seam reaches the engine from a transport yet: the engine's heal reconcile (every 15 min) reads the same persisted mark
-     * and advances it, so until a `MeshTransport` seam lands this only counts (proposed in step 5b's B1 report).
+     * One `TAG_NEXT` of [kind] naming [tag] to [link], if [TagNextSends] lets it go: a proven tag-aware link, the session's
+     * predicate true for its peer now, an own key held, the receiver's per-link limit kept. Counted either way; the line
+     * names the recipient, never the tag. On the worker.
      */
-    private fun requestKeyPass() = Unit
+    private fun sendForm(
+        link: FramedLink,
+        kind: TagNextSends.Kind,
+        tag: ByteArray,
+    ) {
+        if (links[link.nodeId] !== link) return
+        val hears = runCatching { tagNextHears(link.nodeId) }.getOrDefault(false)
+        val eligible = TagNextSends.eligible(link.proven, link.peer.capabilities and Protocol.CAP_BLIND_ADVERT != 0L, hears)
+        val outcome =
+            tagNextSends.decide(
+                link,
+                kind,
+                eligible,
+                ownKey != null,
+                System.currentTimeMillis(),
+                rotation.announceDueAt(),
+                announcing = announcedTag != null,
+            )
+        metrics.onBleAdvertWrite(
+            when (outcome) {
+                TagNextSends.Outcome.NO_KEY -> {
+                    BleAdvertWrite.TAG_NEXT_NO_KEY
+                }
+
+                TagNextSends.Outcome.INELIGIBLE -> {
+                    BleAdvertWrite.TAG_NEXT_INELIGIBLE
+                }
+
+                TagNextSends.Outcome.THROTTLED -> {
+                    BleAdvertWrite.TAG_NEXT_THROTTLED
+                }
+
+                TagNextSends.Outcome.BEFORE_ANNOUNCE -> {
+                    BleAdvertWrite.TAG_NEXT_BEFORE_ANNOUNCE
+                }
+
+                TagNextSends.Outcome.SENT -> {
+                    when (kind) {
+                        TagNextSends.Kind.ANNOUNCE -> BleAdvertWrite.TAG_NEXT_ANNOUNCED
+                        TagNextSends.Kind.CURRENT -> BleAdvertWrite.TAG_NEXT_CURRENT
+                        TagNextSends.Kind.RESEND -> BleAdvertWrite.TAG_NEXT_RESENT
+                    }
+                }
+            },
+        )
+        if (outcome != TagNextSends.Outcome.SENT) return
+        if (link.sendTagNext(tag)) Log.i(TAG, "bt tag next → ${link.nodeId}")
+    }
+
+    /**
+     * A stale advertiser mark asks the key engine for a pass (a MARK advance), once per generation ([staleLatch]), through
+     * the session's requester (`MeshTransport.onPresenceKeyPassRequester`), which launches it on the session: never on
+     * the worker, never under the engine's lock from here, never a mint of ours.
+     */
+    private fun requestKeyPass() {
+        runCatching { keyPassRequester() }
+    }
 
     /** The Coded set's interval now: fast while a fast window runs ([codedFast]), else the resting one. */
     private fun codedInterval(): Int =
@@ -1500,12 +1607,9 @@ class BluetoothMeshTransport internal constructor(
         val wall = System.currentTimeMillis()
         val key = ownKey
         val schedule = tagSchedule
-        if (key == null || schedule == null) {
-            rotation.onAnnounced(wall) // nothing to reserve: the rotation then airs a random tag, unannounced
-            return
-        }
+        // Nothing to reserve with no key: the rotation then airs a random tag, unannounced. The turn marks it announced.
+        if (key == null || schedule == null) return
         val next = runCatching { schedule.reserve(key.key, key.generation, wall) }.getOrNull()
-        rotation.onAnnounced(wall)
         if (next != null && next.resolvable) announceTag(next)
     }
 
@@ -1550,6 +1654,7 @@ class BluetoothMeshTransport internal constructor(
         if (key == held) return
         tagSchedule?.dropReservations()
         rotation.dropAnnouncement()
+        announcedTag = null
         val cause = AdvertRotation.causeOfKeyChange(held, key, airedGeneration, sessionHadKey)
         if (key != null) sessionHadKey = true
         if (cause != null && airsTagNow()) rotate(cause, announced = false)
@@ -2798,6 +2903,7 @@ class BluetoothMeshTransport internal constructor(
                 bleSighted = sighted.mapTo(HashSet()) { it.nodeId },
                 bleLinked = links.keys.toSet(),
                 now = now,
+                boostUntil = legacyBoostUntil,
             )
         val floor = audioMonitor.contended.value || demand == ScanDemandPolicy.Demand.Floor
         if (scanFloored != floor) {
@@ -2912,6 +3018,7 @@ class BluetoothMeshTransport internal constructor(
 
             BlindSightings.History.NONE -> {}
         }
+        if (FormKeys.isForm(attribution.key)) noteHandleSighted(attribution.key, item.at)
         val onTime = !linkStamps.late(attribution.key, item.at)
         if (item.generation != radioGeneration.get()) return metrics.onBleBlindDropped(BleBlindDrop.STALE_RADIO)
         // A hint's sighting still notes its own link (the one whose `t` it was): its PHY control, its sighted mark, its form.
@@ -2932,6 +3039,27 @@ class BluetoothMeshTransport internal constructor(
     }
 
     /**
+     * An unresolved [handle] sighted, captured at [at] (elapsed): its first sighting may end a chase early while this phone
+     * blinds (step 5b's W6, [ScanDemandPolicy.endEarly]), at most once per [CHASE_EARLY_END_COOLDOWN_MS], counted. On
+     * the worker.
+     */
+    private fun noteHandleSighted(
+        handle: String,
+        at: Long,
+    ) {
+        if (handleFirstSeen.size >= HANDLE_FIRST_SEEN_MAX) handleFirstSeen.clear() // bounded; a stale entry only delays an end
+        if (handleFirstSeen.putIfAbsent(handle, at) != null || !mine().blinded) return
+        val now = elapsed()
+        synchronized(chaseLock) {
+            chase =
+                ScanDemandPolicy.endEarly(chase, PROMOTE_CHASE_MS, at, chaseEarlyEndAt, CHASE_EARLY_END_COOLDOWN_MS, now)
+                    ?: return
+            chaseEarlyEndAt = now
+        }
+        metrics.onBleBlindDropped(BleBlindDrop.CHASE_ENDED_BY_HANDLE)
+    }
+
+    /**
      * [FormKeys] let [handle] go (a tag flood past its cap): its entries go with it, so a form is never held under two
      * handles, and the eviction is counted. Under the handle table's monitor; touches only thread-safe maps.
      */
@@ -2944,6 +3072,7 @@ class BluetoothMeshTransport internal constructor(
         gattSighted.remove(handle)
         awareCandidates.forget(handle)
         sideCapable.forget(handle)
+        handleFirstSeen.remove(handle)
         metrics.onBleBlindDropped(BleBlindDrop.HANDLE_EVICTED)
     }
 
@@ -3667,7 +3796,7 @@ class BluetoothMeshTransport internal constructor(
         val first = judge(hello, honoured = BleAdmissionPolicy.honours(hello.offersProof, proven = false, late = false))
         if (first.verdict.refuses) {
             Log.i(TAG, "bt refused client $clientNodeId (${first.fields})")
-            noteHeldRefusal(first.verdict)
+            noteHeldRefusal(first.verdict, clientNodeId)
             link.close()
             armUnlinked(device, clientNodeId) // most often a sighted lonely dialer (hj4a)
             return
@@ -3711,7 +3840,7 @@ class BluetoothMeshTransport internal constructor(
         val late = judge(hello, honoured = BleAdmissionPolicy.honours(hello.offersProof, proven, late = true))
         if (late.verdict.refuses) {
             Log.i(TAG, "bt refused client $clientNodeId (${late.fields} late=true)")
-            noteHeldRefusal(late.verdict)
+            noteHeldRefusal(late.verdict, clientNodeId)
             link.close()
             armUnlinked(device, clientNodeId)
             return
@@ -3767,12 +3896,47 @@ class BluetoothMeshTransport internal constructor(
     )
 
     /**
-     * The held-link row refused a dialer ([BleAdmissionPolicy.Verdict.RefuseHeld]): counted. Resending my current form
-     * over the held link as `TAG_NEXT` is the writer's (ADR 2026-11.xp6d); while this phone airs its id the row never
-     * fires.
+     * The blinding rows' follow-ups (ADR 2026-11.xp6d, step 5b's W5/W6), on the dialer's IO thread:
+     *  - the held-link row ([BleAdmissionPolicy.Verdict.RefuseHeld]): my current form goes over the held link as a resend
+     *    (the same predicate as every `TAG_NEXT`, throttled per link and kept out of the window before a due
+     *    announcement: an excluded peer's re-dials get no resend), and the held link's silence is probed now
+     *    ([LinkSilence.onHeldDial]: never on a `CAP_DOORBELL` link, one probe per answer wait), so a dead held link
+     *    closes within its own probes and the dialer's next try is admitted. Never a shorter wait of its own: a forged
+     *    dial must not get a live link closed behind a full stack buffer;
+     *  - the blinding-only row ([BleAdmissionPolicy.Verdict.RefuseLegacy]): counted, and a scan boost to find that
+     *    dialer's clear advert, at most one per cooldown phone-wide ([LegacyDialerBoost]).
      */
-    private fun noteHeldRefusal(verdict: BleAdmissionPolicy.Verdict) {
-        if (verdict == BleAdmissionPolicy.Verdict.RefuseHeld) metrics.onBleBlindDropped(BleBlindDrop.HELD_LINK_REFUSED)
+    private fun noteHeldRefusal(
+        verdict: BleAdmissionPolicy.Verdict,
+        dialerId: String,
+    ) {
+        when (verdict) {
+            BleAdmissionPolicy.Verdict.RefuseHeld -> {
+                metrics.onBleBlindDropped(BleBlindDrop.HELD_LINK_REFUSED)
+                val held = links[dialerId] ?: return
+                // Counted only when it starts a probe: forged dials at any rate cost one probe per answer wait.
+                if (silences[held]?.policy?.onHeldDial(elapsed()) == true) {
+                    metrics.onBleAdvertWrite(BleAdvertWrite.HELD_PROBED)
+                    Log.i(TAG, "bt link edge $dialerId held dial")
+                    silenceWake.trySend(Unit)
+                }
+                scope.launch(worker) {
+                    val form = writer.form()?.takeIf { it.blinded } ?: return@launch
+                    sendForm(held, TagNextSends.Kind.RESEND, NodeId.toBytes(form.advertised))
+                }
+            }
+
+            BleAdmissionPolicy.Verdict.RefuseLegacy -> {
+                metrics.onBleBlindDropped(BleBlindDrop.LEGACY_DIALER_REFUSED)
+                val now = elapsed()
+                if (!legacyBoost.take(now, dialerId)) return
+                legacyBoostUntil = now + LegacyDialerBoost.BOOST_MS
+                metrics.onBleAdvertWrite(BleAdvertWrite.LEGACY_BOOST)
+                wakeScan()
+            }
+
+            else -> {}
+        }
     }
 
     /**
@@ -3832,13 +3996,23 @@ class BluetoothMeshTransport internal constructor(
                 proofCapable = claims.isProofCapable(clientNodeId),
                 outOfOrder = outOfOrder,
                 heldRow = heldRow,
+                blinding = forms.blinded,
+                readsTags = advert.readsTags,
             )
         val coded = "sighted=$sighted codedOnly=${sighted && !admitSighted}"
         val proof = if (held != null) " heldProven=${held.proven} offersProof=${hello.offersProof}" else ""
         // After every existing field, so a harness that reads them keeps matching (interop.py).
-        val heldTag = if (verdict == BleAdmissionPolicy.Verdict.RefuseHeld) " held=resend" else ""
+        val heldTag = blindRowTag(verdict)
         return Judgement(verdict, sighted, "$coded heldAgeMs=$heldAgeMs atCap=$atCap$why$proof$heldTag", "$coded$why")
     }
+
+    /** The refusal line's last field for a blinding row: `held=resend` (the held-link row) or `blind=legacy`. */
+    private fun blindRowTag(verdict: BleAdmissionPolicy.Verdict): String =
+        when (verdict) {
+            BleAdmissionPolicy.Verdict.RefuseHeld -> " held=resend"
+            BleAdmissionPolicy.Verdict.RefuseLegacy -> " blind=legacy"
+            else -> ""
+        }
 
     // One registration: the link, its doorbell, its PHY control and the neighbor set, in order; the proof's verdict
     // (ADR 2026-11.264w) adds its displacement, its deferred streak reset and the claim it reports.
@@ -3967,6 +4141,8 @@ class BluetoothMeshTransport internal constructor(
         advertEdge()
         field.record(FieldEvent.BtUp(nodeId, dialMs = dialMs, sighted = sighted, links = links.size))
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
+        // A link up while an announcement stands is told the reserved tag right after its proof (step 5b's W5).
+        if (proven) scope.launch(worker) { announcedTag?.let { sendForm(framed, TagNextSends.Kind.ANNOUNCE, it) } }
         // Once the link is in the table and up, so this plane's own R3/R4 hook finds it proven and leaves it.
         if (proven) {
             claims.proven(nodeId, PLANE, displaced)
@@ -4007,7 +4183,45 @@ class BluetoothMeshTransport internal constructor(
     ) {
         if (!proven || !advert.readsTags) return metrics.onBleBlindDropped(BleBlindDrop.TAG_NEXT_UNPROVEN)
         val tag = NodeId.fromBytes(bytes)
-        scope.launch(worker) { if (BlindSightings.current(links[link.nodeId], link)) aliases.onTagNext(link, link.nodeId, tag) }
+        scope.launch(worker) {
+            if (!BlindSightings.current(links[link.nodeId], link)) return@launch
+            when (aliases.onTagNext(link, link.nodeId, tag)) {
+                AdvertAliases.ClaimOutcome.Pending, AdvertAliases.ClaimOutcome.Redundant -> {
+                    noteLinkForm(link, tag)
+                }
+
+                else -> {} // rate-limited, own, contested, voided, contradicted: nothing to note, and nothing scheduled
+            }
+        }
+    }
+
+    /**
+     * A peer's accepted announcement ([tag]) becomes [link]'s form when it reaches its edge (a resend's at once), as a
+     * sighting would make it: both ends then judge `dialsBackAfterDrop` on the same pair of forms, which a settled pair's
+     * sparse sightings at range would leave apart (the bluetooth design pass). One note and one wait per link
+     * ([linkFormNotes], [linkFormJobs]): a later record replaces both, so a fork flooding records costs one coroutine. At
+     * the edge the tag must still stand for the link ([AdvertAliases.stillAnnounced]). On the worker; the wait is
+     * elapsed-aware on the wall clock.
+     */
+    private fun noteLinkForm(
+        link: FramedLink,
+        tag: String,
+    ) {
+        linkFormJobs.remove(link)?.cancel()
+        val form = AdvertOrder.Form(tag, blinded = true)
+        val wall = System.currentTimeMillis()
+        val at = linkFormNotes.offer(link, tag, wall)
+        if (at == null) {
+            if (links[link.nodeId] === link) linkForms[link] = form
+            return
+        }
+        linkFormJobs[link] =
+            scope.launch(worker) {
+                wallWait.sleep(at - wall)
+                linkFormJobs.remove(link)
+                val due = linkFormNotes.due(link, tag, System.currentTimeMillis())
+                if (due && links[link.nodeId] === link && aliases.stillAnnounced(link, link.nodeId, tag)) linkForms[link] = form
+            }
     }
 
     /**
@@ -4038,7 +4252,12 @@ class BluetoothMeshTransport internal constructor(
         if (links.isEmpty()) noLinkSince = elapsed() // the lonely dial's clock runs from the last link's end (hj4a)
         linkStamps.onLinkEvent(nodeId, elapsed())
         val form = linkForms.remove(fl)
-        scope.launch(worker) { aliases.onLinkEnded(fl) }
+        scope.launch(worker) {
+            aliases.onLinkEnded(fl)
+            tagNextSends.forget(fl)
+            linkFormNotes.forget(fl)
+            linkFormJobs.remove(fl)?.cancel()
+        }
         neverSighted.remove(fl)
         val address = linkAddresses.remove(fl)
         val device = linkDevices.remove(fl)
@@ -4537,6 +4756,7 @@ class BluetoothMeshTransport internal constructor(
         radioGeneration.incrementAndGet()
         blindQueue.clear()
         formKeys.clear()
+        handleFirstSeen.clear()
     }
 
     // --- Helpers ---
@@ -4791,6 +5011,13 @@ class BluetoothMeshTransport internal constructor(
 
         // A retired L2CAP server's close comes this long after its grace (PsmRotation.GRACE_MS), so the due check finds it.
         private const val SERVER_GRACE_SLACK_MS = 1_000L
+
+        // A chase ends early on a newly sighted handle at most this often (step 5b's W6): a stationary blinded stranger
+        // gets a new handle every rotation, and must not end every chase.
+        private const val CHASE_EARLY_END_COOLDOWN_MS = 300_000L
+
+        // The first-sighting stamps kept for unresolved handles: about the handle table's own bound.
+        private const val HANDLE_FIRST_SEEN_MAX = 1_024
 
         // A Coded start the stack failed internally (ADVERTISE_FAILED_INTERNAL_ERROR) is retried this many times per
         // bring-up, on [codedKeeper]'s doubling wait; [CODED_RETRYING] marks a retry in flight, so its failure is quiet.

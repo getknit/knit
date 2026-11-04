@@ -766,6 +766,10 @@ class CompositeMeshTransport(
         for (child in children) if (child.kind == TransportKind.Bluetooth) child.onTagNextRecipients(hears)
     }
 
+    override fun onPresenceKeyPassRequester(request: () -> Unit) {
+        for (child in children) if (child.kind == TransportKind.Bluetooth) child.onPresenceKeyPassRequester(request)
+    }
+
     // A live frame (a walkie chunk) rides the high-throughput child when it holds a link to [to]: an NDP's latency is
     // a Wi-Fi radio's, not a connection interval's. Everything else keeps the Bluetooth-first order of [send].
     override suspend fun sendLive(

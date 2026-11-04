@@ -113,4 +113,37 @@ class KeyChurnLimiterTest {
         assertNull("the fourth gain in a day waits", limiter.offer(mapOf(bob to listOf(key()) + listed), now))
         assertEquals(1_000_000L, limiter.nextDueAt())
     }
+
+    @Test
+    fun twentyFiveSameKeyReEntriesInADayAreEachListedWithinTheInterval() {
+        // Step 5b's W7: a DirectContacts flap that brings a contact back with the keys it had is a relisting, never a gain.
+        val limiter = KeyChurnLimiter()
+        val keys = listOf(key(), key())
+        var now = 0L
+        assertNotNull(limiter.offer(mapOf(bob to keys), now))
+        repeat(25) { i ->
+            now += 50 * 60_000L // an hour less ten minutes: 25 in a day
+            assertNotNull("leaving is never delayed", limiter.offer(emptyMap(), now))
+            now += 1_000
+            val listed =
+                limiter.offer(mapOf(bob to keys), now)
+                    ?: limiter.release(limiter.nextDueAt()!!.also { assertTrue(it - now <= KeyChurnLimiter.MIN_INTERVAL_MS) })
+            assertNotNull("re-entry ${i + 1} listed", listed)
+            assertEquals(2, listed!!.getValue(bob).size)
+        }
+    }
+
+    @Test
+    fun aReEntryInsideTheIntervalWaitsForItButNotForTheDailyCap() {
+        val limiter = KeyChurnLimiter()
+        val keys = listOf(key())
+        assertNotNull(limiter.offer(mapOf(bob to keys), 0L))
+        assertNotNull(limiter.offer(emptyMap(), 1_000L))
+        assertNull("inside the interval: held", limiter.offer(mapOf(bob to keys), 2_000L))
+        assertEquals(KeyChurnLimiter.MIN_INTERVAL_MS, limiter.nextDueAt())
+        assertNotNull(limiter.release(KeyChurnLimiter.MIN_INTERVAL_MS))
+        // A re-entry with a key it never had is a gain, under the interval and the cap as before.
+        assertNotNull(limiter.offer(emptyMap(), KeyChurnLimiter.MIN_INTERVAL_MS + 1))
+        assertNull(limiter.offer(mapOf(bob to listOf(key())), KeyChurnLimiter.MIN_INTERVAL_MS + 2))
+    }
 }

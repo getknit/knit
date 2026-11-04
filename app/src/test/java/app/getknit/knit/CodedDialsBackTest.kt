@@ -74,4 +74,20 @@ class CodedDialsBackTest {
             ),
         )
     }
+
+    @Test
+    fun withMyFormBlindedWhoDialsBackFollowsTheFormsAndWhoStepsStaysOnTheIds() {
+        // Step 5b's W6: CodedPhyPolicy's PHY driver is unchanged with mine blinded; only the dial roles read forms.
+        val local = "mmmmmmmmmmmmmmmmmmmmmmmmmm"
+        val peer = "zzzzzzzzzzzzzzzzzzzzzzzzzz"
+        val mine = AdvertOrder.Mine(AdvertOrder.Form("zzzzb" + "a".repeat(21), blinded = true))
+        assertFalse("the larger real id steps the PHY, whatever the forms", CodedPhyPolicy.drives(local, peer))
+        assertTrue(
+            "a blinding phone dials a clear peer back",
+            CodedPhyPolicy.dialsBackAfterDrop(mine, AdvertOrder.Form.clear(peer), null, local, peer),
+        )
+        val theirs = AdvertOrder.Form("zzzzc" + "a".repeat(21), blinded = true)
+        assertFalse("the larger tag dials back", CodedPhyPolicy.dialsBackAfterDrop(mine, theirs, null, local, peer))
+        assertTrue(CodedPhyPolicy.dialsBackAfterDrop(AdvertOrder.Mine(theirs), mine.current, null, peer, local))
+    }
 }

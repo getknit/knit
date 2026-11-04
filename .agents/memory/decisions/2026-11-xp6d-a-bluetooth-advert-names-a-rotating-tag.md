@@ -345,3 +345,51 @@ dialing while blinded, and the carried fixes are Part B2's, so every rotation th
   narrow a crowd for a scanner matching one set to the next.
 - **Old builds** (addition). A shipped build keys sightings by bytes 1–16, never by the blinded phone's real id, so it
   scores the link to it at the floor (`neverSighted`, −90) and sheds it first at its six-link budget.
+
+## Amendment 2026-11-03: announced rotations and the blinding rows (step 5b, Part B2, draft)
+
+Status: draft, with the second half of the writer; the caller decides whether it stands. With it, B1's rotations are
+announced.
+
+- **`TAG_NEXT` sent** (`TagNextSends`), as a link record beside the keepalive (`FramedLink.sendTagNext`): never a frame,
+  never in `DoorbellPolicy.rings`, so a rotation never rings a suspended iPhone. It goes only to a proven link whose HELLO
+  carried `CAP_BLIND_ADVERT`, whose peer `MeshTransport.onTagNextRecipients` answers true at the send (not blocked, not
+  departed; read at each send, never at link-up), and only while an own key is held (a random tag is never announced).
+  Three sends: the lead announcement of the reserved tag at edge − 3.5 min (and the same tag to a link proved while it
+  stands); the form just aired, once per link, after a rotation nobody was told of (a late wake, a key change, a flip);
+  and the held-link row's resend. The receiver keeps one per link per two minutes and holds an announced tag pending,
+  which any other form would replace; so the second and third go only when none went to that link inside two minutes,
+  never inside two minutes before a due announcement, and never while an announcement stands. The announcement never
+  moves for them, so a forged dial cannot push it out. Each refusal is counted.
+- **The held-link row's non-silent bound.** At `RefuseHeld` the held link's silence is probed at once
+  (`LinkSilence.onEdge`, never on a `CAP_DOORBELL` link, rate-limited by the probe's own state), so a held link dead on
+  this side closes within its own probes and the dialer's next try is admitted; never a shorter wait of its own. Dials
+  at any rate, forged ones too, start at most one probe per answer wait (`LinkSilence.onHeldDial`). A
+  proven held link is still displaced only by a verified proof (R2). **An excluded peer's re-dials** (blocked, or one
+  that left the own key's audience) take `RefuseHeld` with no resend, bounded by its own no-reply backoff, until its
+  held link ends.
+- **A peer's announced tag becomes the link's form at its edge** (a resend's at once), so both ends judge
+  `dialsBackAfterDrop` on the same pair of forms. Only a record the resolver accepted (pending, or what a contact's key
+  already says) is noted, one note and one wait per link (`LinkFormNotes`; a later record replaces it), and at the edge
+  only if the tag still stands for the link: a fork flooding records at link rate costs one wait.
+- **The blinding-only row** (`BleAdmissionPolicy.Verdict.RefuseLegacy`): while this phone blinds, a dialer whose HELLO
+  lacks `CAP_BLIND_ADVERT` is refused first, with no reply and no HELLO written, counted apart; it buys a 60 s scan boost
+  to find that dialer's clear advert at most once per five minutes phone-wide (`LegacyDialerBoost`), and one claimed id
+  at most once per half hour under that, so an old phone that cannot be linked does not keep the scan boosted.
+- **The chase's early end.** While blinding, the Aware→Bluetooth chase covers every foreign id, and a blinding peer
+  among them never shows under its id: an unresolved handle first sighted (by capture stamp) after a chase began ends
+  that chase, at most once per five minutes, counted; the ended chase stays ended while its id stays foreign. A link ends
+  one as before. A hostile radio airing fresh fake tags ends live chases at most once per five minutes, which only delays
+  a link to a stranger.
+- **A dial to a superseded form** (the peer rotated since the dial began) is booked under that form's handle and
+  address, which the peer's new form never reads, and never under the resolved id: it costs the new form no streak.
+- **Key churn** (`KeyChurnLimiter`): a contact that returns to the listing with only keys it held when it left relists
+  at most once a minute and never counts toward the daily cap.
+- **A stale mark asks the engine for one pass per generation** through `MeshTransport.onPresenceKeyPassRequester`
+  (Bluetooth only), which `MeshManager` answers with one `reconcile("mark")` on the session.
+- **Counts.** `TagSchedule.Next.resolvable` false and `stale` true reach the field log as counts
+  (`bleTagsUnresolvable`, `bleTagsStale`), never as dated events; the sends, refusals, probes and boosts are STATE counts
+  (`bleAdvertWritesByEvent`); a send line names the recipient, never the tag.
+- **What it does not stop** (addition). `TAG_NEXT` crosses insecure L2CAP in the clear, 3.5 minutes ahead of each edge,
+  so a sniffer on a long-lived link follows every tag for as long as the link lasts, without catching a new HELLO. This
+  is inside #286's accepted cost (the HELLO's `t` already names the tag).

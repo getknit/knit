@@ -332,7 +332,8 @@ LoRa plane (2026-09.ggq4).
 - **When touching `MessageContent.CTL_PRESENCE_KEY` / `pk`, `PresenceKeyPayload`, `PresenceKeyFrame`, `PresenceKeyPolicy`,
   `PresenceKeyEngine` / `PresenceKeyEngineStore` (its `ownKey`, `departed`, `beginSession`), `OwnPresenceKey`,
   `PresenceKeyRepository` (its `markStore`, `presenceKeysFor`, `applyHeld`), `PresenceKeyDao.setCurrentMark`,
-  `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` / `onTagNextRecipients`, `MeshManager.hearsTagNext`, `PresenceKeyPolicy.departed` /
+  `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` / `onTagNextRecipients` / `onPresenceKeyPassRequester`,
+  `MeshManager.hearsTagNext`, `PresenceKeyPolicy.departed` /
   `hearsTagNext`, `InboundPipeline.applyPresenceKey`, `RatchetSessions.OpenedUnder` / `OpenDelta.openedRootTag`,
   `MeshManager.sealPresenceKeys` / `sealLinkReset` / `watchPresenceKeys`, the link-owed resets (`SettingsStore.linkOwedResets`,
   `finishRestore`'s split, `sendSessionReset`'s `deliver`), or `DropReason.PRESENCE_KEY_REFUSED`:** READ ADR 2026-11.xp6d
@@ -352,6 +353,9 @@ LoRa plane (2026-09.ggq4).
   (`MeshManager.sendsPresenceKeys` → `PresenceKeyEngine`'s `sendsOwnKeys`; on in every build as shipped, independent of
   writing tags, `BLIND_ADVERT`), while receiving, storing, resolving, leavers' deletion and link-owed resets run in every
   build whatever it says.
+  The advertiser's stale mark asks for a pass through `onPresenceKeyPassRequester` (once per generation, the transport's
+  latch): `MeshManager` launches one `reconcile("mark")` on the session, which reads the same persisted mark; the
+  15-minute heal reconcile is the backstop.
   The advertiser's own key is `PresenceKeyEngine.ownKey`, published at the end of a settle under the lock, null from
   `beginSession` (every `MeshManager.start`, before the transport) until the session's first settle, compared by
   generation and key bytes so a mark, a grow or a peer key never restarts the advertiser; never a Room read (a block

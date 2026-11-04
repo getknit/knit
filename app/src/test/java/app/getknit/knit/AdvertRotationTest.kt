@@ -196,4 +196,15 @@ class AdvertRotationTest {
         // The wiring counts a rotation by its cause's name (`bleRotationsByCause`).
         assertEquals(Cause.entries.map { it.name }, BleRotation.entries.map { it.name })
     }
+
+    @Test
+    fun theNextAnnouncementIsDueAtTheLeadUntilItIsMade() {
+        assertNull("nothing on the air", rotation.announceDueAt())
+        rotation.onRotated(slotStart)
+        assertEquals(edge - AdvertRotation.LEAD_MS, rotation.announceDueAt())
+        rotation.onAnnounced(edge - AdvertRotation.LEAD_MS)
+        assertNull("made: a resend is kept out by the receiver's limit instead", rotation.announceDueAt())
+        rotation.onRotated(edge)
+        assertEquals(edge + BlindTag.SLOT_MS - AdvertRotation.LEAD_MS, rotation.announceDueAt())
+    }
 }

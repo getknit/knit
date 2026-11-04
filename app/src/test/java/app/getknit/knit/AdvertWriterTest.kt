@@ -26,23 +26,34 @@ import java.util.Random
  * throwing mark store yields a random tag, never the id; an install after the radio went down starts nothing.
  */
 class AdvertWriterTest {
-    /** A set that records every payload and whether it was stopped or retired; inert once retired, as the real one. */
+    /**
+     * A set that records every payload, and every call into one event list shared by all sets ([events]), so the order of
+     * a swap shows and a write after retirement (`late update <name>`) is caught. Inert once retired, as the real one.
+     */
     private class FakeSink(
         val name: String,
+        private val events: MutableList<String>,
     ) : AdvertWriter.Sink {
         val payloads = ArrayList<ByteArray>()
         var stopped = 0
         var retired = false
 
         override fun update(serviceData: ByteArray) {
-            if (!retired) payloads += serviceData
+            if (retired) {
+                events += "late update $name"
+                return
+            }
+            events += "update $name"
+            payloads += serviceData
         }
 
         override fun stop() {
+            events += "stop $name"
             stopped++
         }
 
         override fun retire() {
+            events += "retire $name"
             retired = true
             stopped++
         }
@@ -84,7 +95,11 @@ class AdvertWriterTest {
     private val wall = 1_800_000_000_000L
     private val key = OwnPresenceKey(4, ByteArray(BlindTag.KEY_BYTES) { 9 })
 
-    private fun sink(name: String) = FakeSink(name).also { sinks += it }
+    private val events = ArrayList<String>()
+
+    private fun sink(name: String) = FakeSink("$name${sinks.size}", events).also { sinks += it }
+
+    private fun assertNoLateUpdate() = assertTrue("a retired set was written: $events", events.none { it.startsWith("late update") })
 
     private fun encode(
         form: AdvertOrder.Form,
@@ -193,7 +208,10 @@ class AdvertWriterTest {
         assertTrue(clearPresence.retired)
         assertFalse(writer.isCurrent(clearPresence))
         val firstTagPresence = writer.presence()!!
-        clearPresence.update(byteArrayOf(1)) // a caller that read the old instance before the swap
+        // The swap retired the old sets before the new ones' first write.
+        val retiredAt = events.indexOf("retire $clearPresence")
+        val firstWrite = events.indexOf("update $firstTagPresence")
+        assertTrue("retire before the new set's first update: $events", retiredAt in 0 until firstWrite)
         push()
         push()
         // The slot edge: fresh sets again.
@@ -203,6 +221,7 @@ class AdvertWriterTest {
         push()
         assertNoFormChangedInPlace()
         assertNoIdWhileBlinded()
+        assertNoLateUpdate()
         assertEquals("the old clear set got nothing after its retirement", 2, clearPresence.payloads.size)
     }
 
@@ -245,6 +264,7 @@ class AdvertWriterTest {
         assertTrue(oldCoded.retired)
         assertTrue(writer.isCurrent(newCoded))
         assertEquals(1, newCoded.payloads.size)
+        assertNoLateUpdate()
         assertNoFormChangedInPlace()
     }
 
@@ -297,6 +317,7 @@ class AdvertWriterTest {
         assertTrue(randomSet.retired)
         assertNoFormChangedInPlace()
         assertNoIdWhileBlinded()
+        assertNoLateUpdate()
     }
 
     @Test
