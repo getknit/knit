@@ -24,6 +24,7 @@ import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.ui.util.joinedList
 
 /**
  * Builds and posts "new message" notifications, Signal-style: **one MessagingStyle notification per
@@ -266,7 +267,7 @@ class MessageNotifier internal constructor(
                     context.resources.getQuantityString(
                         R.plurals.notif_open_to_chat_names_more,
                         others,
-                        shown.joinToString(", "),
+                        joinedList(context, shown),
                         others,
                     )
                 }

@@ -2,6 +2,7 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">Knit</string>
     <string name="joined_with_dot">%1$s · %2$s</string>
+    <string name="list_join">%1$s, %2$s</string>
     <string name="notif_group_messages">Повідомлення</string>
     <string name="notif_group_app">Застосунок</string>
     <string name="mesh_channel_name">Mesh-мережа</string>
