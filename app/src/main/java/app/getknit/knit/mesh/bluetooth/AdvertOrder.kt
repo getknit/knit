@@ -74,7 +74,8 @@ internal object AdvertOrder {
      * the held-link row): [current] is what I air now, [previous] what I aired before my last rotation (null when none).
      * The transport holds one in a single reference and replaces it whole, so no reader sees a current from one rotation
      * beside a previous from another. A phone that never blinds holds `Mine(Form.clear(id), null)` for good; the writer
-     * (ADR 2026-11.xp6d's staging, `BuildConfig.BLIND_ADVERT`) is what will move it.
+     * (`AdvertWriter`, under `BuildConfig.BLIND_ADVERT` and its runtime switch) moves it at each rotation, the old current
+     * becoming [previous].
      */
     data class Mine(
         val current: Form,

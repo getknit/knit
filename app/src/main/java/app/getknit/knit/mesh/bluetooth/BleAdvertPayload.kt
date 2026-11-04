@@ -82,8 +82,8 @@ internal object BleAdvertPayload {
 
     /**
      * Bytes 1–16 are a rotating tag ([BlindTag]), not the node id (ADR 2026-11.xp6d). A reader resolves the tag through
-     * `AdvertAliases`; nothing keys a tag as an id. This build reads it and never sets it outside tests ([advert]'s
-     * `blinded`): the writer is `BuildConfig.BLIND_ADVERT`'s, not built yet.
+     * `AdvertAliases`; nothing keys a tag as an id. The writer sets it ([advert]'s `blinded`, through `AdvertWriter`) only
+     * while it airs a tag: `BuildConfig.BLIND_ADVERT`, the runtime switch and extended advertising (step 5b).
      */
     const val FLAG_BLINDED = 0x08
 
@@ -105,7 +105,8 @@ internal object BleAdvertPayload {
 
     /**
      * This node's presence advert, [encode] over [flags]: the bytes `BluetoothMeshTransport.readvertise` puts on air.
-     * [blinded] says [nodeId] is a tag's 26-char form and zeroes the digest cue; this build never sets it outside tests.
+     * [blinded] says [nodeId] is a tag's 26-char form and zeroes the digest cue (unchanged it would tie one tag to the
+     * next): the blinding writer's form.
      */
     @Suppress("LongParameterList") // the advert's fields and its flags, each a different source in the transport
     fun advert(

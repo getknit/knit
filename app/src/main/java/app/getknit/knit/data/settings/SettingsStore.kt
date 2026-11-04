@@ -545,6 +545,17 @@ class SettingsStore(
         }
 
     /**
+     * The blinded advert's runtime switch (ADR 2026-11.xp6d, step 5b's W1): whether a build that writes tags
+     * (`BuildConfig.BLIND_ADVERT`) airs one. A debug build reads the stored value, and unset reads
+     * [DEBUG_BLIND_ADVERT_DEFAULT]: **off** (the maintainer, 2026-11-03) until step 6's debug-bridge action exists to
+     * turn it on and off for a trial, so no lab phone blinds by accident beside the harnesses that read node ids off the
+     * air. Step 6 flips that default (one constant). A release build always reads on, whatever a debug install left
+     * behind; the `debug_` prefix keeps it out of a backup.
+     */
+    val debugBleBlindAdvert: Flow<Boolean> =
+        dataStore.data.map { prefs -> !BuildConfig.DEBUG || (prefs[KEY_DEBUG_BLE_BLIND_ADVERT] ?: DEBUG_BLIND_ADVERT_DEFAULT) }
+
+    /**
      * The bound board as its last session reported it — its Meshtastic node number and, when that number is the
      * CRC32 of its 32-byte key (firmware 2.8's binding, signing or not: #243), its key — or null while unbound.
      * What the profile advertises (`ProfileContent.loraNode` / `loraKey`) so a contact can line a post their board
@@ -919,6 +930,9 @@ class SettingsStore(
             }
         }
 
+    /** Sets [debugBleBlindAdvert]. */
+    suspend fun setDebugBleBlindAdvert(on: Boolean) = dataStore.edit { it[KEY_DEBUG_BLE_BLIND_ADVERT] = on }
+
     /** Sets [debugBlePhyMode]. */
     suspend fun setDebugBlePhyMode(mode: CodedPhyMode) = dataStore.edit { it[KEY_DEBUG_BLE_PHY_MODE] = mode.wire }
 
@@ -1193,6 +1207,10 @@ class SettingsStore(
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")
         val KEY_DEBUG_BLE_LINK_CAP = intPreferencesKey("debug_ble_link_cap")
         val KEY_DEBUG_BLE_PHY_MODE = stringPreferencesKey("debug_ble_phy_mode")
+        val KEY_DEBUG_BLE_BLIND_ADVERT = booleanPreferencesKey("debug_ble_blind_advert")
+
+        /** What [debugBleBlindAdvert] reads in a debug build with nothing stored: off until step 6's bridge action. */
+        const val DEBUG_BLIND_ADVERT_DEFAULT = false
         val KEY_DEBUG_NAN_OFF = booleanPreferencesKey("debug_nan_off")
         val KEY_DEBUG_DIRECT_CALLS_OFF = booleanPreferencesKey("debug_direct_calls_off")
         val KEY_DEBUG_WALKIE_CLIPS = booleanPreferencesKey("debug_walkie_clips")

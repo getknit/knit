@@ -221,7 +221,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `dialsBackAfterDrop`, `FormKeys`, `BlindQueue`, `LinkEventStamps`, `BlindSightings`, `ReplayMarks`, `KeyChurnLimiter`,
   `BtLines`, `ScanPlan.published`, `MeshTransport.onPresenceKeys`, `BleBlindDrop`, `Protocol.CAP_BLIND_ADVERT`, or any
   pre-link `localId > nodeId` in the plane:**
-  READ ADR 2026-11.xp6d (Proposed; the pure core and the reader are built, the writer not). `AdvertOrder.iDial` decides every role
+  READ ADR 2026-11.xp6d (Proposed; the pure core, the reader and the writer's air half are built; `TAG_NEXT` sent and
+  the blinding admission rows are not). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
   two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read
@@ -269,6 +270,31 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   withholds it from a node with `LabLimits.blindAdvert` off (`MeshManager.withheldCapabilities`). The `bt …` lines
   that name a dial's peer are built in `BtLines`. Tests: `BlindReaderTest`, `BlindSightingsTest`, `KeyChurnLimiterTest`,
   `DialPlanTest`, `BleAdmissionPolicyTest`, `CodedDialsBackTest`, `ExpectedTagTableTest`.
+
+- **When touching `AdvertWriter`, `TagChoice`, `AdvertRotation`, `StaleLatch`, `PsmRotation`, `BleAdvertiser.retire`,
+  `BleSideChannel.rotate`, `SideCarousel.rotate`, `TagSchedule.dropReservations` / `random`, `BleRotation`,
+  `BleAdvertWrite`, `RotationTurn`, `SettingsStore.debugBleBlindAdvert`, `BuildConfig.BLIND_ADVERT`, the transport's `readvertise`,
+  `bringUp`, `rotate`, `rotationLoop` or `acceptLoop`, or `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` on
+  the Bluetooth side:** READ ADR 2026-11.xp6d, its "writer on the air" amendment (step 5b, Part B1) above all. The writer
+  airs a tag only under `BLIND_ADVERT` (passed in, the one seam), the runtime switch (off in debug until step 6) and
+  extended advertising (sticky once read true). `RotationTurn`'s every pass suspends on the worker, and a rotation that
+  does not install looks again only a recheck later (the radio down: not until a wake). Every
+  advertiser write goes through `AdvertWriter`'s one snapshot (presence set, Coded set, form, PSM): a push builds from the
+  snapshot's form, never the node id while blinded (a payload naming the id is dropped), nothing airs while a rotation's
+  tag is pending, no set changes form in place (new form, new instances, the old ones `retire`d and inert), and a bring-up
+  is a rotation. `TagChoice` airs a random prefixed tag with no key, when the engine's generation moved past the held one
+  (read synchronously, `onOwnPresenceKeySource`) or when the mark store throws, never the id. A change of the own key's
+  generation rotates at once and is never held; the session's first key after a random bring-up completes it; reservations
+  drop on every key change and at adapter OFF. `AdvertRotation`'s slot turn waits on the wall clock through an
+  elapsed-aware wait (a privacy bound: never `delay`, never `// stretches:`), reserves at edge − 3.5 min, rotates at
+  max(edge, reserve + 30 s) or at once on a late wake, and holds for a fast Coded window, a hunt, a dial of mine or an ACL
+  settle at most `fastHoldMs` from the due time. Each rotation opens a fresh L2CAP server behind 0–15 `SecureRandom`
+  throwaways (`PsmRotation`), the old one accepting 30 s more; the side channel's slots get fresh sets and the pages on the
+  air at the edge are not re-aired, nor any frame already started. Rotation causes and writer events are counts in STATE only (`bleRotationsByCause`,
+  `bleAdvertWritesByEvent`), never logged beside a time, a generation or a slot, never in the field log. `TAG_NEXT` sent,
+  the held-row resend and the blinding-only admission row are Part B2's: the seams (`sendCurrentFormOnce`, `announceTag`)
+  are no-ops, so every B1 rotation is unannounced on the air. Tests: `AdvertWriterTest`, `AdvertRotationTest`,
+  `PsmRotationTest`, `RotationTurnTest`, `TagScheduleTest`, `SideCarouselTest`, `BleAdvertiserTest`, `BleSideChannelReassertTest`.
 
 ## Adding an entry
 

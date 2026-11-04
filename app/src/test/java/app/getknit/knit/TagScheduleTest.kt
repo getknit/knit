@@ -239,4 +239,24 @@ class TagScheduleTest {
     private companion object {
         const val DAY_MS = 24 * 3_600_000L
     }
+
+    @Test
+    fun droppedReservationsAreNeverTaken() {
+        // Step 5b: a new own key, and adapter OFF, drop every reservation on the worker step that sees them.
+        val s = schedule()
+        val reserved = s.reserve(key, 1, wall)
+        s.dropReservations()
+        assertNull(s.take(1, wall + BlindTag.SLOT_MS))
+        assertEquals("the reservation's mark stays written, so nothing repeats", TagSchedule.Mark(slot + 1, 0), store.marks[1])
+        assertFalse(s.next(key, 1, wall + BlindTag.SLOT_MS).tag.contentEquals(reserved.tag))
+    }
+
+    @Test
+    fun aRandomTagCarriesThePrefixAndWritesNoMark() {
+        val r = schedule().random()
+        assertFalse(r.resolvable)
+        assertFalse(r.stale)
+        assertTrue(BlindTag.hasPrefix(r.tag))
+        assertTrue(store.marks.isEmpty())
+    }
 }

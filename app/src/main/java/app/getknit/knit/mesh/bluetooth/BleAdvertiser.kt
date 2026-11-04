@@ -44,6 +44,14 @@ import android.os.SystemClock
  * an enabled set), enable. The set keeps its handle and its address (AOSP `set_parameters` reuses the set's current
  * one), which a stop-and-restart would not; [reassert] holds off while it runs. The Coded set uses it to advertise
  * faster for a while after a link at range drops (ADR 2026-10.yvn6, amendment 3).
+ *
+ * **A retired instance is inert** ([retire], ADR 2026-11.xp6d's writer). A blinding phone never changes a set's form in
+ * place (an in-place `setAdvertisingData` keeps the set's address, which would tie two tags, or a tag and the id,
+ * together): every rotation raises *fresh* instances and retires the old ones. [stop] alone is not enough for that,
+ * because a later [update] on a stopped instance takes the cold path and starts a new set with whatever bytes it was
+ * handed, and a late `onAdvertisingSetStarted(SUCCESS)` for a start [stop] raced reaches this wrapper's [callback]. A
+ * retired instance ignores [update], [reassert] and [setInterval], reports nothing, and stops again any set whose start
+ * lands after it retired.
  */
 @SuppressLint("MissingPermission")
 internal class BleAdvertiser(
@@ -64,7 +72,7 @@ internal class BleAdvertiser(
     // The set stays on its old interval, and [setInterval] has to be asked again to try once more.
     private val onIntervalRefused: (interval: Int, status: Int) -> Unit = { _, _ -> },
     private val now: () -> Long = SystemClock::elapsedRealtime,
-) {
+) : AdvertWriter.Sink {
     // All mutable state below is guarded by [lock]: [update]/[stop] run on the mesh scope while the callback
     // fires on a binder thread, and they race over the set handle + the start-in-flight bookkeeping.
     private val lock = Any()
@@ -104,6 +112,11 @@ internal class BleAdvertiser(
 
     private enum class Swap { NONE, DISABLING, SETTING, ENABLING }
 
+    // [retire] was called: nothing here starts, writes or reports again ([update], [reassert], [setInterval] are no-ops),
+    // and a start that lands late is stopped on [retiredOn], the advertiser it was asked of.
+    private var retired = false
+    private var retiredOn: BluetoothLeAdvertiser? = null
+
     private val callback =
         object : AdvertisingSetCallback() {
             override fun onAdvertisingSetStarted(
@@ -113,6 +126,14 @@ internal class BleAdvertiser(
             ) {
                 synchronized(lock) {
                     starting = false
+                    if (retired) {
+                        // A start [retire] raced: the set must not stay on the air beside the instance that replaced it.
+                        if (status == ADVERTISE_SUCCESS && set != null) {
+                            log("advertising set started after retire, stopping it")
+                            retiredOn?.let { adv -> runCatching { adv.stopAdvertisingSet(this) } }
+                        }
+                        return
+                    }
                     if (status != ADVERTISE_SUCCESS || set == null) {
                         log("advertising set start failed: $status")
                         advertisingSet = null
@@ -205,10 +226,11 @@ internal class BleAdvertiser(
         }
 
     /** (Re)start advertising, or update the live advert **in place**, with fresh [serviceData]; a no-op if the
-     *  device has no advertiser. */
-    fun update(serviceData: ByteArray) {
+     *  device has no advertiser, or once [retire]d. */
+    override fun update(serviceData: ByteArray) {
         val adv = advertiserProvider() ?: return // re-acquired fresh each update (survives an adapter off→on cycle)
         synchronized(lock) {
+            if (retired) return
             lastData = serviceData
             val set = advertisingSet
             when {
@@ -259,6 +281,7 @@ internal class BleAdvertiser(
     fun reassert(): Boolean {
         val adv = advertiserProvider() ?: return false
         synchronized(lock) {
+            if (retired) return false
             val set = advertisingSet
             return when {
                 // An interval change has the set off on purpose and puts it back itself.
@@ -312,7 +335,7 @@ internal class BleAdvertiser(
      */
     fun setInterval(interval: Int) {
         synchronized(lock) {
-            if (interval == wanted.interval) return
+            if (retired || interval == wanted.interval) return
             wanted = withInterval(wanted, interval)
             val set = advertisingSet ?: return // cold, or a start in flight that will pick it up
             if (swap == Swap.NONE) beginSwap(set) // else the change running now picks it up when it ends
@@ -368,7 +391,7 @@ internal class BleAdvertiser(
     /** Whether a set is up or coming up — the side channel reads it to count its live slots. */
     val active: Boolean get() = synchronized(lock) { advertisingSet != null || starting }
 
-    fun stop() {
+    override fun stop() {
         synchronized(lock) {
             val adv = current
             if (adv != null && (advertisingSet != null || starting)) runCatching { adv.stopAdvertisingSet(callback) }
@@ -382,6 +405,22 @@ internal class BleAdvertiser(
             liveInterval = 0
         }
     }
+
+    /**
+     * Stops the set for good: [stop], and from now on this instance starts, writes and reports nothing. A rotation retires
+     * the instances it replaces, so a caller still holding one (a `readvertise` that read it before the swap, a keeper's
+     * turn, a late callback) can never put an old form back on the air or start a new set with it.
+     */
+    override fun retire() {
+        synchronized(lock) {
+            retiredOn = current ?: advertiserProvider()
+            retired = true
+        }
+        stop()
+    }
+
+    /** Whether [retire] was called. */
+    val isRetired: Boolean get() = synchronized(lock) { retired }
 
     // Service data only — no separate service-UUID list AD. The service-data AD already carries the 16-bit UUID,
     // and dropping the redundant list AD frees the 4 bytes the 16-byte raw nodeId needs to keep the payload inside

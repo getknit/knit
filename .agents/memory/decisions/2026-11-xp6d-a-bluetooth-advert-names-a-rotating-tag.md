@@ -153,8 +153,8 @@ sleep, a controller-timed set lifetime or an alarm per rotation, both declined i
   leaves, longer if it then sleeps.
 - **Old builds, during the transition.** Every link between an old and a blinding phone is the blinding phone's dial.
   An old phone that hears a blinding phone one way, but is not heard, never links to it. On an old phone each
-  rotation of each blinded neighbour adds a met-peer row, a phantom nearby entry beside the linked id, an Aware wake,
-  and a chase it cannot end. An un-updated iPhone's head-start dial is refused once per rotation; after N+1 an
+  rotation of each blinded neighbour adds a met-peer row, a phantom nearby entry beside the linked id, a reason to keep
+  its Aware plane attached, and a chase it cannot end. An un-updated iPhone's head-start dial is refused once per rotation; after N+1 an
   un-updated backgrounded iPhone never links to a blinding Android, which is why N+1 waits on the iOS reader.
 - **Strangers.** One appears in the nearby count only once linked. Its sighting no longer corroborates the Wi-Fi Aware
   watchdog's Tier-2 kill until it is linked or resolved, so a wedge beside strangers only (more than six phones, or
@@ -267,3 +267,81 @@ is its own section.
   running at FULL (`presenceMarkNotFull`, a fault) apart from a write refused for a key gone or demoted
   (`presenceMarkRefused`, a rotation's race); `presenceMarkNotFull == 0` with `presenceMarksDurable > 0` is the device
   check the JVM cannot make (framework SQLite in memory there, SQLCipher in WAL on a phone).
+
+## Amendment 2026-11-03: the writer on the air (step 5b, Part B1, draft)
+
+Status: draft, with the writer's Bluetooth half; the caller decides whether it stands. `TAG_NEXT` sent, admission and
+dialing while blinded, and the carried fixes are Part B2's, so every rotation this part makes is unannounced on the air
+(the announcement's reservation is made, and the tag it names is the one aired).
+
+- **The gates.** The writer airs a tag only while `BuildConfig.BLIND_ADVERT` (passed in; nothing under `mesh/bluetooth/`
+  reads `BuildConfig` for it), the runtime switch (`SettingsStore.debugBleBlindAdvert`, key `debug_ble_blind_advert`;
+  unset reads `DEBUG_BLIND_ADVERT_DEFAULT`, **off** in a debug build until step 6's bridge action exists, the
+  maintainer's call of 2026-11-03; a release build always reads on) and the controller's extended advertising (read with
+  the adapter on, where `probeCoded` reads, and kept true for the life of the process once read true, so one transient
+  false read at a bring-up cannot leave a session airing its id) all hold. A build without `BLIND_ADVERT` runs neither
+  the slot turn nor the switch's collector. Off, my forms are
+  clear and nothing below runs. The key gate is independent of the writer's: `PRESENCE_KEYS` mints and sends keys whether
+  or not the advert blinds (so a debug phone with the switch off still sends ctl 11, and release N sends keys and airs its
+  id), and a build that blinds with keys off has no own key and airs random tags.
+- **One writer** (`AdvertWriter`). The presence set, the Coded set, the form they carry and the PSM they name are one
+  snapshot, replaced whole by a rotation, a bring-up or a flip, under one lock every encode is made under. Every push
+  (`readvertise` and its seven callers) builds from the snapshot's form, never from the node id while it is blinded; a
+  payload whose bytes 1–16 are not the snapshot's tag is dropped and counted. While a rotation's tag is pending nothing
+  starts or updates. No set changes form in place: a new form is new instances, and the replaced ones are retired
+  (`BleAdvertiser.retire`: inert from then on, a late start of theirs stopped again). A bring-up is a rotation; an install
+  after the radio went down starts nothing and opens no server.
+- **The tag** (`TagChoice`). With no own key, a random prefixed tag; when the engine's generation (read synchronously)
+  is not the one the transport holds, a random tag and the reservation dropped unaired; announced, exactly what
+  `TagSchedule.take` returns; otherwise `next`. A mark store that throws gives a random tag, never the id. The session's
+  first key after a bring-up that aired a random tag for want of one rotates at once (completing that bring-up); a key the
+  bring-up already used is no change; any other change of the generation, a null among them, rotates at once and is
+  never held. Every reservation is dropped on the worker step that receives a new key, and at adapter OFF. A stale mark
+  asks the engine for one pass per generation; no transport-to-engine seam exists yet, so it is counted and the heal
+  reconcile's 15-minute pass is the backstop.
+- **The slot turn** (`AdvertRotation`) waits on the wall clock through an elapsed-aware wait (a privacy bound, never a
+  `delay`, which stops in suspend), recomputed on `ACTION_TIME_CHANGED`, a key change, a bring-up and a flip. It
+  reserves the coming slot's tag at the first wake at or after edge − 3.5 min, rotates at the first wake at or after
+  max(edge, reserved + 30 s), and rotates at once, unannounced, on a wake past the edge with nothing reserved or a slot
+  late. A rotation due at T waits for a fast Coded window, a range or cold hunt, a dial of mine in flight or an ACL
+  edge's 2.5 s settle, at most until T + `fastHoldMs`, whatever opens after T. A clock set back below the slot on the air
+  rotates at once.
+- **The idle tag's longest life.** The wait adds no wakes, so a lone dozing phone keeps its tag until its first CPU wake
+  after the edge: up to the Doze maintenance gap (about 6 h by default, a device property). A linked phone wakes at
+  least for each re-offer, about 1–2 min past the edge.
+- **A fresh PSM per rotation** (the maintainer, 2026-11-03; `PsmRotation`). Before the old sets stop, a `SecureRandom`
+  count of 0–15 throwaway insecure L2CAP servers are opened and closed (AOSP's LE dynamic PSM allocator is round-robin
+  from the last one, so a plain re-open is p + 1), then the new server opens and the fresh sets name it; the old server
+  keeps accepting for Coded's dial watchdog plus 5 s (30 s), then closes. The residual: under the round-robin allocator
+  the new PSM is the old one + 1 to + 16 (more only when another app allocates in between), so a scanner that sees one
+  set go off the air and the next come on has about a 1-in-8 window to match them on the PSM, not one in 128; it helps in
+  a crowd and little alone. When the new server will not open (`PSM_KEPT`, counted: the stack refused the listen), the
+  new tag airs at the old PSM and that rotation is linkable by it. Accepted sockets outliving their server socket is to
+  verify on the lab phones: a bluedroid-derived vendor stack may free an accepted connection when its listener closes,
+  and the trial checks it: mainly a link accepted before a rotation, held past its server's close 30 s after the next one
+  (on such a stack every accepted link would drop within about 15.5 min), and also a dial inside a rotation's grace held
+  past 30 s; the fallback is to keep a retired server open until no link it accepted is live.
+- **Fresh instances.** The presence set from `presenceParams()` (legacy, `TX_POWER_HIGH`); the old set stopped before
+  the new one starts; the Coded set at the asked power on the interval a fast window wants; a slot or flip restart at
+  least 2.5 s after an ACL edge (a key change is never held). The side channel rotates with them
+  (`BleSideChannel.rotate`): a fresh set per slot, the page each slot had on the air is not aired again, and every frame
+  already started is dropped from the queue (counted `SIDE_FRAME_DROPPED`), since its next part on a fresh address
+  would carry the same fragment id as the part on the old one; at most one page dwell and one fragmented frame per slot
+  per rotation, which the flood and the links carry. My forms (current, previous) swap as one snapshot as the new sets are asked to start, and the
+  resolver's own tags take both. `FLAG_BLINDED` is set and the digest cue zeroed; the HELLO carries `t` (the tag on the
+  air) while blinding.
+- **Counts, never dated causes.** Rotations count by cause in STATE (`bleRotationsByCause`: slot, bring-up, fresh,
+  flip) and the writer's other events in `bleAdvertWritesByEvent`, never in the field log and never in a log line beside
+  a time, a generation or a slot: a dated "fresh" says when the user removed or blocked someone. The `bt state` line
+  shows `psm=rotating` while blinding. The advertiser's own start and stop lines still date every restart in logcat, so
+  an off-edge restart with no adapter edge is visible there; a bug report is the holder's to share.
+- **What it does not stop** (additions). The presence and Coded sets are connectable, so the stack gives them resolvable
+  private addresses: a device holding this phone's IRK (a bonded watch, headset or car) resolves every address to the
+  phone whatever the tag. `AdvertisingSetParameters.Builder.setOwnAddressType(ADDRESS_TYPE_RANDOM_NON_RESOLVABLE)` would
+  avoid that, but it is a `@SystemApi` (the API 37.2 stub), so an app cannot ask for it. The host's own RPA rides this
+  phone's SCAN_REQs and CONNECT_INDs and rotates on the host's timer, not at our edge, so a sniffer that ties it to the
+  presence set by co-location can bridge tags with it. The capabilities byte and the flags byte (`sideLive`, `aware`,
+  `gattPeers`, besides `FLAG_BLINDED`) survive each rotation unchanged: per-build or per-phone constants for hours, they
+  narrow a crowd for a scanner matching one set to the next.
+- **Old builds** (addition). A shipped build keys sightings by bytes 1–16, never by the blinded phone's real id, so it
+  scores the link to it at the floor (`neverSighted`, −90) and sheds it first at its six-link budget.

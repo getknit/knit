@@ -1727,6 +1727,9 @@ class DebugBridgeReceiver :
             .put("bleSideDeduped", snap.bluetooth.bleSideDeduped)
             .put("bleSideDropsByReason", JSONObject(snap.bluetooth.bleSideDropsByReason.mapKeys { it.key.name }))
             .put("bleBlindDropsByReason", JSONObject(snap.bluetooth.bleBlindDropsByReason.mapKeys { it.key.name }))
+            // The blinding writer (ADR 2026-11.xp6d, step 5b): rotations by cause and its other events. Counts only.
+            .put("bleRotationsByCause", JSONObject(snap.bluetooth.bleRotationsByCause.mapKeys { it.key.name }))
+            .put("bleAdvertWritesByEvent", JSONObject(snap.bluetooth.bleAdvertWritesByEvent.mapKeys { it.key.name }))
             .put("bleLinkDupSkipped", snap.bluetooth.bleLinkDupSkipped)
             .put("bleCodedSightings", snap.bluetooth.bleCodedSightings)
             .put("bleCodedDials", snap.bluetooth.bleCodedDials)

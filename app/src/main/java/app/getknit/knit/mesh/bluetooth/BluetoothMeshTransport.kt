@@ -28,7 +28,9 @@ import app.getknit.knit.fieldlog.FieldRecorder
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.mesh.BleAdvertWrite
 import app.getknit.knit.mesh.BleBlindDrop
+import app.getknit.knit.mesh.BleRotation
 import app.getknit.knit.mesh.BleSideDrop
 import app.getknit.knit.mesh.ConnectFailReason
 import app.getknit.knit.mesh.FileFeed
@@ -37,6 +39,7 @@ import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.OwnPresenceKey
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PlaneSupport
@@ -89,7 +92,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.security.SecureRandom
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -109,7 +114,9 @@ import java.util.concurrent.atomic.AtomicReference
  * - **Coordination** — BLE advertising ([BleAdvertiser]) of the 24-byte [BleAdvertPayload] (nodeId + caps +
  *   digest cue + L2CAP PSM + flags) and duty-cycled scanning ([BleScanner]); every scan hit feeds
  *   [BlePresenceTracker] (smoothed RSSI, dwell, linger). Identity is the advertised nodeId, so a rotated BLE
- *   random address is transparent.
+ *   random address is transparent. A blinding build airs a rotating tag in the id's place instead ([AdvertWriter],
+ *   [AdvertRotation], ADR 2026-11.xp6d): fresh sets, a fresh PSM and fresh side slots at every slot edge, key change and
+ *   bring-up, from one writer, never the id.
  * - **Data** — an L2CAP CoC socket per linked peer. The [PromotionPolicy] promotes a peer to a persistent link
  *   once it has dwelled long enough and is close enough (RSSI), bounded by a connection budget with
  *   weakest-first eviction. Each socket feeds the shared [FramedLink] (frames + files + store-and-forward
@@ -132,7 +139,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 @SuppressLint("MissingPermission")
 @Suppress("TooManyFunctions", "LargeClass") // a transport is inherently many small lifecycle/socket methods
-class BluetoothMeshTransport(
+class BluetoothMeshTransport internal constructor(
     context: Context,
     private val identity: Identity,
     private val scope: CoroutineScope,
@@ -174,6 +181,14 @@ class BluetoothMeshTransport(
     // shared with the Wi-Fi Aware plane and the inbound pipeline, which keep the counters and the refusal lines.
     private val claims: LinkClaims,
     private val prover: LinkProver,
+    // The blinded advert's writer (ADR 2026-11.xp6d, step 5b): `BuildConfig.BLIND_ADVERT`, the one seam, passed in so
+    // nothing under mesh/bluetooth/ reads BuildConfig for it. It writes only while the runtime switch ([blindSwitch],
+    // `SettingsStore.debugBleBlindAdvert`, on unless a debug build stored it off) is on and the controller has extended
+    // advertising (its sets may share the host's address across a restart otherwise), and only with [tagMarks], where the
+    // tag schedule's per-generation marks persist (`PresenceKeyRepository.markStore`).
+    private val blindAdvert: Boolean = false,
+    private val blindSwitch: Flow<Boolean> = flowOf(true),
+    tagMarks: TagSchedule.MarkStore? = null,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -186,13 +201,11 @@ class BluetoothMeshTransport(
     // crash/auto-restart) without a process restart. Caching the handles once — as this used to — silently
     // detached the plane from the stack after any such flap (zero scanner/advertiser registration, reach=[]
     // forever) until the app was killed.
-    private val advertiser =
-        BleAdvertiser(
-            { adapter?.bluetoothLeAdvertiser },
-            log = { Log.d(TAG, it) },
-            onStartStatus = { onPresenceEnabled(true, it) },
-            onEnableStatus = ::onPresenceEnabled,
-        )
+    //
+    // The presence and Coded sets live in [writer]'s one snapshot (ADR 2026-11.xp6d's writer, step 5b's W3): every write
+    // goes through it, and a blinding rotation replaces both with fresh instances. [newPresenceAdvertiser] and
+    // [newCodedAdvertiser] make them; their callbacks act only while their instance is the snapshot's.
+    private val writer = AdvertWriter<BleAdvertiser> { localNodeId }
 
     // When the presence set is enabled again (#112): the stack's own re-enable around a connection can be refused, and
     // only sometimes says so. [presenceAdvert] is how it last fared — off, on, refused <status> or disabled.
@@ -204,7 +217,7 @@ class BluetoothMeshTransport(
         BleScanner({ adapter?.bluetoothLeScanner }, ::onScanResult, log = { Log.d(TAG, it) }, matchesServiceUuid = gattPeers)
 
     // The Coded PHY experiment (ADR 2026-10.yvn6). [codedMode] is the mode last read from [phyMode], [codedSupported]
-    // the controller probe [bringUp] makes; [codedAdvertiser] carries the presence payload again on a Coded set, and
+    // the controller probe [bringUp] makes; [writer]'s Coded set carries the presence payload again on the Coded PHY, and
     // [codedAdvert] says how it fared (a refused start leaves it dark until the next bring-up, as the side channel's).
     @Volatile private var codedMode = CodedPhyMode.OFF
 
@@ -214,7 +227,7 @@ class BluetoothMeshTransport(
 
     @Volatile private var codedAdvert = "off"
 
-    @Volatile private var codedAdvertiser = newCodedAdvertiser(AdvertisingSetParameters.TX_POWER_HIGH)
+    @Volatile private var codedPower = AdvertisingSetParameters.TX_POWER_HIGH
 
     // A peer's Coded address (its Coded set's own random address), beside [deviceFor]'s 1M one; and when each peer was
     // last heard on Coded, which is how a link knows its peer can step down — no advert flag is spent on it.
@@ -471,7 +484,8 @@ class BluetoothMeshTransport(
     private lateinit var localNodeId: String
 
     // My advertised forms (ADR 2026-11.xp6d), one snapshot every pre-link role reads ([judge], the dial plan): replaced
-    // whole, never field by field. Clear for good in this build; the writer (`BuildConfig.BLIND_ADVERT`) will move it.
+    // whole, never field by field. Clear while the writer airs the id; a blinding rotation swaps (current, previous) as one
+    // snapshot when its fresh sets are asked to start ([rotate]).
     private val mine = AtomicReference<AdvertOrder.Mine?>(null)
 
     /** [mine], or the clear form of [localNodeId] before [start] has set it. */
@@ -511,9 +525,41 @@ class BluetoothMeshTransport(
         val generation: Int,
     )
 
-    @Volatile private var serverSocket: BluetoothServerSocket? = null
+    // The L2CAP responder's servers: the one the advert names, and while blinding the one a rotation just replaced, still
+    // accepting for a dial timeout ([PsmRotation], step 5b's W4). Guarded by its own monitor; taken inside [writer]'s
+    // lock by a rotation's install, never the other way round. [acceptJobs] holds each live server's accept loop.
+    private val servers = PsmRotation<BluetoothServerSocket>(::listenL2cap, ::closeServerSocket)
+    private val acceptJobs = ConcurrentHashMap<BluetoothServerSocket, Job>()
+    private val psmDraw = SecureRandom()
 
-    @Volatile private var currentPsm = 0
+    // The blinded advert's writer (ADR 2026-11.xp6d, step 5b). [tagSchedule] is the one per transport, so per process,
+    // never per bring-up (it caches each generation's mark); [rotation] times the slot turn, [staleLatch] asks for one key
+    // pass per generation on a stale mark. All three, [workerKey], [sessionHadKey] and [airedGeneration] are the worker's.
+    private val tagSchedule: TagSchedule? = tagMarks?.let(::TagSchedule)
+    private val rotation = AdvertRotation()
+    private val staleLatch = StaleLatch()
+    private var workerKey: OwnPresenceKey? = null
+    private var sessionHadKey = false
+    private var airedGeneration: Long? = null
+
+    // The own key as last handed in ([onOwnPresenceKey]), read by a bring-up's rotation; and the engine's own value,
+    // read synchronously just before a tag airs ([onOwnPresenceKeySource]).
+    @Volatile private var ownKey: OwnPresenceKey? = null
+
+    @Volatile private var ownKeySource: () -> OwnPresenceKey? = { null }
+
+    // The runtime switch's last value, and whether the controller has extended advertising ([probeCoded], adapter on).
+    @Volatile private var blindSwitchOn = true
+
+    @Volatile private var extAdvSupported = false
+
+    // When the last ACL edge landed: a slot rotation runs at least SETTLE_MS after one (9utz), within its hold's bound.
+    @Volatile private var lastAclEdgeAt = Long.MIN_VALUE / 2
+
+    // The slot turn's wake: a key change, a clock change, a bring-up, a flip. Its wait runs on the wall clock, elapsed-
+    // aware (a privacy bound: a tag must not outlive its slot by however long the CPU slept).
+    private val rotationWake = Channel<Unit>(Channel.CONFLATED)
+    private val wallWait = ElapsedWait(System::currentTimeMillis)
 
     // When this node last held no link: the transport's start, or the last link going down. It times both the scan's
     // lonely cadence (ADR 2026-09.w3xk) and the lonely dial (ADR 2026-09.hj4a). The scan's clock used to run from the
@@ -559,7 +605,8 @@ class BluetoothMeshTransport(
     // The last decision and why, as one string: logged on change (a new reason for Off counts), shown on the state line.
     @Volatile private var sideDecision: String = "-"
 
-    private var acceptJob: Job? = null
+    private var rotationJob: Job? = null
+    private var blindJob: Job? = null
     private var scanJob: Job? = null
     private var connectJob: Job? = null
     private var cueJob: Job? = null
@@ -688,6 +735,8 @@ class BluetoothMeshTransport(
             registerTimeChanges()
             audioMonitor.start()
             codedMode = phyMode.first() // before bringUp, so the first advert and scan already follow it
+            blindSwitchOn = blindSwitch.first() // before bringUp, so the first advert is already the switch's form
+            withContext(worker) { sessionHadKey = false } // a session's first own key completes its bring-up
             advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
             codedKeeper.start(elapsed())
             // Before bringUp, so the first advert already says it; the collector below moves it from here.
@@ -712,6 +761,7 @@ class BluetoothMeshTransport(
             diagJob = scope.launch { diagLoop() }
             advertJob = scope.launch { advertLoop() }
             silenceJob = scope.launch { silenceLoop() }
+            startWriterTurns()
             // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
             // the falling edge (audio stopped) resumes the normal cadence promptly instead of after the floor gap.
             audioJob = scope.launch { audioMonitor.contended.drop(1).collect { onAudioChange() } }
@@ -739,6 +789,22 @@ class BluetoothMeshTransport(
                 sideJob = scope.launch { sideScanLoop(it) }
             }
         }
+    }
+
+    /**
+     * The blinded advert writer's two loops (step 5b): the slot turn on the worker, and the runtime switch, each of whose
+     * flips is a rotation turn (fresh sets either way, the old form kept as `previous`).
+     */
+    private fun startWriterTurns() {
+        if (!blindAdvert || tagSchedule == null) return // a build that never blinds runs neither
+        rotationJob = scope.launch(worker) { rotationLoop() }
+        blindJob =
+            scope.launch {
+                blindSwitch.distinctUntilChanged().collect {
+                    blindSwitchOn = it
+                    scope.launch(worker) { flipIfWanted() }
+                }
+            }
     }
 
     /** The power state moved: the scan's cadence may change, and a dark screen lets a boost go at once. */
@@ -770,7 +836,7 @@ class BluetoothMeshTransport(
         phyJob?.cancel()
         advertJob?.cancel()
         silenceJob?.cancel()
-        paceJob?.cancel()
+        listOf(rotationJob, blindJob, paceJob).forEach { it?.cancel() }
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
         field.sampler(FIELD_SAMPLER, null)
@@ -857,6 +923,21 @@ class BluetoothMeshTransport(
             applyKeys(keyLimiter.offer(keys, elapsed()))
             countChurn(held, coalesced)
         }
+    }
+
+    /**
+     * This phone's own presence key (ADR 2026-11.xp6d, step 5b's W2), the engine's published value. Held at once, so a
+     * bring-up's rotation reads the newest; then, on the worker, every reservation is dropped and a change of the
+     * generation on the air restarts the advert at once ([onOwnKeyChanged]). Never logged beyond its generation.
+     */
+    override fun onOwnPresenceKey(key: OwnPresenceKey?) {
+        ownKey = key
+        scope.launch(worker) { onOwnKeyChanged(key) }
+    }
+
+    /** The engine's own value, read just before a tag airs ([TagChoice]): a fresh pair inside the feed's hop airs nothing. */
+    override fun onOwnPresenceKeySource(read: () -> OwnPresenceKey?) {
+        ownKeySource = read
     }
 
     /** Hands [listing] to the resolver (null: nothing changed), then schedules the next held listing. On the worker. */
@@ -1115,70 +1196,397 @@ class BluetoothMeshTransport(
 
     // --- Radio bring-up / teardown ---
 
+    /**
+     * The radio came up (transport start, adapter on). Blinding ([blinding]), the bring-up **is** a rotation (step 5b's
+     * W3): the writer holds every push from now until the worker has chosen the tag, opened a fresh server behind its
+     * throwaways and installed fresh presence, Coded and side sets with it ([rotate]), so no set starts clear and then
+     * switches in place. Otherwise the clear advert goes up now, as it always has.
+     */
     private fun bringUp() {
-        openServer()
         sideChannel?.bringUp() // probes the controller first, so the advert below already carries its flag
         probeCoded()
-        readvertise()
+        if (blinding()) {
+            val token = writer.up(pendingTag = true, clear = null, ::encode, ::write)
+            scope.launch(worker) { runRotation(AdvertRotation.Cause.BRINGUP, announced = false, token = token) }
+        } else {
+            upClear()
+        }
         _health.value = TransportHealth.Healthy
         wakeSide()
     }
 
-    private fun openServer() {
-        val a = adapter ?: return
-        closeServer()
-        val ss =
-            runCatching { a.listenUsingInsecureL2capChannel() }.getOrElse {
-                Log.w(TAG, "L2CAP listen failed", it)
-                return
-            }
-        serverSocket = ss
-        currentPsm = ss.psm
-        acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
-        Log.i(TAG, "L2CAP responder listening on psm $currentPsm")
+    /**
+     * The clear advert's bring-up: a fresh server (no throwaways: a clear advert names the id anyway) and the clear
+     * snapshot, its instances reused when they last carried the clear form, fresh when they carried a tag (no set ever
+     * carries two forms).
+     */
+    private fun upClear() {
+        closeServers()
+        val server = synchronized(servers) { servers.rotate(elapsed(), throwaways = 0) } ?: return
+        startAccepting(server)
+        Log.i(TAG, "L2CAP responder listening on psm ${server.psm}")
+        val reuse = writer.form()?.blinded == false
+        val presence = writer.presence()?.takeIf { reuse } ?: newPresenceAdvertiser()
+        val coded = writer.coded()?.takeIf { reuse } ?: newCodedAdvertiser().also { it.setInterval(codedInterval()) }
+        val clear = AdvertOrder.Form.clear(localNodeId)
+        writer.up(pendingTag = false, clear = AdvertWriter.Aired(presence, coded, clear, server.psm), ::encode, ::write)
+        mine.set(AdvertOrder.Mine.clear(localNodeId))
+        scope.launch(worker) {
+            aliases.setOwnTags(null, null)
+            rotation.onStopped()
+            airedGeneration = null
+        }
     }
 
-    private fun closeServer() {
-        acceptJob?.cancel()
-        acceptJob = null
-        serverSocket?.let { runCatching { it.close() } }
-        serverSocket = null
-        currentPsm = 0
+    /** A new L2CAP responder server, or null when the stack would not open one. */
+    private fun listenL2cap(): BluetoothServerSocket? {
+        val a = adapter ?: return null
+        return runCatching { a.listenUsingInsecureL2capChannel() }
+            .onFailure { Log.w(TAG, "L2CAP listen failed", it) }
+            .getOrNull()
+    }
+
+    /** Closes [ss] (a throwaway, a server whose grace ended, every server at teardown) and ends its accept loop. */
+    private fun closeServerSocket(ss: BluetoothServerSocket) {
+        acceptJobs.remove(ss)?.cancel()
+        runCatching { ss.close() } // what ends a blocked accept(): a cancel does not
+    }
+
+    private fun startAccepting(ss: BluetoothServerSocket) {
+        acceptJobs[ss] = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
+    }
+
+    /** Every server, current and in its grace, closed. */
+    private fun closeServers() {
+        synchronized(servers) { servers.closeAll() }.forEach(::closeServerSocket)
+    }
+
+    /**
+     * Closes the retired servers whose grace ended (step 5b's W4): one dial timeout after the rotation that replaced each,
+     * on the elapsed clock so a sleeping phone does not hold a server for however long it slept.
+     */
+    private fun closeRetiredServersAfterGrace() {
+        scope.launch {
+            elapsedWait.sleep(PsmRotation.GRACE_MS + SERVER_GRACE_SLACK_MS)
+            synchronized(servers) { servers.due(elapsed()) }.forEach(::closeServerSocket)
+        }
     }
 
     private fun tearDownRadio() {
-        advertiser.stop()
+        writer.down() // stops the presence and Coded sets, and makes any rotation begun before now stale
         presenceAdvert = "off"
-        stopCodedAdvert()
+        if (!codedAdvert.startsWith("dark")) codedAdvert = "off"
         // The next bring-up starts the Coded set slow; a link that drops after it makes it fast again.
         codedFast = false
-        codedAdvertiser.setInterval(BleAdvertiser.CODED_INTERVAL)
+        writer.coded()?.setInterval(BleAdvertiser.CODED_INTERVAL)
         scanner.stop()
         sideChannel?.tearDown()
-        closeServer()
+        closeServers()
+        // At adapter OFF (and before a bring-up): no reservation outlives the radio, and the slot turn has nothing on air.
+        scope.launch(worker) {
+            tagSchedule?.dropReservations()
+            rotation.onStopped()
+        }
     }
 
+    /**
+     * Pushes the advert again (a cue, a flag, the Coded set's state moved): through [writer], built from the form on the
+     * air and the PSM it names, never from the node id while blinding; nothing while a rotation's tag is pending.
+     */
     private fun readvertise() {
-        if (adapter?.isEnabled != true || currentPsm == 0 || !::localNodeId.isInitialized) return
-        // FLAG_DIALS_GATT_PEERS rides the same gate as the reader, so it never claims a read this phone cannot make:
-        // a lower-id iPhone waits to be dialed only by a phone that can find it (companion change A3).
-        val payload =
-            BleAdvertPayload.advert(
-                localNodeId,
-                Protocol.LOCAL_CAPABILITIES,
-                storeDigest.current(),
-                currentPsm,
-                sideLive = sideChannel?.live == true,
-                gattPeers = gattPeers,
-                aware = awareAdvertised,
-            )
-        advertiser.update(payload)
+        if (adapter?.isEnabled != true || !::localNodeId.isInitialized) return
+        writer.push(::encode, ::write)
+    }
+
+    /**
+     * The presence payload for [form] at [psm]. FLAG_DIALS_GATT_PEERS rides the same gate as the reader, so it never
+     * claims a read this phone cannot make: a lower-id iPhone waits to be dialed only by a phone that can find it
+     * (companion change A3). A blinded form sets FLAG_BLINDED and zeroes the digest cue. Under [writer]'s lock.
+     */
+    private fun encode(
+        form: AdvertOrder.Form,
+        psm: Int,
+    ): ByteArray =
+        BleAdvertPayload.advert(
+            form.advertised,
+            Protocol.LOCAL_CAPABILITIES,
+            storeDigest.current(),
+            psm,
+            sideLive = sideChannel?.live == true,
+            gattPeers = gattPeers,
+            aware = awareAdvertised,
+            blinded = form.blinded,
+        )
+
+    /** Writes [bytes] to [aired]'s presence set and, while the experiment runs, the same bytes to its Coded set. */
+    private fun write(
+        aired: AdvertWriter.Aired<BleAdvertiser>,
+        bytes: ByteArray,
+    ) {
+        aired.presence.update(bytes)
         // The same bytes on the Coded set, so its PSM and cue can never lag the presence advert's.
         if (codedOn() && !codedAdvert.startsWith("dark")) {
             if (codedAdvert == "off") codedAdvert = "starting"
-            codedAdvertiser.update(payload)
+            aired.coded?.update(bytes)
         } else if (!codedOn()) {
             stopCodedAdvert()
+        }
+    }
+
+    // --- The blinded advert's writer (ADR 2026-11.xp6d, step 5b) ---
+
+    /**
+     * Whether the advert should name a tag now: the build writes tags, the runtime switch is on, the tag schedule has its
+     * store, and the controller has extended advertising (read with the adapter on, [probeCoded]).
+     */
+    private fun blinding(): Boolean = blindAdvert && tagSchedule != null && blindSwitchOn && extAdvSupported
+
+    /** A presence set; its callbacks act only while it is [writer]'s current one (a late start of a retired one never). */
+    private fun newPresenceAdvertiser(): BleAdvertiser {
+        lateinit var set: BleAdvertiser
+        set =
+            BleAdvertiser(
+                { adapter?.bluetoothLeAdvertiser },
+                log = { Log.d(TAG, it) },
+                onStartStatus = { if (writer.isCurrent(set)) onPresenceEnabled(true, it) },
+                onEnableStatus = { enabled, status -> if (writer.isCurrent(set)) onPresenceEnabled(enabled, status) },
+            )
+        return set
+    }
+
+    /**
+     * One rotation of the presence advert, on the worker, never held once called (step 5b's W2–W4): the tag ([TagChoice]:
+     * the reserved one, the slot's next, or a random one, never the id), a fresh server behind its throwaways, fresh
+     * presence and Coded sets installed through [writer] (the old ones retired first), the side channel's fresh slots, and
+     * my forms swapped as one snapshot. A switch turned off makes the clear form the new one, the same way. [token] is a
+     * bring-up's; other causes begin their own. Returns whether it installed; one that did not hands its token back. A
+     * throw costs this rotation alone (the slot turn's round, or [runRotation]).
+     */
+    private fun rotate(
+        cause: AdvertRotation.Cause,
+        announced: Boolean,
+        token: Int = writer.begin(),
+    ): Boolean {
+        var installed = false
+        try {
+            if (!::localNodeId.isInitialized) return false
+            val wall = System.currentTimeMillis()
+            val old = writer.form()
+            val choice = chooseTag(announced, wall)
+            val form = choice?.form ?: AdvertOrder.Form.clear(localNodeId)
+            installed = installFresh(token, form)
+            if (!installed) {
+                // The radio went down first, or no server would open: nothing new airs, and the writer goes back to the
+                // snapshot on the air (none after a teardown: a bring-up's then stays dark until the next one).
+                metrics.onBleAdvertWrite(BleAdvertWrite.INSTALL_STALE)
+                return false
+            }
+            afterInstall(cause, old, form, choice, wall)
+            return true
+        } finally {
+            // Never a pending writer left behind: a rotation that did not install (or threw before it) hands pushes back.
+            if (!installed) writer.abandon(token)
+        }
+    }
+
+    /** What follows a rotation's install, on the worker: my forms, the resolver's own tags, the side slots, the counts. */
+    @Suppress("LongParameterList") // the rotation's facts
+    private fun afterInstall(
+        cause: AdvertRotation.Cause,
+        old: AdvertOrder.Form?,
+        form: AdvertOrder.Form,
+        choice: TagChoice.Choice?,
+        wall: Long,
+    ) {
+        val previous = old?.takeIf { it != form }
+        mine.set(AdvertOrder.Mine(form, previous))
+        aliases.setOwnTags(form.takeIf { it.blinded }?.advertised, previous?.takeIf { it.blinded }?.advertised)
+        if (form.blinded || old?.blinded == true) sideChannel?.rotate()
+        airedGeneration = choice?.generation
+        if (form.blinded) rotation.onRotated(wall) else rotation.onStopped()
+        metrics.onBleRotation(BleRotation.valueOf(cause.name))
+        if (choice?.source != TagChoice.Source.ANNOUNCED) {
+            metrics.onBleAdvertWrite(BleAdvertWrite.UNANNOUNCED)
+            if (links.isNotEmpty()) sendCurrentFormOnce()
+        }
+        // A switch flip that came while this rotation's tag was pending was refused then: it runs now.
+        if (blinding() != form.blinded) scope.launch(worker) { flipIfWanted() }
+        rotationWake.trySend(Unit)
+    }
+
+    /** The tag a rotation airs while blinding ([TagChoice]), counted; null when the advert should be clear. */
+    private fun chooseTag(
+        announced: Boolean,
+        wall: Long,
+    ): TagChoice.Choice? {
+        val schedule = tagSchedule ?: return null
+        if (!blinding()) return null
+        return TagChoice.choose(schedule, ownKey, ownKeySource(), announced, wall).also(::countChoice)
+    }
+
+    /**
+     * Installs fresh presence and Coded sets carrying [form] through [writer], with a fresh server behind its throwaways
+     * opened first (under the writer's lock, so a teardown that comes first leaves nothing open, and one that comes after
+     * closes it). False when the radio went down first or no server is open at all.
+     */
+    private fun installFresh(
+        token: Int,
+        form: AdvertOrder.Form,
+    ): Boolean {
+        var fresh: BluetoothServerSocket? = null
+        val installed =
+            writer.install(token, prepare = {
+                // The new server opens before the old sets stop, and accepts from now; the old one keeps its grace.
+                fresh = synchronized(servers) { servers.rotate(elapsed(), psmDraw.nextInt(PsmRotation.MAX_THROWAWAYS + 1)) }
+                fresh?.let(::startAccepting) ?: metrics.onBleAdvertWrite(BleAdvertWrite.PSM_KEPT)
+                val server = fresh ?: synchronized(servers) { servers.current }
+                // Before the start: a Coded set comes up on the interval a fast window wants, at the power asked for.
+                if (!codedAdvert.startsWith("dark")) codedAdvert = "off"
+                val coded = newCodedAdvertiser().also { it.setInterval(codedInterval()) }
+                server?.let { AdvertWriter.Aired(newPresenceAdvertiser(), coded, form, it.psm) }
+            }, ::encode, ::write)
+        if (fresh != null) closeRetiredServersAfterGrace()
+        return installed
+    }
+
+    /** Counts what [choice] aired, and asks the key engine for one pass per generation on a stale mark. */
+    private fun countChoice(choice: TagChoice.Choice) {
+        val event =
+            when (choice.source) {
+                TagChoice.Source.ANNOUNCED -> BleAdvertWrite.ANNOUNCED
+                TagChoice.Source.NO_KEY -> BleAdvertWrite.RANDOM_NO_KEY
+                TagChoice.Source.KEY_MOVED -> BleAdvertWrite.RANDOM_KEY_MOVED
+                TagChoice.Source.MARK_FAILED -> BleAdvertWrite.RANDOM_MARK_FAILED
+                TagChoice.Source.SLOTTED -> if (choice.resolvable) null else BleAdvertWrite.RANDOM_SCHEDULED
+            }
+        event?.let(metrics::onBleAdvertWrite)
+        // `Next.stale` and `resolvable` reach nothing aired or synced: counts only, here and in STATE.
+        val generation = choice.generation ?: return
+        if (staleLatch.offer(generation, choice.stale)) {
+            metrics.onBleAdvertWrite(BleAdvertWrite.STALE_MARK)
+            requestKeyPass()
+        }
+    }
+
+    /**
+     * The B2 seam (step 5b's W5, not built in B1): after a rotation nobody was told of (a late wake, a key change, a flip),
+     * send the current form once to each eligible link (`MeshTransport.onTagNextRecipients`' predicate, read at the send;
+     * none while the own key is null), so linked strangers do not dial the new tag. B1 sends nothing: every rotation in
+     * B1 is unannounced on the air.
+     */
+    private fun sendCurrentFormOnce() = Unit
+
+    /**
+     * The B2 seam (step 5b's W5, not built in B1): the lead announcement, [next]'s tag in `TAG_NEXT` to each eligible
+     * proven `CAP_BLIND_ADVERT` link, as a link record outside `DoorbellPolicy.rings`. B1 reserves the tag (so the
+     * rotation airs exactly it) and sends nothing.
+     */
+    @Suppress("UnusedParameter") // B2 sends it
+    private fun announceTag(next: TagSchedule.Next) = Unit
+
+    /**
+     * A stale advertiser mark asks the key engine for a pass (a MARK advance), once per generation ([staleLatch]). No
+     * seam reaches the engine from a transport yet: the engine's heal reconcile (every 15 min) reads the same persisted mark
+     * and advances it, so until a `MeshTransport` seam lands this only counts (proposed in step 5b's B1 report).
+     */
+    private fun requestKeyPass() = Unit
+
+    /** The Coded set's interval now: fast while a fast window runs ([codedFast]), else the resting one. */
+    private fun codedInterval(): Int =
+        if (codedFast) CodedPhyPolicy.advertIntervalUnits(CodedPhyDiag.tuning.fastAdvertMs) else BleAdvertiser.CODED_INTERVAL
+
+    /** The slot turn's announcement, on the worker: reserve the coming slot's tag under the key held. */
+    private fun announce() {
+        val wall = System.currentTimeMillis()
+        val key = ownKey
+        val schedule = tagSchedule
+        if (key == null || schedule == null) {
+            rotation.onAnnounced(wall) // nothing to reserve: the rotation then airs a random tag, unannounced
+            return
+        }
+        val next = runCatching { schedule.reserve(key.key, key.generation, wall) }.getOrNull()
+        rotation.onAnnounced(wall)
+        if (next != null && next.resolvable) announceTag(next)
+    }
+
+    /** Whether a slot rotation due now waits (bounded from its due time): a fast Coded window, a hunt, a dial of mine. */
+    private fun rotationHeld(): Boolean = codedFast || hunting || synchronized(lock) { inFlight.isNotEmpty() }
+
+    /** How long the last ACL edge still settles (9utz's 2.5 s), on the elapsed clock. */
+    private fun settleLeftMs(): Long = (lastAclEdgeAt + AdvertReassertPolicy.SETTLE_MS - elapsed()).coerceAtLeast(0L)
+
+    /**
+     * The slot turn (step 5b's W4), on the worker: [AdvertRotation] says when and [RotationTurn] waits (on the wall clock
+     * through an elapsed-aware wait, a privacy bound; with nothing on the air, for a wake alone), woken by a key change, a
+     * clock change, a bring-up or a flip. Every pass suspends, and a rotation that does not install never repeats at once.
+     */
+    private suspend fun rotationLoop() {
+        RotationTurn(
+            rotation,
+            rotationWake,
+            wallWait,
+            wallMs = System::currentTimeMillis,
+            holding = ::rotationHeld,
+            settleLeftMs = ::settleLeftMs,
+            holdMs = { CodedPhyDiag.tuning.fastHoldMs },
+            radioUp = writer::isUp,
+            announce = ::announce,
+            rotate = { step ->
+                if (step.held) metrics.onBleAdvertWrite(BleAdvertWrite.HELD)
+                if (step.bounded) metrics.onBleAdvertWrite(BleAdvertWrite.HOLD_BOUNDED)
+                rotate(AdvertRotation.Cause.SLOT, step.announced)
+            },
+            onFailure = { Log.w(TAG, "bt advert rotation failed: ${it.javaClass.simpleName}") },
+        ).run()
+    }
+
+    /**
+     * The own key changed (a [onOwnPresenceKey] call), on the worker: every reservation goes, and a change of the
+     * generation on the air restarts the advert at once, never held ([AdvertRotation.causeOfKeyChange]).
+     */
+    private fun onOwnKeyChanged(key: OwnPresenceKey?) {
+        val held = workerKey
+        workerKey = key
+        if (key == held) return
+        tagSchedule?.dropReservations()
+        rotation.dropAnnouncement()
+        val cause = AdvertRotation.causeOfKeyChange(held, key, airedGeneration, sessionHadKey)
+        if (key != null) sessionHadKey = true
+        if (cause != null && airsTagNow()) rotate(cause, announced = false)
+    }
+
+    /** Whether the radio is up with a blinded form on the air and no rotation's tag pending (one would read the new key). */
+    private fun airsTagNow(): Boolean = writer.isUp() && !writer.pending() && writer.form()?.blinded == true
+
+    /**
+     * The runtime switch moved [blinding]: a rotation to the wanted form, fresh sets either way. Not a key change, so it
+     * stays out of an ACL edge's settle (9utz) and comes back once it ends.
+     */
+    private fun flipIfWanted() {
+        if (!writer.isUp() || writer.pending() || !::localNodeId.isInitialized) return
+        val on = writer.form()?.blinded == true
+        if (blinding() == on) return
+        val settle = settleLeftMs()
+        if (settle > 0) {
+            scope.launch(worker) {
+                elapsedWait.sleep(settle)
+                flipIfWanted()
+            }
+            return
+        }
+        rotate(AdvertRotation.Cause.FLIP, announced = false)
+    }
+
+    /** [rotate] for a bring-up, from the worker. */
+    private fun runRotation(
+        cause: AdvertRotation.Cause,
+        announced: Boolean,
+        token: Int,
+    ) {
+        runCatching { rotate(cause, announced, token) }.onFailure {
+            // Never the id: the snapshot left from before the bring-up is stopped and stays so (the writer's stale rule).
+            Log.w(TAG, "bt advert bring-up rotation failed: ${it.javaClass.simpleName}")
+            writer.abandon(token)
         }
     }
 
@@ -1215,15 +1623,15 @@ class BluetoothMeshTransport(
             val linked = links.isNotEmpty()
             val side = sideChannel
             if (advertKeeper.isDue(now, linked)) {
-                advertiser.reassert()
-                if (codedUp()) codedAdvertiser.reassert()
+                writer.presence()?.reassert()
+                if (codedUp()) writer.coded()?.reassert()
                 side?.reassert()
                 advertKeeper.reasserted(now)
                 codedKeeper.reasserted(now)
             }
             if (codedKeeper.isDue(now, linked)) {
                 if (codedUp()) {
-                    codedAdvertiser.reassert()
+                    writer.coded()?.reassert()
                 } else if (codedAdvert == CODED_DARK_INTERNAL) {
                     retryCodedStart()
                 }
@@ -1258,6 +1666,7 @@ class BluetoothMeshTransport(
 
     /** A connection opened or closed: the stack re-enabled its sets around it, and that enable may have been refused. */
     private fun advertEdge() {
+        lastAclEdgeAt = elapsed()
         advertKeeper.onConnectionEdge(elapsed())
         advertWake.trySend(Unit)
     }
@@ -1270,21 +1679,31 @@ class BluetoothMeshTransport(
     /** Reads the controller's Coded and extended-advertising support (adapter on), and clears a refused advert. */
     private fun probeCoded() {
         val a = adapter
-        codedSupported =
-            a != null && a.isEnabled && runCatching { a.isLeCodedPhySupported && a.isLeExtendedAdvertisingSupported }.getOrDefault(false)
+        // Extended advertising also gates the blinded writer: without it a controller's sets may share the host's address
+        // across a restart, which would tie one tag to the next (ADR 2026-11.xp6d). False while the adapter is off.
+        val extended = a != null && a.isEnabled && runCatching { a.isLeExtendedAdvertisingSupported }.getOrDefault(false)
+        // Sticky for the process: the controller's feature does not change, and one transient false read at a bring-up
+        // must not leave a whole session airing its id.
+        if (extended) extAdvSupported = true
+        codedSupported = extended && runCatching { a.isLeCodedPhySupported }.getOrDefault(false)
         if (codedAdvert.startsWith("dark")) codedAdvert = "off"
         codedStartRetries = 0
     }
 
-    private fun newCodedAdvertiser(txPower: Int): BleAdvertiser =
-        BleAdvertiser(
-            { adapter?.bluetoothLeAdvertiser },
-            log = { Log.d(TAG, "coded $it") },
-            params = BleAdvertiser.codedParams(txPower),
-            onStartStatus = ::onCodedAdvertStatus,
-            onEnableStatus = ::onCodedEnabled,
-            onIntervalRefused = ::onCodedIntervalRefused,
-        )
+    /** A Coded set at the power asked for ([codedPower]); its callbacks act only while it is [writer]'s current one. */
+    private fun newCodedAdvertiser(): BleAdvertiser {
+        lateinit var set: BleAdvertiser
+        set =
+            BleAdvertiser(
+                { adapter?.bluetoothLeAdvertiser },
+                log = { Log.d(TAG, "coded $it") },
+                params = BleAdvertiser.codedParams(codedPower),
+                onStartStatus = { if (writer.isCurrent(set)) onCodedAdvertStatus(it) },
+                onEnableStatus = { enabled, status -> if (writer.isCurrent(set)) onCodedEnabled(enabled, status) },
+                onIntervalRefused = { interval, status -> if (writer.isCurrent(set)) onCodedIntervalRefused(interval, status) },
+            )
+        return set
+    }
 
     /** Whether the Coded set is up: live, or refused an enable that [codedKeeper] is retrying. */
     private fun codedUp(): Boolean = codedAdvert == "live" || codedAdvert.startsWith("refused")
@@ -1367,7 +1786,7 @@ class BluetoothMeshTransport(
         val now = elapsed()
         val tuning = CodedPhyDiag.tuning
         val fast = codedOn() && codedPace.fast(now)
-        codedAdvertiser.setInterval(
+        writer.coded()?.setInterval(
             if (fast) CodedPhyPolicy.advertIntervalUnits(tuning.fastAdvertMs) else BleAdvertiser.CODED_INTERVAL,
         )
         if (fast != codedFast) {
@@ -1432,7 +1851,7 @@ class BluetoothMeshTransport(
     }
 
     private fun stopCodedAdvert() {
-        codedAdvertiser.stop()
+        writer.coded()?.stop()
         if (!codedAdvert.startsWith("dark")) codedAdvert = "off"
     }
 
@@ -1445,12 +1864,13 @@ class BluetoothMeshTransport(
                 else -> return false
             }
         scope.launch {
-            stopCodedAdvert()
             codedTxPower = level
-            codedAdvertiser = newCodedAdvertiser(power)
+            codedPower = power
             codedFast = false
-            applyCodedPace() // before the start, so a fast window carries onto the new set
-            readvertise()
+            if (!codedAdvert.startsWith("dark")) codedAdvert = "off"
+            // A fresh Coded set through the one writer, under the form on the air; a fast window moves it in place after.
+            writer.replaceCoded(newCodedAdvertiser(), ::encode, ::write)
+            applyCodedPace()
         }
         return true
     }
@@ -3034,12 +3454,19 @@ class BluetoothMeshTransport(
         key: String,
     ): LinkHandshake.Dialed {
         val dialed = NodeId.toBytes(form.advertised)
+        val told = toldForm()
         return if (form.blinded) {
-            LinkHandshake.dialTag(link.input, link.output, prover, dialed)
+            LinkHandshake.dialTag(link.input, link.output, prover, dialed, told = told)
         } else {
-            LinkHandshake.dial(link.input, link.output, prover, key, addressed = dialed)
+            LinkHandshake.dial(link.input, link.output, prover, key, told = told, addressed = dialed)
         }
     }
+
+    /**
+     * The HELLO's `t`: the tag I air now while blinding (ADR 2026-11.xp6d, "The handshake"), so a peer judges order on the
+     * form it could have heard; null while I air my id (a clear HELLO carries `a`, never `t`).
+     */
+    private fun toldForm(): ByteArray? = mine().current.takeIf { it.blinded }?.let { NodeId.toBytes(it.advertised) }
 
     /**
      * Why a tag dial whose handshake ended as [dialed] is not a link, or null when it is one. Nothing here names, counts
@@ -3182,10 +3609,16 @@ class BluetoothMeshTransport(
         fun finish(): Boolean = settled.compareAndSet(false, true).also { job.cancel() }
     }
 
+    // Per server: a rotation's retired server keeps accepting through its grace (step 5b's W4); closing a server is what
+    // ends its loop (a blocked accept() throws), and a closed one is forgotten.
     private fun acceptLoop(ss: BluetoothServerSocket) {
-        while (scope.isActive && serverSocket === ss) {
-            val socket = runCatching { ss.accept() }.getOrNull() ?: break
-            scope.launch(Dispatchers.IO) { superviseAccepted(socket) }
+        try {
+            while (scope.isActive) {
+                val socket = runCatching { ss.accept() }.getOrNull() ?: break
+                scope.launch(Dispatchers.IO) { superviseAccepted(socket) }
+            }
+        } finally {
+            acceptJobs.remove(ss)
         }
     }
 
@@ -3243,7 +3676,7 @@ class BluetoothMeshTransport(
         // before registering), our PROOF behind it when the dialer offers one, then read the dialer's PROOF. We read
         // first, then reply: no mutual block. Its own watchdog: the HELLO's was cancelled at the read.
         val answerCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
-        val outcome = runCatching { LinkHandshake.answer(link.input, link.output, prover, hello) }
+        val outcome = runCatching { LinkHandshake.answer(link.input, link.output, prover, hello, told = toldForm()) }
         val inTime = answerCut.finish()
         val answered =
             outcome.getOrNull()?.takeIf { inTime }
@@ -4068,6 +4501,7 @@ class BluetoothMeshTransport(
                 intent: Intent,
             ) {
                 scope.launch(worker) { aliases.slide() }
+                rotationWake.trySend(Unit) // the slot turn's edge moved with the clock
             }
         }
 
@@ -4272,7 +4706,7 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
-                "alone=${aloneForMs()}ms psm=$currentPsm advert=$presenceAdvert " +
+                "alone=${aloneForMs()}ms psm=${if (writer.form()?.blinded == true) "rotating" else writer.psm()} advert=$presenceAdvert " +
                 "doorbells=${doorbells.size} rings=${rings.get()}" +
                 (if (tuners.isNotEmpty()) " tuners=${tuners.size}" else "") +
                 " arms=${aclArmsAttached.get()}/${aclArms.get()} orphans=${orphans.watching} skipped=${orphans.armsSkipped} " +
@@ -4354,6 +4788,9 @@ class BluetoothMeshTransport(
 
         // [codedKeeper] has no net of its own: the presence turns are it, so its period never comes due.
         private const val NO_NET_MS = Long.MAX_VALUE / 2
+
+        // A retired L2CAP server's close comes this long after its grace (PsmRotation.GRACE_MS), so the due check finds it.
+        private const val SERVER_GRACE_SLACK_MS = 1_000L
 
         // A Coded start the stack failed internally (ADVERTISE_FAILED_INTERNAL_ERROR) is retried this many times per
         // bring-up, on [codedKeeper]'s doubling wait; [CODED_RETRYING] marks a retry in flight, so its failure is quiet.

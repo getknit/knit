@@ -248,4 +248,51 @@ class SideCarouselTest {
         tick(1)
         assertEquals(v1, carousel.version)
     }
+
+    @Test
+    fun aRotationTakesEveryPageOffAndDropsEveryStartedFrame() {
+        // ADR 2026-11.xp6d's writer (step 5b): nothing on the air at the edge, and no part of a frame begun before it,
+        // reaches the fresh sets. Frames never started stay queued.
+        val b1 = part()
+        val b2 = part()
+        val b3 = part()
+        val c = part()
+        val d = part()
+        offer(listOf(b1, b2, b3)) // a three-part frame: its parts share one fragment id
+        offer(listOf(c))
+        tick()
+        assertEquals("the one-part frame first, then the first part of the three", listOf(c, b1), carousel.pages())
+        offer(listOf(d)) // queued behind the started frame, never started
+        val v = carousel.version
+        assertEquals(2, carousel.rotate())
+        assertTrue(carousel.version > v)
+        assertEquals(listOf(Drop.ROTATED), drops)
+        assertEquals(listOf<ByteArray?>(null, null), carousel.pages())
+        tick()
+        assertEquals("only the unstarted frame airs after the edge", listOf(d, null), carousel.pages())
+    }
+
+    @Test
+    fun noFragmentedFrameAirsOnBothSidesOfARotation() {
+        val parts = List(4) { part() }
+        offer(parts)
+        val before = HashSet<ByteArray>()
+        tick()
+        carousel.pages().filterNotNull().forEach(before::add)
+        carousel.rotate()
+        val after = HashSet<ByteArray>()
+        repeat(10) {
+            tick(config.dwellMs + config.lingerMs)
+            carousel.pages().filterNotNull().forEach(after::add)
+        }
+        assertTrue("parts aired before the edge", before.isNotEmpty())
+        assertTrue("no part of the frame airs after it", after.none { a -> parts.any { it === a } })
+    }
+
+    @Test
+    fun aRotationWithNothingOnTheAirDropsNothing() {
+        assertEquals(0, carousel.rotate())
+        tick()
+        assertEquals(0, carousel.onAir())
+    }
 }

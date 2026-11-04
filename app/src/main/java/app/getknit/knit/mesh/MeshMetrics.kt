@@ -282,6 +282,64 @@ enum class BleBlindDrop {
 }
 
 /**
+ * Why a blinding phone's presence advert rotated (ADR 2026-11.xp6d's writer, step 5b's W4): a slot edge, a bring-up (the
+ * session's first own key completing one among them), a change of the own key's generation (a removal or a block, a
+ * weekly or clock advance: the feed cannot tell them apart), or the writer switching on or off. Counts only, read in STATE:
+ * never logged beside a time, a generation or a slot, since a dated "fresh" says when the user removed or blocked someone.
+ * Surfaced in [MeshMetrics.Snapshot.Bluetooth.bleRotationsByCause].
+ */
+enum class BleRotation { SLOT, BRINGUP, FRESH, FLIP }
+
+/**
+ * What the blinding advert writer did besides rotating (ADR 2026-11.xp6d's writer, step 5b). Counts only. Surfaced in
+ * [MeshMetrics.Snapshot.Bluetooth.bleAdvertWritesByEvent].
+ */
+enum class BleAdvertWrite {
+    /** A rotation aired the tag its announcement reserved (`TagSchedule.take`). */
+    ANNOUNCED,
+
+    /** A rotation aired a tag nobody was told of: a late wake, a key change, a bring-up, a flip. */
+    UNANNOUNCED,
+
+    /** A random prefixed tag aired because the transport held no own key yet. */
+    RANDOM_NO_KEY,
+
+    /** A random tag aired because the engine's generation was not the one the transport held (a fresh pair in the hop). */
+    RANDOM_KEY_MOVED,
+
+    /** A random tag aired because the mark store threw (a demoted generation, a storage fault): never the id. */
+    RANDOM_MARK_FAILED,
+
+    /** A slotted answer that was random anyway (the clock behind the mark, or the slot's restarts spent). */
+    RANDOM_SCHEDULED,
+
+    /** A stale mark asked the key engine for a pass (once per generation). */
+    STALE_MARK,
+
+    /** A slot rotation waited on a hold (a fast Coded window, a hunt, a dial) or an ACL edge's settle. */
+    HELD,
+
+    /** A held slot rotation ran at its bound with the hold still on. */
+    HOLD_BOUNDED,
+
+    /** A payload the writer refused because a blinded snapshot's bytes 1–16 were not its tag. */
+    CLEAR_REFUSED,
+
+    /** A rotation's install found the radio gone (its sets retired unstarted, its server closed). */
+    INSTALL_STALE,
+
+    /** A rotation's fresh L2CAP server would not open: the advert kept the old PSM. */
+    PSM_KEPT,
+
+    /**
+     * A started side-channel frame (a fragmented one, part of it already aired) dropped at a rotation: its next part on a
+     * fresh slot address would link that address to the old one by its fragment id. Here, not in [BleSideDrop], because
+     * that one reaches the field log, where a sampled count would date the rotation.
+     */
+    SIDE_FRAME_DROPPED,
+}
+
+/**
  * Why the BLE side channel (`mesh/bluetooth/BleSideChannel`, the extended-advertising page carrier) discarded
  * a frame. Surfaced in [MeshMetrics.Snapshot.Bluetooth.bleSideDropsByReason]: STALE/OVERFLOW climbing means the pages
  * cannot keep up with what is offered (two slots at a ~12 s dwell is the whole capacity); FRAG_TIMEOUT means
@@ -454,6 +512,8 @@ class MeshMetrics {
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
     private val bleBlindDrops: Map<BleBlindDrop, AtomicLong> = BleBlindDrop.entries.associateWith { AtomicLong() }
+    private val bleRotations: Map<BleRotation, AtomicLong> = BleRotation.entries.associateWith { AtomicLong() }
+    private val bleAdvertWrites: Map<BleAdvertWrite, AtomicLong> = BleAdvertWrite.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
     private val bleCodedSightings = AtomicLong()
     private val bleCodedDials = AtomicLong()
@@ -1234,6 +1294,16 @@ class MeshMetrics {
         bleBlindDrops.getValue(reason).incrementAndGet()
     }
 
+    /** A blinding phone's advert rotated — see [BleRotation]. A count, never a dated event. */
+    fun onBleRotation(cause: BleRotation) {
+        bleRotations.getValue(cause).incrementAndGet()
+    }
+
+    /** The blinding advert writer did something worth counting — see [BleAdvertWrite]. */
+    fun onBleAdvertWrite(event: BleAdvertWrite) {
+        bleAdvertWrites.getValue(event).incrementAndGet()
+    }
+
     /** The side channel discarded a frame — see [BleSideDrop] for how to read each reason. */
     fun onBleSideDropped(reason: BleSideDrop) {
         bleSideDrops.getValue(reason).incrementAndGet()
@@ -1860,6 +1930,8 @@ class MeshMetrics {
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
             bleBlindDropsByReason = bleBlindDrops.mapValues { it.value.get() }.filterValues { it > 0 },
+            bleRotationsByCause = bleRotations.mapValues { it.value.get() }.filterValues { it > 0 },
+            bleAdvertWritesByEvent = bleAdvertWrites.mapValues { it.value.get() }.filterValues { it > 0 },
         )
     }
 
@@ -2184,6 +2256,10 @@ class MeshMetrics {
             val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
             // ADR 2026-11.xp6d: blinded adverts, GATT payloads and TAG_NEXT records dropped, and held-link refusals.
             val bleBlindDropsByReason: Map<BleBlindDrop, Long> = emptyMap(),
+            // ADR 2026-11.xp6d's writer: rotations by cause and the writer's other events. STATE only, never the field log
+            // (a sampled count dates a fresh rotation, and through it a removal or a block).
+            val bleRotationsByCause: Map<BleRotation, Long> = emptyMap(),
+            val bleAdvertWritesByEvent: Map<BleAdvertWrite, Long> = emptyMap(),
         )
 
         /** Wi-Fi Aware: serves, owed links, refused accepts, the message plane, and bulk-preference timeouts. */

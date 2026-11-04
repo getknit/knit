@@ -509,4 +509,15 @@ class SettingsStoreTest {
             store.removeSpoolTicket("other.example")
             assertTrue(store.spoolTickets.first().isEmpty())
         }
+
+    @Test
+    fun `the blinded advert switch reads off until set in a debug build`() =
+        runTest {
+            val store = newStore()
+            assertEquals("off until step 6 flips DEBUG_BLIND_ADVERT_DEFAULT", false, store.debugBleBlindAdvert.first())
+            store.setDebugBleBlindAdvert(true)
+            assertEquals(true, store.debugBleBlindAdvert.first())
+            store.setDebugBleBlindAdvert(false)
+            assertEquals(false, store.debugBleBlindAdvert.first())
+        }
 }

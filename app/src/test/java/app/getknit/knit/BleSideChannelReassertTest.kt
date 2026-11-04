@@ -40,7 +40,8 @@ import kotlin.random.Random
 /**
  * The side channel's page sets ride the presence set's re-assert (ADR 2026-10.9utz, amendment 2026-10-09; #143): a
  * slot with a page on the air is enabled again on a turn, a refused enable comes back on the doubling wait, and nothing
- * raises a slot the carousel took down, one sitting out a refused start, or a dark channel. A start's reaction runs late,
+ * raises a slot the carousel took down, one sitting out a refused start, or a dark channel. A rotation (ADR 2026-11.xp6d's
+ * writer) retires every slot for a fresh set and never re-airs the page that was on the air. A start's reaction runs late,
  * on the channel's scope: a standard test dispatcher holds it until [runCurrent], so the window between the binder
  * callback and the reaction is open here as it is on `Dispatchers.Default`. Robolectric for the framework's real
  * `AdvertiseData` / `AdvertisingSetParameters` builders; the adapter, the advertiser and the sets are mocks.
@@ -264,5 +265,34 @@ class BleSideChannelReassertTest {
     private companion object {
         // Past any retry or settle: what a keeper with no net and nothing refused reports.
         const val LONG_WAIT = 24 * 60 * 60_000L
+    }
+
+    @Test
+    fun aRotationRetiresEverySlotAndNeverReairsThePageThatWasOnTheAir() {
+        // ADR 2026-11.xp6d's writer (step 5b): fresh sets on new addresses, the old ones stopped, the old page not aired.
+        val set = liveSlot()
+        val oldCallback = callbacks.last()
+        side.rotate()
+        verify(exactly = 1) { radio.stopAdvertisingSet(oldCallback) }
+        assertEquals("the page on the air at the edge is not restarted on a fresh set", 1, starts.size)
+        assertEquals(0, side.reassert())
+        // The old set's late word lands nowhere: no re-enable is asked of it, and no refusal wakes the transport.
+        oldCallback.onAdvertisingEnabled(set, true, ADVERTISE_FAILED_INTERNAL_ERROR)
+        assertEquals(0, refusedWakes)
+        // A new frame airs on a fresh instance, with a callback of its own.
+        offerOne("CCCCCCCCCCCCCCCCCCCCCC")
+        assertEquals(2, starts.size)
+        assertTrue("a fresh set, not the old instance restarted", callbacks.last() !== oldCallback)
+    }
+
+    @Test
+    fun aLateStartOfARetiredSlotIsStoppedAndDoesNotSitTheNewSlotOut() {
+        offerOne()
+        val oldCallback = callbacks.last()
+        side.rotate() // the start was still in flight
+        oldCallback.onAdvertisingSetStarted(null, 0, ADVERTISE_FAILED_TOO_MANY_ADVERTISERS)
+        runCurrent()
+        offerOne("DDDDDDDDDDDDDDDDDDDDDD")
+        assertEquals("the fresh slot was not sat out by the old one's refusal", 2, starts.size)
     }
 }

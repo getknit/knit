@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.SystemClock
+import app.getknit.knit.mesh.BleAdvertWrite
 import app.getknit.knit.mesh.BleSideDrop
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.SeenSet
@@ -109,12 +110,14 @@ class BleSideChannel internal constructor(
 
     private val carousel =
         SideCarousel(now, config) { drop ->
-            metrics.onBleSideDropped(
-                when (drop) {
-                    SideCarousel.Drop.STALE -> BleSideDrop.STALE
-                    SideCarousel.Drop.OVERFLOW -> BleSideDrop.OVERFLOW
-                },
-            )
+            when (drop) {
+                SideCarousel.Drop.STALE -> metrics.onBleSideDropped(BleSideDrop.STALE)
+
+                SideCarousel.Drop.OVERFLOW -> metrics.onBleSideDropped(BleSideDrop.OVERFLOW)
+
+                // A rotation's count stays in STATE (never the field log, which would date it).
+                SideCarousel.Drop.ROTATED -> metrics.onBleAdvertWrite(BleAdvertWrite.SIDE_FRAME_DROPPED)
+            }
         }
 
     // Each slot's refused-enable retries (ADR 2026-10.9utz, amendment 2026-10-09). No net of their own: the slots ride
@@ -122,17 +125,34 @@ class BleSideChannel internal constructor(
     private val keepers: List<AdvertReassertPolicy.Keeper> =
         List(config.slots) { AdvertReassertPolicy.Keeper(alonePeriodMs = NO_NET_MS, linkedPeriodMs = NO_NET_MS) }
 
-    private val slots: List<BleAdvertiser> =
-        List(config.slots) { i ->
+    // One set per slot, replaced by a fresh instance at each [rotate] (a new address, and a callback a late start of the
+    // old one cannot reach). Written under [lock]; a slot's callback reads its own entry without it ([isSlot]).
+    private val slots: Array<BleAdvertiser> = Array(config.slots) { newSlot(it) }
+
+    /**
+     * A page set for slot [index]: its callbacks act only while it is still that slot's set, so a retired set's late word
+     * never lands on the set that replaced it (and [rotate] moves [generation], which drops a reaction already launched).
+     */
+    private fun newSlot(index: Int): BleAdvertiser {
+        lateinit var set: BleAdvertiser
+        set =
             BleAdvertiser(
                 advertiserProvider = { adapter?.bluetoothLeAdvertiser },
-                log = { log("slot$i: $it") },
+                log = { log("slot$index: $it") },
                 serviceUuid = BleConstants.SIDE_SERVICE_UUID,
                 params = BleAdvertiser.sideParams(),
-                onStartStatus = { status -> onSlotStatus(i, status) },
-                onEnableStatus = { enabled, status -> onSlotEnabled(i, enabled, status) },
+                onStartStatus = { status -> if (isSlot(index, set)) onSlotStatus(index, status) },
+                onEnableStatus = { enabled, status -> if (isSlot(index, set)) onSlotEnabled(index, enabled, status) },
             )
-        }
+        return set
+    }
+
+    // A racy read on a binder thread, on purpose: taking [lock] inside a slot's callback could deadlock (the order
+    // everywhere else is [lock], then the slot). A stale answer either way is what [react]'s generation check settles.
+    private fun isSlot(
+        index: Int,
+        set: BleAdvertiser,
+    ): Boolean = slots[index] === set
 
     // What each set was last told to air (by reference — the carousel hands back the same part objects).
     private val pushed = arrayOfNulls<ByteArray>(config.slots)
@@ -208,6 +228,29 @@ class BleSideChannel internal constructor(
             lastPage.clear()
         }
         log("ble-side bring-up extAdv=$extended maxAdvData=$maxData page=$page live=$live")
+    }
+
+    /**
+     * The presence advert rotated (ADR 2026-11.xp6d's writer, step 5b's W4): each slot gets a **fresh** set (a new
+     * address; a stop and restart of the old instance would also reuse its callback, which a late start of the old set
+     * reaches), the old sets retire, and the page each slot had on the air is not aired again ([SideCarousel.rotate]): a
+     * side address heard beside one tag and then beside the next, or a page relayed on both sides of the edge, would link
+     * the two tags for any scanner logging addresses (the bluetooth and security design passes). The queue stays, and the
+     * carousel fills the fresh sets from it at once. A slot's start reaction from before the rotation is dropped (the
+     * generation moves). Called by the transport's one advert writer, on its worker, never under the writer's lock.
+     */
+    fun rotate() {
+        synchronized(lock) {
+            generation++
+            for (i in slots.indices) {
+                slots[i].retire()
+                slots[i] = newSlot(i)
+            }
+            val dropped = carousel.rotate()
+            pushed.fill(null)
+            if (dropped > 0) log("ble-side rotate dropped=$dropped")
+            if (live) applyLocked() else rescheduleLocked()
+        }
     }
 
     /** Radio down (adapter off, transport stop): every set and the scan go down; the seen window is kept. */

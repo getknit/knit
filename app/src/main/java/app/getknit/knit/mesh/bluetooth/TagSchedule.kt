@@ -129,6 +129,21 @@ internal class TagSchedule(
         return next.takeIf { slot == BlindTag.slotOf(wallMs) }
     }
 
+    /**
+     * Drops every reservation, unaired (their marks stay written, so nothing repeats). The wiring calls it on the worker
+     * step that receives a new own key and at adapter OFF, so a tag reserved under a key that has since gone is never
+     * taken.
+     */
+    fun dropReservations() {
+        reserved.clear()
+    }
+
+    /**
+     * A fresh random prefixed tag that no contact resolves, with no mark written: what the writer airs while it holds no
+     * key, when a mark write failed, or when the key it would air under is no longer the engine's current one.
+     */
+    fun random(): Next = Next(randomTag(), resolvable = false, stale = false)
+
     private fun choose(
         key: ByteArray,
         generation: Long,

@@ -296,4 +296,42 @@ class BleAdvertiserTest {
         advertiser.reassert()
         assertTrue(written.isEmpty())
     }
+
+    @Test
+    fun aRetiredInstanceIgnoresEveryLaterCall() {
+        // ADR 2026-11.xp6d's writer: a caller still holding a set a rotation replaced can never put a form back on the air.
+        advertiser.update(byteArrayOf(1))
+        val set = liveSet()
+        advertiser.retire()
+        assertTrue(advertiser.isRetired)
+        verify(exactly = 1) { radio.stopAdvertisingSet(callbacks.last()) }
+        advertiser.update(byteArrayOf(2))
+        assertFalse(advertiser.reassert())
+        advertiser.setInterval(BleAdvertiser.CODED_INTERVAL / 2)
+        assertEquals("no cold restart of a retired set", 1, starts.size)
+        verify(exactly = 0) { set.setAdvertisingData(any()) }
+        verify(exactly = 0) { set.enableAdvertising(any(), any(), any()) }
+    }
+
+    @Test
+    fun aStartThatLandsAfterRetireIsStoppedAndReportsNothing() {
+        val reported = mutableListOf<Int>()
+        val retiring =
+            BleAdvertiser(
+                { radio.takeIf { advertiserPresent } },
+                log = {},
+                onStartStatus = { reported += it },
+                onEnableStatus = { enabled, status -> enables += enabled to status },
+            )
+        retiring.update(byteArrayOf(1))
+        retiring.retire() // the rotation replaced it while its start was in flight
+        val late = mockk<AdvertisingSet>(relaxed = true)
+        callbacks.last().onAdvertisingSetStarted(late, 0, ADVERTISE_SUCCESS)
+        callbacks.last().onAdvertisingEnabled(late, true, ADVERTISE_SUCCESS)
+        assertTrue("the late start reaches no caller", reported.isEmpty())
+        assertTrue(enables.isEmpty())
+        verify(exactly = 2) { radio.stopAdvertisingSet(callbacks.last()) } // at retire, and again for the late start
+        assertFalse(retiring.reassert())
+        verify(exactly = 0) { late.enableAdvertising(any(), any(), any()) }
+    }
 }

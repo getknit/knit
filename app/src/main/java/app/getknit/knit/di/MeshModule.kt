@@ -18,6 +18,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.AwareSwitch
@@ -285,6 +286,11 @@ val meshModule =
                                     awareWontRun = awareWontRunHere,
                                     claims = get(),
                                     prover = get(),
+                                    // The blinded advert's writer (ADR 2026-11.xp6d, step 5b): the build flag is its one seam,
+                                    // the runtime switch and the controller's extended advertising the transport's own gates.
+                                    blindAdvert = BuildConfig.BLIND_ADVERT,
+                                    blindSwitch = get<SettingsStore>().debugBleBlindAdvert,
+                                    tagMarks = get<PresenceKeyRepository>().markStore(get()),
                                 )
                             bluetooth = bt
                             add(bt)

@@ -67,7 +67,7 @@ internal class SideCarousel(
     }
 
     /** Why a queued frame was discarded (surfaced as metrics by the channel). */
-    enum class Drop { STALE, OVERFLOW }
+    enum class Drop { STALE, OVERFLOW, ROTATED }
 
     private class Frame(
         val kind: Kind,
@@ -237,6 +237,32 @@ internal class SideCarousel(
 
     @Synchronized
     fun onAir(): Int = slots.count { it.frame != null }
+
+    /**
+     * The presence advert rotated (ADR 2026-11.xp6d's writer, step 5b's W4): every slot is emptied and the page each
+     * held is not aired again, and every frame already started is dropped from the queue too ([Drop.ROTATED], counted).
+     * The channel raises fresh sets, each on a new address. Re-airing on one of them the page that was on the air just
+     * before the edge would tie the two slot addresses, and through them the two presence tags, together (a relayed
+     * page's bytes are the same on both sides); so would part k + 1 of a fragmented frame after part k aired on the old
+     * address, since every part carries the same fragment id. The frames that were never started stay queued; the flood
+     * and the links carry the rest. Cost: at most one page dwell and one fragmented frame per slot per rotation. Returns
+     * how many pages it took off.
+     */
+    @Synchronized
+    fun rotate(): Int {
+        var dropped = 0
+        for (s in slots) {
+            if (s.frame == null) continue
+            s.frame = null
+            s.bytes = null
+            dropped++
+        }
+        val started = queue.filter { it.started }
+        queue.removeAll(started.toSet())
+        repeat(started.size) { onDrop(Drop.ROTATED) }
+        version++
+        return dropped
+    }
 
     /** Forgets the queue and empties every slot (radio down); the seen window is kept on purpose. */
     @Synchronized
