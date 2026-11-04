@@ -138,6 +138,10 @@ interface PeerDao {
     @Query("SELECT nodeId FROM peers WHERE deviceTag IN (:tags)")
     suspend fun nodeIdsWithDeviceTags(tags: List<String>): List<String>
 
+    /** The live form of [nodeIdsWithDeviceTags]: re-queried on every `peers` write, so a tag pinned later is included. */
+    @Query("SELECT nodeId FROM peers WHERE deviceTag IN (:tags)")
+    fun observeNodeIdsWithDeviceTags(tags: List<String>): Flow<List<String>>
+
     /** The peers whose stored profile carries every bit of [bits] (the link-proof seed, ADR 2026-11.264w). */
     @Query("SELECT nodeId FROM peers WHERE (capabilities & :bits) = :bits")
     suspend fun withCapabilities(bits: Long): List<String>

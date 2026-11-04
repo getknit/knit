@@ -43,7 +43,8 @@ internal fun directContactIds(
 
 /**
  * [directContactIds] over the stored facts: [read] queries every source afresh (the key engine decides on it, never on
- * a cached value), and [observe] emits whenever the set changes (the engine re-checks on it).
+ * a cached value); [sets] recomputes the set on every emission of every input, a change signal; [observe] is that set
+ * deduplicated, a value to act on.
  *
  * Both first mark, once per install, the commons posters a build before ADR 2026-11.xp6d accepted without a mark
  * ([SettingsStore.backfillCommonsAccepts]), from [commons]' members, which every build binds whether or not it shows
@@ -75,9 +76,16 @@ class DirectContacts(
         )
     }
 
-    /** The set as it changes. A device-tag block is read afresh on each change of the other inputs. */
+    /**
+     * The set, recomputed on every emission of every input and never deduplicated: one value after every write to a store
+     * [read] reads (Room re-queries after each invalidation, the settings flows emit on every write), so the last value
+     * follows the last write. What a reader that acts on "something changed" collects (the key engine's contacts kick,
+     * `MeshManager.watchPresenceKeys`), comparing it with what it last read itself. Each value comes from each input's
+     * last emission (`combine`), so while one input's query lags a value can be stale; the input's late emission
+     * recomputes it. A device-tag block is read afresh on each recomputation.
+     */
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun observe(): Flow<Set<String>> =
+    fun sets(): Flow<Set<String>> =
         flow {
             ensureBackfilled()
             emit(identity.nodeId())
@@ -104,7 +112,17 @@ class DirectContacts(
                     me = me,
                 )
             }
-        }.distinctUntilChanged()
+        }
+
+    /**
+     * [sets], deduplicated: it emits when its own computed value changes, not once per store change. A set that starts
+     * and ends while one input's query lags is never computed, and a value equal to the one this flow last emitted is
+     * dropped even when another reader of the stores saw a different set in between (knit-next #285: a contact added and
+     * removed inside a lag left the key engine waiting for a heal). For a level-triggered reader that acts on the latest
+     * value (the Bluetooth plane's key listing, `MeshManager.feedPresenceKeys`), where late is only late; never a change
+     * signal; that is [sets].
+     */
+    fun observe(): Flow<Set<String>> = sets().distinctUntilChanged()
 
     private data class SettingsInputs(
         val accepted: Set<String>,

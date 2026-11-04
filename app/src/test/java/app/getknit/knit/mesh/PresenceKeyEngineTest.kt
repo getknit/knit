@@ -793,7 +793,7 @@ class PresenceKeyEngineTest {
 
             rig.engine.beginSession()
             assertNull("the last session's key is gone at the start", rig.engine.ownKey.value)
-            assertNull(rig.engine.departed.value)
+            assertNull(rig.engine.departed.value ?: rig.engine.lastRead.value)
             val seen = ownKeysSeen(rig.engine)
             rig.direct = setOf("alice") // bob removed while stopped
             rig.engine.start()
@@ -801,7 +801,7 @@ class PresenceKeyEngineTest {
             val fresh = rig.currentKey()
             assertNotEquals(before, fresh)
             assertEquals("null, then the fresh key and nothing between", listOf(null, fresh), seen)
-            assertEquals(setOf("bob"), rig.engine.departed.value)
+            assertEquals(setOf("bob") to setOf("alice"), rig.engine.departed.value to rig.engine.lastRead.value)
         }
 
     /** A pass of an earlier session still inside the lock when the next session begins publishes nothing after it. */

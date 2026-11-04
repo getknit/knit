@@ -182,6 +182,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -1363,10 +1364,11 @@ class MeshManager(
 
     /**
      * The presence-key engine's session (ADR 2026-11.xp6d): armed once the own-profile seed — which runs a restore's
-     * [finishRestore], whose clamp and link-owed resets must land before the first mint — is done, then re-run on every
-     * change of the direct contacts and on every session root change (a confirmation, an adopted replacement, the answer
-     * to our reset). Link-ups and drops reach it from [neighborPass], a profile's capabilities from the pipeline, and the
-     * heal basket runs it as the backstop.
+     * [finishRestore], whose clamp and link-owed resets must land before the first mint — is done, then re-run whenever
+     * the direct contacts the stores hold differ from those its last completed pass acted on (`DirectContacts.sets`
+     * against [PresenceKeyEngine.lastRead], re-compared when either moves) and on every session root change (a
+     * confirmation, an adopted replacement, the answer to our reset). Link-ups and drops reach it from [neighborPass], a
+     * profile's capabilities from the pipeline, and the heal basket runs it as the backstop.
      */
     private fun watchPresenceKeys(
         session: CoroutineScope,
@@ -1377,14 +1379,20 @@ class MeshManager(
         val failed: (Exception) -> Unit = { Log.w(TAG, "presence keys failed: ${it.message}") }
         // Subscribed before the engine arms, so no change lands between its first pass and the collectors (a trigger
         // before [PresenceKeyEngine.start] is a no-op that the first pass covers).
-        // The contacts collector only kicks, and a loop of its own runs the pass. Run inline, a pass held on the engine
-        // lock or a link send kept the collector busy, and `DirectContacts.observe` (a combine, then distinct) folded a
-        // contact added and removed meanwhile into the value it last saw: no pass followed the removal, while another
-        // trigger's pass had already put the contact in the key's audience, so the fresh pair waited for a heal (mesh
-        // lab, PresenceKeyFeedLabTest, about 1 run in 200). A conflated kick is never lost and needs no distinct value:
-        // every pass reads the direct contacts afresh, so one pass after the last change is all the change needs.
+        // The contacts trigger watches the stores, not a deduplicated value (knit-next #285, step 5b): it compares the
+        // latest `DirectContacts.sets` value (recomputed on every input emission) with the set the engine's last completed
+        // pass acted on (`lastRead`, moved by every trigger's pass, null after one that threw), and kicks while they
+        // differ. Both sides re-compare when either moves, so a pass that ends behind the stores (it read a contact
+        // removed while it ran), one that failed, and an emission that raced a read each kick again. `observe()` was the
+        // trigger once: its dedup compared with its own last emission, so a contact added and removed while one input's
+        // query lagged left the fresh pair waiting for a heal. The kick is conflated and a loop of its own runs the pass,
+        // so the collector is never busy and one pass after the last change is all a burst costs.
         val contactKicks = Channel<Unit>(Channel.CONFLATED)
-        session.launch { contacts.observe().collect { contactKicks.trySend(Unit) } }
+        session.launch {
+            combine(contacts.sets(), engine.lastRead) { set, read -> set != read }
+                .filter { it }
+                .collect { contactKicks.trySend(Unit) }
+        }
         session.launch { contactKicks.consumeEach { runRound(failed) { engine.reconcile("contacts") } } }
         session.launch { ratchet.rootChanges.collect { runRound(failed) { engine.reconcile("root") } } }
         session.launch {
@@ -1435,10 +1443,12 @@ class MeshManager(
      * engine's published value ([PresenceKeyEngine.ownKey]), never a Room read: it changes only with the current
      * generation, and is null until the session's first settle. The block list (node ids, and the ids whose pinned device
      * tag is blocked) is kept in memory for [hearsTagNext], which the transport calls at each send from its own worker;
-     * it is re-read when either block setting changes and when any peer's device tag does, so a peer pinned later under
-     * a blocked tag is refused from then on. A failed own-key round costs that value alone; a block-list input that
-     * fails leaves the list unread, so no one is sent `TAG_NEXT` until the next session. Never logs a key.
+     * the tag half is a `peers` query keyed on the blocked tags (re-keyed when they change, re-run on a `peers` write), so
+     * a peer pinned later under a blocked tag is refused from then on. A failed own-key round costs that value alone; a
+     * block-list input that fails leaves the list unread, so no one is sent `TAG_NEXT` until the next session. Never logs
+     * a key.
      */
+    @OptIn(ExperimentalCoroutinesApi::class) // flatMapLatest: the device-tag query re-keyed on each change of the blocked tags
     private fun feedOwnPresenceKey(session: CoroutineScope) {
         presenceKeys?.let { engine ->
             session.launch {
@@ -1448,20 +1458,15 @@ class MeshManager(
             }
         }
         session.launch {
-            // Every peer's (node id, device tag), so a tag pinned after its block is resolved too; distinct, so a presence
-            // or name write to the table costs no re-read.
-            val tagged =
-                peers
-                    .observePeers()
-                    .map { rows -> rows.mapNotNullTo(HashSet()) { row -> row.deviceTag?.let { row.nodeId to it } } }
-                    .distinctUntilChanged()
-            combine(settings.blockedNodeIds, settings.blockedDeviceTags, tagged) { ids, tags, pinned ->
-                ids + pinned.filter { (_, tag) -> tag in tags }.map { (id, _) -> id }
-            }.catch {
-                // An input that fails ends the list: no TAG_NEXT to anyone until the next session reads it again.
-                Log.w(TAG, "tag-next block list failed: ${it.message}")
-                tagNextBlocked.value = null
-            }.collect { tagNextBlocked.value = it }
+            // The ids pinned under a blocked device tag, by a query keyed on those tags alone: re-run on a `peers` write,
+            // so a peer pinned later under a blocked tag is refused, and re-keyed when the blocked tags change.
+            val tagged = settings.blockedDeviceTags.distinctUntilChanged().flatMapLatest { peers.observeNodeIdsWithDeviceTags(it) }
+            combine(settings.blockedNodeIds, tagged) { ids, byTag -> ids + byTag }
+                .catch {
+                    // An input that fails ends the list: no TAG_NEXT to anyone until the next session reads it again.
+                    Log.w(TAG, "tag-next block list failed: ${it.message}")
+                    tagNextBlocked.value = null
+                }.collect { tagNextBlocked.value = it }
         }
     }
 

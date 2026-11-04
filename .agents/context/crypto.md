@@ -357,16 +357,22 @@ LoRa plane (2026-09.ggq4).
   generation and key bytes so a mark, a grow or a peer key never restarts the advertiser; never a Room read (a block
   made while stopped would air under the leaver's key); null when a settle cannot reach nothing-due; read synchronously
   through `onOwnPresenceKeySource` where a tag is about to air. `TAG_NEXT` recipients are `MeshManager.hearsTagNext`: not
-  blocked (node ids, and device tags re-read on any peer's tag change), not `departed` (published before the key), in
-  memory, no until both are read. No mark refusal names a generation. `watchPresenceKeys` turns each direct-contact
-  change into a conflated kick that a loop of its own runs as a pass, never a pass inside the `DirectContacts.observe`
-  collector: a busy collector let combine and distinct fold an add and a removal away, and the fresh pair waited for a
-  heal. The mark write (`markStore`) is never inside a
+  blocked (node ids, and the ids a `peers` query keyed on the blocked device tags names), not `departed` (published
+  before the key), in memory, no until both are read. No mark refusal names a generation. The contacts trigger
+  (`watchPresenceKeys`) combines `DirectContacts.sets` (recomputed on every input emission, never deduplicated) with
+  `PresenceKeyEngine.lastRead` (a flow: the set the last completed pass of any trigger acted on, set only after it
+  settled and published, null after a pass that threw) and kicks while they differ, so a pass that ended behind the
+  stores or failed kicks again; the kick is conflated and a loop of its own runs it. Never `DirectContacts.observe` as a trigger: its dedup
+  compares with its own last emission, so a contact added and removed while one input's query lagged (a root pass
+  meanwhile put her in the key's audience) left the fresh pair waiting for a heal (#285). `observe` is for the
+  level-triggered key listing alone. The mark write (`markStore`) is never inside a
   transaction, commits only after an in-transaction `PRAGMA synchronous` reads FULL, and only while its generation is
   the newest activated (xp6d's step 5b key-side amendment). Never a key, a tag or a root tag in a log line beside a peer
   id. Regression: `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `PresenceKeyRepositoryTest`, `InboundPipelineTest`'s
   presence-key cases, `GoldenVectorTest`'s `messageContentPresenceKey*`, `CompositeMeshTransportTest`'s own-key case,
-  `PresenceKeyLabTest`, `PresenceKeyFeedLabTest` (the key handed to the radio and the `TAG_NEXT` predicate).
+  `PresenceKeyLabTest`, `PresenceKeyFeedLabTest` (the key handed to the radio and the `TAG_NEXT` predicate),
+  `DirectContactsObserveFoldTest` and `MeshManagerTest`'s `aRemovalTheContactsFlowNeverSawStillRunsAPassThatRotates` (the
+  contacts trigger).
 
 ## Adding an entry
 

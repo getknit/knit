@@ -87,8 +87,10 @@ lines.
   ("The presence key"). The presence key goes to direct contacts only: the user's own accepts, verified peers and DM
   threads they wrote in, less blocked node ids and blocked device tags — never group co-members, and never a commons
   poster, whose accept is marked as the commons' in the same edit. A path that accepts on the user's behalf calls
-  `accept` (which clears the mark); one that accepts for someone else's act must not. Regression: `DirectContactsTest`,
-  `SettingsStoreTest`, `MeshManagerTest`'s commons-member cases.
+  `accept` (which clears the mark); one that accepts for someone else's act must not. `DirectContacts.sets` is the change
+  signal (recomputed on every input emission, never deduplicated); `observe` is `sets` deduplicated, a value for a
+  level-triggered reader, and may drop a set another reader saw (the key engine's trigger, `crypto.md`). Regression:
+  `DirectContactsTest`, `DirectContactsObserveFoldTest`, `SettingsStoreTest`, `MeshManagerTest`'s commons-member cases.
 - **When touching blocking — `SettingsStore.blockedNodeIds` / `blockedDeviceTags` / `block` / `unblock`,
   `data/settings/BlockListStore`, `mesh/BlockListWatch`, `InboundPipeline.rewantOwedFaces` /
   `settleBlockMovedMidProfile`, `InboundPipeline.onBlocked` / `reapplyHeldProfile` / `caughtByDeviceTag` /

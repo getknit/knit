@@ -185,6 +185,22 @@ class PresenceKeyEngine(
     // The direct contacts the last pass saw, to tell who left; null before the session's first pass.
     private var lastDirect: Set<String>? = null
 
+    private val lastReadState = MutableStateFlow<Set<String>?>(null)
+
+    /**
+     * The direct contacts the last completed pass acted on, or null: before this session's first pass, and after a pass
+     * that threw. What a trigger that watches the stores (`MeshManager.watchPresenceKeys`, on `DirectContacts.sets`)
+     * compares the latest set with: equal needs no pass, anything else kicks one. Every trigger's pass moves it, so it is
+     * the engine's own baseline, never a flow's last emission.
+     *
+     * Set only once the pass has settled and published ([publish], under the epoch check), never at the read: a set
+     * recomputed after the read and before the pass ends must still compare unequal with what the pass then records (a
+     * contact removed while a pass that read her runs, which hands her the key), and a pass that throws after its read
+     * must not record a set it never acted on. An unsettled pass still records its read: another pass would settle no
+     * further. A flow, so the watcher re-compares whenever it moves, not only when the stores do.
+     */
+    val lastRead: StateFlow<Set<String>?> = lastReadState.asStateFlow()
+
     @Volatile
     private var started = false
 
@@ -233,13 +249,15 @@ class PresenceKeyEngine(
     fun beginSession() {
         synchronized(published) {
             sessionEpoch.incrementAndGet()
+            lastReadState.value = null
             ownKeyState.value = null
             departedState.value = null
         }
     }
 
     /**
-     * Publishes [rows]' departures, then their current key, unless [beginSession] ran since the pass read [epoch]. The
+     * Publishes [rows]' departures, then their current key, then [contacts] as [lastRead], unless [beginSession] ran since
+     * the pass read [epoch]. The
      * departures go first, so a `TAG_NEXT` the advertiser sends right after a fresh key reaches it never reads the set
      * from before the rotation. A settle that did not reach [PresenceKeyPolicy.Due.None] ([settled] false: a fresh pair
      * or a first mint whose generation could not be minted) publishes no key at all (the advertiser airs random tags)
@@ -262,6 +280,7 @@ class PresenceKeyEngine(
                         ?.takeIf { settled }
                         ?.let { OwnPresenceKey(it.generation, it.key) }
             }
+            lastReadState.value = contacts
         }
     }
 
@@ -291,6 +310,7 @@ class PresenceKeyEngine(
         lock.withLock {
             resetSentThisLink.clear()
             lastDirect = null
+            lastReadState.value = null
         }
         started = true
         reconcile("start")
@@ -360,7 +380,17 @@ class PresenceKeyEngine(
      */
     suspend fun reconcile(cause: String) {
         if (!started) return
-        val outgoing = lock.withLock { if (started) pass(cause) else emptyList() }
+        val outgoing =
+            lock.withLock {
+                if (!started) return@withLock emptyList()
+                // A pass that read and did not act (it threw): nothing it read stands, so the watcher's next set kicks again.
+                var acted = false
+                try {
+                    pass(cause).also { acted = true }
+                } finally {
+                    if (!acted) lastReadState.value = null
+                }
+            }
         // One peer's failed send never loses the others', and forgets what that peer was sent, so the next pass resends.
         val failed = outgoing.filter { (peer, frame) -> runCatchingUnlessCancelled { send(peer, frame) }.isFailure }.map { it.first.nodeId }
         if (failed.isNotEmpty()) onSendFailed(failed)

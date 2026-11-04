@@ -32,6 +32,7 @@ import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerAdvertised
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.pin.PinEntity
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
@@ -45,6 +46,7 @@ import app.getknit.knit.mesh.crypto.LoraDirectSeal
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.crypto.b64
@@ -123,9 +125,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -153,6 +157,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Drives the **real** [MeshManager] outbound send-and-originate workflow — `sendChat` and the origination
@@ -4484,14 +4489,23 @@ class MeshManagerTest {
     private fun Rig.stubTagNext(inputs: TagNextInputs = TagNextInputs()): TagNextInputs {
         coEvery { settings.blockedNodeIds } returns inputs.blocked
         coEvery { settings.blockedDeviceTags } returns inputs.tags
-        coEvery { peers.observePeers() } returns inputs.pinned
+        // The keyed query over the drivable table: the ids pinned under the asked tags, re-run on every table change.
+        every { peers.observeNodeIdsWithDeviceTags(any()) } answers {
+            val tags = firstArg<Set<String>>()
+            inputs.pinned.map { rows -> rows.filter { it.deviceTag in tags }.mapTo(HashSet()) { it.nodeId } }
+        }
         stubProfileState(MutableStateFlow(0L))
         coEvery { groups.observeGroups() } returns flowOf(emptyList())
         return inputs
     }
 
-    private suspend fun awaitTrue(what: () -> Boolean) =
-        withContext(Dispatchers.Default) { withTimeout(AWAIT_MS) { while (!what()) delay(POLL_MS) } }
+    private suspend fun awaitTrue(
+        message: String = "the condition never held",
+        what: suspend () -> Boolean,
+    ) {
+        val held = withContext(Dispatchers.Default) { withTimeoutOrNull(AWAIT_MS) { while (!what()) delay(POLL_MS) } } != null
+        assertTrue(message, held)
+    }
 
     /**
      * The radio's `TAG_NEXT` predicate is the manager's: no until the session has read the block list, then never to a
@@ -4534,18 +4548,14 @@ class MeshManagerTest {
             val secondPass = CompletableDeferred<Unit>()
             val session = AtomicInteger()
             val contacts = mockk<DirectContacts>()
+            every { contacts.sets() } returns MutableStateFlow(emptySet())
             every { contacts.observe() } returns MutableStateFlow(emptySet())
             coEvery { contacts.read() } coAnswers {
                 if (session.get() > 1) secondPass.await()
                 emptySet()
             }
             val rig = Rig(backgroundScope, directContacts = contacts)
-            val last = AtomicLong()
-            coEvery { rig.settings.presenceKeyLastGeneration() } answers { last.get() }
-            coEvery { rig.settings.setPresenceKeyLastGeneration(any()) } answers {
-                last.set(firstArg())
-                emptyPreferences()
-            }
+            rig.stubKeyGenerations()
             rig.stubTagNext(TagNextInputs(tags = MutableSharedFlow<Set<String>>(replay = 1).apply { tryEmit(emptySet()) }))
             session.set(1)
             rig.manager.start()
@@ -4583,6 +4593,142 @@ class MeshManagerTest {
             assertFalse(hears("mallory"))
             rig.manager.stop()
         }
+
+    /**
+     * A manager running a real key engine over a direct-contact set the test drives: `sets()` (the trigger's stream),
+     * `read()` (what a pass reads, holdable just after it read) and a mint that can be made to fail once.
+     */
+    private inner class KeyTriggerRig(
+        scope: CoroutineScope,
+    ) {
+        val roots = MutableSharedFlow<String>(extraBufferCapacity = 8)
+        val direct = AtomicReference(setOf("bob"))
+        val sets = MutableSharedFlow<Set<String>>(replay = 1).apply { tryEmit(setOf("bob")) }
+        val failNextMint = AtomicBoolean()
+
+        /** Armed: the next read() completes the first once it has read, and returns only when the second completes. */
+        @Volatile
+        var holdNextRead: Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>? = null
+        private val contacts =
+            mockk<DirectContacts>().also { contacts ->
+                every { contacts.sets() } returns sets
+                every { contacts.observe() } returns sets.distinctUntilChanged()
+                coEvery { contacts.read() } coAnswers {
+                    val read = direct.get()
+                    holdNextRead?.let { (reached, release) ->
+                        holdNextRead = null
+                        reached.complete(Unit)
+                        release.await()
+                    }
+                    read
+                }
+            }
+        val rig = Rig(scope, rootChanges = roots, directContacts = contacts)
+        private val keys = PresenceKeyRepository(rig.db)
+
+        /** Starts the manager and returns the generation of the first key it hands the radio. */
+        suspend fun start(): Long {
+            rig.stubKeyGenerations(failNextMint)
+            rig.stubTagNext()
+            rig.manager.start()
+            awaitTrue { rig.transport.ownKeysHanded.any { it != null } }
+            return checkNotNull(rig.transport.ownKeysHanded.last { it != null }).generation
+        }
+
+        suspend fun audience(): Set<String>? = PresenceKeyPolicy.keysOf(keys.ownKeys()).current?.audience
+
+        /** A root change runs a pass that reads {bob, carol}: she joins the key's audience. The contacts flow never saw her. */
+        suspend fun carolJoinsByARootPass() {
+            direct.set(setOf("bob", "carol"))
+            roots.emit("carol")
+        }
+
+        /** Waits for a key newer than [first] at the radio, and checks the fresh pair names bob alone. */
+        suspend fun awaitFreshPairWithoutCarol(
+            first: Long,
+            why: String,
+        ) {
+            awaitTrue(why) {
+                rig.transport.ownKeysHanded
+                    .lastOrNull { it != null }
+                    ?.generation
+                    ?.let { it > first } == true
+            }
+            assertEquals("the fresh pair names bob alone", setOf("bob"), audience())
+            rig.manager.stop()
+        }
+    }
+
+    /**
+     * The removal's trigger compares with what the engine last acted on, never with a deduplicated flow's own last value
+     * (knit-next #285, step 5b). The engine reads {bob, carol} through another trigger while the contacts flow, its query
+     * lagging, never computed carol: its next set after the removal is {bob}, equal to `DirectContacts.observe`'s last
+     * emission, which would drop it. `sets()` emits it, it differs from the engine's last read, and a pass runs.
+     */
+    @Test
+    fun aRemovalTheContactsFlowNeverSawStillRunsAPassThatRotates() =
+        runTest(UnconfinedTestDispatcher()) {
+            val k = KeyTriggerRig(backgroundScope)
+            val first = k.start()
+            k.carolJoinsByARootPass()
+            awaitTrue { k.audience()?.contains("carol") == true }
+
+            k.direct.set(setOf("bob"))
+            k.sets.emit(setOf("bob"))
+            k.awaitFreshPairWithoutCarol(first, "no pass followed a removal the contacts flow's dedup would drop")
+        }
+
+    /**
+     * A removal while a pass that read the contact runs (security's race): the pass reads {bob, carol}, carol is removed
+     * and `sets()` emits {bob}, equal to what the last completed pass acted on, then the pass ends and hands carol the
+     * key. The engine records what it acted on only when the pass ends, and the watcher re-compares then: a pass follows.
+     */
+    @Test
+    fun aRemovalWhileAPassThatReadTheContactRunsIsFollowedByAPass() =
+        runTest(UnconfinedTestDispatcher()) {
+            val k = KeyTriggerRig(backgroundScope)
+            val first = k.start()
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            k.holdNextRead = reached to release
+            k.carolJoinsByARootPass()
+            awaitTrue { reached.isCompleted } // the root pass has read {bob, carol} and has not acted yet
+
+            k.direct.set(setOf("bob"))
+            k.sets.emit(setOf("bob"))
+            release.complete(Unit)
+            k.awaitFreshPairWithoutCarol(first, "a removal that raced a pass's read waited for a heal")
+        }
+
+    /** A pass that throws after its read records nothing it read: the trigger's next set kicks again. */
+    @Test
+    fun aPassThatThrowsAfterItsReadIsFollowedByAnother() =
+        runTest(UnconfinedTestDispatcher()) {
+            val k = KeyTriggerRig(backgroundScope)
+            val first = k.start()
+            k.carolJoinsByARootPass()
+            awaitTrue { k.audience()?.contains("carol") == true }
+
+            k.failNextMint.set(true)
+            k.direct.set(setOf("bob"))
+            k.sets.emit(setOf("bob")) // the removal's pass reads {bob}, then its fresh pair's mint throws
+            awaitTrue { !k.failNextMint.get() }
+            k.sets.emit(setOf("bob")) // a later write that recomputes the same set
+            k.awaitFreshPairWithoutCarol(first, "a removal whose pass threw waited for a heal")
+        }
+
+    /** The settings a key engine mints by: its last generation, read back as written; [failNext] fails one read. */
+    private fun Rig.stubKeyGenerations(failNext: AtomicBoolean = AtomicBoolean()) {
+        val last = AtomicLong()
+        coEvery { settings.presenceKeyLastGeneration() } answers {
+            check(!failNext.getAndSet(false)) { "the store refused the read" }
+            last.get()
+        }
+        coEvery { settings.setPresenceKeyLastGeneration(any()) } answers {
+            last.set(firstArg())
+            emptyPreferences()
+        }
+    }
 
     // --- The block list's presentation hooks (ADR 2026-11.nsbf, #249) ---
 

@@ -250,6 +250,19 @@ class PeerRepository(
         if (tags.isEmpty()) emptyList() else tags.toList().chunked(SQL_CHUNK).flatMap { dao.nodeIdsWithDeviceTags(it) }
 
     /**
+     * The live form of [nodeIdsWithDeviceTags], as a set, deduplicated: the query runs keyed on [tags] alone, so a write
+     * to an unrelated row costs a narrow re-query and no emission (the `TAG_NEXT` block list, `MeshManager`).
+     */
+    fun observeNodeIdsWithDeviceTags(tags: Set<String>): Flow<Set<String>> =
+        if (tags.isEmpty()) {
+            flowOf(emptySet())
+        } else {
+            combine(tags.toList().chunked(SQL_CHUNK).map { dao.observeNodeIdsWithDeviceTags(it) }) { chunks ->
+                chunks.flatMapTo(HashSet()) { it }
+            }.distinctUntilChanged()
+        }
+
+    /**
      * Bounds the `peers` table (any valid inbound profile upserts a row, uncapped) against a Sybil profile
      * flood: evicts the oldest-by-`updatedAt` **unverified** peers beyond [cap] that aren't [protected]
      * (verified, an accepted/known conversation id, or a peer the user has messaged — group ids / the Nearby id

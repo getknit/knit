@@ -11,6 +11,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -85,6 +88,25 @@ class PeerRepositoryTest : RoomDbTest() {
             assertNotNull(dao.findByNodeId("new"))
             assertNotNull(dao.findByNodeId("verified"))
             assertNotNull(dao.findByNodeId("known"))
+        }
+
+    /**
+     * The `TAG_NEXT` block list's tag half (ADR 2026-11.xp6d, step 5b): the ids pinned under the asked tags, live, so a
+     * peer pinned later under a blocked tag joins it; nothing for no tags.
+     */
+    @Test
+    fun `observeNodeIdsWithDeviceTags follows a peer pinned later under an asked tag`() =
+        runTest {
+            val dao = db.peerDao()
+            dao.upsert(PeerEntity(nodeId = "a", deviceTag = "t1"))
+            dao.upsert(PeerEntity(nodeId = "b", deviceTag = "t2"))
+            val repo = repo()
+            val flow = repo.observeNodeIdsWithDeviceTags(setOf("t1"))
+            withContext(Dispatchers.Default) { withTimeout(WAIT_MS) { flow.first { it == setOf("a") } } }
+
+            dao.upsert(PeerEntity(nodeId = "c", deviceTag = "t1"))
+            withContext(Dispatchers.Default) { withTimeout(WAIT_MS) { flow.first { it == setOf("a", "c") } } }
+            assertEquals(emptySet<String>(), repo.observeNodeIdsWithDeviceTags(emptySet()).first())
         }
 
     @Test
@@ -310,5 +332,8 @@ class PeerRepositoryTest : RoomDbTest() {
         const val HOUR = 60 * MINUTE
         const val DAY = 24 * HOUR
         const val NOW = 1_800_000_000_000L
+
+        /** How long a live query may take to answer a write before the test calls it lost. */
+        const val WAIT_MS = 10_000L
     }
 }
