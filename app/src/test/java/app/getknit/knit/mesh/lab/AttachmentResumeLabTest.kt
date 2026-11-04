@@ -85,6 +85,7 @@ class AttachmentResumeLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, alice to carol)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
             lab.awaitAcquainted(alice, carol)
             awaitLinkUpHooks(bob to alice, carol to alice)
 
@@ -139,6 +140,7 @@ class AttachmentResumeLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
             awaitLinkUpHooks(bob to alice)
 
             alice.transport.streamFiles(bob.transport, untilBytes = FIRST_CUT)
@@ -183,6 +185,7 @@ class AttachmentResumeLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
             awaitLinkUpHooks(bob to alice)
 
             alice.transport.corruptFiles = true

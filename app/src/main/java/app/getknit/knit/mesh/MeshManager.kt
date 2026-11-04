@@ -322,6 +322,9 @@ class MeshManager(
     // How long a blob round's first ask has before every other neighbour is asked ([BlobExchange.FIRST_ASK_GRACE_MS],
     // ADR 2026-10.f7gg). Injectable for `mesh/lab`, whose scenarios must not hang an assertion on a wall-clock race.
     firstAskGraceMs: Long = BlobExchange.FIRST_ASK_GRACE_MS,
+    // The carrier budget ([CARRIER_BLOB_BUDGET_BYTES]): the bytes held for others, request-only blobs included (#282).
+    // Injectable for `mesh/lab`, which fills a small one with a few pictures.
+    private val carrierBlobBudgetBytes: Long = CARRIER_BLOB_BUDGET_BYTES,
     // How long a send of ours with nothing else to defer on holds for its proof round
     // ([AttachmentDeferPolicy.PROOF_WAIT_MS], ADR 2026-10.vy27). Injectable for `mesh/lab`, whose wall-clock hold a stall
     // must not outlast.
@@ -516,6 +519,7 @@ class MeshManager(
             onPeerHolds = { hash, peer, plane -> blobs.recordHolder(hash, peer, plane, clock()) },
             log = { Log.d(TAG, it) },
             metered = blobMetered,
+            echoGate = { echoGate(it) },
         )
 
     /**
@@ -785,6 +789,7 @@ class MeshManager(
     // stable field the deferred lambdas read at call time).
     private val pipeline: InboundPipeline =
         InboundPipeline(
+            carrierBlobBudgetBytes = carrierBlobBudgetBytes,
             transport = transport,
             messages = messages,
             receipts = receipts,
@@ -2410,7 +2415,127 @@ class MeshManager(
             ) = blobStore.ingest(aHash, mime, bytes)
 
             override suspend fun refused(aHash: String): Boolean = refusedImage(aHash)
+
+            // The radios' row fold (#282): a message request's attachment waits for its acceptance on the spool too.
+            override suspend fun accepted(conversationId: String): Boolean =
+                AcceptanceSnapshot.of(settings, peers, messages, identity.nodeId()).isAccepted(conversationId)
+
+            override suspend fun held(
+                aHash: String,
+                conversationId: String,
+            ): Boolean = requestHeld(aHash, conversationId)
         }
+
+    /**
+     * Whether our own pull of attachment [hash] waits for a message request's acceptance (#282, [RequestHold], ADR
+     * 2026-11.qu98): every row naming it is somebody else's, untapped, in a conversation not accepted — and no live
+     * custody frame naming it is carried for somebody else (a third party's DM, a group naming a third party), whose copy
+     * goes by the carrier rules (#282's B3/B4). With no row naming it, it is held when the [conversationId] the caller
+     * found it in — a spool scope's DM peer or group — is not accepted, or, with no scope either, when every custody frame
+     * naming it is a request's to us alone ([carriedVerdict]). A fresh [AcceptanceSnapshot] each time. What the spool's
+     * attachment pass ([scopeBlobs]) and the echo ([echoGate]) ask; the re-arm folds the same rows in one pass
+     * ([rewantMissingBlobsLocked]). `internal` only so `MeshManagerTest` can pin the verdict without a link.
+     */
+    internal suspend fun requestHeld(
+        hash: String,
+        conversationId: String? = null,
+    ): Boolean {
+        val me = identity.nodeId()
+        val rows = messages.attachmentFetchRows(hash, me)
+        if (rows.isEmpty() && conversationId == null) return carriedVerdict(hash, me) ?: false
+        if (rows.any { it.own || it.approved }) return false
+        val acceptance = AcceptanceSnapshot.of(settings, peers, messages, me)
+        if (rows.isEmpty()) return !acceptance.isAccepted(checkNotNull(conversationId))
+        if (!RequestHold.held(rows, acceptance.acceptedAmong(rows.map { it.conversationId })::contains)) return false
+        return carriedVerdict(hash, me) ?: true
+    }
+
+    /**
+     * Whether the live custody frames naming [hash] hold it as a message request's (#282, [RequestHold.carriedHeld]):
+     * every one is addressed to us alone — a DM to us, or a group naming only us and its sender, us counted by its roster,
+     * its departed list or our group row — from a conversation not accepted, its sender counted as one of the group's. Null
+     * when no frame names it. One custody read of the one hash; a snapshot only when a frame is ours.
+     */
+    private suspend fun carriedVerdict(
+        hash: String,
+        me: String,
+    ): Boolean? {
+        val named = forwardStore.carriedAttachmentsNaming(hash, clock())
+        if (named.isEmpty()) return null
+        if (named.any { it.recipientId != me && it.groupId == null }) return false
+        val ours = if (named.any { it.groupId != null }) groups.active().mapTo(HashSet()) { it.groupId } else emptySet()
+        val frames = named.map { if (it.groupId in ours) it.copy(member = true) else it }
+        val acceptance = AcceptanceSnapshot.of(settings, peers, messages, me)
+        val accepted = HashSet<Pair<String, String>>()
+        frames.forEach { f ->
+            val conversation = RequestHold.conversationOf(f, me) ?: return@forEach
+            val sender = checkNotNull(f.senderId)
+            if (acceptance.isAccepted(conversation, sender)) accepted += conversation to sender
+        }
+        return RequestHold.carriedHeld(frames, me) { conversation, sender -> (conversation to sender) in accepted }
+    }
+
+    /**
+     * What a neighbour's ask for [hash], which we lack, may make of it ([BlobExchange.echoGate], #282): HELD for a message
+     * request's bytes ([requestHeld]) and for the photo only unaccepted groups decide (#282's B5), PHOTO — wanted under
+     * [FileIntake.MAX_AVATAR_BYTES] — for any other photo a group of ours decides, OPEN otherwise. The verdict is kept per
+     * hash for [BlobExchange.ROUND_MS] in a bounded memo, for the echo alone: a peer asking for many hashes only churns
+     * the memo, and the database re-arm, which never reads it, stays the source of every want. An acceptance clears it.
+     */
+    internal suspend fun echoGate(hash: String): BlobExchange.EchoGate {
+        val now = clock()
+        synchronized(echoGates) { echoGates[hash]?.takeIf { now - it.second < BlobExchange.ROUND_MS }?.let { return it.first } }
+        val deciding = groups.active().filter { it.photoHash == hash }
+        val gate =
+            when {
+                deciding.isEmpty() -> if (requestHeld(hash)) BlobExchange.EchoGate.HELD else BlobExchange.EchoGate.OPEN
+                deciding.any { acceptance().isAccepted(it.groupId) } -> BlobExchange.EchoGate.PHOTO
+                else -> BlobExchange.EchoGate.HELD
+            }
+        synchronized(echoGates) { echoGates[hash] = gate to now }
+        return gate
+    }
+
+    /** A fresh [AcceptanceSnapshot] for this node. */
+    private suspend fun acceptance(): AcceptanceSnapshot = AcceptanceSnapshot.of(settings, peers, messages, identity.nodeId())
+
+    // [echoGate]'s memo: hash → (verdict, when), at most [ECHO_GATE_MEMO] entries, the eldest dropped. Guarded by itself.
+    private val echoGates =
+        object : LinkedHashMap<String, Pair<BlobExchange.EchoGate, Long>>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<BlobExchange.EchoGate, Long>>): Boolean =
+                size > ECHO_GATE_MEMO
+        }
+
+    /**
+     * The bytes held for others, against [carrierBlobBudgetBytes] (ADR 2026-11.qu98): the blobs only carried frames name,
+     * and those only a message request's rows name (#282's B1).
+     */
+    private suspend fun carrierBytes(me: String): Long {
+        val acceptance = AcceptanceSnapshot.of(settings, peers, messages, me)
+        val requests = messages.distinctConversations().filterNot { acceptance.isAccepted(it) }
+        return blobs.carrierOnlyBlobBytes() + blobs.requestOnlyBlobs(requests, me).sumOf { it.size }
+    }
+
+    /**
+     * Drops the blobs only a message request's rows name once no carried frame pins them (#282's B1): carrier bytes whose
+     * frame has gone, as the start's orphan collection drops a carrier's. The rows still name them, so accepting the
+     * request fetches them again. The request conversations are read again from a fresh [AcceptanceSnapshot] just before
+     * the drop, so a conversation accepted while the blobs were listed keeps its bytes; the drop itself re-checks each
+     * hash's rows against that list inside its write ([BlobRepository.dropRequestOnly]). An acceptance landing between
+     * that second read and the write is the residue: its own re-arm may run while the bytes are still held and ask for
+     * nothing, so the next database re-arm (the 60 s tick, or a link-up) fetches them again. Run beside the local-storage
+     * sweep.
+     */
+    private suspend fun dropRequestOnlyBlobs() {
+        val me = identity.nodeId()
+        val listed = AcceptanceSnapshot.of(settings, peers, messages, me)
+        val requests = messages.distinctConversations().filterNot { listed.isAccepted(it) }
+        val gone = blobs.requestOnlyBlobs(requests, me).filterNot { it.carried }.map { it.hash }
+        if (gone.isEmpty()) return
+        val fresh = AcceptanceSnapshot.of(settings, peers, messages, me)
+        blobs.dropRequestOnly(gone, requests.filterNot { fresh.isAccepted(it) }, me)
+        Log.i(TAG, "dropped up to ${gone.size} blobs only an unaccepted request named, no frame carrying them")
+    }
 
     /**
      * Whether screening refused [hash] while content filtering is on — a photo whose bytes were dropped and
@@ -3314,6 +3439,23 @@ class MeshManager(
             // rather than at the next start (#234).
             blobs.deleteOrphans()
             startSweepsDone = true
+            // An acceptance re-arms at once (#282, [RequestHold]): Accept, Profile → Message, a contact import and a
+            // verification fetch a message request's attachments without waiting for the 60 s tick, which still catches a
+            // reply and a known sender joining a group. Its own coroutine, since the collector below never returns, and
+            // after the sweeps, as that one. Its first value re-arms too, so an acceptance made while it subscribed is
+            // never lost to a skipped first value; the pass is one bounded query when nothing changed.
+            session.launch {
+                combine(
+                    settings.acceptedConversations,
+                    peers.observeVerifiedNodeIds(),
+                ) { accepted, verified -> accepted to verified.toSet() }
+                    .distinctUntilChanged()
+                    .collect {
+                        synchronized(echoGates) { echoGates.clear() }
+                        runRound({ e -> Log.w(TAG, "acceptance re-arm failed: ${e.message}") }) { rewantMissingBlobs() }
+                        metrics.onAcceptanceRearm()
+                    }
+            }
             // The first value is the startup re-arm; every change of the user's Bluetooth download limit re-arms with
             // the new verdict at once, so choosing "Never" fetches what was waiting without the next tick (ADR
             // 2026-10.js2p). Distinct: every settings flow re-emits on a write to any key.
@@ -3392,7 +3534,7 @@ class MeshManager(
         // Carrier-only custody blobs backfill only while under the byte budget (the same pull-time soft cap
         // onCarriedFrame applies), so a restart re-attempts pulls that a live-session over-budget skip left missing.
         val (carried, frames) =
-            if (blobs.carrierOnlyBlobBytes() < CARRIER_BLOB_BUDGET_BYTES) {
+            if (carrierBytes(me) < carrierBlobBudgetBytes) {
                 val now = clock()
                 // Live frames only (#195): a frame past its TTL is carried by nobody, and a re-arm from it minted a root.
                 val carried = forwardStore.attachmentsNeedingFetch(now)
@@ -3407,15 +3549,32 @@ class MeshManager(
         // wanted with its row's sender, so a want re-armed after a restart or the sweep asks the author first.
         // All of it goes to the exchange in one batch, so a link-up's holder queries share one frame per neighbour.
         val needed = messages.attachmentsNeedingFetch(me = me)
+        // Every hash a row names, held or not: what the carried half's fast-only hold counts as judged by its rows.
         val ownHashes = needed.mapTo(HashSet()) { it.hash }
-        val wanted = needed.mapTo(mutableListOf<Pair<String, String?>>()) { it.hash to it.senderId }
+        // Whether each conversation is a message request not accepted yet (#282), read here, after custody's read and
+        // inside this pass, never kept from the last: an acceptance between two passes is this one's to act on.
+        val acceptance = AcceptanceSnapshot.of(settings, peers, messages, me)
+        val accepted = acceptance.acceptedAmong(needed.flatMapTo(HashSet()) { m -> m.rows.map { it.conversationId } })
+        // The rows that would fetch each hash ([RequestHold]): ours, tapped, or an accepted conversation's. A hash none
+        // of whose rows would is a request's, and waits; the rest are judged by their releasing rows alone, so a held
+        // stranger's row is never the author asked first and never moves a contact's deadline or fast-only verdict.
+        val releasing =
+            needed.mapNotNull { m ->
+                val rows = RequestHold.releasing(m.rows, accepted::contains)
+                if (rows.isEmpty()) null else m.hash to rows
+            }
+        val wanted = releasing.mapTo(mutableListOf<Pair<String, String?>>()) { (hash, rows) -> hash to rows.first().senderId }
+        // The hashes a row of ours fetches: the carried half below never wants one of them in its own right. A hash only
+        // held rows name is still a carrier's to pull when a frame naming it is carried for somebody else (ADR
+        // 2026-11.qu98, #282's B3/B4): a stranger naming a third party's picture never stops our relay work for them.
+        val releasingHashes = releasing.mapTo(HashSet()) { it.first }
         // Each want's fast-only flag is derived here from the rows, every time, never kept from the last (ADR
         // 2026-10.js2p): an attachment every row of which declares over the user's limit, untapped, is fetched over
         // Wi-Fi Aware only. One row that would fetch it fetches it for all (a stranger's row cannot hold a contact's).
-        val fastOnly = needed.filter { BluetoothFetchGate.fastOnly(it.rows, limit) }.mapTo(HashSet()) { it.hash }
+        val fastOnly = releasing.filter { (_, rows) -> BluetoothFetchGate.fastOnly(rows, limit) }.mapTo(HashSet()) { it.first }
         // And until when its neighbours may be asked to pull it through (#195, ADR 2026-10.2drc): a DM's custody window
         // from its latest row, carried on every ask so nobody echoes it past the window; none for a group's or a room's.
-        val until = needed.mapNotNull { m -> PullThroughGate.until(m.rows)?.let { m.hash to it } }.toMap(HashMap())
+        val until = releasing.mapNotNull { (hash, rows) -> PullThroughGate.until(rows)?.let { hash to it } }.toMap(HashMap())
         // The carried ones skip those already re-requested above as our own/received attachments, and ones a DM's
         // linked recipient is fetching now ([CarrierPullPolicy], ADR 2026-10.g24x) — this tick re-reads them, so the
         // hold ends by itself when the recipient's link goes or the window passes.
@@ -3425,20 +3584,24 @@ class MeshManager(
             // The radio set: a recipient a contact's direct link reaches cannot fetch a carrier's copy over it (the link
             // carries an attachment addressed to both ends only), so it holds nobody's pull back (ADR 2026-10.a5yj).
             val linked = radioLinks().mapTo(HashSet()) { it.nodeId }
-            val held = heldForLinkedRecipients(carried.keys, frames, linked)
+            val held =
+                heldForLinkedRecipients(carried.keys, frames, linked) +
+                    heldForRequests(carried.keys - releasingHashes, frames, me, acceptance)
             val carriedUntil = carrierDeadlines(frames)
             val photos = sendersOwnPhotos(frames)
             carried
-                .filterKeys { it !in ownHashes && it !in held }
+                .filterKeys { it !in releasingHashes && it !in held }
                 .forEach { (hash, author) -> carriedWant(hash, author, photos[hash], carriedUntil[hash], wanted, until, carriedPhotos) }
             if (limit != null) fastOnly += unopenedForUs(carried.keys - ownHashes - photos.keys, frames, me, limit)
         }
         // A group's decided photo not shown yet (ADR 2026-09.nxcq): the row is the durable want, so a pull lost
         // to a restart or the fetch TTL comes back here and not only on the group's next frame. A photo
         // screening refused keeps its verdict and is never asked for again while filtering is on.
-        groups.photoHashesNeedingFetch().forEach { if (!refusedImage(it)) wanted += it to null }
+        val groupPhotos = groupPhotosToFetch(acceptance)
         beforeRewantApplies?.invoke()
         blobExchange.wantAll(wanted, fastOnly, until)
+        // A group's photo is a photo (#282): wanted under the face ceiling, as its delivery wants it.
+        groupPhotos.forEach { blobExchange.want(it, ceiling = FileIntake.MAX_AVATAR_BYTES) }
         // Not before the start's sweeps, as [rewantFaces]: an earlier session's refusals and holder marks are seeded then.
         if (startSweepsDone) blobExchange.wantFaces(carriedPhotos, FileIntake.MAX_AVATAR_BYTES)
         // Then the peers' photos, after every attachment's want (ADR 2026-11.4ckq, #258).
@@ -3520,6 +3683,49 @@ class MeshManager(
                     hash to sent.max() + ForwardRepository.DEFAULT_TTL_MS
                 }
             }.toMap()
+
+    /**
+     * The carried attachments among [hashes] — none of which a stored row names — that a message request holds (#282,
+     * [RequestHold.carriedHeld]): every carried frame naming one is addressed to us, from a conversation [acceptance]
+     * does not accept, the frame's sender counted as one of its group's senders. One frame we carry for somebody else,
+     * our own, or an accepted one's leaves the hash to the carrier's rules and budget. A hash no frame names any more is
+     * not held here.
+     */
+    private suspend fun heldForRequests(
+        hashes: Set<String>,
+        frames: List<CarriedAttachment>,
+        me: String,
+        acceptance: AcceptanceSnapshot,
+    ): Set<String> {
+        if (hashes.isEmpty()) return emptySet()
+        val named = frames.filter { it.hash in hashes }
+        // Each (conversation, sender) a frame of ours names, judged once: the fold below is pure.
+        val accepted = HashSet<Pair<String, String>>()
+        named.forEach { f ->
+            val conversation = RequestHold.conversationOf(f, me) ?: return@forEach
+            val sender = checkNotNull(f.senderId)
+            if (acceptance.isAccepted(conversation, sender)) accepted += conversation to sender
+        }
+        return named
+            .groupBy { it.hash }
+            .filterValues { RequestHold.carriedHeld(it, me) { conversation, sender -> (conversation to sender) in accepted } }
+            .keys
+    }
+
+    /**
+     * The decided group photos to fetch on this re-arm (ADR 2026-09.nxcq): not shown yet, bytes not here, not refused by
+     * screening — and decided by at least one group [acceptance] accepts (#282): a stranger's group is a message request,
+     * and its photo waits for the acceptance like its attachments. The row does not keep who decided the photo, so a
+     * group is judged by the senders it holds messages from; its delivery counts the deciding frame's sender too.
+     */
+    private suspend fun groupPhotosToFetch(acceptance: AcceptanceSnapshot): List<String> {
+        val needed = groups.photoHashesNeedingFetch()
+        if (needed.isEmpty()) return emptyList()
+        val deciding = groups.active().filter { it.photoHash in needed && it.photoShownHash != it.photoHash }
+        return needed.filter { hash ->
+            !refusedImage(hash) && deciding.any { it.photoHash == hash && acceptance.isAccepted(it.groupId) }
+        }
+    }
 
     /**
      * [rewantMissingBlobsLocked]'s want of one carried attachment [hash]: as the photo its frames' [sender] advertises
@@ -3671,6 +3877,8 @@ class MeshManager(
         messages.sweepRetention(now, protectedIds, knownSenders = accepted + verified + authored + me)
         // A pin evicted takes its cached proof of key with it (#234), or the cache would serve what the store dropped.
         keyExchange.forget(peers.sweepCap(protectedIds))
+        // Bytes only an unaccepted request names, no frame carrying them any more: carrier bytes, dropped as such (#282).
+        dropRequestOnlyBlobs()
         // A proof of key stored before the profile cap (#234) is still served to every key request; the door would refuse
         // it, so it goes. The pin it proved stays.
         val oversize = peers.deleteOversizeProfileFrames(forwardStore.maxProfileSignedBytes)
@@ -5890,6 +6098,9 @@ class MeshManager(
          * which a face never fills past three quarters anyway.
          */
         const val FACE_REWANT_CAP = 64
+
+        // [echoGate]'s memo bound: a want table's worth (`BlobExchange.MAX_FETCHING`); more only costs reads (#282).
+        const val ECHO_GATE_MEMO = 256
 
         /** How recently a peer outside the contacts must have been heard for [rewantFaces] to want its photo: a day. */
         const val FACE_HEARD_WINDOW_MS = 24 * 60 * 60_000L

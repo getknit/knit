@@ -381,15 +381,16 @@ interface MessageDao {
     /**
      * Every stored row naming an attachment whose bytes aren't in the `blobs` table yet, earliest first (`sentAt`, then
      * id), with what `BluetoothFetchGate` judges each on (ADR 2026-10.js2p): its declared size, the user's tap, and
-     * whether [me] sent it; and, for `PullThroughGate` (#195), when it was sent and whether it is a DM's. One entry per
-     * *row*, not per hash: a stranger's row naming a contact's attachment hash must not decide the contact's fetch, so the
-     * rule folds over the rows in Kotlin (`MessageRepository.attachmentsNeedingFetch`), and the earliest row's sender is
-     * the one holder a re-armed want can name (ADR 2026-10.f7gg). A commons row ([commonsGlob]) is left out: its bytes
-     * live on the room's relay alone (spec §7.4), which [commonsAttachmentsMissing] fetches from, never the radios.
+     * whether [me] sent it; for `PullThroughGate` (#195), when it was sent and whether it is a DM's; and, for `RequestHold`
+     * (#282), its conversation. One entry per *row*, not per hash: a stranger's row naming a contact's attachment hash
+     * must not decide the contact's fetch, so the rule folds over the rows in Kotlin
+     * (`MessageRepository.attachmentsNeedingFetch`), and the earliest row's sender is the one holder a re-armed want can
+     * name (ADR 2026-10.f7gg). A commons row ([commonsGlob]) is left out: its bytes live on the room's relay alone (spec
+     * §7.4), which [commonsAttachmentsMissing] fetches from, never the radios.
      */
     @Query(
         "SELECT attachmentHash AS hash, senderId, attachmentSize, attachmentFetchApproved AS approved, " +
-            "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm FROM messages " +
+            "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm, conversationId FROM messages " +
             "WHERE attachmentHash IS NOT NULL AND attachmentHash NOT IN (SELECT hash FROM blobs) " +
             "AND conversationId NOT GLOB :commonsGlob " +
             "ORDER BY sentAt, id",
@@ -425,7 +426,7 @@ interface MessageDao {
      */
     @Query(
         "SELECT attachmentHash AS hash, senderId, attachmentSize, attachmentFetchApproved AS approved, " +
-            "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm FROM messages " +
+            "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm, conversationId FROM messages " +
             "WHERE attachmentHash = :hash AND conversationId NOT GLOB :commonsGlob ORDER BY sentAt, id",
     )
     suspend fun attachmentFetchRowsFor(
@@ -968,6 +969,8 @@ data class AttachmentFetchRow(
     val sentAt: Long = 0L,
     /** Whether the row is a DM's (a `recipientId`); a group's and a room's have none. */
     val dm: Boolean = false,
+    /** The row's conversation: whether it is accepted decides whether the row fetches its attachment (`RequestHold`, #282). */
+    val conversationId: String,
 )
 
 /**

@@ -191,6 +191,7 @@ class DirectLinkAttachmentLabTest {
         val carol = lab.node("carol", limits).apply { setDisplayName("Carol") }
         lab.linkAll(alice to bob, bob to carol, alice to carol)
         lab.awaitAcquainted(alice, bob, carol)
+        lab.befriend(alice, bob)
         lab.unlink(alice, bob)
         lab.unlink(bob, carol)
 
@@ -232,6 +233,7 @@ class DirectLinkAttachmentLabTest {
     fun aLinkFileLandingAsTheRecipientsMeshStopsIsAskedAgainAndHeldOnce() =
         runBlocking {
             val (alice, bob) = linkOnlyPair(spool = null)
+            lab.befriend(alice, bob)
             bob.linkFileGate.hold()
             val picture = Random(227).nextBytes(16_384)
             assertTrue(alice.sendImage(picture, "landing", to = bob))
@@ -289,6 +291,7 @@ class DirectLinkAttachmentLabTest {
             lab.meetOnTheRelay(alice, bob)
             lab.link(alice, carol)
             lab.awaitAcquainted(alice, carol)
+            lab.befriend(alice, bob, carol)
             val group = alice.createGroup(carol)
             val picture = Random(228).nextBytes(16_384)
             assertTrue(alice.sendImage(picture, "for the group", groupId = group))

@@ -80,6 +80,42 @@ interface BlobDao {
     )
     suspend fun carrierOnlyBlobBytes(): Long
 
+    /**
+     * The blobs a row in one of the [requests] conversations (those the caller found not accepted) names, that no row of
+     * [me]'s and no tapped row names, and that no avatar or group photo names (#282, ADR 2026-11.qu98): the candidates
+     * for request-only bytes. Whether *every* row naming one is a request's is the caller's check
+     * (`BlobRepository.requestOnlyBlobs`): [requests] is bound once here, so a caller can split a long list into chunks
+     * under SQLite's variable cap. `length(bytes)` as in [carrierOnlyBlobBytes]; `carried` when a frame pins it.
+     */
+    @Query(
+        "SELECT b.hash AS hash, length(b.bytes) AS size, " +
+            "EXISTS (SELECT 1 FROM forward_store AS f WHERE f.attachmentHash = b.hash) AS carried FROM blobs AS b WHERE " +
+            "b.hash IN (SELECT attachmentHash FROM messages WHERE conversationId IN (:requests) AND attachmentHash IS NOT NULL) " +
+            "AND NOT EXISTS (SELECT 1 FROM messages AS o WHERE o.attachmentHash = b.hash AND " +
+            "(o.senderId = :me OR o.attachmentFetchApproved = 1)) " +
+            "AND b.hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) " +
+            "AND b.hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL) " +
+            "AND b.hash NOT IN (SELECT photoShownHash FROM groups WHERE photoShownHash IS NOT NULL)",
+    )
+    suspend fun requestBlobCandidates(
+        requests: List<String>,
+        me: String,
+    ): List<RequestOnlyBlob>
+
+    /** How many message rows naming [hash] are [me]'s or tapped: rows that fetch it for us (#282, `RequestHold`). */
+    @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash AND (senderId = :me OR attachmentFetchApproved = 1)")
+    suspend fun countFetchingRows(
+        hash: String,
+        me: String,
+    ): Int
+
     @Query("DELETE FROM blobs WHERE hash = :hash")
     suspend fun delete(hash: String)
 }
+
+/** A blob only a message request's rows name ([BlobDao.requestBlobCandidates]): its length, and whether a carried frame pins it. */
+data class RequestOnlyBlob(
+    val hash: String,
+    val size: Long,
+    val carried: Boolean,
+)

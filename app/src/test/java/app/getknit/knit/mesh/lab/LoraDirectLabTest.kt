@@ -390,6 +390,7 @@ class LoraDirectLabTest {
             val alice = lab.node("alice", quick, air = air).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", quick, air = air).apply { setDisplayName("Bob") }
             meetThenPart(alice, bob)
+            lab.befriend(alice, bob)
 
             val picture = Random(11).nextBytes(2_048)
             assertTrue(alice.sendImage(picture, "", to = bob))

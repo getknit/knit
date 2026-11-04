@@ -68,6 +68,7 @@ class PictureFanoutLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob)
             awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, bob to carol, carol to alice, carol to bob)
 
             val deferred = carol.metrics.files().carrierPullsDeferred
@@ -108,6 +109,7 @@ class PictureFanoutLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob, carol)
             awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, carol to alice)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "hello both"))
@@ -151,6 +153,7 @@ class PictureFanoutLabTest {
             val mallory = lab.node("mallory", pages = pages)
             lab.linkAll(alice to bob, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob, carol)
             awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, carol to alice)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "hello both"))
@@ -206,6 +209,7 @@ class PictureFanoutLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob, carol)
             awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, carol to alice)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "hello both"))

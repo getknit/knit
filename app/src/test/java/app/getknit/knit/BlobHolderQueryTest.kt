@@ -114,6 +114,11 @@ class BlobHolderQueryTest {
         // While set, this node leaves queries unanswered: an answer that comes in late is the test's to deliver.
         @Volatile var mute = false
 
+        // The hashes this node holds back as a message request's attachments, and those a group of its decides as its
+        // photo (#282, `MeshManager.echoGate`).
+        val requestHeld: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        val groupPhotos: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
         // Every (hash, peer) a proof query's answer said is held ([BlobExchange.confirmHeld]), and the plane it crossed.
         val holds = CopyOnWriteArrayList<Pair<String, String>>()
         val holdPlanes = CopyOnWriteArrayList<DeliveryPlane>()
@@ -132,6 +137,13 @@ class BlobHolderQueryTest {
                 onPeerHolds = { hash, peer, plane ->
                     holds += hash to peer
                     holdPlanes += plane
+                },
+                echoGate = {
+                    when (it) {
+                        in requestHeld -> BlobExchange.EchoGate.HELD
+                        in groupPhotos -> BlobExchange.EchoGate.PHOTO
+                        else -> BlobExchange.EchoGate.OPEN
+                    }
                 },
             )
 
@@ -2114,6 +2126,55 @@ class BlobHolderQueryTest {
             b.exchange.onRequest(late, "a", pull = 3, until = deadline)
             assertTrue("and an ask past it makes no want at all", late !in b.exchange.wantedHashes())
             assertTrue(b.events.contains(BlobExchange.BlobEvent.EchoDeclined))
+        }
+
+    /**
+     * #282: a carrier's pull-through ask for a message request's attachment, once its own deferral has ended, must not make
+     * the recipient fetch what the user has not accepted. The ask is declined as a past-deadline one is; one for any other
+     * blob is pulled through as before.
+     */
+    @Test
+    fun anAskForAMessageRequestsAttachmentMakesNoEchoAndAnyOtherDoes() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val c = Node("c", backgroundScope)
+            b.transport.connect(a.transport)
+            b.transport.connect(c.transport)
+            val held = sha256Hex(picture())
+            val other = sha256Hex(picture(2_300))
+            b.requestHeld += held
+
+            b.exchange.onRequest(other, "a", pull = 3)
+            assertEquals("an ordinary ask is pulled through", listOf<Int?>(2), c.pullsFrom("b", other))
+            b.exchange.onRequest(held, "a", pull = 3)
+            assertTrue("a request's makes no want", held !in b.exchange.wantedHashes())
+            assertTrue("and asks nobody", c.pullsFrom("b", held).isEmpty())
+            assertTrue(b.events.contains(BlobExchange.BlobEvent.EchoDeclined))
+        }
+
+    /**
+     * #282's B5: an ask for a hash a group decides as its photo is echoed under the face ceiling, as every want of a group
+     * photo is — never uncapped, which would let a neighbour make us pull a large file a stranger's group names as its
+     * photo. An ordinary hash's echo takes none.
+     */
+    @Test
+    fun anAskForAGroupsPhotoIsEchoedUnderTheFaceCeiling() =
+        runTest(UnconfinedTestDispatcher()) {
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val c = Node("c", backgroundScope)
+            b.transport.connect(a.transport)
+            b.transport.connect(c.transport)
+            val photo = sha256Hex(picture())
+            val other = sha256Hex(picture(2_300))
+            b.groupPhotos += photo
+
+            b.exchange.onRequest(other, "a", pull = 3)
+            b.exchange.onRequest(photo, "a", pull = 3)
+            assertTrue("both are echoed", photo in b.exchange.wantedHashes() && other in b.exchange.wantedHashes())
+            assertEquals("the photo under the face ceiling", FileIntake.MAX_AVATAR_BYTES, b.partials.capFor(photo))
+            assertEquals("the other uncapped", null, b.partials.capFor(other))
         }
 
     /** The `until` of the last ask for [hash] [node] received from [from]. */

@@ -7,6 +7,7 @@ import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.PhotoRefusalDao
 import app.getknit.knit.data.blob.PhotoRefusalEntity
+import app.getknit.knit.data.blob.RequestOnlyBlob
 import app.getknit.knit.data.blob.SavedFileDao
 import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupDao
@@ -193,10 +194,7 @@ class BlobRepository(
         if (hash == null) return
         if (hash == settings.ownAvatarHash.first()) return
         db.withWriteTransaction {
-            if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
-            if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
-            if (groups.countByPhotoHash(hash) > 0) return@withWriteTransaction
-            if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            if (messages.countByAttachmentHash(hash) > 0 || pinnedOutsideMessages(hash)) return@withWriteTransaction
             blobs.delete(hash)
             // A peer that still advertises the photo keeps its verdict and its refusal, never its bytes (ADR
             // 2026-11.4ckq): the database re-arm wants an advertised photo whose bytes are gone, and a refused one must
@@ -220,10 +218,7 @@ class BlobRepository(
     suspend fun dropRefusedFace(hash: String) {
         if (hash == settings.ownAvatarHash.first()) return
         db.withWriteTransaction {
-            if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
-            if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
-            if (groups.countByPhotoHash(hash) > 0) return@withWriteTransaction
-            if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            if (messages.countByAttachmentHash(hash) > 0 || pinnedOutsideMessages(hash)) return@withWriteTransaction
             blobs.delete(hash)
         }
     }
@@ -282,6 +277,74 @@ class BlobRepository(
     suspend fun carrierOnlyBlobBytes(): Long = blobs.carrierOnlyBlobBytes()
 
     /**
+     * The blobs only the rows of the message requests [requests] name (#282, ADR 2026-11.qu98): carrier bytes, which the
+     * carrier budget counts and [dropRequestOnly] lets go. [BlobDao.requestBlobCandidates] lists them in chunks of the
+     * list under SQLite's variable cap, and each is kept only while every row naming it is a held request's
+     * ([namedOnlyByRequests]). Our own avatar is never one: a stranger who names its public hash in a request does not
+     * make it carrier bytes.
+     */
+    suspend fun requestOnlyBlobs(
+        requests: List<String>,
+        me: String,
+    ): List<RequestOnlyBlob> {
+        if (requests.isEmpty()) return emptyList()
+        val own = settings.ownAvatarHash.first()
+        val held = requests.toHashSet()
+        return requests
+            .chunked(MAX_BOUND_IDS)
+            .flatMap { blobs.requestBlobCandidates(it, me) }
+            .distinctBy { it.hash }
+            .filter { it.hash != own && namedOnlyByRequests(it.hash, held, me) }
+    }
+
+    /**
+     * Drops the request-only blobs among [hashes] (#282): bytes only rows of the message requests [requests] name, no
+     * carried frame pins and nobody accepted — carrier bytes whose frame has gone. The rows keep naming them, so an
+     * acceptance re-fetches them. The guards every deleter shares: never our own avatar nor a blob this process stored
+     * ([keptFromSweeps]), and, inside the transaction, never one an avatar, a group photo or a carried frame names
+     * ([pinnedOutsideMessages]) or a row that fetches it for us names — an acceptance or a contact's row since the listing
+     * ([namedOnlyByRequests]).
+     */
+    suspend fun dropRequestOnly(
+        hashes: Collection<String>,
+        requests: Collection<String>,
+        me: String,
+    ) {
+        if (hashes.isEmpty()) return
+        val own = settings.ownAvatarHash.first()
+        val held = requests.toHashSet()
+        db.withWriteTransaction {
+            hashes.filterNot { keptFromSweeps(it, own) }.forEach {
+                if (pinnedOutsideMessages(it) || !namedOnlyByRequests(it, held, me)) return@forEach
+                blobs.delete(it)
+                savedFiles.delete(it)
+                holders.delete(it)
+            }
+        }
+    }
+
+    /** Whether a sweep must leave [hash] alone whatever names it: our own avatar ([own]), or a blob this process stored (#288). */
+    private fun keptFromSweeps(
+        hash: String,
+        own: String?,
+    ): Boolean = hash == own || hash in storedThisProcess
+
+    /** Whether a peer's avatar, a group's photo (decided or shown) or a carried frame names [hash]. */
+    private suspend fun pinnedOutsideMessages(hash: String): Boolean =
+        peers.countByAvatarHash(hash) > 0 || groups.countByPhotoHash(hash) > 0 || forward.countByAttachmentHash(hash) > 0
+
+    /** Whether every message row naming [hash] is a held request's: in one of [requests], not [me]'s, not tapped. */
+    private suspend fun namedOnlyByRequests(
+        hash: String,
+        requests: Set<String>,
+        me: String,
+    ): Boolean {
+        if (blobs.countFetchingRows(hash, me) > 0) return false
+        val named = messages.conversationsOfAttachment(hash)
+        return named.isNotEmpty() && named.all { it in requests }
+    }
+
+    /**
      * Deletes every blob an earlier process stored that no message, peer avatar, group photo, carried frame or our own
      * avatar names. Run at each mesh start to reclaim blobs left orphaned by, e.g., an attachment staged but never sent
      * in an earlier process (its compose state died with it, so its blob is safe to drop). A blob this process stored is
@@ -292,7 +355,7 @@ class BlobRepository(
     suspend fun deleteOrphans() {
         val own = settings.ownAvatarHash.first()
         db.withWriteTransaction {
-            blobs.orphanHashes().filter { it != own && it !in storedThisProcess }.forEach {
+            blobs.orphanHashes().filterNot { keptFromSweeps(it, own) }.forEach {
                 blobs.delete(it)
                 // A photo a peer still advertises keeps its verdict, as in [deleteIfUnreferenced] (ADR 2026-11.4ckq).
                 if (peers.countByAdvertisedAvatar(it) == 0) verdicts.delete(it)
@@ -307,5 +370,9 @@ class BlobRepository(
     private companion object {
         // As `PartialBlobs` keeps per hash in a session.
         const val MAX_HOLDER_MARKS = 16
+
+        // Request ids bound per [BlobDao.requestBlobCandidates] call: well under SQLite's variable cap (32,766), so any
+        // number of unaccepted threads is listed (#282).
+        const val MAX_BOUND_IDS = 500
     }
 }

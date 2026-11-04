@@ -336,6 +336,9 @@ class MeshMetrics {
     private val healsCompleted = AtomicLong()
     private val blobAsksHandled = AtomicLong()
     private val carrierPullsDeferred = AtomicLong()
+    private val requestHolds = AtomicLong()
+    private val acceptanceRearms = AtomicLong()
+    private val carrierPullsOverBudget = AtomicLong()
     private val filesResumedOut = AtomicLong()
     private val filesResumedIn = AtomicLong()
     private val splicesRefused = AtomicLong()
@@ -676,6 +679,27 @@ class MeshMetrics {
      */
     fun onCarrierPullDeferred() {
         carrierPullsDeferred.incrementAndGet()
+    }
+
+    /**
+     * An attachment of a message request not accepted yet was left unfetched — at its delivery, at the custody of its
+     * frame, or as a group's photo (#282, `RequestHold`) — what the mesh-in-a-box lab waits on before it says nothing came.
+     */
+    fun onRequestHeld() {
+        requestHolds.incrementAndGet()
+    }
+
+    /**
+     * The acceptance collector's database re-arm returned (#282): an acceptance, a verification or the collector's first
+     * value has been acted on — what the mesh-in-a-box lab waits on before it says a want was decided after one.
+     */
+    fun onAcceptanceRearm() {
+        acceptanceRearms.incrementAndGet()
+    }
+
+    /** A carried attachment was not pulled because the carrier budget is spent (request-only bytes included, #282). */
+    fun onCarrierPullOverBudget() {
+        carrierPullsOverBudget.incrementAndGet()
     }
 
     /** We streamed a neighbor only the rest of a blob, from the offset its ask named: a cut transfer resumed (#116). */
@@ -1689,6 +1713,9 @@ class MeshMetrics {
             filesSentBt = filesSentBt.get(),
             blobAsksHandled = blobAsksHandled.get(),
             carrierPullsDeferred = carrierPullsDeferred.get(),
+            requestHolds = requestHolds.get(),
+            acceptanceRearms = acceptanceRearms.get(),
+            carrierPullsOverBudget = carrierPullsOverBudget.get(),
             filesResumedOut = filesResumedOut.get(),
             filesResumedIn = filesResumedIn.get(),
             splicesRefused = splicesRefused.get(),
@@ -1985,6 +2012,11 @@ class MeshMetrics {
             val filesSentBt: Long = 0,
             val blobAsksHandled: Long = 0,
             val carrierPullsDeferred: Long = 0,
+            // #282: a message request's attachment left unfetched until the request is accepted (`RequestHold`).
+            val requestHolds: Long = 0,
+            // #282: the acceptance collector's re-arms that returned, and carried pulls skipped for the carrier budget.
+            val acceptanceRearms: Long = 0,
+            val carrierPullsOverBudget: Long = 0,
             val filesResumedOut: Long = 0,
             val filesResumedIn: Long = 0,
             val splicesRefused: Long = 0,

@@ -14,6 +14,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.PinRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
+import app.getknit.knit.data.blob.RequestOnlyBlob
 import app.getknit.knit.data.crypto.SignedPrekey
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -50,6 +51,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.lora.BoardAddr
 import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.LoraBoardHolder
@@ -540,6 +542,9 @@ class MeshManagerTest {
         var publicChannelRefusal: PublicPostRefusal? = null
         val manager: MeshManager
 
+        /** The manager's kept prefixes and per-hash caps: where a photo want's ceiling shows (#234, #282). */
+        val partials = PartialBlobs(Files.createTempDirectory("mm-parts").toFile())
+
         init {
             coEvery { identity.nodeId() } returns me.nodeId
             coEvery { settings.displayName } returns displayName
@@ -551,6 +556,9 @@ class MeshManagerTest {
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
             coEvery { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
             coEvery { settings.acceptedConversations } returns MutableStateFlow(emptySet())
+            // The acceptance collector's other input (#282): a relaxed mock's flow would end without a value, and no
+            // acceptance would ever re-arm.
+            coEvery { peers.observeVerifiedNodeIds() } returns flowOf(emptyList())
             // Every database re-arm reads the owed faces, and the block-list watch its last-acted list, with `.first()`.
             coEvery { settings.blockList } returns blockState
             // And the filter its peer-photo pass reads (ADR 2026-11.4ckq); a test that moves it stubs its own.
@@ -595,7 +603,7 @@ class MeshManagerTest {
                 blobs = blobs,
                 imageScreening = imageScreening,
                 blobStore = blobStore,
-                partials = PartialBlobs(Files.createTempDirectory("mm-parts").toFile()),
+                partials = partials,
                 forwardStore = forwardStore,
                 notifier = notifier,
                 textModeration = textModeration,
@@ -3958,12 +3966,21 @@ class MeshManagerTest {
 
     // --- Ask before large Bluetooth-only downloads (ADR 2026-10.js2p) ---
 
+    /**
+     * One row naming [hash], by [sender], in [conversationId]: a room's by default, which is never a message request (#282),
+     * so a case about something else is not held by one.
+     */
     private fun missing(
         hash: String,
         sender: String,
         size: Long?,
         approved: Boolean = false,
-    ) = MissingAttachment(hash, sender, listOf(AttachmentFetchRow(hash, sender, size, approved, own = false)))
+        conversationId: String = Conversations.NEARBY,
+    ) = MissingAttachment(
+        hash,
+        sender,
+        listOf(AttachmentFetchRow(hash, sender, size, approved, own = false, conversationId = conversationId)),
+    )
 
     /** Every blob request the manager sent, as (to, content). */
     private fun Rig.blobAsks(): List<Pair<String?, BlobReqContent>> =
@@ -3975,8 +3992,9 @@ class MeshManagerTest {
         }
 
     /**
-     * The distinct hashes asked for. A start-up with a link already up re-arms twice — the limit collector's first value
-     * and the newcomer's pass, whose `linked` + `reask` may ask the author again — so a wait counts hashes, never asks.
+     * The distinct hashes asked for. A start-up with a link already up re-arms three times — the limit collector's first
+     * value, the acceptance collector's first value (#282) and the newcomer's pass, whose `linked` + `reask` may ask the
+     * author again — so a wait counts hashes, never asks.
      */
     private fun Rig.askedHashes(): Set<String> = blobAsks().mapTo(HashSet()) { it.second.hash }
 
@@ -3987,12 +4005,13 @@ class MeshManagerTest {
     private fun Rig.countReArms(): AtomicInteger = AtomicInteger().also { n -> manager.beforeRewantApplies = { n.incrementAndGet() } }
 
     /**
-     * Returns once both start-up re-arms (the limit collector's first value and the newcomer's pass) have applied their
-     * wants, so a "held" read sees every pass and not only the first. Two have entered the lock; the re-offer's own
-     * re-arm queues behind the second and runs only after its wants applied — and is one more pass the hold must survive.
+     * Returns once the three start-up re-arms (the limit collector's first value, the acceptance collector's first value
+     * and the newcomer's pass) have applied their wants, so a "held" read sees every pass and not only the first. Three
+     * have entered the lock; the re-offer's own re-arm queues behind the third and runs only after its wants applied — and
+     * is one more pass the hold must survive.
      */
     private suspend fun Rig.awaitStartupReArms(passes: AtomicInteger) {
-        await(2) { passes.get() }
+        await(3) { passes.get() }
         manager.reofferToNeighbors()
     }
 
@@ -4163,8 +4182,8 @@ class MeshManagerTest {
                         "shared",
                         author,
                         listOf(
-                            AttachmentFetchRow("shared", author, null, false, false),
-                            AttachmentFetchRow("shared", "x", 9_000_000L, false, false),
+                            AttachmentFetchRow("shared", author, null, false, false, conversationId = Conversations.NEARBY),
+                            AttachmentFetchRow("shared", "x", 9_000_000L, false, false, conversationId = Conversations.NEARBY),
                         ),
                     ),
                 )
@@ -4252,17 +4271,30 @@ class MeshManagerTest {
                     MissingAttachment(
                         "dm",
                         author,
-                        listOf(AttachmentFetchRow("dm", author, null, false, false, sentAt = sentAt, dm = true)),
+                        listOf(AttachmentFetchRow("dm", author, null, false, false, sentAt = sentAt, dm = true, conversationId = author)),
                     ),
                     MissingAttachment(
                         "group",
                         author,
-                        listOf(AttachmentFetchRow("group", author, null, false, false, sentAt = sentAt, dm = false)),
+                        listOf(
+                            AttachmentFetchRow(
+                                "group",
+                                author,
+                                null,
+                                false,
+                                false,
+                                sentAt = sentAt,
+                                dm = false,
+                                conversationId = GROUP_THREAD,
+                            ),
+                        ),
                     ),
                 )
             rig.transport.nearby.value = setOf(Peer(author))
             rig.stubProfileState(MutableStateFlow(0L))
             coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            // Both threads accepted: neither row is a message request held back (#282).
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(author, GROUP_THREAD))
 
             rig.manager.start()
             rig.await(2) { rig.askedHashes().size }
@@ -4328,6 +4360,211 @@ class MeshManagerTest {
                     it.second.hash
                 },
             )
+            rig.manager.stop()
+        }
+
+    @Test
+    fun theReArmHoldsAMessageRequestsRowsAndItsFramesToUsAndAsksTheRest() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282: a stranger's row, and a custodied frame of theirs addressed to us that no row names yet, wait for the
+            // acceptance; a contact's row and a frame we carry for somebody else are asked for as before.
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val bob = "bob-node"
+            val me = rig.me.nodeId
+            coEvery { rig.messages.attachmentsNeedingFetch(any()) } returns
+                listOf(
+                    missing("request-row", stranger, null, conversationId = stranger),
+                    missing("contact-row", bob, null, conversationId = bob),
+                )
+            rig.forwardStore.carried =
+                listOf(
+                    CarriedAttachment("request-frame", recipientId = me, carriedAt = 0L, senderId = stranger),
+                    CarriedAttachment("carried", recipientId = "carol", carriedAt = 0L, senderId = stranger),
+                )
+            rig.transport.nearby.value = setOf(Peer(stranger), Peer(bob))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(bob)) // after the profile's stubs
+
+            val passes = rig.countReArms()
+            rig.manager.start()
+            rig.await(2) { rig.askedHashes().size }
+            rig.awaitStartupReArms(passes)
+            assertEquals("the contact's row and the carrier's pull", setOf("contact-row", "carried"), rig.askedHashes())
+            assertEquals(setOf("contact-row", "carried"), rig.manager.wantedBlobs())
+            rig.manager.stop()
+        }
+
+    @Test
+    fun anAskForAParkedRequestsAttachmentNoRowNamesIsHeldByItsCustodiedFrames() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282: a stranger's frame to us waiting on its key is custodied before any row names its hash, so the echo of a
+            // carrier's ask falls back to custody's frames — as the re-arm's carried half folds them — and declines it. A
+            // hash we carry for somebody else, or one a contact sent us, is still echoed.
+            val rig = Rig(backgroundScope)
+            val me = rig.me.nodeId
+            val stranger = "stranger-node"
+            val bob = "bob-node"
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(bob))
+            coEvery { rig.messages.attachmentFetchRows(any(), any()) } returns emptyList()
+            rig.forwardStore.carried =
+                listOf(
+                    CarriedAttachment("parked-dm", recipientId = me, carriedAt = 0L, senderId = stranger),
+                    CarriedAttachment("parked-group", null, 0L, stranger, GROUP_THREAD, roster = setOf(me, stranger)),
+                    CarriedAttachment("carried", recipientId = "carol", carriedAt = 0L, senderId = stranger),
+                    CarriedAttachment("contacts", recipientId = me, carriedAt = 0L, senderId = bob),
+                    CarriedAttachment("contacts-group", null, 0L, bob, GROUP_THREAD, roster = setOf(me, bob)),
+                )
+
+            assertTrue("a stranger's DM to us", rig.manager.requestHeld("parked-dm"))
+            assertTrue("a stranger's group frame we are a member of", rig.manager.requestHeld("parked-group"))
+            assertFalse("a frame we carry for carol", rig.manager.requestHeld("carried"))
+            assertFalse("a contact's DM", rig.manager.requestHeld("contacts"))
+            assertFalse("a contact's group frame: its sender counts as the group's", rig.manager.requestHeld("contacts-group"))
+            assertFalse("a hash nothing names", rig.manager.requestHeld("unknown"))
+        }
+
+    @Test
+    fun aStrangersRequestNamingAThirdPartysPictureNeverStopsOurCarrierWork() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282's B4: a stranger's request row naming the hash of Alice→Bob's picture, which we carry, must not stop our
+            // custody pull of it, nor our echo of Bob's ask: the hold covers our own pull for ourselves, nothing else.
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val alice = "alice-node"
+            val heldRow = missing("shared", stranger, null, conversationId = stranger)
+            coEvery { rig.messages.attachmentsNeedingFetch(any()) } returns listOf(heldRow)
+            coEvery { rig.messages.attachmentFetchRows("shared", any()) } returns heldRow.rows
+            rig.forwardStore.carried = listOf(CarriedAttachment("shared", recipientId = "bob-node", carriedAt = 0L, senderId = alice))
+            rig.transport.nearby.value = setOf(Peer(alice))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+
+            rig.manager.start()
+            rig.await(1) { rig.askedHashes().size }
+            assertEquals(
+                "the carrier's pull, asked of its author",
+                alice to "shared",
+                rig.blobAsks().first().let {
+                    it.first to
+                        it.second.hash
+                },
+            )
+            assertFalse("and Bob's ask is echoed", rig.manager.requestHeld("shared"))
+            assertEquals(BlobExchange.EchoGate.OPEN, rig.manager.echoGate("shared"))
+            rig.manager.stop()
+        }
+
+    @Test
+    fun anAskForAGroupsPhotoIsHeldUntilTheGroupIsAcceptedAndCappedAfter() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282's B5: a neighbour's ask for the photo only a request group decides makes no want of ours; an accepted
+            // group's photo is echoed under the face ceiling, and any other hash as before.
+            val rig = Rig(backgroundScope)
+
+            fun group(
+                id: String,
+                photo: String,
+            ) = GroupEntity(
+                groupId = id,
+                name = "",
+                members = GroupMembersStore.encode(listOf(rig.me.nodeId, "x")),
+                createdBy = "x",
+                createdAt = 0L,
+                photoHash = photo,
+            )
+            coEvery { rig.groups.active() } returns listOf(group(GROUP_THREAD, "request-photo"), group("g-known", "known-photo"))
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf("g-known"))
+            coEvery { rig.messages.attachmentFetchRows(any(), any()) } returns emptyList()
+
+            assertEquals(BlobExchange.EchoGate.HELD, rig.manager.echoGate("request-photo"))
+            assertEquals(BlobExchange.EchoGate.PHOTO, rig.manager.echoGate("known-photo"))
+            assertEquals(BlobExchange.EchoGate.OPEN, rig.manager.echoGate("anything-else"))
+        }
+
+    @Test
+    fun theReArmWantsOnlyAnAcceptedGroupsPhotoAndUnderTheFaceCeiling() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282's B5 at the tick: a decided group photo not shown yet is a durable want (ADR 2026-09.nxcq) only for a group
+            // that is accepted, and a photo's want is capped as a face's is.
+            val rig = Rig(backgroundScope)
+            val holder = "holder-node"
+
+            fun group(
+                id: String,
+                photo: String,
+            ) = GroupEntity(
+                groupId = id,
+                name = "",
+                members = GroupMembersStore.encode(listOf(rig.me.nodeId, holder)),
+                createdBy = holder,
+                createdAt = 0L,
+                photoHash = photo,
+            )
+            coEvery { rig.groups.photoHashesNeedingFetch() } returns listOf("req-photo", "known-photo")
+            coEvery { rig.groups.active() } returns listOf(group(GROUP_THREAD, "req-photo"), group("g-known", "known-photo"))
+            rig.transport.nearby.value = setOf(Peer(holder))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf("g-known")) // after the profile's stubs
+
+            val passes = rig.countReArms()
+            rig.manager.start()
+            rig.await(1) { rig.askedHashes().size }
+            rig.awaitStartupReArms(passes)
+            assertEquals("only the accepted group's photo", setOf("known-photo"), rig.askedHashes())
+            assertEquals("under the face ceiling", FileIntake.MAX_AVATAR_BYTES, rig.partials.capFor("known-photo"))
+            rig.manager.stop()
+        }
+
+    @Test
+    fun theRequestSweepRereadsAcceptanceJustBeforeItDrops() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282: the sweep lists a request's bytes, and the user accepts the request while it does. The drop is handed the
+            // requests as they stand after that, so the repository's re-check keeps the newly accepted conversation's bytes.
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val accepted = MutableStateFlow(emptySet<String>())
+            coEvery { rig.settings.acceptedConversations } returns accepted
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.messages.distinctConversations() } returns listOf(stranger)
+            coEvery { rig.blobs.requestOnlyBlobs(listOf(stranger), any()) } coAnswers {
+                accepted.value = setOf(stranger) // the Accept lands while the bytes are listed
+                listOf(RequestOnlyBlob("request-bytes", 4L, carried = false))
+            }
+
+            rig.manager.sweepLocalStorage()
+
+            coVerify { rig.blobs.dropRequestOnly(listOf("request-bytes"), match { stranger !in it }, any()) }
+            coVerify(exactly = 0) { rig.blobs.dropRequestOnly(any(), match { stranger in it }, any()) }
+        }
+
+    @Test
+    fun acceptingARequestFetchesItsAttachmentWithoutATick() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #282: the acceptance collector re-arms on the write itself; the 60 s tick runs on real time and never fires here.
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val accepted = MutableStateFlow(emptySet<String>())
+            coEvery { rig.messages.attachmentsNeedingFetch(any()) } returns
+                listOf(missing("request-row", stranger, null, conversationId = stranger))
+            rig.transport.nearby.value = setOf(Peer(stranger))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.settings.acceptedConversations } returns accepted // after the profile's stubs, which set their own
+
+            val passes = rig.countReArms()
+            rig.manager.start()
+            rig.awaitStartupReArms(passes) // every pass the start owes has read the request as held
+            assertTrue("held while a request: ${rig.askedHashes()}", rig.askedHashes().isEmpty())
+            assertFalse("request-row" in rig.manager.wantedBlobs())
+
+            val before = passes.get()
+            accepted.value = setOf(stranger)
+            rig.await(1) { if ("request-row" in rig.askedHashes()) 1 else 0 }
+            assertEquals(stranger, rig.blobAsks().first { it.second.hash == "request-row" }.first)
+            assertTrue("a re-arm of its own ran", passes.get() > before)
             rig.manager.stop()
         }
 
@@ -4410,7 +4647,7 @@ class MeshManagerTest {
             val rig = Rig(backgroundScope)
             val author = "author-node"
             coEvery { rig.messages.attachmentFetchRows("big", any()) } returns
-                listOf(AttachmentFetchRow("big", author, 2_000_000L, true, false))
+                listOf(AttachmentFetchRow("big", author, 2_000_000L, true, false, conversationId = author))
             rig.transport.nearby.value = setOf(Peer(author))
 
             rig.manager.downloadAttachment("big")
@@ -4425,6 +4662,9 @@ class MeshManagerTest {
         /** Real-time budget for work the manager's session runs off the test dispatcher (see awaitCustodiedProfiles). */
         const val AWAIT_MS = 10_000L
         const val POLL_MS = 5L
+
+        /** A group thread's id, as `Conversations.groupIdFor` shapes one. */
+        const val GROUP_THREAD = "g-thread"
     }
 
     // --- self hygiene at start ---

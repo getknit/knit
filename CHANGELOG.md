@@ -127,6 +127,8 @@ document:
   could keep seeing their old photo or initials until one of you restarted Knit.
 - On a phone with no Files app, Knit closed when you went to send a file or photo, save a file, or make or
   restore a backup. It now says the phone has no app for picking or saving files.
+- Knit now waits until you accept a message request before it downloads the request's pictures and files.
+  They arrive after you tap Accept, so a stranger's attachments no longer take up space on your phone first.
 
 ## [2.10.2](https://github.com/getknit/knit/releases/tag/v2.10.2) — 2026-11-02T03:32:31Z
 

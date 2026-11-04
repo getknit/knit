@@ -315,6 +315,7 @@ carries; never renumber an old one.
 | [2026-11.ejn8](decisions/2026-11-ejn8-translation-models-go-phone-to-phone-over-a-direct-transfer.md) | Translation models go phone to phone over a direct transfer | transfer, ml, wire, privacy |
 | [2026-11.nsbf](decisions/2026-11-nsbf-a-block-also-holds-a-person-s-profile-presentation.md) | A block also holds a person's profile presentation | moderation, privacy, security, profile, contacts |
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |
+| [2026-11.qu98](decisions/2026-11-qu98-a-message-request-s-attachments-wait-for-acceptance.md) | a message request's attachments wait for acceptance | blobs, messages, security |
 | [2026-11.sfms](decisions/2026-11-sfms-a-reset-the-replacement-floor-refuses-is-re-opened-when-the-floor-ends.md) | A reset the replacement floor refuses is re-opened when the floor ends | crypto, pfs, recovery |
 | [2026-11.vdx4](decisions/2026-11-vdx4-a-uri-another-app-hands-knit-is-read-only-through-someone-else-s-provider.md) | A URI another app hands Knit is read only through someone else's provider | security, attachments, privacy |
 | [2026-11.xp6d](decisions/2026-11-xp6d-a-bluetooth-advert-names-a-rotating-tag.md) | A Bluetooth advert names a rotating tag, not the node id | ble, mesh, privacy, wire, crypto |

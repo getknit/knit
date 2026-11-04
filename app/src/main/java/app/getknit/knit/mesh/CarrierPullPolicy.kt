@@ -20,6 +20,10 @@ package app.getknit.knit.mesh
  * opaque to a carrier and purges nothing. A recipient or member linked to us but not to the author still gets it at
  * once: its own ask reaches us, and `BlobExchange.onRequest` pulls it through on its behalf, which this never holds
  * back.
+ *
+ * A recipient that holds the DM as a message request not accepted yet fetches nothing (#282, `RequestHold`), and does
+ * not echo a carrier's ask either, so a carrier linked to it waits here for the whole [DEFER_MS] before it takes its
+ * own copy from the author: the request delays the carriers' copies by up to that, and changes nothing this reads.
  */
 internal object CarrierPullPolicy {
     // Long enough for the recipient to have fetched the picture over the link it shares with us — a 2 MB one at the

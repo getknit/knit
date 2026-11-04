@@ -46,6 +46,7 @@ abstract class StrandedLabBase {
         awaitLinkUpHooks(alice to bob, alice to carol, bob to alice, bob to carol, carol to alice, carol to bob)
         lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
         lab.awaitAcquainted(sam, alice)
+        lab.befriend(sam, alice) // Sam's picture is a contact's, not a request's (ADR 2026-11.qu98)
         awaitLinkUpHooks(sam to alice, alice to sam)
 
         assertTrue(sam.sendImage(Random(195).nextBytes(4_096), "never lands", to = alice))

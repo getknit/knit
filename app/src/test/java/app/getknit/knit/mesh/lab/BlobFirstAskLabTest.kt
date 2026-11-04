@@ -99,6 +99,7 @@ class BlobFirstAskLabTest {
             val dave = lab.node("dave").apply { setDisplayName("Dave") }
             lab.linkAll(alice to bob, alice to dave, bob to carol, dave to carol)
             lab.awaitAcquainted(alice, bob, carol, dave)
+            lab.befriend(alice, bob, carol, dave)
             awaitLinkUpHooks(bob to alice, bob to carol, carol to bob, carol to dave, dave to alice, dave to carol)
             val groupId = alice.createGroup(bob, carol, dave)
             assertTrue(alice.sendGroup(groupId, "hello all"))

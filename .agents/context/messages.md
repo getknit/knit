@@ -16,6 +16,11 @@ lines.
   2026-10.97vs. A cue goes over the radios and, for a DM or group, as a spool sig beside them (spec §7.8); the
   Typing indicators switch (on by default) stops both and hides cues already showing, and a cue from a blocked
   sender or in a message request is never shown, whatever plane carried it.
+- **When touching what a message request fetches — `Conversations.isAccepted` as read by `AcceptanceSnapshot`,
+  `InboundPipeline.notifyPendingRequests`, or any attachment want in a conversation nobody accepted:** READ ADR 009
+  and ADR 2026-11.qu98. A request's row is stored and acked, but its attachment is not fetched, echoed or pulled off
+  the spool until the conversation is accepted (or a row naming the same hash is ours, tapped or accepted); Accept
+  re-arms at once. Symbols: `.agents/context/blobs.md`.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
   for the card its link is fetching, or the share sheet never carries one; a LoRa thread takes a card exactly

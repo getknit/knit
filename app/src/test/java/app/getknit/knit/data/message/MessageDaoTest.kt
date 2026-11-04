@@ -2,6 +2,7 @@ package app.getknit.knit.data.message
 
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.blob.BlobEntity
+import app.getknit.knit.data.message.Conversations.NEARBY
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -42,14 +43,14 @@ class MessageDaoTest : RoomDbTest() {
             // ADR 2026-10.js2p: what BluetoothFetchGate folds a re-armed want's verdict over, row by row.
             dao.upsert(msg("a1", attachmentHash = "H1", sender = "peer", sentAt = 1L).copy(attachmentSize = 2_000_000L))
             dao.upsert(msg("a2", attachmentHash = "H1", sender = "me", sentAt = 2L).copy(attachmentSize = 1_500_000L))
-            dao.upsert(msg("c1", recipientId = "me", attachmentHash = "H3", sender = "peer", sentAt = 3L))
+            dao.upsert(msg("c1", recipientId = "me", conversationId = "peer", attachmentHash = "H3", sender = "peer", sentAt = 3L))
 
-            // And, for PullThroughGate (#195), when each was sent and whether it is a DM's: only c1 has a recipient.
+            // And when each was sent and whether it is a DM's (#195), and its conversation (#282): only c1 has a recipient.
             assertEquals(
                 listOf(
-                    AttachmentFetchRow("H1", "peer", 2_000_000L, approved = false, own = false, sentAt = 1L, dm = false),
-                    AttachmentFetchRow("H1", "me", 1_500_000L, approved = false, own = true, sentAt = 2L, dm = false),
-                    AttachmentFetchRow("H3", "peer", null, approved = false, own = false, sentAt = 3L, dm = true),
+                    AttachmentFetchRow("H1", "peer", 2_000_000L, approved = false, own = false, sentAt = 1L, dm = false, NEARBY),
+                    AttachmentFetchRow("H1", "me", 1_500_000L, approved = false, own = true, sentAt = 2L, dm = false, NEARBY),
+                    AttachmentFetchRow("H3", "peer", null, approved = false, own = false, sentAt = 3L, dm = true, "peer"),
                 ),
                 dao.attachmentFetchRows(me = "me", commonsGlob = COMMONS_GLOB),
             )

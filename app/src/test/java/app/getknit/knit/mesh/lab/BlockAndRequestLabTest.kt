@@ -1,8 +1,11 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.data.AttachmentIdentities
+import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.sha256Hex
@@ -86,6 +89,171 @@ class BlockAndRequestLabTest {
             carol.accept(alice.nodeId)
             assertTrue(carol.sendDm(alice, "accepted"))
             lab.assertConverged(listOf(alice, carol), atLeast = 2, carriers = listOf(bob)) { it.dmWith(if (it === alice) carol else alice) }
+        }
+
+    /**
+     * #282: a stranger's picture to Carol is stored and acked, and its bytes wait for her Accept. Dave, linked to Carol
+     * alone, carries the DM, leaves the picture to its linked recipient for `CarrierPullPolicy.DEFER_MS`, then asks Carol
+     * to pull it through — and Carol declines the echo, so nothing a stranger chose reaches her store or her radios. Once
+     * she accepts, she fetches it at once with no tick, and Dave's next tick takes his copy from her: one copy per (hash,
+     * link), and the full oracle across the three.
+     */
+    @Test
+    fun aRequestsPictureWaitsForTheAcceptThenCrossesEachLinkOnce() =
+        runBlocking {
+            val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            lab.linkAll(stranger to carol, carol to dave)
+            lab.awaitAcquainted(stranger, carol, dave)
+
+            val held = carol.metrics.files().requestHolds
+            val deferred = dave.metrics.files().carrierPullsDeferred
+            val picture = Random(282).nextBytes(4_096)
+            assertTrue(stranger.sendImage(picture, "a request", to = carol))
+            val id = stranger.ownMessageId(stranger.dmWith(carol), "a request")
+            val hash = checkNotNull(stranger.attachmentHash(stranger.dmWith(carol), id))
+            lab.awaitReceipt(stranger, id, carol)
+            assertTrue("the DM is a message request", carol.isRequest(stranger))
+            // Each decision is awaited, not the absence it leads to: Carol's hold, and Dave's deferral to his linked recipient.
+            lab.await(1) { if (carol.metrics.files().requestHolds > held) 1 else 0 }
+            lab.await(1) { if (dave.metrics.files().carrierPullsDeferred > deferred) 1 else 0 }
+
+            // Past the carrier's deferral, Dave's tick wants the picture and asks Carol, his one neighbour, to pull it through.
+            val declined = carol.metrics.files().blobEchoesDeclined
+            lab.clock.advance(CarrierPullPolicy.DEFER_MS)
+            carol.sweepExpired()
+            dave.sweepExpired()
+            dave.reoffer()
+            lab.await(1) { dave.transport.blobAsks.count { it.hash == hash && it.to == carol.nodeId } }
+            lab.await(1) { if (carol.metrics.files().blobEchoesDeclined > declined) 1 else 0 }
+            carol.reoffer() // her own tick re-reads the rows: still held
+            assertFalse("carol fetched a request's picture", carol.holdsBlob(hash))
+            assertFalse("carol wants it", hash in carol.manager.wantedBlobs())
+            assertTrue("carol asked for it: ${carol.transport.blobAsks}", carol.transport.blobAsks.none { it.hash == hash })
+            assertEquals("no copy reached carol", 0, stranger.filesTo(carol, hash) + dave.filesTo(carol, hash))
+
+            carol.accept(stranger.nodeId)
+            lab.await(1) { if (carol.holdsBlob(hash)) 1 else 0 }
+            awaitCopy(dave, hash)
+            assertEquals("the stranger fed carol once", 1, stranger.filesTo(carol, hash))
+            assertEquals("and carol fed dave once", 1, carol.filesTo(dave, hash))
+            lab.assertConverged(listOf(stranger, carol), atLeast = 1, carriers = listOf(dave)) {
+                it.dmWith(if (it === stranger) carol else stranger)
+            }
+            assertTrue(picture.contentEquals(carol.attachmentPlain(carol.dmWith(stranger), id)))
+        }
+
+    /**
+     * #282's group form: a stranger founds a group of the two of them with Carol and posts a picture. A group only a
+     * stranger has spoken in is a request, and one naming nobody else is carried for nobody else (ADR 2026-11.qu98), so
+     * its picture waits whole: no hold lifts on her tick, nothing is fetched or asked. Accepted, it is fetched at once, one
+     * copy. (A group naming a third member is that member's to carry for: `aStrangersGroupPictureReachesAMemberWho…`.)
+     */
+    @Test
+    fun aStrangersPairGroupPictureWaitsForTheAccept() =
+        runBlocking {
+            val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            lab.link(stranger, carol)
+            lab.awaitAcquainted(stranger, carol)
+
+            val groupId = stranger.createGroup(carol)
+            val held = carol.metrics.files().requestHolds
+            val picture = Random(283).nextBytes(4_096)
+            assertTrue(stranger.sendImage(picture, "from a stranger", groupId = groupId))
+            val id = stranger.ownMessageId(groupId, "from a stranger")
+            val hash = checkNotNull(stranger.attachmentHash(groupId, id))
+            lab.awaitReceipt(stranger, id, carol)
+            lab.await(1) { if (carol.metrics.files().requestHolds > held) 1 else 0 }
+            carol.reoffer() // her tick re-reads the rows: still held
+            assertFalse("carol fetched a request's picture", carol.holdsBlob(hash))
+            assertFalse("carol wants it", hash in carol.manager.wantedBlobs())
+            assertEquals("no copy reached carol", 0, stranger.filesTo(carol, hash))
+
+            carol.accept(groupId)
+            lab.await(1) { if (carol.holdsBlob(hash)) 1 else 0 }
+            assertEquals("the stranger fed carol once", 1, stranger.filesTo(carol, hash))
+            lab.assertConverged(listOf(stranger, carol), atLeast = 1) { groupId }
+            assertTrue(picture.contentEquals(carol.attachmentPlain(groupId, id)))
+        }
+
+    /**
+     * #282's B3 (ADR 2026-11.qu98's carrier rule): a stranger founds a group with Ravi and Mona, and the radios run in a
+     * line, the stranger – Ravi – Mona. Mona knows the stranger, Ravi never accepts. Ravi's own row of the picture stays a
+     * request's, but the group names Mona, so Ravi carries the picture for her as any carrier would: Mona gets it through
+     * him, one copy per link, while Ravi's request is still pending.
+     */
+    @Test
+    fun aStrangersGroupPictureReachesAMemberWhoKnowsThemThroughOneWhoNeverAccepted() =
+        runBlocking {
+            val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
+            val ravi = lab.node("ravi").apply { setDisplayName("Ravi") }
+            val mona = lab.node("mona").apply { setDisplayName("Mona") }
+            lab.linkAll(stranger to ravi, ravi to mona)
+            lab.awaitAcquainted(stranger, ravi, mona)
+            lab.befriend(stranger, mona)
+
+            val groupId = stranger.createGroup(ravi, mona)
+            val picture = Random(285).nextBytes(4_096)
+            assertTrue(stranger.sendImage(picture, "for the group", groupId = groupId))
+            val id = stranger.ownMessageId(groupId, "for the group")
+            val hash = checkNotNull(stranger.attachmentHash(groupId, id))
+            awaitCopy(mona, hash)
+            assertFalse(
+                "ravi never accepted the group",
+                ravi.settings.acceptedConversations
+                    .first()
+                    .contains(groupId),
+            )
+            assertEquals("the stranger fed ravi once", 1, stranger.filesTo(ravi, hash))
+            assertEquals("and ravi fed mona once", 1, ravi.filesTo(mona, hash))
+            lab.assertConverged(listOf(stranger, ravi, mona), atLeast = 1) { groupId }
+            assertTrue(picture.contentEquals(mona.attachmentPlain(groupId, id)))
+        }
+
+    /**
+     * #282's B4: a stranger's request to Carol names the hash of Alice's picture to Bob, which Carol carries between them.
+     * The hold is Carol's own pull for herself and nothing else: Bob's ask is still echoed and served through her, one copy
+     * per link.
+     */
+    @Test
+    fun aStrangersRequestNamingABystandersPictureNeverStopsTheirCarrier() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
+            lab.linkAll(alice to carol, carol to bob, stranger to carol)
+            lab.awaitAcquainted(alice, bob, carol, stranger)
+            lab.befriend(alice, bob)
+            lab.unlink(alice, carol) // Alice's DM waits in her custody while the stranger names its bytes to Carol
+
+            val picture = Random(286).nextBytes(4_096)
+            assertTrue(alice.sendImage(picture, "for bob", to = bob))
+            val id = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), id))
+            // A fork names a hash it saw on the air: here it holds the sealed bytes too, as a carrier of them would.
+            stranger.blobs.insert(hash, "image/jpeg", checkNotNull(alice.blobs.bytes(hash)))
+            val forged =
+                AttachmentStore.Ingested(
+                    hash = hash,
+                    mime = "image/jpeg",
+                    sizeBytes = picture.size,
+                    reuse = AttachmentIdentities.Held(hash, key = "a2V5", mime = "image/jpeg", animated = false, plainHash = hash),
+                )
+            val holds = carol.metrics.files().requestHolds
+            assertTrue(stranger.sendPicked(forged, "the same file", to = carol))
+            lab.await(1) { if (carol.metrics.files().requestHolds > holds) 1 else 0 }
+
+            lab.link(alice, carol)
+            awaitCopy(bob, hash)
+            assertEquals("carol took one copy", 1, alice.filesTo(carol, hash) + stranger.filesTo(carol, hash))
+            assertEquals("and fed bob one", 1, carol.filesTo(bob, hash))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol, stranger)) {
+                it.dmWith(if (it === alice) bob else alice)
+            }
+            assertTrue(picture.contentEquals(bob.attachmentPlain(bob.dmWith(alice), id)))
         }
 
     /**
@@ -270,6 +438,36 @@ class BlockAndRequestLabTest {
                 )
             }
         }
+
+    /** How many copies of [hash] this node handed [to]: the `files` recorder, the oracle for one copy per (hash, link). */
+    private fun LabNode.filesTo(
+        to: LabNode,
+        hash: String,
+    ) = transport.files.count { it == "${to.nodeId} ATTACHMENT $hash" }
+
+    /**
+     * Waits for [node] to hold [hash], over its ticks if need be: a want an echo declined may have backed off, and its next
+     * cycle is due only on the lab's calendar, which a scenario moves by hand.
+     */
+    private suspend fun awaitCopy(
+        node: LabNode,
+        hash: String,
+    ) {
+        var held = false
+        repeat(HEAL_TICKS) {
+            if (!held) {
+                node.reoffer()
+                held = lab.tryAwait(1, TICK_WAIT_MS) { if (node.holdsBlob(hash)) 1 else 0 }
+            }
+            if (!held) lab.clock.advance(BlobExchange.ROUND_MS + 1)
+        }
+        assertTrue(
+            "${node.name} never got ${hash.take(
+                8,
+            )}: wanted ${hash in node.manager.wantedBlobs()}, asked ${node.transport.blobAsks.filter { it.hash == hash }}",
+            held,
+        )
+    }
 
     /**
      * Waits for [alice] to show [bob]'s owed face with its bytes, over her ticks if need be: a face whose bytes went (#256)

@@ -221,6 +221,7 @@ class StrandedAttachmentLabTest : StrandedLabBase() {
             awaitLinkUpHooks(alice to dave, dave to alice)
             lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
             lab.awaitAcquainted(sam, alice)
+            lab.befriend(sam, alice)
             awaitLinkUpHooks(sam to alice, alice to sam)
             assertTrue(sam.sendImage(Random(1_195).nextBytes(4_096), "asked blind", to = alice))
             val id = sam.ownMessageId(sam.dmWith(alice), "asked blind")
@@ -327,6 +328,7 @@ class StrandedAttachmentLabTest : StrandedLabBase() {
             awaitLinkUpHooks(alice to bob, bob to alice, bob to dave, dave to bob)
             lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
             lab.awaitAcquainted(sam, alice)
+            lab.befriend(sam, alice)
             awaitLinkUpHooks(sam to alice, alice to sam)
             val groupId = sam.createGroup(alice)
             assertTrue(sam.sendGroup(groupId, "hello"))
@@ -383,6 +385,7 @@ class StrandedAttachmentLabTest : StrandedLabBase() {
             awaitLinkUpHooks(alice to bob, bob to alice)
             lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
             lab.awaitAcquainted(sam, alice)
+            lab.befriend(sam, alice)
             awaitLinkUpHooks(sam to alice, alice to sam)
             val groupId = sam.createGroup(alice)
             assertTrue(sam.sendGroup(groupId, "hello"))

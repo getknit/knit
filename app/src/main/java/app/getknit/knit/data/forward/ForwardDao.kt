@@ -172,6 +172,24 @@ interface ForwardDao {
     suspend fun carriedAttachments(now: Long): List<CarriedAttachmentRow>
 
     /**
+     * [carriedAttachments] for the one attachment [hash]: the frames naming it, when it is not held. What a neighbour's ask
+     * for a blob no message row names is judged on (#282, `RequestHold.carriedHeld`), so one ask reads one hash's rows.
+     */
+    @Query(
+        "SELECT attachmentHash AS hash, recipientId, receivedAt, senderId, groupId, sentAt, " +
+            "CASE WHEN recipientId IS NULL AND (groupId IS NOT NULL OR NOT EXISTS " +
+            "(SELECT 1 FROM messages AS m WHERE m.attachmentHash = forward_store.attachmentHash)) " +
+            "THEN signed END AS signed, " +
+            "EXISTS (SELECT 1 FROM messages AS m WHERE m.attachmentHash = forward_store.attachmentHash) AS rowCovered " +
+            "FROM forward_store " +
+            "WHERE attachmentHash = :hash AND expiresAt >= :now AND attachmentHash NOT IN (SELECT hash FROM blobs)",
+    )
+    suspend fun carriedAttachmentsNaming(
+        hash: String,
+        now: Long,
+    ): List<CarriedAttachmentRow>
+
+    /**
      * Every carried frame including expired-but-unswept rows, newest first — the `debug.STORE` bridge dump.
      * Deliberately wider than what the digest folds (live rows only), so a dump can show the benign lapsed
      * residue awaiting the sweep alongside the live set the cue plane actually advertises.

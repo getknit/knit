@@ -71,6 +71,7 @@ import app.getknit.knit.data.settings.TicketKeyStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.CARRIER_BLOB_BUDGET_BYTES
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.ContributionLedger
 import app.getknit.knit.mesh.DmAckCoalescer
@@ -966,6 +967,33 @@ class MeshLab {
     }
 
     /**
+     * Makes [nodes] people who know each other: each accepts every other's DM, as the Requests inbox's Accept does. A
+     * message request's attachments are not fetched until it is accepted (ADR 2026-11.qu98, #282), so a scenario whose
+     * nodes stand for contacts calls this after [awaitAcquainted]; one whose subject is a stranger or a request leaves those
+     * nodes out. Each accept is awaited through the re-arm it sets off (`MeshManager`'s acceptance collector, counted as
+     * `Files.acceptanceRearms`), once the collector has finished the round for its first value: a round still running
+     * when the scenario sends would read the rows before a delivery wrote its row and hold the delivery's want to Wi-Fi
+     * Aware (the js2p window, `StrandedAttachmentLabTest`'s flake of 2026-11-04). An id a node already accepted is
+     * skipped, since it moves nothing the collector sees.
+     */
+    suspend fun befriend(vararg nodes: LabNode) {
+        for (node in nodes) {
+            // The collector's first round (its first value, launched after the start's sweeps, which a boot does not await)
+            // bumps the same counter: a baseline read while it still runs would take its finish for the accept's round.
+            val first = tryAwait(1) { if (node.metrics.files().acceptanceRearms >= 1) 1 else 0 }
+            assertTrue("${node.name}'s acceptance collector never acted on its first value", first)
+            for (other in nodes.filter { it !== node }) {
+                // An id already accepted changes nothing the collector sees (`distinctUntilChanged`): no round to await.
+                if (other.nodeId in node.settings.acceptedConversations.first()) continue
+                val before = node.metrics.files().acceptanceRearms
+                node.accept(other.nodeId)
+                val ok = tryAwait(1) { if (node.metrics.files().acceptanceRearms > before) 1 else 0 }
+                assertTrue("${node.name}'s acceptance of ${other.name} never re-armed", ok)
+            }
+        }
+    }
+
+    /**
      * Waits until the link-up among [nodes] is over: every pair has pinned the other's key, the custody stores
      * agree, every node's newcomer hooks have run, and what those hooks sent has been handled. A scenario may act
      * on the link the moment this returns: cut it, hold it, mint a group, count frames.
@@ -1161,6 +1189,8 @@ data class LabLimits(
     val rideHoldMs: Long = MeshLab.RIDE_HOLD_MS,
     /** How long a blob round's first ask has before every other neighbour is asked ([MeshLab.FIRST_ASK_GRACE_MS]). */
     val firstAskGraceMs: Long = MeshLab.FIRST_ASK_GRACE_MS,
+    /** The carrier budget (`CARRIER_BLOB_BUDGET_BYTES`, 128 MiB): what a scenario fills with a few pictures (#282). */
+    val carrierBlobBudgetBytes: Long = CARRIER_BLOB_BUDGET_BYTES,
     /**
      * How long a send of ours with nothing else to defer on holds for its proof round ([MeshLab.PROOF_WAIT_MS]; ADR
      * 2026-10.vy27): on the wall clock, so longer than production's, which a stalled node could outlast.
@@ -1922,6 +1952,7 @@ class LabNode internal constructor(
                 spoolTickMs = limits.spoolTickMs,
                 spoolAttachmentRetryMs = limits.spoolAttachmentRetryMs,
                 firstAskGraceMs = limits.firstAskGraceMs,
+                carrierBlobBudgetBytes = limits.carrierBlobBudgetBytes,
                 proofWaitMs = limits.proofWaitMs,
                 reofferIntervalMs = limits.reofferIntervalMs,
                 blobHolderQuery =

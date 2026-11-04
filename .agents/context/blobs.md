@@ -181,6 +181,29 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   2026-10-19 amendment).
   Lab: `LargeAttachmentLabTest`, `LinkDownloadLimitLabTest` (over a direct link), `AttachmentLabTest`'s two #132 cases; unit: `BlobExchangeTest`'s fast-only cases,
   `CompositeMeshTransportTest`, `BluetoothFetchGateTest`.
+- **Before touching `RequestHold` / `AcceptanceSnapshot`, `AttachmentFetchRow.conversationId`,
+  `CarriedAttachment.departed`, what `InboundPipeline.deliveredFetch` / `foldFetch` / `onCarriedFrame` /
+  `settleGroupPhotoBlobs` or `MeshManager.rewantMissingBlobs` (`heldForRequests`, `groupPhotosToFetch`,
+  `carriedVerdict`) want for a conversation nobody accepted, `MeshManager.requestHeld` / `echoGate` (`EchoGate`,
+  `ECHO_GATE_MEMO`), `BlobRepository.requestOnlyBlobs` / `dropRequestOnly` (`keptFromSweeps`, `pinnedOutsideMessages`,
+  `namedOnlyByRequests`), `BlobDao.requestBlobCandidates` / `countFetchingRows`, `MeshManager.dropRequestOnlyBlobs`,
+  `InboundPipeline.carriedForOthersInRequest`, the carrier budget's `carrierBytes`, `ForwardStore.carriedAttachmentsNaming`, `ScopeBlobs.accepted` / `held`, the
+  acceptance collector on `acceptedConversations` and the verified ids, or `MeshMetrics.Files.requestHolds` / `acceptanceRearms` / `carrierPullsOverBudget`, or `MeshLab.befriend`:** READ ADR
+  2026-11.qu98 (with 009, 018, 2026-10.js2p, 2026-10.g24x). The hold covers only our own pull of a request's bytes for
+  ourselves: an attachment is held while every row naming it is not ours, not tapped and in a conversation
+  `Conversations.isAccepted` does not accept. A custodied DM to us, or a frame of a group whose roster is only us and
+  its sender, is held by the same rule; we are a member by `members ∪ departed` or a group we hold, never the
+  stranger's roster alone. Anything else (a frame for somebody else, a request group naming a third member) goes by the
+  carrier rules, even under a Bluetooth limit, and a blob only held rows name counts toward the carrier budget and is
+  evicted as carrier bytes. That drop keeps every orphan-sweep guard (our own avatar, which never counts, a blob stored
+  this process, a group photo), re-reads acceptance just before it and the rows inside its write. The
+  echo declines a held hash (`EchoDeclined`) after reading custody too, and wants any group photo under
+  `FileIntake.MAX_AVATAR_BYTES`; its per-hash memo lasts one `ROUND_MS` and the collector clears it, the re-arm never
+  reads it. The spool drops a held hash from its candidates without settling it. Author, `until` and the fast-only
+  verdict come from the releasing rows only. Custody, relay, acks and `CarrierPullPolicy`'s inputs never read
+  acceptance. Unasked pushes: #277. Lab: `BlockAndRequestLabTest`, `MaliciousForkLabTest`'s request
+  cases; unit: `RequestHoldTest`, `BlobDaoTest`, `BlobRepositoryTest`'s request cases,
+  `MeshManagerTest.theRequestSweepRereadsAcceptanceJustBeforeItDrops`.
 - **When touching `KeyExchange`'s cache / `profileFor` / `serveKey`, `peer_profiles` (`PeerProfileEntity`,
   `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`keylessSenders`):** READ ADR
   2026-09.g64k (it closes the case ADR 2026-09.9xuu set aside). A carrier keeps the signed profile each pin came from,

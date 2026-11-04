@@ -156,6 +156,7 @@ class PullBudgetLabTest : StrandedLabBase() {
     ): String {
         lab.link(from, to) { from.transport.holdFiles(to.transport) }
         lab.awaitAcquainted(from, to)
+        lab.befriend(from, to)
         awaitLinkUpHooks(from to to, to to from)
         assertTrue(from.sendImage(Random(text.hashCode()).nextBytes(4_096), text, to = to))
         val id = from.ownMessageId(from.dmWith(to), text)
@@ -304,6 +305,7 @@ class PullBudgetLabTest : StrandedLabBase() {
             awaitLinkUpHooks(alice to bob, bob to alice, bob to carol, carol to bob)
             lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
             lab.awaitAcquainted(sam, alice)
+            lab.befriend(sam, alice)
             awaitLinkUpHooks(sam to alice, alice to sam)
 
             lab.clock.skew("sam", -PAST_WINDOW_MS) // his DM's sentAt is a day and an hour old when it lands
@@ -410,6 +412,7 @@ class PullBudgetLabTest : StrandedLabBase() {
             awaitLinkUpHooks(sam to bob, bob to sam, bob to alice, alice to bob)
             lab.link(sam, alice) { sam.transport.holdFiles(alice.transport) }
             lab.awaitAcquainted(sam, alice)
+            lab.befriend(sam, alice)
             awaitLinkUpHooks(sam to alice, alice to sam)
 
             val picture = Random(8_195).nextBytes(4_096)

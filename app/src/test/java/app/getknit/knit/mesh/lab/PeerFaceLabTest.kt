@@ -358,6 +358,7 @@ class PeerFaceLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            alice.accept(CROWD) // the crowd's attachments are a known thread's, never a request's (ADR 2026-11.qu98)
             startSwept(alice, bob)
             val now = lab.clock.now()
             val attachments = (1..ATTACHMENTS).map { sha256Hex("attachment $it".toByteArray()) }

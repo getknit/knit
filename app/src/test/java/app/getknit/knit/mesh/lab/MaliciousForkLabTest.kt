@@ -1,8 +1,12 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.data.AttachmentIdentities
+import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.protocol.BlobReqContent
@@ -10,6 +14,7 @@ import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -248,6 +253,7 @@ class MaliciousForkLabTest : StrandedLabBase() {
             val mallory = lab.node("mallory", limits).apply { setDisplayName("Mallory") }
             lab.linkAll(alice to bob, mallory to bob)
             lab.awaitAcquainted(alice, bob, mallory)
+            lab.befriend(alice, bob)
 
             val sybils = (1..4).map { LabSybil(seed = 9_100 + it, name = "sybil $it") }
             val sizes = listOf(PROFILE_CAP, PROFILE_CAP, PROFILE_CAP + 1, PROFILE_CAP + 2)
@@ -426,19 +432,200 @@ class MaliciousForkLabTest : StrandedLabBase() {
             )
         }
 
+    /**
+     * #282's B2: Mallory founds a group that lists Alice only as departed, and posts a picture into it. The frame still
+     * addresses Alice, so its picture is a request's: held, unwanted and unfetched, until she accepts the group — then her
+     * re-arm wants it at once.
+     */
+    @Test
+    fun aGroupListingUsOnlyAsDepartedIsStillARequestsAndHeld() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+            lab.link(alice, mallory)
+            lab.awaitAcquainted(alice, mallory)
+            val picture = Random(2_821).nextBytes(4_096)
+            val hash = sha256Hex(picture)
+            mallory.blobs.insert(hash, "image/jpeg", picture)
+            val group =
+                GroupInfo(
+                    id = Conversations.groupIdFor(listOf(mallory.nodeId, alice.nodeId)),
+                    members = listOf(mallory.nodeId),
+                    createdBy = mallory.nodeId,
+                    departed = listOf(alice.nodeId),
+                )
+            val holds = alice.metrics.files().requestHolds
+            val frame =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = FrameId.new(),
+                    senderId = mallory.nodeId,
+                    sentAt = lab.clock.now(),
+                    group = group,
+                    payload = WireCodec.encodePayload(ChatContent(enc = LabSybil.sealedNoise(Random(2_822)), attachmentHash = hash)),
+                )
+            mallory.floodSigned(frame)
+            lab.await(1) { if (frame.id in alice.custodyIds()) 1 else 0 }
+            lab.await(1) { if (alice.metrics.files().requestHolds > holds) 1 else 0 }
+            alice.reoffer() // her tick re-reads custody: still held
+            assertFalse("alice fetched it", alice.holdsBlob(hash))
+            assertFalse("alice wants it", alice.wants(hash))
+            assertEquals("nobody fed alice", 0, mallory.transport.files.count { hash in it })
+
+            // Accepted, the hold lets go: her re-arm wants it. Unopened (she cannot read a frame sealed to nobody), it is wanted
+            // fast-only under her Bluetooth limit when her group row counts it as ours (ADR 2026-10.js2p) — a want that stays
+            // a want with no Wi-Fi Aware holder here — and plain otherwise, when it lands: either way it is released. Past a
+            // carrier's deferral too, in case her pull is read as one (ADR 2026-10.g24x).
+            alice.accept(group.id)
+            lab.clock.advance(CarrierPullPolicy.DEFER_MS)
+            alice.reoffer()
+            lab.await(1) { if (alice.wants(hash) || alice.holdsBlob(hash)) 1 else 0 }
+            // Mallory's own floods never enter her custody (a fork floods what it signs and keeps nothing), so custody is
+            // compared on Alice's side alone.
+            lab.assertConverged(listOf(alice, mallory), atLeast = 0, custodyAcross = listOf(alice)) { Conversations.NEARBY }
+        }
+
+    /**
+     * #282's round 3: Mallory sends Alice a request DM naming the hash of Alice's own photo, which she advertises to anyone.
+     * Mallory's row is then the only message row naming it, and no peers row is Alice's own. Once the DM's custody has
+     * expired and Alice has restarted (so no mark of this process protects it), her sweep of request-only bytes must still
+     * leave her photo: it is her avatar, as every other deleter knows. Bob, meeting her after, fetches her face.
+     */
+    @Test
+    fun aRequestNamingOurOwnPhotoNeverDropsIt() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+            lab.link(alice, mallory)
+            lab.awaitAcquainted(alice, mallory)
+            val photo = Random(2_825).nextBytes(2_048)
+            val hash = sha256Hex(photo)
+            alice.setAvatar(photo)
+            // The hash is public in Alice's profile; a fork pairs it with the bytes it pulled as her face.
+            mallory.blobs.insert(hash, "image/jpeg", photo)
+            val named = AttachmentIdentities.Held(hash, key = "a2V5", mime = "image/jpeg", animated = false, plainHash = hash)
+            val request = AttachmentStore.Ingested(hash = hash, mime = "image/jpeg", sizeBytes = photo.size, reuse = named)
+            assertTrue(mallory.sendPicked(request, "your own face", to = alice))
+            val id = mallory.ownMessageId(mallory.dmWith(alice), "your own face")
+            // Alice holds the bytes already, so nothing is held or fetched: the row naming them is what lands.
+            lab.await(1) { if (alice.attachmentHash(alice.dmWith(mallory), id) == hash) 1 else 0 }
+
+            lab.unlink(alice, mallory)
+            // lab-lint: allow clock-jump-over-48h — 24 h and a minute, under 48 h before the restart's sweep
+            lab.clock.advance(ForwardRepository.DEFAULT_TTL_MS + MINUTE_MS)
+            alice.sweepExpired() // the DM's custody goes: no frame pins the bytes any more
+            alice.restart() // a new process: nothing stored "this process" shields the photo
+            lab.await(1) { if (alice.manager.startSweepsDone) 1 else 0 }
+            alice.sweepLocalStorage()
+            assertTrue("alice's own photo was dropped as a request's bytes", alice.holdsBlob(hash))
+
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            lab.await(1) { if (bob.peer(alice)?.avatarHash == hash) 1 else 0 }
+            lab.assertConverged(listOf(alice, bob), atLeast = 0) { Conversations.NEARBY }
+        }
+
+    /**
+     * #282's B1: Mallory sends Alice request DMs naming pictures, and floods DMs to a Sybil naming the same ones. Alice
+     * carries those for the Sybil and pulls their pictures as a carrier — and a picture only a request's rows name is a
+     * carrier's bytes, so the budget stops her: what she holds of Mallory's stays within one picture of it.
+     */
+    @Test
+    fun aRequestsRowsDoNotLiftTheCarrierBudget() =
+        runBlocking {
+            val limits = LabLimits(carrierBlobBudgetBytes = BUDGET_BYTES)
+            val alice = lab.node("alice", limits).apply { setDisplayName("Alice") }
+            val mallory = lab.node("mallory", limits).apply { setDisplayName("Mallory") }
+            lab.link(alice, mallory)
+            lab.awaitAcquainted(alice, mallory)
+            val sybil = LabSybil(seed = 2_823, name = "sybil")
+            mallory.flood(sybil.profile(lab.clock.now()))
+
+            val hashes = mutableListOf<String>()
+            var pulled = 0
+            repeat(PICTURES) { i ->
+                val picture = Random(2_830 + i).nextBytes(PICTURE_BYTES)
+                val hash = sha256Hex(picture).also { hashes += it }
+                mallory.blobs.insert(hash, "image/jpeg", picture)
+                val held = AttachmentIdentities.Held(hash, key = "a2V5", mime = "image/jpeg", animated = false, plainHash = hash)
+                val request = AttachmentStore.Ingested(hash = hash, mime = "image/jpeg", sizeBytes = PICTURE_BYTES, reuse = held)
+                val holds = alice.metrics.files().requestHolds
+                assertTrue(mallory.sendPicked(request, "request $i", to = alice))
+                lab.await(1) { if (alice.metrics.files().requestHolds > holds) 1 else 0 }
+                val carried =
+                    RelayEnvelope(
+                        type = FrameType.CHAT,
+                        id = FrameId.new(),
+                        senderId = mallory.nodeId,
+                        sentAt = lab.clock.now(),
+                        recipientId = sybil.nodeId,
+                        payload = WireCodec.encodePayload(ChatContent(enc = LabSybil.sealedNoise(Random(i)), attachmentHash = hash)),
+                    )
+                val refused = alice.metrics.files().carrierPullsOverBudget
+                mallory.floodSigned(carried)
+                lab.await(1) { if (carried.id in alice.custodyIds()) 1 else 0 }
+                // A pull the budget let through lands; one it refused is counted. Either way the next picture waits for it.
+                lab.await(1) { if (alice.holdsBlob(hash) || alice.metrics.files().carrierPullsOverBudget > refused) 1 else 0 }
+                if (alice.holdsBlob(hash)) pulled++
+            }
+            val heldBytes = hashes.count { alice.holdsBlob(it) } * PICTURE_BYTES.toLong()
+            assertTrue("alice held $heldBytes B of Mallory's, over the budget's last pull", heldBytes <= BUDGET_BYTES + PICTURE_BYTES)
+            assertTrue("the budget refused some: pulled $pulled of $PICTURES", pulled < PICTURES)
+            // Mallory's own floods never enter her custody (a fork floods what it signs and keeps nothing), so custody is
+            // compared on Alice's side alone.
+            lab.assertConverged(listOf(alice, mallory), atLeast = 0, custodyAcross = listOf(alice)) { Conversations.NEARBY }
+        }
+
+    /**
+     * #282's B5: Mallory founds a group with Alice and sets its photo, then asks Alice for it point-to-point, the pull
+     * budget open. The group is a request's, so Alice makes no echo want of its photo; accepted, she fetches it herself.
+     */
+    @Test
+    fun anAskForARequestGroupsPhotoMakesNoWantUntilTheGroupIsAccepted() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+            lab.link(alice, mallory)
+            lab.awaitAcquainted(alice, mallory)
+            val groupId = mallory.createGroup(alice)
+            assertTrue(mallory.sendGroup(groupId, "a group"))
+            lab.await(1) { alice.rowsIn(groupId).size }
+            val photo = Random(2_824).nextBytes(4_096)
+            val hash = sha256Hex(photo)
+            mallory.setGroupPhoto(groupId, photo)
+            lab.await(1) { if (alice.group(groupId)?.photoHash == hash) 1 else 0 }
+
+            val declined = alice.metrics.files().blobEchoesDeclined
+            mallory.transport.send(ask(mallory, hash, relay = false, pull = 1), Peer(alice.nodeId))
+            lab.await(1) { if (alice.metrics.files().blobEchoesDeclined > declined) 1 else 0 }
+            assertFalse("alice wants the photo", alice.wants(hash))
+            assertFalse("alice holds the photo", alice.holdsBlob(hash))
+
+            alice.accept(groupId)
+            lab.await(1) { if (alice.holdsBlob(hash)) 1 else 0 }
+            lab.assertConverged(listOf(alice, mallory), atLeast = 1) { groupId }
+        }
+
     /** A `blobreq` for [hash] with the whole pull budget, as a current build's root sends it, but for [relay]. */
     private fun ask(
         from: LabNode,
         hash: String,
         relay: Boolean,
+        pull: Int = BlobExchange.PULL_BUDGET,
     ): WireEnvelope {
-        val content = BlobReqContent(hash, pull = BlobExchange.PULL_BUDGET)
+        val content = BlobReqContent(hash, pull = pull)
         val env =
             RelayEnvelope(type = FrameType.BLOB_REQ, id = FrameId.new(), senderId = from.nodeId, payload = WireCodec.encodePayload(content))
         return WireEnvelope(ttl = DEFAULT_TTL, relay = relay, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
     private companion object {
+        // #282's budget case: four pictures of 4 KiB fill a 10 KiB budget on the third.
+        const val MINUTE_MS = 60_000L
+        const val BUDGET_BYTES = 10_240L
+        const val PICTURE_BYTES = 4_096
+        const val PICTURES = 5
         const val SYBILS = 10
         const val FLOOD_PER_SYBIL = 8
         const val BYTE_CAP = 4_096

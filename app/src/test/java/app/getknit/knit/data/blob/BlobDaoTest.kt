@@ -3,6 +3,7 @@ package app.getknit.knit.data.blob
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -89,10 +90,43 @@ class BlobDaoTest : RoomDbTest() {
             assertEquals(5L, dao.carrierOnlyBlobBytes()) // only C's 5 bytes
         }
 
+    @Test
+    fun `requestBlobCandidates lists the held blobs a request's rows name, with whether a frame carries them`() =
+        runTest {
+            // #282's B1: what the carrier budget counts and the sweep drops on top of carrierOnlyBlobBytes, before
+            // `BlobRepository` keeps only those every row of which is a request's (Shared is a candidate it then drops).
+            listOf("R", "RC", "Shared", "Own", "Tapped", "Avatar").forEach {
+                dao.insert(BlobEntity(hash = it, mime = "image/jpeg", bytes = ByteArray(4)))
+            }
+            val messages = db.messageDao()
+            messages.upsert(message("r1", attachmentHash = "R", conversation = "stranger"))
+            messages.upsert(message("r2", attachmentHash = "RC", conversation = "stranger"))
+            db.forwardDao().insert(carried("frc", attachmentHash = "RC"))
+            messages.upsert(message("r3", attachmentHash = "Shared", conversation = "stranger"))
+            messages.upsert(message("c3", attachmentHash = "Shared", conversation = "contact"))
+            messages.upsert(message("r4", attachmentHash = "Own", conversation = "stranger").copy(senderId = "me"))
+            messages.upsert(message("r5", attachmentHash = "Tapped", conversation = "stranger").copy(attachmentFetchApproved = true))
+            messages.upsert(message("r6", attachmentHash = "Avatar", conversation = "stranger"))
+            db.peerDao().upsert(PeerEntity(nodeId = "p1", avatarHash = "Avatar"))
+
+            assertEquals(
+                setOf(
+                    RequestOnlyBlob("R", 4L, carried = false),
+                    RequestOnlyBlob("RC", 4L, carried = true),
+                    RequestOnlyBlob("Shared", 4L, carried = false),
+                ),
+                dao.requestBlobCandidates(listOf("stranger"), me = "me").toSet(),
+            )
+            assertEquals(1, dao.countFetchingRows("Own", "me"))
+            assertEquals(1, dao.countFetchingRows("Tapped", "me"))
+            assertEquals(0, dao.countFetchingRows("R", "me"))
+        }
+
     private fun message(
         id: String,
         attachmentHash: String?,
-    ) = MessageEntity(id = id, senderId = "s", body = "", sentAt = 1L, attachmentHash = attachmentHash)
+        conversation: String = Conversations.NEARBY,
+    ) = MessageEntity(id = id, senderId = "s", conversationId = conversation, body = "", sentAt = 1L, attachmentHash = attachmentHash)
 
     private fun group(
         id: String,

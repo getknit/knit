@@ -46,6 +46,7 @@ class MeshPauseLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             val before = Random(1).nextBytes(4_096)
             val during = Random(2).nextBytes(4_096)

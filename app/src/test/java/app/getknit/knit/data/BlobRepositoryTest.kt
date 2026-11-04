@@ -55,6 +55,103 @@ class BlobRepositoryTest : RoomDbTest() {
 
     private suspend fun blob(hash: String) = db.blobDao().insert(BlobEntity(hash, "image/jpeg", byteArrayOf(1, 2, 3)))
 
+    // --- #282: request-only bytes are carrier bytes, dropped under the guards every deleter shares ---
+
+    /** A row of the request [conversation] (a stranger's DM to us) naming [hash]. */
+    private suspend fun requestRow(
+        id: String,
+        hash: String,
+        conversation: String = STRANGER,
+        sender: String = STRANGER,
+    ) = db.messageDao().upsert(
+        MessageEntity(id = id, senderId = sender, conversationId = conversation, body = "", sentAt = 1L, attachmentHash = hash),
+    )
+
+    @Test
+    fun `a request's bytes a frame no longer carries are listed and dropped`() =
+        runTest {
+            ownAvatar(null)
+            blob("req")
+            requestRow("r1", "req")
+
+            assertEquals(listOf("req"), repo().requestOnlyBlobs(listOf(STRANGER), ME).map { it.hash })
+            repo().dropRequestOnly(listOf("req"), listOf(STRANGER), ME)
+
+            assertFalse(db.blobDao().exists("req"))
+        }
+
+    @Test
+    fun `our own avatar named by a stranger's request is neither request bytes nor dropped`() =
+        runTest {
+            // A stranger DMs us an attachment whose hash is our public photo's: their row is the only one naming it, and no
+            // peers row is ours. The guard every other deleter keeps holds here too.
+            ownAvatar("mine")
+            blob("mine")
+            requestRow("r1", "mine")
+
+            assertEquals(emptyList<String>(), repo().requestOnlyBlobs(listOf(STRANGER), ME).map { it.hash })
+            repo().dropRequestOnly(listOf("mine"), listOf(STRANGER), ME)
+
+            assertTrue("our own avatar was dropped", db.blobDao().exists("mine"))
+        }
+
+    @Test
+    fun `a blob this process stored is not dropped as a request's`() =
+        runTest {
+            ownAvatar(null)
+            val repo = repo()
+            repo.insert("staged", "image/jpeg", byteArrayOf(1)) // #288: a composer or a save may name it next
+            requestRow("r1", "staged")
+
+            repo.dropRequestOnly(listOf("staged"), listOf(STRANGER), ME)
+
+            assertTrue(db.blobDao().exists("staged"))
+        }
+
+    @Test
+    fun `a row that fetches it for us since the listing keeps the blob`() =
+        runTest {
+            // The drop re-checks the rows inside its transaction: an acceptance, or a contact's row naming the same file,
+            // between the listing and the delete keeps the bytes.
+            ownAvatar(null)
+            blob("shared")
+            requestRow("r1", "shared")
+            assertEquals(listOf("shared"), repo().requestOnlyBlobs(listOf(STRANGER), ME).map { it.hash })
+            requestRow("c1", "shared", conversation = "contact", sender = "contact")
+
+            repo().dropRequestOnly(listOf("shared"), listOf(STRANGER), ME)
+
+            assertTrue(db.blobDao().exists("shared"))
+        }
+
+    @Test
+    fun `a conversation accepted since the listing keeps its bytes`() =
+        runTest {
+            // The caller re-reads the requests just before the drop (`MeshManager.dropRequestOnlyBlobs`): one accepted
+            // since the listing is no longer among them, and the drop's re-check keeps the bytes it names.
+            ownAvatar(null)
+            blob("accepted")
+            requestRow("r1", "accepted")
+            assertEquals(listOf("accepted"), repo().requestOnlyBlobs(listOf(STRANGER), ME).map { it.hash })
+
+            repo().dropRequestOnly(listOf("accepted"), requests = emptyList(), ME)
+
+            assertTrue(db.blobDao().exists("accepted"))
+        }
+
+    @Test
+    fun `request ids past one bound list are listed in chunks`() =
+        runTest {
+            // SQLite caps a statement's variables at 32,766: the list goes in chunks, so any number of unaccepted threads is
+            // read. One statement binding all of these would throw.
+            ownAvatar(null)
+            blob("late")
+            requestRow("r1", "late", conversation = "request-39999", sender = "request-39999")
+            val requests = (0 until 40_000).map { "request-$it" }
+
+            assertEquals(listOf("late"), repo().requestOnlyBlobs(requests, ME).map { it.hash })
+        }
+
     @Test
     fun `deletes a blob and its verdict when nothing references it`() =
         runTest {
@@ -459,4 +556,9 @@ class BlobRepositoryTest : RoomDbTest() {
             every { dao.observeOnPlanes(any(), any()) } throws AssertionError("queried the holders table for nothing")
             assertEquals(emptyMap<String, Map<String, Int>>(), repo(holders = dao).observeHolders(emptySet()).first())
         }
+
+    private companion object {
+        const val ME = "me"
+        const val STRANGER = "stranger"
+    }
 }

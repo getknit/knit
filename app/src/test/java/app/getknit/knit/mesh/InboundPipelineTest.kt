@@ -15,6 +15,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.adts
+import app.getknit.knit.data.blob.RequestOnlyBlob
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
@@ -533,6 +534,7 @@ class InboundPipelineTest {
                             msg.attachmentSize,
                             msg.attachmentFetchApproved,
                             msg.senderId == me,
+                            conversationId = msg.conversationId,
                         )
                     }
             }
@@ -2888,6 +2890,7 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId) // a contact's group: not a message request (#282)
             // blobStore.has("photoB") defaults false → decide on it, keep showing nothing, arm a pull.
             val group =
                 rig.group(
@@ -2901,7 +2904,18 @@ class InboundPipelineTest {
             assertEquals("decided the moment it is heard", "photoB", rig.groupMap[group.id]?.photoHash)
             assertEquals(100L, rig.groupMap[group.id]?.photoUpdatedAt)
             assertNull("not shown until its bytes arrive", rig.groupMap[group.id]?.photoShownHash)
-            coVerify { rig.blobExchange.want("photoB", any(), any(), any(), until = null, untilKnown = any()) }
+            // A photo's pull, under the face ceiling (#282).
+            coVerify {
+                rig.blobExchange.want(
+                    "photoB",
+                    any(),
+                    any(),
+                    any(),
+                    until = null,
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
 
             // The pulled blob lands → the group shows it now that it still decides on it.
             rig.pipeline.onObtained("photoB")
@@ -2918,6 +2932,7 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice) // content filtering is on in the rig
+            rig.settings.accepted.value = setOf(alice.nodeId) // a contact's group: not a message request (#282)
             val group =
                 rig.group(
                     members = listOf(rig.self.nodeId, alice.nodeId),
@@ -2937,7 +2952,17 @@ class InboundPipelineTest {
             coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced("photoC") }
 
             rig.deliver(alice, rig.groupUpdate(alice, group, sentAt = 8L))
-            coVerify(exactly = 1) { rig.blobExchange.want("photoC", any(), any(), any(), until = null, untilKnown = any()) }
+            coVerify(exactly = 1) {
+                rig.blobExchange.want(
+                    "photoC",
+                    any(),
+                    any(),
+                    any(),
+                    until = null,
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
         }
 
     /**
@@ -3008,6 +3033,7 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId) // a contact's group: not a message request (#282)
             val members = listOf(rig.self.nodeId, alice.nodeId)
             rig.seedGroup(
                 "g-p",
@@ -3021,7 +3047,17 @@ class InboundPipelineTest {
             val same = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "new", photoUpdatedAt = 9L)
             rig.deliver(alice, rig.groupUpdate(alice, same, sentAt = 12L))
 
-            coVerify { rig.blobExchange.want("new", alice.nodeId, null, null, until = null, untilKnown = any()) }
+            coVerify {
+                rig.blobExchange.want(
+                    "new",
+                    alice.nodeId,
+                    null,
+                    null,
+                    until = null,
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
             assertEquals("old", rig.groupMap["g-p"]?.photoShownHash)
             assertEquals(0, rig.msgMap.values.count { it.kind == MessageEntity.KIND_GROUP_PHOTO })
 
@@ -3889,6 +3925,8 @@ class InboundPipelineTest {
             rig.peerMap[alice.nodeId] =
                 PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, verified = true, updatedAt = 1L)
             rig.settings.bluetoothDownloadLimitBytes.value = 1_000_000L
+            // The contact's thread is accepted: since #282's fold, only rows that would fetch the hash judge it.
+            rig.settings.accepted.value = setOf("contact-node")
             rig.msgMap["contact"] =
                 MessageEntity(
                     id = "contact",
@@ -3967,6 +4005,8 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.settings.bluetoothDownloadLimitBytes.value = 1_000_000L
+            // A contact's DMs: a message request's are held whatever the limit (#282), the request-hold cases' business.
+            rig.settings.accepted.value = setOf(alice.nodeId)
 
             fun dm(
                 id: String,
@@ -4012,6 +4052,313 @@ class InboundPipelineTest {
             rig.settings.bluetoothDownloadLimitBytes.value = null
             rig.pipeline.onCarriedFrame(dm("d4", "ours-no-limit", rig.self.nodeId))
             coVerify { rig.blobExchange.want("ours-no-limit", alice.nodeId, null, null, false, until = any(), untilKnown = any()) }
+        }
+
+    // --- A message request's attachments wait for its acceptance (#282, RequestHold) ---
+
+    /** Fails if any want of [hash] was made, whatever its arguments. */
+    private fun Rig.assertNeverWanted(hash: String) =
+        coVerify(exactly = 0) {
+            blobExchange.want(
+                hash,
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                pull = any(),
+                until = any(),
+                untilKnown = any(),
+                ceiling = any(),
+                pushedBy = any(),
+            )
+        }
+
+    /** A chat frame from [author] naming [hash], to [to] or into [group]: what custody hands [InboundPipeline.onCarriedFrame]. */
+    private fun Rig.carried(
+        author: Party,
+        id: String,
+        hash: String,
+        to: String? = null,
+        group: GroupInfo? = null,
+    ) = attachmentChat(author, id = id, attachmentHash = hash).let {
+        RelayEnvelope(
+            type = it.type,
+            id = it.id,
+            senderId = it.senderId,
+            sentAt = it.sentAt,
+            recipientId = to,
+            group = group,
+            payload = it.payload,
+        )
+    }
+
+    @Test
+    fun aStrangersDmAttachmentIsStoredAndAckedButNeverFetched() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            rig.pin(stranger) // a key and nothing else: their DM is a message request
+
+            rig.deliver(stranger, rig.sealedFileDm(stranger, id = "r1", attachmentHash = "req-file", fileName = "a.zip"), from = "c")
+
+            assertEquals("the row is stored", "req-file", rig.msgMap["r1"]?.attachmentHash)
+            assertTrue("and acked", rig.originated.any { it.type == FrameType.RECEIPT })
+            assertEquals("its fetch is held, once", 1L, rig.metrics.files().requestHolds)
+            rig.assertNeverWanted("req-file")
+        }
+
+    @Test
+    fun anAcceptedPeersDmAttachmentIsFetchedFromThemAtOnce() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+
+            rig.deliver(alice, rig.sealedFileDm(alice, id = "a1", attachmentHash = "acc-file", fileName = "a.zip"), from = "c")
+
+            coVerify { rig.blobExchange.want("acc-file", alice.nodeId, "c", null, false, until = more(0L), untilKnown = any()) }
+            assertEquals(0L, rig.metrics.files().requestHolds)
+        }
+
+    /**
+     * One row that would fetch it fetches it for all, as `BluetoothFetchGate` folds them: a contact's DM naming the same file
+     * fetches the stranger's copy too — asked of the contact, whose row releases it, never of the stranger.
+     */
+    @Test
+    fun aRequestsAttachmentAContactAlsoSentIsFetchedFromTheContact() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val bob = party()
+            rig.pin(stranger)
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            rig.msgMap["b1"] =
+                MessageEntity(
+                    id = "b1",
+                    senderId = bob.nodeId,
+                    recipientId = rig.self.nodeId,
+                    conversationId = bob.nodeId,
+                    body = "",
+                    sentAt = 4L,
+                    attachmentHash = "shared",
+                )
+
+            rig.deliver(stranger, rig.sealedFileDm(stranger, id = "r2", attachmentHash = "shared", fileName = "a.zip"), from = "c")
+
+            coVerify { rig.blobExchange.want("shared", bob.nodeId, "c", null, false, until = any(), untilKnown = any()) }
+            coVerify(exactly = 0) {
+                rig.blobExchange.want(
+                    "shared",
+                    stranger.nodeId,
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    pull = any(),
+                    until = any(),
+                    untilKnown = any(),
+                )
+            }
+        }
+
+    @Test
+    fun aRequestsAttachmentAlreadyHeldIsStillDescribed() =
+        runTest {
+            // Bytes already here (carried, or off a spool first) cost nothing more: the row is described as any other.
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            rig.pin(stranger)
+            val note = adts(frames = 216)
+            val seal = AttachmentCrypto.seal(note)
+            coEvery { rig.blobStore.has("req-note") } returns true
+            coEvery { rig.blobs.bytes("req-note") } returns seal.blob
+            coEvery { rig.messages.voiceMetaWanted("req-note") } returns true
+
+            rig.deliver(stranger, rig.sealedVoiceDm(stranger, id = "r3", attachmentHash = "req-note", key = seal.key))
+
+            coVerify(exactly = 1) { rig.messages.setVoiceMeta("req-note", VoiceAudio.durationMs(note)!!, null) }
+            rig.assertNeverWanted("req-note")
+        }
+
+    /**
+     * Custody runs ahead of the delivery: a stranger's DM to us is custodied before it is opened, and its attachment is not
+     * wanted there either, while the same stranger's DM we carry for somebody else is the carrier's, wanted as before.
+     */
+    @Test
+    fun onCarriedFrameHoldsAStrangersDmToUsAndWantsOneItCarriesForSomebodyElse() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d1", "for-us", to = rig.self.nodeId))
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d2", "for-carol", to = "carol"))
+
+            coVerify { rig.blobExchange.want("for-carol", stranger.nodeId, null, null, false, until = more(0L), untilKnown = any()) }
+            rig.assertNeverWanted("for-us")
+            assertEquals(1L, rig.metrics.files().requestHolds)
+        }
+
+    /**
+     * A group frame to us counts its own sender as one of the group's senders (#282): a contact's new group is pulled at
+     * once, as its delivery right behind will judge it; a stranger's waits.
+     */
+    @Test
+    fun onCarriedFrameWantsAContactsGroupAttachmentAndHoldsAStrangers() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            val stranger = party()
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            val bobs = rig.group(members = listOf(rig.self.nodeId, bob.nodeId), createdBy = bob.nodeId)
+            val strangers = rig.group(members = listOf(rig.self.nodeId, stranger.nodeId), createdBy = stranger.nodeId)
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "g2", "strangers-pic", group = strangers))
+            rig.pipeline.onCarriedFrame(rig.carried(bob, "g1", "bobs-pic", group = bobs))
+
+            coVerify { rig.blobExchange.want("bobs-pic", bob.nodeId, null, null, false, until = null, untilKnown = any()) }
+            rig.assertNeverWanted("strangers-pic")
+        }
+
+    /**
+     * #282's B1: the bytes only a request's rows name are carrier bytes, counted against the carrier budget, so a stranger
+     * cannot pair request rows with carried frames naming the same hashes to have us pull them all outside it.
+     */
+    @Test
+    fun aRequestsBytesCountAgainstTheCarrierBudget() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            coEvery { rig.blobs.carrierOnlyBlobBytes() } returns CARRIER_BLOB_BUDGET_BYTES - 10
+            coEvery { rig.messages.distinctConversations() } returns listOf(stranger.nodeId)
+            coEvery { rig.blobs.requestOnlyBlobs(listOf(stranger.nodeId), any()) } returns
+                listOf(RequestOnlyBlob("held", 20, carried = true))
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d1", "over-budget", to = "carol"))
+            rig.assertNeverWanted("over-budget")
+
+            coEvery { rig.blobs.requestOnlyBlobs(any(), any()) } returns emptyList()
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "d2", "under-budget", to = "carol"))
+            coVerify { rig.blobExchange.want("under-budget", stranger.nodeId, null, null, false, until = more(0L), untilKnown = any()) }
+        }
+
+    /** #282's B2: a stranger who lists us only as departed still addresses the group frame to us, and it is held. */
+    @Test
+    fun onCarriedFrameHoldsAStrangersGroupFrameListingUsOnlyAsDeparted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val group = rig.group(members = listOf(stranger.nodeId), createdBy = stranger.nodeId, departed = listOf(rig.self.nodeId))
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "g1", "departed-pic", group = group))
+
+            assertEquals(1L, rig.metrics.files().requestHolds)
+            rig.assertNeverWanted("departed-pic")
+        }
+
+    /**
+     * #282's B3: a stranger's group that names a third member is carried for that member — who may know the stranger and
+     * want the picture through us — so our custody pull follows the carrier rules; our own row of it stays held.
+     */
+    @Test
+    fun onCarriedFramePullsAStrangersGroupPictureNamingAThirdMemberAsTheirCarrier() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            val group = rig.group(members = listOf(rig.self.nodeId, stranger.nodeId, "mira"), createdBy = stranger.nodeId)
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "g1", "third-pic", group = group))
+
+            coVerify { rig.blobExchange.want("third-pic", stranger.nodeId, null, null, false, until = null, untilKnown = any()) }
+            assertEquals(0L, rig.metrics.files().requestHolds)
+        }
+
+    /**
+     * #282's round 3: with a Bluetooth limit set, the same third-party group frame is still the carrier's pull — never left to
+     * a delivery that holds our own row of it, which would leave the third member waiting on our tick.
+     */
+    @Test
+    fun onCarriedFramePullsAThirdMembersPictureAsACarrierUnderABluetoothLimit() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            rig.settings.bluetoothDownloadLimitBytes.value = 1_000_000L
+            val group = rig.group(members = listOf(rig.self.nodeId, stranger.nodeId, "mira"), createdBy = stranger.nodeId)
+
+            rig.pipeline.onCarriedFrame(rig.carried(stranger, "g1", "third-pic", group = group))
+
+            coVerify { rig.blobExchange.want("third-pic", stranger.nodeId, null, null, false, until = null, untilKnown = any()) }
+        }
+
+    /**
+     * #282's N1: an accepted row is judged with the other rows that would fetch the hash, never a held request's. A
+     * stranger's group row naming the same file would otherwise strip the contact's DM of its pull-through deadline.
+     */
+    @Test
+    fun anAcceptedDmsDeadlineIgnoresAHeldRequestsRowNamingTheSameFile() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            rig.pin(bob)
+            rig.settings.accepted.value = setOf(bob.nodeId)
+            rig.msgMap["s1"] =
+                MessageEntity(
+                    id = "s1",
+                    senderId = "stranger",
+                    conversationId = "g-request",
+                    body = "",
+                    sentAt = 3L,
+                    attachmentHash = "shared",
+                )
+
+            rig.deliver(bob, rig.sealedFileDm(bob, id = "b1", attachmentHash = "shared", fileName = "a.zip"), from = "c")
+
+            coVerify {
+                rig.blobExchange.want(
+                    "shared",
+                    bob.nodeId,
+                    "c",
+                    null,
+                    false,
+                    until = 5L + ForwardRepository.DEFAULT_TTL_MS,
+                    untilKnown = any(),
+                )
+            }
+        }
+
+    @Test
+    fun aStrangersGroupPhotoIsHeldUntilTheGroupIsAcceptedThenPulledUnderTheFaceCeiling() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val stranger = party()
+            rig.pin(stranger)
+            val group =
+                rig.group(
+                    members = listOf(rig.self.nodeId, stranger.nodeId),
+                    createdBy = stranger.nodeId,
+                    photoHash = "their-photo",
+                    photoUpdatedAt = 100L,
+                )
+
+            rig.deliver(stranger, rig.groupUpdate(stranger, group))
+            assertEquals("decided all the same", "their-photo", rig.groupMap[group.id]?.photoHash)
+            assertEquals("its pull is held", 1L, rig.metrics.files().requestHolds)
+            rig.assertNeverWanted("their-photo")
+
+            rig.settings.accepted.value = setOf(group.id)
+            rig.deliver(stranger, rig.groupUpdate(stranger, group, sentAt = 8L))
+            coVerify(exactly = 1) {
+                rig.blobExchange.want(
+                    "their-photo",
+                    stranger.nodeId,
+                    null,
+                    null,
+                    until = null,
+                    untilKnown = any(),
+                    ceiling = FileIntake.MAX_AVATAR_BYTES,
+                )
+            }
         }
 
     /**

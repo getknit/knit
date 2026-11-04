@@ -54,6 +54,7 @@ class AttachmentReuseLabTest {
     fun aGroupPicturePassedOnInADmGoesOutAsTheGroupsCopy() =
         runBlocking {
             val (alice, bob, carol) = trio()
+            lab.befriend(alice, bob, carol)
             val groupId = alice.createGroup(bob, carol)
             val picture = Random(11).nextBytes(4_096)
             assertTrue(alice.sendImage(picture, "for the group", groupId = groupId))
@@ -108,6 +109,7 @@ class AttachmentReuseLabTest {
     fun aGroupPicturePostedToTheRoomIsCopiedLocallyByEveryoneWhoHasItSealed() =
         runBlocking {
             val (alice, bob, carol) = trio()
+            lab.befriend(alice, bob, carol)
             val groupId = alice.createGroup(bob, carol)
             val picture = Random(13).nextBytes(4_096)
             assertTrue(alice.sendImage(picture, "for the group", groupId = groupId))
@@ -140,6 +142,7 @@ class AttachmentReuseLabTest {
     fun aStrangersPostOfAPictureWeHoldSealedIsPulledNotCopied() =
         runBlocking {
             val (alice, bob, carol) = trio()
+            lab.befriend(alice, bob, carol) // Dave stays a stranger: his room post is the point
             val dave = lab.node("dave").apply { setDisplayName("Dave") }
             lab.linkAll(dave to alice, dave to bob, dave to carol)
             lab.awaitAcquainted(alice, bob, carol, dave)

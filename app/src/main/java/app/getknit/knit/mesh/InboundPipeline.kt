@@ -321,6 +321,8 @@ class InboundPipeline(
     // Each stored profile's capabilities, after its commit: the presence-key engine re-reconciles a linked peer whose
     // profile just gained `CAP_BLIND_ADVERT` (MeshManager → PresenceKeyEngine.onCapabilities). The default ignores them.
     private val onProfileCapabilities: (nodeId: String, capabilities: Long?) -> Unit = { _, _ -> },
+    // The carrier budget ([CARRIER_BLOB_BUDGET_BYTES]); `mesh/lab` shrinks it to fill it with a few pictures.
+    private val carrierBlobBudgetBytes: Long = CARRIER_BLOB_BUDGET_BYTES,
 ) {
     // The title and avatar a notification wears, resolved from the conversation alone — the resolver the
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
@@ -3026,20 +3028,96 @@ class InboundPipeline(
         if (RoomAttachments.refuses(env, content)) return
         if (blobStore.has(hash)) return
         if (copyFromOwnStore(hash, env.senderId)) return
-        if (blobs.carrierOnlyBlobBytes() >= CARRIER_BLOB_BUDGET_BYTES) return
+        val me = identity.nodeId()
+        if (carrierBytes(me) >= carrierBlobBudgetBytes) {
+            metrics.onCarrierPullOverBudget()
+            return
+        }
         // The radio set (ADR 2026-10.a5yj): a recipient only a contact's direct link reaches cannot fetch a carrier's
         // copy over it, which carries an attachment addressed to both ends alone, so it holds no pull back.
         val linked = transport.neighbors.value.mapNotNullTo(HashSet()) { n -> n.nodeId.takeIf(transport::radioLinked) }
-        val member = env.group?.members?.contains(identity.nodeId()) == true
-        val carried = CarriedAttachment(hash, env.recipientId, clock(), env.senderId, env.group?.id, member)
+        val member = env.group?.members?.contains(me) == true
+        val carried =
+            CarriedAttachment(
+                hash,
+                env.recipientId,
+                clock(),
+                env.senderId,
+                env.group?.id,
+                member,
+                roster = env.group?.members?.toSet(),
+                departed = env.group?.departed?.toSet(),
+            )
+        if (carriedRequestHeld(hash, carried, me)) return
         if (CarrierPullPolicy.defers(listOf(carried), linked, clock())) {
             metrics.onCarrierPullDeferred()
             return
         }
-        val fastOnly = carriedFastOnly(env, content, hash, member) ?: return
+        // A request group's frame naming a third party is carried for them (#282's B3): a carrier's pull, never the user's
+        // download, so never left to a delivery that holds our own row of it.
+        val fastOnly = if (carriedForOthersInRequest(carried, me)) false else carriedFastOnly(env, content, hash, member) ?: return
         // A DM's carrier pulls it through for its custody window and no longer: frame-global, the same on every node (#195).
         val until = env.recipientId?.let { clampFuture(env.sentAt) + ForwardRepository.DEFAULT_TTL_MS }
         blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fastOnly, until = until)
+    }
+
+    /**
+     * Whether [onCarriedFrame] leaves the attachment [hash] of a custodied [frame] addressed to us alone — our DM, or a
+     * group naming nobody but us and its sender — because its conversation is a message request not accepted yet (#282,
+     * [RequestHold]), the frame's own sender counted as one of a group's senders. We count as a member by the frame's
+     * roster, its departed list or our group row, so a stranger cannot skip the hold by leaving us out of `members`. A row
+     * naming the hash that would fetch it (ours, tapped, an accepted conversation's) still does. A frame we carry for
+     * somebody else — a third party's DM, a group naming a third party — or our own, is never held here: it goes by the
+     * carrier rules, under the carrier budget ([carrierBytes]).
+     */
+    private suspend fun carriedRequestHeld(
+        hash: String,
+        frame: CarriedAttachment,
+        me: String,
+    ): Boolean {
+        val group = frame.groupId
+        val ours = frame.member || (group != null && groups.find(group)?.left == false)
+        val conversation = RequestHold.conversationOf(frame.copy(member = ours), me) ?: return false
+        val acceptance = acceptance(me)
+        if (acceptance.isAccepted(conversation, frame.senderId)) return false
+        val rows = messages.attachmentFetchRows(hash, me)
+        val accepted = acceptance.acceptedAmong(rows.map { it.conversationId })
+        if (RequestHold.releasing(rows, accepted::contains).isNotEmpty()) return false
+        noteRequestHeld(hash, frame.senderId)
+        return true
+    }
+
+    /**
+     * Whether [frame] is a group's not accepted yet that names somebody besides us and its sender ([RequestHold.conversationOf]
+     * null for it): our copy is that party's carrier copy (#282's B3), judged by the carrier rules and not by our own row.
+     */
+    private suspend fun carriedForOthersInRequest(
+        frame: CarriedAttachment,
+        me: String,
+    ): Boolean {
+        val group = frame.groupId ?: return false
+        if (frame.senderId == me || RequestHold.conversationOf(frame.copy(member = true), me) != null) return false
+        return !acceptance(me).isAccepted(group, frame.senderId)
+    }
+
+    /**
+     * The bytes held for others, against the carrier budget (ADR 2026-11.qu98): the blobs only carried frames name, and
+     * those only a message request's rows name — a stranger's request is not ours until it is accepted, so its bytes
+     * cannot sit outside the budget behind a row of its own (#282's B1).
+     */
+    private suspend fun carrierBytes(me: String): Long {
+        val acceptance = acceptance(me)
+        val requests = messages.distinctConversations().filterNot { acceptance.isAccepted(it) }
+        return blobs.carrierOnlyBlobBytes() + blobs.requestOnlyBlobs(requests, me).sumOf { it.size }
+    }
+
+    /** Counts and logs a fetch left to the acceptance of its message request (#282). */
+    private fun noteRequestHeld(
+        hash: String,
+        sender: String?,
+    ) {
+        metrics.onRequestHeld()
+        Log.i(TAG, "blob request-hold ${hash.take(ID_CHARS)}… from ${sender?.take(ID_CHARS)}: not accepted yet")
     }
 
     /**
@@ -3053,38 +3131,96 @@ class InboundPipeline(
      * A DM's row reads the rows too, for the deadline its want pulls it through by (`PullThroughGate.until`, #195): a DM
      * delivered past its custody window must not ask anyone to pull it, from its first step. A group's or a room's row has
      * none, so it still pays nothing.
+     *
+     * A row in a conversation not accepted yet (a stranger's message request, #282) fetches nothing by itself, so it reads
+     * the rows too: the attachment is held ([RequestHold]) unless another row naming it would fetch it — ours, tapped, or
+     * an accepted conversation's — and then those rows alone say who is asked first, until when it is pulled through, and
+     * whether it is fast-only. One [AcceptanceSnapshot] judges the conversations; the new row's sender counts as one of
+     * its group's senders, as the notify gate's read after the persist counts it.
+     *
+     * A commons row is fetched by the room's own pass, never the radios (spec §7.4), so there is no rule to judge it by.
      */
+    @Suppress("LongParameterList") // the delivery's facts, threaded once from deliverChat
     private suspend fun deliveredFetch(
         hash: String?,
         declaredSize: Long?,
         isNew: Boolean,
         env: RelayEnvelope,
         me: String,
+        conversationId: String,
     ): DeliveredFetch {
-        if (hash == null) return DeliveredFetch.PLAIN
+        if (hash == null || Conversations.kindFor(conversationId) == ConversationKind.COMMONS) return DeliveredFetch.PLAIN
+        val acceptance = acceptance(me)
         val limit = settings.bluetoothDownloadLimitBytes.first()
         val senderId = env.senderId
         val own = senderId == me
         val gated = BluetoothFetchGate.fastOnly(declaredSize, limit, approved = false, own = own)
-        if (!gated && env.recipientId == null) return DeliveredFetch.PLAIN
+        val accepted = acceptance.isAccepted(conversationId, senderId)
+        val releases = own || accepted
+        if (!gated && env.recipientId == null && releases) return DeliveredFetch.PLAIN
         val stored = messages.attachmentFetchRows(hash, me)
         val tapped = stored.any { it.approved }
-        val rows = if (isNew) stored + newRow(hash, env, declaredSize, tapped, own) else stored
+        val rows = if (isNew) stored + newRow(hash, env, declaredSize, tapped, own, conversationId) else stored
+        return foldFetch(rows, conversationId, accepted, own, gated && isNew && tapped, gated, limit, acceptance)
+    }
+
+    /**
+     * [deliveredFetch]'s fold over the [rows] naming the hash, the new one included, once they are read: judged by the
+     * rows that would fetch it alone ([RequestHold.releasing]) — the pull-through deadline and the fast-only verdict under
+     * the user's [limit] — so a held request's row naming the same hash moves neither. A row of a message request not
+     * accepted yet (#282) fetches nothing by itself: held unless another row releases it, and then asked first of that
+     * row's sender. Our own row, or one in an [accepted] [conversationId], is asked of its frame's sender as before.
+     */
+    @Suppress("LongParameterList") // the delivery's verdicts, threaded once from deliveredFetch
+    private suspend fun foldFetch(
+        rows: List<AttachmentFetchRow>,
+        conversationId: String,
+        accepted: Boolean,
+        own: Boolean,
+        inheritsTap: Boolean,
+        gated: Boolean,
+        limit: Long?,
+        acceptance: AcceptanceSnapshot,
+    ): DeliveredFetch {
+        val acceptedIds = acceptance.acceptedAmong(rows.map { it.conversationId } - conversationId)
+        val releasing = RequestHold.releasing(rows) { it in acceptedIds || (accepted && it == conversationId) }
+        if (own || accepted) {
+            // Our own row, or an accepted one, is among them; with it unstored as well (a re-serve of a deleted row), all.
+            val judged = releasing.ifEmpty { rows }
+            return DeliveredFetch(
+                inheritsTap = inheritsTap,
+                fastOnly = gated && BluetoothFetchGate.fastOnly(judged, limit),
+                until = PullThroughGate.until(judged),
+            )
+        }
+        if (releasing.isEmpty()) return DeliveredFetch.HELD
         return DeliveredFetch(
-            inheritsTap = gated && isNew && tapped,
-            fastOnly = gated && BluetoothFetchGate.fastOnly(rows, limit),
-            until = PullThroughGate.until(rows),
+            inheritsTap = inheritsTap,
+            fastOnly = BluetoothFetchGate.fastOnly(releasing, limit),
+            until = PullThroughGate.until(releasing),
+            author = releasing.first().senderId,
         )
     }
 
-    /** The fetch row [env] will store for its attachment [hash], before it is stored: what the gates fold it as. */
+    /** The fetch row [env] will store for its attachment [hash] in [conversationId], before it is stored: what the gates fold. */
+    @Suppress("LongParameterList") // the row's columns, one each
     private fun newRow(
         hash: String,
         env: RelayEnvelope,
         declaredSize: Long?,
         approved: Boolean,
         own: Boolean,
-    ) = AttachmentFetchRow(hash, env.senderId, declaredSize, approved, own, sentAt = clampFuture(env.sentAt), dm = env.recipientId != null)
+        conversationId: String,
+    ) = AttachmentFetchRow(
+        hash,
+        env.senderId,
+        declaredSize,
+        approved,
+        own,
+        sentAt = clampFuture(env.sentAt),
+        dm = env.recipientId != null,
+        conversationId = conversationId,
+    )
 
     /**
      * Starts pulling a delivered row's [hash] unless we already hold it (the UI observes the blobs table and flips the
@@ -3092,7 +3228,9 @@ class InboundPipeline(
      * (carried while its frame was parked for a key, fetched off a spool first, or a forward of a file we have), no
      * onObtained is coming, so the row is described here, now that it and the key are in hand — the same hooks through
      * the same helper, so neither order can miss one (#132). Off the [radio] (a commons attachment, which the room's
-     * relay alone brings, ADR 2026-10.xhfr) nothing is asked of a neighbour.
+     * relay alone brings, ADR 2026-10.xhfr) nothing is asked of a neighbour, and nothing is asked for a message
+     * request's attachment no other row fetches ([DeliveredFetch.held], #282): bytes already here are still described,
+     * and a copy of our own is still made, since neither fetches anything.
      */
     @Suppress("LongParameterList") // the delivery's attachment facts, threaded once from deliverChat
     private suspend fun pullOrDescribe(
@@ -3104,28 +3242,49 @@ class InboundPipeline(
         fetch: DeliveredFetch,
         radio: Boolean,
     ) {
-        if (blobStore.has(hash)) {
-            describeHeldAttachment(hash, key, mime)
-        } else if ((key != null || !copyFromOwnStore(hash, env.senderId)) && radio) {
-            // The delivery read every row naming the hash, or its own is no DM's: its deadline, none included, is known.
-            blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
-            // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
-            // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
-            // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
-            // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
-            transport.expectBulkTransfer(env.senderId)
+        when {
+            blobStore.has(hash) -> {
+                describeHeldAttachment(hash, key, mime)
+            }
+
+            // A key-less copy of a plaintext we hold sealed, made from our own store (ADR 2026-10.mptm): nothing to fetch.
+            key == null && copyFromOwnStore(hash, env.senderId) -> {}
+
+            fetch.held -> {
+                noteRequestHeld(hash, env.senderId)
+            }
+
+            radio -> {
+                // The author of a row that fetches it: this frame's sender, unless its own row is held and another fetches it.
+                val author = fetch.author ?: env.senderId
+                // The delivery read every row naming the hash, or its own is no DM's: its deadline, none included, is known.
+                blobExchange.want(hash, author = author, via = via, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
+                // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
+                // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
+                // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
+                // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
+                transport.expectBulkTransfer(author)
+            }
         }
     }
 
-    /** [deliveredFetch]'s verdict: whether the new row comes in tapped, and whether its want is fast-only. */
+    /**
+     * [deliveredFetch]'s verdict: whether the new row comes in tapped, whether its want is fast-only, and whether there is
+     * one at all ([held]).
+     */
     private class DeliveredFetch(
         val inheritsTap: Boolean,
         val fastOnly: Boolean,
         // The deadline the want pulls it through by: a DM's custody window, null for anything else (#195).
         val until: Long? = null,
+        // The holder asked first when the new row is a held request's and another row fetches it (#282); null: its sender.
+        val author: String? = null,
+        // No row naming it fetches it: a message request's attachment waits for its acceptance (#282, [RequestHold]).
+        val held: Boolean = false,
     ) {
         companion object {
             val PLAIN = DeliveredFetch(inheritsTap = false, fastOnly = false)
+            val HELD = DeliveredFetch(inheritsTap = false, fastOnly = false, held = true)
         }
     }
 
@@ -3154,7 +3313,7 @@ class InboundPipeline(
             val own = env.senderId == me
             if (!BluetoothFetchGate.fastOnly(declared, limit, approved = false, own = own)) return false
             val stored = messages.attachmentFetchRows(hash, me)
-            val post = newRow(hash, env, declared, approved = stored.any { it.approved }, own = own)
+            val post = newRow(hash, env, declared, approved = stored.any { it.approved }, own = own, conversationId = Conversations.NEARBY)
             return BluetoothFetchGate.fastOnly(stored + post, limit)
         }
         val rows = messages.attachmentFetchRows(hash, me).takeIf { it.isNotEmpty() } ?: return null
@@ -3263,7 +3422,7 @@ class InboundPipeline(
         // A decided photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert stored it, so
         // settleArrivedGroupPhoto finds the row waiting on it). Outside the transaction — a network-bound blob
         // fetch, and the reclaims below are their own transactions.
-        settleGroupPhotoBlobs(photo, senderId)
+        settleGroupPhotoBlobs(photo, group.id, senderId, me)
         // The row exists now: any seed that arrived ahead of it can be adopted. Cheap when nothing is parked
         // (the usual case), and it must run before a chat frame's own decrypt so the first message of a new
         // group opens on its first pass rather than on the custody replay.
@@ -3606,13 +3765,25 @@ class InboundPipeline(
      * avatars — so this runs for direct neighbors too, and the holder serves the blob when the want reaches
      * it; [settleArrivedGroupPhoto] shows it on arrival), drops a refused photo's bytes, and reclaims the
      * hashes the row stopped naming.
+     *
+     * The pull is a photo's (#282): at most [FileIntake.MAX_AVATAR_BYTES], as a face is, and only once the group is
+     * accepted ([AcceptanceSnapshot], the deciding frame's sender counted as one of its senders) — a stranger's group
+     * is a message request, whose photo the request inbox does not show. The database re-arm wants it on acceptance.
      */
     private suspend fun settleGroupPhotoBlobs(
         photo: PhotoDecision,
+        groupId: String,
         // The member whose frame named the photo: the likeliest holder, so the round asks it first (ADR 2026-10.f7gg).
         senderId: String,
+        me: String,
     ) {
-        photo.pull?.let { blobExchange.want(it, author = senderId) }
+        photo.pull?.let { hash ->
+            if (acceptance(me).isAccepted(groupId, senderId)) {
+                blobExchange.want(hash, author = senderId, ceiling = FileIntake.MAX_AVATAR_BYTES)
+            } else {
+                noteRequestHeld(hash, senderId)
+            }
+        }
         photo.refused?.let { blobs.dropRefusedGroupPhoto(it) }
         photo.replaced.forEach { blobs.deleteIfUnreferenced(it) }
     }
@@ -3656,51 +3827,28 @@ class InboundPipeline(
     private suspend fun isAccepted(
         conversationId: String,
         me: String,
-    ): Boolean =
-        Conversations.isAccepted(
-            conversationId,
-            settings.acceptedConversations.first(),
-            peers.verifiedNodeIds().toSet(),
-            messages.conversationsIAuthoredIn(me).toSet(),
-            groupSendersOf(conversationId),
-        )
+    ): Boolean = acceptance(me).isAccepted(conversationId)
 
     /**
-     * The senders who have posted in [conversationId] when it's a group (empty otherwise), for the group
-     * known-sender branch of [Conversations.isAccepted]. Read on the delivery path *after* the inbound
-     * message is saved, so it includes the current sender — a group first spoken in by a known peer is
-     * accepted on that very message.
+     * A fresh [AcceptanceSnapshot] for [me]: what [Conversations.isAccepted] reads, read as it is asked. A group's senders
+     * are read when it is first judged, so a read on the delivery path *after* the inbound message is saved includes the
+     * current sender — a group first spoken in by a known peer is accepted on that very message.
      */
-    private suspend fun groupSendersOf(conversationId: String): Set<String> =
-        if (Conversations.kindFor(conversationId) == ConversationKind.GROUP) {
-            messages.sendersIn(conversationId).toSet()
-        } else {
-            emptySet()
-        }
+    private fun acceptance(me: String): AcceptanceSnapshot = AcceptanceSnapshot.of(settings, peers, messages, me)
 
     /**
      * Refreshes the single coalesced "message request received" heads-up with the current count of
-     * pending (unaccepted) request threads. Reuses the shared [Conversations.isAccepted] predicate so the
-     * count matches the per-message gate; excludes Nearby and blocked senders. Local / notify only, so mesh
-     * convergence is untouched (custody + relay run outside this dispatch path).
+     * pending (unaccepted) request threads. Reuses the shared [Conversations.isAccepted] predicate, through one
+     * [AcceptanceSnapshot], so the count matches the per-message gate — a group a known peer has posted in counts
+     * as a chat, as in the Message Requests inbox; excludes Nearby and blocked senders. Local / notify only, so
+     * mesh convergence is untouched (custody + relay run outside this dispatch path).
      */
     private suspend fun notifyPendingRequests(me: String) {
-        val accepted = settings.acceptedConversations.first()
-        val verified = peers.verifiedNodeIds().toSet()
-        val authored = messages.conversationsIAuthoredIn(me).toSet()
+        val acceptance = acceptance(me)
         val blocked = settings.blockedNodeIds.first()
-        val conversations = messages.distinctConversations()
-        // Per-group senders, so a group a known peer has posted in counts as a chat, not a request
-        // (matches the per-message gate above and the Message Requests inbox).
-        val sendersByGroup =
-            conversations
-                .filter { Conversations.kindFor(it) == ConversationKind.GROUP }
-                .associateWith { messages.sendersIn(it).toSet() }
         val count =
-            conversations.count { id ->
-                id != Conversations.NEARBY &&
-                    id !in blocked &&
-                    !Conversations.isAccepted(id, accepted, verified, authored, sendersByGroup[id].orEmpty())
+            messages.distinctConversations().count { id ->
+                id != Conversations.NEARBY && id !in blocked && !acceptance.isAccepted(id)
             }
         notifier.notifyMessageRequests(count)
     }
@@ -3831,8 +3979,7 @@ class InboundPipeline(
         val attachmentKey = sealed?.attachmentKey ?: content.attachmentKey?.takeIf { commons }
         val moderation = inboundModeration(isNew, content.body, conversationId)
         val (declaredSize, video) = deliveredDescription(content, sealed)
-        // No radio fetch for a commons attachment, so no fetch rule to judge it by.
-        val fetch = if (commons) DeliveredFetch.PLAIN else deliveredFetch(hash, declaredSize, isNew, env, me)
+        val fetch = deliveredFetch(hash, declaredSize, isNew, env, me, conversationId)
         // Clamp the inbound body: our sender-side TextLimits.MESSAGE only bounds what we originate, not what a peer
         // floods (otherwise bounded only by the 512 KiB record cap → unbounded local growth). Mirrors the profile
         // name/status clamp in handleProfile.

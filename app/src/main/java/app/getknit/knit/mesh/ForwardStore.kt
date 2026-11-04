@@ -98,6 +98,15 @@ interface ForwardStore {
      */
     suspend fun carriedAttachments(now: Long): List<CarriedAttachment> = emptyList()
 
+    /**
+     * [carriedAttachments] for the one attachment [hash]: whether a neighbour's ask for a blob no message row names is a
+     * message request's held back (#282, `RequestHold.carriedHeld`). The default filters [carriedAttachments].
+     */
+    suspend fun carriedAttachmentsNaming(
+        hash: String,
+        now: Long,
+    ): List<CarriedAttachment> = carriedAttachments(now).filter { it.hash == hash }
+
     /** The carried frame [id]'s cleartext recipient, or null if not held. */
     suspend fun recipientOf(id: String): String?
 
@@ -159,4 +168,7 @@ data class CarriedAttachment(
     // Whether a message row named the hash when custody read it, so a room post's [declaredSize] was not loaded
     // ([ForwardDao.carriedAttachments]): the re-arm holds such a post whose row went before its rows' read (#141).
     val rowCovered: Boolean = false,
+    // A group frame's departed list, as its own bytes carry it: with [roster], whom the frame is addressed to, which is
+    // what says a stranger's group frame is ours alone or somebody else's too (#282, `RequestHold.conversationOf`).
+    val departed: Set<String>? = null,
 )

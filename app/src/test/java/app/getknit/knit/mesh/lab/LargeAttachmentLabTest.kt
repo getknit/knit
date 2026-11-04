@@ -82,6 +82,7 @@ class LargeAttachmentLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             val (_, hash) = largeFileToBob(alice, bob, seed = 2001)
             lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
@@ -113,6 +114,7 @@ class LargeAttachmentLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             val (id, hash) = largeFileToBob(alice, bob, seed = 2006)
             lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
@@ -154,6 +156,7 @@ class LargeAttachmentLabTest {
                 bob.transport.bulkRoutes[alice.nodeId] = route
                 lab.link(alice, bob)
                 lab.awaitAcquainted(alice, bob)
+                lab.befriend(alice, bob)
 
                 val (_, hash) = largeFileToBob(alice, bob, seed)
                 lab.assertConverged(listOf(alice, bob), atLeast = 1, conversation = dm(alice, bob))
@@ -359,6 +362,7 @@ class LargeAttachmentLabTest {
             bob.settings.setBluetoothDownloadLimit(BluetoothDownloadLimit.NEVER)
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             val (_, hash) = largeFileToBob(alice, bob, seed = 2005)
             lab.assertConverged(listOf(alice, bob), atLeast = 1, conversation = dm(alice, bob))

@@ -59,6 +59,23 @@ interface ScopeBlobs {
      * nothing.
      */
     suspend fun refused(aHash: String): Boolean = false
+
+    /**
+     * Whether the conversation [conversationId] (a DM scope's peer, a group scope's group) is accepted, not a message
+     * request (#282, `Conversations.isAccepted`): an accepted scope's attachments are never [held], so a round asks no
+     * more. The default accepts everything.
+     */
+    suspend fun accepted(conversationId: String): Boolean = true
+
+    /**
+     * Whether [aHash], which this phone lacks and found in the scope of [conversationId], a message request not accepted,
+     * waits for its acceptance (#282, `RequestHold`): no row naming it is ours, tapped or an accepted conversation's. The
+     * default holds nothing.
+     */
+    suspend fun held(
+        aHash: String,
+        conversationId: String,
+    ): Boolean = false
 }
 
 /** Opens WebSocket sessions to spools. The one seam the OkHttp adapter implements. */
@@ -2264,7 +2281,7 @@ class ScopeSync(
             if (conn.limits?.attachments != true) return
             // S-7.4-5: a spool answers attachment records naming a room `err malformed` unless its HELLO said so for it.
             if (scope.commonsId != null && advertOf(scope, conn).info?.attach != true) return
-            val (candidates, fetchOnly) = attachmentCandidates(scope, frames, timed)
+            val (candidates, fetchOnly) = attachmentCandidates(scope, frames, timed, blobStore)
             var handled = 0
             var pending = 0
             for ((ref, aHashBytes) in candidates) {
@@ -2293,14 +2310,24 @@ class ScopeSync(
          * with the hashes among them that are only ever fetched: ours from [frames], and — in a commons — every other
          * member's from our record of the room (C-7.4-6: each member pushes its own). Quarantined and settled ones are
          * left out of both, the room's read included, so its limit counts live candidates.
+         *
+         * So is one of [frames]' we lack and hold back as a message request's (#282, [ScopeBlobs.held]), silently: it is
+         * neither pending, which would schedule a retry nobody acts on, nor settled, which would keep it from the round
+         * after the acceptance — the next round fetches it then.
          */
         private suspend fun attachmentCandidates(
             scope: Scope,
             frames: List<CarriedFrame>,
             timed: Boolean,
+            blobStore: ScopeBlobs,
         ): Pair<List<Pair<ScopeAttachments.Ref, ByteArray>>, Set<String>> {
             val skip = quarantinedAttachments(scope) + settledAttachmentsFor(scope, recheckOlder = timed)
-            val ours = ScopeAttachments.references(frames, scope, selfId())
+            // A request's scope alone may hold any: one question per round, then one per attachment it names.
+            val request = (scope.peerId ?: scope.groupId)?.takeUnless { blobStore.accepted(it) }
+            val ours =
+                ScopeAttachments.references(frames, scope, selfId()).filterNot { ref ->
+                    request != null && ref.aHash !in skip && !blobStore.has(ref.aHash) && blobStore.held(ref.aHash, request)
+                }
             val theirs = scope.commonsId?.let { commonsTheirs(scope, it, ours, skip) }.orEmpty()
             val candidates =
                 (ours + theirs)

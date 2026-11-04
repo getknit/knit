@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.message.DeliveryPlane
+import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.protocol.BlobCancelContent
 import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
@@ -191,6 +192,10 @@ class BlobExchange(
     // direct link only from an unmetered one (ADR 2026-10.js2p, a5yj). Read once per step ([linkedNow]) for its new asks
     // and nothing else; the default (every rig, `mesh/lab` unless a node sets it) says no.
     private val metered: () -> Boolean = { false },
+    // What a neighbour's ask for [hash], which we lack, may make of it (#282, `RequestHold`): HELD for a message request's
+    // bytes, never echoed into a want of ours (served if we hold them); PHOTO for a group's photo, echoed under the face
+    // ceiling; OPEN for anything else.
+    private val echoGate: suspend (hash: String) -> EchoGate = { EchoGate.OPEN },
 ) {
     /**
      * Whether this node queries capable neighbours before it asks ([enabled]), how long it waits for their answers, and
@@ -2218,7 +2223,12 @@ class BlobExchange(
         echoFor(hash, fromNodeId, fastOnly, pull, until)
     }
 
-    /** [serveOrWant] for a blob we lack: want it for [asker], unless its ask allows no echo here (#195). */
+    /**
+     * [serveOrWant] for a blob we lack: want it for [asker], unless its ask allows no echo here (#195), or the blob is a
+     * message request's we hold back until the request is accepted ([echoGate], #282) — a carrier's pull-through ask,
+     * once its own pull deferral ends, must not make us fetch what the user has not accepted. A group's photo is echoed
+     * under [FileIntake.MAX_AVATAR_BYTES], as every want of one is.
+     */
     private suspend fun echoFor(
         hash: String,
         asker: String,
@@ -2226,7 +2236,18 @@ class BlobExchange(
         pull: Int?,
         until: Long?,
     ) {
-        val refused = echoRefused(pull, until) ?: return want(hash, asker = asker, fastOnly = fastOnly, pull = pull, until = until)
+        val gate = if (echoRefused(pull, until) == null) echoGate(hash) else EchoGate.OPEN
+        val refused =
+            echoRefused(pull, until)
+                ?: "a message request's, not accepted".takeIf { gate == EchoGate.HELD }
+                ?: return want(
+                    hash,
+                    asker = asker,
+                    fastOnly = fastOnly,
+                    pull = pull,
+                    until = until,
+                    ceiling = FileIntake.MAX_AVATAR_BYTES.takeIf { gate == EchoGate.PHOTO },
+                )
         onEvent(BlobEvent.EchoDeclined)
         log("blob no-echo ${hash.take(LOG_HASH_CHARS)}… for $asker ($refused)")
     }
@@ -2734,11 +2755,11 @@ class BlobExchange(
     }
 
     /**
-     * The larger ceiling wins (#234): a want of our own without one — an attachment, a carried frame, a group photo —
-     * lifts a photo's for good, and two photo wants keep the larger. Only our own wants call it: a neighbour's ask is not
-     * a want of ours and moves no ceiling, or a holder passed over could lift it by asking us for the hash. For the same
-     * reason a want only neighbours' asks made so far has no ceiling of ours to keep: our first want sets its own. Under
-     * [lock].
+     * The larger ceiling wins (#234): a want of our own without one — an attachment, a carried frame — lifts a photo's for
+     * good (a group's photo is wanted under the face ceiling since #282, so it lifts nothing), and two photo wants keep the
+     * larger. Only our own wants call it: a neighbour's ask is not a want of ours and moves no ceiling, or a holder passed
+     * over could lift it by asking us for the hash. For the same reason a want only neighbours' asks made so far has no
+     * ceiling of ours to keep: our first want sets its own. Under [lock].
      */
     private fun mergeCeiling(
         w: Want,
@@ -3401,6 +3422,18 @@ class BlobExchange(
 
         // Reached only over a contact's direct Internet link (ADR 2026-10.a5yj): after every radio neighbour.
         Internet("internet link"),
+    }
+
+    /** What a neighbour's ask may make of a blob we lack ([echoGate], #282). */
+    enum class EchoGate {
+        /** Echoed as any ask is. */
+        OPEN,
+
+        /** A group's photo: echoed under the face ceiling. */
+        PHOTO,
+
+        /** A message request's bytes: declined, as `EchoDeclined`. */
+        HELD,
     }
 
     /** What a step or a query did, for the owner's counters. */

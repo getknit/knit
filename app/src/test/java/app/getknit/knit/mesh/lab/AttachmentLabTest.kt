@@ -54,6 +54,7 @@ class AttachmentLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             val picture = Random(1).nextBytes(4_096)
             assertTrue(alice.sendImage(picture, "a picture", to = bob))
@@ -88,6 +89,7 @@ class AttachmentLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, carol)
 
             lab.unlink(bob, carol)
             val picture = Random(2).nextBytes(4_096)
@@ -191,6 +193,7 @@ class AttachmentLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob, carol)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "founded"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
@@ -217,6 +220,7 @@ class AttachmentLabTest {
     fun aMemberStillPullingANewGroupPhotoNeverSwitchesTheOthersBack() =
         runBlocking {
             val (alice, bob, carol) = groupOfThree()
+            lab.befriend(alice, bob, carol)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "founded"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
@@ -258,6 +262,7 @@ class AttachmentLabTest {
     fun aGroupPhotoPullLostToARestartIsAskedForAgain() =
         runBlocking {
             val (alice, bob, carol) = groupOfThree()
+            lab.befriend(alice, bob, carol)
             val groupId = alice.createGroup(bob, carol)
             assertTrue(alice.sendGroup(groupId, "founded"))
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
@@ -367,6 +372,7 @@ class AttachmentLabTest {
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             lab.linkAll(alice to bob, bob to carol, alice to carol)
             lab.awaitAcquainted(alice, bob, carol)
+            lab.befriend(alice, bob)
             // Each end's link-up hooks have run (its digest goes out after its re-ask), so none of them asks below.
             lab.await(1) {
                 val ran = listOf(bob to listOf(alice, carol), carol to listOf(alice, bob))
@@ -425,6 +431,7 @@ class AttachmentLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
             // Each end's link-up hooks have run (its digest goes out after its re-ask), so none of them asks below.
             lab.await(1) {
                 if (alice.nodeId in bob.transport.digestsSent && bob.nodeId in alice.transport.digestsSent) 1 else 0
@@ -494,6 +501,7 @@ class AttachmentLabTest {
             bob.settings.setBluetoothDownloadLimit(BluetoothDownloadLimit.NEVER)
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             alice.transport.hold(bob.transport)
             val groupId = alice.createGroup(bob)
@@ -535,6 +543,7 @@ class AttachmentLabTest {
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
+            lab.befriend(alice, bob)
 
             alice.transport.hold(bob.transport)
             val groupId = alice.createGroup(bob)

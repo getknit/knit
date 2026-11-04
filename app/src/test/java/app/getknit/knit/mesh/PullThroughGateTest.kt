@@ -14,7 +14,7 @@ class PullThroughGateTest {
         sentAt: Long,
         dm: Boolean,
         own: Boolean = false,
-    ) = AttachmentFetchRow("h", "s", null, approved = false, own = own, sentAt = sentAt, dm = dm)
+    ) = AttachmentFetchRow("h", "s", null, approved = false, own = own, sentAt = sentAt, dm = dm, conversationId = "s")
 
     @Test
     fun aDmsAttachmentIsPulledThroughForACustodyWindowFromItsLatestRow() {

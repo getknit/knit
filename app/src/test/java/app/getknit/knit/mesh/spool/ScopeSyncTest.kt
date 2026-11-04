@@ -83,6 +83,16 @@ class ScopeSyncTest {
 
         override suspend fun refused(aHash: String): Boolean = aHash in refused
 
+        /** The conversations this member holds as message requests not accepted yet (#282): every attachment in them waits. */
+        val requests = mutableSetOf<String>()
+
+        override suspend fun accepted(conversationId: String): Boolean = conversationId !in requests
+
+        override suspend fun held(
+            aHash: String,
+            conversationId: String,
+        ): Boolean = conversationId in requests
+
         override suspend fun bytes(aHash: String): ByteArray? = stored[aHash]
 
         override suspend fun save(
@@ -3704,6 +3714,44 @@ class ScopeSyncTest {
             pump(rounds = 70)
 
             assertTrue("fetched once no longer refused", receiver.blobs.stored.containsKey(aHash))
+            assertEquals(listOf(aHash), receiver.obtained)
+            receiver.sync.stop()
+        }
+
+    @Test
+    fun `a message request's attachment is neither asked about nor fetched until the request is accepted`() =
+        runTest {
+            // #282: a stranger's DM scope confirms on their first init, so their custody frame reaches the attachment pass.
+            // Its bytes wait, asked about by nobody, and are not settled, so the 60 s timed round after the acceptance
+            // fetches them.
+            val spool = FakeSpool()
+            val (aHash, bytes) = image()
+            val sender = member(spool, alice, bob, blobs = FakeBlobs(aHash to bytes))
+            val receiver = member(spool, bob, alice, blobs = FakeBlobs().apply { requests += alice })
+            sender.custody.store(
+                dmFrame(fid("m1"), from = alice, to = bob, sentAt = now, attachmentHash = aHash),
+                ForwardStore.ORIGIN_SELF,
+                now,
+            )
+            sender.sync.start(backgroundScope)
+            pump(rounds = 12)
+            sender.sync.stop()
+            spool.presenceAsks.clear()
+
+            receiver.sync.start(backgroundScope)
+            pump(rounds = 16)
+
+            assertTrue("the frame itself still crossed", receiver.delivered.isNotEmpty())
+            assertFalse(receiver.blobs.stored.containsKey(aHash))
+            assertEquals("no round trip for a held request's attachment", emptyList<String>(), spool.presenceAsks)
+            assertEquals(emptyList<String>(), spool.chunkGets)
+
+            // Accepted: the 60 s timed round fetches it; no settled-attachment recheck is owed.
+            receiver.blobs.requests.clear()
+            pump(rounds = 70)
+
+            assertTrue("fetched once accepted", receiver.blobs.stored.containsKey(aHash))
+            assertTrue(bytes.contentEquals(receiver.blobs.stored.getValue(aHash)))
             assertEquals(listOf(aHash), receiver.obtained)
             receiver.sync.stop()
         }

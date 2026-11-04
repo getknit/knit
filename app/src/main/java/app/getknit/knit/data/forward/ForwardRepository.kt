@@ -288,30 +288,39 @@ class ForwardRepository(
      * group frame is ours before any group row does (ADR 2026-10.js2p), and what says a room post is large before its
      * row exists (ADR 2026-10.hmfe). Only a cleartext post's size is read: an encrypted frame's rides sealed.
      */
-    override suspend fun carriedAttachments(now: Long): List<CarriedAttachment> =
-        dao.carriedAttachments(now).map {
-            // Only a group frame's and a room post's bytes are loaded (the query's CASE): a DM names neither.
-            val env = it.signed?.let(WireCodec::decodeEnvelope)
-            val roster = env?.group?.members?.toSet()
-            val declaredSize =
-                env
-                    ?.takeIf { e -> e.type == FrameType.CHAT && e.recipientId == null && e.group == null }
-                    ?.let { e -> WireCodec.decodeChecked<ChatContent>(e.payload) }
-                    ?.takeIf { c -> c.enc == null }
-                    ?.attachmentSize
-                    ?.takeIf { size -> size > 0 }
-            CarriedAttachment(
-                it.hash,
-                it.recipientId,
-                it.receivedAt,
-                it.senderId,
-                it.groupId,
-                roster = roster,
-                declaredSize = declaredSize,
-                sentAt = it.sentAt,
-                rowCovered = it.rowCovered,
-            )
-        }
+    override suspend fun carriedAttachments(now: Long): List<CarriedAttachment> = dao.carriedAttachments(now).map(::carried)
+
+    override suspend fun carriedAttachmentsNaming(
+        hash: String,
+        now: Long,
+    ): List<CarriedAttachment> = dao.carriedAttachmentsNaming(hash, now).map(::carried)
+
+    /** One of [ForwardDao.carriedAttachments]' rows as the re-arm reads it: its roster and declared size off its bytes. */
+    private fun carried(row: CarriedAttachmentRow): CarriedAttachment {
+        // Only a group frame's and a room post's bytes are loaded (the query's CASE): a DM names neither.
+        val env = row.signed?.let(WireCodec::decodeEnvelope)
+        val roster = env?.group?.members?.toSet()
+        val departed = env?.group?.departed?.toSet()
+        val declaredSize =
+            env
+                ?.takeIf { e -> e.type == FrameType.CHAT && e.recipientId == null && e.group == null }
+                ?.let { e -> WireCodec.decodeChecked<ChatContent>(e.payload) }
+                ?.takeIf { c -> c.enc == null }
+                ?.attachmentSize
+                ?.takeIf { size -> size > 0 }
+        return CarriedAttachment(
+            row.hash,
+            row.recipientId,
+            row.receivedAt,
+            row.senderId,
+            row.groupId,
+            roster = roster,
+            declaredSize = declaredSize,
+            sentAt = row.sentAt,
+            rowCovered = row.rowCovered,
+            departed = departed,
+        )
+    }
 
     override suspend fun recipientOf(id: String): String? = dao.recipientOf(id)
 
