@@ -99,6 +99,9 @@ class DirectContactsObserveFoldTest {
                 assertEquals(emptySet<String>(), withTimeout(WAIT_MS) { seen.receive() })
                 messages.save(dm(BOB))
                 awaitValue(seen, setOf(BOB))
+                // The collector may still be re-running a query for Bob's write; hold only once it has gone quiet, so the
+                // hold parks the next query, not one already past the gate.
+                awaitQuiet(seen)
 
                 gate.hold()
                 messages.save(dm(CAROL))
@@ -139,6 +142,14 @@ class DirectContactsObserveFoldTest {
             val got = seen.receive()
         } while (got != value)
     }
+
+    /** Drains [seen] until nothing arrives for [QUIET_MS] (bounded by [WAIT_MS]). */
+    private suspend fun awaitQuiet(seen: Channel<Set<String>>) =
+        withTimeout(WAIT_MS) {
+            do {
+                val got = withTimeoutOrNull(QUIET_MS) { seen.receive() }
+            } while (got != null)
+        }
 
     private fun dm(to: String) = MessageEntity(id = "m-$to", senderId = ME, recipientId = to, conversationId = to, body = "hi", sentAt = 1L)
 
@@ -187,6 +198,7 @@ class DirectContactsObserveFoldTest {
         const val LAGGING = "lagging-direct-contacts-collector"
         const val WAIT_MS = 10_000L
         const val EMISSION_WAIT_MS = 3_000L
+        const val QUIET_MS = 300L
         const val ME = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val BOB = "bbbbbbbbbbbbbbbbbbbbbbbbbb"
         const val CAROL = "cccccccccccccccccccccccccc"

@@ -272,11 +272,19 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
 
 - **When touching `AdvertWriter`, `TagChoice`, `AdvertRotation`, `StaleLatch`, `PsmRotation`, `BleAdvertiser.retire`,
   `BleSideChannel.rotate`, `SideCarousel.rotate`, `TagSchedule.dropReservations` / `random`, `BleRotation`,
-  `BleAdvertWrite`, `RotationTurn`, `SettingsStore.debugBleBlindAdvert`, `BuildConfig.BLIND_ADVERT`, the transport's `readvertise`,
-  `bringUp`, `rotate`, `rotationLoop` or `acceptLoop`, or `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` on
-  the Bluetooth side:** READ ADR 2026-11.xp6d, its "writer on the air" amendment (step 5b, Part B1) above all. The writer
-  airs a tag only under `BLIND_ADVERT` (passed in, the one seam), the runtime switch (off in debug until step 6) and
-  extended advertising (sticky once read true). `RotationTurn`'s every pass suspends on the worker, and a rotation that
+  `BleAdvertWrite`, `RotationTurn`, `SettingsStore.debugBleBlindAdvert`, `BuildConfig.BLIND_ADVERT`, `AdvertDiag`,
+  `AdvertStatus`, `AdvertSwitch`, `ForcedRotation`, `AdvertWriter.aired`, `AdvertRotation.View`, the transport's `readvertise`,
+  `bringUp`, `rotate`, `rotationLoop`, `acceptLoop`, `advertStatus`, `forceRotate`, `awaitAdvertSwitch` or `dialedByMe`, or
+  `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` on
+  the Bluetooth side:** READ ADR 2026-11.xp6d, its "writer on the air" amendment (step 5b, Part B1) above all, and its
+  step-6 amendment for the bridge (`…debug.ADVERT` / `ADVERT_ROTATE`: never a cause, tag source, `resolvable` or
+  generation in a reply, all of which are logged with a time). The writer airs a tag only under `BLIND_ADVERT` (passed
+  in, the one seam), the runtime switch (on by default in debug since step 6, `ADVERT --ez blind false` for a harness
+  that needs the classic order) and
+  extended advertising (null until read, sticky once read true). The bridge's view (`AdvertDiag`, a debug build only) is
+  built by `AdvertStatus.of`, which takes no cause, source or generation; `ADVERT_ROTATE` runs through `rotate` with
+  `Cause.FORCED` only when `ForcedRotation.refusal` passes (a tag on the air, nothing pending, settling, announced or held,
+  no retired server in its 30 s grace, no live link sent a form inside the receiver's two-minute limit). `RotationTurn`'s every pass suspends on the worker, and a rotation that
   does not install looks again only a recheck later (the radio down: not until a wake). Every
   advertiser write goes through `AdvertWriter`'s one snapshot (presence set, Coded set, form, PSM): a push builds from the
   snapshot's form, never the node id while blinded (a payload naming the id is dropped), nothing airs while a rotation's
@@ -292,13 +300,14 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   air at the edge are not re-aired, nor any frame already started. Rotation causes and writer events are counts in STATE only (`bleRotationsByCause`,
   `bleAdvertWritesByEvent`), never logged beside a time, a generation or a slot, never in the field log. `TAG_NEXT` sent,
   the held-row resend and the blinding-only admission row are Part B2's (the next entry). Tests: `AdvertWriterTest`, `AdvertRotationTest`,
-  `PsmRotationTest`, `RotationTurnTest`, `TagScheduleTest`, `SideCarouselTest`, `BleAdvertiserTest`, `BleSideChannelReassertTest`.
+  `PsmRotationTest`, `RotationTurnTest`, `TagScheduleTest`, `SideCarouselTest`, `BleAdvertiserTest`, `BleSideChannelReassertTest`,
+  `AdvertDiagTest`.
 
 - **When touching `TagNextSends`, `LinkFormNotes`, `LinkSilence.onHeldDial`, `AdvertAliases.stillAnnounced`,
-  `FramedLink.sendTagNext`, `BleAdmissionPolicy.Verdict.RefuseLegacy` / `RefuseHeld`'s
+  `LinkFormWaits`, `FramedLink.sendTagNext`, `BleAdmissionPolicy.Verdict.RefuseLegacy` / `RefuseHeld`'s
   follow-ups, `LegacyDialerBoost`, `ScanDemandPolicy.endEarly` / `decide`'s `boostUntil`, `KeyChurnLimiter`'s
   relisting, `AdvertRotation.announceDueAt`, the transport's `sendForm` / `announceTag` / `sendCurrentFormOnce` /
-  `noteHeldRefusal` / `noteLinkFormAtEdge` / `noteHandleSighted`, or `MeshTransport.onTagNextRecipients` /
+  `noteHeldRefusal` / `noteLinkForm` / `noteHandleSighted`, or `MeshTransport.onTagNextRecipients` /
   `onPresenceKeyPassRequester` on the Bluetooth side:** READ ADR 2026-11.xp6d's "announced rotations and the blinding
   rows" amendment (step 5b, Part B2). `TAG_NEXT` is a link record outside `DoorbellPolicy.rings`, sent only to a proven
   `CAP_BLIND_ADVERT` link whose peer the session's predicate hears at the send, and never while the own key is null.

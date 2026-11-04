@@ -97,6 +97,8 @@ import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.bluetooth.AdvertDiag
+import app.getknit.knit.mesh.bluetooth.AdvertSwitch
 import app.getknit.knit.mesh.bluetooth.CodedPhyDiag
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.CodedPhyPolicy
@@ -392,6 +394,19 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   ask on an ACL settles on 517 whatever it names — rssi, codedOwned, refused, and the link's boost's boosting and
  *   earned, null before its first file). The `bt tune <id> …` and `bt boost <id> …` log lines carry the same, and the
  *   HCI snoop is the oracle.
+ * - [ACTION_ADVERT] — the **blinded Bluetooth advert** (ADR 2026-11.xp6d, step 6). `--ez blind true|false` stores the
+ *   runtime switch (`SettingsStore.debugBleBlindAdvert`), `--ez clear true` clears it back to the default (on in a debug
+ *   build); after a store it waits (about 6 s at most) for the form on the air to match what the writer should air, and
+ *   says `applied`, or not with a `why` (`transport not running`, `radio down`, `no extended advertising`, `pending`,
+ *   `timeout`; `build` on a build without `BLIND_ADVERT`, which only stores). No extras reads. The reply: `build`,
+ *   `switch` (`value`, and `stored`, null while the default stands), `running`, then the transport's
+ *   [app.getknit.knit.mesh.bluetooth.AdvertStatus] fields (the gates, `form` clear|tag, `epoch`, `rotatedAtMs`, the
+ *   turn, `psm` while clear, `peers[]` and `links[]`). Never a rotation's cause, a tag's source, `resolvable`, a key
+ *   generation or a tag: this reply is mirrored to logcat with a time.
+ * - [ACTION_ADVERT_ROTATE] — one unannounced rotation of the blinded advert now (`AdvertRotation.Cause.FORCED`), or a
+ *   refusal with a `why` (`radio down`, `pending`, `clear`, `settling`, `announced`, `holding`, `grace`, `throttled`);
+ *   the reply is `rotated`, `epochBefore` / `epochAfter`, then [ACTION_ADVERT]'s fields. Each one spends one of the
+ *   slot's restarts.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -667,6 +682,14 @@ class DebugBridgeReceiver :
 
                         ACTION_LINKTUNE -> {
                             handleLinkTune(intent)
+                        }
+
+                        ACTION_ADVERT -> {
+                            handleAdvert(intent)
+                        }
+
+                        ACTION_ADVERT_ROTATE -> {
+                            handleAdvertRotate()
                         }
 
                         ACTION_NANICM -> {
@@ -3947,6 +3970,69 @@ class DebugBridgeReceiver :
             .put("nearby", ble?.nearby ?: JSONObject.NULL)
     }
 
+    /**
+     * [ACTION_ADVERT]: stores the blinded advert's runtime switch (`blind`, or `clear` back to the default), waits for it to
+     * reach the air when the build writes tags and the transport runs, then reports the advert ([putAdvert]). A store with
+     * no transport running is still `status: ok`, `applied: false` (a harness may set the switch before the mesh starts).
+     */
+    private suspend fun handleAdvert(intent: Intent): JSONObject {
+        val clear = intent.getBooleanExtra("clear", false)
+        val stores = clear || intent.hasExtra("blind")
+        when {
+            clear -> settings.setDebugBleBlindAdvert(null)
+            intent.hasExtra("blind") -> settings.setDebugBleBlindAdvert(intent.getBooleanExtra("blind", true))
+        }
+        val value = settings.debugBleBlindAdvert.first()
+        val stored = settings.debugBleBlindAdvertStored.first()
+        val out =
+            JSONObject()
+                .put("status", "ok")
+                .put("build", BuildConfig.BLIND_ADVERT)
+                .put("switch", JSONObject().put("value", value).put("stored", stored ?: JSONObject.NULL))
+        if (stores) {
+            if (BuildConfig.BLIND_ADVERT) {
+                val await = AdvertDiag.awaitSwitch
+                val result = await?.invoke(value) ?: AdvertSwitch.Result(false, AdvertSwitch.Why.NOT_RUNNING)
+                out.put("applied", result.applied)
+                result.why?.let { out.put("why", it.wire) }
+            } else {
+                out.put("applied", false).put("why", "build")
+            }
+        }
+        return putAdvert(out)
+    }
+
+    /** [ACTION_ADVERT_ROTATE]: one forced rotation, or the reason it was refused, then [ACTION_ADVERT]'s report. */
+    private suspend fun handleAdvertRotate(): JSONObject {
+        val out = JSONObject().put("status", "ok").put("build", BuildConfig.BLIND_ADVERT)
+        val rotate = AdvertDiag.rotate
+        if (rotate == null) {
+            out.put("rotated", false).put("why", AdvertSwitch.Why.NOT_RUNNING.wire)
+        } else {
+            val r = rotate()
+            out.put("rotated", r.rotated).put("epochBefore", r.epochBefore).put("epochAfter", r.epochAfter)
+            if (!r.rotated) out.put("why", r.refused?.wire ?: "no install")
+        }
+        return putAdvert(out)
+    }
+
+    /** Adds `running` and, while the Bluetooth transport runs, its [app.getknit.knit.mesh.bluetooth.AdvertStatus] fields. */
+    private suspend fun putAdvert(out: JSONObject): JSONObject {
+        val status = AdvertDiag.status?.invoke()
+        out.put("running", status != null)
+        status?.fields()?.forEach { (key, value) -> out.put(key, jsonOf(value)) }
+        return out
+    }
+
+    /** A plain value, map or list ([app.getknit.knit.mesh.bluetooth.AdvertStatus.fields]) as JSON. */
+    private fun jsonOf(value: Any?): Any =
+        when (value) {
+            null -> JSONObject.NULL
+            is Map<*, *> -> JSONObject().also { o -> value.forEach { (k, v) -> o.put(k.toString(), jsonOf(v)) } }
+            is List<*> -> JSONArray(value.map(::jsonOf))
+            else -> value
+        }
+
     /** [ACTION_NANOFF]: switches the Wi-Fi Aware plane off or back on, then reports the switch with the plane's row. */
     private suspend fun handleNanOff(intent: Intent): JSONObject {
         if (intent.hasExtra("off")) settings.setDebugNanOff(intent.getBooleanExtra("off", false))
@@ -4431,6 +4517,8 @@ class DebugBridgeReceiver :
         const val ACTION_LOWPOWER = "app.getknit.knit.debug.LOWPOWER"
         const val ACTION_PHY = "app.getknit.knit.debug.PHY"
         const val ACTION_LINKTUNE = "app.getknit.knit.debug.LINKTUNE"
+        const val ACTION_ADVERT = "app.getknit.knit.debug.ADVERT"
+        const val ACTION_ADVERT_ROTATE = "app.getknit.knit.debug.ADVERT_ROTATE"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

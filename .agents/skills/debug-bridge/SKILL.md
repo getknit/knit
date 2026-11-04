@@ -103,7 +103,8 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
 - **Mesh state:** `STATE`, `STORE`, `HEAL`, `PAUSE`, `RESUME`, `BLECAP`, `NANOFF` (Wi-Fi Aware off, Bluetooth
   alone), `AWARE` (the person's Settings › Wi-Fi Aware switch), `LOWPOWER` (low-power mode's switch and posture; not
   offered since #44), `PHY` (the Coded PHY experiment), `LINKTUNE` (ask a Bluetooth link for a PHY, priority or MTU; the 1M/2M
-  file budget and the link boost's A/B switch on any debug build — the #120 drain trial).
+  file budget and the link boost's A/B switch on any debug build — the #120 drain trial), `ADVERT` (the blinded
+  advert's switch, form, rotation count and each peer's dial role), `ADVERT_ROTATE` (one forced rotation).
 - **Planes:** `SPOOL`, `COMMONS`, `LORA`, `LORATX`, `LORAPROV`, `XFER`, `CALL` (experimental voice calls), `LINK`
   (direct Internet links with a contact, the a5yj spike), `STT`
   (the walkie transcript's model and lines), `TRANSLATE` (the offline translation spike's models and bench;
@@ -149,6 +150,6 @@ so nobody has to drive the consent sheet.
 Check for drift after any change. This must print nothing:
 
 ```sh
-comm -3 <(grep -oE '"app\.getknit\.knit\.debug\.[A-Z]+"' app/src/debug/java/app/getknit/knit/debug/DebugBridgeReceiver.kt | tr -d '"' | sed 's/.*\.//' | sort -u) \
-        <(grep -oE 'debug\.[A-Z]+' .agents/context/debug-bridge.md | sed 's/.*\.//' | sort -u)
+comm -3 <(grep -oE '"app\.getknit\.knit\.debug\.[A-Z_]+"' app/src/debug/java/app/getknit/knit/debug/DebugBridgeReceiver.kt | tr -d '"' | sed 's/.*\.//' | sort -u) \
+        <(grep -oE 'debug\.[A-Z_]+' .agents/context/debug-bridge.md | sed 's/.*\.//' | sort -u)
 ```

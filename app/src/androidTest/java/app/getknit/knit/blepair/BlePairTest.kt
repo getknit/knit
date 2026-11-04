@@ -61,7 +61,9 @@ import kotlin.random.Random
  * - `knitBleBridge` — the guest-side port `adb reverse` maps to this emulator's bridge control (cuts and deafness).
  *
  * A test that does something one-sided gives it to one side by id ([isSmaller]): the smaller id never dials, so a
- * fault it makes is healed by the other side's ordinary dial.
+ * fault it makes is healed by the other side's ordinary dial. That order holds only between clear adverts: a debug build
+ * blinds by default (ADR 2026-11.xp6d), and between two tags the larger tag dials, turning every slot.
+ * `ble-pair-test.sh` turns the blind switch off on both sides unless `KNIT_PAIR_BLIND=1`.
  */
 abstract class BlePairTest {
     private val args = InstrumentationRegistry.getArguments()
@@ -90,8 +92,18 @@ abstract class BlePairTest {
     protected val watch = CoroutineScope(Dispatchers.Default + Job())
     private val strangers = ConcurrentHashMap.newKeySet<String>()
 
-    /** True on the side with the smaller node id, the one that never dials. */
-    protected val isSmaller: Boolean get() = self < peer
+    /**
+     * True on the side with the smaller node id, the one that never dials — with clear adverts only, so it fails fast on a
+     * side whose blind switch is on (a `KNIT_PAIR_BLIND=1` run, or a run not started by `ble-pair-test.sh`).
+     */
+    protected val isSmaller: Boolean
+        get() {
+            check(!BuildConfig.BLIND_ADVERT || !runBlocking { settings.debugBleBlindAdvert.first() }) {
+                "isSmaller assumes the classic dial order, and this side's advert may blind: turn the switch off " +
+                    "(ble-pair-test.sh does, unless KNIT_PAIR_BLIND=1)"
+            }
+            return self < peer
+        }
 
     @Before
     fun startTheMesh() {

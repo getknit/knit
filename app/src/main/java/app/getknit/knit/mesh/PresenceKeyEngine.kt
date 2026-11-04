@@ -394,10 +394,10 @@ class PresenceKeyEngine(
         // One peer's failed send never loses the others', and forgets what that peer was sent, so the next pass resends.
         val failed = outgoing.filter { (peer, frame) -> runCatchingUnlessCancelled { send(peer, frame) }.isFailure }.map { it.first.nodeId }
         if (failed.isNotEmpty()) onSendFailed(failed)
+        // The per-decision trail only (nowhere in production): a dated `contacts` pass that seals to every linked contact
+        // says when the user removed or blocked someone (ADR 2026-11.xp6d, "Counts, never dated causes").
         if (outgoing.isNotEmpty()) {
-            log(
-                "presence keys ($cause): ${outgoing.size - failed.size} frames to linked contacts, ${failed.size} failed",
-            )
+            debug("presence keys ($cause): ${outgoing.size - failed.size} frames to linked contacts, ${failed.size} failed")
         }
     }
 
@@ -510,8 +510,8 @@ class PresenceKeyEngine(
         store.deletePeerKeys(leavers)
         val owed = store.linkOwedResets().keys
         leavers.filter { it in owed }.forEach { store.dropLinkOwedReset(it) }
+        // No line: a dated "former direct contacts deleted" says when someone was removed or blocked.
         leavers.forEach { sent.remove(it) }
-        log("presence keys of ${leavers.size} former direct contacts deleted")
     }
 
     /**
@@ -549,11 +549,9 @@ class PresenceKeyEngine(
         val change = changeFor(due, rows, contacts, now) ?: return false
         store.applyOwn(change.inserted, change.updated, change.keep)
         if (due is PresenceKeyPolicy.Due.Advance && due.cause != PresenceKeyPolicy.AdvanceCause.WEEKLY) lastClockAdvanceAt = elapsed()
-        if (change.inserted.isNotEmpty()) {
-            metrics.onPresenceKeyRotated()
-            val current = PresenceKeyPolicy.keysOf(store.ownKeys()).current?.generation
-            log("presence key ${due.javaClass.simpleName.lowercase()}: current g=$current")
-        }
+        // Counted, never logged: a dated line naming the step or the generation says when the user removed or blocked
+        // someone (ADR 2026-11.xp6d, "Counts, never dated causes").
+        if (change.inserted.isNotEmpty()) metrics.onPresenceKeyRotated()
         return true
     }
 

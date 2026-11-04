@@ -1,6 +1,8 @@
 package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.mesh.crypto.BlindTag
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * Who is sent this phone's advertised form over a link, and when (ADR 2026-11.xp6d's "Rotation is announced"; step 5b's
@@ -73,6 +75,13 @@ internal class TagNextSends<L : Any>(
         if (outcome == Outcome.SENT) lastSent[link] = wallMs
         return outcome
     }
+
+    /**
+     * Whether any live link was sent a form within [minIntervalMs] before [wallMs]: a post-rotation send to it now would
+     * be [Outcome.THROTTLED], leaving that peer on the old form (`…debug.ADVERT_ROTATE` refuses then, step 6). Ended links
+     * are [forget]ed, so only links still held count.
+     */
+    fun sentWithin(wallMs: Long): Boolean = lastSent.values.any { wallMs - it in 0 until minIntervalMs }
 
     /** The link ended: its record goes with it. */
     fun forget(link: L) {
@@ -160,4 +169,74 @@ internal class LinkFormNotes<L : Any> {
     }
 
     fun clear() = notes.clear()
+}
+
+/**
+ * The transport's half of [LinkFormNotes] (step 5b's W5; split out in step 6 so the JVM covers the wiring): which
+ * resolver answers are noted at all, and one wait per link. Only an announcement the resolver accepted ([notes]: held
+ * pending, or what a contact's key already says) is noted; a later accepted record cancels the link's wait and replaces
+ * it, so a fork flooding records at link rate holds one coroutine, never one per record. At the wait's end the note must
+ * still be that link's and that tag ([LinkFormNotes.due]) and still stand ([offer]'s `stands`, read then) before it
+ * applies. Confined, with every coroutine [launch] starts, to one thread (the transport's worker).
+ */
+internal class LinkFormWaits<L : Any>(
+    // Starts a wait on the owner's confined dispatcher.
+    private val launch: (suspend () -> Unit) -> Job,
+    // An elapsed-aware wait on the wall clock: a peer's edge is a wall-clock instant, and a `delay` stops in suspend.
+    private val wait: suspend (Long) -> Unit,
+    private val wallMs: () -> Long,
+) {
+    private val notes = LinkFormNotes<L>()
+    private val jobs = HashMap<L, Job>()
+
+    /** How many links hold a wait for their edge. */
+    val waiting: Int get() = jobs.size
+
+    /**
+     * The resolver answered [outcome] to [tag], announced on [link]. Returns whether it was noted. A noted record applies
+     * ([apply]) at once when it names the form on the air now, else at the coming edge if [stands] still holds then.
+     */
+    fun offer(
+        link: L,
+        tag: String,
+        outcome: AdvertAliases.ClaimOutcome,
+        stands: () -> Boolean,
+        apply: () -> Unit,
+    ): Boolean {
+        if (!notes(outcome)) return false
+        jobs.remove(link)?.cancel()
+        val wall = wallMs()
+        val at = notes.offer(link, tag, wall)
+        if (at == null) {
+            apply()
+            return true
+        }
+        jobs[link] =
+            launch {
+                wait(at - wall)
+                val self = currentCoroutineContext()[Job]
+                if (jobs[link] === self) jobs.remove(link)
+                if (notes.due(link, tag, wallMs()) && stands()) apply()
+            }
+        return true
+    }
+
+    /** The link ended (or was replaced): its note and its wait go. */
+    fun forget(link: L) {
+        notes.forget(link)
+        jobs.remove(link)?.cancel()
+    }
+
+    /** Every link's (adapter off, stop). */
+    fun clear() {
+        notes.clear()
+        jobs.values.forEach(Job::cancel)
+        jobs.clear()
+    }
+
+    companion object {
+        /** Whether a resolver answer to a `TAG_NEXT` is noted: held pending, or already a contact's key's answer. */
+        fun notes(outcome: AdvertAliases.ClaimOutcome): Boolean =
+            outcome == AdvertAliases.ClaimOutcome.Pending || outcome == AdvertAliases.ClaimOutcome.Redundant
+    }
 }

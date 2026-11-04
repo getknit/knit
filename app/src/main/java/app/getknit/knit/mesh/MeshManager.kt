@@ -433,9 +433,11 @@ class MeshManager(
     // on in every build, independent of writing tags (`BLIND_ADVERT`). Off, contacts' keys are still received, stored and
     // resolved and a restore's link-owed resets still go. `mesh/lab` models a node with it off.
     sendsPresenceKeys: Boolean = true,
-    // Where the presence-key engine's per-decision lines go (a link-owed reset's step and link epochs; ids and counts,
-    // never bytes or a tag): debug in production; `mesh/lab` raises them to a warning so a failed scenario's report holds them.
-    presenceDebugLog: (String) -> Unit = { Log.d(TAG, it) },
+    // Where the presence-key engine's per-decision lines go (each pass's direct-contact count, whom keys were sealed to, a
+    // link-owed reset's step; ids and counts, never bytes or a tag): nowhere in production, since a dated count that
+    // drops, or a dated seal to every contact, says when the user removed or blocked someone (ADR 2026-11.xp6d, "Counts,
+    // never dated causes"); `mesh/lab` keeps them as warnings so a failed scenario's report holds them.
+    presenceDebugLog: (String) -> Unit = {},
     // How long a link-up waits before its presence-key reconcile (the brief: a random 2–20 s, so the ctl does not ride
     // the link's first second). `mesh/lab` shortens it.
     private val presenceLinkUpDelayMs: () -> Long = {

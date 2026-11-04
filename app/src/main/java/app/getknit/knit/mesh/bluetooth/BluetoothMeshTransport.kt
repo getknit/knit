@@ -548,10 +548,11 @@ class BluetoothMeshTransport internal constructor(
 
     @Volatile private var ownKeySource: () -> OwnPresenceKey? = { null }
 
-    // The runtime switch's last value, and whether the controller has extended advertising ([probeCoded], adapter on).
+    // The runtime switch's last value, and whether the controller has extended advertising ([probeCoded], adapter on):
+    // null until read, sticky once true (the debug bridge's `extendedAdvertising` reports all three states).
     @Volatile private var blindSwitchOn = true
 
-    @Volatile private var extAdvSupported = false
+    @Volatile private var extAdvSupported: Boolean? = null
 
     // When the last ACL edge landed: a slot rotation runs at least SETTLE_MS after one (9utz), within its hold's bound.
     @Volatile private var lastAclEdgeAt = Long.MIN_VALUE / 2
@@ -564,9 +565,21 @@ class BluetoothMeshTransport internal constructor(
     private var announcedTag: ByteArray? = null
 
     // A peer's accepted announcement waiting for its edge to become its link's form: one note and one wait per link, the
-    // worker's ([noteLinkForm]).
-    private val linkFormNotes = LinkFormNotes<FramedLink>()
-    private val linkFormJobs = HashMap<FramedLink, Job>()
+    // worker's ([LinkFormWaits], [onTagNext]).
+    private val linkFormWaits =
+        LinkFormWaits<FramedLink>(
+            launch = { block -> scope.launch(worker) { block() } },
+            wait = { ms -> wallWait.sleep(ms) },
+            wallMs = System::currentTimeMillis,
+        )
+
+    // The live links this phone dialed (the dial path registers with `dialStartedAt`, the accept path without), keyed by
+    // link identity and dropped wherever [linkForms] drops the link, so a replaced link never reports its successor's role.
+    // Read by the debug bridge's `ADVERT` (`links[].dialedByMe`).
+    private val dialedByMe: MutableSet<FramedLink> = ConcurrentHashMap.newKeySet()
+
+    // When the last rotation installed (elapsed clock, the worker's): `ADVERT_ROTATE`'s grace floor.
+    private var lastInstallAt: Long? = null
 
     // How a stale mark asks the key engine for a pass (`MeshTransport.onPresenceKeyPassRequester`).
     @Volatile private var keyPassRequester: () -> Unit = {}
@@ -810,7 +823,7 @@ class BluetoothMeshTransport internal constructor(
             CodedPhyDiag.status = ::codedPhyStatus
             CodedPhyDiag.setTxPower = ::setCodedTxPower
             field.sampler(FIELD_SAMPLER, ::fieldSample)
-            if (BuildConfig.DEBUG) LinkTuneDiag.tune = ::tuneLinks
+            if (BuildConfig.DEBUG) bindDebugDiags()
             sideChannel?.let {
                 it.bind(sideListener)
                 sideJob = scope.launch { sideScanLoop(it) }
@@ -832,6 +845,22 @@ class BluetoothMeshTransport internal constructor(
                     scope.launch(worker) { flipIfWanted() }
                 }
             }
+    }
+
+    /** A debug build's bridge levers: the drain trial's per-link tuning (#120) and the blinded advert's view (step 6). */
+    private fun bindDebugDiags() {
+        LinkTuneDiag.tune = ::tuneLinks
+        AdvertDiag.status = ::advertStatus
+        AdvertDiag.rotate = ::forceRotate
+        AdvertDiag.awaitSwitch = ::awaitAdvertSwitch
+    }
+
+    /** [bindDebugDiags] undone at stop (a no-op on a release build, which bound nothing). */
+    private fun unbindDebugDiags() {
+        LinkTuneDiag.tune = null
+        AdvertDiag.status = null
+        AdvertDiag.rotate = null
+        AdvertDiag.awaitSwitch = null
     }
 
     /** The power state moved: the scan's cadence may change, and a dark screen lets a boost go at once. */
@@ -867,7 +896,7 @@ class BluetoothMeshTransport internal constructor(
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
         field.sampler(FIELD_SAMPLER, null)
-        LinkTuneDiag.tune = null
+        unbindDebugDiags()
         CodedPhyDiag.publishLinkPhys(emptyMap())
         sideJob?.cancel()
         cancelGattRead()
@@ -1325,9 +1354,7 @@ class BluetoothMeshTransport internal constructor(
             rotation.onStopped()
             announcedTag = null
             tagNextSends.clear()
-            linkFormNotes.clear()
-            linkFormJobs.values.forEach(Job::cancel)
-            linkFormJobs.clear()
+            linkFormWaits.clear()
         }
     }
 
@@ -1381,7 +1408,7 @@ class BluetoothMeshTransport internal constructor(
      * Whether the advert should name a tag now: the build writes tags, the runtime switch is on, the tag schedule has its
      * store, and the controller has extended advertising (read with the adapter on, [probeCoded]).
      */
-    private fun blinding(): Boolean = blindAdvert && tagSchedule != null && blindSwitchOn && extAdvSupported
+    private fun blinding(): Boolean = blindAdvert && tagSchedule != null && blindSwitchOn && extAdvSupported == true
 
     /** A presence set; its callbacks act only while it is [writer]'s current one (a late start of a retired one never). */
     private fun newPresenceAdvertiser(): BleAdvertiser {
@@ -1445,6 +1472,7 @@ class BluetoothMeshTransport internal constructor(
         aliases.setOwnTags(form.takeIf { it.blinded }?.advertised, previous?.takeIf { it.blinded }?.advertised)
         if (form.blinded || old?.blinded == true) sideChannel?.rotate()
         airedGeneration = choice?.generation
+        lastInstallAt = elapsed()
         if (form.blinded) rotation.onRotated(wall) else rotation.onStopped()
         announcedTag = null // aired now, or passed by
         metrics.onBleRotation(BleRotation.valueOf(cause.name))
@@ -1682,6 +1710,92 @@ class BluetoothMeshTransport internal constructor(
         rotate(AdvertRotation.Cause.FLIP, announced = false)
     }
 
+    // --- The debug bridge's view of the writer (step 6; bound in a debug build only, AdvertDiag) ---
+
+    /**
+     * `…debug.ADVERT`'s status, read on the worker (the turn's fields are the worker's; the writer's snapshot is one
+     * reference). Nothing in it names a cause, a tag source, a generation or a tag ([AdvertStatus]).
+     */
+    private suspend fun advertStatus(): AdvertStatus =
+        withContext(worker) {
+            val linked = links.values.toList()
+            AdvertStatus.of(
+                aired = writer.aired(),
+                radioUp = writer.isUp(),
+                pending = writer.pending(),
+                blinding = blinding(),
+                extendedAdvertising = extAdvSupported,
+                keyHeld = ownKey != null,
+                turn = rotation.view(),
+                mine = mine().current,
+                sightings = presence.snapshots(elapsed()),
+                linkedIds = linked.mapTo(HashSet()) { it.nodeId },
+                links =
+                    linked.map {
+                        AdvertStatus.Link(
+                            nodeId = it.nodeId,
+                            proven = it.proven,
+                            dialedByMe = it in dialedByMe,
+                            tagAware = it.peer.capabilities and Protocol.CAP_BLIND_ADVERT != 0L,
+                        )
+                    },
+            )
+        }
+
+    /**
+     * `…debug.ADVERT_ROTATE`: one unannounced rotation now through [rotate] ([AdvertRotation.Cause.FORCED]), on the worker,
+     * refused in the same task by [ForcedRotation.refusal] when an ordinary rotation would not run now or would cost the
+     * plane a server, a reservation or a settle. A refused call rotates nothing.
+     */
+    private suspend fun forceRotate(): ForcedRotation.Result =
+        withContext(worker) {
+            val before = writer.aired()?.installs ?: 0L
+            val refused =
+                ForcedRotation.refusal(
+                    radioUp = writer.isUp(),
+                    pending = writer.pending(),
+                    blinding = blinding(),
+                    airedBlinded = writer.aired()?.form?.blinded == true,
+                    settleLeftMs = settleLeftMs(),
+                    announced = rotation.view().announced || announcedTag != null,
+                    holding = rotationHeld(),
+                    retiredServerOpen = synchronized(servers) { servers.nextDueAt() } != null,
+                    sinceInstallMs = lastInstallAt?.let { elapsed() - it },
+                    formSentRecently = tagNextSends.sentWithin(System.currentTimeMillis()),
+                )
+            val rotated = refused == null && ::localNodeId.isInitialized && rotate(AdvertRotation.Cause.FORCED, announced = false)
+            ForcedRotation.Result(rotated, refused, before, writer.aired()?.installs ?: 0L)
+        }
+
+    /**
+     * `…debug.ADVERT --ez blind|clear`: after the bridge stored the switch as [want], waits until this transport has seen it
+     * and the form on the air matches [blinding] ([AdvertSwitch.verdict]), at most [ADVERT_SWITCH_WAIT_MS] on the elapsed
+     * clock: a flip waits out an ACL edge's 2.5 s settle, then a rotation's install. Polls; a debug bridge's wait only.
+     */
+    private suspend fun awaitAdvertSwitch(want: Boolean): AdvertSwitch.Result {
+        val poll = ElapsedWait(::elapsed, ADVERT_SWITCH_POLL_MS)
+        val deadline = elapsed() + ADVERT_SWITCH_WAIT_MS
+        while (true) {
+            val timedOut = elapsed() >= deadline
+            val verdict =
+                withContext(worker) {
+                    AdvertSwitch.verdict(
+                        markStore = tagSchedule != null,
+                        want = want,
+                        seen = blindSwitchOn == want,
+                        radioUp = writer.isUp(),
+                        pending = writer.pending(),
+                        airedBlinded = writer.aired()?.form?.blinded,
+                        blinding = blinding(),
+                        extendedAdvertising = extAdvSupported,
+                        timedOut = timedOut,
+                    )
+                }
+            if (verdict != null) return verdict
+            poll.sleep(ADVERT_SWITCH_POLL_MS)
+        }
+    }
+
     /** [rotate] for a bring-up, from the worker. */
     private fun runRotation(
         cause: AdvertRotation.Cause,
@@ -1786,11 +1900,16 @@ class BluetoothMeshTransport internal constructor(
         val a = adapter
         // Extended advertising also gates the blinded writer: without it a controller's sets may share the host's address
         // across a restart, which would tie one tag to the next (ADR 2026-11.xp6d). False while the adapter is off.
-        val extended = a != null && a.isEnabled && runCatching { a.isLeExtendedAdvertisingSupported }.getOrDefault(false)
+        val read = if (a != null && a.isEnabled) runCatching { a.isLeExtendedAdvertisingSupported }.getOrNull() else null
+        val extended = read == true
         // Sticky for the process: the controller's feature does not change, and one transient false read at a bring-up
-        // must not leave a whole session airing its id.
-        if (extended) extAdvSupported = true
-        codedSupported = extended && runCatching { a.isLeCodedPhySupported }.getOrDefault(false)
+        // must not leave a whole session airing its id. A false read only replaces "not read yet".
+        if (extended) {
+            extAdvSupported = true
+        } else if (read == false && extAdvSupported == null) {
+            extAdvSupported = false
+        }
+        codedSupported = extended && a != null && runCatching { a.isLeCodedPhySupported }.getOrDefault(false)
         if (codedAdvert.startsWith("dark")) codedAdvert = "off"
         codedStartRetries = 0
     }
@@ -4075,6 +4194,7 @@ class BluetoothMeshTransport internal constructor(
             confirmGattPayload(it.address, nodeId)
         }
         (form ?: presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.form)?.let { linkForms[framed] = it }
+        if (dialStartedAt != null) dialedByMe.add(framed) // the dial path passes it; the accept path never does
         linkStamps.onLinkEvent(nodeId, elapsed())
         val prev = links.put(nodeId, framed)
         // R3 on this plane: a proven link took the place of an unproven one claiming the id (the prev close below).
@@ -4088,7 +4208,12 @@ class BluetoothMeshTransport internal constructor(
             linkPhy.remove(prev)
             lastPace.remove(prev)
             linkForms.remove(prev)
-            scope.launch(worker) { aliases.onLinkEnded(prev) }
+            dialedByMe.remove(prev)
+            scope.launch(worker) {
+                aliases.onLinkEnded(prev)
+                tagNextSends.forget(prev)
+                linkFormWaits.forget(prev)
+            }
             phyControls.remove(prev)?.close()
             publishLinkPhys()
             silences.remove(prev)
@@ -4185,43 +4310,32 @@ class BluetoothMeshTransport internal constructor(
         val tag = NodeId.fromBytes(bytes)
         scope.launch(worker) {
             if (!BlindSightings.current(links[link.nodeId], link)) return@launch
-            when (aliases.onTagNext(link, link.nodeId, tag)) {
-                AdvertAliases.ClaimOutcome.Pending, AdvertAliases.ClaimOutcome.Redundant -> {
-                    noteLinkForm(link, tag)
-                }
-
-                else -> {} // rate-limited, own, contested, voided, contradicted: nothing to note, and nothing scheduled
-            }
+            // Rate-limited, own, contested, voided, contradicted: nothing noted, and nothing scheduled.
+            noteLinkForm(link, tag, aliases.onTagNext(link, link.nodeId, tag))
         }
     }
 
     /**
      * A peer's accepted announcement ([tag]) becomes [link]'s form when it reaches its edge (a resend's at once), as a
      * sighting would make it: both ends then judge `dialsBackAfterDrop` on the same pair of forms, which a settled pair's
-     * sparse sightings at range would leave apart (the bluetooth design pass). One note and one wait per link
-     * ([linkFormNotes], [linkFormJobs]): a later record replaces both, so a fork flooding records costs one coroutine. At
-     * the edge the tag must still stand for the link ([AdvertAliases.stillAnnounced]). On the worker; the wait is
-     * elapsed-aware on the wall clock.
+     * sparse sightings at range would leave apart (the bluetooth design pass). Only a record the resolver accepted
+     * ([outcome] Pending or Redundant), one note and one wait per link ([linkFormWaits]): a later record replaces both, so a
+     * fork flooding records costs one coroutine. At the edge the tag must still stand for the link
+     * ([AdvertAliases.stillAnnounced]). On the worker; the wait is elapsed-aware on the wall clock.
      */
     private fun noteLinkForm(
         link: FramedLink,
         tag: String,
+        outcome: AdvertAliases.ClaimOutcome,
     ) {
-        linkFormJobs.remove(link)?.cancel()
         val form = AdvertOrder.Form(tag, blinded = true)
-        val wall = System.currentTimeMillis()
-        val at = linkFormNotes.offer(link, tag, wall)
-        if (at == null) {
-            if (links[link.nodeId] === link) linkForms[link] = form
-            return
-        }
-        linkFormJobs[link] =
-            scope.launch(worker) {
-                wallWait.sleep(at - wall)
-                linkFormJobs.remove(link)
-                val due = linkFormNotes.due(link, tag, System.currentTimeMillis())
-                if (due && links[link.nodeId] === link && aliases.stillAnnounced(link, link.nodeId, tag)) linkForms[link] = form
-            }
+        linkFormWaits.offer(
+            link,
+            tag,
+            outcome,
+            stands = { links[link.nodeId] === link && aliases.stillAnnounced(link, link.nodeId, tag) },
+            apply = { if (links[link.nodeId] === link) linkForms[link] = form },
+        )
     }
 
     /**
@@ -4252,11 +4366,11 @@ class BluetoothMeshTransport internal constructor(
         if (links.isEmpty()) noLinkSince = elapsed() // the lonely dial's clock runs from the last link's end (hj4a)
         linkStamps.onLinkEvent(nodeId, elapsed())
         val form = linkForms.remove(fl)
+        dialedByMe.remove(fl)
         scope.launch(worker) {
             aliases.onLinkEnded(fl)
             tagNextSends.forget(fl)
-            linkFormNotes.forget(fl)
-            linkFormJobs.remove(fl)?.cancel()
+            linkFormWaits.forget(fl)
         }
         neverSighted.remove(fl)
         val address = linkAddresses.remove(fl)
@@ -5011,6 +5125,11 @@ class BluetoothMeshTransport internal constructor(
 
         // A retired L2CAP server's close comes this long after its grace (PsmRotation.GRACE_MS), so the due check finds it.
         private const val SERVER_GRACE_SLACK_MS = 1_000L
+
+        // `…debug.ADVERT`'s wait for a stored switch to reach the air: an ACL edge's 2.5 s settle, then a rotation's
+        // install (throwaway servers, a durable mark write), with margin; looked at every 200 ms of the elapsed clock.
+        private const val ADVERT_SWITCH_WAIT_MS = 6_000L
+        private const val ADVERT_SWITCH_POLL_MS = 200L
 
         // A chase ends early on a newly sighted handle at most this often (step 5b's W6): a stationary blinded stranger
         // gets a new handle every rotation, and must not end every chase.

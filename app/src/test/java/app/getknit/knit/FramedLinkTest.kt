@@ -1479,9 +1479,13 @@ class FramedLinkTest {
         val tag = ByteArray(LinkFraming.TAG_NEXT_BYTES) { (it + 1).toByte() }
         clock.set(9_000)
         assertTrue(h.link.sendTagNext(tag))
+        // A keepalive queued behind it: once it is read, the writer has finished with the TAG_NEXT, so the clock below is
+        // read after the record's whole write, not while it may still be in hand.
+        assertTrue(h.link.sendKeepalive())
         val rec = LinkFraming.read(h.fromLink)!!
         assertEquals(LinkFraming.Type.TAG_NEXT, rec.type)
         assertArrayEquals(tag, rec.payload)
+        assertEquals(LinkFraming.Type.KEEPALIVE, LinkFraming.read(h.fromLink)!!.type)
         assertEquals("a control record touches no activity clock", 1_000L, h.link.lastActivityAt)
     }
 

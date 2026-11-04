@@ -290,11 +290,12 @@ enum class BleBlindDrop {
 /**
  * Why a blinding phone's presence advert rotated (ADR 2026-11.xp6d's writer, step 5b's W4): a slot edge, a bring-up (the
  * session's first own key completing one among them), a change of the own key's generation (a removal or a block, a
- * weekly or clock advance: the feed cannot tell them apart), or the writer switching on or off. Counts only, read in STATE:
+ * weekly or clock advance: the feed cannot tell them apart), the writer switching on or off, or a debug build's
+ * `…debug.ADVERT_ROTATE` (FORCED, step 6). Counts only, read in STATE:
  * never logged beside a time, a generation or a slot, since a dated "fresh" says when the user removed or blocked someone.
  * Surfaced in [MeshMetrics.Snapshot.Bluetooth.bleRotationsByCause].
  */
-enum class BleRotation { SLOT, BRINGUP, FRESH, FLIP }
+enum class BleRotation { SLOT, BRINGUP, FRESH, FLIP, FORCED }
 
 /**
  * What the blinding advert writer did besides rotating (ADR 2026-11.xp6d's writer, step 5b). Counts only. Surfaced in

@@ -29,28 +29,36 @@ class RotationTurnTest {
     private val rotation = AdvertRotation().also { it.onRotated(slotStart) }
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private var attempts = 0
+    private var announces = 0
     private var failures = 0
     private var radioUp = true
 
-    private fun TestScope.turn(rotate: () -> Boolean) =
-        RotationTurn(
-            rotation,
-            wake,
-            ElapsedWait({ edge + testScheduler.currentTime }),
-            wallMs = { edge + testScheduler.currentTime },
-            holding = { false },
-            settleLeftMs = { 0L },
-            holdMs = { 180_000L },
-            radioUp = { radioUp },
-            announce = {},
-            rotate = {
-                attempts++
-                // A spin regression fails here instead of hanging the test fork.
-                if (attempts > 50) throw AssertionError("spin: $attempts rotation attempts")
-                rotate()
-            },
-            onFailure = { failures++ },
-        )
+    private fun TestScope.turn(
+        announce: () -> Unit = {},
+        rotate: () -> Boolean,
+    ) = RotationTurn(
+        rotation,
+        wake,
+        ElapsedWait({ edge + testScheduler.currentTime }),
+        wallMs = { edge + testScheduler.currentTime },
+        holding = { false },
+        settleLeftMs = { 0L },
+        holdMs = { 180_000L },
+        radioUp = { radioUp },
+        announce = {
+            announces++
+            // As for rotations: a spin regression fails here instead of hanging the test fork.
+            if (announces > 50) throw AssertionError("spin: $announces announcements")
+            announce()
+        },
+        rotate = {
+            attempts++
+            // A spin regression fails here instead of hanging the test fork.
+            if (attempts > 50) throw AssertionError("spin: $attempts rotation attempts")
+            rotate()
+        },
+        onFailure = { failures++ },
+    )
 
     @Test
     fun aRotationThatDoesNotInstallLooksAgainOnlyAfterARecheck() =
@@ -116,10 +124,44 @@ class RotationTurnTest {
                 }
             runCurrent()
             assertEquals(1, attempts)
+            assertEquals("a late wake rotates unannounced", 0, announces)
             advanceTimeBy(BlindTag.SLOT_MS / 2)
             assertEquals("nothing more inside the new slot", 1, attempts)
+            assertEquals(0, announces)
             advanceTimeBy(BlindTag.SLOT_MS)
             assertEquals("the next edge rotates again", 2, attempts)
+            assertEquals("one announcement for that slot, at its lead", 1, announces)
+            advanceTimeBy(BlindTag.SLOT_MS)
+            assertEquals(3, attempts)
+            assertEquals("one announcement per slot", 2, announces)
+            job.cancel()
+        }
+
+    @Test
+    fun anAnnouncementThatThrowsIsMarkedMadeAndNotRetriedAtOnce() =
+        runTest {
+            val job =
+                launch {
+                    turn(announce = { error("the mark store refused") }) {
+                        rotation.onRotated(edge + testScheduler.currentTime)
+                        true
+                    }.run()
+                }
+            runCurrent()
+            assertEquals(1, attempts)
+            // Up to the lead before the next edge: the announcement runs, throws, and goes to onFailure once.
+            advanceTimeBy(BlindTag.SLOT_MS - AdvertRotation.LEAD_MS)
+            runCurrent()
+            assertEquals(1, announces)
+            assertEquals(1, failures)
+            assertTrue("marked announced whatever it managed", rotation.view().announced)
+            advanceTimeBy(AdvertRotation.LEAD_MS - 1)
+            assertEquals("no second announcement for the slot", 1, announces)
+            assertEquals(1, failures)
+            assertEquals(1, attempts)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals("the edge still rotates", 2, attempts)
             job.cancel()
         }
 }

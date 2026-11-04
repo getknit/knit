@@ -16,7 +16,19 @@ Scenarios:
 - `restart`: `…debug.PAUSE` then `…debug.RESUME` on the toggled phone, which stops the transports and starts them again.
   Use it for a phone whose Bluetooth must stay on, such as one with a watch paired.
 
---toggle takes a label, or `dialer` / `responder` (the larger node id dials, ADR 2026-09.shzv).
+--toggle takes a label, or `dialer` / `responder` (between clear adverts the larger node id dials, ADR 2026-09.shzv).
+
+A debug build blinds its advert by default (ADR 2026-11.xp6d): it airs a rotating tag, and between two tags the larger
+tag dials, so the dialer turns every 15-minute slot and at every bring-up. While either phone blinds, `--toggle` takes a
+label only, and each rep's role is the one observed: the phone that logged `bt connect ok` for the link that came back
+dialed it (`dialed_by`). The toggled phone's `…debug.ADVERT` `iDial` for the other before the stimulus is kept as
+`role_before`, a prediction only: a Bluetooth toggle or a restart is a bring-up, and a bring-up airs a new tag, so the
+order it predicted can turn (as a slot edge inside the rep can). `iDial` is the order alone: a lonely, Coded or doorbell
+dial can make the other side dial, so a `split` or a miss is not an order bug. A dial to a peer the transport has not
+resolved is logged under a handle (`bt initiating to ~zzzz…<n>`, `bt connect ~zzzz…<n>@<address> failed`; a new one at
+each of its rotations), and such a line counts as a dial to the other phone: pause every other Knit phone in range
+(`--hold-paused`), or a stranger's dial is counted as the pair's. No handle is written to reps.jsonl. `ADVERT --ez blind
+false` on both phones (then `--ez clear true` after the run) gives the classic order back.
 
 The oracle is each phone's own `BluetoothMeshTransport` log, streamed with `logcat -v epoch` for the whole run, so
 nothing touches the untoggled phone between the stimulus and the link (a bridge call wakes the app, and on a screen-off
@@ -72,6 +84,9 @@ EVENTS = {
 }
 # Events about one peer carry its id as the first group; these are about the radio or the scan as a whole.
 UNKEYED = {"adapter", "cap", "scan", "lonely_scan", "state"}
+# A dial to a peer the transport has not resolved names the form's handle, never a tag (BtLines, ADR 2026-11.xp6d); these
+# kinds may carry one. A proven link's lines (`connect ok`, `accepted`, `up`, `down`) always carry the proven id.
+HANDLED = {"initiating", "lonely", "connect_failed"}
 
 
 def log(msg: str) -> None:
@@ -105,6 +120,23 @@ class Phone:
         if r.returncode != 0:
             raise RuntimeError(f"{self.label} {action}: {r.stderr.strip()}")
         return json.loads(r.stdout)
+
+    def advert(self, other: str) -> dict:
+        """This phone's advert, from `…debug.ADVERT`: its form (`clear` or `tag`), its rotation count, and whether it
+        dials `other` before any link (`iDial`, None when it holds no presence for it). A phone that has not resolved the
+        other lists it under a handle: with every other Knit phone paused, a single unresolved entry is taken for it
+        (`by_handle`). Never a tag or a handle in what it returns."""
+        a = self.bridge("ADVERT")
+        if a.get("status") != "ok":
+            raise RuntimeError(f"{self.label} ADVERT: {a}")
+        peers = a.get("peers", [])
+        peer = next((x for x in peers if x.get("peer") == other), None)
+        unresolved = [x for x in peers if not x.get("resolved")]
+        by_handle = peer is None and len(unresolved) == 1
+        if by_handle:
+            peer = unresolved[0]
+        return {"form": a.get("form"), "epoch": a.get("epoch"), "iDial": (peer or {}).get("iDial"),
+                **({"by_handle": True} if by_handle else {})}
 
     def measure_offset(self, samples: int = 5) -> float:
         """The device clock's offset from the host's, from the probe with the shortest round trip."""
@@ -258,6 +290,7 @@ class Trial:
         self.bt_off = False
         self.capped = False
         self.mesh_paused = False
+        self.blinded = False
 
     # --- setup and teardown -------------------------------------------------------------------------------------
 
@@ -270,17 +303,27 @@ class Trial:
             rtt = p.measure_offset()
             log(f"{p.label} {p.node_id} '{p.name}' offset={p.offset:+.3f}s rtt={rtt * 1000:.0f}ms")
         a, b = self.phones.values()
+        forms = {p.label: p.advert(q.node_id)["form"] for p, q in ((a, b), (b, a))}
+        self.blinded = any(f != "clear" for f in forms.values())
         dialer = a if a.node_id > b.node_id else b
         t = self.args.toggle
         if t in ("dialer", "responder"):
+            if self.blinded:
+                sys.exit(f"--toggle {t}: an advert blinds ({forms}), so the dialer turns every slot and at every bring-up; "
+                         "toggle a label (each rep records its role), or turn both switches off "
+                         "(`…debug.ADVERT --ez blind false`)")
             self.toggled = dialer if t == "dialer" else (b if dialer is a else a)
         elif t in self.phones:
             self.toggled = self.phones[t]
         else:
             sys.exit(f"--toggle {t}: not a label, dialer or responder")
         self.other = b if self.toggled is a else a
-        self.role = "dialer" if self.toggled is dialer else "responder"
-        log(f"toggling {self.toggled.label} (the {self.role}); {dialer.label} dials")
+        if self.blinded:
+            self.role = "per-rep"
+            log(f"toggling {self.toggled.label}; adverts {forms}: the role is recorded per rep")
+        else:
+            self.role = "dialer" if self.toggled is dialer else "responder"
+            log(f"toggling {self.toggled.label} (the {self.role}); {dialer.label} dials")
         for p in self.phones.values():
             tail = Tail(p, self.out / f"logcat-{p.label}.txt")
             tail.start()
@@ -298,6 +341,7 @@ class Trial:
             "phones": {p.label: {"serial": p.serial, "nodeId": p.node_id, "name": p.name} for p in self.phones.values()},
             "toggled": self.toggled.label,
             "role": self.role,
+            "adverts": forms,
             "builds": {p.label: self.build_of(p) for p in self.phones.values()},
         }
         with open(self.out / "meta.jsonl", "a", encoding="utf-8") as f:
@@ -421,6 +465,14 @@ class Trial:
             return rec
         self.set_screen()
         rec["before"] = {p.label: {**self.clique(p), **p.power()} for p in (t, o)}
+        # Read before the settle: nothing may touch the untoggled phone between the stimulus and the link.
+        adverts = {t.label: t.advert(o.node_id), o.label: o.advert(t.node_id)}
+        rec["advert_before"] = adverts
+        if self.blinded:
+            mine, theirs = adverts[t.label]["iDial"], adverts[o.label]["iDial"]
+            rec["role_before"] = ("dialer" if mine and not theirs else "responder" if theirs and not mine
+                                  else None if mine is None or theirs is None else "split")
+            rec["role"] = rec["role_before"] or "unknown"
         rec["rtt_ms"] = {p.label: round(p.measure_offset() * 1000) for p in (t, o)}
         rec["offset_s"] = {p.label: round(p.offset, 3) for p in (t, o)}
         log(f"rep {n}: settling {a.settle}s")
@@ -484,7 +536,11 @@ class Trial:
         else:
             rec["outcome"] = "timeout"
             log(f"rep {n}: no link within {a.timeout}s")
+            if self.blinded:
+                rec["role"] = "unknown"  # no dial observed; a bring-up's new tag makes role_before a guess
         rec.update(self.decompose(t0, t_down, (first or time.time()) + 3))
+        if first is not None:
+            self.record_dialer(rec, adverts)
         if first is None:
             # Wait out the stragglers so the next rep starts linked, and keep when it finally came.
             late = None
@@ -495,6 +551,24 @@ class Trial:
                     break
             rec["late_linked_s"] = round(late[0] - t0, 2) if late else None
         return rec
+
+    def record_dialer(self, rec: dict, before: dict) -> None:
+        """Who opened the link that came back, from the logs already streamed (the first `bt connect ok` for the pair after
+        the stimulus; else the side that logged `bt accepted client` took it), and whether a rotation fell inside the rep
+        (any epoch moved: the toggled phone's always does on a Bluetooth toggle or a restart, a bring-up being one). While
+        blinding, the rep's role is the observed one; `role_before` stays as the prediction it was."""
+        t, o = self.toggled, self.other
+        ok = [x for x in rec.get("attempts", []) if x["ok"]]
+        took = rec.get("accepts", [])
+        by = ok[0]["by"] if ok else ((o.label if took[0]["by"] == t.label else t.label) if took else None)
+        rec["dialed_by"] = by
+        after = {t.label: t.advert(o.node_id), o.label: o.advert(t.node_id)}
+        rec["rotated"] = sorted(k for k in after if after[k]["epoch"] != before[k]["epoch"])
+        if self.blinded:
+            observed = "dialer" if by == t.label else "responder" if by == o.label else None
+            if observed and rec.get("role_before") in ("dialer", "responder"):
+                rec["predicted"] = rec["role_before"] == observed
+            rec["role"] = observed or rec.get("role_before") or "unknown"
 
     def decompose(self, t0: float, t_down: float, end: float) -> dict:
         """What each phone's transport did about the other between the stimulus and the link."""
@@ -507,6 +581,9 @@ class Trial:
         for p, peer in ((t, o.node_id), (o, t.node_id)):
             for h, kind, g in self.tails[p.label].events(t_down - 1, end):
                 keyed = kind not in UNKEYED
+                if keyed and kind in HANDLED and g[0].startswith("~") and g[0] != peer:
+                    d["by_handle"] = d.get("by_handle", 0) + 1
+                    g = (peer, *g[1:])  # the pair's other phone, with every other Knit phone held paused
                 if keyed and g[0] != peer:
                     # A dial to someone else holds the connect slot (one at a time), so in a clique it is the wait.
                     if h >= t0 and kind in ("initiating", "connect_ok", "connect_failed"):
@@ -541,6 +618,8 @@ class Trial:
         d["first_initiating"] = first_init
         d["attempts"], d["refusals"], d["accepts"] = attempts, refusals, accepts
         d["failed_dials"] = sum(1 for x in attempts if not x["ok"])
+        # A blinding responder refusing a dialer that cannot read tags (ADR 2026-11.xp6d's RefuseLegacy).
+        d["legacy_refusals"] = sum(1 for x in refusals if "blind=legacy" in x["why"])
         return d
 
     def run(self) -> None:

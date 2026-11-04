@@ -1,12 +1,22 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.bluetooth.AdvertAliases.ClaimOutcome
 import app.getknit.knit.mesh.bluetooth.AdvertRotation
 import app.getknit.knit.mesh.bluetooth.LinkFormNotes
+import app.getknit.knit.mesh.bluetooth.LinkFormWaits
 import app.getknit.knit.mesh.bluetooth.LinkSilence
 import app.getknit.knit.mesh.bluetooth.TagNextSends
 import app.getknit.knit.mesh.bluetooth.TagNextSends.Kind
 import app.getknit.knit.mesh.bluetooth.TagNextSends.Outcome
 import app.getknit.knit.mesh.crypto.BlindTag
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,6 +28,7 @@ import org.junit.Test
  * kept out of the window before a due announcement, an announcement that never moves for a resend, and when a received
  * `TAG_NEXT` becomes the link's form.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class TagNextSendsTest {
     private val minInterval = TagNextSends.MIN_INTERVAL_MS
     private val sends = TagNextSends<String>(minInterval)
@@ -120,6 +131,7 @@ class TagNextSendsTest {
         // The security review's trial on the JVM: the held link's peer is alive and answers each probe at once.
         val silence = LinkSilence(exempt = false, uptime = { 0L })
         silence.onKeepaliveIn() // the peer answers keepalives
+        silence.onKeepaliveWritten(0L) // and our answer to its keepalive goes out, so no ANSWER sits ahead of the probes
         var rxAt = 0L
         var resent = 0
         var probes = 0
@@ -137,7 +149,82 @@ class TagNextSendsTest {
             }
         }
         assertEquals(5, resent)
-        assertTrue("one probe per answer wait at most: $probes", probes <= (600_000L / LinkSilence.ANSWER_MS).toInt() + 1)
-        assertTrue(probes >= 1)
+        // Ten minutes over one answer wait each (30 s): exactly one probe per wait, never one per dial.
+        assertEquals(30_000L, LinkSilence.ANSWER_MS)
+        assertEquals("one probe per answer wait", 20, probes)
     }
+
+    // --- LinkFormWaits: the transport's wiring of the notes ---
+
+    /**
+     * A [LinkFormWaits] on this test's virtual clock (wall = [t0] + virtual time), its waits on the test scheduler; every
+     * coroutine it launches goes into [launched], so a test counts the live ones, not the map's entries.
+     */
+    private fun TestScope.waits(launched: MutableList<Job> = ArrayList()): LinkFormWaits<String> =
+        LinkFormWaits(
+            launch = { block -> backgroundScope.launch { block() }.also { launched += it } },
+            wait = { ms -> delay(ms) },
+            wallMs = { t0 + testScheduler.currentTime },
+        )
+
+    private val edge = (BlindTag.slotOf(t0) + 1) * BlindTag.SLOT_MS
+
+    @Test
+    fun onlyAnAcceptedAnnouncementIsNoted() =
+        runTest {
+            val w = waits()
+            val applied = ArrayList<String>()
+            for (outcome in ClaimOutcome.entries) {
+                val noted = w.offer("x", "t-$outcome", outcome, stands = { true }) { applied += "t-$outcome" }
+                assertEquals(outcome.name, outcome == ClaimOutcome.Pending || outcome == ClaimOutcome.Redundant, noted)
+            }
+            // Mid-slot, outside the announcement window: each accepted record names the form on the air, and applies at once.
+            assertEquals(listOf("t-Pending", "t-Redundant"), applied)
+            assertEquals(0, w.waiting)
+        }
+
+    @Test
+    fun aThousandRecordsOnOneLinkHoldOneWaitAndApplyOnceAtTheEdge() =
+        runTest {
+            // Inside the announcement window from the start, so every record waits for the edge.
+            advanceTimeBy(edge - TagNextSends.ANNOUNCE_WINDOW_MS + 1_000 - t0)
+            val launched = ArrayList<Job>()
+            val w = waits(launched)
+            val applied = ArrayList<String>()
+            repeat(1_000) { i -> w.offer("fork", "tag$i", ClaimOutcome.Pending, stands = { true }) { applied += "tag$i" } }
+            runCurrent()
+            assertEquals("one live coroutine per link, never one per record", 1, launched.count { it.isActive })
+            assertEquals(1, w.waiting)
+            w.offer("other", "o", ClaimOutcome.Pending, stands = { true }) { applied += "o" }
+            assertEquals(2, w.waiting)
+            advanceTimeBy(edge - (t0 + testScheduler.currentTime) - 1)
+            runCurrent()
+            assertEquals("nothing before the edge", emptyList<String>(), applied)
+            advanceTimeBy(2)
+            runCurrent()
+            assertEquals(listOf("tag999", "o"), applied)
+            assertEquals(0, w.waiting)
+        }
+
+    @Test
+    fun aNoteThatNoLongerStandsAtTheEdgeOrWhoseLinkEndedNeverApplies() =
+        runTest {
+            advanceTimeBy(edge - 60_000 - t0)
+            val w = waits()
+            val applied = ArrayList<String>()
+            w.offer("gone", "g", ClaimOutcome.Pending, stands = { true }) { applied += "g" }
+            w.offer("voided", "v", ClaimOutcome.Pending, stands = { false }) { applied += "v" }
+            w.forget("gone")
+            assertEquals(1, w.waiting)
+            advanceTimeBy(120_000)
+            runCurrent()
+            assertEquals(emptyList<String>(), applied)
+            assertEquals(0, w.waiting)
+            // A record outside the window names the form on the air now: it applies at once, with no wait.
+            advanceTimeBy(BlindTag.SLOT_MS / 2)
+            w.offer("now", "n", ClaimOutcome.Pending, stands = { false }) { applied += "n" }
+            assertEquals(listOf("n"), applied)
+            assertEquals(0, w.waiting)
+            w.clear()
+        }
 }

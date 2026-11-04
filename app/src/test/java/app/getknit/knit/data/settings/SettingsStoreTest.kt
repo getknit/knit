@@ -511,13 +511,19 @@ class SettingsStoreTest {
         }
 
     @Test
-    fun `the blinded advert switch reads off until set in a debug build`() =
+    fun `the blinded advert switch reads on until stored off in a debug build, and clears back to on`() =
         runTest {
             val store = newStore()
-            assertEquals("off until step 6 flips DEBUG_BLIND_ADVERT_DEFAULT", false, store.debugBleBlindAdvert.first())
-            store.setDebugBleBlindAdvert(true)
-            assertEquals(true, store.debugBleBlindAdvert.first())
+            assertEquals("on by default since step 6", true, store.debugBleBlindAdvert.first())
+            assertNull("nothing stored", store.debugBleBlindAdvertStored.first())
             store.setDebugBleBlindAdvert(false)
             assertEquals(false, store.debugBleBlindAdvert.first())
+            assertEquals(false, store.debugBleBlindAdvertStored.first())
+            store.setDebugBleBlindAdvert(true)
+            assertEquals(true, store.debugBleBlindAdvertStored.first())
+            store.setDebugBleBlindAdvert(false)
+            store.setDebugBleBlindAdvert(null)
+            assertEquals("a clear puts the default back", true, store.debugBleBlindAdvert.first())
+            assertNull(store.debugBleBlindAdvertStored.first())
         }
 }

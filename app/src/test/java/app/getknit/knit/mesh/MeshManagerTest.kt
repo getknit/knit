@@ -289,6 +289,13 @@ class MeshManagerTest {
             ownKeysHanded += key
         }
 
+        /** How this radio asks the key engine for a pass (a stale mark, step 5b): the session's, installed at each start. */
+        @Volatile var passRequester: (() -> Unit)? = null
+
+        override fun onPresenceKeyPassRequester(request: () -> Unit) {
+            passRequester = request
+        }
+
         override fun coveredByInternet(peers: Set<String>) {
             internetCovers += peers
         }
@@ -4606,7 +4613,10 @@ class MeshManagerTest {
         val sets = MutableSharedFlow<Set<String>>(replay = 1).apply { tryEmit(setOf("bob")) }
         val failNextMint = AtomicBoolean()
 
-        /** Armed: the next read() completes the first once it has read, and returns only when the second completes. */
+        /**
+         * Armed: the next read() that sees carol completes the first once it has read, and returns only when the second
+         * completes. A read without her (a pass another trigger started first) passes, so the hold lands on the root pass.
+         */
         @Volatile
         var holdNextRead: Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>? = null
         private val contacts =
@@ -4615,10 +4625,12 @@ class MeshManagerTest {
                 every { contacts.observe() } returns sets.distinctUntilChanged()
                 coEvery { contacts.read() } coAnswers {
                     val read = direct.get()
-                    holdNextRead?.let { (reached, release) ->
-                        holdNextRead = null
-                        reached.complete(Unit)
-                        release.await()
+                    if ("carol" in read) {
+                        holdNextRead?.let { (reached, release) ->
+                            holdNextRead = null
+                            reached.complete(Unit)
+                            release.await()
+                        }
                     }
                     read
                 }
@@ -4715,6 +4727,44 @@ class MeshManagerTest {
             awaitTrue { !k.failNextMint.get() }
             k.sets.emit(setOf("bob")) // a later write that recomputes the same set
             k.awaitFreshPairWithoutCarol(first, "a removal whose pass threw waited for a heal")
+        }
+
+    /**
+     * The radio's pass requester (a stale mark, ADR 2026-11.xp6d step 5b) runs one engine pass on the session: the engine
+     * reads the contacts again. A request from a radio that outlived its session throws nothing, and the next start installs
+     * the requester anew.
+     */
+    @Test
+    fun theRadiosPassRequesterRunsAnEnginePassOnTheSession() =
+        runTest(UnconfinedTestDispatcher()) {
+            val reads = AtomicInteger()
+            val contacts = mockk<DirectContacts>()
+            // A feed that never emits: no contacts kick can stand in for the requester's pass, whatever the schedule.
+            every { contacts.sets() } returns MutableSharedFlow()
+            every { contacts.observe() } returns MutableSharedFlow()
+            coEvery { contacts.read() } coAnswers {
+                reads.incrementAndGet()
+                setOf("bob")
+            }
+            val rig = Rig(backgroundScope, directContacts = contacts)
+            rig.stubKeyGenerations()
+            rig.stubTagNext()
+            rig.manager.start()
+            awaitTrue { rig.transport.ownKeysHanded.any { it != null } }
+            val request = checkNotNull(rig.transport.passRequester) { "no requester installed at the start" }
+
+            val before = reads.get()
+            request()
+            awaitTrue("the requester ran no pass") { reads.get() > before }
+
+            rig.manager.stop()
+            val stopped = reads.get()
+            request() // a request from a radio that outlived its session
+            rig.transport.passRequester = null
+            rig.manager.start()
+            assertNotNull("the next start installs the requester again", rig.transport.passRequester)
+            awaitTrue { reads.get() > stopped } // the new session's own passes
+            rig.manager.stop()
         }
 
     /** The settings a key engine mints by: its last generation, read back as written; [failNext] fails one read. */

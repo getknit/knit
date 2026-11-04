@@ -32,6 +32,8 @@ import app.getknit.knit.mesh.OwnPresenceKey
  * read [isCurrent] (a volatile read, no lock) but never call into this class otherwise.
  */
 internal class AdvertWriter<S : AdvertWriter.Sink>(
+    // Only for [Aired.installedAtMs], the debug bridge's `rotatedAtMs`. First, so a trailing lambda is still [localId].
+    private val wallMs: () -> Long = System::currentTimeMillis,
     private val localId: () -> String,
 ) {
     /** An advertising set the writer drives ([BleAdvertiser]). */
@@ -46,13 +48,29 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
         fun retire()
     }
 
-    /** What is on the air: the presence and Coded instances, the form both carry, and the L2CAP PSM they name. */
+    /**
+     * What is on the air: the presence and Coded instances, the form both carry, and the L2CAP PSM they name. Immutable
+     * and replaced whole, so one read of [aired] gives a form and a PSM from the same snapshot. [installs] and
+     * [installedAtMs] are the writer's stamp at the bring-up or install that put it up (zero on one built by a caller and
+     * not yet installed): how many snapshots this writer has installed by then, counting it, and when (wall clock). The
+     * debug bridge's `epoch` and `rotatedAtMs` (step 6); a Coded power change keeps the stamp.
+     */
     class Aired<S>(
         val presence: S,
         val coded: S?,
         val form: AdvertOrder.Form,
         val psm: Int,
-    )
+        val installs: Long = 0,
+        val installedAtMs: Long = 0,
+    ) {
+        internal fun stamped(
+            installs: Long,
+            atMs: Long,
+        ): Aired<S> = Aired(presence, coded, form, psm, installs, atMs)
+
+        /** Redacted: the form's own `toString` (four characters), never the tag. */
+        override fun toString(): String = "Aired($form, installs=$installs)"
+    }
 
     private val lock = Any()
 
@@ -65,6 +83,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
     private var pending = false
     private var pushWanted = false
     private var epoch = 0
+    private var installs = 0L
 
     /** Payloads dropped because a blinded snapshot's bytes 1–16 were not its tag (the id, or another form). */
     @Volatile var clearRefused = 0L
@@ -75,6 +94,12 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
 
     /** The Coded instance, as [presence]. */
     fun coded(): S? = aired?.coded
+
+    /**
+     * The snapshot on the air, or the last one while the radio is down; null before the first. One volatile read: a
+     * reader that wants the form and the PSM together reads them from this one reference, never from [form] and [psm].
+     */
+    fun aired(): Aired<S>? = aired
 
     /** The form on the air (null before the first install). Read without the lock: a snapshot, replaced whole. */
     fun form(): AdvertOrder.Form? = aired?.form
@@ -109,7 +134,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
             if (!pendingTag && clear != null) {
                 if (clear.form.blinded) error("a clear bring-up names a clear form")
                 aired?.let { old -> retireReplaced(old, clear) }
-                aired = clear
+                aired = clear.stamped(++installs, wallMs())
                 stale = false
                 pushLocked(encode, write)
             }
@@ -170,7 +195,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
             if (token != epoch || !up) return false
             val next = prepare() ?: return false
             aired?.let { old -> retireReplaced(old, next) }
-            aired = next
+            aired = next.stamped(++installs, wallMs())
             stale = false
             pending = false
             pushWanted = false
@@ -191,7 +216,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
                 return
             }
             old.coded?.retire()
-            aired = Aired(old.presence, coded, old.form, old.psm)
+            aired = Aired(old.presence, coded, old.form, old.psm, old.installs, old.installedAtMs)
             if (up && !pending && !stale) pushLocked(encode, write)
         }
     }

@@ -870,6 +870,48 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   relinks a tuned link on the way out; `--boost on|off` runs one half of the boost's A/B (pace then defaults to 4096)
   and the summary adds `earned` and `releaseAfterS` (feed end to the tuner's served `ask priority=BALANCED`). An ask lasts the link's life: relink (`BLECAP --ei max 0`, then `--ez clear true`) between
   cells.
+- `…debug.ADVERT` — the **blinded Bluetooth advert** (ADR 2026-11.xp6d's step-6 amendment; reads on any debug build,
+  the writer needs `BuildConfig.BLIND_ADVERT`). `--ez blind true|false` stores the runtime switch
+  (`SettingsStore.debugBleBlindAdvert`, a `debug_` key, never in a backup; on by default in a debug build since step 6),
+  `--ez clear true` clears it back to that default; no extras reads. After a store the action waits, at most about 6 s of
+  the elapsed clock (a flip waits out an ACL edge's 2.5 s settle, then a rotation's install), until the form on the air
+  matches what the writer should air (`blinding`, not the switch: without extended advertising, or with the radio down, it
+  stays clear), then says `applied: true`, or `false` with `why`: `transport not running` (the switch is stored and applies
+  at the next start; still `status: ok`, which `scripts/ble-pair-test.sh` relies on), `radio down` (applies at the next
+  bring-up), `no extended advertising`, `no mark store` (answered at once: the writer never blinds without one), `pending` (a rotation's tag was still pending: its install re-runs
+  the flip), `timeout`, or `build` (a build without `BLIND_ADVERT`, which only stores). The reply: `build`, `switch`
+  (`value`, and `stored`: null while the default stands, so a switch a harness left off is visible), `running` (the
+  Bluetooth transport runs), then the transport's fields: `extendedAdvertising` (null until read with the adapter on,
+  sticky once true), `keyHeld` (an own presence key), `radioUp`, `pending`, `blinding`, `form` (`clear` | `tag`, null
+  before the first install), `epoch` (snapshots this process installed: every rotation, bring-up and flip adds one) and
+  `rotatedAtMs` (the last install's wall clock), the turn (`nextEdgeAtMs`, the global slot edge; `announced`, the coming
+  slot's announcement made; `holding`, a due rotation waiting on a hold or a settle), `psm` (the advertised PSM while
+  clear, null while blinding, as `bt state`'s `psm=rotating`), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>`
+  while unresolved, never a tag; `resolved`; `blinded`, their form; `iDial`; `linked`, never true for a handle) and
+  `links[]` (`nodeId` as the HELLO named it, `proven` (264w), `dialedByMe`, `tagAware`: its HELLO carried
+  `CAP_BLIND_ADVERT`). `iDial` is `AdvertOrder.iDial` on my current form against theirs: the pre-link order alone, which
+  between two tags turns with every slot and bring-up; a lonely dial, a Coded hunt or an iPhone's doorbell can still make the
+  other side dial, so the observed dialer is `links[].dialedByMe` (or `bt connect ok` in logcat). The reply is mirrored to
+  `KnitBridge:I` with a time, so it never carries a rotation cause, a tag source, `resolvable`/`stale`, a key generation, a
+  tag or a handle beside an id; read causes from `STATE`'s `bleRotationsByCause` and `bleTagsUnresolvable` around a call.
+  The oracle for the switch: `form` and `epoch`, and `bt state … psm=` stops (or starts) saying `rotating`. The knit-ios
+  `interop.py` keys peers off advert bytes 1–16 until its paired half lands: a phone it drives needs `ADVERT --ez blind
+  false` first, restored with `--ez clear true` after. Any harness that turns the switch off clears it in a `finally`.
+- `…debug.ADVERT_ROTATE` — **one unannounced rotation** of the blinded advert now (`AdvertRotation.Cause.FORCED`, counted
+  in `STATE`'s `bleRotationsByCause` as `FORCED`): fresh presence, Coded and side sets, a fresh PSM, the next restart
+  index of the slot (as a bring-up takes), and a `TAG_NEXT` naming the new form to each linked peer `TagNextSends` lets one
+  go to (proven, tag-aware, not blocked or departed, an own key held); an ineligible link is told nothing and keeps the old
+  form as its link's form until it sees the new one. Refused, nothing rotated,
+  with `why`: `transport not running`, `radio down`, `pending`, `clear` (not blinding, or the clear form on the air),
+  `settling` (an ACL edge's 2.5 s), `announced` (the coming slot's announcement stands: a forced rotation would spend it),
+  `holding` (a fast Coded window, a hunt or a dial of mine), `grace` (a retired server still accepts, or the last install
+  was under 30 s ago), `throttled` (a live link was sent a form in the last two minutes, the receiver's per-link limit:
+  the new form's send to it would be dropped, leaving that peer on the old one). The reply: `rotated`, `epochBefore` / `epochAfter`, then `ADVERT`'s fields. Oracle: `epoch` moves
+  by one and the advertiser's start/stop lines show fresh sets. Negative controls: refused `clear` while `form` is
+  `clear`, `grace` on a second call inside 30 s, and `throttled` on one 30 s to 2 min after a rotation that told a linked
+  tag-aware peer. **It burns the slot's restarts durably** (`BlindTag.RESTARTS` = 4):
+  past them every rotation or bring-up in that slot airs a random tag no contact resolves until the edge (linked peers are
+  unharmed), so a timed trial never mixes `ADVERT_ROTATE` with its reps inside one 15-minute slot.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

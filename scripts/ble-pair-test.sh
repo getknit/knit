@@ -23,6 +23,8 @@
 # that side's bridge log and btsnoop — and prints the test's own `BlePair` lines (link and relink times).
 # Env: KNIT_PAIR_NO_BUILD=1 installs the APKs already built instead of building first;
 #      KNIT_PAIR_KEEP=1 keeps both identities and their history for a `run` instead of starting clean;
+#      KNIT_PAIR_BLIND=1 runs both adverts blinded (the debug default, cleared to it first) instead of switching the
+#      blind switch off for the classic order and back to the default after;
 #      KNIT_HCI_HEADLESS= (empty) shows the windows; KNIT_HCI_AVD picks the AVD both boot (Knit_BLE_Pair);
 #      KNIT_HCI_NICE (10) the emulators' niceness, so a run yields the CPU to whatever else the host is doing.
 #
@@ -116,6 +118,30 @@ node_id() {
     sed -n 's/.*data="//;s/"$//p' | python3 -c 'import json, sys; print(json.load(sys.stdin)["self"]["nodeId"])'
 }
 
+# Debug builds blind their advert by default (ADR 2026-11.xp6d, step 6), and the tests' one-sided faults go by the
+# classic dial order (BlePairTest.isSmaller: the smaller id never dials). So the switch goes off on both sides before a
+# run and back to the default after it (the emulators air on real dongles, and a kept identity would keep an id in the
+# clear), unless KNIT_PAIR_BLIND=1 (a blinded case, which must not use isSmaller), which clears it to the default (on)
+# first. Each store is checked against the reply's `switch.stored`, not only its status.
+SWITCHED=()
+blind_switch() {
+  local side=$1 extra=$2 want=$3 reply
+  reply=$(on "$side" shell "am broadcast -f 0x20 -p $PKG -a $PKG.debug.ADVERT --ez $extra" | sed -n 's/.*data="//;s/"$//p')
+  printf '%s' "$reply" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+want = {"false": False, "null": None}[sys.argv[1]]
+sys.exit(d.get("status") != "ok" or (d.get("switch") or {}).get("stored", "absent") != want)' "$want" ||
+    die "the blind switch did not take ($extra) on $(serial_of "$side"): ${reply:-no reply}"
+}
+
+# Puts every switch this run stored back to the default; a no-op once done, so the exit trap can call it again.
+restore_switches() {
+  local side
+  for side in "${SWITCHED[@]}"; do blind_switch "$side" "clear true" null || true; done
+  SWITCHED=()
+}
+
 prepare() {
   local side=$1 p
   if [ -z "${KNIT_PAIR_KEEP:-}" ]; then
@@ -148,6 +174,12 @@ cmd_run() {
     prepare "$side"
     ids[$side]=$(node_id "$side")
     [ -n "${ids[$side]}" ] || die "no node id from $(serial_of "$side") (is Knit installed? install first)"
+    if [ -n "${KNIT_PAIR_BLIND:-}" ]; then
+      blind_switch "$side" "clear true" null
+    else
+      SWITCHED+=("$side")
+      blind_switch "$side" "blind false" false
+    fi
     [ -n "$(runner_of "$side")" ] || die "no instrumentation for $PKG on $(serial_of "$side") (install first)"
   done
   [ "${ids[a]}" != "${ids[b]}" ] || die "both emulators hold the same identity ${ids[a]} (drop KNIT_PAIR_KEEP)"
@@ -162,6 +194,7 @@ cmd_run() {
     pids+=($!)
   done
   local pid; for pid in "${pids[@]}"; do wait "$pid" || true; done
+  restore_switches
 
   for side in "${SIDES[@]}"; do
     on "$side" logcat -d >"$dir/$side.logcat.txt" 2>&1 || true
@@ -181,6 +214,7 @@ cmd_run() {
 
 cmd_down() {
   local side
+  restore_switches
   for side in "${SIDES[@]}"; do KNIT_HCI_EMU_PORT=$(console_of "$side") "$HB" down "$side" || true; done
   "$ADB" kill-server 2>/dev/null || true
 }

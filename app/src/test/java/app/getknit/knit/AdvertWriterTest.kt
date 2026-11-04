@@ -336,4 +336,34 @@ class AdvertWriterTest {
         assertTrue(choice.form.blinded)
         assertNotEquals(localId, choice.form.advertised)
     }
+
+    @Test
+    fun everyInstallIsStampedAndOneReadGivesTheFormAndPsmTogether() {
+        // The debug bridge's `epoch` and `rotatedAtMs` (step 6): a clear bring-up and each install count one; a Coded power
+        // change replaces the snapshot but keeps its stamp.
+        var now = wall
+        val stamped = AdvertWriter<FakeSink>(wallMs = { now }) { localId }
+        assertNull(stamped.aired())
+        stamped.up(pendingTag = false, clear = clearAired(), ::encode, ::write)
+        assertEquals(1L, stamped.aired()!!.installs)
+        assertEquals(wall, stamped.aired()!!.installedAtMs)
+        now += 5_000
+        val form = TagChoice.choose(schedule, key, key, false, wall).form
+        assertTrue(stamped.install(stamped.begin(), { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9C) }, ::encode, ::write))
+        val aired = stamped.aired()!!
+        assertEquals(2L, aired.installs)
+        assertEquals(wall + 5_000, aired.installedAtMs)
+        assertEquals(form, aired.form)
+        assertEquals(0x9C, aired.psm)
+        assertFalse("never the tag in its string form", form.advertised in aired.toString())
+        now += 5_000
+        stamped.replaceCoded(sink("c2"), ::encode, ::write)
+        assertEquals(2L, stamped.aired()!!.installs)
+        assertEquals(wall + 5_000, stamped.aired()!!.installedAtMs)
+        // A stale install (the radio went down first) stamps nothing.
+        val token = stamped.begin()
+        stamped.down()
+        assertFalse(stamped.install(token, { AdvertWriter.Aired(sink("p"), sink("c"), form, 0x9D) }, ::encode, ::write))
+        assertEquals(2L, stamped.aired()!!.installs)
+    }
 }

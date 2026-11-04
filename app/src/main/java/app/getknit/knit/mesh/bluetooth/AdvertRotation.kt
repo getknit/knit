@@ -67,8 +67,24 @@ internal class AdvertRotation(
         ) : Step
     }
 
-    /** Why a rotation ran: counted (`bleRotations`), never logged beside a time, a generation or a slot. */
-    enum class Cause { SLOT, BRINGUP, FRESH, FLIP }
+    /**
+     * Why a rotation ran: counted (`bleRotations`), never logged beside a time, a generation or a slot, and never in a
+     * debug-bridge reply (each one is mirrored to logcat with a time). [FORCED] is the bridge's `…debug.ADVERT_ROTATE`
+     * (step 6): a debug build's one rotation on demand, through the ordinary path.
+     */
+    enum class Cause { SLOT, BRINGUP, FRESH, FLIP, FORCED }
+
+    /**
+     * The turn as the debug bridge reads it (step 6), on the worker: when the slot on the air ends ([nextEdgeAtMs], a
+     * global wall-clock edge, null with nothing blinded on the air), whether the coming slot's announcement has been made
+     * ([announced]), and whether a rotation that came due waited on a hold or a settle ([holding]). Nothing in it names a
+     * cause, a tag or a generation.
+     */
+    data class View(
+        val nextEdgeAtMs: Long?,
+        val announced: Boolean,
+        val holding: Boolean,
+    )
 
     // The slot of the tag on the air, or null while no blinded form is (the writer off, the radio down).
     private var airedSlot: Long? = null
@@ -121,6 +137,16 @@ internal class AdvertRotation(
 
     /** Whether a blinded form is on the air, so the turn has an edge to wait for. */
     val turning: Boolean get() = airedSlot != null
+
+    /** [View] now. Single-threaded with the turn: the wiring reads it on the worker. */
+    fun view(): View {
+        val aired = airedSlot
+        return View(
+            nextEdgeAtMs = aired?.let { (it + 1) * BlindTag.SLOT_MS },
+            announced = aired != null && announcedAt != null && announcedSlot == aired + 1,
+            holding = dueAt != null && held,
+        )
+    }
 
     /**
      * The turn's next step at [wallMs]. [holding] is whether a hold applies now (a fast Coded window, a hunt, a dial of

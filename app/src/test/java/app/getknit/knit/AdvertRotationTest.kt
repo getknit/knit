@@ -207,4 +207,22 @@ class AdvertRotationTest {
         rotation.onRotated(edge)
         assertEquals(edge + BlindTag.SLOT_MS - AdvertRotation.LEAD_MS, rotation.announceDueAt())
     }
+
+    @Test
+    fun theBridgesViewNamesTheEdgeTheAnnouncementAndAHold() {
+        assertEquals(AdvertRotation.View(nextEdgeAtMs = null, announced = false, holding = false), rotation.view())
+        rotation.onRotated(slotStart + 1_000)
+        assertEquals(AdvertRotation.View(edge, announced = false, holding = false), rotation.view())
+        rotation.onAnnounced(edge - AdvertRotation.LEAD_MS)
+        assertEquals(AdvertRotation.View(edge, announced = true, holding = false), rotation.view())
+        // Past the edge and the 30 s lead, a hold applies: the due rotation waits, and the view says so.
+        assertTrue(next(edge + AdvertRotation.MIN_LEAD_MS, holding = true) is Step.Wait)
+        assertEquals(AdvertRotation.View(edge, announced = true, holding = true), rotation.view())
+        rotation.dropAnnouncement()
+        assertFalse(rotation.view().announced)
+        rotation.onRotated(edge + AdvertRotation.MIN_LEAD_MS)
+        assertEquals(AdvertRotation.View(edge + BlindTag.SLOT_MS, announced = false, holding = false), rotation.view())
+        rotation.onStopped()
+        assertNull(rotation.view().nextEdgeAtMs)
+    }
 }

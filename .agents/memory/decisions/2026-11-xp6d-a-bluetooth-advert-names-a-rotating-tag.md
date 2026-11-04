@@ -393,3 +393,41 @@ announced.
 - **What it does not stop** (addition). `TAG_NEXT` crosses insecure L2CAP in the clear, 3.5 minutes ahead of each edge,
   so a sniffer on a long-lived link follows every tag for as long as the link lasts, without catching a new HELLO. This
   is inside #286's accepted cost (the HELLO's `t` already names the tag).
+
+## Amendment 2026-11-04: the debug bridge, the switch on, the harnesses (step 6, draft)
+
+Status: draft, with step 6's code; the caller decides whether it stands.
+
+- **The switch is on in debug builds.** `SettingsStore.DEBUG_BLIND_ADVERT_DEFAULT` is now true, so a debug build of this
+  branch on a controller with extended advertising airs tags from its first bring-up. `…debug.ADVERT --ez blind false`
+  stores it off (the advert goes clear at the next flip), `--ez clear true` puts the default back, and the reply's
+  `switch.stored` shows a value a harness left behind. A release build still has no writer and reads the switch as on.
+- **What the bridge may say.** `…debug.ADVERT` reports the gates (build flag, switch, extended advertising, a key held),
+  the aired form (`clear` or `tag`), a per-process rotation count (`epoch`) and the last install's time, the turn (next
+  edge, an announcement standing, a hold), the PSM while clear, each sighted peer's pre-link order (`iDial`, under its
+  id or its handle) and each link's direction (`dialedByMe`). Every bridge reply is mirrored to logcat with a time, so
+  neither reply carries a rotation cause, a tag source, `resolvable`/`stale`, a key generation, a tag or a handle beside
+  an id: each of those, dated, would date a removal, a block or a clock move ("Counts, never dated causes", B1). A
+  harness reads causes from `STATE`'s counts around the call. Extended advertising reads `null` until the adapter has
+  been on (still sticky once true), and with no transport running both actions answer `status: ok` with the reason, so
+  a harness can store the switch before the mesh starts.
+- **No dated key lines either** (security-reviewer, 2026-11-04, on Part A's code). The engine logged
+  `presence key <step>: current g=<n>` at each new generation and `presence keys of <n> former direct contacts deleted`
+  at each leaver sweep, both with a time: a dated fresh pair or sweep says when the user removed or blocked someone.
+  Both are gone (the rotation stays counted), and the engine's per-decision trail (each pass's direct-contact count,
+  whom keys were sealed to, how many frames a pass sent) goes nowhere in production; the mesh lab keeps it for its reports.
+- **A forced rotation** (`…debug.ADVERT_ROTATE`, `AdvertRotation.Cause.FORCED`) is one unannounced rotation through
+  the ordinary path, refused unless a tag is on the air with nothing pending, settling, announced or held, and none
+  within the retired server's 30 s grace, so a loop cannot pile up servers or spend an announcement. It spends the slot's
+  restart indexes durably: past four, every rotation or bring-up in that slot airs a tag no contact resolves until the
+  edge, so a timed trial does not mix forced rotations with reps in one slot.
+- **Who dials, for a harness.** Between two tags the larger tag dials, so the role turns every slot and at every
+  bring-up (a Bluetooth toggle or a restart is one). `scripts/ble-link-trial.py` therefore records the role it observed
+  (`bt connect ok` for the link that came back) and keeps the pre-stimulus `iDial` only as a prediction; `--toggle
+  dialer|responder` needs clear adverts. A dial to an unresolved peer is logged under a handle, which the harness takes
+  for the other phone only with every other Knit phone paused. `scripts/ble-pair-test.sh` turns the switch off on both
+  emulators for the run and back to the default after (they air on real dongles) unless `KNIT_PAIR_BLIND=1`, since `BlePairTest.isSmaller` assumes the classic order and fails fast otherwise.
+- **The knit-ios half** moves in a paired change: `interop.py` keys "the phone under test" off the bridge, not off advert
+  bytes 1–16, takes the expected dialer from `iDial`, treats ` blind=legacy` from an un-updated iPhone as expected, and
+  restores any switch it turned off; the iOS reader never caches a PSM per address across a tag change. Until it lands,
+  a phone that harness drives with a debug build of this branch needs `ADVERT --ez blind false` first.
