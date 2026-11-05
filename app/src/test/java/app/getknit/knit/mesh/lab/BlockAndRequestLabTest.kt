@@ -220,7 +220,9 @@ class BlockAndRequestLabTest {
     @Test
     fun aStrangersRequestNamingABystandersPictureNeverStopsTheirCarrier() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            // Alice stays board-less in a boards sweep: the unlink below is her island, and a board would carry her DM to
+            // Bob over the shared air, so Bob's ask could pull the stranger's copy through Carol before the request lands.
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
             val bob = lab.node("bob").apply { setDisplayName("Bob") }
             val carol = lab.node("carol").apply { setDisplayName("Carol") }
             val stranger = lab.node("stranger").apply { setDisplayName("Stranger") }
