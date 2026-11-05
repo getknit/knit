@@ -456,3 +456,15 @@ models (ADR 2026-11.ejn8). It installs exactly as a download does: every file mu
 in `SttModelInstaller.adopt`, so the sending phone is trusted with no more than getknit.app is. The "One direction per
 download" bullet above still holds for the download itself.
 
+
+## Amendment 2026-11-04: an undetermined read is read again
+
+**Why.** The emulator pair trial found two in-memory reads holding an empty answer for their ten minutes. The author's
+language in a chat (`AuthorLanguages`) was read on the first resolve, when the author had sent one line, and their
+short lines stayed unsure after they had written four sure Spanish ones. The reader's own sends (`ReaderLanguage`)
+were read as the process started, before its first send, so on an English phone what they wrote counted for nothing.
+
+**What changes.** Each is held for ten minutes only once it names a language: an author's majority of at least three
+sure messages in the chat, the reader's three sure picks of one language. Until then it is read again at every ask,
+which costs at most 30 or 50 reads of the identifier, and usually far fewer, since the common undetermined case is
+someone who has written little.

@@ -36,7 +36,7 @@ lines.
   pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnSends`, `SettingsStore.translateTarget`,
   `MessageEntity.draftTranslatedFrom`, `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`,
   `SettingsStore.translationEnabled` or `scripts/translate-*`:** READ ADR 2026-10.t2h6
-  (Proposed; offline translation) and its 2026-10-23, 2026-10-29, 2026-11-01 and 2026-11-02 amendments. It is a
+  (Proposed; offline translation) and its 2026-10-23, 2026-10-29, 2026-11-01, 2026-11-02 and 2026-11-04 amendments. It is a
   build made with `-Ptranslate=true` only (a debug, or a testers' alpha built here). The runtime, slimt and CLD2
   behind `TranslateJni`, is the `app.getknit:translate-native` AAR that the separate knit-translate-native
   repository builds reproducibly and publishes to Maven Central: `:app` compiles against it everywhere and packages
@@ -98,8 +98,10 @@ lines.
   (`EmojiPickerSheet`), the Delete confirmation or anything else a long-press opens, or `ui/chat/MessageMenuOverlay`
   (`MessageMenuHost`, `MessageMenu`, `InWindowSheet`, `InWindowAlertDialog`):** READ ADR 2026-11.pk9u. They draw in the
   chat's own window so the soft keyboard stays up and the chat does not reflow; a `Popup`, `ModalBottomSheet` or
-  `AlertDialog` there is a window of its own and closes the keyboard. Tests: `ChatScreenContentTest` (one root,
-  composer still focused).
+  `AlertDialog` there is a window of its own and closes the keyboard. The host draws a menu's content apart from the
+  bubble, so a value that arrives after it opens (the Translate offer) is read inside the content, never captured: a
+  capture that changes in the frame the layer first composes is lost. Tests: `ChatScreenContentTest` (one root,
+  composer still focused), `MessageBubbleMenuTest` (a late Translate offer).
 - **When touching `data/pin/` (`PinEntity`, `PinDao`), `PinRepository`, `ChatViewModel.pinned` / `setPinned`,
   `senderName` or `ChatScreen`'s `PinnedBar`:** READ ADR 2026-10.2r7e. Pins are local to this phone: nothing is
   framed or enters custody, and the bar jumps through the quote-jump path. A row exists only while its message is
