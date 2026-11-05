@@ -254,10 +254,22 @@ internal class LoraMeshTransport(
     /** [linkedPeers], for the `mesh/lab` harness to wait on the composite's hand-off (`LabNode.awaitBoardSawLinks`). */
     internal val linkIds: Set<String> get() = linkedPeers
 
-    // Peers a connected spool was recently a path to (`coveredByInternet`, ADR 2026-09.y5f3). A cover for
-    // compact DMs only — the spool carries the signed copy for free.
-    @Volatile
+    // Peers a connected spool was recently a path to (`coveredByInternet`, ADR 2026-09.y5f3), as ScopeSync last
+    // published them: its single writer. A cover for compact DMs only — the spool carries the signed copy for free.
+    // Guarded by [coverLock], with [liftedPeers] and [covered].
     private var internetPeers: Set<String> = emptySet()
+
+    // Peers in [internetPeers] whose live compact frame reached us over the air since (#294, ADR 2026-09.y5f3's
+    // 2026-11-04 amendment): their sender aired it because, by its own reckoning, no relay joins us, so the relay's
+    // word for them is stale. A lift lasts until the relay itself drops the peer. In memory only, never persisted.
+    private var liftedPeers: Set<String> = emptySet()
+
+    /** The cover every reader asks: [internetPeers] less [liftedPeers]. Written under [coverLock], read without it. */
+    @Volatile
+    private var covered: Set<String> = emptySet()
+
+    /** Guards the two cover sets and the lapse computed off them; never held across [publishStatus] or a launch. */
+    private val coverLock = Any()
 
     @Volatile
     private var currentConfig: LoraConfig? = null
@@ -442,6 +454,12 @@ internal class LoraMeshTransport(
         // The board is gone and with it the route every mark was about (ADR 2026-10.x9fa).
         endFlights()
         direct.clearPeers()
+        // A lift was this board's hearing; the next board has heard nothing yet. Only adds cover, so nothing lapses and
+        // no catch-up runs; `stop()` and the next status publish show it.
+        synchronized(coverLock) {
+            liftedPeers = emptySet()
+            covered = internetPeers
+        }
     }
 
     /**
@@ -592,9 +610,43 @@ internal class LoraMeshTransport(
         linkedPeers = peers
     }
 
+    /**
+     * ScopeSync's present set (ADR 2026-09.y5f3). A lift ([onDirectPacket]) survives every change but the relay losing
+     * that peer. A peer whose cover lapses gets a catch-up at once (#294): a DM the cover kept off the air has no other
+     * way back to it but the re-probe, a window or more out.
+     */
     override fun coveredByInternet(peers: Set<String>) {
-        internetPeers = peers
+        val lapsed =
+            synchronized(coverLock) {
+                val before = covered
+                liftedPeers = liftedPeers intersect peers
+                internetPeers = peers
+                covered = peers - liftedPeers
+                before - covered
+            }
         publishStatus()
+        if (lapsed.isNotEmpty() && mayTransmit()) scope.launch { lapsed.forEach { catchUp(it, why = "cover lapsed") } }
+    }
+
+    /**
+     * Lifts the relay cover for [peerId] after a live compact frame from them, true when it was covered. Their sender
+     * aired it only because no relay joined us by its reckoning; until our relay itself loses them, what we owe them —
+     * the ✓✓ the delivery is about to coalesce, our next DM — goes on the air too (#294). Accepted cost: duplicate air
+     * while they stay present on the relay, paced by what the two users write.
+     */
+    private fun liftCover(peerId: String): Boolean {
+        val lifted =
+            synchronized(coverLock) {
+                if (peerId !in covered) return@synchronized false
+                liftedPeers = liftedPeers + peerId
+                covered = internetPeers - liftedPeers
+                true
+            }
+        if (lifted) {
+            log("lora cover lifted $peerId")
+            publishStatus()
+        }
+        return lifted
     }
 
     /**
@@ -965,7 +1017,7 @@ internal class LoraMeshTransport(
         if (!mayTransmit() || currentConfig?.dms != true) return false
         val holder = boardHolders?.get(peerId)
         if (holder == null || !holder.direct) return false
-        if (peerId in linkedPeers || peerId in internetPeers) return false
+        if (peerId in linkedPeers || peerId in covered) return false
         if (currentConfig?.channelIndex == PublicChannelPolicy.PRIMARY_INDEX) return false
         if (copyWaiting(dm.frameId)) return false
         if (direct.reachOf(peerId, clock()).keepsResendsOff()) return false
@@ -986,23 +1038,54 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * [peerId]'s board was heard on the air (ADR 2026-10.x9fa). Only the edge out of an unreachable mark matters, and
-     * only once the gap since the last failure has passed; then the newest unacked DM goes, and the ≤ 2 older ones follow
-     * once the destination acks it. Anything less pulls the next re-probe forward. Never behind a timer: the resend asks
-     * [LoraDirectSource.isUnacked] when it reaches the air.
+     * [peerId]'s board was heard on the air (ADR 2026-10.x9fa). Only the edge out of an unreachable mark matters — or,
+     * when [lifted], a relay cover this hearing just lifted — and then [catchUp] decides.
      */
-    private suspend fun onBoardHeard(peerId: String) {
-        if (!direct.onHeard(peerId)) return
-        log("lora direct heard $peerId")
-        publishStatus()
-        if (!reprobe.onHeard(peerId, clock())) return
-        val held = source.unackedTo(peerId, RESEND_LIMIT)
-        val newest = held.firstOrNull() ?: return
+    private suspend fun onBoardHeard(
+        peerId: String,
+        lifted: Boolean = false,
+    ) {
+        val edge = direct.onHeard(peerId)
+        if (edge) {
+            log("lora direct heard $peerId")
+            publishStatus()
+        }
+        if (edge || lifted) catchUp(peerId, why = if (lifted) "lifted" else "heard")
+    }
+
+    /**
+     * Re-airs what a fact says LoRa now carries to [peerId] (#294, ADR 2026-10.x9fa's 2026-11-04 amendment): their board
+     * heard after a failure, their relay cover lapsed or lifted, or their board acking a fresh DM ([skip], that one).
+     * One backoff for every trigger: nothing goes inside the re-probe's gap since the last failure this process saw
+     * ([LoraReprobe.onHeard], which pulls the round forward instead), and what goes is booked as a re-probe
+     * ([LoraReprobe.onReprobed]). Only DMs no board took ([DirectDm.boardTook]: one that did waits on its phone, which
+     * is the re-probe's question) and none with a copy still waiting. The newest goes now, the ≤ 2 older after its
+     * destination acks it; each asks [LoraDirectSource.isUnacked] again at send, never behind a timer.
+     */
+    private suspend fun catchUp(
+        peerId: String,
+        skip: String? = null,
+        why: String,
+    ) {
+        if (!mayTransmit() || currentConfig?.dms != true) return
         val now = clock()
-        if (!enqueueResend(peerId, newest, flushAfter = held.drop(1).map { it.frameId })) return
-        reprobe.onReprobed(peerId, newest.frameId, lastAcked = lastAcked(peerId, newest.frameId), now)
+        if (!reprobe.onHeard(peerId, now)) return
+        val held =
+            source
+                .unackedTo(peerId, RESEND_LIMIT, untakenOnly = true)
+                .filter { it.frameId != skip && !it.boardTook && !copyWaiting(it.frameId) }
+        val newest = held.firstOrNull() ?: return
+        if (!enqueueResend(peerId, newest, flushAfter = held.drop(1).map { it.frameId })) {
+            log("lora catch-up refused $peerId")
+            return
+        }
+        // Behind a fresh DM's board ack ([skip]) the board is there and the gap was just reset (`onAcked`): this is no
+        // evidence the phone is away, so it books at the base gap rather than doubling — or a burst's acks would push the
+        // re-probe out to its 4 h cap. Every other trigger books as a re-probe does.
+        val reset = skip != null || lastAcked(peerId, newest.frameId)
+        reprobe.onReprobed(peerId, newest.frameId, lastAcked = reset, now)
         stateWake.trySend(Unit)
-        log("lora resend ${newest.frameId} -> $peerId (+${held.size - 1} after its ack)")
+        log("lora resend ${newest.frameId} -> $peerId ($why, +${held.size - 1} after its ack)")
     }
 
     /** Whether the DM the last re-probe or resend to [peerId] aired has its ✓✓ now — what resets the backoff. */
@@ -1043,7 +1126,7 @@ internal class LoraMeshTransport(
                 stateWake.trySend(Unit)
             }
 
-            peerId in linkedPeers || peerId in internetPeers -> {
+            peerId in linkedPeers || peerId in covered -> {
                 reprobe.defer(peerId, now)
             }
 
@@ -1267,6 +1350,11 @@ internal class LoraMeshTransport(
                 log("lora direct acked ${send.frameId} -> $peer")
                 direct.unpark(peer).forEach { offer(peer, it.frameId, it.sentAtMs, it.plaintext, it.kind) }
                 if (send.flushAfter.isNotEmpty()) scope.launch { flush(peer, send.flushAfter) }
+                // Their board just took a DM the user wrote: anything older no board took goes behind it (#294). Never
+                // on a resend's ack, which carries its own flushAfter.
+                if (send.kind == DirectKind.MESSAGE && !send.resend) {
+                    scope.launch { catchUp(peer, skip = send.frameId, why = "after ack") }
+                }
             }
 
             is PacketOutcome.Refused -> {
@@ -1512,12 +1600,15 @@ internal class LoraMeshTransport(
         publishStatus()
     }
 
-    /** The older unacked DMs a resend after a hearing promised to follow once its destination acked it. */
+    /**
+     * The older unacked DMs a catch-up promised to follow once its destination acked the newest. Read untaken, as the
+     * catch-up chose them: the resend just acked is taken now, and counted against the limit it would hide the oldest.
+     */
     private suspend fun flush(
         peerId: String,
         frameIds: List<String>,
     ) {
-        val held = source.unackedTo(peerId, RESEND_LIMIT).associateBy { it.frameId }
+        val held = source.unackedTo(peerId, RESEND_LIMIT, untakenOnly = true).associateBy { it.frameId }
         frameIds.mapNotNull(held::get).forEach { enqueueResend(peerId, it, flushAfter = emptyList()) }
     }
 
@@ -1553,9 +1644,9 @@ internal class LoraMeshTransport(
      * PKI-decrypted DM there whatever slot it used, and since 2.8 PKI-encrypts every unicast its phone sends, that is
      * where every compact DM from a 2.8 board lands (the PKI amendment) — and only when addressed to our own board: a
      * unicast to another board is not ours to open. Not gated on our own DM switch: our board has already acknowledged
-     * it, and dropping it here would turn the sender's delivered radio into a lost message. Opened, it is delivered, the
-     * peer's reach is noted if it is fresh, and only then is their board heard, so a ✓✓ it carried is applied before a
-     * resend asks what is still unacked.
+     * it, and dropping it here would turn the sender's delivered radio into a lost message. Opened and live, it lifts the
+     * peer's relay cover first ([liftCover], #294); then it is delivered, the peer's reach is noted if it is fresh, and
+     * only then is their board heard, so a ✓✓ it carried is applied before a resend asks what is still unacked.
      */
     private fun onDirectPacket(
         packet: ReceivedPacket,
@@ -1582,6 +1673,9 @@ internal class LoraMeshTransport(
         if (packet.channelIndex != bound) noteBoard(packet)
         metrics.onLoraDirectDelivered()
         log("lora rx direct ${opened.frameId} from ${opened.peerId}")
+        // Lifted before delivery, so the ✓✓ the delivery coalesces passes skipCovered. Any authenticated compact frame
+        // (a DM, a ✓✓, a reaction), but only a live reception: never off MQTT or out of a replayed queue (#294).
+        val lifted = isLive(packet) && liftCover(opened.peerId)
         scope.launch {
             runCatching { inbox.deliver(opened) }
                 .onSuccess { log("lora direct delivered ${opened.frameId} from ${opened.peerId}") }
@@ -1589,7 +1683,7 @@ internal class LoraMeshTransport(
             // Author-keyed reach, as a fresh room post feeds it: an authenticated DM from them, never their board's ACK.
             val age = wallClock() - opened.sentAtMs
             if (age in -Protocol.MAX_FUTURE_SKEW_MS..LoraFramePolicy.FRESH_MS) noteReachable(Peer(opened.peerId))
-            onBoardHeard(opened.peerId)
+            onBoardHeard(opened.peerId, lifted)
         }
     }
 
@@ -1629,14 +1723,23 @@ internal class LoraMeshTransport(
      */
     private fun noteHeard(packet: ReceivedPacket) {
         val ready = link.state.value as? LinkState.Ready ?: return
-        if (packet.from == 0u || packet.from == ready.board.myNodeNum || packet.viaMqtt) return
-        val rssi = packet.rxRssi
-        if (rssi == null || rssi == 0) return
-        packet.rxTime?.let { heardAt -> if (wallClock() - heardAt.toLong() * MS_PER_SECOND > HEARING_MAX_AGE_MS) return }
+        if (packet.from == 0u || packet.from == ready.board.myNodeNum || !isLive(packet)) return
         val peer = peerByBoard[BoardAddr(packet.from)] ?: return
         // Only the edge out of an unreachable mark does anything; a busy contact's every packet must not cost a coroutine.
         if (direct.reachOf(peer, clock()) != LoraDirectPolicy.Reach.UNREACHABLE) return
         scope.launch { onBoardHeard(peer) }
+    }
+
+    /**
+     * Whether [packet] came to us over the air just now: an RSSI (the NodeDB replay at every handshake has none), not
+     * an MQTT uplink, and an `rx_time`, when present, within [HEARING_MAX_AGE_MS] (the to-phone queue replayed at
+     * reconnect). What the hearing hook and the cover's lift both read.
+     */
+    private fun isLive(packet: ReceivedPacket): Boolean {
+        val rssi = packet.rxRssi
+        if (packet.viaMqtt || rssi == null || rssi == 0) return false
+        val heardAt = packet.rxTime ?: return true
+        return wallClock() - heardAt.toLong() * MS_PER_SECOND <= HEARING_MAX_AGE_MS
     }
 
     /**
@@ -1704,7 +1807,7 @@ internal class LoraMeshTransport(
             metrics.onLoraSkippedLinked()
             return true
         }
-        if (peerId in internetPeers) {
+        if (peerId in covered) {
             metrics.onLoraSkippedInternet()
             return true
         }
@@ -1753,7 +1856,7 @@ internal class LoraMeshTransport(
     private fun coverReason(to: String): StaleAtSend? =
         when {
             to == selfIdCached || to in linkedPeers -> StaleAtSend.LINKED
-            to in internetPeers -> StaleAtSend.INTERNET
+            to in covered -> StaleAtSend.INTERNET
             else -> null
         }
 
@@ -2497,7 +2600,7 @@ internal class LoraMeshTransport(
                     airtime = pace.airtime.snapshot(now),
                     braked = pace.braked(now),
                     bandReadingAgeMs = pace.bandReadAt()?.let { now - it },
-                    internetCovered = internetPeers.size,
+                    internetCovered = covered.size,
                     direct = direct.counts(now),
                 )
         }

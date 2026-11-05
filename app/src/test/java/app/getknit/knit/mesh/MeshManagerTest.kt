@@ -1928,6 +1928,26 @@ class MeshManagerTest {
     )
 
     /**
+     * #294: a DM whose board acked its compact copy reads `boardTook`, and a catch-up's `untakenOnly` read drops those rows
+     * before the limit, so three newer taken DMs cannot hide an older stranded one.
+     */
+    @Test
+    fun theLoraSourceMarksWhatABoardTookAndLeavesItOutBeforeTheLimitForACatchUp() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val rows = (0 until 4).map { rig.dmRow("dm $it", sentAt = rig.now - 60_000 + it * 1_000L) }
+            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns rows
+            val (oldest, taken) = rows.first() to rows.drop(1)
+            taken.forEach { rig.manager.onLoraRadioReached(it.id, late = false) }
+            val source = rig.manager.loraDirectSource()
+
+            assertEquals(listOf(oldest.id), source.unackedTo(rig.bob.nodeId, limit = 3, untakenOnly = true).map { it.frameId })
+            val all = source.unackedTo(rig.bob.nodeId, limit = 3)
+            assertEquals(taken.reversed().map { it.id }, all.map { it.frameId })
+            assertTrue(all.all { it.boardTook })
+        }
+
+    /**
      * [MeshManager.loraDirectSource] (Crypto 6): our unacked DMs inside the window, newest first, as compact plaintext with
      * no inline acks and only those that fit one packet; `isUnacked` asks the row again — ours, a DM, no ✓✓, not parked
      * on its key, still young.

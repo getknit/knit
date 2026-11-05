@@ -126,3 +126,26 @@ scenarios in `mesh/lab/`, which run the real stacks over a fake air and a fake s
 ## Superseded in part by ADR 2026-10.rp3s (2026-10-29)
 
 The LoRa leg of route 2 is gone: LoRa's `fastSend` refuses every room tick, and `escalateRide` reads only short-range reach, so an author the board alone can hear keeps their tick parked for a link or the spool. The deadline, the spool route and Wi-Fi Aware's air route stay.
+
+## Amendment (2026-11-04, #294, draft): a live compact frame lifts the LoRa cover
+
+"The spool covers the board" rested on a premise: a peer a connected spool heard from within `SPOOL_COVER_MS` has a
+path through it that costs nothing. On 2026-11-04 the premise failed for 15 minutes. The Pixel 9 switched its relays
+off; the Pixel 7 kept it covered for the window after its last push, while compact DMs from it arrived over LoRa. Its
+two held ✓✓ and its own three DMs went to the relay alone (`loraSkippedInternet: 7`, `loraDirectSent: 0`), until the
+Pixel 9 reconnected.
+
+On the LoRa plane, a **live** authenticated compact frame from a covered peer (a DM, a ✓✓ or a reaction, with an RSSI,
+not via MQTT, `rx_time` fresh: the hearing hook's rules) now lifts that peer's cover. Its sender aired it only
+because, by its own reckoning, no relay joins the two phones. The lift is in memory (`liftedPeers`). It ends only when
+the relay itself drops the peer: an unrelated change in the present set keeps it. Losing or unbinding the board
+(`quiesce`) ends every lift, since the next board has heard nothing; that only adds cover, so no catch-up runs. Every gate reads the effective
+cover, the spool's set less the lifted peers: the offer's `skipCovered`, `StaleAtSend.INTERNET` at send, the resend,
+the re-probe's defer and `internetCovered`. The lift lands before the frame is delivered, so the ✓✓ the delivery
+coalesces passes it, and a DM the cover kept off the air is caught up (ADR 2026-10.x9fa's amendment of the same day).
+A cover that lapses catches its stranded DMs up the same way. A board's ACK alone never lifts: it is a radio's.
+`ScopeSync` stays the one writer of the spool's set; both sets sit under one lock that is never held across
+`publishStatus`. `AckSync`'s spool route reads `presentPeers` directly and is unchanged.
+
+Accepted cost: while the peer stays present on the relay as well, their DMs and ✓✓ ride both, the air copy paced by
+what the two users write. That air goes to a peer that just proved LoRa reaches it.

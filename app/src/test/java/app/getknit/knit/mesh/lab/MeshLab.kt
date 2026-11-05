@@ -2020,7 +2020,8 @@ class LabNode internal constructor(
                     override suspend fun unackedTo(
                         peerId: String,
                         limit: Int,
-                    ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit)
+                        untakenOnly: Boolean,
+                    ): List<DirectDm> = manager.loraDirectSource().unackedTo(peerId, limit, untakenOnly)
 
                     override suspend fun isUnacked(frameId: String): Boolean = manager.loraDirectSource().isUnacked(frameId)
                 },

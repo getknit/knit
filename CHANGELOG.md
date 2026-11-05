@@ -93,6 +93,8 @@ document:
 
 ### Fixed
 
+- When one of two people on LoRa switched their internet relays off, messages and delivery checkmarks between
+  them could wait up to 15 minutes for the relay. They now go over LoRa instead, on both phones.
 - After Google Play or F-Droid updated Knit, it stayed offline until you opened the app again. The mesh now
   starts again by itself once an update finishes, unless you had stopped it.
 - Some phones, realme models among them, could show "Knit isn't responding" for a routine check Knit runs in

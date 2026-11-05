@@ -173,6 +173,75 @@ class RoomTickPlanesLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 5) { it.dmWith(if (it === alice) bob else alice) }
         }
 
+    /**
+     * #294, the 2026-11-04 field case: alice's DM is kept off the air by her relay cover a moment before her sockets
+     * close, and bob, who goes on reading alice as relay-present for the 15-minute window, would keep every ✓✓ and reply
+     * off it too. Here the relay swallows everything from DM 1 on (so no ✓✓ can come back that way, whichever race the
+     * field would have run), then alice leaves it. Her board catches DM 1 up — on the lapse, or behind DM 2's board ack
+     * when a failure from the meeting still holds the re-probe's gap — and bob's board lifts alice's cover on her first
+     * live compact frame, so both ✓✓ and his reply cross the air in seconds, well inside `LoraReprobe.BASE_MS` and
+     * `SPOOL_COVER_MS`.
+     */
+    @Test
+    fun dmsStrandedByARelayThatWentCatchUpOverTheAirAndTheFarSideAnswersThere() =
+        runBlocking {
+            val air = MeshLab.quickAir()
+            val spool = FakeSpool()
+            val limits = LabLimits(dmAckHoldMs = 1_000L)
+            val alice = lab.node("alice", limits, air = air, spool = spool).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits, air = air, spool = spool).apply { setDisplayName("Bob") }
+            lab.meetOnTheRelay(alice, bob, air)
+            for (node in listOf(alice, bob)) {
+                assertTrue("${node.name}'s board never took the relay's cover", lab.tryAwait(1) { node.internetCovered() })
+            }
+            // As in the scenario above: a meeting DM offered into the dark air may have marked a board unreachable. Wait
+            // the sends out and let each board speak, so neither side holds the other's next offer.
+            lab.await(1) { alice.boardReadyFor(bob) }
+            lab.await(1) { bob.boardReadyFor(alice) }
+            val boards = listOf(alice, bob).map { checkNotNull(it.lora) }
+            assertTrue("a dark send never ended", lab.tryAwait(1) { if (boards.all { it.status.value.direct.inFlight == 0 }) 1 else 0 })
+            assertTrue(alice.sendRoom("on alice's board"))
+            assertTrue(bob.sendRoom("on bob's board"))
+            assertTrue("a board was never heard", lab.tryAwait(1) { if (boards.all { it.status.value.direct.unreachable == 0 }) 1 else 0 })
+
+            spool.mute()
+            val skippedBefore = alice.metrics.lora().loraSkippedInternet
+            assertTrue(alice.sendDm(bob, "are you waiting?"))
+            val dm1 = alice.ownMessageId(alice.dmWith(bob), "are you waiting?")
+            lab.await(1) { (alice.metrics.lora().loraSkippedInternet - skippedBefore).toInt() }
+            lab.leaveRelay(alice)
+            // The workers stop before ScopeSync republishes presence: wait for the board's own cover to go, or DM 2 can
+            // still be skipped as covered.
+            assertTrue("alice's board kept the cover of a relay it left", lab.tryAwait(1) { 1 - alice.internetCovered() })
+            assertTrue(alice.sendDm(bob, "resend test"))
+            val dm2 = alice.ownMessageId(alice.dmWith(bob), "resend test")
+
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.first == dm1 } }
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).count { it.first == dm2 } }
+            assertEquals("DM 1 caught up over the air", DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), dm1))
+            assertEquals(DeliveryPlane.LoRa, bob.receivedVia(bob.dmWith(alice), dm2))
+            assertEquals("DM 1's ✓✓ crossed the air", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm1, bob))
+            assertEquals("DM 2's too", DeliveryPlane.LoRa, lab.awaitReceipt(alice, dm2, bob))
+            assertTrue("bob's board never lifted alice's cover: ${bob.loraLog}", bob.loraLog.contains("lora cover lifted ${alice.nodeId}"))
+            assertTrue("bob's relay no longer lists alice, so a 0 below would not be the lift", bob.spoolPresent(alice))
+            assertEquals("bob's relay still lists alice; his board no longer reads it", 0, bob.internetCovered())
+
+            assertTrue(bob.sendDm(alice, "heading home"))
+            val reply = bob.ownMessageId(bob.dmWith(alice), "heading home")
+            lab.await(1) { alice.decrypted(alice.dmWith(bob)).count { it.first == reply } }
+            assertEquals(
+                "bob's reply went on the air, not to the relay alone",
+                DeliveryPlane.LoRa,
+                alice.receivedVia(alice.dmWith(bob), reply),
+            )
+
+            // The signed copies cross only where they can: a link, once bob is off the swallowing relay too.
+            lab.leaveRelay(bob)
+            spool.unmute()
+            lab.link(alice, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 7) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
     /** How many peers [this] node's board counts as covered by the Internet: 1 or 0 here, a `tryAwait` count. */
     private fun LabNode.internetCovered(): Int = checkNotNull(lora) { "$name has no board" }.status.value.internetCovered
 
