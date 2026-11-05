@@ -125,7 +125,7 @@ and the entry is fixed.
   its `why`.
 - **When touching `LinkSignal.m`, `DirectLinks.freeLinkTo` / `raiseBulk` / `mayRaiseBulk` / `meteredAt` /
   `METERED_RETRY_MS` / `passMetered`, `LinkOutcome.METERED`, `LinkWhy.BULK`, `MeshTransport.freeLinked` / `freeLinkTo` /
-  `raiseFreeLink` / `freeLinkMay`, `DirectLinkTransport.raiseFreeLink`, `CompositeMeshTransport.fileChildFor` /
+  `raiseFreeLink` / `freeLinkMay` / `freeLinkComing`, `DirectLinkTransport.raiseFreeLink`, `CompositeMeshTransport.fileChildFor` /
   `freeLinkFor` / `awaitPlaneThenSend` / `fastLinked`, `LinkDemandPolicy.Pending.beside`, `MeshLinkPending`'s
   `fastHeld` or `MeshManager.attachmentFastHeld`:** READ ADR 2026-10.a5yj's beside-a-radio amendment (#236) and
   `docs/DIRECT_LINKS.md` L-2-7, L-7-11. Beside a radio a link carries attachments, never frames, and only a **free** one:

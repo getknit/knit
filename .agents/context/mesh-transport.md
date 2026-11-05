@@ -352,7 +352,10 @@ to the radio; else below `BULK_MIN_BYTES` the link holder; else NAN arms and is 
 radio links, `raiseFreeLink` (the link plane's `BULK` offer) and the same detached ≤ 10 s wait on `freeLinked`
 (`awaitPlaneThenSend`), then the radio. The early `fast == null` return is for non-attachments only, so a node with no
 NAN child (the lab, a phone without Wi-Fi Aware) runs the ladder too. `fastLinked` carries the free links to
-radio-linked peers beside NAN's, the edge `BlobExchange.fastLinkUp` steps fast-only wants on.
+radio-linked peers beside NAN's, the edge `BlobExchange.fastLinkUp` steps fast-only wants on. A fast-only ask can reach the
+holder over the radio before its end of that link is in `freeLinked`: `freeLinkComing` (the links' own read, true from the
+punch on) lets it past the holder's refusal, and `sendFastOnly`'s arm waits out the publish on the same `freeLinkReady`,
+never the radio (#295).
 
 ## The BLE scan is demand-gated, and a *settled* clique used to scan continuously
 
