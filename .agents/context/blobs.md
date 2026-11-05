@@ -284,16 +284,21 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   direct-link cases, `BlobHolderQueryTest`'s direct-link cases, `BlobRepositoryTest`'s plane rule; lab:
   `DirectLinkLabTest`, `DirectLinkPushLabTest` (a push the peer did not keep, once per link-up), attachment cases owed.
 - **When touching what a free direct link beside a radio does to an ask or a serve — `Candidate.linkRides` /
-  `linkMay` (`BlobExchange.besideRadio`), `BlobExchange.ridesLink`, `graceFor` / the blind first ask's link wait,
-  `BlobExchange.fastHeld` / `MeshManager.attachmentFastHeld`, or what `MeshTransport.freeLinkMay` feeds:** READ ADR
+  `linkMay` (`BlobExchange.besideRadio`), `BlobExchange.ridesLink` / `linkComing`, `graceFor` / the blind first ask's link
+  wait, `BlobExchange.fastHeld` / `MeshManager.attachmentFastHeld`, or what `MeshTransport.freeLinkMay` /
+  `freeLinkComing` feeds:** READ ADR
   2026-10.a5yj's beside-a-radio amendment (#236) and `docs/DIRECT_LINKS.md` L-7-11; the link plane's side is
   `.agents/context/direct-links.md`. A free link beside a radio carries only a blob addressed to both ends, so its
   peer's copy rides the link — a fast route, never parked — only for a hash its view admits, read per want and per ask
   (`PairView.admitsBlob`), never per peer: for any other the copy rides the radio and its budget. A holder a radio links
   that may raise a free link for a large copy (`freeLinkMay`, as far as the asker can tell) gets the composite's 10 s link
   wait on its grace, as a Wi-Fi Aware arm does, or a carrier asked past it sends a second copy (#79's shape). Only a want
-  held for a fast route (`Want.fastHeld`) may call for such a link from the receiving end. Unit: `BlobExchangeTest`'s
-  free-link cases, `BlobHolderQueryTest.aCarrierWhoseFreeLinkRefusesTheBlobRidesTheRadioAndParksBehindItsFeed`.
+  held for a fast route (`Want.fastHeld`) may call for such a link from the receiving end. A fast-only ask rides the
+  radio, so it can beat the holder's publish of the link it counts on: `BlobExchange.linkComing`
+  (`MeshTransport.freeLinkComing`, the links' own `freeLinkTo`, never `bulkUnderWay`) lets it through `refusesFastOnly`, and
+  the composite's raised-link wait carries the copy (#295, 2026-11-05 in that amendment). Unit: `BlobExchangeTest`'s
+  free-link cases, `BlobHolderQueryTest.aCarrierWhoseFreeLinkRefusesTheBlobRidesTheRadioAndParksBehindItsFeed`; lab:
+  `LinkBesideRadioLabTest`, which holds the holder's handshake (`LabHelloGate`).
 
 ## Adding an entry
 

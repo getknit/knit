@@ -227,6 +227,12 @@ class FakeLoopTransport(
      */
     val freeLinkMays = mutableSetOf<String>()
 
+    /**
+     * Peers a test declares the links hold a free link to that this end has yet to publish ([freeLinkComing]), for a blob
+     * their [linkViews] entry admits (every blob without one).
+     */
+    val freeLinkComings = mutableSetOf<String>()
+
     /** Every [freeLinkMay] read, as (peer, blob), in order. */
     val freeLinkMayReads = CopyOnWriteArrayList<Pair<String, String>>()
 
@@ -239,6 +245,11 @@ class FakeLoopTransport(
         freeLinkMayReads += nodeId to blobKey
         return nodeId in freeLinkMays && linkViews[nodeId]?.admitsBlob(blobKey) != false
     }
+
+    override suspend fun freeLinkComing(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = nodeId in freeLinkComings && linkViews[nodeId]?.admitsBlob(blobKey) != false
 
     override suspend fun pairView(nodeId: String): PairView? = linkViews[nodeId]?.takeIf { nodeId in links }
 

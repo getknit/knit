@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.inet.FakeLinkNet.Nat
 import app.getknit.knit.mesh.inet.LinkOutcome
 import app.getknit.knit.mesh.inet.LinkWhy
@@ -9,6 +10,7 @@ import app.getknit.knit.mesh.spool.SpoolTicket
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -125,6 +127,101 @@ class LinkBesideRadioLabTest {
             assertTrue("an ask was not fast-only", asksLogged(of = alice, hash = hash).all { it })
             assertEquals("one copy over the link: ${alice.linkFiles}", 1, alice.linkFiles.count { hash in it && bob.nodeId in it })
             assertEquals("a copy over the radio: ${alice.transport.files}", 0, alice.transport.files.count { hash in it })
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * The ask beats the holder's end of the link (#295), the holder answering. Bob raises the link as above, and Alice is
+     * stopped with her HELLO out, so Bob's end is published and his fast-only ask reaches her over the radio while hers is
+     * not. She takes it for the link about to be published, and the copy crosses it as soon as her end is, with no tick.
+     */
+    @Test
+    fun aFastOnlyAskAheadOfTheAnsweringHoldersEndOfTheLinkCrossesItWithNoTick() =
+        runBlocking {
+            val (alice, bob) = onOneLanBesideARadio(filesGatedRelay())
+            val (_, hash) = send(alice, bob, OVER_LIMIT_BYTES, "the early survey", seed = 2_367)
+            awaitHeld(bob)
+
+            alice.linkHelloGate.hold()
+            checkNotNull(bob.demand).round()
+            awaitAskMetInTheWindow(alice, bob, hash)
+            alice.linkHelloGate.release()
+
+            assertTrue(
+                "bob never got the file over a link\n${alice.linkLog}\n${bob.linkLog}\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 },
+            )
+            assertEquals(LinkWhy.WANT, checkNotNull(bob.links).lastTries()[alice.nodeId]?.why)
+            assertOneCopyOverTheLink(alice, bob, hash)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * The other way round (#295): Alice offers the link, and is stopped before she reads Bob's HELLO, so Bob, answering,
+     * publishes first and asks. No round of Bob's demand runs: its offer would cross hers, and crossed offers resolve by id,
+     * which could leave Bob the offerer.
+     */
+    @Test
+    fun aFastOnlyAskAheadOfTheOfferingHoldersEndOfTheLinkCrossesItWithNoTick() =
+        runBlocking {
+            val (alice, bob) = onOneLanBesideARadio(filesGatedRelay())
+            val (_, hash) = send(alice, bob, OVER_LIMIT_BYTES, "the offered survey", seed = 2_368)
+            awaitHeld(bob)
+
+            alice.linkHelloGate.hold()
+            assertTrue("alice raised no link", checkNotNull(alice.links).raiseBulk(bob.nodeId))
+            awaitAskMetInTheWindow(alice, bob, hash)
+            alice.linkHelloGate.release()
+
+            assertTrue(
+                "bob never got the file over a link\n${alice.linkLog}\n${bob.linkLog}\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 },
+            )
+            val raised = checkNotNull(checkNotNull(alice.links).lastTries()[bob.nodeId]) { "alice raised no link" }
+            assertTrue("alice did not offer", raised.offerer)
+            assertEquals(LinkOutcome.UP to LinkWhy.BULK, raised.outcome to raised.why)
+            assertOneCopyOverTheLink(alice, bob, hash)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
+     * A link that dies inside the window (#295) takes the copy waiting for it with it, never to the radio: Bob has not
+     * agreed to wait on Bluetooth for these bytes, so the copy is dropped, and his next ask brings one over the next link.
+     */
+    @Test
+    fun aHandshakeThatDiesInsideTheWindowDropsTheCopyAndTheNextLinksAskIsServed() =
+        runBlocking {
+            val (alice, bob) = onOneLanBesideARadio(filesGatedRelay())
+            val (_, hash) = send(alice, bob, OVER_LIMIT_BYTES, "the lost survey", seed = 2_369)
+            awaitHeld(bob)
+
+            alice.linkHelloGate.hold()
+            checkNotNull(bob.demand).round()
+            awaitAskMetInTheWindow(alice, bob, hash)
+            alice.linkHelloGate.fail()
+
+            lab.await(1) { alice.routeLog.count { hash in it && "fast-only — dropped" in it } }
+            // Over at both ends: a raise refuses a link still listed, and starts nothing while one counts as under way.
+            val links = checkNotNull(alice.links)
+            lab.await(1) {
+                if (bob.linkPlaneHolds(alice) || links.bulkUnderWay(bob.nodeId) || bob.nodeId in links.links.value) 0 else 1
+            }
+            assertEquals("a copy crossed: ${alice.linkFiles}", 0, alice.linkFiles.count { hash in it })
+            assertEquals("a copy over the radio: ${alice.transport.files}", 0, alice.transport.files.count { hash in it })
+
+            // The next link. On a phone Bob's re-ask needs no tick: with the link still down at his wake the want is held and
+            // the next edge queries Alice, and with it back in time his confirm wait does, and her HAVE re-asks either way. The
+            // lab's jump wakes neither timer, so `reoffer()` stands in for it. The jump goes ahead of the offer, which it would
+            // end once out (`LabInternet`).
+            lab.clock.advance(BlobExchange.ROUND_MS + 1)
+            assertTrue("alice raised no link", links.raiseBulk(bob.nodeId))
+            lab.await(1) { if (bob.linkPlaneHolds(alice) && alice.linkPlaneHolds(bob)) 1 else 0 }
+            bob.reoffer()
+            assertTrue(
+                "bob never got the file over the next link\n${alice.linkLog}\n${bob.linkLog}\n${lab.report(listOf(alice, bob))}",
+                lab.tryAwait(1) { if (bob.holdsBlob(hash)) 1 else 0 },
+            )
+            assertOneCopyOverTheLink(alice, bob, hash)
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { it.dmWith(if (it === alice) bob else alice) }
         }
 
@@ -266,6 +363,41 @@ class LinkBesideRadioLabTest {
         val heldBefore = node.metrics.files().blobFastOnlyHeld
         node.reoffer()
         lab.await(1) { if (node.metrics.files().blobFastOnlyHeld > heldBefore) 1 else 0 }
+    }
+
+    // [holder] is stopped at its gate with [asker]'s end of the link published, and has met the ask for [hash]. The holder's
+    // own line says so, written once the ask reached it: the asker logs its ask after sending it, which would release the
+    // gate with the ask still on its way, and a holder publishing ahead of it passes on old code too.
+    private suspend fun awaitAskMetInTheWindow(
+        holder: LabNode,
+        asker: LabNode,
+        hash: String,
+    ) {
+        lab.await(1) { holder.linkHelloGate.parked }
+        lab.await(1) { if (askMet(holder, asker, hash)) 1 else 0 }
+        assertTrue("the asker's end is not up", asker.linkPlaneHolds(holder))
+        assertFalse("the holder's end was published", holder.linkPlaneHolds(asker))
+    }
+
+    // Whether [holder] refused [asker]'s fast-only ask for [hash], or handed its copy to the composite's wait.
+    private fun askMet(
+        holder: LabNode,
+        asker: LabNode,
+        hash: String,
+    ): Boolean =
+        holder.routeLog.any { it.startsWith("file route:") && hash in it && "(fast-only)" in it } ||
+            ShadowLog.getLogs().any { it.msg.startsWith("blob refuse ${hash.take(HASH_CHARS)}… → ${asker.nodeId}") }
+
+    // One copy of [hash] crossed the link from [holder] to [asker], none the radio, and every ask for it was fast-only.
+    private suspend fun assertOneCopyOverTheLink(
+        holder: LabNode,
+        asker: LabNode,
+        hash: String,
+    ) {
+        lab.await(1) { if (asksLogged(of = holder, hash = hash).isNotEmpty()) 1 else 0 }
+        assertTrue("an ask was not fast-only", asksLogged(of = holder, hash = hash).all { it })
+        assertEquals("one copy over the link: ${holder.linkFiles}", 1, holder.linkFiles.count { hash in it && asker.nodeId in it })
+        assertEquals("a copy over the radio: ${holder.transport.files}", 0, holder.transport.files.count { hash in it })
     }
 
     // The asks of [of] for [hash] the asker's blob exchange logged, each as whether it said fast-only

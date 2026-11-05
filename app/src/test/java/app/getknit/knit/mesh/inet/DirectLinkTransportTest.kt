@@ -72,6 +72,8 @@ class DirectLinkTransportTest {
         handshakeMs: Long = DirectLinkTransport.HANDSHAKE_MS,
         lookups: LinkScope = Lookups,
         now: () -> Long = clock,
+        freeLink: (String) -> Boolean = { false },
+        bulkRaising: (String) -> Boolean = { false },
     ) {
         val uses: MutableList<String> = Collections.synchronizedList(ArrayList())
 
@@ -99,6 +101,8 @@ class DirectLinkTransportTest {
                     // Whether the peer was already a neighbour when the link was reported: it must not be yet.
                     if (transport.neighbors.value.any { n -> n.nodeId == it }) upLate.set(true)
                 },
+                freeLink = freeLink,
+                bulkRaising = bulkRaising,
                 handshakeMs = handshakeMs,
                 claims = claims,
             )
@@ -633,6 +637,27 @@ class DirectLinkTransportTest {
             assertTrue(PAIRS in b.transport.arrivingFiles())
             b.transport.stop()
             assertTrue("a stopped plane holds nothing arriving", b.transport.arrivingFiles().isEmpty())
+        }
+
+    /**
+     * A free link coming (#295) is the links' own read of a free link, for a blob it would carry, while the plane runs: true
+     * with no link in the plane yet, and never for an attempt under way, which would admit asks from outside that window.
+     */
+    @Test
+    fun aFreeLinkComingIsTheLinksOwnReadForABlobItCarriesAndNeverAnAttempt() =
+        runBlocking<Unit> {
+            var free = false
+            val a = End(alice, freeLink = { free }, bulkRaising = { true })
+            a.transport.start()
+            assertFalse("an attempt under way is no link", a.transport.freeLinkComing(bob, PAIRS))
+
+            free = true
+            assertTrue("up below the plane", a.transport.freeLinkComing(bob, PAIRS))
+            assertFalse("published to nobody yet", a.transport.freeLinkTo(bob))
+            assertFalse("a blob the link does not carry", a.transport.freeLinkComing(bob, ROOM_PHOTO))
+
+            a.transport.stop()
+            assertFalse("a plane that is off takes no link", a.transport.freeLinkComing(bob, PAIRS))
         }
 
     private companion object {

@@ -109,7 +109,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * ([reachingFor]) and per ask ([ridesLink]); for any other it rides the radio as before. A large copy from a holder a
  * radio links may wait up to [CompositeMeshTransport.BULK_GRACE_MS] while the holder raises a free link, so an ask of
  * one that may ([Candidate.linkMay]) outlasts that wait as it does a Wi-Fi Aware arm. A held fast-only want is the one
- * whose own link demand may call for such a link ([fastHeld]).
+ * whose own link demand may call for such a link ([fastHeld]). The asker's fast-only ask rides the radio, so it can reach
+ * the holder before the holder's end of that link is published: the holder then takes the ask for the link about to be
+ * published ([linkComing], #295) and the same wait carries the copy.
  *
  * **Proof of a hold (ADR 2026-10.vy27).** A DM photo its recipient holds never goes up to a spool, and the sender's proof
  * is that recipient's own HAVE: [confirmHeld] sends it the same holder query, and the answer to it reaches [onPeerHolds]
@@ -1642,6 +1644,20 @@ class BlobExchange(
             (!transport.radioLinked(peer) || transport.pairView(peer)?.admitsBlob(hash) == true)
 
     /**
+     * Whether a copy of [hash] to [peer] would go over a free link beside a radio that the links hold and that may not be
+     * published yet ([MeshTransport.freeLinkComing], #295). A receiver's fast-only ask rides the radio, so it can beat this
+     * end's publish of the link it counts on, whichever end offered. Per blob, as [ridesLink] is (L-7-11), and only beside a
+     * radio: the wait that carries the copy (`CompositeMeshTransport.sendFastOnly`) is armed only for a peer a radio links,
+     * and any other copy would be dropped there, with [refusesFastOnly]'s line and count saying nothing of it. The copy is
+     * served as any fast-only one is, so the serve memo covers a second ask and [FileMeta.onDropped] forgets it if the link
+     * never comes.
+     */
+    private suspend fun linkComing(
+        peer: String,
+        hash: String,
+    ): Boolean = transport.radioLinked(peer) && transport.freeLinkComing(peer, hash)
+
+    /**
      * Steps [hash] again after [ms]: when an ask's grace is up, answers are due, or a holder's stream may have ended.
      * The earliest wake wins — a later step that needs a sooner one (a stream to poll, a wait for answers) arms it, and
      * a superseded timer does nothing. A timer that fires steps every want due within [TIMER_COALESCE_MS] of it and
@@ -2117,10 +2133,10 @@ class BlobExchange(
      * once all landed at the end; one at a time, the first lands in a quarter of that, and its receiver holds it — a
      * second source for the rest.
      *
-     * A [fastOnly] ask (ADR 2026-10.js2p) is served only over a fast route — Wi-Fi Aware, or a contact's direct link that
-     * is the asker's only link (a5yj): refused at once when the asker has neither, never parked behind a Bluetooth feed,
-     * and handed to the transport marked so it is never sent over Bluetooth. Not holding it, we pull it through
-     * fast-only too.
+     * A [fastOnly] ask (ADR 2026-10.js2p) is served only over a fast route — Wi-Fi Aware, a contact's direct link that
+     * is the asker's only link (a5yj), or a free link beside a radio that carries the blob, up or about to be published
+     * ([linkComing], L-7-11): refused at once when the asker has none, never parked behind a Bluetooth feed, and handed
+     * to the transport marked so it is never sent over Bluetooth. Not holding it, we pull it through fast-only too.
      *
      * Not holding it, we want it with one hop less of the ask's [pull] budget ([budgetOf]: an older build's ask, with
      * none, is a fetch only) and its [until] (#195). An ask with no budget left, or past its deadline, makes no want
@@ -2136,9 +2152,10 @@ class BlobExchange(
     ) = serveOrWant(hash, fromNodeId, offset, mayPark = true, fastOnly = fastOnly, pull = pull, until = until)
 
     /**
-     * Whether a [fastOnly] ask from [fromNodeId] for [hash] is refused: nothing reaches it over Wi-Fi Aware, and its file
-     * would not ride a contact's direct link. Refused before the store is read, with no memo stamped, so a SENDING answer
-     * never covers a copy that went nowhere and its next ask, once a route is up, is served at once. A link's peer is
+     * Whether a [fastOnly] ask from [fromNodeId] for [hash] is refused: nothing reaches it over Wi-Fi Aware, its file
+     * would not ride a contact's direct link, and no free link that carries it is about to be published ([linkComing]).
+     * Refused before the store is read, with no memo stamped, so a SENDING answer never covers a copy that went nowhere
+     * and its next ask, once a route is up, is served at once. A link's peer is
      * served whatever our own network costs: it asked fast-only over the link only from an unmetered network or after
      * its tap, and the tap protects the receiver's data (ADR 2026-10.js2p, a5yj). The two ends can see different planes
      * — we mid-dial on Bluetooth to an asker that sees only the link, so its file would ride Bluetooth here — and then
@@ -2153,7 +2170,8 @@ class BlobExchange(
         fromNodeId: String,
         fastOnly: Boolean,
     ): Boolean {
-        if (!fastOnly || transport.bulkRouteTo(fromNodeId) != BulkRoute.None || ridesLink(fromNodeId, hash)) return false
+        if (!fastOnly || transport.bulkRouteTo(fromNodeId) != BulkRoute.None) return false
+        if (ridesLink(fromNodeId, hash) || linkComing(fromNodeId, hash)) return false
         onEvent(BlobEvent.FastOnlyRefused)
         log("blob refuse ${hash.take(LOG_HASH_CHARS)}… → $fromNodeId: fast-only, no fast route")
         return true

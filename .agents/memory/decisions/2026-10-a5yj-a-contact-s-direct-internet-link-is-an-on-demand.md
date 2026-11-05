@@ -924,6 +924,15 @@ bridged WANs on one site cannot be told from a contact across town.
   the radio. The trial hit this when the P9 left Wi-Fi for a weak cellular signal: the P7 waited 10 s, and the offer
   ended `NO_ANSWER` after 15 s.
 
+**2026-11-05 (#295): a fast-only ask ahead of the holder's end of the link is served.** A receiver's ask rides the radio,
+so nothing orders it behind the holder's publish of the link it counts on, and the holder refused it silently, leaving the
+file to the 60 s tick on an idle link. Each end's HELLO goes out after its own `DirectLinks` has the link up, so an asker
+that has published proves the punch is up at the holder too, whichever end offered, and the holder reads that
+(`MeshTransport.freeLinkComing`: `DirectLinks.freeLinkTo`, for a blob the link carries, to a peer a radio links). The ask
+is then served as any fast-only one is, and the composite's raised-link wait carries the copy: no new hold, and never the
+radio. A link only being attempted does not count (`bulkUnderWay` would admit it), so an ask from outside the window is
+still refused, and the asymmetries this ADR accepted stay as they were.
+
 ## Amendment 2026-10-31 — a file no relay takes is marked "Not on relays", not "Nearby only"
 
 Status: Accepted (2026-10-31), the maintainer's call during the #236 trial.

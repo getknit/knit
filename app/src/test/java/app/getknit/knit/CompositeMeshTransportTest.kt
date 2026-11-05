@@ -193,6 +193,14 @@ class CompositeMeshTransportTest {
 
         override fun freeLinkRaising(nodeId: String): Boolean = raising
 
+        /** The peers [freeLinkComing] answers true for. */
+        val coming = mutableSetOf<String>()
+
+        override suspend fun freeLinkComing(
+            nodeId: String,
+            blobKey: String,
+        ): Boolean = nodeId in coming
+
         override suspend fun raiseFreeLink(
             nodeId: String,
             blobKey: String,
@@ -1009,6 +1017,18 @@ class CompositeMeshTransportTest {
             advanceUntilIdle()
             assertEquals(1, dropped)
             assertTrue(bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun aFreeLinkComingIsTheLinkPlanesAnswer() =
+        runTest(UnconfinedTestDispatcher()) {
+            val (bt, nan, link) = besideARadio()
+            val composite = CompositeMeshTransport(listOf(bt, nan, link), backgroundScope)
+            assertFalse(composite.freeLinkComing("p", "key"))
+
+            link.coming += "p"
+            assertTrue(composite.freeLinkComing("p", "key"))
+            assertFalse(CompositeMeshTransport(listOf(bt, nan), backgroundScope).freeLinkComing("p", "key"))
         }
 
     @Test

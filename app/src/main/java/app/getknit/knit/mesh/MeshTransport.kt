@@ -569,6 +569,19 @@ interface MeshTransport {
     fun freeLinkRaising(nodeId: String): Boolean = false
 
     /**
+     * Whether the links hold a free link to [nodeId] that would carry the attachment [blobKey] and that may not be in
+     * [freeLinked] yet: its punch is up and it counts as free, and this end's handshake may still be running (#295). The
+     * peer's end can publish first and ask over the radio, which nothing orders behind this end's publish, so the holder
+     * takes the ask as one for the link about to be published, and [raiseFreeLink]'s wait carries the copy. A link only
+     * being attempted is not one: an asker that counts on a free link has seen it up, and an ask from outside that window
+     * stays refused (ADR 2026-10.a5yj). Default false.
+     */
+    suspend fun freeLinkComing(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = false
+
+    /**
      * How a file from [nodeId] would most likely reach us: over a live high-throughput link, over one such a plane
      * can raise, or over neither ([BulkRoute]). A read of the plane's own sets, cheap and non-blocking, for
      * `BlobExchange` to put a Wi-Fi Aware neighbour ahead of a Bluetooth-only one when it picks whom to ask first.

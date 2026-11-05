@@ -2193,6 +2193,105 @@ class BlobExchangeTest {
         }
 
     /**
+     * A receiver's fast-only ask rides the radio, so it can reach the holder before the holder's end of the free link is
+     * published (#295). The holder hands one fast-only copy to the transport, whose wait carries it over that link; the
+     * serve memo covers a second ask, and a copy the wait gave up on leaves the next ask served at once.
+     */
+    @Test
+    fun aFastOnlyAskAheadOfTheHoldersEndOfAFreeLinkIsServedOnce() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = FakeLoopTransport("h")
+            FakeLoopTransport("n").also(h::connect)
+            h.freeLinkComings += "n"
+            val store =
+                FakeBlobStore(
+                    Files.createTempDirectory("blob-link-coming").toFile(),
+                ).apply { seed(PICTURE_HASH, "image/jpeg", PICTURE) }
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(h, store, onEvent = { events += it })
+
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            val meta = h.filesSent.single()
+            assertTrue("marked for the transport, which never hands it to Bluetooth", meta.fastOnly)
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            assertEquals("a second ask ships nothing", 1, h.filesSent.size)
+
+            checkNotNull(meta.onDropped).invoke() // the link's handshake died: the composite dropped the copy
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            assertEquals("forgotten, so the next ask is served at once", 2, h.filesSent.size)
+            assertTrue("nothing refused: $events", BlobExchange.BlobEvent.FastOnlyRefused !in events)
+        }
+
+    /**
+     * The asker's link about to be published passes the refusal ahead of the store read (#295), so a holder that lacks the
+     * blob pulls it through as it would once the link is published: one fast-only ask to a fast-linked source, a hop less of
+     * the asker's budget, and nothing refused.
+     */
+    @Test
+    fun aFastOnlyAskAheadOfAFreeLinkForABlobWeLackIsPulledThroughFastOnly() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = FakeLoopTransport("h")
+            val source = FakeLoopTransport("source").also(h::connect)
+            FakeLoopTransport("n").also(h::connect)
+            h.bulkRoutes["source"] = BulkRoute.Linked
+            h.freeLinkComings += "n"
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(h, onEvent = { events += it })
+            val toSource = backgroundScope.requestsArrivingAt(source)
+
+            exchange.onRequest("H", "n", fastOnly = true, pull = BlobExchange.PULL_BUDGET)
+            exchange.reask()
+            assertEquals(
+                "one fast-only ask, one hop less of the asker's budget",
+                listOf(BlobReqContent("H", fastOnly = true, pull = BlobExchange.PULL_BUDGET - 1)),
+                toSource,
+            )
+            assertTrue("nothing refused: $events", BlobExchange.BlobEvent.FastOnlyRefused !in events)
+        }
+
+    /**
+     * A link about to be published is a fast route only for a blob it carries (L-7-11), and only to a peer a radio links,
+     * whose wait is the one that carries the copy: any other ask is refused as before, with no serve, no echo and no memo.
+     */
+    @Test
+    fun aFastOnlyAskIsStillRefusedWithNoLinkComingThatWouldCarryItToAPeerARadioLinks() =
+        runTest(UnconfinedTestDispatcher()) {
+            val h = FakeLoopTransport("h")
+            FakeLoopTransport("n").also(h::connect)
+            val source = FakeLoopTransport("source").also(h::connect)
+            h.bulkRoutes["source"] = BulkRoute.Linked
+            val store =
+                FakeBlobStore(
+                    Files.createTempDirectory("blob-link-coming-refused").toFile(),
+                ).apply { seed(PICTURE_HASH, "image/jpeg", PICTURE) }
+            val events = CopyOnWriteArrayList<BlobExchange.BlobEvent>()
+            val exchange = exchangeOn(h, store, onEvent = { events += it })
+            val toSource = backgroundScope.requestsArrivingAt(source)
+            val refused = { events.count { it == BlobExchange.BlobEvent.FastOnlyRefused } }
+
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            assertEquals("no link coming", 1, refused())
+
+            h.freeLinkComings += "n"
+            h.linkViews["n"] = BlobsView(setOf("other"))
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            assertEquals("a link coming that does not carry it", 2, refused())
+            exchange.onRequest("H", "n", fastOnly = true, pull = BlobExchange.PULL_BUDGET) // one we lack
+            assertEquals("nor one we lack", 3, refused())
+            exchange.reask()
+            assertTrue("no echo: ${toSource.toList()}", toSource.isEmpty())
+
+            h.freeLinkComings += "gone"
+            exchange.onRequest(PICTURE_HASH, "gone", fastOnly = true)
+            assertEquals("a link coming to a peer no radio links", 4, refused())
+            assertTrue("nothing handed to the transport", h.filesSent.isEmpty())
+
+            h.linkViews.remove("n")
+            exchange.onRequest(PICTURE_HASH, "n", fastOnly = true)
+            assertEquals("no memo stamped: served once it carries it", 1, h.filesSent.size)
+        }
+
+    /**
      * [BlobExchange.fastHeld], what `MeshManager.attachmentFastHeld` hands the link demand: true only for a fast-only want
      * its last step found no fast holder for — never a plain want, and not once the tap made it one.
      */

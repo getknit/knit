@@ -106,6 +106,7 @@ import app.getknit.knit.mesh.inet.MeshLinkPending
 import app.getknit.knit.mesh.inet.MeshLinkScope
 import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
+import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.lora.DirectDm
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
@@ -177,8 +178,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.robolectric.shadows.ShadowLog
 import java.io.File
+import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.Files
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -473,6 +478,7 @@ class MeshLab {
         nodes.forEach {
             it.custodyGate.release()
             it.linkFileGate.release()
+            it.linkHelloGate.release()
         }
         // What the boards-everywhere sweep exercised, so a green run says whether a DM ever went compact in it.
         if (boardsAir != null) {
@@ -1240,6 +1246,77 @@ data class LabLimits(
 }
 
 /**
+ * A node's end of a direct link's handshake, holdable: from [hold] on, the first flush on a link's socket returns only at
+ * [release], so the HELLO has gone and this end's `DirectLinkTransport.run` has not — the window between a peer's publish
+ * and this end's (#295), for either role: an answerer stops with its reply out, an offerer before it reads the reply. Held
+ * after the flush and not at it: the stream cuts a segment only on a flush, so a hold ahead of one would leave the HELLO
+ * unsent and the peer never up. [fail] ends the hold as a handshake that died. `MeshLab.close` releases it as a net, since a
+ * thread parked here cannot be cancelled; a link held past `DirectLinkTransport.HANDSHAKE_MS` is closed by that watchdog.
+ */
+class LabHelloGate {
+    @Volatile
+    private var opened: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
+
+    private val waiting = AtomicInteger()
+
+    /** How many handshakes are stopped at the gate right now. */
+    val parked: Int get() = waiting.get()
+
+    /** From now on, the first flush on every link's socket waits for [release] or [fail]. */
+    fun hold() {
+        check(opened.isDone) { "the gate is already holding: release it first" }
+        opened = CompletableFuture()
+    }
+
+    /** Lets every parked handshake go on, and every later one. */
+    fun release() {
+        opened.complete(true)
+    }
+
+    /** Ends every parked handshake with a failed write, as a stream that broke under it; every later one goes on. */
+    fun fail() {
+        val held = opened
+        opened = CompletableFuture.completedFuture(true)
+        held.complete(false)
+    }
+
+    /** [socket], its first flush held here. */
+    internal fun over(socket: LinkSocket): LinkSocket =
+        object : LinkSocket by socket {
+            private val hello = AtomicBoolean(true)
+
+            override val output: OutputStream =
+                object : OutputStream() {
+                    override fun write(b: Int) = socket.output.write(b)
+
+                    override fun write(
+                        b: ByteArray,
+                        off: Int,
+                        len: Int,
+                    ) = socket.output.write(b, off, len)
+
+                    override fun flush() {
+                        socket.output.flush()
+                        if (hello.compareAndSet(true, false)) pass()
+                    }
+
+                    override fun close() = socket.output.close()
+                }
+        }
+
+    private fun pass() {
+        val gate = opened
+        if (gate.isDone && gate.get()) return
+        waiting.incrementAndGet()
+        try {
+            if (!gate.get()) throw IOException("the handshake died at the gate")
+        } finally {
+            waiting.decrementAndGet()
+        }
+    }
+}
+
+/**
  * One phone. The persistent half (identity secret, database, settings file) outlives [boot]/[shutdown], so
  * [restart] is a real process death: every in-memory structure — `PendingInbound`, `PendingGroupKeys`, the
  * ratchet caches, the seen set — is rebuilt from what was committed.
@@ -1453,6 +1530,12 @@ class LabNode internal constructor(
     /** This node's hand-off of a file its direct-link plane landed to the manager, holdable ([LabFileGate]). */
     val linkFileGate = LabFileGate()
 
+    /** This node's end of a link handshake, holdable with its HELLO out ([LabHelloGate]). */
+    val linkHelloGate = LabHelloGate()
+
+    /** What this node's composite logged, kept across restarts: every `file route:` line, the holder's own word on a copy. */
+    val routeLog = CopyOnWriteArrayList<String>()
+
     /** The composite the manager runs on when the node has a board ([lora]) or a link plane ([link]) beside the radio. */
     private var composite: CompositeMeshTransport? = null
 
@@ -1526,7 +1609,7 @@ class LabNode internal constructor(
                 radioLinked = mesh::radioLinked,
                 clock = now,
                 streams = phone.streams,
-                onStream = { peer, socket, offerer -> plane.adopt(peer, socket, offerer) },
+                onStream = { peer, socket, offerer -> plane.adopt(peer, linkHelloGate.over(socket), offerer) },
                 linkBusy = { plane.busy(it) },
                 log = { linkLog += it },
             )
@@ -1600,7 +1683,7 @@ class LabNode internal constructor(
             boardPlane = lora?.let(::LabBoardPlane)
             val record = LabLinkRecord(linkFrames, linkDigestsFrom, linkUps::get, linkAsksOut, linkAsksIn)
             linkPlane = link?.let { LabLinkPlane(it, linkFiles, linkFileGate, record) }
-            CompositeMeshTransport(listOfNotNull(transport, boardPlane, linkPlane), scope)
+            CompositeMeshTransport(listOfNotNull(transport, boardPlane, linkPlane), scope, log = { routeLog += it })
         }
 
     /**

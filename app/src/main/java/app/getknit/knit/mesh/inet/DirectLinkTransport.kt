@@ -421,6 +421,14 @@ class DirectLinkTransport(
 
     override fun freeLinkRaising(nodeId: String): Boolean = bulkRaising(nodeId)
 
+    // The links' own read of a free link, true before this plane's handshake publishes it, whichever end offered: each end's
+    // HELLO goes out after its own [adopt], so a peer that has published proves the punch is up here too (#295). Never
+    // [bulkRaising], which also covers an attempt not yet up, nor [pairView], null until the link is in [links].
+    override suspend fun freeLinkComing(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = running && freeLink(nodeId) && blobView(nodeId)?.admitsBlob(blobKey) == true
+
     // The pair's rule for [peer] whether or not a link is up: what a link to it would carry.
     private suspend fun blobView(peer: String): LinkView? {
         if (self == null) self = selfId()

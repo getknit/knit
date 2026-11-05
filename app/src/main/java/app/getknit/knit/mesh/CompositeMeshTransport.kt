@@ -410,6 +410,11 @@ class CompositeMeshTransport(
 
     override fun freeLinkRaising(nodeId: String): Boolean = children.any { it.viaInternet && it.freeLinkRaising(nodeId) }
 
+    override suspend fun freeLinkComing(
+        nodeId: String,
+        blobKey: String,
+    ): Boolean = children.firstOrNull { it.viaInternet }?.freeLinkComing(nodeId, blobKey) ?: false
+
     /** The high-throughput child's answer: the plane an attachment would ride, whichever child carries the ask. */
     override fun bulkRouteTo(nodeId: String): BulkRoute = children.firstOrNull { it.highThroughput }?.bulkRouteTo(nodeId) ?: BulkRoute.None
 
