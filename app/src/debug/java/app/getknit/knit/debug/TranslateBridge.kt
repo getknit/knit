@@ -135,7 +135,8 @@ internal object TranslateBridge : KoinComponent {
             "offers" -> {
                 val row = messageRow(intent) ?: return reply("error", "missing or unknown 'id' extra")
                 val reader = readerTarget()
-                val resolution = resolveRow(translator, row)
+                // As this reader reads it: sure words and a contrary declaration, the one with somewhere to go (ADR 2026-11.tj49).
+                val resolution = TranslateTarget.forReader(resolveRow(translator, row), reader)
                 val kept = row.keptTranslation()
                 val offered =
                     get<SettingsStore>().translationEnabled.first() &&
@@ -144,6 +145,8 @@ internal object TranslateBridge : KoinComponent {
                     .put("offered", offered)
                     .put("lang", pickJson(resolution.pick))
                     .put("source", resolution.source?.name ?: JSONObject.NULL)
+                    .put("contested", resolution.contested ?: JSONObject.NULL)
+                    .put("guessed", resolution.guessed)
                     .put("reader", reader?.code ?: JSONObject.NULL)
                     .put("kept", kept?.to?.code ?: JSONObject.NULL)
             }
@@ -403,7 +406,7 @@ internal object TranslateBridge : KoinComponent {
         intent: Intent,
     ): JSONObject {
         val row = messageRow(intent) ?: return reply("error", "unknown 'id'")
-        val resolution = resolveRow(translator, row)
+        val resolution = TranslateTarget.forReader(resolveRow(translator, row), readerTarget())
         val from =
             intent.getStringExtra("from")?.let(TranslateLang::ofCode)
                 ?: (resolution.pick as? LanguagePick.Picked)?.lang

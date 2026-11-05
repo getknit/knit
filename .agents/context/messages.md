@@ -36,7 +36,9 @@ lines.
   pin, `TranslateDirections.kt`, `MessageDao.setTranslation` / `recentOwnSends`, `SettingsStore.translateTarget`,
   `MessageEntity.draftTranslatedFrom`, `LanguageRegistry` / `DeclaredLangs`, a frame's `lang` / `reads`,
   `SettingsStore.translationEnabled` or `scripts/translate-*`:** READ ADR 2026-10.t2h6
-  (Proposed; offline translation) and its 2026-10-23, 2026-10-29, 2026-11-01, 2026-11-02 and 2026-11-04 amendments. It is a
+  (Proposed; offline translation) and its 2026-10-23, 2026-10-29, 2026-11-01, 2026-11-02 and 2026-11-04 amendments,
+  and ADR 2026-11.tj49 (`Resolution.contested`, `TranslateTarget.forReader`): sure words and a contrary declared language
+  each stand for the reader they give somewhere to go, the words first; a declaration that overrules them is guessed. It is a
   build made with `-Ptranslate=true` only (a debug, or a testers' alpha built here). The runtime, slimt and CLD2
   behind `TranslateJni`, is the `app.getknit:translate-native` AAR that the separate knit-translate-native
   repository builds reproducibly and publishes to Maven Central: `:app` compiles against it everywhere and packages

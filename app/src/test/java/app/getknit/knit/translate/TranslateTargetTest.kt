@@ -86,6 +86,40 @@ class TranslateTargetTest {
     }
 
     @Test
+    fun sureWordsAndAContraryDeclarationTranslateFromWhicheverGoesSomewhereForTheReader() {
+        // ADR 2026-11.tj49. "que fotos tan bonitas", declared Spanish, which CLD2 reads as English.
+        val photos = Resolution(LanguagePick.Picked(TranslateLang.EN), LanguageSource.TEXT, contested = "es")
+        // An English reader had no Translate at all: the English goes nowhere for them, the Spanish does. Overruling
+        // sure words is a guess, so the reader is offered "Not Spanish?".
+        val forEnglish = TranslateTarget.forReader(photos, TranslateLang.EN)
+        assertEquals(Resolution(LanguagePick.Picked(es), LanguageSource.DECLARED, contested = "en"), forEnglish)
+        assertTrue(forEnglish.guessed)
+        assertTrue(TranslateTarget.offers(photos, TranslateLang.EN))
+        // A Spanish reader keeps the words, unguessed: English typed on a Spanish keyboard is still offered as English.
+        assertEquals(photos, TranslateTarget.forReader(photos, es))
+        assertFalse(photos.guessed)
+        assertTrue(TranslateTarget.offers(photos, es))
+
+        // "нема за що", declared Ukrainian, which CLD2 reads as Serbian: no model for Serbian, so the declaration.
+        val ukrainian = TranslateLang("uk")
+        val thanks = Resolution(LanguagePick.Other("sr"), LanguageSource.TEXT, contested = "uk")
+        assertEquals(
+            Resolution(LanguagePick.Picked(ukrainian), LanguageSource.DECLARED, contested = "sr"),
+            TranslateTarget.forReader(thanks, TranslateLang.EN),
+        )
+        assertTrue(TranslateTarget.offers(thanks, TranslateLang.EN))
+
+        // Neither goes anywhere: Italian words declared Spanish, for a Spanish reader. Nothing to offer, as before.
+        val italian = Resolution(LanguagePick.Other("it"), LanguageSource.TEXT, contested = "es")
+        assertEquals(italian, TranslateTarget.forReader(italian, es))
+        assertFalse(TranslateTarget.offers(italian, es))
+        // A declaration that settled unsure words is no contest, and stays unguessed.
+        val typed = Resolution(LanguagePick.Picked(es), LanguageSource.DECLARED)
+        assertEquals(typed, TranslateTarget.forReader(typed, TranslateLang.EN))
+        assertFalse(typed.guessed)
+    }
+
+    @Test
     fun aKeptTranslationIsOfferedAgainOnlyIntoATargetItIsNotInYet() {
         val kept = StoredTranslation("coming?", es, TranslateLang.EN, flagged = false, guessed = false)
         assertFalse(TranslateTarget.offersAgain(kept, TranslateLang.EN))

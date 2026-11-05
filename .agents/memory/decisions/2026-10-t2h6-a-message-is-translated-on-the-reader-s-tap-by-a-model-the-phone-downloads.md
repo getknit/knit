@@ -468,3 +468,9 @@ were read as the process started, before its first send, so on an English phone 
 sure messages in the chat, the reader's three sure picks of one language. Until then it is read again at every ask,
 which costs at most 30 or 50 reads of the identifier, and usually far fewer, since the common undetermined case is
 someone who has written little.
+
+## Amendment 2026-11-04: sure words no longer always win
+
+The 2026-10-29 amendment's "Words the identifier is still sure of win, in any registry language" is overturned by ADR
+2026-11.tj49. When sure words and the sender's declared language disagree, the reader translates from whichever one
+has somewhere to go for them. A declaration that overrules sure words is marked guessed.

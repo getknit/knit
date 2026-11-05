@@ -318,6 +318,7 @@ carries; never renumber an old one.
 | [2026-11.pk9u](decisions/2026-11-pk9u-chat-menus.md) | Chat menus, sheets and confirmations draw in the chat's own window | ui |
 | [2026-11.qu98](decisions/2026-11-qu98-a-message-request-s-attachments-wait-for-acceptance.md) | a message request's attachments wait for acceptance | blobs, messages, security |
 | [2026-11.sfms](decisions/2026-11-sfms-a-reset-the-replacement-floor-refuses-is-re-opened-when-the-floor-ends.md) | A reset the replacement floor refuses is re-opened when the floor ends | crypto, pfs, recovery |
+| [2026-11.tj49](decisions/2026-11-tj49-a-declared-language-overrules-sure-words-when-only-it-can-be-translated.md) | a declared language overrules sure words when only it can be translated | ml, ui |
 | [2026-11.vdx4](decisions/2026-11-vdx4-a-uri-another-app-hands-knit-is-read-only-through-someone-else-s-provider.md) | A URI another app hands Knit is read only through someone else's provider | security, attachments, privacy |
 | [2026-11.xp6d](decisions/2026-11-xp6d-a-bluetooth-advert-names-a-rotating-tag.md) | A Bluetooth advert names a rotating tag, not the node id | ble, mesh, privacy, wire, crypto |
 | [2026-11.zmc6](decisions/2026-11-zmc6-a-release-build-fails-on-an-r8-cast-to-a-class-newer-than-minsdk.md) | a release build fails on an R8 cast to a class newer than minSdk | build, release, r8 |

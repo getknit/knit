@@ -957,7 +957,8 @@ class ChatViewModel(
                 translateRow(t, row, from, TranslateTarget.of(from, reader), guessed = false)
                 return@launch
             }
-            val resolution = resolve(t, row)
+            // Sure words and the sender's declaration can disagree: the reading with somewhere to go (ADR 2026-11.tj49).
+            val resolution = TranslateTarget.forReader(resolve(t, row), reader)
             when (val pick = resolution.pick) {
                 is LanguagePick.Picked -> {
                     translateRow(t, row, pick.lang, TranslateTarget.of(pick.lang, reader), guessed = resolution.guessed)
