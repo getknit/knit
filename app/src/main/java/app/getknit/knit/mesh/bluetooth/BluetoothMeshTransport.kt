@@ -636,6 +636,12 @@ class BluetoothMeshTransport internal constructor(
     // logged once per transition, the BLE twin of WifiAwareTransport's `lonely: relaxed …` line. Loop thread only.
     private var lonelyRelaxedLogged = false
 
+    // A debug build's scan hold (`…debug.SCAN`, #285): the hunt's gap after every window until it is released, expires or
+    // the transport stops. [lastGap] is the gap the loop last took, for the bridge's read.
+    private val scanHold = ScanHold()
+
+    @Volatile private var lastGap: ScanPlan.Gap? = null
+
     // The GATT read budget's last logged edge ([logGattBudget]); written on the scan callback's main thread only.
     private var gattBudgetSpentLogged = false
 
@@ -849,12 +855,18 @@ class BluetoothMeshTransport internal constructor(
             }
     }
 
-    /** A debug build's bridge levers: the drain trial's per-link tuning (#120) and the blinded advert's view (step 6). */
+    /**
+     * A debug build's bridge levers: the drain trial's per-link tuning (#120), the blinded advert's view (step 6) and the
+     * scan hold (#285).
+     */
     private fun bindDebugDiags() {
+        // A hold a bridge call raced past the last stop's unbind must not carry into this session, nor its `on` go unclosed.
+        if (scanHold.end()) onScanHoldEnd("stop")
         LinkTuneDiag.tune = ::tuneLinks
         AdvertDiag.status = ::advertStatus
         AdvertDiag.rotate = ::forceRotate
         AdvertDiag.awaitSwitch = ::awaitAdvertSwitch
+        ScanDiag.hold = ::scanDiag
     }
 
     /** [bindDebugDiags] undone at stop (a no-op on a release build, which bound nothing). */
@@ -863,6 +875,7 @@ class BluetoothMeshTransport internal constructor(
         AdvertDiag.status = null
         AdvertDiag.rotate = null
         AdvertDiag.awaitSwitch = null
+        ScanDiag.hold = null
     }
 
     /** The power state moved: the scan's cadence may change, and a dark screen lets a boost go at once. */
@@ -899,6 +912,7 @@ class BluetoothMeshTransport internal constructor(
         CodedPhyDiag.setTxPower = null
         field.sampler(FIELD_SAMPLER, null)
         unbindDebugDiags()
+        endScanHoldAtStop()
         CodedPhyDiag.publishLinkPhys(emptyMap())
         sideJob?.cancel()
         cancelGattRead()
@@ -2727,8 +2741,11 @@ class BluetoothMeshTransport internal constructor(
             // otherwise sit out its settled gap before the hunt's first window (the 2026-10-20 amendment).
             val gapHunt = if (noteColdSightings(power)) huntNow(power) else hunt
             val aloneFor = aloneForMs()
-            val gap = ScanPlan.gapAfterWindow(power, gapHunt, ::floorScan, links.size, aloneFor)
-            logLonelyTransition(!gapHunt && links.isEmpty() && PowerPolicy.lonelyRelaxed(power, aloneFor), gap.ms, aloneFor)
+            val held = scanHeld()
+            val gap = ScanPlan.gapAfterWindow(power, gapHunt, ::floorScan, links.size, aloneFor, held)
+            if (held) scanHold.onHeldGap()
+            lastGap = gap
+            logLonelyTransition(gap.lonelyRelaxed, gap.ms, aloneFor)
             // The hunting gaps keep wall time through sleep; every other gap is a power budget and stretches (pj9w).
             if (gap.keepsWallTime) {
                 elapsedWait.receiveWithin(scanWake, gap.ms)
@@ -3010,6 +3027,65 @@ class BluetoothMeshTransport internal constructor(
         ms: Long,
     ) {
         if (gattPeers && phys != ScanPhys.CODED) forgetQuietGattPayloads(ms)
+    }
+
+    /** The transport stopped: a debug scan hold ends with it (`bt scan hold off (stop)`), and the last gap is forgotten. */
+    private fun endScanHoldAtStop() {
+        if (scanHold.end()) onScanHoldEnd("stop")
+        lastGap = null
+    }
+
+    /** Whether the debug scan hold stands now; one that ran out ends here, logged once (`bt scan hold off (expired)`). */
+    private fun scanHeld(): Boolean {
+        val now = elapsed()
+        if (scanHold.expire(now)) onScanHoldEnd("expired")
+        return scanHold.held(now)
+    }
+
+    /**
+     * The scan hold ended ([why]: `expired`, `released` or `stop`). The floor's edge is forgotten, so the next window logs
+     * the tier the policy picks again and a trial log shows the scan back on it.
+     */
+    private fun onScanHoldEnd(why: String) {
+        scanFloored = null
+        Log.i(TAG, "bt scan hold off ($why)")
+    }
+
+    /**
+     * `…debug.SCAN` (#285, a debug build only, through [ScanDiag]): [hold] true starts or renews the hold for [minutes]
+     * ([ScanHold.minutes]), and a new one wakes the scan, so a long gap ends now; false releases it; null only reads. The hold moves
+     * the gap alone ([ScanPlan.gapAfterWindow]), and costs battery while it stands.
+     */
+    private fun scanDiag(
+        hold: Boolean?,
+        minutes: Int?,
+    ): ScanStatus {
+        var granted: Int? = null
+        if (hold == true) {
+            val started = scanHold.start(elapsed(), minutes)
+            granted = started.minutes
+            Log.i(TAG, "bt scan hold on (debug, $granted min)")
+            // A renewal only moves the expiry: the held gap already stands, and each wake would add a back-to-back window.
+            if (!started.renewed) wakeScan()
+        } else if (hold == false && scanHold.end()) {
+            onScanHoldEnd("released")
+        }
+        val held = scanHeld()
+        val power = powerState.state.value
+        val gap = lastGap
+        return ScanStatus(
+            held = held,
+            expiresInMs = scanHold.remainingMs(elapsed()),
+            minutes = granted,
+            posture = gap?.posture?.wire,
+            gapMs = gap?.ms,
+            wallTime = gap?.keepsWallTime,
+            windowMs = PowerPolicy.dutyCycle(power).scanWindowMs,
+            mode = if (power.interactive || power.charging) "balanced" else "low_power",
+            heldGaps = scanHold.heldGaps(),
+            links = links.size,
+            hunting = hunting,
+        )
     }
 
     /** One line per edge of the lonely cadence, so a device trial can grep when the scan relaxed and why. */
@@ -5087,7 +5163,9 @@ class BluetoothMeshTransport internal constructor(
                 " near=${_near.value.map { it.nodeId }}" +
                 // After near=, bare ids and booleans only: knit-ios interop.py reads every `<id>:<number>` past linkScores=.
                 " awareNear=${_awareCandidatesNear.value} awareHeard=${_awareCandidatesHeard.value} aware=$awareAdvertised " +
-                "newcomers=${newcomers.sees.value}",
+                "newcomers=${newcomers.sees.value}" +
+                // A debug build's scan hold (#285): bare seconds left, no id, so interop.py's `<id>:<number>` read is untouched.
+                scanHold.remainingMs(now)?.let { " scanHold=${it / MS_PER_S}s" }.orEmpty(),
         )
     }
 

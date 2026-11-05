@@ -917,6 +917,27 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   tag-aware peer. **It burns the slot's restarts durably** (`BlindTag.RESTARTS` = 4):
   past them every rotation or bring-up in that slot airs a random tag no contact resolves until the edge (linked peers are
   unharmed), so a timed trial never mixes `ADVERT_ROTATE` with its reps inside one 15-minute slot.
+- `…debug.SCAN` — **the Bluetooth scan hold** (#285, for a trial that needs a dense scan, such as counting forged
+  blinded adverts against ADR 2026-11.xp6d's resolver; any debug build). `--ez hold true` holds the scan at the hunt's
+  gap (`PowerPolicy.HUNT_IDLE_MS`, 12 s, on the elapsed clock) after every window, whatever the links, the settled floor,
+  Bluetooth audio or the lonely clock say (`ScanPlan.gapAfterWindow`'s `held`), for `--ei minutes N` (30 unless given,
+  clamped to 1..120); another `hold true` renews it from now, `--ez hold false` releases it, and the transport's stop
+  ends it. No extras reads. Only the gap moves: the window's length and scan mode (`balanced` on a lit screen or a
+  charger, else `low_power` 8 s windows: keep the screen on or the phone charging for the densest scan), its PHYs,
+  dials, promotion, the lonely dial and the advert stay the policy's. The reply: `held`, `expiresInMs` (null when not
+  held), `minutes` (granted by this call, else null), `posture` (the last gap's: `held`, `hunt`, `floor`, `boost`,
+  `lonely`, `relaxed`; null before the first window, and the old one until the window after a hold starts ends),
+  `gapMs`, `wallTime`, `windowMs` and `mode` (the next window's), `heldGaps` (gaps taken since the hold started),
+  `links`, `hunting`; `error` while the transport is not running. Oracle: `bt scan hold on (debug, N min)`, then no
+  `bt scan → floor` or `bt scan lonely: relaxed` line while it stands, `posture: held` with `heldGaps` climbing about
+  every 20–24 s, and the `bt state` line's `scanHold=<s>` token (absent when not held); at the end `bt scan hold off
+  (expired|released|stop)` and the policy's own `bt scan → floor|boost` edge after the next window that does not hunt. **It costs
+  battery while held**: a 12 s gap is the lonely hunt's duty, so never leave one on a phone headed for a battery
+  trial (the cap bounds a forgotten one to two hours). A renewal only moves the expiry; only a new hold wakes the scan.
+  On a phone already relaxed (alone past the lonely window), a hold logs `bt scan lonely: aggressive again` at its first
+  gap and `bt scan lonely: relaxed …` again after it ends: those are the lever's own edges, not the policy's. The hold
+  never forces the window or the mode: a trial pins the observer's power state instead (`svc power stayon true` over USB
+  only, never Wi-Fi over network adb) and records the reply's `mode` per run.
 - `…debug.KEYS` — **the presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
   (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
   `audience` ids, `markSlot`); `direct[]` per direct contact (`listed`: the generations the Bluetooth resolver lists for

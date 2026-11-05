@@ -111,6 +111,13 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   watchdogs, scan window and pause, the hunting gap, the GATT payload read's give-up) go through `elapsedWait`, never
   `delay` / `withTimeoutOrNull`, which stop while the CPU sleeps; the settled, linked and relaxed scan gaps keep
   stretching on purpose (power budgets — moving one is a battery change). Measure with `scripts/ble-link-trial.py`.
+- **When touching `ScanPlan.gapAfterWindow` / `Gap` / `Posture`, `ScanHold`, `ScanDiag`, `ScanStatus`, or the transport's
+  `scanHeld` / `scanDiag`:** READ ADR 2026-10.pj9w (the gap's clock) and the `…debug.SCAN` bullet in
+  `.agents/context/debug-bridge.md` (#285). The gap after a window is decided in `gapAfterWindow` alone: held, hunt,
+  floor, then the duty cycle; `posture` and `lonelyRelaxed` (the `bt scan lonely:` edge) come out of the same decision.
+  The scan hold is a debug build's trial lever only (bound in `bindDebugDiags`, ended at stop, at most 120 min on the
+  elapsed clock): it takes the hunt's gap and wall time and asks no floor, and moves nothing else (window, mode, PHYs,
+  dials, `hunting`). Tests: `ScanPlanTest`, `ScanHoldTest`.
 - **When touching `ScanPlan.near`, `BlePresenceTracker.Snapshot.oneMFresh` / `codedFresh`, `BluetoothMeshTransport.near`,
   or `MeshTransport.near` / `onForeignNear`:** READ ADR 2026-09.9dnk (its 2026-10-20 amendment) and ADR 2026-10.yvn6.
   `near` is the set that corroborates Wi-Fi Aware's Tier-2 self-kill: link peers on any PHY, plus peers whose strongest

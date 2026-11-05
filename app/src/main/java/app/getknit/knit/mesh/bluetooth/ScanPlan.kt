@@ -33,31 +33,65 @@ internal object ScanPlan {
             else -> null
         }
 
-    /** The gap after a presence window: [ms] long, and whether it keeps wall time through sleep ([keepsWallTime]). */
+    /**
+     * The scan's posture for the gap after a window, by the name its log lines use: [HELD] (a debug build's hold,
+     * [ScanHold]), [HUNT], [FLOOR] (settled or audio-contended), [BOOST] (links held, promotion work), [LONELY] (no link,
+     * still aggressive) and [RELAXED] (no link, past the lonely window on battery). [wire] is the debug bridge's word.
+     */
+    enum class Posture(
+        val wire: String,
+    ) {
+        HELD("held"),
+        HUNT("hunt"),
+        FLOOR("floor"),
+        BOOST("boost"),
+        LONELY("lonely"),
+        RELAXED("relaxed"),
+    }
+
+    /**
+     * The gap after a presence window: [ms] long, whether it keeps wall time through sleep ([keepsWallTime]), the
+     * [posture] that chose it, and whether the `bt scan lonely: relaxed` edge reads relaxed ([lonelyRelaxed]).
+     */
     data class Gap(
         val ms: Long,
         val keepsWallTime: Boolean,
+        val posture: Posture,
+        val lonelyRelaxed: Boolean = false,
     )
 
     /**
-     * The gap after a presence window: the hunting gap while it [hunt]s, else the settled [floor]'s or the duty cycle's.
-     * Only a hunting gap keeps wall time (ADR 2026-10.pj9w): the settled, linked and relaxed gaps are power budgets
-     * and stretch while the CPU sleeps.
+     * The gap after a presence window: the hunting gap while a debug [held] hold stands or it [hunt]s, else the settled
+     * [floor]'s or the duty cycle's. Only a hunting gap keeps wall time (ADR 2026-10.pj9w): the settled, linked and
+     * relaxed gaps are power budgets and stretch while the CPU sleeps.
+     *
+     * [held] is `…debug.SCAN --ez hold true` (#285, a device trial's lever): the hunt's gap, whatever the links, the floor,
+     * Bluetooth audio or the lonely clock say, so a trial phone keeps scanning densely while it counts adverts. [floor] is
+     * not asked while held, so no `bt scan → floor` edge is logged, and the lonely edge reads not relaxed. It moves only
+     * the gap: the window, the scan mode and the PHYs stay the power state's and the hunt's own, and nothing that reads
+     * whether the phone hunts (Coded windows, a dial ending a window, the rotation's hold) sees it.
      */
+    @Suppress("LongParameterList") // the gap's inputs, each from a different source in the transport
     fun gapAfterWindow(
         power: PowerState,
         hunt: Boolean,
         floor: () -> Boolean,
         links: Int,
         aloneForMs: Long,
+        held: Boolean = false,
     ): Gap {
-        val ms =
+        if (held) return Gap(PowerPolicy.HUNT_IDLE_MS, keepsWallTime = true, posture = Posture.HELD)
+        if (hunt) return Gap(PowerPolicy.HUNT_IDLE_MS, keepsWallTime = true, posture = Posture.HUNT)
+        val relaxed = links == 0 && PowerPolicy.lonelyRelaxed(power, aloneForMs)
+        val wallTime = PowerPolicy.hunting(power, links, aloneForMs)
+        if (floor()) return Gap(PowerPolicy.settledIdleAfterScan(power, links, aloneForMs), wallTime, Posture.FLOOR, relaxed)
+        val posture =
             when {
-                hunt -> PowerPolicy.HUNT_IDLE_MS
-                floor() -> PowerPolicy.settledIdleAfterScan(power, links, aloneForMs)
-                else -> PowerPolicy.idleAfterScan(power, links, aloneForMs)
+                links > 0 -> Posture.BOOST
+                relaxed -> Posture.RELAXED
+                else -> Posture.LONELY
             }
-        return Gap(ms, keepsWallTime = hunt || PowerPolicy.hunting(power, links, aloneForMs))
+        return Gap(PowerPolicy.idleAfterScan(power, links, aloneForMs), wallTime, posture, relaxed)
     }
 
     /** The sighted peers not [linked] that are heard on Coded alone ([CodedPhyPolicy.codedOnly]): the far ones. */

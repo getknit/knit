@@ -107,7 +107,7 @@ class ScanPlanTest {
     fun aHuntingGapKeepsWallTimeAndNeverAsksForTheFloor() {
         var floorReads = 0
         val gap = ScanPlan.gapAfterWindow(PowerState(), hunt = true, floor = { floorReads++ > 0 }, links = 2, aloneForMs = 0)
-        assertEquals(ScanPlan.Gap(PowerPolicy.HUNT_IDLE_MS, keepsWallTime = true), gap)
+        assertEquals(ScanPlan.Gap(PowerPolicy.HUNT_IDLE_MS, keepsWallTime = true, posture = ScanPlan.Posture.HUNT), gap)
         assertEquals(0, floorReads)
     }
 
@@ -115,11 +115,11 @@ class ScanPlanTest {
     fun aSettledOrDutyGapIsAPowerBudgetThatStretches() {
         val lit = PowerState(interactive = true)
         assertEquals(
-            ScanPlan.Gap(PowerPolicy.settledIdleAfterScan(lit, 2, 0), keepsWallTime = false),
+            ScanPlan.Gap(PowerPolicy.settledIdleAfterScan(lit, 2, 0), keepsWallTime = false, posture = ScanPlan.Posture.FLOOR),
             ScanPlan.gapAfterWindow(lit, hunt = false, floor = { true }, links = 2, aloneForMs = 0),
         )
         assertEquals(
-            ScanPlan.Gap(PowerPolicy.idleAfterScan(lit, 2, 0), keepsWallTime = false),
+            ScanPlan.Gap(PowerPolicy.idleAfterScan(lit, 2, 0), keepsWallTime = false, posture = ScanPlan.Posture.BOOST),
             ScanPlan.gapAfterWindow(lit, hunt = false, floor = { false }, links = 2, aloneForMs = 0),
         )
     }
@@ -130,6 +130,42 @@ class ScanPlanTest {
         val gap = ScanPlan.gapAfterWindow(dark, hunt = false, floor = { false }, links = 0, aloneForMs = 0)
         assertEquals(PowerPolicy.hunting(dark, 0, 0), gap.keepsWallTime)
         assertTrue("alone and not yet relaxed", gap.keepsWallTime)
+        assertEquals(ScanPlan.Posture.LONELY, gap.posture)
+        assertFalse(gap.lonelyRelaxed)
+        // Floored while alone and not yet relaxed (an audio floor): still wall time, as before the hold.
+        val floored = ScanPlan.gapAfterWindow(dark, hunt = false, floor = { true }, links = 0, aloneForMs = 0)
+        assertEquals(ScanPlan.Posture.FLOOR, floored.posture)
+        assertTrue("a floored linkless gap keeps wall time", floored.keepsWallTime)
+    }
+
+    @Test
+    fun aLinklessPhoneOnBatteryRelaxesPastTheLonelyWindow() {
+        val dark = PowerState(interactive = false, batteryLow = true)
+        val alone = PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS
+        val gap = ScanPlan.gapAfterWindow(dark, hunt = false, floor = { false }, links = 0, aloneForMs = alone)
+        assertEquals(ScanPlan.Gap(PowerPolicy.idleAfterScan(dark, 0, alone), false, ScanPlan.Posture.RELAXED, true), gap)
+        // Audio's floor alone still reads relaxed on the lonely edge, as the transport's line always has.
+        val floored = ScanPlan.gapAfterWindow(dark, hunt = false, floor = { true }, links = 0, aloneForMs = alone)
+        assertEquals(ScanPlan.Posture.FLOOR, floored.posture)
+        assertTrue(floored.lonelyRelaxed)
+        assertFalse("a hunt is never the relaxed edge", ScanPlan.gapAfterWindow(dark, true, { false }, 0, alone).lonelyRelaxed)
+    }
+
+    @Test
+    fun aHeldScanTakesTheHuntsGapWhateverThePolicySaysAndNeverAsksForTheFloor() {
+        val held = ScanPlan.Gap(PowerPolicy.HUNT_IDLE_MS, keepsWallTime = true, posture = ScanPlan.Posture.HELD)
+        var floorReads = 0
+        val floor = { floorReads++ >= 0 }
+        val dark = PowerState(interactive = false, batteryLow = true)
+        val alone = PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS * 10
+        // Settled with links (the floor), alone past the lonely window (relaxed), and hunting: held each time.
+        assertEquals(held, ScanPlan.gapAfterWindow(dark, hunt = false, floor = floor, links = 3, aloneForMs = 0, held = true))
+        assertEquals(held, ScanPlan.gapAfterWindow(dark, hunt = false, floor = floor, links = 0, aloneForMs = alone, held = true))
+        assertEquals(held, ScanPlan.gapAfterWindow(dark, hunt = true, floor = floor, links = 0, aloneForMs = alone, held = true))
+        assertEquals("no floor edge is logged while held", 0, floorReads)
+        // Released, the same inputs fall back to the policy's own gaps.
+        assertEquals(ScanPlan.Posture.FLOOR, ScanPlan.gapAfterWindow(dark, false, floor, 3, 0).posture)
+        assertEquals(ScanPlan.Posture.RELAXED, ScanPlan.gapAfterWindow(dark, false, { false }, 0, alone).posture)
     }
 
     private fun heard(

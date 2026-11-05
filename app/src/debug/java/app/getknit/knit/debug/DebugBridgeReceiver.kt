@@ -109,6 +109,8 @@ import app.getknit.knit.mesh.bluetooth.LinkTuneDiag
 import app.getknit.knit.mesh.bluetooth.LinkTuneRequest
 import app.getknit.knit.mesh.bluetooth.PhyTuning
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
+import app.getknit.knit.mesh.bluetooth.ScanDiag
+import app.getknit.knit.mesh.bluetooth.ScanHold
 import app.getknit.knit.mesh.bluetooth.TunePhy
 import app.getknit.knit.mesh.bluetooth.TunePriority
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
@@ -410,6 +412,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   refusal with a `why` (`radio down`, `pending`, `clear`, `settling`, `announced`, `holding`, `grace`, `throttled`);
  *   the reply is `rotated`, `epochBefore` / `epochAfter`, then [ACTION_ADVERT]'s fields. Each one spends one of the
  *   slot's restarts.
+ * - [ACTION_SCAN] — the **Bluetooth scan hold** (#285, a device trial's lever; any debug build). `--ez hold true` holds the
+ *   scan at the hunt's gap (12 s, wall time) after every window, whatever the links, the floor, Bluetooth audio or the
+ *   lonely clock say, for `--ei minutes N` (30 unless given, 1..120), renewed by another `hold true`; `--ez hold false`
+ *   releases it, and the transport's stop ends it. Only the gap moves: the window, the scan mode, the PHYs, dials,
+ *   promotion and the advert stay the policy's. No extras reads. The reply: `held`, `expiresInMs`, `minutes` (granted by
+ *   this call), `posture` (the last gap's: held|hunt|floor|boost|lonely|relaxed), `gapMs`, `wallTime`, `windowMs` and
+ *   `mode` (the next window's, balanced|low_power), `heldGaps` (gaps taken under the hold), `links`, `hunting`. Logs
+ *   `bt scan hold on (debug, N min)` and `bt scan hold off (expired|released|stop)`. It costs battery while it stands.
  * - [ACTION_KEYS] — the **presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
  *   (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
  *   `audience` ids, the advertiser's `markSlot`); `direct` (the direct contacts as `DirectContacts.read` gives them) and,
@@ -701,6 +711,10 @@ class DebugBridgeReceiver :
 
                         ACTION_ADVERT_ROTATE -> {
                             handleAdvertRotate()
+                        }
+
+                        ACTION_SCAN -> {
+                            handleScan(intent)
                         }
 
                         ACTION_KEYS -> {
@@ -4103,6 +4117,30 @@ class DebugBridgeReceiver :
             )
     }
 
+    /**
+     * [ACTION_SCAN]: starts (`hold` true, for `minutes`), releases (`hold` false) or only reads the Bluetooth scan hold
+     * (#285), then reports it and the scan's last gap ([app.getknit.knit.mesh.bluetooth.ScanStatus]).
+     */
+    private fun handleScan(intent: Intent): JSONObject {
+        val diag = ScanDiag.hold ?: return reply("error", "Bluetooth transport is not running")
+        val hold = if (intent.hasExtra("hold")) intent.getBooleanExtra("hold", false) else null
+        val minutes = if (intent.hasExtra(EXTRA_MINUTES)) intent.getIntExtra(EXTRA_MINUTES, ScanHold.DEFAULT_MINUTES) else null
+        val s = diag(hold, minutes)
+        return JSONObject()
+            .put("status", "ok")
+            .put("held", s.held)
+            .put("expiresInMs", s.expiresInMs ?: JSONObject.NULL)
+            .put("minutes", s.minutes ?: JSONObject.NULL)
+            .put("posture", s.posture ?: JSONObject.NULL)
+            .put("gapMs", s.gapMs ?: JSONObject.NULL)
+            .put("wallTime", s.wallTime ?: JSONObject.NULL)
+            .put("windowMs", s.windowMs)
+            .put("mode", s.mode)
+            .put("heldGaps", s.heldGaps)
+            .put("links", s.links)
+            .put("hunting", s.hunting)
+    }
+
     /** [ACTION_ADVERT_ROTATE]: one forced rotation, or the reason it was refused, then [ACTION_ADVERT]'s report. */
     private suspend fun handleAdvertRotate(): JSONObject {
         val out = JSONObject().put("status", "ok").put("build", BuildConfig.BLIND_ADVERT)
@@ -4621,6 +4659,7 @@ class DebugBridgeReceiver :
         const val ACTION_ADVERT = "app.getknit.knit.debug.ADVERT"
         const val ACTION_ADVERT_ROTATE = "app.getknit.knit.debug.ADVERT_ROTATE"
         const val ACTION_KEYS = "app.getknit.knit.debug.KEYS"
+        const val ACTION_SCAN = "app.getknit.knit.debug.SCAN"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"
