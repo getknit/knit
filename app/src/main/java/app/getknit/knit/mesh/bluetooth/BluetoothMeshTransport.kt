@@ -1749,8 +1749,9 @@ class BluetoothMeshTransport internal constructor(
     // --- The debug bridge's view of the writer (step 6; bound in a debug build only, AdvertDiag) ---
 
     /**
-     * `…debug.ADVERT`'s status, read in one task on the worker (the turn's fields, the generations and the last install
-     * are the worker's; the writer's snapshot is one reference). Never a key or a tag ([AdvertStatus]).
+     * `…debug.ADVERT`'s status, read in one task on the worker (the turn's fields, the generations, the last install and
+     * [aliases], confined to it, are the worker's; the writer's snapshot is one reference). Never a key or a tag
+     * ([AdvertStatus]).
      */
     private suspend fun advertStatus(): AdvertStatus =
         withContext(worker) {
@@ -1766,6 +1767,8 @@ class BluetoothMeshTransport internal constructor(
                 install = lastInstall,
                 turn = rotation.view(),
                 mine = mine().current,
+                aliases = aliases.counters(),
+                formHandles = formKeys.size,
                 sightings = presence.snapshots(elapsed()),
                 links =
                     linked.map {

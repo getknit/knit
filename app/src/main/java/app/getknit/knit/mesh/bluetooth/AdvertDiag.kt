@@ -11,7 +11,8 @@ package app.getknit.knit.mesh.bluetooth
  * carry the diagnostics the writer's logging rule keeps out of release logs and the field log (a rotation's cause, the
  * tag's source, `resolvable` / `stale`, key generations, the PSM while blinding, which link a handle is), though the
  * receiver mirrors each reply to logcat with a time. The one standing limit: never a key, and never a tag, its hex or a
- * prefix of one past `zzzz`, in any reply. [AdvertStatus] copies no tag out of the forms it reads.
+ * prefix of one past `zzzz`, in any reply. [AdvertStatus] copies no tag out of the forms it reads, and the reader's tables
+ * reach it as counts ([AdvertAliases.Counters], [FormKeys.size]), never their entries.
  */
 internal object AdvertDiag {
     /** The advert's gates, form, turn, peers and links now ([AdvertStatus]). */
@@ -47,6 +48,9 @@ internal object AdvertDiag {
  *  - The turn ([AdvertRotation.View]): [nextEdgeAtMs], [announced], [holding].
  *  - [psm]: the advertised PSM, blinded or clear (`bt state` still logs `psm=rotating` while blinding; the reply is a
  *    debug read).
+ *  - [aliases] and [formHandles]: the blinded advert reader's counts and table sizes, and the handles held, so a trial can
+ *    watch those tables under a flood. Read as they stand: nothing lapses for a read, so an entry past its time counts
+ *    until the reader's next event.
  *  - [peers]: one per presence snapshot ([Peer]); [links]: one per live link ([Link]).
  */
 internal data class AdvertStatus(
@@ -68,6 +72,8 @@ internal data class AdvertStatus(
     val announced: Boolean,
     val holding: Boolean,
     val psm: Int?,
+    val aliases: AdvertAliases.Counters,
+    val formHandles: Int,
     val peers: List<Peer>,
     val links: List<Link>,
 ) {
@@ -156,6 +162,8 @@ internal data class AdvertStatus(
             "announced" to announced,
             "holding" to holding,
             "psm" to psm,
+            // Ahead of the lists, which grow with the room: the logcat mirror cuts a long reply at its end.
+            "aliases" to aliasFields(),
             "peers" to
                 peers.map {
                     linkedMapOf(
@@ -179,6 +187,42 @@ internal data class AdvertStatus(
                 },
         )
 
+    /** [aliases], every count and size of it, then [formHandles]. */
+    private fun aliasFields(): Map<String, Number> =
+        linkedMapOf(
+            "resolvedByKey" to aliases.resolvedByKey,
+            "resolvedByClaim" to aliases.resolvedByClaim,
+            "resolvedByHint" to aliases.resolvedByHint,
+            "unresolved" to aliases.unresolved,
+            "malformed" to aliases.malformed,
+            "claimsRecorded" to aliases.claimsRecorded,
+            "claimsDropped" to aliases.claimsDropped,
+            "claimsVoided" to aliases.claimsVoided,
+            "claimsIgnored" to aliases.claimsIgnored,
+            "claimsRefusedFull" to aliases.claimsRefusedFull,
+            "claimsEvicted" to aliases.claimsEvicted,
+            "entriesEvicted" to aliases.entriesEvicted,
+            "tagNextRateLimited" to aliases.tagNextRateLimited,
+            "spotChecks" to aliases.spotChecks,
+            "proofMismatches" to aliases.proofMismatches,
+            "keyProofMismatches" to aliases.keyProofMismatches,
+            "tableSize" to aliases.tableSize,
+            "tableBuilds" to aliases.tableBuilds,
+            "tableSlotSteps" to aliases.tableSlotSteps,
+            "tableHmacs" to aliases.tableHmacs,
+            "keyCollisions" to aliases.keyCollisions,
+            "collidedTags" to aliases.collidedTags,
+            "tableContacts" to aliases.tableContacts,
+            "claims" to aliases.claims,
+            "pending" to aliases.pending,
+            "voided" to aliases.voided,
+            "deadlines" to aliases.deadlines,
+            "hints" to aliases.hints,
+            "heldLinks" to aliases.heldLinks,
+            "lastTagNext" to aliases.lastTagNext,
+            "formHandles" to formHandles,
+        )
+
     companion object {
         const val FORM_CLEAR = "clear"
         const val FORM_TAG = "tag"
@@ -187,7 +231,7 @@ internal data class AdvertStatus(
          * The status from the transport's state, read on its worker. [aired] is the writer's one snapshot ([AdvertWriter.aired]),
          * so the form and the PSM come from one reference; [keyGeneration] the held own key's; [install] the last install's
          * facts recorded (null before the first), reported only when they are [aired]'s own (the same stamp): null while
-         * the install's facts are in flight; [mine] my current form.
+         * the install's facts are in flight; [mine] my current form; [aliases] and [formHandles] the reader's counts.
          */
         @Suppress("LongParameterList") // the status's sources, each a different reader in the transport
         fun of(
@@ -201,6 +245,8 @@ internal data class AdvertStatus(
             install: Install?,
             turn: AdvertRotation.View,
             mine: AdvertOrder.Form,
+            aliases: AdvertAliases.Counters,
+            formHandles: Int,
             sightings: List<BlePresenceTracker.Snapshot>,
             links: List<Link>,
         ): AdvertStatus {
@@ -224,6 +270,8 @@ internal data class AdvertStatus(
                 announced = turn.announced,
                 holding = turn.holding,
                 psm = aired?.psm,
+                aliases = aliases,
+                formHandles = formHandles,
                 peers = sightings.map { peer(it, mine, links) },
                 links = links,
             )

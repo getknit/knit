@@ -253,10 +253,21 @@ internal class AdvertAliases<L : Any>(
         val keyCollisions: Long,
         /** Tags two contacts' keys list now (a walk of the table). */
         val collidedTags: Int,
+        /** Contacts the table lists keys for. */
+        val tableContacts: Int,
         val claims: Int,
         val pending: Int,
         val voided: Int,
+        /**
+         * Queued expiries, stale ones included. `QUEUE_SLACK` times the live entries plus `QUEUE_FLOOR` holds only as of
+         * the last entry queued: a void or a removal leaves its deadline until due, and a held link's due entry loses
+         * its deadline but stays live, so a read can land outside that either way.
+         */
         val deadlines: Int,
+        /** The per-link tables: each entry goes at [onLinkEnded], so these follow the live links. */
+        val hints: Int,
+        val heldLinks: Int,
+        val lastTagNext: Int,
     )
 
     /** A claimed tag offered for a verification dial: dial [tag] by tag and pass its proven id to [onSpotCheck]. */
@@ -558,10 +569,14 @@ internal class AdvertAliases<L : Any>(
             tableHmacs = table.tagsComputed,
             keyCollisions = table.collisionHits,
             collidedTags = table.collided,
+            tableContacts = table.contactCount,
             claims = claims.size,
             pending = pending.size,
             voided = voided.size,
             deadlines = deadlines.size,
+            hints = hints.size,
+            heldLinks = heldLinks.size,
+            lastTagNext = lastTagNext.size,
         )
 
     /** The contact whose expected tags list [tag], or null. */

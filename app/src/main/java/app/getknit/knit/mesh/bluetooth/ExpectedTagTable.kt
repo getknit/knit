@@ -73,6 +73,9 @@ internal class ExpectedTagTable(
     /** Expected tags listed now. */
     val size: Int get() = table.size
 
+    /** Contacts listed now. */
+    val contactCount: Int get() = contacts.size
+
     /** Forms two or more contacts list now: they resolve to nobody. A walk of the table, for diagnostics only. */
     val collided: Int get() = table.values.count { it.isCollision() }
 

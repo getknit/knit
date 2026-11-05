@@ -15,7 +15,7 @@ package app.getknit.knit.mesh.bluetooth
  *
  * Bounded, least recently used out first, and a handle goes only together with its entries ([onEvict]: the transport
  * forgets them and counts it), so a form is never held under two handles; its next sighting starts afresh under a new
- * one. Thread-safe (the scan callback, the worker and the connect loop all ask).
+ * one. Thread-safe (the worker, the dial path and the adapter-off teardown all ask).
  */
 internal class FormKeys(
     cap: Int = DEFAULT_CAP,
@@ -31,6 +31,10 @@ internal class FormKeys(
             }
         }
     private var next = 0L
+
+    /** Handles held now, at most the cap: the count alone, for the debug bridge ([AdvertStatus.formHandles]). */
+    val size: Int
+        @Synchronized get() = byTag.size
 
     /** The handle [tag] (a blinded form's 26-char string) is held under: the same one while it is remembered. */
     @Synchronized

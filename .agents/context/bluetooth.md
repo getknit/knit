@@ -289,7 +289,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   in, the one seam), the runtime switch (on by default in debug since step 6, `ADVERT --ez blind false` for a harness
   that needs the classic order) and
   extended advertising (null until read, sticky once read true). The bridge's view (`AdvertDiag`, a debug build only) is
-  built by `AdvertStatus.of`, which copies no tag out of the forms it reads; `ADVERT_ROTATE` runs through `rotate` with
+  built by `AdvertStatus.of`, which copies no tag out of the forms it reads and takes the reader's tables as counts
+  (`AdvertAliases.counters()` and `FormKeys.size`, in the same worker task); `ADVERT_ROTATE` runs through `rotate` with
   `Cause.FORCED` only when `ForcedRotation.refusal` passes (a tag on the air, nothing pending, settling, announced or held,
   no retired server in its 30 s grace, no live link sent a form inside the receiver's two-minute limit). `RotationTurn`'s every pass suspends on the worker, and a rotation that
   does not install looks again only a recheck later (the radio down: not until a wake). Every

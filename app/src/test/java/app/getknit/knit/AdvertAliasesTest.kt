@@ -642,6 +642,32 @@ class AdvertAliasesTest {
     }
 
     @Test
+    fun thePerLinkTablesShowInTheCountersAndGoAtTheLinksEnd() {
+        val a = aliases()
+        assertEquals(0, a.counters().tableContacts)
+        a.setKeys(mapOf(bob to ContactKey(bobKey)))
+        assertEquals(1, a.counters().tableContacts)
+        assertEquals(ClaimOutcome.Hinted, a.onAnswered("answered", tagUnder(key()), alice))
+        assertEquals(ClaimOutcome.Pending, a.onTagNext("announced", mallory, tagUnder(key())))
+        val live = a.counters()
+        assertEquals(1, live.hints)
+        assertEquals(2, live.heldLinks)
+        assertEquals(1, live.lastTagNext)
+        a.onLinkEnded("answered")
+        val half = a.counters()
+        assertEquals("the hint went with its link", 0, half.hints)
+        assertEquals(1, half.heldLinks)
+        assertEquals("the other link's TAG_NEXT mark stands", 1, half.lastTagNext)
+        a.onLinkEnded("announced")
+        val ended = a.counters()
+        assertEquals(0, ended.hints)
+        assertEquals(0, ended.heldLinks)
+        assertEquals(0, ended.lastTagNext)
+        assertEquals("an announced tag outlives its link by a claim lifetime", 1, ended.pending)
+        assertEquals("a contact is no link", 1, ended.tableContacts)
+    }
+
+    @Test
     fun countersAndSpotChecksNeverPrintAKeyOrATag() {
         val a = aliases()
         a.setKeys(mapOf(bob to ContactKey(bobKey)))

@@ -129,6 +129,9 @@ class BlindReaderTest {
         keys.keyFor(NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 5 }, slot = 1, restart = 0)))
         assertEquals("the least recently used, so its owner forgets its entries with it", listOf(first), evicted)
         assertNull(keys.existing(tag))
+        assertEquals("the cap bounds the table", 2, keys.size)
+        keys.clear()
+        assertEquals(0, keys.size)
     }
 
     @Test

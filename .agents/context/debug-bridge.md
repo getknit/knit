@@ -890,7 +890,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `source` (`TagChoice.Source`: ANNOUNCED, SLOTTED, NO_KEY, KEY_MOVED, MARK_FAILED), `resolvable` and `stale` (all three
   null for a clear install), the turn (`nextEdgeAtMs`, the global slot edge; `announced`, the coming slot's announcement
   made; `holding`, a due rotation waiting on a hold or a settle), `psm` (the advertised PSM, blinded or clear: the old one
-  keeps accepting 30 s after a rotation), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>` while unresolved,
+  keeps accepting 30 s after a rotation), `aliases` (the blinded reader's tables, counts and sizes only, every
+  `AdvertAliases.Counters` field by its name plus `formHandles`, the `FormKeys` handles held, at most 512: the per-link
+  `hints`, `heldLinks` and `lastTagNext` follow the live links; `claims` (128, past which only a held link's claim is taken) and `pending` (256)
+  outlive a link by a claim lifetime, 16.5 min; a `voided` entry (256) lives that long from when it was made, link or no
+  link. `deadlines` counts stale expiries too: four times those live entries plus 256 holds as of the last entry queued,
+  and a read can land outside it either way, so it is no leak alarm. Nothing lapses for a read: a due entry counts until the reader's next blinded sighting or
+  handshake. Each read walks the expected-tag table once, for `collidedTags`), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>` while unresolved,
   never a tag; `resolved`; `blinded`, their form; `iDial`; `linked` and `linkedAs`, the live link's node id this entry
   is: its own, or for a handle the link whose known form is that tag) and `links[]` (`nodeId` as the HELLO named it,
   `proven` (264w), `dialedByMe`, `tagAware`: its HELLO carried `CAP_BLIND_ADVERT`; `blinded`: the kind of the form its

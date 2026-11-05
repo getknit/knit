@@ -5,6 +5,7 @@ import app.getknit.knit.legal.repoFile
 import app.getknit.knit.mesh.BleRotation
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.OwnPresenceKey
+import app.getknit.knit.mesh.bluetooth.AdvertAliases
 import app.getknit.knit.mesh.bluetooth.AdvertOrder
 import app.getknit.knit.mesh.bluetooth.AdvertRotation
 import app.getknit.knit.mesh.bluetooth.AdvertStatus
@@ -22,6 +23,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Modifier
 
 /**
  * The debug bridge's view of the blinded advert (ADR 2026-11.xp6d's step-6 amendment, and the maintainer's 2026-11-04
@@ -122,6 +124,8 @@ class AdvertDiagTest {
         rotation: AdvertRotation = AdvertRotation(),
         install: AdvertStatus.Install? = null,
         links: List<AdvertStatus.Link> = this.links,
+        aliases: AdvertAliases.Counters = AdvertAliases<String>({ 0L }, { wall }).counters(),
+        formHandles: Int = 0,
     ) = AdvertStatus.of(
         aired = writer.aired(),
         radioUp = writer.isUp(),
@@ -133,6 +137,8 @@ class AdvertDiagTest {
         install = install,
         turn = rotation.view(),
         mine = mine,
+        aliases = aliases,
+        formHandles = formHandles,
         sightings = sightings,
         links = links,
     )
@@ -317,6 +323,8 @@ class AdvertDiagTest {
                 install = null,
                 turn = AdvertRotation().view(),
                 mine = mine,
+                aliases = AdvertAliases<String>({ 0L }, { wall }).counters(),
+                formHandles = 0,
                 sightings = leaky,
                 links = emptyList(),
             )
@@ -351,6 +359,7 @@ class AdvertDiagTest {
                 "announced",
                 "holding",
                 "psm",
+                "aliases",
                 "peers",
                 "links",
             ),
@@ -364,6 +373,53 @@ class AdvertDiagTest {
         @Suppress("UNCHECKED_CAST")
         val link = (f.getValue("links") as List<Map<String, Any?>>).first()
         assertEquals(listOf("nodeId", "proven", "dialedByMe", "tagAware", "blinded"), link.keys.toList())
+    }
+
+    @Test
+    fun everyCountReachesTheReplyUnderItsOwnName() {
+        // Every field a distinct value: a trial reading a swapped column would read the wrong table.
+        val ctor = AdvertAliases.Counters::class.java.declaredConstructors.single { !it.isSynthetic }
+        val distinct =
+            ctor.parameterTypes.mapIndexed<Class<*>, Any> { i, type ->
+                if (type == Long::class.javaPrimitiveType) i + 1L else i + 1
+            }
+        val counts = ctor.newInstance(*distinct.toTypedArray()) as AdvertAliases.Counters
+        val mine = AdvertOrder.Form(myTag, blinded = true)
+        val reply = status(writerAiring(mine), mine, aliases = counts).fields().getValue("aliases") as Map<*, *>
+        for (field in AdvertAliases.Counters::class.java.declaredFields.filter { !Modifier.isStatic(it.modifiers) }) {
+            field.isAccessible = true
+            assertEquals(field.name, field.get(counts), reply[field.name])
+        }
+    }
+
+    @Test
+    fun theAliasesFieldCarriesEveryCountAndNoKeyOrTag() {
+        val contactKey = ByteArray(BlindTag.KEY_BYTES) { 6 }
+        val reader = AdvertAliases<String>({ 1_000L }, { wall })
+        reader.setKeys(mapOf(contactId to AdvertAliases.ContactKey(contactKey)))
+        reader.onAnswered("answered", strangerTag, strangerId)
+        val announced = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 8 }, BlindTag.slotOf(wall), 3))
+        reader.onTagNext("announced", clearId, announced)
+        val mine = AdvertOrder.Form(myTag, blinded = true)
+        val s = status(writerAiring(mine), mine, aliases = reader.counters(), formHandles = 7)
+
+        @Suppress("UNCHECKED_CAST")
+        val aliases = s.fields().getValue("aliases") as Map<String, Number>
+        // By reflection: a count added to Counters fails here until the reply carries it.
+        val counted =
+            AdvertAliases.Counters::class.java.declaredFields
+                .filter { !Modifier.isStatic(it.modifiers) }
+                .map { it.name }
+        assertEquals((counted + "formHandles").toSet(), aliases.keys)
+        assertEquals(1, aliases["hints"])
+        assertEquals(2, aliases["heldLinks"])
+        assertEquals(1, aliases["lastTagNext"])
+        assertEquals(1, aliases["pending"])
+        assertEquals(1, aliases["tableContacts"])
+        assertEquals(7, aliases["formHandles"])
+        assertNoTag(s, myTag, contactTag, strangerTag, announced)
+        val printed = s.toString() + s.fields()
+        assertFalse("a key's hex in $printed", contactKey.joinToString("") { "%02x".format(it) } in printed)
     }
 
     // --- ADVERT_ROTATE's refusal rule ---
@@ -510,6 +566,16 @@ class AdvertDiagTest {
         assertTrue("AdvertDiag.status = ::advertStatus" in transport.substringAfter("private fun bindDebugDiags()"))
         assertTrue("unbindDebugDiags()" in transport.substringAfter("override fun stop()").substringBefore("tearDownRadio()"))
         assertTrue("AdvertDiag.status = null" in transport.substringAfter("private fun unbindDebugDiags()"))
+    }
+
+    @Test
+    fun theReadersCountsAreReadInTheStatusTaskOnTheWorker() {
+        // AdvertAliases is confined to the worker: a read off it races every table the counts walk.
+        val read = transport.substringAfter("private suspend fun advertStatus()").substringBefore("\n        }\n")
+        assertTrue("the read opens on the worker", read.startsWith(": AdvertStatus =\n        withContext(worker) {"))
+        assertTrue("the counts are in the task", "aliases = aliases.counters()" in read)
+        assertTrue("the handles are in the task", "formHandles = formKeys.size" in read)
+        assertEquals("no other read of the counts", 1, Regex("""aliases\.counters\(\)""").findAll(transport).count())
     }
 
     @Test

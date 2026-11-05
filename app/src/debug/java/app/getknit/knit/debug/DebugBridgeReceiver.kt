@@ -406,8 +406,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   `switch` (`value`, and `stored`, null while the default stands), `running`, then the transport's
  *   [app.getknit.knit.mesh.bluetooth.AdvertStatus] fields (the gates, `form` clear|tag, `epoch`, `rotatedAtMs`,
  *   `keyGeneration`, `airedGeneration`, the last install's `lastCause`, `source`, `resolvable` and `stale`, the turn,
- *   `psm`, `peers[]` and `links[]`). Debug is for development (the maintainer, 2026-11-04): the diagnostics are here, but
- *   never a key or a tag (nor its hex, nor a prefix past `zzzz`).
+ *   `psm`, `aliases` (the reader's counts and table sizes), `peers[]` and `links[]`). Debug is for development (the
+ *   maintainer, 2026-11-04): the diagnostics are here, but never a key or a tag (nor its hex, nor a prefix past `zzzz`).
  * - [ACTION_ADVERT_ROTATE] — one unannounced rotation of the blinded advert now (`AdvertRotation.Cause.FORCED`), or a
  *   refusal with a `why` (`radio down`, `pending`, `clear`, `settling`, `announced`, `holding`, `grace`, `throttled`);
  *   the reply is `rotated`, `epochBefore` / `epochAfter`, then [ACTION_ADVERT]'s fields. Each one spends one of the
