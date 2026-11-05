@@ -158,7 +158,13 @@ private fun openLayer(
     return true
 }
 
-/** The long-press menu of the bubble whose bounds [anchor] tracks. Outside a host (a preview) it shows nothing. */
+/**
+ * The long-press menu of the bubble whose bounds [anchor] tracks. Outside a host (a preview) it shows nothing.
+ *
+ * [content] is drawn by the host, apart from its caller: a value it captures that changes in the frame the layer first
+ * composes is lost, and the menu keeps what it drew. Anything that arrives after the menu opens (the Translate offer)
+ * is read inside [content], as a State or a `() -> T`, so the layer itself is subscribed to it.
+ */
 @Composable
 internal fun MessageMenu(
     anchor: MutableState<Rect>,

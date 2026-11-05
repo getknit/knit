@@ -2772,9 +2772,10 @@ private fun ColumnScope.NotRelayedMarker(
 // translate UI (a parameter's null is a value R8 cannot see through Compose).
 private val BUBBLE_TRANSLATES = TRANSLATE_WIRED || BuildConfig.DEBUG
 
+// Internal for MessageBubbleMenuTest, which opens its long-press menu without a whole screen.
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(
+internal fun MessageBubble(
     row: ChatRow,
     now: Long,
     showSenderName: Boolean,
@@ -3404,11 +3405,13 @@ private fun MessageBubble(
                 }
                 if (showPicker) {
                     // Resolved as the menu opens, in milliseconds: Translate appears once the row's language is known.
-                    val translateOffered by produceState(initialValue = offersTranslate == null, row.id) {
-                        if (offersTranslate != null) value = offersTranslate(row)
-                    }
+                    // Held as a State and read inside the menu, never here ([ReactionPicker]'s translateOffered).
+                    val translateOffered =
+                        produceState(initialValue = offersTranslate == null, row.id) {
+                            if (offersTranslate != null) value = offersTranslate(row)
+                        }
                     // Text the reader can see: a body the filter hides is translated only once revealed.
-                    val translatable = BUBBLE_TRANSLATES && readableBody && translateOffered
+                    val translatable = BUBBLE_TRANSLATES && readableBody
                     ReactionPicker(
                         anchor = bubbleBounds,
                         bubble = bubbleLayer,
@@ -3449,6 +3452,7 @@ private fun MessageBubble(
                             } else {
                                 null
                             },
+                        translateOffered = { translateOffered.value },
                         pinned = pinned,
                         // The opposite of what this bubble shows now: if that is already stale, the write is a no-op.
                         onPinAction =
@@ -3642,6 +3646,10 @@ private fun ReactionPicker(
     canReact: Boolean = true,
     // Translate this message (ADR 2026-10.t2h6): null where translation is not wired or there is no text to read.
     onTranslate: (() -> Unit)? = null,
+    // Whether [onTranslate] is offered on this row, read inside the menu. The answer lands milliseconds after the menu
+    // opens, often in the frame its in-window layer first composes, and a value passed down to this picker that changes
+    // in that frame never reaches what the layer drew ([MessageMenu]): Translate stayed hidden on every phone.
+    translateOffered: () -> Boolean = { true },
     // Pin this message, or unpin it when [pinned] (#42), which also picks the label: null where pins are not wired.
     pinned: Boolean = false,
     onPinAction: (() -> Unit)? = null,
@@ -3721,7 +3729,7 @@ private fun ReactionPicker(
                         onClick = onCopy,
                     )
                 }
-                if (onTranslate != null) {
+                if (onTranslate != null && translateOffered()) {
                     PickerAction(
                         icon = Icons.Filled.Translate,
                         label = stringResource(R.string.chat_action_translate),
@@ -4141,7 +4149,7 @@ private fun AttachmentImage(
 }
 
 /** A tapped attachment plus the bubble metadata the fullscreen viewer shows in its top bar. */
-private data class FullscreenImage(
+internal data class FullscreenImage(
     val image: BlobImage,
     val mine: Boolean,
     val senderName: String,

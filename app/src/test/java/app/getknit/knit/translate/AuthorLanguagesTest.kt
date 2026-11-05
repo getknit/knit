@@ -56,6 +56,21 @@ class AuthorLanguagesTest {
         }
 
     @Test
+    fun anAuthorWithNoLanguageYetIsReadAgainAtTheNextAsk() =
+        runTest {
+            // A newcomer's first line was read before they had written three sure ones. Held, that answer left their
+            // short lines unsure for ten minutes however much they wrote; read again, the next ask settles it.
+            val written = mutableMapOf(("g1" to "lucia") to listOf("es a"))
+            val langs = languages(written)
+            assertNull(langs.of("g1", "lucia"))
+
+            written["g1" to "lucia"] = listOf("es c", "es b", "es a")
+
+            assertEquals(TranslateLang("es"), langs.of("g1", "lucia"))
+            assertEquals(2, asked.size)
+        }
+
+    @Test
     fun aLanguageIsHeldForItsTtlThenReadAgain() =
         runTest {
             val langs = languages(mapOf(("g1" to "lucia") to listOf("es a", "es b", "es c")))

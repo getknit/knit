@@ -55,6 +55,35 @@ class ReaderLanguageTest {
         }
 
     @Test
+    fun sendsThatNameNoLanguageYetAreReadAgainAtTheNextAsk() =
+        runTest {
+            // The chats read the reader's language as the process starts, before its first send. Held, that empty read
+            // let nothing this person wrote count for ten minutes; read again, three sends settle it at once.
+            val sends = mutableListOf<OwnSend>()
+            var reads = 0
+            val reader =
+                ReaderLanguage(
+                    ownSends = { limit ->
+                        reads++
+                        sends.take(limit)
+                    },
+                    read = { LanguagePick.Picked(es) },
+                    preferred = { listOf("en-US") },
+                    clock = { 0L },
+                )
+            assertEquals(TranslateLang.EN, reader.estimate(override = null).target)
+
+            sends += List(ReaderLanguages.MIN_WRITTEN) { OwnSend("¿nos vemos a las cinco?", draftTranslatedFrom = null) }
+            assertEquals(es, reader.estimate(override = null).target)
+            assertEquals(2, reads)
+
+            // Once they name a language it is held for the TTL: a third ask reads nothing.
+            sends.clear()
+            assertEquals(es, reader.estimate(override = null).target)
+            assertEquals(2, reads)
+        }
+
+    @Test
     fun aDraftLanguageNoModelReachesIsUnsureNotItsTranslation() =
         runTest {
             // Read off the table, so a new model never turns this red.
