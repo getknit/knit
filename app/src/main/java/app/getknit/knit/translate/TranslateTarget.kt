@@ -59,18 +59,41 @@ object TranslateTarget {
     ): String? = translatedFrom?.takeIf { translatedInto != null && it != translatedInto }?.code
 
     /**
+     * The reading of [resolution] a reader of [reader] translates from (ADR 2026-11.tj49). Uncontested, the resolution
+     * itself. When sure words and the sender's declaration disagree, the words, as long as they go somewhere for this
+     * reader; else the declaration, when it does, as a [LanguageSource.DECLARED] read that is guessed (the reader may
+     * say "Not Spanish?"); else the words, with nowhere to go. A Spanish line CLD2 reads as English ("que fotos tan
+     * bonitas", declared Spanish) is Spanish to an English reader, who could otherwise not translate it at all, and
+     * English to a Spanish reader, who is offered English typed on a Spanish keyboard as before.
+     */
+    fun forReader(
+        resolution: Resolution,
+        reader: TranslateLang?,
+    ): Resolution {
+        if (resolution.source != LanguageSource.TEXT) return resolution
+        val declared = resolution.contested?.let(TranslateLang::ofCode) ?: return resolution
+        val words = (resolution.pick as? LanguagePick.Picked)?.lang
+        if (words != null && of(words, reader) != null) return resolution
+        if (of(declared, reader) == null) return resolution
+        val wordsCode = words?.code ?: (resolution.pick as? LanguagePick.Other)?.code
+        return Resolution(LanguagePick.Picked(declared), LanguageSource.DECLARED, resolution.ranked, contested = wordsCode)
+    }
+
+    /**
      * Whether a message whose language resolved to [resolution] offers Translate to a reader of [reader] (the
      * 2026-10-29 amendment): not when its words, or the language it was typed in, name a language with nowhere to go
      * or no model here; a language only a prior settled, or none, keeps the offer, since the reader may know better.
+     * Words and a declaration that disagree offer it when either goes somewhere for this reader ([forReader]).
      */
     fun offers(
         resolution: Resolution,
         reader: TranslateLang?,
     ): Boolean {
+        val read = forReader(resolution, reader)
         // A language no model here translates from: nothing to offer, however it was known.
-        if (resolution.pick is LanguagePick.Other) return false
-        val lang = (resolution.pick as? LanguagePick.Picked)?.lang ?: return true
-        return when (resolution.source) {
+        if (read.pick is LanguagePick.Other) return false
+        val lang = (read.pick as? LanguagePick.Picked)?.lang ?: return true
+        return when (read.source) {
             LanguageSource.TEXT, LanguageSource.DECLARED -> of(lang, reader) != null
             else -> true
         }

@@ -1,6 +1,7 @@
 package app.getknit.knit.translate
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -75,6 +76,26 @@ class LanguageResolverTest {
     }
 
     @Test
+    fun sureWordsKeepAContraryDeclarationBesideThemOnlyWhenAModelTranslatesIt() {
+        // ADR 2026-11.tj49, from the emulator trial: plain Spanish CLD2 reads as English, and plain Ukrainian it reads as
+        // Serbian, each declared by its sender.
+        assertEquals(
+            Resolution(LanguagePick.Picked(TranslateLang.EN), LanguageSource.TEXT, listOf(TranslateLang.EN), contested = "es"),
+            LanguageResolver.resolve(cld2("en", 95), "que fotos tan bonitas", pair, null, null, declared = "es"),
+        )
+        val uk = TranslateLang("uk")
+        assertEquals(
+            Resolution(LanguagePick.Other("sr"), LanguageSource.TEXT, contested = "uk"),
+            LanguageResolver.resolve(cld2("sr", 95), "нема за що", setOf(TranslateLang.EN, uk), null, null, declared = "uk"),
+        )
+        // The words' own language declared is no contest; nor is one no model here translates from.
+        assertNull(LanguageResolver.resolve(cld2("en"), "see you later", pair, null, null, declared = "en").contested)
+        assertNull(LanguageResolver.resolve(cld2("en"), "see you later", pair, null, null, declared = "el").contested)
+        // Unsure words leave nothing to contest: the declaration answers, as before.
+        assertNull(LanguageResolver.resolve(unread, "ya voy", pair, null, null, declared = "es").contested)
+    }
+
+    @Test
     fun aPriorOutsideTheCandidatesIsIgnored() {
         assertEquals(
             Resolution(LanguagePick.Picked(TranslateLang.EN), LanguageSource.CHAT),
@@ -89,10 +110,13 @@ class LanguageResolverTest {
         assertEquals(LanguagePick.Picked(es), typed.pick)
         assertEquals(LanguageSource.DECLARED, typed.source)
         assertEquals(false, typed.guessed)
-        // Plain words overrule the keyboard: English typed on a Spanish keyboard is English.
+        // Plain words are the read: English typed on a Spanish keyboard is English, with the keyboard's Spanish kept
+        // beside it for a reader the English has nowhere to go for (ADR 2026-11.tj49).
         val read = LanguageResolver.resolve(cld2("en"), "see you at the park later", pair, null, null, declared = "es")
         assertEquals(LanguagePick.Picked(TranslateLang.EN), read.pick)
         assertEquals(LanguageSource.TEXT, read.source)
+        assertEquals("es", read.contested)
+        assertEquals(false, read.guessed)
         // Typed in a language no model here translates from: that language, not the author's usual one in its place.
         val other = LanguageResolver.resolve(unread, "ok", pair, author = es, chat = null, declared = "el")
         assertEquals(LanguagePick.Other("el"), other.pick)

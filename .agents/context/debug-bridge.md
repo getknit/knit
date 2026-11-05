@@ -555,7 +555,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   - `target --es from <code>` is where a message in that language goes for this reader. `switch [--ez on false]` sets or
     reports Settings › Chats › Translation; `into --es lang <code>|auto` sets "Translate messages into".
   - `offers --es id <messageId>` is whether that row's menu offers Translate (`offered`, the chat's own rule), with
-    the language it resolved to (`lang`, `source`), the `reader` and any `kept` translation's target. `translate --es
+    the language it resolved to for this reader (`lang`, `source`, `guessed`, and `contested`: the other reading when
+    sure words and the sender's declaration disagree, ADR 2026-11.tj49), the `reader` and any `kept` translation's target. `translate --es
     id <messageId> [--es from <code>] [--es to <code>]` translates a real row as its bubble would, so the result is kept
     on the row: read it back with `STATE`'s message fields (`translation`, `translationFrom`, `translationTo`), and the
     declared `bodyLang` / `authorReads` beside them.
