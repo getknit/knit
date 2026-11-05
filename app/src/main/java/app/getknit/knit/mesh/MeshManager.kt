@@ -5628,25 +5628,30 @@ class MeshManager(
      * [LORA_DIRECT_SEND_WINDOW_MS] (Crypto 6) — a resend the far phone would refuse as stale after its board acked it is
      * air for nothing — and only those whose compact form fits one packet at the MTU floor: a longer DM never rode
      * compact, and asking again with it would only count it too long again. Each call asks the database afresh: the
-     * plane re-asks [LoraDirectSource.isUnacked] at send, never behind a timer.
+     * plane re-asks [LoraDirectSource.isUnacked] at send, never behind a timer. [DirectDm.boardTook] is read off
+     * [loraReached] (every destination ack, a resend's included), and `untakenOnly` drops those rows before the limit.
+     * In memory: after a restart every DM reads untaken, so the first catch-up per peer can re-air up to
+     * `RESEND_LIMIT` DMs a board took before the restart; their new acks then mark them and stop it.
      */
     internal fun loraDirectSource(): LoraDirectSource =
         object : LoraDirectSource {
             override suspend fun unackedTo(
                 peerId: String,
                 limit: Int,
+                untakenOnly: Boolean,
             ): List<DirectDm> {
                 if (peerId in settings.blockedNodeIds.first()) return emptyList()
                 val since = clock() - LORA_DIRECT_SEND_WINDOW_MS
+                val tookBoard = loraReached.value
                 return messages
                     .unackedDmsTo(peerId, identity.nodeId(), since = since)
                     .asSequence()
-                    .filter { it.sentAt > since }
+                    .filter { it.sentAt > since && !(untakenOnly && it.id in tookBoard) }
                     .sortedByDescending { it.sentAt }
                     .mapNotNull { row ->
                         compactPlaintext(row.sealedContent())
                             ?.takeIf { it.size <= LORA_DIRECT_PLAINTEXT_BYTES }
-                            ?.let { DirectDm(row.id, row.sentAt, it) }
+                            ?.let { DirectDm(row.id, row.sentAt, it, boardTook = row.id in tookBoard) }
                     }.take(limit)
                     .toList()
             }

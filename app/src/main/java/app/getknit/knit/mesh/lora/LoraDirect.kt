@@ -93,10 +93,15 @@ internal fun interface LoraDirectInbox {
  * hearing and the re-probe re-air, asked again at send.
  */
 internal interface LoraDirectSource {
-    /** Up to [limit] of our unacked DMs to [peerId], newest first. A resend carries no inline acks. */
+    /**
+     * Up to [limit] of our unacked DMs to [peerId], newest first. A resend carries no inline acks. [untakenOnly] leaves
+     * out the DMs a board took ([DirectDm.boardTook]) before the limit applies, so newer board-taken ones waiting on a ✓✓
+     * cannot hide an older stranded one from a catch-up.
+     */
     suspend fun unackedTo(
         peerId: String,
         limit: Int,
+        untakenOnly: Boolean = false,
     ): List<DirectDm>
 
     /** Whether [frameId] is still one of ours without its ✓✓ (and inside the window): the at-send re-ask of a resend. */
@@ -107,17 +112,23 @@ internal interface LoraDirectSource {
         override suspend fun unackedTo(
             peerId: String,
             limit: Int,
+            untakenOnly: Boolean,
         ): List<DirectDm> = emptyList()
 
         override suspend fun isUnacked(frameId: String): Boolean = false
     }
 }
 
-/** One of our unacked DMs, as [LoraDirectSource] hands it to the plane to re-seal. */
+/**
+ * One of our unacked DMs, as [LoraDirectSource] hands it to the plane to re-seal. [boardTook] says the recipient's board
+ * acked a compact copy of it this process (`MeshManager.loraRadioReached`, in memory only): such a DM waits on its
+ * phone, and only the re-probe asks again; a catch-up re-airs only the ones no board took (#294, ADR 2026-10.x9fa).
+ */
 internal class DirectDm(
     val frameId: String,
     val sentAtMs: Long,
     val plaintext: ByteArray,
+    val boardTook: Boolean = false,
 )
 
 /**

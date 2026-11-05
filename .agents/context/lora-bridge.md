@@ -49,7 +49,12 @@ seam (`MeshTransport.longRangeFanout`):
   or to a peer a connected spool heard from within `SPOOL_COVER_MS` (15 min) never airs, and one already queued is
   abandoned at dequeue (`StaleAtSend.LINKED` / `INTERNET`): the link or the spool carries its signed copy for free.
   Counted `loraSkippedLinked` / `loraSkippedInternet`; `internetPeers` comes from `MeshManager`'s spool-presence watch
-  through `MeshTransport.coveredByInternet` and shows as `internetCovered` in `…debug.LORA`.
+  through `MeshTransport.coveredByInternet`. A live compact frame from a covered peer (an RSSI, not MQTT, a fresh
+  `rx_time`) lifts their cover (`liftedPeers`, `lora cover lifted <peer>`) until the relay itself drops them: their
+  sender aired it because no relay joins us by its reckoning (#294, ADR 2026-09.y5f3's 2026-11-04 amendment). The cover
+  every gate reads is `internetPeers` less `liftedPeers`, in memory only, emptied by `quiesce`, and shows as
+  `internetCovered` in
+  `…debug.LORA`.
 - **No room ✓✓ (ADR 2026-10.rp3s).** `fastSend` refuses everything, so AckSync's cleartext receipt and its sealed
   escalation never air. A room tick goes home over a link or the spool; `AckSync.escalateRide` reads
   `shortRangeReachable`, so an author the board alone can hear keeps the tick parked rather than sealing it into an
@@ -420,6 +425,16 @@ the DM off PKI, was wrong, and the 2.8 board trial that "confirmed it" passed th
   next re-probe is pulled forward instead. A hearing never resets the backoff. A received compact DM counts as a
   hearing only after `inbox.deliver` returns, so a ✓✓ it carried is applied before the resend asks what is unacked.
   Every resend re-asks `LoraDirectSource.isUnacked` at send (`StaleAtSend.ACKED`), never behind a timer.
+- **The catch-up** (`catchUp`, #294, ADR 2026-10.x9fa's 2026-11-04 amendment). The hearing above is one of four facts
+  that re-air what a cover or a failure stranded: a hearing on the edge out of `Unreachable` (`heard`), a relay cover
+  lapsing (`cover lapsed`) or lifted by a live compact frame (`lifted`), and the destination's board acking a fresh DM
+  (`after ack`, that DM skipped; never on a resend's ack). Each logs `lora resend <id> -> <peer> (<why>, +<n> after its
+  ack)`, or `lora catch-up refused <peer>` when a gate of the resend said no. All share the re-probe's gap since the
+  last failure (`LoraReprobe.onHeard`), and a catch-up books as a re-probe (`onReprobed`; behind a fresh ack at the base
+  gap). Only DMs no board took (`DirectDm.boardTook`, off `MeshManager.loraRadioReached`, in memory, dropped before the
+  source's limit) with no copy waiting; after a restart the first catch-up per peer may re-air up to three a board
+  took before it: a DM the board took waits on its phone, the re-probe's question, so ordinary chat never re-airs (the
+  coalescer holds a ✓✓ up to 45 s). The newest goes, ≤ 2 older after its ack.
 - **The re-probe** (`LoraReprobe`, `lora reprobe <id> -> <peer>`, `loraReprobed`) keys on our DMs still without their
   ✓✓, whatever the radio said: the phone may be away from a board that acks everything. 15 min after the first DM,
   doubling to 4 h; a destination's ack of a fresh DM resets the gap and asks again one base gap on, an ack of a re-aired one keeps the earned gap (15, 30, 60 min while the phone stays away); a ✓✓ on the last re-aired DM
@@ -953,7 +968,11 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   → one airing and its four retries (`airtime.usedMs` rises by five airings at once; `meshtastic --listen` near A shows five transmissions, the give-up about a minute later), `lora direct unreachable`,
   `loraDirectUnreachable 1`, the second `lora direct held`; power B's board on and let it air anything →
   `lora direct heard <B>`, then `lora resend` once the gap since the failure has passed (else the next
-  `lora reprobe`), and both land. `…debug.LORA --ez dms false` on A → a new DM stays LoRa-silent (`loraDirectSent`
+  `lora reprobe`), and both land. The relay strand (#294), A and B on one relay and both boards, no link: A sends a DM
+  and switches its relays off within a second → `lora resend <id> -> <B> (cover lapsed` on A within seconds (or
+  `(after ack` behind A's next DM); B logs `lora cover lifted <A>` on the first compact frame, its `internetCovered`
+  drops by one and `loraDirectSent` climbs while `loraSkippedInternet` stays flat; every ✓✓ is home in a minute or
+  two. A 10-DM chat at under 45 s spacing with relays off keeps `loraDirectResent` at 0. `…debug.LORA --ez dms false` on A → a new DM stays LoRa-silent (`loraDirectSent`
   flat) while a room post crosses. Rejoin a BLE clique after an hour of history: `loraSuppressed` climbs,
   `loraDroppedQueue` stays 0.
 

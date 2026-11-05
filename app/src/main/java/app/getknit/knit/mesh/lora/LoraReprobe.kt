@@ -178,7 +178,10 @@ internal class LoraReprobe(
 
         /**
          * The first gap: one airtime window. An absent phone costs at most one DM's airings per window, and a present
-         * one has long since sent its ✓✓ (the coalescer holds it 45 s at most).
+         * one has long since sent its ✓✓ (the coalescer holds it 45 s at most). Not the way back for a DM no board took:
+         * the transport's catch-up re-airs that on a fact — a hearing after a failure, a relay cover lapsed or lifted,
+         * the board acking a fresh DM (#294) — inside this schedule's gap since the last failure and booked on it. What
+         * waits the full gap is a DM the board took whose phone has not answered.
          */
         const val BASE_MS = 15 * 60_000L
 

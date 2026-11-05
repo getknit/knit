@@ -434,7 +434,8 @@ val meshModule =
                         override suspend fun unackedTo(
                             peerId: String,
                             limit: Int,
-                        ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit)
+                            untakenOnly: Boolean,
+                        ): List<DirectDm> = get<MeshManager>().loraDirectSource().unackedTo(peerId, limit, untakenOnly)
 
                         override suspend fun isUnacked(frameId: String): Boolean = get<MeshManager>().loraDirectSource().isUnacked(frameId)
                     },

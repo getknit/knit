@@ -414,3 +414,50 @@ A side effect agrees with the 2026-10-29 amendment: a sibling signed copy that c
 `loraDirectCopyTaken` (no `rideOwnFirstContact`) instead of the unmarked exists-gate. Regression:
 `InboundPipelineTest.aCompactCopyCommittingBeforeTheSignedCopysRowReadStillLetsItsInitThrough` (failed before the fix);
 a mark with no row is `aDeletedCompactDmStaysDeletedWhenItsPacketReplaysOrItsSignedCopyLands`.
+
+### Amendment (2026-11-04, #294, draft): stranded DMs catch up on a fact, never on the timer
+
+**What was observed.** The Pixel 9 sent a DM 0.7 s before its relay sockets closed. The relay cover kept it off the
+air, and nothing offered it to LoRa again: the only way back was the re-probe, one `BASE_MS` (15 min) out and pushed
+back again by every newer DM its board acked (`onAcked(fresh = true)`), which then re-airs only the newest DM still
+without its ✓✓. The resend after a hearing ran only on the edge out of `Unreachable`.
+
+**What changed.** The hearing's tail is one function, `LoraMeshTransport.catchUp`, and four facts call it: a hearing on
+the edge out of `Unreachable` (`heard`); a relay cover lapsing (`cover lapsed`, the peers that left the effective
+cover) or lifted by a live compact frame (`lifted`, ADR 2026-09.y5f3's amendment of the same day); and the
+destination's board acking a fresh DM (`after ack`, that DM skipped; never on a resend's ack, which carries its own
+`flushAfter`). Each re-airs the newest of our unacked DMs and the older ≤ 2 after its ack, as the hearing did, with
+two rules that keep it off ordinary chat and off a flapping relay:
+
+- **Only a DM no board took.** `DirectDm.boardTook` is filled by `MeshManager.loraDirectSource` from
+  `loraRadioReached`, every destination ack, a resend's included. A DM the board took waits on its phone, which is
+  the re-probe's question, so two DMs to a present phone inside the coalescer's 45 s never re-air the first. The
+  source drops the taken rows before its limit (`unackedTo(untakenOnly = true)`), so newer taken DMs never hide an
+  older stranded one. The mark is in memory: after a restart the first catch-up per peer can re-air up to
+  `RESEND_LIMIT` DMs a board took before the restart; their new acks then mark them and stop it. A DM with a copy
+  queued or in flight is skipped too.
+- **One backoff for every trigger.** Nothing goes inside the re-probe's gap since the last failure this process saw
+  (`LoraReprobe.onHeard`, which pulls the round forward instead), and what goes is booked as a re-probe
+  (`onReprobed`). Behind a fresh DM's ack it books at the base gap, since `onAcked` just reset it and a board that
+  acked is no evidence the phone is away; otherwise a burst's acks doubled the gap to its 4 h cap within seconds (the
+  lab's burst scenario caught it).
+
+The log line keeps its prefix: `lora resend <id> -> <peer> (<why>, +<n> after its ack)`, or `lora catch-up refused
+<peer>`. `LoraReprobe`, its persistence and `LoraPlaneState`'s keys are unchanged; no timer is added.
+
+**Why this is not rp3s's first-hearing re-offer, which this ADR removed.** That re-offer re-aired a DM-form broadcast
+on hearing any frame from its recipient, with no acks on the air to say what had arrived: a guess from airings, held
+off only by a 2 s settle and an hourly bound per frame. A catch-up runs on a fact about the path (a board's ack, an
+authenticated live frame from the peer, the relay itself dropping them) and re-airs only a DM that no destination
+board acknowledged, so nothing the far radio already holds goes again.
+
+**What it costs.** At most one DM's airings per trigger now, and two more after its ack: a 40-character DM is one
+95-B packet (1.13 s at LongFast), five airings if its board stays silent. `after ack` and `lifted` are paced by what
+the two users write; `cover lapsed` fires once per lapse; a relay flapping after a failure airs once per gap. A burst
+past the parked limit now crosses the dropped DMs on the next acks rather than waiting for a link or the re-probe.
+A ✓✓ is still never caught up: it is the coalescer's.
+
+Tests: `LoraDirectTransportTest` (the catch-up section: each trigger, two DMs to a present phone, a board-taken DM, a
+flapping relay, a resend's ack, the base gap behind an ack) and `RoomTickPlanesLabTest.dmsStrandedByARelayThatWentCatchUpOverTheAirAndTheFarSideAnswersThere`.
+Device trial owed: the #294 recipe on two phones with boards; a 10-DM chat at under 45 s spacing with relays off keeps
+`loraDirectResent` at 0; the far phone off with its board on, five DMs: resends stay within the re-probe's schedule.

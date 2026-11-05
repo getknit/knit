@@ -45,7 +45,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `LoraDirectPolicy` (`mustWait`, `holds`, `onHeard`, `deadlineMs`, `retriesBefore`, `RETRANSMITS`, `boardAcks`,
   `ACK_PAYLOAD_BYTES`), `RideGate.direct`
   / `reachHeld` / `unackedFrameId`, `StaleAtSend.NOT_DIRECT` / `HELD` / `ACKED` / `SLOT_ZERO`, `noteHeard` /
-  `onBoardHeard`, `onDirectPacket`, `LoraReprobe` / `reprobeDue`, `frameKey` / `LoraPacePolicy.hasQueued` /
+  `onBoardHeard` / `isLive`, `catchUp`, `DirectDm.boardTook`, `onDirectPacket`, `LoraReprobe` / `reprobeDue`, `frameKey` / `LoraPacePolicy.hasQueued` /
   `hasQueuedTo`, `LoraDirectPolicy.payloadCap`, `ReceivedPacket.pkiEncrypted`, or `LoraSizeHint.DM_BODY_BYTES`:** READ
   ADR 2026-10.x9fa (it supersedes ADR 039's DM form, ADR 2026-10.a4pm and rp3s's probe, re-offer and repair) and its
   2026-10-30 PKI amendment, then "DMs" in `lora-bridge.md`. Firmware 2.8 PKI-encrypts every compact DM whatever the
@@ -58,7 +58,10 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `Reachable` (45-min linger) and never feeds `reachable`; an implicit ACK only counts; `Unreachable` or no outcome by
   the deadline holds offers until a live hearing of that board (RSSI, not MQTT, not our board, fresh `rx_time`) or the
   re-probe; a destination's refusal holds until their profile changes or 4 h pass. Every send ends at its deadline. The re-probe
-  keys on our DMs with no ✓✓, whatever the board said. A board-map source that has not reported reads "not now"; a
+  keys on our DMs with no ✓✓, whatever the board said. A catch-up (x9fa's 2026-11-04 amendment, #294) re-airs the
+  newest DM **no board took** (`DirectDm.boardTook`) on a fact — a hearing after a failure, a relay cover lapsed or
+  lifted, the board acking a fresh DM — never a board-taken one (that is the re-probe's), inside the re-probe's gap
+  since the last failure and booked on its schedule; no timer, nothing persisted. A board-map source that has not reported reads "not now"; a
   failing one is retried every 5 min and counted (`loraBoardHoldersFailed`). Before our id, the fan-out admits at most
   `PRE_ID_ADMISSIONS` (4) room posts (`loraPreIdRefused` past it), charging a slot only to a frame that reaches the
   queue (`reservePreId`). A frame dropped before its first fragment is `abandon`ed: its dedup slot comes back, and a
@@ -131,12 +134,16 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `loraRoomReachFor` returns `RoomBandBusy` only when a peer is LoRa-only, ahead of `RoomSaturated` (a braked post may
   never cross LoRa, a spent window only delays it); the DM and group rules never read it, since the brake holds no
   DM. It can outlast a lifted brake by the linger sweep's minute (#240).
-- **When touching `skipCovered` / `coverReason`, `suppressDataPath` / `linkIds`, `coveredByInternet` on this plane,
+- **When touching `skipCovered` / `coverReason`, `suppressDataPath` / `linkIds`, `coveredByInternet` / `liftCover` /
+  `liftedPeers` on this plane,
   `RideGate` (`authorId`, `direct`, `reachHeld`, `unackedFrameId`), `staleReason` / `StaleAtSend`,
   `OutboundFrame.sigKey`, `sendFrame`, or `selfIdKnown`:** READ ADR 054 and ADR 2026-09.5dt2 (and ADR 2026-09.y5f3 for
   the Internet cover, ADR 2026-10.rp3s for the author, ADR 2026-10.x9fa for a compact DM's gates). A compact DM to us,
   or to a peer a short-range plane holds a **live link** to (links, never sightings; `suppressDataPath` is the only
-  feed), or one a spool covers, never airs; the queue is a time-delayed commitment, so each frame carries the gates its
+  feed), or one a spool covers, never airs. The spool cover read is `internetPeers` (ScopeSync's set, its one writer)
+  less `liftedPeers`: a live compact frame from the peer lifts it until the relay drops them, and a cover that lapses
+  or lifts catches the stranded DM up (ADR 2026-09.y5f3's 2026-11-04 amendment, #294; both sets under one lock, never
+  held across `publishStatus`). The queue is a time-delayed commitment, so each frame carries the gates its
   own path asked and `sendFrame` re-asks them before the first fragment — only those. The pacer parks until the self id
   is known (#141). `HELD` is asked only of an offer, never of a resend or re-probe, which fly to ask an unconfirmed
   board again; `ACKED` only of those two, and last, since it reads the database. A refusal at send hands back the

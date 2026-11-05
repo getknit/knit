@@ -71,9 +71,13 @@ class LoraDirectTransportTest {
         }
     }
 
-    /** Our own DMs without their ✓✓, newest first, per peer; a test acks one by removing it. */
+    /**
+     * Our own DMs without their ✓✓, newest first, per peer; a test acks one by removing it. [took] is what the plane's
+     * `onRadioReached` reported, read into [DirectDm.boardTook] as `MeshManager` reads `loraRadioReached`.
+     */
     private class FakeSource : LoraDirectSource {
         val unacked = mutableMapOf<String, MutableList<DirectDm>>()
+        val took = mutableSetOf<String>()
 
         fun hold(
             peer: String,
@@ -87,7 +91,13 @@ class LoraDirectTransportTest {
         override suspend fun unackedTo(
             peerId: String,
             limit: Int,
-        ): List<DirectDm> = unacked[peerId].orEmpty().take(limit)
+            untakenOnly: Boolean,
+        ): List<DirectDm> =
+            unacked[peerId]
+                .orEmpty()
+                .filter { !untakenOnly || it.frameId !in took }
+                .take(limit)
+                .map { DirectDm(it.frameId, it.sentAtMs, it.plaintext, boardTook = it.frameId in took) }
 
         override suspend fun isUnacked(frameId: String): Boolean = unacked.values.any { list -> list.any { it.frameId == frameId } }
     }
@@ -159,7 +169,10 @@ class LoraDirectTransportTest {
                 },
                 source = source,
                 boardMap = boardFlow.filterNotNull(),
-                onRadioReached = { frameId, late -> reached += frameId to late },
+                onRadioReached = { frameId, late ->
+                    reached += frameId to late
+                    source.took += frameId
+                },
                 scope = scope,
                 metrics = metrics,
                 state = state,
@@ -188,8 +201,9 @@ class LoraDirectTransportTest {
         air: FakeMeshtasticAir,
         firmware: String = "2.5.0",
         signaturePolicy: SignaturePolicy? = null,
+        log: (String) -> Unit = {},
     ): Pair<Node, Node> {
-        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), firmware = firmware, signaturePolicy = signaturePolicy)
+        val a = node(air, 1u, "alice", mapOf("bob" to holder(2u)), firmware = firmware, signaturePolicy = signaturePolicy, log = log)
         val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)), firmware = firmware, signaturePolicy = signaturePolicy)
         up(a, b)
         return a to b
@@ -525,11 +539,11 @@ class LoraDirectTransportTest {
             assertEquals(1L, a.lora.loraDirectUnreachable)
             assertEquals(2L, a.lora.loraDirectHeld)
 
-            // A gap after the failure — the re-probe deferred meanwhile by a spool cover — bob's board comes back and
-            // airs anything at all.
-            a.transport.coveredByInternet(setOf("bob"))
+            // A gap after the failure — the re-probe deferred meanwhile by a link cover (a spool cover's lapse would
+            // catch up on its own, #294) — bob's board comes back and airs anything at all.
+            a.transport.suppressDataPath(setOf("bob"))
             settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
-            a.transport.coveredByInternet(emptySet())
+            a.transport.suppressDataPath(emptySet())
             assertEquals("nothing aired while covered", 1, a.link.sent.size)
             val b = node(air, 2u, "bob", mapOf("alice" to holder(1u)))
             up(b)
@@ -802,9 +816,9 @@ class LoraDirectTransportTest {
             settle(air.untilGiveUp())
             assertEquals(1, a.transport.status.value.direct.unreachable)
             air.lossy = { _, _ -> false }
-            a.transport.coveredByInternet(setOf("bob")) // the re-probe defers while the gap runs out
+            a.transport.suppressDataPath(setOf("bob")) // the re-probe defers while the gap runs out
             settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
-            a.transport.coveredByInternet(emptySet())
+            a.transport.suppressDataPath(emptySet())
             // Bob's compact ✓✓ for f1 is delivered before his board counts as heard, so the resend the hearing would make
             // asks a source that already has f1 acked, and nothing is re-aired.
             b.dm("alice", "t1", body = "ack:f1", kind = DirectKind.RECEIPT)
@@ -813,6 +827,261 @@ class LoraDirectTransportTest {
             assertEquals(0, a.transport.status.value.direct.unreachable)
             assertEquals(0L, a.lora.loraDirectResent)
             assertEquals(1, a.link.sent.size)
+        }
+
+    // --- the catch-up: a fact says LoRa carries now (#294) ---
+
+    /** The frame ids [node]'s board wrote, in order. */
+    private fun sentIds(node: Node): List<String> = node.link.sent.map { frameIdOf(it) }
+
+    @Test
+    fun aDmTheRelayCoverKeptOffTheAirGoesTheMomentTheCoverLapses() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val (a, b) = pair(air, log = { logs += it })
+            a.transport.coveredByInternet(setOf("bob"))
+            a.dm("bob", "f1") // sent 0.7 s before the sockets closed: the field case
+            settle()
+            assertTrue(a.link.sent.isEmpty())
+            assertEquals(1L, a.lora.loraSkippedInternet)
+
+            a.transport.coveredByInternet(emptySet()) // no clock advance: the lapse itself is the trigger
+            runCurrent()
+            settle()
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+            assertEquals(1L, a.lora.loraDirectResent)
+            assertTrue(logs.any { it.startsWith("lora resend f1 -> bob (cover lapsed") })
+
+            // Covered again, a DM kept off, then the same set republished: nothing lapsed, so nothing catches up.
+            a.transport.coveredByInternet(setOf("bob"))
+            a.dm("bob", "f2")
+            settle()
+            assertEquals(2L, a.lora.loraSkippedInternet)
+            a.transport.coveredByInternet(setOf("bob"))
+            settle()
+            assertEquals("still one airing", 1, a.link.sent.size)
+            assertEquals(2L, a.lora.loraSkippedInternet)
+        }
+
+    @Test
+    fun aFreshDmsBoardAckBringsTheOlderOnesNoBoardTookBehindItAndAResendsAckBringsNothing() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val (a, b) = pair(air, log = { logs += it })
+            // Four DMs a live link carried, so none went on the air; the link goes and none of them has its ✓✓.
+            a.transport.suppressDataPath(setOf("bob"))
+            listOf("f0", "f1", "f2", "f3").forEach { a.dm("bob", it) }
+            settle()
+            a.transport.suppressDataPath(emptySet())
+            assertTrue(a.link.sent.isEmpty())
+
+            a.dm("bob", "f4")
+            settle(10_000)
+            settle(10_000)
+            // f4's ack queues the newest of the rest, the two older after its ack (RESEND_LIMIT counts only what no board
+            // took); those resends' own acks queue nothing more, so f0 waits for the re-probe.
+            assertEquals(listOf("f4", "f3", "f2", "f1"), sentIds(a))
+            assertEquals(listOf("f4", "f3", "f2", "f1"), b.delivered.map { it.frameId })
+            assertEquals(3L, a.lora.loraDirectResent)
+            assertTrue(logs.any { it.startsWith("lora resend f3 -> bob (after ack, +2 after its ack)") })
+            assertEquals(
+                "a board that just acked is no evidence the phone is away: the re-probe stays at the base gap",
+                listOf(LoraReprobe.BASE_MS),
+                a.transport.reprobeSchedule().map { it.gapMs },
+            )
+        }
+
+    @Test
+    fun newerDmsItsBoardTookNeverHideAnOlderStrandedOneFromTheCatchUp() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            listOf("f1", "f2", "f3").forEach {
+                a.dm("bob", it)
+                settle()
+            }
+            // An older DM nothing carried — queued under a cover before the three, say — still without its ✓✓, while the
+            // three board-taken ones wait on bob's coalesced ✓✓.
+            a.source.unacked
+                .getValue("bob")
+                .add(DirectDm("f0", 0, "hi".encodeToByteArray()))
+            a.dm("bob", "f4")
+            settle(10_000)
+            assertEquals("the limit counts only what no board took", listOf("f1", "f2", "f3", "f4", "f0"), sentIds(a))
+            assertEquals(listOf("f1", "f2", "f3", "f4", "f0"), b.delivered.map { it.frameId })
+        }
+
+    @Test
+    fun losingTheBoardEndsEveryLift() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            a.transport.coveredByInternet(setOf("bob"))
+            b.dm("alice", "g1")
+            settle()
+            assertEquals(0, a.transport.status.value.internetCovered)
+
+            a.config.value = null // the board is unbound: what it heard says nothing about the next one
+            settle(1_000)
+            assertEquals("the relay's cover is back", 1, a.transport.status.value.internetCovered)
+            a.config.value = LoraConfig("AA:1", 1)
+            settle(1_000)
+            a.link.readyProvisioned(knitIndex = 1)
+            settle(1_000)
+            a.dm("bob", "f1")
+            settle()
+            assertTrue("covered again until bob is heard anew", a.link.sent.isEmpty())
+            assertEquals(1L, a.lora.loraSkippedInternet)
+        }
+
+    @Test
+    fun twoDmsToAPresentPhoneNeverReAirTheFirst() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            // Ordinary chat: bob's coalescer holds the ✓✓ for f1 up to 45 s, so f1 is unacked when f2's board ack lands.
+            a.dm("bob", "f1")
+            settle()
+            a.dm("bob", "f2")
+            settle()
+            assertEquals(listOf("f1", "f2"), sentIds(a))
+            assertEquals(0L, a.lora.loraDirectResent)
+        }
+
+    @Test
+    fun aDmItsBoardTookIsNeverCaughtUpOnlyTheOneTheCoverKeptOff() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            a.dm("bob", "f1")
+            settle()
+            a.transport.coveredByInternet(setOf("bob"))
+            a.dm("bob", "f2")
+            settle()
+            a.transport.coveredByInternet(emptySet())
+            runCurrent()
+            settle()
+            assertEquals("f1 waits on bob's phone: the re-probe's question", listOf("f1", "f2"), sentIds(a))
+            assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })
+        }
+
+    @Test
+    fun aRelayFlappingAfterAFailureAirsOnceInsideTheReprobesGap() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, _) = pair(air)
+            air.lossy = { _, to -> to == 2u } // bob's board is out of reach all along
+            a.dm("bob", "f1")
+            settle(air.untilGiveUp())
+            assertEquals(1, a.transport.status.value.direct.unreachable)
+
+            a.transport.coveredByInternet(setOf("bob"))
+            a.transport.coveredByInternet(emptySet())
+            settle()
+            assertEquals("inside the gap since the failure: nothing", 1, a.link.sent.size)
+
+            a.transport.coveredByInternet(setOf("bob")) // the re-probe defers while covered
+            settle(LoraReprobe.BASE_MS + LoraMeshTransport.LINGER_SWEEP_MS)
+            a.transport.coveredByInternet(emptySet())
+            settle(air.untilGiveUp())
+            assertEquals("past the gap: one resend, which fails again", 2, a.link.sent.size)
+
+            a.transport.coveredByInternet(setOf("bob"))
+            a.transport.coveredByInternet(emptySet())
+            settle()
+            assertEquals("the gap doubled: nothing", 2, a.link.sent.size)
+        }
+
+    @Test
+    fun aLiveCompactDmLiftsItsSendersCoverAndCatchesUpWhatItKeptOff() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val logs = mutableListOf<String>()
+            val (a, b) = pair(air, log = { logs += it })
+            a.transport.coveredByInternet(setOf("bob")) // bob pushed to the relay minutes ago, and left it
+            a.dm("bob", "f1")
+            settle()
+            assertTrue(a.link.sent.isEmpty())
+
+            b.dm("alice", "g1") // bob aired it: by his reckoning no relay joins us
+            settle(10_000)
+            assertEquals(listOf("g1"), a.delivered.map { it.frameId })
+            assertEquals(0, a.transport.status.value.internetCovered)
+            assertTrue(logs.contains("lora cover lifted bob"))
+            assertTrue(logs.any { it.startsWith("lora resend f1 -> bob (lifted") })
+            assertEquals(listOf("f1"), b.delivered.map { it.frameId })
+        }
+
+    @Test
+    fun aTickAloneLiftsTheCoverSoWhatWeOweGoesOnTheAir() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            a.transport.coveredByInternet(setOf("bob"))
+            b.dm("alice", "t1", body = "ack:nothing", kind = DirectKind.RECEIPT)
+            settle()
+            assertEquals(listOf("t1"), a.delivered.map { it.frameId })
+            assertEquals(0, a.transport.status.value.internetCovered)
+            a.dm("bob", "r1", kind = DirectKind.RECEIPT) // the ✓✓ we owe bob
+            settle()
+            assertEquals(listOf("r1"), sentIds(a))
+            assertEquals(0L, a.lora.loraSkippedInternet)
+        }
+
+    @Test
+    fun aLiftLastsUntilTheRelayLosesThatPeerWhateverElseItsPresentSetDoes() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            a.transport.coveredByInternet(setOf("bob"))
+            b.dm("alice", "g1")
+            settle()
+            assertEquals(0, a.transport.status.value.internetCovered)
+
+            a.transport.coveredByInternet(setOf("bob", "carol")) // carol appears on the relay
+            settle()
+            assertEquals("carol only: bob's lift holds", 1, a.transport.status.value.internetCovered)
+            a.dm("bob", "f1")
+            settle()
+            assertEquals(listOf("f1"), sentIds(a))
+
+            a.transport.coveredByInternet(setOf("carol")) // the relay lost bob: the lift ends with his presence
+            a.transport.coveredByInternet(setOf("bob", "carol")) // and he is back on it
+            a.dm("bob", "f2")
+            settle()
+            assertEquals(listOf("f1"), sentIds(a))
+            assertEquals(1L, a.lora.loraSkippedInternet)
+        }
+
+    @Test
+    fun neitherAnMqttCopyNorAReplayedOneNorABoardsAckLiftsTheCover() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            val now = wallBase + testScheduler.currentTime
+            a.transport.coveredByInternet(setOf("bob"))
+            val m1 = b.seal.seal("alice", "m1", now, "hi".encodeToByteArray())
+            a.link.deliver(2u, 0, MeshtasticProto.PORT_PRIVATE_APP, m1, to = 1u, viaMqtt = true, pkiEncrypted = true)
+            val q1 = b.seal.seal("alice", "q1", now, "hi".encodeToByteArray())
+            val stale = (now / 1_000 - 600).toUInt() // the to-phone queue replayed at reconnect
+            a.link.deliver(2u, 0, MeshtasticProto.PORT_PRIVATE_APP, q1, to = 1u, rxTime = stale, pkiEncrypted = true)
+            settle()
+            assertEquals("both delivered", listOf("m1", "q1"), a.delivered.map { it.frameId })
+            assertEquals("neither lifted", 1, a.transport.status.value.internetCovered)
+
+            // A board's ACK is a radio's word, never a person's: bob's board acks a DM that left before his cover came.
+            a.transport.coveredByInternet(emptySet())
+            a.transport.coveredByInternet(setOf("carol"))
+            a.dm("bob", "f1")
+            settle(500) // written; its ack lands at 2 s
+            assertEquals(listOf("f1"), sentIds(a))
+            assertEquals(0L, a.lora.loraDirectAcked)
+            a.transport.coveredByInternet(setOf("bob", "carol"))
+            settle()
+            assertEquals(1L, a.lora.loraDirectAcked)
+            assertEquals(2, a.transport.status.value.internetCovered)
         }
 
     // --- the air ---
