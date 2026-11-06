@@ -1703,6 +1703,12 @@
     <string name="chat_mesh_post_not_connected">Não publicado — seu rádio não está conectado</string>
     <string name="chat_mesh_post_too_soon">Não publicado — uma publicação a cada 30 segundos. Tente de novo em instantes.</string>
     <string name="chat_mesh_post_too_large">Não publicado — longo demais para um pacote de rádio</string>
+    <string name="chat_mesh_post_too_long">Longo demais para um pacote de rádio</string>
+    <plurals name="chat_message_too_long">
+        <item quantity="one">Longo demais: as mensagens podem ter até %1$d caractere</item>
+        <item quantity="many">Longo demais: as mensagens podem ter até %1$d caracteres</item>
+        <item quantity="other">Longo demais: as mensagens podem ter até %1$d caracteres</item>
+    </plurals>
     <string name="chat_mesh_post_no_air">Não publicado — o rádio usou seu tempo de transmissão por enquanto. Tente de novo em alguns minutos.</string>
     <string name="chat_mesh_post_channel_unusable">Não publicado — o canal principal deste rádio não aceita publicações</string>
     <string name="chat_mesh_post_refused">Não publicado — o rádio recusou. Tente de novo.</string>

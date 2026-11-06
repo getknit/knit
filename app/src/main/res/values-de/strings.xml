@@ -1671,6 +1671,11 @@
     <string name="chat_mesh_post_not_connected">Nicht gesendet – dein Funkgerät ist nicht verbunden</string>
     <string name="chat_mesh_post_too_soon">Nicht gesendet – nur ein Beitrag alle 30 Sekunden. Versuche es gleich noch einmal.</string>
     <string name="chat_mesh_post_too_large">Nicht gesendet – zu lang für ein Funkpaket</string>
+    <string name="chat_mesh_post_too_long">Zu lang für ein Funkpaket</string>
+    <plurals name="chat_message_too_long">
+        <item quantity="one">Zu lang: Nachrichten können bis zu %1$d Zeichen haben</item>
+        <item quantity="other">Zu lang: Nachrichten können bis zu %1$d Zeichen haben</item>
+    </plurals>
     <string name="chat_mesh_post_no_air">Nicht gesendet – das Funkgerät hat seine Sendezeit vorerst aufgebraucht. Versuche es in ein paar Minuten noch einmal.</string>
     <string name="chat_mesh_post_channel_unusable">Nicht gesendet – der Primärkanal dieses Funkgeräts nimmt keine Beiträge an</string>
     <string name="chat_mesh_post_refused">Nicht gesendet – das Funkgerät hat den Beitrag abgelehnt. Versuche es noch einmal.</string>

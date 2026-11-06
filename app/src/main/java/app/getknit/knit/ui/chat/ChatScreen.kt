@@ -3,6 +3,7 @@ package app.getknit.knit.ui.chat
 import android.content.ClipData
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import android.view.inputmethod.InputMethodManager
@@ -183,6 +184,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -4813,6 +4815,8 @@ private fun MessageInput(
             fontWeight = FontWeight.SemiBold,
         )
 
+    val onCapRefused = rememberCapRefusal(maxBytes)
+
     fun insertMention(
         query: MentionQuery,
         candidate: MentionCandidate,
@@ -5117,9 +5121,12 @@ private fun MessageInput(
                                 // The chips go first: a deletion they widen only shortens the draft, so the
                                 // cap after them still judges the edit that actually lands.
                                 inputTransformation =
-                                    remember(maxBytes) {
+                                    remember(maxBytes, onCapRefused) {
                                         MentionChips { currentMentions }.then(
-                                            maxBytes?.let(::MaxUtf8Bytes) ?: InputTransformation.maxLength(TextLimits.MESSAGE),
+                                            SaysWhenRefused(
+                                                maxBytes?.let(::MaxUtf8Bytes) ?: InputTransformation.maxLength(TextLimits.MESSAGE),
+                                                onCapRefused,
+                                            ),
                                         )
                                     },
                                 outputTransformation = remember(chipStyle) { MentionChipStyle({ currentMentions }, chipStyle) },
@@ -5377,6 +5384,55 @@ private class MaxUtf8Bytes(
 ) : InputTransformation {
     override fun TextFieldBuffer.transformInput() {
         if (LoraSizeHint.utf8Length(asCharSequence()) > maxBytes) revertAllChanges()
+    }
+}
+
+/**
+ * Tells [onRefused] when [cap] takes back an edit that grew the draft, so a paste too long for the field is
+ * refused out loud rather than vanishing. The buffer ending shorter than the edit left it is the refusal: a cap
+ * reverting a deletion ends longer, and a cursor move ends the same.
+ */
+private class SaysWhenRefused(
+    private val cap: InputTransformation,
+    private val onRefused: () -> Unit,
+) : InputTransformation {
+    override val keyboardOptions: KeyboardOptions?
+        get() = cap.keyboardOptions
+
+    override fun SemanticsPropertyReceiver.applySemantics() {
+        with(cap) { applySemantics() }
+    }
+
+    override fun TextFieldBuffer.transformInput() {
+        val attempted = length
+        with(cap) { transformInput() }
+        if (length < attempted) onRefused()
+    }
+}
+
+/** A `Toast.LENGTH_LONG`: a key held at the cap waits out the toast on screen rather than queueing more behind it. */
+private const val CAP_TOAST_GAP_MS = 3_500L
+
+/** What the composer does when its cap refuses an edit: a toast saying what the limit is, at most one per [CAP_TOAST_GAP_MS]. */
+@Composable
+private fun rememberCapRefusal(maxBytes: Int?): () -> Unit {
+    val context = LocalContext.current
+    val message =
+        if (maxBytes != null) {
+            stringResource(R.string.chat_mesh_post_too_long)
+        } else {
+            pluralStringResource(R.plurals.chat_message_too_long, TextLimits.MESSAGE, TextLimits.MESSAGE)
+        }
+    return remember(context, message) {
+        var shownAt: Long? = null
+        val onRefused: () -> Unit = {
+            val now = SystemClock.elapsedRealtime()
+            if (shownAt.let { it == null || now - it >= CAP_TOAST_GAP_MS }) {
+                shownAt = now
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            }
+        }
+        onRefused
     }
 }
 

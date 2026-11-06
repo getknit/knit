@@ -93,6 +93,8 @@ document:
 
 ### Fixed
 
+- Pasting a message too long for the chat did nothing, with no sign why. A toast now gives the limit, and in
+  the Meshtastic room it says the post won't fit in one radio packet.
 - When one of two people on LoRa switched their internet relays off, messages and delivery checkmarks between
   them could wait up to 15 minutes for the relay. They now go over LoRa instead, on both phones.
 - After Google Play or F-Droid updated Knit, it stayed offline until you opened the app again. The mesh now
