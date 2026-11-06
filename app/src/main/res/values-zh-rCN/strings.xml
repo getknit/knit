@@ -20,9 +20,9 @@
     <string name="mesh_notification_paused_title">Knit Mesh 网络已暂停</string>
     <string name="mesh_notification_paused_until">直到 %1$s</string>
     <string name="channel_alerts_name">连接和提醒</string>
-    <string name="channel_alerts_desc">Mesh 网络连接变化和错误</string>
+    <string name="channel_alerts_desc">Mesh 连接状态变更及错误</string>
     <string name="storage_alert_title">Knit 无法启动 Mesh 网络</string>
-    <string name="storage_alert_text">这部手机的安全存储没有响应，所以 Knit 无法打开你的消息。没有删除任何内容。点按以重试。</string>
+    <string name="storage_alert_text">手机的安全存储无响应，Knit 无法打开你的消息。你的消息不会因此丢失，点击重试。</string>
     <string name="storage_unavailable_title">正在等待安全存储</string>
     <string name="storage_unavailable_body">这部手机的安全存储没有响应，所以 Knit 暂时无法打开你的消息。没有删除任何内容。请稍后再试，重启手机也可能有帮助。</string>
     <string name="storage_unavailable_retry">重试</string>
