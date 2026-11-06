@@ -17,11 +17,14 @@ class FakeKeystoreCipher : KeystoreCipher {
     /** What the next [key] calls do instead of looking: throw, or [MISSING]. */
     val keyScript = ArrayDeque<Throwable>()
 
-    /** What the next [open] calls throw instead of unwrapping. */
+    /** What the next [open] calls throw instead of unwrapping, or [OPENS] to let one through. */
     val openScript = ArrayDeque<Throwable>()
 
     /** What the next [open] calls do to the bytes they unwrapped: a Keystore handing back other bytes, its tag verified. */
     val alterScript = ArrayDeque<(ByteArray) -> ByteArray>()
+
+    /** What the next [seal] calls do to the bytes before sealing them: other bytes sealed, under a tag that verifies. */
+    val sealScript = ArrayDeque<(ByteArray) -> ByteArray>()
 
     var lookups = 0
         private set
@@ -46,7 +49,7 @@ class FakeKeystoreCipher : KeystoreCipher {
         plain: ByteArray,
     ): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key) }
-        val ciphertext = cipher.doFinal(plain)
+        val ciphertext = cipher.doFinal(sealScript.removeFirstOrNull()?.invoke(plain) ?: plain)
         return cipher.iv + ciphertext
     }
 
@@ -55,7 +58,7 @@ class FakeKeystoreCipher : KeystoreCipher {
         wrapped: ByteArray,
     ): ByteArray {
         opens++
-        openScript.removeFirstOrNull()?.let { throw it }
+        openScript.removeFirstOrNull()?.let { if (it !== OPENS) throw it }
         val iv = wrapped.copyOfRange(0, KeystoreCipher.IV_LENGTH)
         val cipher =
             Cipher.getInstance(TRANSFORMATION).apply {
@@ -70,6 +73,9 @@ class FakeKeystoreCipher : KeystoreCipher {
 
         /** A scripted lookup that answers "no key". */
         val MISSING = Throwable("scripted: no key")
+
+        /** A scripted unwrap that goes through: the store's own check, ahead of a refusal aimed at the read after it. */
+        val OPENS = Throwable("scripted: opens")
 
         fun newKey(): SecretKey = SecretKeySpec(ByteArray(32).also { SecureRandom().nextBytes(it) }, "AES")
     }

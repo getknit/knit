@@ -111,8 +111,10 @@ class DatabaseKeyRecoveryTest {
     @Test
     fun aMintThatDoesNotReadBackFailsTheOpen() {
         staleDatabase()
+        cipher.openScript += FakeKeystoreCipher.OPENS
         repeat(3) { cipher.openScript += refusal() }
         assertThrows(KeystoreUnavailableException::class.java) { databaseKey.getOrCreate() }
+        assertTrue("the wrap was written and it was the read after that failed", keyFile.exists())
     }
 
     @Test

@@ -14,6 +14,9 @@ lines.
   screens:** READ ADR 028 and ADR 2026-10.fzsy. Reports are written redacted and leave the phone only by the user's
   hand; ANRs are imported from `ApplicationExitInfo` at start, once each (the `anr-seen` watermark), and `AnrTrace`
   is the privacy boundary for native frames, which the redactor passes verbatim.
+- **When touching `crash/TraceText` or adding a caller:** READ ADR 2026-10.47rw's 2026-11-05 amendment. It is the one
+  place a crash means to tell Google something: text in frames, which reach Play and pass the redactor unread, so a
+  caller hands it structure and counts, never anything a peer or the user wrote.
 - **When touching the Diagnostics share paths (`launchCrashShareChooser`, `FieldLogViewModel.sendInChat` /
   `CrashLogViewModel.sendInChat`, `FieldLogExport.fileName`):** READ ADR 2026-11.vdx4's 2026-11-02 amendment. The
   share sheet leaves Knit out (`EXTRA_EXCLUDE_COMPONENTS`), because the chat refuses a URI on Knit's own provider;

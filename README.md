@@ -470,10 +470,12 @@ therefore makes no network calls at all. A call over the Internet and a relay's 
 through the relay plane, and the speech model for call transcripts is downloaded from getknit.app only
 when you tap for it. (`ACCESS_NETWORK_STATE` is how the app checks that the default network actually
 reaches the Internet before it opens any of these sockets, so a phone that is only on the mesh never
-tries.) Knit bundles no analytics or telemetry, and a crash is
-kept on the phone for you to copy into a bug report, never uploaded. The same goes for the field log, which is off
+tries.) Knit bundles no analytics or telemetry, and it keeps a crash on the phone for you to copy into a bug report,
+never uploading one itself. The same goes for the field log, which is off
 unless you turn it on in Diagnostics: a three-day record of how your radios behaved, with no names, messages
-or ids in it, that you can share if you want to help tune Knit. You can confirm all of it from the source and the deliberately
+or ids in it, that you can share if you want to help tune Knit. If you installed from Google Play and share usage and
+diagnostics with Google, Android itself reports crashes there: the stack trace and, for an identity file that cannot be
+read, that file's size and layout, never its contents. You can confirm all of it from the source and the deliberately
 GMS-free dependency list.
 
 **Why does the app declare the location permission?**

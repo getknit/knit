@@ -182,6 +182,51 @@ class KeystoreSecretTest {
     }
 
     @Test
+    fun aSealOfOtherBytesReplacesNothing() {
+        val secret = stored()
+        val wrap = file.readBytes()
+        cipher.sealScript += { it + 1 }
+        assertThrows(KeystoreUnavailableException::class.java) { secret.store(byteArrayOf(9)) }
+        assertArrayEquals(wrap, file.readBytes())
+        assertArrayEquals(PLAIN, (secret.read() as Unwrapped.Present).bytes)
+    }
+
+    @Test
+    fun aSealOfOtherBytesOfTheSameLengthReplacesNothing() {
+        val secret = stored()
+        val wrap = file.readBytes()
+        cipher.sealScript += { sealed -> sealed.copyOf().also { it[0] = (it[0] + 1).toByte() } }
+        assertThrows(KeystoreUnavailableException::class.java) { secret.store(byteArrayOf(9)) }
+        assertArrayEquals(wrap, file.readBytes())
+    }
+
+    @Test
+    fun anOpenThatHandsBackOtherBytesReplacesNothing() {
+        val secret = stored()
+        val wrap = file.readBytes()
+        cipher.alterScript += { it + 1 }
+        assertThrows(KeystoreUnavailableException::class.java) { secret.store(byteArrayOf(9)) }
+        assertArrayEquals(wrap, file.readBytes())
+    }
+
+    @Test
+    fun aWrapTheKeystoreWillNotOpenReplacesNothing() {
+        val secret = stored()
+        val wrap = file.readBytes()
+        cipher.openScript += refusal()
+        val thrown = assertThrows(KeystoreUnavailableException::class.java) { secret.store(byteArrayOf(9)) }
+        assertTrue(thrown.cause is InvalidKeyException)
+        assertArrayEquals(wrap, file.readBytes())
+    }
+
+    @Test
+    fun aFirstStoreThatDoesNotOpenBackLeavesNoFile() {
+        cipher.sealScript += { it + 1 }
+        assertThrows(KeystoreUnavailableException::class.java) { secret().store(PLAIN) }
+        assertFalse(file.exists())
+    }
+
+    @Test
     fun aFreshKeyIsGeneratedOnlyWhenAsked() {
         val secret = stored()
         secret.store(byteArrayOf(8), freshKey = true)

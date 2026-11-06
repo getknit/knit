@@ -28,8 +28,12 @@ lines.
   confirmed absence; read a mint back before using it; and a live reader (the backup writer) uses `current()` /
   `read()`, never `getOrCreate()`. Debug builds refuse on cue while `files/keystore-fault` holds a count.
   An identity that opens but does not parse is unwrapped again over the same waits before it fails, and the failure
-  names each read's `CborShape`, never a value byte (the 2026-10-27 amendment).
-  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`, `CborShapeTest`,
+  names each read's `CborShape` (the 2026-10-27 amendment), in its message and in its frames, the only part Play keeps
+  (`crash/TraceText`, read back with `scripts/trace-text.py`). `CborShape` stops at the first head `Stored` could not
+  hold and prints nothing of it: past a lost span a head is a key byte. `KeystoreSecret.store` opens what it sealed and compares
+  before it replaces a file, and `rotatePrekeyIfDue` answers false rather than throw into the start path. Debug builds
+  hand back altered bytes on cue while `files/keystore-alter` holds a count (the 2026-11-05 amendment).
+  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`, `CborShapeTest`, `TraceTextTest`,
   `BackupWriterKeystoreTest`, `StorageGateTest`; on a device `DatabaseKeyTest`.
 - **When touching `data/backup/`, `ui/backup/`, `RestartActivity`, `KnitApplication.onCreate`'s pre-Koin
   block, `MeshManager.finishRestore`, `SeenSet.reopen`, `SettingsKeys.TRANSIENT_PREFIXES`, or adding a table

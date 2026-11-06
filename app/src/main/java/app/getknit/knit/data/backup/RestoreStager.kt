@@ -169,8 +169,8 @@ class RestoreStager(
     }
 
     /**
-     * Wraps [plain] under [alias] into [staging]/[fileName] and proves the wrap reads back. A wrap that fails or
-     * reads back refused is this phone's Keystore, never the file, so it is [BackupProblem.KEYSTORE_UNAVAILABLE];
+     * Wraps [plain] under [alias] into [staging]/[fileName] and proves the wrap reads back. A wrap that fails, opens
+     * to other bytes or reads back refused is this phone's Keystore, never the file, so it is [BackupProblem.KEYSTORE_UNAVAILABLE];
      * a read-back that proves anything else wrong is a [BackupProblem.MISMATCH] (ADR 2026-10.47rw).
      */
     private fun wrap(
