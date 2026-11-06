@@ -440,8 +440,8 @@ Status: Accepted (2026-11-05), with step 6's code.
 
 ## Amendment 2026-11-06: the owner-bound tag
 
-Status: Proposed (2026-11-06), until its device trial passes. From a design review of this ADR, which found that
-"Colliding keys" was itself a way to hide a contact.
+Status: Accepted (2026-11-06), after its device trial. From a design review of this ADR, which found that "Colliding
+keys" was itself a way to hide a contact.
 
 - **The tag binds its owner's id.** The MAC's message is now `label ‖ ownerNodeId (16 raw bytes) ‖ u64be(slot) ‖
   u8(restart)`, 44 bytes. The layout, the prefix, the slots, the restarts and the window all stand. The label stays
@@ -479,6 +479,9 @@ Status: Proposed (2026-11-06), until its device trial passes. From a design revi
 - **Mixed builds.** A phone on the 28-byte form does not resolve by key and links as a stranger. Once linked, the pair
   can still show as resolved through claims and `TAG_NEXT`, so a device trial reads `aliases.resolvedByKey`, never
   `peers[].resolved`.
+- **The trial (2026-11-06).** Three phones on this build, two contacts and a stranger, with no links and Wi-Fi Aware
+  off. Each contact resolved the other by key across a slot edge, a process restart and a Bluetooth toggle, with
+  `resolvedByClaim` at 0, and its count stopped while the writer was down. The stranger resolved neither.
 
 Guards: `BlindTagTest` (pins from an independent recipe, one key under two owners), `TagScheduleTest` (a tag resolves
 under the writer's id and no other, a failure burns no mark), `ExpectedTagTableTest` (a re-gifted key takes over nothing
