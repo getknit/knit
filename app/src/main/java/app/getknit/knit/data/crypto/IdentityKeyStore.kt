@@ -1,6 +1,7 @@
 package app.getknit.knit.data.crypto
 
 import android.util.Log
+import app.getknit.knit.crash.TraceText
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
@@ -56,8 +57,8 @@ class SignedPrekey(
  * (kept aside first); a Keystore refusal throws [KeystoreUnavailableException] and caches nothing, so the next
  * call tries again and finds the same identity. A wrap that opens but does not parse is never a reason to mint: every
  * peer pins the node id this file certifies. It is unwrapped again first, over [rereadDelaysMs], since a Keystore can
- * hand back other bytes than it sealed with its tag verified, and what still fails is a crash whose message carries
- * each read's [CborShape] (never a key byte).
+ * hand back other bytes than it sealed with its tag verified, and what still fails is a crash whose message and frames
+ * carry each read's [CborShape].
  */
 class IdentityKeyStore(
     private val secret: KeystoreSecret,
@@ -103,14 +104,24 @@ class IdentityKeyStore(
      * pruning retention to the newest [SPK_KEEP]. Returns true when a rotation happened — the caller
      * must then bump `profileVersion` so the new prekey re-floods. Old privates are retained so
      * in-flight initiations against a recently superseded prekey still open (~[SPK_KEEP] weeks).
+     *
+     * A prekey that cannot be stored is false too, and the next heal tries again: the old one stands, and a phone that
+     * never had one finds out in [currentPrekey], which throws. Both callers run this inline, the mesh start and the
+     * heal basket, so a throw here would cost every step after it, each time.
      */
     @Synchronized
+    @Suppress("TooGenericExceptionCaught") // whatever the Keystore or the disk threw, the old prekey stands
     fun rotatePrekeyIfDue(now: Long): Boolean {
         val state = loaded()
         val newest = state.stored.prekeys?.maxByOrNull { it.id }
         if (newest != null && now - newest.createdAt < SPK_ROTATE_MS) return false
-        mint(state, now)
-        return true
+        return try {
+            mint(state, now)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "prekey not rotated; trying again at the next heal", e)
+            false
+        }
     }
 
     /**
@@ -164,7 +175,9 @@ class IdentityKeyStore(
      * vouches for the bytes, so a parse failure is a bad build or a Keystore handing back other bytes than it sealed:
      * on Play, 2.9.0, one Redmi Note 14 Pro+ (API 36) opened its identity and failed mid-array, which no build writes.
      * A glitch on the way out reads right a moment later. A bad build, or bytes altered on the way in, fail every
-     * read; the exception then says whether the reads agreed and what each one looked like, and nothing is minted.
+     * read; the exception then says whether the reads agreed and what each one looked like, and nothing is minted. Its
+     * frames say it too ([TraceText]): that is the only part of this crash Play keeps, and the phone that needs it
+     * cannot open Diagnostics.
      */
     private fun parseOrReread(first: ByteArray): Loaded {
         val reads = mutableListOf(first)
@@ -188,9 +201,10 @@ class IdentityKeyStore(
             Log.w(TAG, "identity read ${attempt + 1} opened but does not parse", failure)
             if (firstFailure == null) firstFailure = failure
         }
-        throw IllegalStateException(
-            "identity keys unwrapped but do not parse; not minting over them. ${describeReads(reads, stoppedBy)}",
-            firstFailure,
+        val described = describeReads(reads, stoppedBy)
+        throw TraceText.carry(
+            IllegalStateException("identity keys unwrapped but do not parse; not minting over them. $described", firstFailure),
+            described,
         )
     }
 
@@ -300,7 +314,7 @@ class IdentityKeyStore(
 
         /**
          * Whether the unparsed [reads] were the same bytes, and the shape of each different one: `3 reads, the same
-         * bytes every time: 1043 B {hybridPriv:[i×92 t7@203 …` says the Keystore keeps answering what it sealed.
+         * bytes every time: 1043 B {hybridPriv:[i×92 sigPriv:[i×154]@203 …` says the Keystore keeps answering what it sealed.
          */
         private fun describeReads(
             reads: List<ByteArray>,

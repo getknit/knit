@@ -1,24 +1,31 @@
 package app.getknit.knit.data.crypto
 
 /**
- * The structure of a CBOR document and never a value in it: major types, counts and lengths, and a map key only when
- * it is one of the caller's [describe] names. It is what a Keystore-wrapped secret that opens but does not parse can
- * carry into a crash log: enough to tell a span lost or repeated mid-array from a bad build, with no key byte in it.
+ * The structure of a document `cryptoCbor` wrote, safe to leave the phone in a crash report: what an identity that opens
+ * but does not parse can say about itself, enough to tell a span lost or repeated mid-array from a bad build.
  *
- * `i` is an integer, `b32` a 32-byte string, `t7` a 7-byte text, `s` a simple value, `f` a float, `#n(…)` tag n,
- * `{k:v,…}` a map, and `[…]` an array whose equal neighbours collapse to `shape×n`, every run after the first carrying
- * the offset it starts at (`[i×92 t7@203 …]`). A trailing `*` marks an indefinite length, `!@n` the offset where the
- * walk met malformed CBOR and stopped, and `+n B` bytes left over after the document. The document's size leads.
+ * It walks only what such a document holds, integers, arrays and maps keyed by the caller's [describe] names, and stops
+ * at the first head that is anything else, printing nothing of it. That stop is the point. `ByteArray`s are arrays of
+ * integers here, so past a lost span the walk can read a key byte as a head, and a head's type and length together are
+ * the whole byte; a tag's argument is eight of them (ADR 2026-10.47rw's 2026-11-05 amendment). A head out of step in an
+ * array can show only that it read as an integer one or two bytes wide, and an offset how many value bytes before it took
+ * one byte to encode, which a short run can narrow to one head's width and no further. The slot after a name can be
+ * wider, as `createdAt` has to be.
+ *
+ * `i` is an integer, `{k:v,…}` a map, and `[…]` an array whose equal neighbours collapse to `shape×n`, every run after the
+ * first carrying the offset it starts at. A name inside an array is the next field arriving where the array promised
+ * more (`[i×92 sigPriv:[i×154]@203 …`). `!@n` is the offset the walk stopped at, `+n B` bytes left over after the
+ * document. The document's size leads.
  */
 internal object CborShape {
     fun describe(
         blob: ByteArray,
-        names: Set<String> = emptySet(),
+        names: Set<String>,
     ): String {
         val walk = Walk(blob, names)
         val shape =
             try {
-                val document = walk.item(0)
+                val document = walk.value(0)
                 val trailing = blob.size - walk.at
                 if (trailing > 0) "$document +$trailing B" else document
             } catch (cut: Cut) {
@@ -31,7 +38,7 @@ internal object CborShape {
     /** Deep enough for any secret this app wraps; a deeper document is cut there rather than walked. */
     private const val MAX_DEPTH = 16
 
-    /** A walk of garbage alternates shapes and grows with it; the head of it is the part that says what happened. */
+    /** A guard: the walk stops too early to reach it on anything but a document that really is this large. */
     private const val MAX_CHARS = 1_000
 
     // RFC 8949 §3: a head byte is three bits of major type over five of additional information.
@@ -40,19 +47,15 @@ internal object CborShape {
     private const val BYTE_MASK = 0xFF
     private const val MAJOR_UNSIGNED = 0
     private const val MAJOR_NEGATIVE = 1
-    private const val MAJOR_BYTES = 2
     private const val MAJOR_TEXT = 3
     private const val MAJOR_ARRAY = 4
     private const val MAJOR_MAP = 5
-    private const val MAJOR_TAG = 6
 
     /** The first additional information whose argument follows the head: 24, 25, 26, 27 take 1, 2, 4, 8 bytes. */
     private const val INFO_FOLLOWS = 24
     private const val INFO_LAST_WIDTH = 27
-    private const val INDEFINITE = 31
-    private const val BREAK = 0xFF
 
-    /** The walk stopped on malformed CBOR; [shape] is everything up to it, ending in `!@offset`. */
+    /** The walk stopped; [shape] is everything up to it, ending in `!@offset`. */
     private class Cut(
         val shape: String,
         inner: Cut? = null,
@@ -71,52 +74,49 @@ internal object CborShape {
     ) {
         var at = 0
 
-        fun item(depth: Int): String {
+        /** The document, or a field's value: an integer, an array or a map. */
+        fun value(depth: Int): String {
             val start = at
-            if (depth > MAX_DEPTH || at >= blob.size) throw Cut("!@$start")
-            val head = blob[at++].toInt() and BYTE_MASK
-            val major = head ushr MAJOR_SHIFT
-            val info = head and INFO_MASK
-            return if (info == INDEFINITE) indefinite(major, start, depth) else definite(major, info, start, depth)
-        }
-
-        private fun definite(
-            major: Int,
-            info: Int,
-            start: Int,
-            depth: Int,
-        ): String {
-            val argument = argument(info, start)
-            return when (major) {
-                MAJOR_UNSIGNED, MAJOR_NEGATIVE -> "i"
-                MAJOR_BYTES -> "b" + skip(argument, start)
-                MAJOR_TEXT -> "t" + skip(argument, start)
-                MAJOR_ARRAY -> elements(argument, start, depth)
-                MAJOR_MAP -> entries(argument, start, depth)
-                MAJOR_TAG -> tagged(argument, depth)
-                else -> if (info > INFO_FOLLOWS) "f" else "s" // 25–27 are the half, single and double floats
+            return when (major(depth)) {
+                MAJOR_UNSIGNED, MAJOR_NEGATIVE -> integer(start)
+                MAJOR_ARRAY -> elements(start, depth)
+                MAJOR_MAP -> entries(start, depth)
+                else -> throw Cut("!@$start")
             }
         }
 
-        private fun indefinite(
-            major: Int,
-            start: Int,
-            depth: Int,
-        ): String =
-            when (major) {
-                MAJOR_BYTES, MAJOR_TEXT -> chunks(major)
-                MAJOR_ARRAY -> elements(null, start, depth) + "*"
-                MAJOR_MAP -> entries(null, start, depth) + "*"
-                else -> throw Cut("!@$start") // a break outside an indefinite item, or an integer or tag
+        /** An array's element: an integer, a map, or a field out of place, read with its value. */
+        private fun element(depth: Int): String {
+            val start = at
+            name()?.let { return field(it, depth) }
+            return when (major(depth)) {
+                MAJOR_UNSIGNED, MAJOR_NEGATIVE -> byteElement(start)
+                MAJOR_MAP -> entries(start, depth)
+                else -> throw Cut("!@$start")
             }
+        }
 
-        /** The head's argument: [info] itself below [INFO_FOLLOWS], else the 1, 2, 4 or 8 bytes after the head. */
-        private fun argument(
-            info: Int,
-            start: Int,
-        ): Long {
+        /** An integer in an array is a `ByteArray`'s, two bytes at most; a wider head is out of step, and its width narrows it. */
+        private fun byteElement(start: Int): String {
+            if (blob[at].toInt() and INFO_MASK > INFO_FOLLOWS) throw Cut("!@$start")
+            return integer(start)
+        }
+
+        private fun major(depth: Int): Int {
+            if (depth > MAX_DEPTH || at >= blob.size) throw Cut("!@$at")
+            return (blob[at].toInt() and BYTE_MASK) ushr MAJOR_SHIFT
+        }
+
+        private fun integer(start: Int): String {
+            argument(start)
+            return "i"
+        }
+
+        /** Consumes a head, answering its argument; reserved and indefinite lengths stop the walk, as no build writes them. */
+        private fun argument(start: Int): Long {
+            val info = blob[at++].toInt() and INFO_MASK
             if (info < INFO_FOLLOWS) return info.toLong()
-            if (info > INFO_LAST_WIDTH) throw Cut("!@$start") // 28–30 are reserved
+            if (info > INFO_LAST_WIDTH) throw Cut("!@$start")
             val width = 1 shl (info - INFO_FOLLOWS)
             if (blob.size - at < width) throw Cut("!@$start")
             var value = 0L
@@ -124,40 +124,18 @@ internal object CborShape {
             return value
         }
 
-        private fun skip(
-            length: Long,
-            start: Int,
-        ): Long {
-            if (length < 0 || length > blob.size - at) throw Cut("!@$start")
-            at += length.toInt()
-            return length
-        }
-
-        /** Whether an indefinite item ends here, consuming its break. */
-        private fun breakNext(): Boolean {
-            if (at >= blob.size) throw Cut("!@$at")
-            if (blob[at].toInt() and BYTE_MASK != BREAK) return false
-            at++
-            return true
-        }
-
-        private fun more(
-            count: Long?,
-            seen: Long,
-        ): Boolean = if (count == null) !breakNext() else seen < count
-
         private fun elements(
-            count: Long?,
             start: Int,
             depth: Int,
         ): String {
-            if (count != null && count < 0) throw Cut("!@$start")
+            val count = argument(start)
+            if (count < 0) throw Cut("!@$start")
             val runs = mutableListOf<Run>()
             try {
                 var seen = 0L
-                while (more(count, seen)) {
+                while (seen < count) {
                     val itemStart = at
-                    val shape = item(depth + 1)
+                    val shape = element(depth + 1)
                     val last = runs.lastOrNull()
                     if (last != null && last.shape == shape) last.count++ else runs += Run(shape, itemStart)
                     seen++
@@ -173,64 +151,55 @@ internal object CborShape {
                 run.shape + (if (run.count > 1) "×${run.count}" else "") + (if (index > 0) "@${run.start}" else "") + " "
             }
 
+        /** A map that opens on a name; any other is a head out of step, and even its `{` would say what that byte is. */
         private fun entries(
-            count: Long?,
             start: Int,
             depth: Int,
         ): String {
-            if (count != null && count < 0) throw Cut("!@$start")
+            val count = argument(start)
+            if (count <= 0 || !opensOnName()) throw Cut("!@$start")
             val parts = mutableListOf<String>()
-            var pending = ""
             try {
                 var seen = 0L
-                while (more(count, seen)) {
-                    pending = key(depth + 1) + ":"
-                    parts += pending + item(depth + 1)
-                    pending = ""
+                while (seen < count) {
+                    parts += namedField(depth + 1)
                     seen++
                 }
             } catch (cut: Cut) {
-                throw Cut("{" + (parts + (pending + cut.shape)).joinToString(","), cut)
+                throw Cut("{" + (parts + cut.shape).joinToString(","), cut)
             }
             return "{" + parts.joinToString(",") + "}"
         }
 
-        /** A text key with its length in the head that is one of [names] reads as itself; any other reads as its shape. */
-        private fun key(depth: Int): String {
-            val head = blob.getOrNull(at)?.toInt()?.and(BYTE_MASK) ?: throw Cut("!@$at")
-            val length = head and INFO_MASK
-            if (head ushr MAJOR_SHIFT == MAJOR_TEXT && length < INFO_FOLLOWS && length < blob.size - at) {
-                val text = blob.decodeToString(at + 1, at + 1 + length)
-                if (text in names) {
-                    at += 1 + length
-                    return text
-                }
-            }
-            return item(depth)
+        private fun opensOnName(): Boolean {
+            val first = at
+            return (name() != null).also { at = first }
         }
 
-        private fun tagged(
-            tag: Long,
+        private fun namedField(depth: Int): String {
+            val start = at
+            return field(name() ?: throw Cut("!@$start"), depth)
+        }
+
+        private fun field(
+            name: String,
             depth: Int,
         ): String =
             try {
-                "#$tag(" + item(depth + 1) + ")"
+                "$name:" + value(depth)
             } catch (cut: Cut) {
-                throw Cut("#$tag(" + cut.shape, cut)
+                throw Cut("$name:" + cut.shape, cut)
             }
 
-        /** An indefinite byte or text string: definite chunks of the same major type up to a break. */
-        private fun chunks(major: Int): String {
-            val prefix = if (major == MAJOR_BYTES) "b" else "t"
-            var total = 0L
-            while (!breakNext()) {
-                val chunkStart = at
-                val head = blob[at++].toInt() and BYTE_MASK
-                val info = head and INFO_MASK
-                if (head ushr MAJOR_SHIFT != major || info == INDEFINITE) throw Cut("$prefix$total*!@$chunkStart")
-                total += skip(argument(info, chunkStart), chunkStart)
-            }
-            return "$prefix$total*"
+        /** The name at [at], consumed, or null with nothing consumed: only a text with its length in the head can be one. */
+        private fun name(): String? {
+            val head = blob.getOrNull(at)?.toInt()?.and(BYTE_MASK) ?: return null
+            val length = head and INFO_MASK
+            if (head ushr MAJOR_SHIFT != MAJOR_TEXT || length >= INFO_FOLLOWS || length >= blob.size - at) return null
+            val text = blob.decodeToString(at + 1, at + 1 + length)
+            if (text !in names) return null
+            at += 1 + length
+            return text
         }
     }
 }

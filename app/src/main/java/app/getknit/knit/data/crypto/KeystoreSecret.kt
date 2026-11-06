@@ -104,6 +104,12 @@ class KeystoreSecret(
     /**
      * Wraps [plain] under the Keystore key and writes it, replacing any prior value. [freshKey] generates a new
      * key first — only for a key the Keystore reported invalidated, which would refuse every wrap under it.
+     *
+     * The wrap has to open back to [plain] before it replaces anything: a tag that verifies says the bytes are the ones
+     * the Keystore sealed, not the ones it was handed, and the file this overwrites may be the only good copy. A wrap
+     * that opens to other bytes, or that the Keystore will not open, is a [KeystoreUnavailableException] with the file
+     * as it was (ADR 2026-10.47rw's 2026-11-05 amendment). One attempt, unlike [read]: a store that fails here is tried
+     * again by whoever asked, and costs a rotation a heal or a mint a Try again.
      */
     @Synchronized
     fun store(
@@ -111,7 +117,12 @@ class KeystoreSecret(
         freshKey: Boolean = false,
     ) {
         val key = if (freshKey) cipher.generate(alias) else keyForStore()
-        file.writeBytesAtomically(cipher.seal(key, plain))
+        val wrap = cipher.seal(key, plain)
+        val back = runCatching { cipher.open(key, wrap) }.getOrElse { throw KeystoreUnavailableException("seal of $fileName", it) }
+        val same = back.contentEquals(plain)
+        back.fill(0)
+        if (!same) throw KeystoreUnavailableException("seal of $fileName", null)
+        file.writeBytesAtomically(wrap)
     }
 
     /**

@@ -8,7 +8,8 @@ import app.getknit.knit.identity.NodeId
  *
  * Stack **frames** pass through byte-identical. A frame's class, method, file and line are constants
  * compiled into the APK — identical on every install — so they cannot carry a node id, a contact name,
- * or message text, and they are the entire diagnostic payload. Everything else is treated as an
+ * or message text, and they are the entire diagnostic payload. The one frame that is not a constant
+ * is [TraceText]'s, whose callers answer for what it carries. Everything else is treated as an
  * exception *message*, which is where identifiers do leak in practice: `BluetoothMeshTransport` puts
  * two node ids into one `IllegalStateException`, and `GallerySaver` puts a `content://` uri into an
  * `error()`.

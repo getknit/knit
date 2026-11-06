@@ -21,6 +21,23 @@ internal fun testEnvironment(
     fingerprint = "google/shiba/shiba:16/BP41.250822.001/13456789:user/release-keys",
 )
 
+/** The text [TraceText] carried in a printed [trace], read back the way `scripts/trace-text.py` reads a Play report. */
+internal fun carriedText(trace: String): String {
+    val chunks = Regex("""at knit\.TraceText\.t(\w+)\(TraceText:\d+\)""").findAll(trace).joinToString("") { it.groupValues[1] }
+    val bytes = java.io.ByteArrayOutputStream()
+    var at = 0
+    while (at < chunks.length) {
+        if (chunks[at] == '_') {
+            bytes.write(chunks.substring(at + 1, at + 3).toInt(16))
+            at += 3
+        } else {
+            bytes.write(chunks[at].code)
+            at++
+        }
+    }
+    return bytes.toString(Charsets.UTF_8)
+}
+
 /** A throwable whose message is [message] and whose frames are stable across runs. */
 internal fun throwableWith(message: String): Throwable =
     IllegalStateException(message).apply {

@@ -3,6 +3,7 @@ package app.getknit.knit.data.crypto
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.crash.carriedText
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -156,7 +157,54 @@ class IdentityKeyStoreRecoveryTest {
 
     @Test
     fun aMintThatDoesNotReadBackFailsInsteadOfServingAnUnstoredIdentity() {
+        cipher.openScript += FakeKeystoreCipher.OPENS
         repeat(3) { cipher.openScript += refusal() }
         assertThrows(KeystoreUnavailableException::class.java) { IdentityKeyStore(secret).keys() }
+        assertTrue("the wrap was written and it was the read after that failed", file.exists())
+    }
+
+    @Test
+    fun aWrapThatNeverParsesCarriesItsReadsInItsFramesToo() {
+        publicKey(IdentityKeyStore(secret))
+        repeat(3) { cipher.alterScript += dropped(40, 60) }
+
+        val thrown = assertThrows(IllegalStateException::class.java) { rereading().keys() }
+        assertEquals(thrown.message.orEmpty().substringAfter("not minting over them. "), carriedText(thrown.stackTraceToString()))
+    }
+
+    @Test
+    fun aRotationThatCannotBeStoredKeepsThePrekeyAndGoesAgainNextTime() {
+        val store = IdentityKeyStore(secret)
+        val first = store.currentPrekey(NOW).id
+        val wrap = file.readBytes()
+        cipher.sealScript += { it + 1 }
+
+        assertFalse(store.rotatePrekeyIfDue(ROTATION_DUE))
+        assertEquals(first, store.currentPrekey(ROTATION_DUE).id)
+        assertArrayEquals(wrap, file.readBytes())
+
+        assertTrue(store.rotatePrekeyIfDue(ROTATION_DUE))
+        val second = store.currentPrekey(ROTATION_DUE).id
+        assertNotEquals(first, second)
+        assertEquals(second, IdentityKeyStore(secret).currentPrekey(ROTATION_DUE).id)
+    }
+
+    @Test
+    fun aRotationWhoseKeyLookupIsRefusedKeepsThePrekeyToo() {
+        val store = IdentityKeyStore(secret)
+        val first = store.currentPrekey(NOW).id
+        val wrap = file.readBytes()
+        cipher.keyScript += refusal()
+
+        assertFalse(store.rotatePrekeyIfDue(ROTATION_DUE))
+        assertEquals(first, store.currentPrekey(ROTATION_DUE).id)
+        assertArrayEquals(wrap, file.readBytes())
+    }
+
+    private companion object {
+        const val NOW = 1_800_000_000_000L
+
+        /** Past the seven-day cadence of `SPK_ROTATE_MS`. */
+        const val ROTATION_DUE = NOW + 8 * 24 * 60 * 60_000L
     }
 }
