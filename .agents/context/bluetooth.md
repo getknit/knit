@@ -228,7 +228,7 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `dialsBackAfterDrop`, `FormKeys`, `BlindQueue`, `LinkEventStamps`, `BlindSightings`, `ReplayMarks`, `KeyChurnLimiter`,
   `BtLines`, `ScanPlan.published`, `MeshTransport.onPresenceKeys`, `BleBlindDrop`, `Protocol.CAP_BLIND_ADVERT`, or any
   pre-link `localId > nodeId` in the plane:**
-  READ ADR 2026-11.xp6d (Proposed; the pure core, the reader and the writer are built, behind `BLIND_ADVERT`). `AdvertOrder.iDial` decides every role
+  READ ADR 2026-11.xp6d (Accepted; the pure core, the reader and the writer are built, behind `BLIND_ADVERT`). `AdvertOrder.iDial` decides every role
   before a link on advertised forms: a blinding phone dials every clear advert, a clear phone never dials a blinded one,
   two tags go to the larger, and the responder judges a dialer on the form its HELLO `a` names (current or previous
   only). The PHY steps of a live link stay on proven real ids; the dial-back and hunt roles that read

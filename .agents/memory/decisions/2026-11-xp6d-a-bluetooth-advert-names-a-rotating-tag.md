@@ -187,8 +187,9 @@ none moved),
 `DirectContactsTest`, `PresenceKeyPolicyTest`, `PresenceKeyLabTest` (direct contacts resolve; strangers, group
 co-members and commons posters never do; removal, block and restore rotate; restores and resets on either side
 re-deliver, with the link up throughout; a passive carrier holds and floods nothing naming a key's recipient; a clock 46 min ahead or 9 h behind, slot phase pinned, links as a stranger) ending in
-`assertConverged`, and a `MaliciousForkLabTest` case
-in which a linked Sybil claims other phones' tags.
+`assertConverged`, and the Sybil cases in `BlindReaderTest` (from `aContactsKeyOutranksASybilsClaimSoOurDialToTheContactStands`
+to `aSybilOnOneLinkHoldsOneClaimSoItHoldsOffOnePhoneAtATime`), which walk a linked Sybil's claim on other phones' tags through
+`AdvertAliases`, `BlindSightings`, `BlePresenceTracker` and `DialPlan.ordinaryCandidates` to the dial decision and its release.
 
 ## Amendment 2026-11-03: the reader's wiring (step 5a)
 
