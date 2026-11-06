@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.chat
 
+import android.content.Context
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.Text
@@ -38,6 +39,7 @@ import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
@@ -46,7 +48,10 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.emoji.EmojiCatalogLoader
@@ -75,6 +80,9 @@ import org.koin.compose.KoinIsolatedContext
 import org.koin.dsl.koinApplication
 import org.koin.dsl.module
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowSystemClock
+import org.robolectric.shadows.ShadowToast
+import java.time.Duration
 
 /**
  * Drives the stateless `ChatScreenContent` — the send/attach button-mode switch, the long-press that
@@ -613,6 +621,40 @@ class ChatScreenContentTest {
 
         assertEquals(1, sends)
         assertEquals("hello\n", state.text.toString())
+    }
+
+    /**
+     * The cap refuses a paste whole, so the toast is the only sign anything happened. Filling the field to the
+     * cap exactly is not a refusal, and a held key waits out the toast on screen instead of queueing more.
+     */
+    @Test
+    fun aPastePastTheCapIsRefusedOutLoud() {
+        val state = TextFieldState("")
+        compose.setContent(content(input = "", inputState = state))
+        val input = compose.onNodeWithTag("chat_input")
+
+        input.performTextInput("x".repeat(TextLimits.MESSAGE))
+        assertEquals(TextLimits.MESSAGE, state.text.length)
+        assertEquals(0, ShadowToast.shownToastCount())
+
+        input.performTextInput("y")
+        assertEquals("x".repeat(TextLimits.MESSAGE), state.text.toString())
+        assertEquals(1, ShadowToast.shownToastCount())
+        val limit = TextLimits.MESSAGE
+        assertEquals(
+            ApplicationProvider
+                .getApplicationContext<Context>()
+                .resources
+                .getQuantityString(R.plurals.chat_message_too_long, limit, limit),
+            ShadowToast.getTextOfLatestToast(),
+        )
+
+        input.performTextInput("y")
+        assertEquals(1, ShadowToast.shownToastCount())
+
+        ShadowSystemClock.advanceBy(Duration.ofMillis(3_500))
+        input.performTextInput("y")
+        assertEquals(2, ShadowToast.shownToastCount())
     }
 
     @Test

@@ -2029,6 +2029,12 @@
     <string name="chat_mesh_post_not_connected">Not posted — your radio isn\'t connected</string>
     <string name="chat_mesh_post_too_soon">Not posted — one post every 30 seconds. Try again shortly.</string>
     <string name="chat_mesh_post_too_large">Not posted — too long for one radio packet</string>
+    <!-- The composer refusing an edit past its cap, said as a toast: the whole paste or keystroke is refused and the draft stays as it was. The first is the radio channel's cap, the second every other chat's. -->
+    <string name="chat_mesh_post_too_long">Too long for one radio packet</string>
+    <plurals name="chat_message_too_long">
+        <item quantity="one">Too long: messages can be up to %1$d character</item>
+        <item quantity="other">Too long: messages can be up to %1$d characters</item>
+    </plurals>
     <string name="chat_mesh_post_no_air">Not posted — the radio has used its airtime for now. Try again in a few minutes.</string>
     <string name="chat_mesh_post_channel_unusable">Not posted — this radio\'s primary channel can\'t take posts</string>
     <string name="chat_mesh_post_refused">Not posted — the radio refused it. Try again.</string>

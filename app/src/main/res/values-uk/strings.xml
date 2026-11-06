@@ -1735,6 +1735,13 @@
     <string name="chat_mesh_post_not_connected">Не опубліковано — ваше радіо не підключено</string>
     <string name="chat_mesh_post_too_soon">Не опубліковано — один допис раз на 30 секунд. Спробуйте трохи згодом.</string>
     <string name="chat_mesh_post_too_large">Не опубліковано — задовге для одного радіопакета</string>
+    <string name="chat_mesh_post_too_long">Задовге для одного радіопакета</string>
+    <plurals name="chat_message_too_long">
+        <item quantity="one">Задовге: повідомлення може містити до %1$d символу</item>
+        <item quantity="few">Задовге: повідомлення може містити до %1$d символів</item>
+        <item quantity="many">Задовге: повідомлення може містити до %1$d символів</item>
+        <item quantity="other">Задовге: повідомлення може містити до %1$d символу</item>
+    </plurals>
     <string name="chat_mesh_post_no_air">Не опубліковано — радіо поки що використало свій ефірний час. Спробуйте за кілька хвилин.</string>
     <string name="chat_mesh_post_channel_unusable">Не опубліковано — основний канал цього радіо не приймає дописів</string>
     <string name="chat_mesh_post_refused">Не опубліковано — радіо відхилило допис. Спробуйте ще раз.</string>

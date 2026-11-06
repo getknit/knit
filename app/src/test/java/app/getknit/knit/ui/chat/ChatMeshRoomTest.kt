@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.chat
 
+import android.content.Context
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
@@ -13,7 +14,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.ui.theme.KnitTheme
@@ -23,6 +26,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowToast
 
 /**
  * The Meshtastic room's screen. Every assertion here is really one rule: a post heard on the paired radio's
@@ -328,6 +332,18 @@ class ChatMeshRoomTest {
         compose.onNodeWithText("names not verified unless marked", substring = true).assertIsDisplayed()
         compose.onNodeWithTag("chat_mesh_notice").performClick()
         compose.onNodeWithText("a shield beside it", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aPastePastTheByteCapSaysItWontFitOnePacket() {
+        // Refused from an empty field, where the counter has not appeared: the toast is all there is to see.
+        render(listOf(row()))
+        compose.onNodeWithTag("chat_input").performTextInput("x".repeat(PublicPostPolicy.MAX_ON_AIR_BYTES + 1))
+        assertEquals("", inputState.text.toString())
+        assertEquals(
+            ApplicationProvider.getApplicationContext<Context>().getString(R.string.chat_mesh_post_too_long),
+            ShadowToast.getTextOfLatestToast(),
+        )
     }
 
     @Test
