@@ -9,8 +9,8 @@ package app.getknit.knit.mesh.bluetooth
  * 1. a contact's listing **gains a key** at most once per [minIntervalMs], and at most [dailyCap] times per rolling
  *    [dayMs]; a change inside either is held, and when the window frees the **newest** listing held applies, never the
  *    first ([held], and [coalesced] for a held listing a newer one replaced);
- * 2. **unlisting is never delayed**: a contact leaving the listing, a key dropped and a new collision (which the store
- *    leaves out) apply at once, and a change that both drops and gains applies its drop at once and holds its gain.
+ * 2. **unlisting is never delayed**: a contact leaving the listing and a key dropped apply at once, and a change that
+ *    both drops and gains applies its drop at once and holds its gain.
  *
  * A contact that leaves the listing and comes back within [dayMs] is counted against what it gained before. So a
  * contact streaming generations costs the table at most three new keys' tags, 420 HMACs, per [minIntervalMs], whether
@@ -49,8 +49,8 @@ internal class KeyChurnLimiter(
 
     private val contacts = HashMap<String, State>()
 
-    // The gains of contacts that left the listing (a DirectContacts flap, every key colliding), kept a day: a re-entry
-    // counts against them, so leaving and coming back never escapes the bound. At most one per contact that left.
+    // The gains of contacts that left the listing (a DirectContacts flap), kept a day: a re-entry counts against them, so
+    // leaving and coming back never escapes the bound. At most one per contact that left.
     private val departed = HashMap<String, Departed>()
 
     /** Changes held for a window, and held changes a newer one replaced. */

@@ -5,9 +5,10 @@ import app.getknit.knit.mesh.crypto.BlindTag
 
 /**
  * Every direct contact's expected tags over the contact window, so [AdvertAliases] resolves a heard tag with one hash
- * lookup (ADR 2026-11.xp6d, "The tag" and "Clocks"). A tag is a function of (key, slot, restart) ([BlindTag.tag]), so
- * the table lists each contact key's tags for every slot of [BlindTag.window] and all [BlindTag.RESTARTS] restarts,
- * keyed by the tag's 26-char form. An unknown tag, a flood of them included, costs a miss and nothing else.
+ * lookup (ADR 2026-11.xp6d, "The tag" and "Clocks"). A tag is a function of (key, owner, slot, restart) ([BlindTag.tag]),
+ * so the table lists each contact key's tags, minted under that contact's own id, for every slot of [BlindTag.window] and
+ * all [BlindTag.RESTARTS] restarts, keyed by the tag's 26-char form. An unknown tag, a flood of them included, costs a miss
+ * and nothing else.
  *
  * - **Incremental.** [slide] at a slot change lists only the slot that entered the window and drops the one that
  *   left it (a wall clock that jumps lists or drops as many as moved); [setKeys] rebuilds only the contacts whose keys
@@ -18,11 +19,10 @@ import app.getknit.knit.mesh.crypto.BlindTag
  *   another contact holds its next key too), and a lapsed key stays unlisted while the feed still names it. A
  *   **replaced newest key** stays listed until a tag under its successor is heard or its cap passes ([lapse], on the
  *   elapsed clock): an idle phone can air a tag minted under the old key for hours.
- * - **Collisions resolve to nobody.** A form that two contacts' keys both list (a contact who sent another's presence
- *   key as her own, or a 2⁻¹⁰⁸ accident) answers no one, however the two were listed or the window moved: last listed
- *   must not win, or the copier would take over the other's tags, contradict his claims and turn his proofs into
- *   replays. Each form keeps every generation that lists it, so unlisting one leaves the other's slots mapped.
- *   [collisionHits] counts the lookups refused this way (never the tag).
+ * - **One entry per form.** A tag binds its owner's id, so a key two contacts list (a contact who sent another's presence
+ *   key as her own) gives each contact tags of its own, and neither touches the other's. A contact's own keys are deduped
+ *   ([update]), so a form has one generation. Two listings of one form are a 2⁻¹⁰⁸ accident: the last wins and nothing
+ *   counts it.
  * - **Clocks.** Slots read the wall clock (the sender's slot against this phone's window); the previous key's cap reads
  *   the elapsed clock.
  *
@@ -39,10 +39,12 @@ internal class ExpectedTagTable(
     )
 
     private class Generation(
+        owner: String,
         val key: ByteArray,
         var untilMs: Long?,
     ) {
-        val expected = BlindTag.Expected(key)
+        /** Empty for an [owner] with no canonical bytes: the writer's schedule refuses one too, so it can have aired none. */
+        val expected = BlindTag.Expected(key, NodeId.toBytesOrNull(owner))
         val bySlot = HashMap<Long, List<String>>()
 
         /** Kept past the feed: the newest key a newer one replaced, listed until its cap or a tag under a newer key. */
@@ -65,8 +67,7 @@ internal class ExpectedTagTable(
 
     private val contacts = HashMap<String, Contact>()
 
-    /** Every generation listing a form; more than one contact among them is a collision. */
-    private val table = HashMap<String, MutableList<Entry>>()
+    private val table = HashMap<String, Entry>()
     private var window: LongRange? = null
     private var nextLapseMs = Long.MAX_VALUE
 
@@ -75,13 +76,6 @@ internal class ExpectedTagTable(
 
     /** Contacts listed now. */
     val contactCount: Int get() = contacts.size
-
-    /** Forms two or more contacts list now: they resolve to nobody. A walk of the table, for diagnostics only. */
-    val collided: Int get() = table.values.count { it.isCollision() }
-
-    /** Lookups refused for a collision, since the start. */
-    var collisionHits = 0L
-        private set
 
     /** Key generations listed whole over the window, since the start. */
     var builds = 0L
@@ -111,20 +105,16 @@ internal class ExpectedTagTable(
     }
 
     /**
-     * The owner of [tag] (a 26-char form), or null: unlisted, or listed by two contacts. A hit at [nowMs] under one of a
-     * contact's keys caps every older key it still lists, and retires at once one the feed replaced ([retireOlder]).
+     * The owner of [tag] (a 26-char form), or null when it is unlisted. A hit at [nowMs] under one of a contact's keys
+     * caps every older key it still lists, and retires at once one the feed replaced ([retireOlder]).
      */
     fun lookup(
         tag: String,
         nowMs: Long,
     ): Hit? {
-        val entries = table[tag] ?: return null
-        if (entries.isCollision()) {
-            collisionHits++
-            return null
-        }
-        val contact = entries.first().contact
-        val heard = contact.generations.indexOfFirst { g -> entries.any { it.generation === g } }
+        val entry = table[tag] ?: return null
+        val contact = entry.contact
+        val heard = contact.generations.indexOf(entry.generation)
         if (heard >= 0) retireOlder(contact, heard, nowMs)
         return Hit(contact.id, current = heard == 0)
     }
@@ -195,11 +185,14 @@ internal class ExpectedTagTable(
         nowMs: Long,
     ) {
         val held = contacts[id]
-        held?.retired?.removeAll { r -> key.keys.none { it.contentEquals(r) } }
-        val wanted = key.keys.filter { k -> held?.retired?.none { it.contentEquals(k) } ?: true }
+        // A fork can store one key under two generations (`PresenceKeyPolicy.receive` compares bytes only within one). Both
+        // would list the same forms, so the unlisting of one would leave the key's tags dark: the newest stands for it.
+        val keys = key.keys.distinctBy { it.asList() }
+        held?.retired?.removeAll { r -> keys.none { it.contentEquals(r) } }
+        val wanted = keys.filter { k -> held?.retired?.none { it.contentEquals(k) } ?: true }
         val listed =
             wanted.mapIndexed { i, k ->
-                (held?.generationFor(k) ?: Generation(k.copyOf(), null)).also {
+                (held?.generationFor(k) ?: Generation(id, k.copyOf(), null)).also {
                     it.lingering = false
                     // A store-listed older key keeps the cap a hit under a newer one set; the two-key form's is reset.
                     val cap = it.untilMs
@@ -255,7 +248,7 @@ internal class ExpectedTagTable(
         if (forms.isEmpty()) return
         generation.bySlot[slot] = forms
         val entry = Entry(contact, generation)
-        forms.forEach { table.getOrPut(it) { ArrayList(1) }.add(entry) }
+        forms.forEach { table[it] = entry }
     }
 
     private fun dropSlot(
@@ -263,9 +256,8 @@ internal class ExpectedTagTable(
         slot: Long,
     ) {
         generation.bySlot.remove(slot)?.forEach { form ->
-            val entries = table[form] ?: return@forEach
-            entries.removeAll { it.generation === generation }
-            if (entries.isEmpty()) table.remove(form)
+            // A form a later listing won (the 2⁻¹⁰⁸ accident) stays that listing's.
+            if (table[form]?.generation === generation) table.remove(form)
         }
     }
 
@@ -274,8 +266,6 @@ internal class ExpectedTagTable(
             .toList()
             .forEach { dropSlot(generation, it) }
     }
-
-    private fun List<Entry>.isCollision(): Boolean = any { it.contact !== first().contact }
 
     private fun unlist(contact: Contact) {
         contact.generations.forEach(::unlistGeneration)

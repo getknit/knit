@@ -12673,9 +12673,12 @@ class InboundPipelineTest {
             assertEquals(1L, rig.metrics.keys().presenceKeysReplaced)
         }
 
-    /** A key two peers handed us, or one of our own, is listed for no one and counted (security N7). */
+    /**
+     * The store lists what it holds: a tag is bound to its owner's id, so a key equal to another's or to one of ours needs
+     * no rule here (ADR 2026-11.xp6d's owner-bound amendment; `PresenceKeyForkLabTest` carries it through to the resolver).
+     */
     @Test
-    fun aKeyEqualToOursOrAnothersIsListedForNoOne() =
+    fun everyStoredKeyOfADirectContactIsListedAndNoOneElses() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
@@ -12701,16 +12704,22 @@ class InboundPipelineTest {
             rig.deliver(bob, V2Author(bob, rig).presenceKeyDm("pk-b", 200L to 10))
             rig.deliver(carol, V2Author(carol, rig).presenceKeyDm("pk-c", 300L to 30, 301L to 31))
 
-            val (listed, excluded) = keys.presenceKeysFor(setOf(alice.nodeId, bob.nodeId, carol.nodeId))
-            assertEquals(listOf(101L), listed.getValue(alice.nodeId).map { it.generation })
-            assertFalse("bob's only key is alice's too", bob.nodeId in listed)
-            assertEquals("carol's first key is ours", listOf(301L), listed.getValue(carol.nodeId).map { it.generation })
-            assertEquals(3, excluded)
+            val listed = keys.presenceKeysFor(setOf(alice.nodeId, bob.nodeId, carol.nodeId))
+            assertEquals("newest first", listOf(101L, 100L), listed.getValue(alice.nodeId).map { it.generation })
+            assertEquals("bob's only key is alice's too", listOf(200L), listed.getValue(bob.nodeId).map { it.generation })
+            assertEquals("carol's first key is ours", listOf(301L, 300L), listed.getValue(carol.nodeId).map { it.generation })
+            assertArrayEquals(
+                "one key, two contacts: listed for both",
+                listed.getValue(alice.nodeId).last().key,
+                listed.getValue(bob.nodeId).single().key,
+            )
             assertEquals(
                 "a stored key of anyone else is never listed",
-                emptyMap<String, Any>(),
-                keys.presenceKeysFor(setOf("someone")).first,
+                setOf(alice.nodeId),
+                keys.presenceKeysFor(setOf(alice.nodeId)).keys,
             )
+            assertEquals("and of no one held", emptyMap<String, Any>(), keys.presenceKeysFor(setOf("someone")))
+            assertEquals("and with no one asked for", emptyMap<String, Any>(), keys.presenceKeysFor(emptySet()))
         }
 
     private fun scopeConfig(

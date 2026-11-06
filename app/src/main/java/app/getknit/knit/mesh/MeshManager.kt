@@ -1408,20 +1408,17 @@ class MeshManager(
     /**
      * The Bluetooth plane's resolver reads the direct contacts' presence keys (ADR 2026-11.xp6d's key feed): the store's
      * listing, re-read on every change of the keys or of the direct contacts, goes whole to the transport, which bounds a
-     * contact's churn itself. Keys a collision left out are counted as they rise. Never logs a key. This phone's own key and
-     * the `TAG_NEXT` block list go too ([feedOwnPresenceKey]).
+     * contact's churn itself. Never logs a key. This phone's own key and the `TAG_NEXT` block list go too
+     * ([feedOwnPresenceKey]).
      */
     private fun feedPresenceKeys(session: CoroutineScope) {
         feedOwnPresenceKey(session)
         val contacts = directContacts ?: return
         val failed: (Exception) -> Unit = { Log.w(TAG, "presence key feed failed: ${it.message}") }
         session.launch {
-            var excludedBefore = 0
             combine(contacts.observe(), presenceKeyStore.keyChanges()) { direct, _ -> direct }.collect { direct ->
                 runRound(failed) {
-                    val (listed, excluded) = presenceKeyStore.presenceKeysFor(direct)
-                    metrics.onPresenceKeysExcluded(excluded - excludedBefore)
-                    excludedBefore = excluded
+                    val listed = presenceKeyStore.presenceKeysFor(direct)
                     transport.onPresenceKeys(listed.mapValues { (_, keys) -> keys.map { it.key } })
                 }
             }

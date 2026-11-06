@@ -68,7 +68,7 @@ class BlindSightingsTest {
         // every event it lets through before that end; one it stops would have held a dead link and a hint for good.
         var now = 0L
         val aliases = AdvertAliases<Any>(nowMs = { now }, wallMs = { 1_800_000_000_000L })
-        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, slot = 1, restart = 0))
+        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, ByteArray(NodeId.BYTES), slot = 1, restart = 0))
         val link = Any()
         var registered: Any? = link
         // The fork proves and closes at once: its end runs on the worker before its `onAnswered`.

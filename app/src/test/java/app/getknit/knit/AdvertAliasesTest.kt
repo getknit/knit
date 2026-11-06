@@ -30,12 +30,13 @@ class AdvertAliasesTest {
 
     private fun key(): ByteArray = ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes)
 
-    /** [key]'s tag for the slot [slotOffset] from the wall clock's, at [restart]. */
+    /** [owner]'s tag under [key] for the slot [slotOffset] from the wall clock's, at [restart]. */
     private fun tagUnder(
         key: ByteArray,
         slotOffset: Long = 0,
         restart: Int = 0,
-    ): String = NodeId.fromBytes(BlindTag.tag(key, BlindTag.slotOf(wall) + slotOffset, restart))
+        owner: String = bob,
+    ): String = NodeId.fromBytes(BlindTag.tag(key, NodeId.toBytes(owner), BlindTag.slotOf(wall) + slotOffset, restart))
 
     private fun blinded(tag: String) = Form(tag, blinded = true)
 
@@ -134,21 +135,23 @@ class AdvertAliasesTest {
     @Test
     fun aContactSendingAnothersKeyGainsNothingOverHim() {
         val a = aliases()
-        // Mallory sent Bob's presence key as her own.
+        // Mallory sent Bob's presence key as her own: the tags it lists under her id are hers, and his stay his.
         a.setKeys(mapOf(bob to ContactKey(bobKey), mallory to ContactKey(bobKey)))
         val bobs = tagUnder(bobKey)
-        assertEquals("neither id by key", Resolution.Unresolved, a.resolve(blinded(bobs)))
-        // Bob's own dial-proven link claim stands: no key contradicts it, and his proof is no replay.
-        assertEquals(ClaimOutcome.Recorded, a.onDialed("l1", blinded(bobs), bobs, bob))
-        assertEquals(resolved(bob, Source.Claim), a.resolve(blinded(bobs)))
+        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(bobs)))
+        assertEquals(resolved(mallory, Source.Key), a.resolve(blinded(tagUnder(bobKey, owner = mallory))))
+        // Bob's own dial proves what the key says: nothing to record, and his proof is no replay.
+        assertEquals(ClaimOutcome.Redundant, a.onDialed("l1", blinded(bobs), bobs, bob))
         wall += BlindTag.SLOT_MS
         a.slide()
-        assertEquals("the window moved; still his claim", resolved(bob, Source.Claim), a.resolve(blinded(bobs)))
+        assertEquals("the window moved; still his key", resolved(bob, Source.Key), a.resolve(blinded(bobs)))
+        assertEquals("a slot the window gained is his too", resolved(bob, Source.Key), a.resolve(blinded(tagUnder(bobKey, 2))))
         val counted = a.counters()
         assertEquals(0L, counted.keyProofMismatches)
         assertEquals(0L, counted.claimsDropped)
-        assertTrue(counted.keyCollisions > 0)
-        assertEquals("a slot the window gained is no one's either", Resolution.Unresolved, a.resolve(blinded(tagUnder(bobKey, 2))))
+        // Her claim to his tag is one his key contradicts.
+        assertEquals(ClaimOutcome.Contradicted, a.onTagNext("l2", mallory, bobs))
+        assertEquals(resolved(bob, Source.Key), a.resolve(blinded(bobs)))
     }
 
     @Test
@@ -547,7 +550,7 @@ class AdvertAliasesTest {
             now += 10
         }
         assertEquals(AdvertAliases.Config().maxClaims, a.counters().claims)
-        val alices = tagUnder(aliceKey)
+        val alices = tagUnder(aliceKey, owner = alice)
         assertEquals(ClaimOutcome.Recorded, a.onDialed("la", blinded(alices), alices, alice))
         assertEquals(resolved(alice, Source.Claim), a.resolve(blinded(alices)))
         val bobs = tagUnder(bobKey)

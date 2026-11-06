@@ -7,10 +7,16 @@ import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.bluetooth.TagSchedule
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -110,6 +116,41 @@ class PresenceKeyRepositoryTest : RoomDbTest() {
 
             assertEquals(listOf("bob" to 5L, "bob" to 3L, "carol" to 7L), rows.map { it.nodeId to it.generation })
             assertEquals(listOf(50L, 50L, 70L), rows.map { it.receivedAt })
+        }
+
+    /**
+     * The feed's token moves exactly when a key or its era does: a sender restored twice from one backup reuses a generation
+     * number, and a token of (node, generation) alone swallowed the tick that re-lists the resolver's keys. On a real
+     * dispatcher: Room's invalidation does not run on the test's virtual clock.
+     */
+    @Test
+    fun keyChangesTicksForANewEraThatReusesAGenerationAndNotForARewriteOfTheSameRow() =
+        runTest {
+            withContext(Dispatchers.Default) {
+                val ticks = Channel<List<String>>(Channel.UNLIMITED)
+                val watcher = launch { repo.keyChanges().collect { ticks.send(it) } }
+
+                suspend fun nextTick() = checkNotNull(withTimeoutOrNull(WEDGE_MS) { ticks.receive() }) { "no tick: the token did not move" }
+                val bytes = ByteArray(32) { 1 }
+                val other = ByteArray(32) { 2 }
+                assertEquals(emptyList<String>(), nextTick())
+
+                repo.applyHeld("bob", listOf(PresenceKeyPolicy.Held(5, bytes, rootTag = 1L)), now = 100)
+                val first = nextTick()
+                assertEquals(1, first.size)
+
+                // The same key in the same era moves nothing. Read from the row, since the flow may conflate two writes and
+                // the token is a function of the row.
+                repo.applyHeld("bob", listOf(PresenceKeyPolicy.Held(5, bytes, rootTag = 1L)), now = 150)
+                assertEquals("a rewrite keeps its first arrival", 100L, repo.peerKeyRows().single().receivedAt)
+                repo.applyHeld("bob", listOf(PresenceKeyPolicy.Held(5, other, rootTag = 2L)), now = 200)
+                val newEra = nextTick()
+                assertNotEquals("same generation, other bytes, new root", first, newEra)
+
+                repo.applyHeld("bob", listOf(PresenceKeyPolicy.Held(5, other, rootTag = 3L)), now = 300)
+                assertNotEquals("the era alone moves it too", newEra, nextTick())
+                watcher.cancel()
+            }
         }
 
     private fun held(generation: Long) = PresenceKeyPolicy.Held(generation, ByteArray(32) { generation.toByte() }, rootTag = 1L)

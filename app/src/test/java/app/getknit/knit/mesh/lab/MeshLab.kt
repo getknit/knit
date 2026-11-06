@@ -2303,13 +2303,15 @@ class LabNode internal constructor(
      * what `data/backup` restores — the identity and settings as they were, the database with its
      * [BackupTables.TRANSIENT] tables (custody, both ratchets) emptied exactly as the export leaves them, and
      * the settings carrying the restore mark that makes the next `MeshManager.start` run `finishRestore`.
-     * The snapshot is taken at the moment of the call; nothing this node held in memory survives.
+     * The snapshot is taken at the moment of the call; nothing this node held in memory survives. [lastGeneration] is
+     * the `presence_key_last_generation` an older backup carried, for a second restore from one backup: null, the snapshot's.
      */
-    suspend fun restoreFromBackup() {
+    suspend fun restoreFromBackup(lastGeneration: Long? = null) {
         check(!meshPaused) { "$name's mesh is paused: resumeMesh() before a restore" }
         val peers = shutdownLive()
         awaitPeersSettled(peers)
         db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
+        lastGeneration?.let { settings.setPresenceKeyLastGeneration(it) }
         dataStore.edit { it[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)] = true }
         timedBoot()
     }

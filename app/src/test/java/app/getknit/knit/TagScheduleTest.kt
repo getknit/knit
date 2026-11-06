@@ -56,8 +56,10 @@ class TagScheduleTest {
     private val wall = 1_800_000_000_000L
     private val slot = BlindTag.slotOf(wall)
     private val store = Store()
+    private val localId = NodeId.derive("me")
+    private val me = NodeId.toBytes(localId)
 
-    private fun schedule(seed: Long = 1) = TagSchedule(store, SeededRandom(seed))
+    private fun schedule(seed: Long = 1) = TagSchedule(store, SeededRandom(seed)) { localId }
 
     /** Every tag aired, as a list, so a repeat shows as a duplicate. */
     private val aired = ArrayList<List<Byte>>()
@@ -75,9 +77,9 @@ class TagScheduleTest {
     fun aNewGenerationStartsAtTheCurrentSlot() {
         val next = air(schedule(), wall)
         assertTrue(next.resolvable)
-        assertArrayEquals(BlindTag.tag(key, slot, 0), next.tag)
+        assertArrayEquals(BlindTag.tag(key, me, slot, 0), next.tag)
         assertEquals(TagSchedule.Mark(slot, 0), store.marks[1])
-        assertArrayEquals("a newer generation has no mark of its own", BlindTag.tag(key, slot, 0), air(schedule(), wall, 2).tag)
+        assertArrayEquals("a newer generation has no mark of its own", BlindTag.tag(key, me, slot, 0), air(schedule(), wall, 2).tag)
     }
 
     @Test
@@ -85,7 +87,7 @@ class TagScheduleTest {
         val s = schedule()
         val nexts = List(5) { air(s, wall + it * 1_000L) }
         assertEquals(listOf(true, true, true, true, false), nexts.map { it.resolvable })
-        for (restart in 0 until BlindTag.RESTARTS) assertArrayEquals(BlindTag.tag(key, slot, restart), nexts[restart].tag)
+        for (restart in 0 until BlindTag.RESTARTS) assertArrayEquals(BlindTag.tag(key, me, slot, restart), nexts[restart].tag)
         assertNoRepeat()
         assertTrue("the next slot resolves again", air(s, wall + BlindTag.SLOT_MS).resolvable)
     }
@@ -122,9 +124,13 @@ class TagScheduleTest {
         assertFalse(fallback.resolvable)
         assertTrue(BlindTag.hasPrefix(fallback.tag))
         val table = ExpectedTagTable(previousKeyMaxMs = 1_000)
-        table.setKeys(mapOf(NodeId.derive("me") to ContactKey(key)), nowMs = 0, wallMs = wall)
+        table.setKeys(mapOf(localId to ContactKey(key)), nowMs = 0, wallMs = wall)
         assertNull(table.lookup(NodeId.fromBytes(fallback.tag), 0L))
-        assertEquals(NodeId.derive("me"), table.lookup(NodeId.fromBytes(aired.first().toByteArray()), 0L)?.nodeId)
+        assertEquals(localId, table.lookup(NodeId.fromBytes(aired.first().toByteArray()), 0L)?.nodeId)
+        // A tag is the writer's: the same key listed under any other id does not resolve it.
+        val other = ExpectedTagTable(previousKeyMaxMs = 1_000)
+        other.setKeys(mapOf(NodeId.derive("someone else") to ContactKey(key)), nowMs = 0, wallMs = wall)
+        assertNull(other.lookup(NodeId.fromBytes(aired.first().toByteArray()), 0L))
         assertFalse("the diagnostics name no tag", fallback.toString().contains(NodeId.fromBytes(fallback.tag).substring(4)))
     }
 
@@ -146,7 +152,7 @@ class TagScheduleTest {
             val next = air(s, wall + 60_000, generation + 1, fresh)
             assertTrue(next.resolvable)
             assertFalse(next.stale)
-            assertArrayEquals(BlindTag.tag(fresh, slot, 0), next.tag)
+            assertArrayEquals(BlindTag.tag(fresh, me, slot, 0), next.tag)
         }
         assertNoRepeat()
         val s = schedule()
@@ -170,7 +176,7 @@ class TagScheduleTest {
         val s = schedule()
         air(s, wall)
         val announced = s.reserve(key, 1, wall)
-        assertArrayEquals(BlindTag.tag(key, slot + 1, 0), announced.tag)
+        assertArrayEquals(BlindTag.tag(key, me, slot + 1, 0), announced.tag)
         val bringUp = air(s, wall + 1_000)
         assertFalse("a bring-up inside the announcement lead airs a random tag", bringUp.resolvable)
         val rotation = s.take(1, wall + BlindTag.SLOT_MS)
@@ -178,7 +184,7 @@ class TagScheduleTest {
         assertArrayEquals("announce, rotate, same bytes", announced.tag, rotation?.tag)
         aired += announced.tag.toList()
         assertNull("taken once", s.take(1, wall + BlindTag.SLOT_MS))
-        assertArrayEquals(BlindTag.tag(key, slot + 1, 1), air(s, wall + BlindTag.SLOT_MS).tag)
+        assertArrayEquals(BlindTag.tag(key, me, slot + 1, 1), air(s, wall + BlindTag.SLOT_MS).tag)
         assertNoRepeat()
     }
 
@@ -191,7 +197,33 @@ class TagScheduleTest {
         assertTrue("an unread generation fails on its read", runCatching { s.next(key, 2, wall) }.exceptionOrNull() is IOException)
         store.failing = false
         assertEquals("the failed write left the mark", TagSchedule.Mark(slot, 0), store.marks[1])
-        assertArrayEquals(BlindTag.tag(key, slot + 1, 0), air(s, wall + BlindTag.SLOT_MS).tag)
+        assertArrayEquals(BlindTag.tag(key, me, slot + 1, 0), air(s, wall + BlindTag.SLOT_MS).tag)
+    }
+
+    @Test
+    fun aFailureComputingTheTagBurnsNoMark() {
+        // The tag comes before the mark: a key or id that cannot make one leaves the (slot, restart) unspent.
+        val bad = TagSchedule(store, SeededRandom(1)) { "not a node id" }
+        assertTrue(runCatching { bad.next(key, 1, wall) }.exceptionOrNull() is IllegalStateException)
+        // The last char's two padding bits set: the right length and alphabet, but no canonical bytes, so the reader lists nothing.
+        val padded = TagSchedule(store, SeededRandom(1)) { localId.dropLast(1) + "7" }
+        assertTrue(runCatching { padded.next(key, 1, wall) }.exceptionOrNull() is IllegalStateException)
+        val s = schedule()
+        assertTrue(runCatching { s.next(ByteArray(1), 1, wall) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue("nothing written", store.marks.isEmpty())
+        assertArrayEquals(BlindTag.tag(key, me, slot, 0), air(s, wall).tag)
+    }
+
+    @Test
+    fun theIdIsReadAtAChoiceNeverAtConstruction() {
+        // The transport builds its schedule in a field initializer, before `start` sets the id its lambda reads.
+        var started: String? = null
+        val s = TagSchedule(store, SeededRandom(1)) { checkNotNull(started) }
+        assertTrue("a random tag needs no id", BlindTag.hasPrefix(s.random().tag))
+        assertTrue(runCatching { s.next(key, 1, wall) }.isFailure)
+        assertTrue(store.marks.isEmpty())
+        started = localId
+        assertArrayEquals(BlindTag.tag(key, me, slot, 0), s.next(key, 1, wall).tag)
     }
 
     @Test
@@ -215,7 +247,7 @@ class TagScheduleTest {
         val s = schedule()
         val stale = s.reserve(key, 1, wall)
         val later = s.reserve(key, 1, wall + BlindTag.SLOT_MS)
-        assertArrayEquals("the later slot's own tag, not the held one", BlindTag.tag(key, slot + 2, 0), later.tag)
+        assertArrayEquals("the later slot's own tag, not the held one", BlindTag.tag(key, me, slot + 2, 0), later.tag)
         val taken = s.take(1, wall + 2 * BlindTag.SLOT_MS)
         assertArrayEquals(later.tag, taken?.tag)
         assertFalse("the replaced reservation is never aired", stale.tag.contentEquals(taken?.tag))
@@ -230,7 +262,7 @@ class TagScheduleTest {
         assertNull("taken a slot late: dropped", s.take(1, wall + 3 * BlindTag.SLOT_MS))
         assertNull("and gone", s.take(1, wall + 2 * BlindTag.SLOT_MS))
         val next = air(s, wall + 3 * BlindTag.SLOT_MS)
-        assertArrayEquals(BlindTag.tag(key, slot + 3, 0), next.tag)
+        assertArrayEquals(BlindTag.tag(key, me, slot + 3, 0), next.tag)
         aired += announced.tag.toList()
         aired += late.tag.toList()
         assertNoRepeat()

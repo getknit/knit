@@ -52,27 +52,34 @@ internal class BlindVectors(
 ) {
     private val aliceKey = fixtureBytes(BlindTag.KEY_BYTES, ALICE_KEY_SEED)
     private val bobKey = fixtureBytes(BlindTag.KEY_BYTES, BOB_KEY_SEED)
+    private val aliceId = NodeId.toBytes(alice.nodeId)
+    private val bobId = NodeId.toBytes(bob.nodeId)
     private val slot = BlindTag.slotOf(wallMs)
 
+    /** One pinned tag: [keyName]'s presence [key], aired by [ownerName], whose node id's raw 16 bytes are [owner]. */
     private class TagCase(
         val name: String,
-        val owner: String,
+        val keyName: String,
         val key: ByteArray,
+        val ownerName: String,
+        val owner: ByteArray,
         val slot: Long,
         val restart: Int,
     )
 
     private val tagCases: List<TagCase> =
         listOf(
-            TagCase("aliceSlotMinus1", "alice", aliceKey, -1, 0),
-            TagCase("aliceSlot0", "alice", aliceKey, 0, 0),
-        ) + (0 until BlindTag.RESTARTS).map { TagCase("aliceNowRestart$it", "alice", aliceKey, slot, it) } +
-            TagCase("bobNowRestart0", "bob", bobKey, slot, 0)
+            TagCase("aliceSlotMinus1", "alice", aliceKey, "alice", aliceId, -1, 0),
+            TagCase("aliceSlot0", "alice", aliceKey, "alice", aliceId, 0, 0),
+        ) + (0 until BlindTag.RESTARTS).map { TagCase("aliceNowRestart$it", "alice", aliceKey, "alice", aliceId, slot, it) } +
+            TagCase("bobNowRestart0", "bob", bobKey, "bob", bobId, slot, 0) +
+            // Alice's key re-sent by Bob as his own: not aliceNowRestart0, so no port can leave the owner out of the MAC.
+            TagCase(REGIFTED, "alice", aliceKey, "bob", bobId, slot, 0)
 
-    private val aliceTag = BlindTag.tag(aliceKey, slot, 0)
-    private val aliceNextTag = BlindTag.tag(aliceKey, slot + 1, 0)
-    private val aliceTagRestart1 = BlindTag.tag(aliceKey, slot, 1)
-    private val bobTag = BlindTag.tag(bobKey, slot, 0)
+    private val aliceTag = BlindTag.tag(aliceKey, aliceId, slot, 0)
+    private val aliceNextTag = BlindTag.tag(aliceKey, aliceId, slot + 1, 0)
+    private val aliceTagRestart1 = BlindTag.tag(aliceKey, aliceId, slot, 1)
+    private val bobTag = BlindTag.tag(bobKey, bobId, slot, 0)
 
     private val slotOfCases = listOf(0L, SLOT_MS - 1, SLOT_MS, -1L, -SLOT_MS, -SLOT_MS - 1, wallMs)
 
@@ -200,14 +207,16 @@ internal class BlindVectors(
     private fun tagsJson(): JsonObject =
         buildJsonObject {
             for (c in tagCases) {
-                val tag = BlindTag.tag(c.key, c.slot, c.restart)
-                check(tag.contentEquals(specTag(c.key, c.slot, c.restart))) { "BlindTag drifted from its layout: ${c.name}" }
+                val tag = BlindTag.tag(c.key, c.owner, c.slot, c.restart)
+                check(tag.contentEquals(specTag(c.key, c.owner, c.slot, c.restart))) { "BlindTag drifted from its layout: ${c.name}" }
                 putJsonObject(c.name) {
-                    put("key", c.owner)
+                    put("key", c.keyName)
+                    put("owner", c.ownerName)
+                    put("ownerId", c.owner.toHex())
                     put("slot", c.slot)
                     put("restart", c.restart)
-                    put("macInput", macInput(c.slot, c.restart).toHex())
-                    put("mac", mac(c.key, macInput(c.slot, c.restart)).toHex())
+                    put("macInput", macInput(c.owner, c.slot, c.restart).toHex())
+                    put("mac", mac(c.key, macInput(c.owner, c.slot, c.restart)).toHex())
                     put("tag", tag.toHex())
                     put("asNodeId", NodeId.fromBytes(tag))
                 }
@@ -376,21 +385,29 @@ internal class BlindVectors(
         assertEquals(tagCases.map { it.name }.toSet(), tags.keys)
         for (c in tagCases) {
             val pinned = tags.obj(c.name)
-            assertEquals(c.name, c.owner, pinned.str("key"))
+            assertEquals(c.name, c.keyName, pinned.str("key"))
+            assertEquals(c.name, c.ownerName, pinned.str("owner"))
+            assertEquals(c.name, c.owner.toHex(), pinned.str("ownerId"))
             assertEquals(c.name, c.slot, pinned.getValue("slot").jsonPrimitive.long)
             assertEquals(c.name, c.restart, pinned.getValue("restart").jsonPrimitive.int)
             val input = pinned.str("macInput").fromHex()
-            assertArrayEquals(c.name, macInput(c.slot, c.restart), input)
+            assertEquals(c.name, MAC_INPUT_BYTES, input.size)
+            assertArrayEquals(c.name, macInput(c.owner, c.slot, c.restart), input)
             assertArrayEquals(c.name, mac(c.key, input), pinned.str("mac").fromHex())
             val tag = pinned.str("tag").fromHex()
-            assertArrayEquals(c.name, specTag(c.key, c.slot, c.restart), tag)
-            assertArrayEquals(c.name, BlindTag.tag(c.key, c.slot, c.restart), tag)
-            assertArrayEquals(c.name, BlindTag.Expected(c.key).tag(c.slot, c.restart), tag)
+            assertArrayEquals(c.name, specTag(c.key, c.owner, c.slot, c.restart), tag)
+            assertArrayEquals(c.name, BlindTag.tag(c.key, c.owner, c.slot, c.restart), tag)
+            assertArrayEquals(c.name, BlindTag.Expected(c.key, c.owner).tag(c.slot, c.restart), tag)
             assertEquals(c.name, NodeId.fromBytes(tag), pinned.str("asNodeId"))
             assertEquals(c.name, "zzzz", pinned.str("asNodeId").take(PREFIX_CHARS))
         }
         val minusOne = tags.obj("aliceSlotMinus1").str("macInput").drop(LABEL_HEX)
-        assertEquals("u64be(-1) is two's complement", "ffffffffffffffff", minusOne.take(2 * Long.SIZE_BYTES))
+        assertEquals("the owner follows the label", aliceId.toHex(), minusOne.take(OWNER_HEX))
+        assertEquals("u64be(-1) is two's complement", "ffffffffffffffff", minusOne.drop(OWNER_HEX).take(2 * Long.SIZE_BYTES))
+        assertTrue(
+            "one key under two owners is two tags",
+            tags.obj(REGIFTED).str("tag") != tags.obj("aliceNowRestart0").str("tag"),
+        )
 
         val prefix = blind.obj("hasPrefix")
         assertEquals(prefixCases.map { it.first }.toSet(), prefix.keys)
@@ -471,8 +488,10 @@ internal class BlindVectors(
 
     companion object {
         const val ABOUT =
-            "Blinded adverts (ADR 2026-11.xp6d, knit-next #285). tags: m = HMAC-SHA256(presenceKey, label ‖ u64be(slot) ‖ " +
-                "u8(restart)); tag = CE 73 (90 | m[0] >> 4) ‖ m[1..13]; slot = floor(wallMs / slotMs). hasPrefix: 16 bytes " +
+            "Blinded adverts (ADR 2026-11.xp6d, knit-next #285). tags: m = HMAC-SHA256(presenceKey, label ‖ ownerNodeId " +
+                "(16 raw bytes, ownerId) ‖ u64be(slot) ‖ u8(restart)), a 44-byte message; tag = CE 73 (90 | m[0] >> 4) ‖ " +
+                "m[1..13]; slot = floor(wallMs / slotMs). aliceKeyUnderBob is Alice's key re-sent as Bob's own: another " +
+                "tag than aliceNowRestart0, since a tag is bound to the id airing it. hasPrefix: 16 bytes " +
                 "starting CE 73 9_, saying nothing of whose. link: Alice, blinding, dials Bob's tag; her HELLO tells her " +
                 "tag (t) and the tag she dialed (a), his tells his; both proofs sign the HELLOs as sent, so a rewritten " +
                 "t fails. helloFields: t and a are read only behind a valid nonce, in any order, as exactly 32 lowercase " +
@@ -493,14 +512,18 @@ internal class BlindVectors(
         private const val HEX_DIGITS = 2 * Protocol.HELLO_FORM_BYTES
         private const val PREFIX_CHARS = 4
         private val LABEL_HEX = 2 * BlindTag.LABEL.length
+        private const val OWNER_HEX = 2 * NodeId.BYTES
+        private const val MAC_INPUT_BYTES = 44
+        private const val REGIFTED = "aliceKeyUnderBob"
         private const val HMAC = "HmacSHA256"
 
-        /** label (ASCII) ‖ u64be(slot) ‖ u8(restart), built here rather than read from [BlindTag]. */
+        /** label (ASCII) ‖ owner (16 raw) ‖ u64be(slot) ‖ u8(restart), built here rather than read from [BlindTag]. */
         private fun macInput(
+            owner: ByteArray,
             slot: Long,
             restart: Int,
         ): ByteArray =
-            BlindTag.LABEL.toByteArray(Charsets.US_ASCII) + ByteBuffer.allocate(Long.SIZE_BYTES).putLong(slot).array() +
+            BlindTag.LABEL.toByteArray(Charsets.US_ASCII) + owner + ByteBuffer.allocate(Long.SIZE_BYTES).putLong(slot).array() +
                 byteArrayOf(restart.toByte())
 
         private fun mac(
@@ -511,10 +534,11 @@ internal class BlindVectors(
         /** The layout in [BlindTag]'s KDoc, from the MAC: `CE 73 (90 | m[0] >>> 4) ‖ m[1..13]`. */
         private fun specTag(
             key: ByteArray,
+            owner: ByteArray,
             slot: Long,
             restart: Int,
         ): ByteArray {
-            val m = mac(key, macInput(slot, restart))
+            val m = mac(key, macInput(owner, slot, restart))
             val head = byteArrayOf(0xCE.toByte(), 0x73, (0x90 or ((m[0].toInt() and 0xFF) ushr 4)).toByte())
             return head + m.copyOfRange(1, BlindTag.BYTES - 2)
         }

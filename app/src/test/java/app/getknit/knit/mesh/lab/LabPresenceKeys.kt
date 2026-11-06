@@ -54,8 +54,7 @@ internal suspend fun holdsKeysOf(
     if (pair.size != 2) return false
     val listed =
         holder.presenceKeys
-            .presenceKeysFor(setOf(owner.nodeId))
-            .first[owner.nodeId]
+            .presenceKeysFor(setOf(owner.nodeId))[owner.nodeId]
             .orEmpty()
     return pair.all { generation ->
         val own = ownKey(owner, generation)

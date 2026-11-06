@@ -437,3 +437,51 @@ Status: Accepted (2026-11-05), with step 6's code.
   bytes 1–16, takes the expected dialer from `iDial`, treats ` blind=legacy` from an un-updated iPhone as expected, and
   restores any switch it turned off; the iOS reader never caches a PSM per address across a tag change. Until it lands,
   a phone that harness drives with a debug build of this branch needs `ADVERT --ez blind false` first.
+
+## Amendment 2026-11-06: the owner-bound tag
+
+Status: Proposed (2026-11-06), until its device trial passes. From a design review of this ADR, which found that
+"Colliding keys" was itself a way to hide a contact.
+
+- **The tag binds its owner's id.** The MAC's message is now `label ‖ ownerNodeId (16 raw bytes) ‖ u64be(slot) ‖
+  u8(restart)`, 44 bytes. The layout, the prefix, the slots, the restarts and the window all stand. The label stays
+  `knit/advert/v1/slot`: no release carried the 28-byte form, so a new version would separate it from nothing. The
+  message still fits one SHA-256 block, so a tag costs what it did.
+- **Why.** Under the old message two phones holding one key aired the same tags, and "Colliding keys" had to answer
+  that. The answer gave a contact a lever. M, a direct contact of both V and this phone, re-sends V's key as its own;
+  the key is then listed for neither, and V stops resolving here. M gets V's next key each week as V's contact, so it
+  could repeat this for as long as it liked. Under the new message a re-gifted key gives tags under M's id. V is
+  untouched, and all M has done is let V and V's contacts forge M's own presence. It also closes a case the rule never
+  saw: M handing V's key to a W who held none from V, where W then resolved V as M.
+- **"Colliding keys" is withdrawn,** with the store's rule in "The presence key" (`PresenceKeyPolicy.listing`, the
+  `presenceKeysExcluded` count) and the table's (`keyCollisions`, `collidedTags`). A direct contact's stored keys are
+  listed under its id whatever any other peer holds, one of ours included. `ExpectedTagTable` keeps one entry per form.
+  A form two contacts list is now a 2⁻¹⁰⁸ accident: the last listing wins and nothing counts it. Choosing a key to hit
+  any tag in a target's window costs about 2⁹⁴ work, for one 15-minute tag. The table dedupes a contact's keys by content, since
+  `PresenceKeyPolicy.receive` compares bytes only within a generation and a fork can store one key under two.
+- **Whose id goes in.** The reader's owner is the id the store filed the key under, which is the signed sender of the
+  ctl 11 a ratchet open accepted (`InboundPipeline.applyPresenceKey`). The row proves that sender handed us the key,
+  not that it minted it, and that is enough, because the same id goes into the MAC. The writer's owner is the local
+  node id, read at each choice (`TagSchedule`'s `localId`), because the transport builds the schedule before `start`
+  sets the id. A tag is computed before its mark is written, so a failure spends no (slot, restart).
+- **What stays.** Every key holder can still recognise the owner and forge its presence. A holder of the owner's next
+  key can still air one tag under it and cap the older keys a generation on (`ExpectedTagTable.retireOlder`).
+- **Order of landing.** `main` carries the 28-byte derivation, unreleased. A release from it would ship readers that
+  never resolve a writer's tag, with no version to tell the two apart. The maintainer confirmed (2026-11-06) that
+  nothing is released before this merges. The `blind` vectors moved for this, which the guards' "new entries, none moved" no longer
+  describes: a deliberate move of entries no release carried and no port reads yet. The iOS reader brief quotes the
+  44-byte message.
+- **A generation number can come back.** "A restore never reuses a number" in "The presence key" holds only for numbers
+  as of the backup. While `last` sits ahead of the clock, `max(last + 1, now)` is a plain counter, so a phone restored
+  twice from one backup mints the same numbers again with other bytes. The new root tells the eras apart, and the key
+  feed's token carries `receivedAt` (`PresenceKeyDao.observeKeyRows`), so such a swap re-lists. The token used to be
+  `node:generation` alone, and the own-row tick this amendment removes was all that healed it.
+- **Mixed builds.** A phone on the 28-byte form does not resolve by key and links as a stranger. Once linked, the pair
+  can still show as resolved through claims and `TAG_NEXT`, so a device trial reads `aliases.resolvedByKey`, never
+  `peers[].resolved`.
+
+Guards: `BlindTagTest` (pins from an independent recipe, one key under two owners), `TagScheduleTest` (a tag resolves
+under the writer's id and no other, a failure burns no mark), `ExpectedTagTableTest` (a re-gifted key takes over nothing
+in either listing order, one key under two generations stays resolved), `PresenceKeyForkLabTest` (either arrival order,
+through a real `ExpectedTagTable`), `PresenceKeyFeedLabTest` (a reused generation reaches the radio with its new bytes),
+and the `blind` vectors' `aliceKeyUnderBob`, which pins one key under another's id.

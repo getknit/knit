@@ -39,7 +39,9 @@ class AdvertOrderTest {
     private fun id(): String = NodeId.fromBytes(ByteArray(NodeId.BYTES).also(random::nextBytes))
 
     private fun tag(): String =
-        NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes), random.nextInt(SLOTS).toLong(), 0))
+        NodeId.fromBytes(
+            BlindTag.tag(ByteArray(BlindTag.KEY_BYTES).also(random::nextBytes), ByteArray(NodeId.BYTES), random.nextInt(SLOTS).toLong(), 0),
+        )
 
     private fun phone(
         build: Build,

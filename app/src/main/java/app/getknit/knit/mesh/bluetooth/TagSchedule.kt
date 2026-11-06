@@ -1,12 +1,13 @@
 package app.getknit.knit.mesh.bluetooth
 
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.BlindTag
 import java.security.SecureRandom
 
 /**
  * Which tag the advertiser airs at a rotation or a bring-up (ADR 2026-11.xp6d, "The tag"; the security pass of
- * 2026-11-02). A slotted tag is a pure function of (key, slot, restart), so airing one (slot, restart) twice from two
- * advertiser addresses ties the addresses together. The wall clock alone cannot prevent that: a clock pushed forward
+ * 2026-11-02). A slotted tag is a pure function of (key, owner, slot, restart), so airing one (slot, restart) twice from
+ * two advertiser addresses ties the addresses together. The wall clock alone cannot prevent that: a clock pushed forward
  * then corrected, pulled back, or stepped by NTP across a slot edge comes back to slots already aired, and a fifth
  * bring-up in one slot has no restart index left.
  *
@@ -28,9 +29,14 @@ import java.security.SecureRandom
  * second [next] at the slot edge would air the next restart instead. A bring-up between the announcement and the
  * rotation finds the mark at the reserved slot, ahead of the clock, and airs a random tag: acceptable for that lead.
  *
- * **Durability and threads.** The mark is written before a tag is returned, so the wiring airs a tag only after its mark
- * is durable: a crash or power loss between the two costs one unused (slot, restart), never a repeat. A store that
- * fails throws, and the throw propagates: nothing is returned, so nothing is aired. [next], [reserve] and [take] write
+ * **Whose tag.** A tag is minted under this phone's own node id ([localId]), as a contact's [ExpectedTagTable] lists it.
+ * [localId] is read at each choice, never at construction: the transport builds its schedule in a field initializer,
+ * before `start` has set the id. An id with no canonical bytes throws, as the reader lists nothing for one.
+ *
+ * **Durability and threads.** The tag is computed first and the mark written before it is returned, so the wiring airs a
+ * tag only after its mark is durable: a crash or power loss between the two costs one unused (slot, restart), never a
+ * repeat, and nothing that can refuse the tag runs after the mark, so no failure burns one. A store that fails throws, and
+ * the throw propagates: nothing is returned, so nothing is aired. [next], [reserve] and [take] write
  * to storage, so the wiring calls them only on the transport's confined worker, never on the main thread (the
  * `ACTION_STATE_CHANGED` receiver runs there) and never under the transport's `lock`; `readvertise` takes the tag only
  * after the call returns. Marks are cached in memory per generation, so the store is read once per generation.
@@ -45,6 +51,7 @@ import java.security.SecureRandom
 internal class TagSchedule(
     private val store: MarkStore,
     private val random: SecureRandom = SecureRandom(),
+    private val localId: () -> String,
 ) {
     /** The last (slot, restart) aired or reserved under one key generation. */
     data class Mark(
@@ -150,6 +157,7 @@ internal class TagSchedule(
         wallMs: Long,
         slot: Long,
     ): Next {
+        val owner = checkNotNull(NodeId.toBytesOrNull(localId())) { "this phone's node id has no canonical bytes" }
         val mark = markOf(generation)
         val stale = mark != null && mark.slot > BlindTag.slotOf(wallMs) + BlindTag.WINDOW_AHEAD_SLOTS
         val chosen =
@@ -159,9 +167,10 @@ internal class TagSchedule(
                 else -> null
             }
         if (chosen == null) return Next(randomTag(), resolvable = false, stale = stale)
+        val tag = BlindTag.tag(key, owner, chosen.slot, chosen.restart)
         store.write(generation, chosen)
         marks[generation] = chosen
-        return Next(BlindTag.tag(key, chosen.slot, chosen.restart), resolvable = true, stale = false)
+        return Next(tag, resolvable = true, stale = false)
     }
 
     private fun markOf(generation: Long): Mark? =

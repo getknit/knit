@@ -9,7 +9,10 @@ import androidx.room3.PrimaryKey
  * with [activatedAt] set) and the next one ([activatedAt] null: handed to contacts ahead, never aired yet).
  *
  * Local only, never in a backup (`BackupTables.TRANSIENT`): a restored phone mints afresh, and its generation numbers
- * stay above the old ones through the carried `presence_key_last_generation` setting. Keys are never logged.
+ * stay above everything as of the backup through the carried `presence_key_last_generation` setting. A number minted
+ * after the backup can repeat (while that setting is at or past the clock, `max(last + 1, now)` is a plain counter, so
+ * two restores from one backup mint the same numbers with other bytes); the restore's new root is what tells the eras
+ * apart. Keys are never logged.
  */
 @Entity(tableName = "own_presence_keys")
 data class OwnPresenceKeyEntity(

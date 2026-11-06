@@ -1,9 +1,11 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -161,4 +163,84 @@ class PresenceKeyFeedLabTest {
                 it.dmWith(if (it === alice) bob else alice)
             }
         }
+
+    /**
+     * A new era that reuses generation numbers. Alice's clock ran ahead and was corrected, so the backup's last generation
+     * sits past the clock and `max(last + 1, now)` is a plain counter: two restores from that one backup mint the same two
+     * numbers with other bytes. Bob, holding exactly those two, stores the second restore's keys as a new era, and the
+     * `node:generation` of each row does not move. The oracle is what reaches his radio, since the stored rows are right
+     * either way: a feed token that cannot see the new bytes leaves his resolver on keys Alice no longer has.
+     */
+    @Test
+    fun aSecondRestoreFromOneBackupHandsTheReaderItsNewKeysUnderTheSameGenerations() =
+        runBlocking {
+            val limits = blind.copy(resetFloorMs = SHORT_FLOOR_MS)
+            val alice = lab.node("alice", limits = limits).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", limits = limits).apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            lab.converse(alice, bob)
+            // Ticks first: a receipt held across a reset is lost by design (ADR 2026-10.8hn6), which is not what this tests.
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+            lab.awaitHoldsKeysOf(bob, alice)
+            lab.awaitHoldsKeysOf(alice, bob)
+            val before = alice.ownPair()
+            alice.presenceSkewMs = AHEAD_MS
+            alice.heal()
+            lab.await(1) { if (alice.ownPair() != before) 1 else 0 }
+            lab.awaitHoldsKeysOf(bob, alice)
+            val backup = alice.settings.presenceKeyLastGeneration()
+            alice.presenceSkewMs = 0L
+            assertTrue("the backup's last generation sits past the corrected clock", backup > lab.clock.now())
+
+            val first = restoreAndAwaitTheReader(alice, bob, backup)
+            // lab-lint: allow sleep-as-sync — a floor to outwait, not an event: the open path stamps it on the wall clock,
+            // which a lab clock jump never moves, and a longer wait here only passes it by more.
+            delay(2 * SHORT_FLOOR_MS)
+            val second = restoreAndAwaitTheReader(alice, bob, backup)
+
+            for (i in first.indices) assertFalse("generation ${backup + 1 + i} has new bytes", first[i].contentEquals(second[i]))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /** One restore from the backup carrying [backup]: Bob's radio ends holding Alice's two new keys. Returns those keys. */
+    private suspend fun restoreAndAwaitTheReader(
+        alice: LabNode,
+        bob: LabNode,
+        backup: Long,
+    ): List<ByteArray> {
+        alice.restoreFromBackup(lastGeneration = backup)
+        lab.link(alice, bob)
+        lab.awaitHoldsKeysOf(bob, alice)
+        lab.awaitHoldsKeysOf(alice, bob)
+        val generations = listOf(backup + 1, backup + 2)
+        assertEquals("the counter minted the same two numbers", generations, alice.ownPair())
+        assertEquals(
+            "bob holds exactly those two",
+            generations,
+            bob.presenceKeys
+                .heldBy(alice.nodeId)
+                .map { it.generation }
+                .sorted(),
+        )
+        val keys = generations.map { ownKey(alice, it) }
+        val handed = {
+            val listed =
+                bob.transport.presenceKeysHanded
+                    .lastOrNull()
+                    ?.get(alice.nodeId)
+                    .orEmpty()
+            listed.size == keys.size && keys.all { key -> listed.any { it.contentEquals(key) } }
+        }
+        assertTrue("bob's radio never got alice's new keys\n${lab.report(listOf(alice, bob))}", lab.tryAwait(1) { if (handed()) 1 else 0 })
+        return keys
+    }
+
+    private companion object {
+        /** Under the year a restore clamps at: the carried generation must survive it. */
+        const val AHEAD_MS = 30 * PresenceKeyPolicy.DAY_MS
+
+        /** The floor on a peer's flagged reset, shortened on both nodes so the second restore's reset can outwait it. */
+        const val SHORT_FLOOR_MS = 1_000L
+    }
 }

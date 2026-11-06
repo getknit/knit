@@ -210,24 +210,6 @@ class PresenceKeyPolicyTest {
     }
 
     @Test
-    fun aKeyTwoPeersHoldOrOneOfOursIsListedForNoOneAndCounted() {
-        val shared = key(7)
-        val (listed, excluded) =
-            PresenceKeyPolicy.listing(
-                mapOf(
-                    "a" to listOf(Held(1, shared, TAG_A), Held(2, key(2), TAG_A)),
-                    "b" to listOf(Held(9, shared, TAG_B)),
-                    "c" to listOf(Held(4, key(40), TAG_B)),
-                ),
-                own = listOf(key(40)),
-            )
-        assertEquals(listOf(2L), listed.getValue("a").map { it.generation })
-        assertTrue(listed.getValue("b").isEmpty())
-        assertTrue("a key equal to one of ours is nobody's", listed.getValue("c").isEmpty())
-        assertEquals(3, excluded)
-    }
-
-    @Test
     fun aKeptLinkResetIsResentOnlyWhileItsRootAndPrekeyStandAndALostOneIsMarkedAgain() {
         val step = PresenceKeyPolicy::linkReset
         assertEquals(PresenceKeyPolicy.LinkReset.RESEND, step(TAG_A, TAG_A, true, true))

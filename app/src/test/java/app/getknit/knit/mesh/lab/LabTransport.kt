@@ -959,6 +959,17 @@ class LabTransport(
     /** Each key handed with the predicate's answer for each [tagNextProbe] id, read in the same call: no hop between. */
     val tagNextAtHandOff = CopyOnWriteArrayList<Pair<OwnPresenceKey?, Map<String, Boolean>>>()
 
+    /**
+     * Every listing of the direct contacts' presence keys the manager handed this radio, in order: what a Bluetooth plane
+     * would build its expected tags from (ADR 2026-11.xp6d's key feed). A composite forwards it to every child, so this
+     * records on any node.
+     */
+    val presenceKeysHanded = CopyOnWriteArrayList<Map<String, List<ByteArray>>>()
+
+    override fun onPresenceKeys(keys: Map<String, List<ByteArray>>) {
+        presenceKeysHanded += keys
+    }
+
     override fun onTagNextRecipients(hears: (nodeId: String) -> Boolean) {
         tagNext = hears
     }

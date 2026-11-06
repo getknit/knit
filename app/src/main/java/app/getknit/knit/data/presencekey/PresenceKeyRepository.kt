@@ -152,28 +152,22 @@ class PresenceKeyRepository(
     }
 
     /**
-     * The keys of each of [direct] that we hold (up to three each, newest first), less every key byte-equal to another
-     * listed contact's or to one of our own (security N7; [PresenceKeyPolicy.listing]). The second value counts what was
-     * left out. Read only for direct contacts: a stored key of anyone else is never listed.
+     * Every key of each of [direct] that we hold (up to three each, newest first). Read only for direct contacts: a stored
+     * key of anyone else is never listed. A key equal to another's needs no rule here: a tag is bound to its owner's id
+     * ([app.getknit.knit.mesh.crypto.BlindTag]), so a key re-sent as someone else's lists tags of that sender's alone.
      */
-    suspend fun presenceKeysFor(direct: Set<String>): Pair<Map<String, List<ContactKey>>, Int> {
-        if (direct.isEmpty()) return emptyMap<String, List<ContactKey>>() to 0
-        val rows = direct.toList().chunked(SQL_CHUNK).flatMap { dao.peerKeys(it) }
-        val byPeer = rows.groupBy { it.nodeId }
-        val (listed, excluded) =
-            PresenceKeyPolicy.listing(
-                byPeer.mapValues { (_, keys) -> keys.map { PresenceKeyPolicy.Held(it.generation, it.key, it.rootTag) } },
-                dao.ownKeys().map { it.key },
-            )
-        val received = rows.associate { (it.nodeId to it.generation) to it.receivedAt }
-        return listed
-            .mapValues { (peer, keys) -> keys.map { ContactKey(it.generation, it.key, received.getValue(peer to it.generation)) } }
-            .filterValues { it.isNotEmpty() } to excluded
-    }
+    suspend fun presenceKeysFor(direct: Set<String>): Map<String, List<ContactKey>> =
+        direct
+            .toList()
+            .chunked(SQL_CHUNK)
+            .flatMap { dao.peerKeys(it) }
+            .groupBy({ it.nodeId }) { ContactKey(it.generation, it.key, it.receivedAt) }
 
     /**
-     * Ticks whenever a peer's keys or our own change (the rows' generations, never the keys): with the direct contacts'
-     * own flow, what re-reads [presenceKeysFor] for the Bluetooth plane's resolver.
+     * Ticks whenever a peer's keys or their era change (each row's generation and arrival, never a key or a root tag: a new
+     * era can reuse a generation, and [applyHeld] restamps only a row whose bytes or root moved): with the direct contacts'
+     * own flow, what re-reads [presenceKeysFor] for the Bluetooth plane's resolver. Our own keys list nothing there, so they
+     * never tick it.
      */
     fun keyChanges(): Flow<List<String>> = dao.observeKeyRows().distinctUntilChanged()
 

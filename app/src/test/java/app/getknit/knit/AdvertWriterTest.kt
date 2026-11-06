@@ -91,7 +91,7 @@ class AdvertWriterTest {
     private val writer = AdvertWriter<FakeSink> { localId }
     private val sinks = ArrayList<FakeSink>()
     private val store = Store()
-    private val schedule = TagSchedule(store, SeededRandom(3))
+    private val schedule = TagSchedule(store, SeededRandom(3)) { localId }
     private val wall = 1_800_000_000_000L
     private val key = OwnPresenceKey(4, ByteArray(BlindTag.KEY_BYTES) { 9 })
 
@@ -163,7 +163,7 @@ class AdvertWriterTest {
         val parsed = BleAdvertPayload.parse(presence.payloads.single())!!
         assertTrue(parsed.blinded)
         assertEquals(0, parsed.digestCue)
-        assertArrayEquals(BlindTag.tag(key.key, BlindTag.slotOf(wall), 0), NodeId.toBytes(parsed.nodeId))
+        assertArrayEquals(BlindTag.tag(key.key, NodeId.toBytes(localId), BlindTag.slotOf(wall), 0), NodeId.toBytes(parsed.nodeId))
         assertEquals(0x81, parsed.psm)
         assertNoIdWhileBlinded()
     }
@@ -331,7 +331,7 @@ class AdvertWriterTest {
                     mark: TagSchedule.Mark,
                 ) = Unit
             }
-        val choice = TagChoice.choose(TagSchedule(failingRead, SeededRandom(1)), key, key, false, wall)
+        val choice = TagChoice.choose(TagSchedule(failingRead, SeededRandom(1)) { localId }, key, key, false, wall)
         assertEquals(TagChoice.Source.MARK_FAILED, choice.source)
         assertTrue(choice.form.blinded)
         assertNotEquals(localId, choice.form.advertised)

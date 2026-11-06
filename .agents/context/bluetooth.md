@@ -237,8 +237,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   hints (presence only, never suppressing a dial). Contacts resolve by one lookup in `ExpectedTagTable`: every direct
   contact's key listed over `BlindTag.window` of the wall clock (8 hours back, half an hour ahead, every restart),
   moved a slot at a time and rebuilt per contact on a key change, on the confined worker; an unknown tag costs a miss,
-  so there is no HMAC budget, deferral or cache. A tag outside the window does not resolve, and one two contacts' keys
-  both list resolves to nobody. `TagSchedule` picks the tag to air: never a (slot, restart) at or below the persisted
+  so there is no HMAC budget, deferral or cache. A tag outside the window does not resolve. A tag binds its owner's id
+  (the owner-bound amendment), so a key a contact passes on as its own touches nobody else's tags. `TagSchedule` picks the tag to air: never a (slot, restart) at or below the persisted
   per-generation mark, a random unresolvable tag while the clock is behind it or the slot's restarts are spent, a
   `stale` flag (start a new key generation) when the mark is past the window's lead; the announced tag is `reserve`d
   and aired with `take`, and the mark's store throws rather than answers null on error. When to rotate is the

@@ -338,9 +338,10 @@ class BleAdmissionPolicyTest {
     // --- Blinded adverts (ADR 2026-11.xp6d): the order on forms, and the held-link row ---
 
     private val reader = AdvertOrder.Mine.clear(high)
-    private val contactTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, slot = 1, restart = 0))
-    private val myTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, slot = 1, restart = 0))
-    private val myPreviousTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, slot = 0, restart = 0))
+    private val tagOwner = ByteArray(NodeId.BYTES)
+    private val contactTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, tagOwner, slot = 1, restart = 0))
+    private val myTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, tagOwner, slot = 1, restart = 0))
+    private val myPreviousTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 9 }, tagOwner, slot = 0, restart = 0))
 
     // A garbage `t`: a canonical form other than the dialer's id, without the tag prefix.
     private val garbage = "bbbbbbbbbbbbbbbbbbbbbbbbba"

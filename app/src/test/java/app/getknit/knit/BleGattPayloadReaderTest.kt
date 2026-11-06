@@ -214,7 +214,7 @@ class BleGattPayloadReaderTest {
     @Test
     fun aBlindedPayloadIsAStrangerOfItsOwnPhase() {
         // ADR 2026-11.xp6d: no port serves a blinded payload, and its tag would be forgotten and re-read at every dial.
-        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, slot = 1, restart = 0))
+        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, ByteArray(NodeId.BYTES), slot = 1, restart = 0))
         val blinded = BleAdvertPayload.advert(tag, 0L, 0L, 0x83, sideLive = false, gattPeers = false, aware = false, blinded = true)
         every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
         every { gatt.readCharacteristic(characteristic) } returns true

@@ -53,8 +53,9 @@ lines.
 - **When touching `own_presence_keys` / `peer_presence_keys` (`data/presencekey/`, DB v32), `PresenceKeyDao`,
   `PeerDao.deleteOrphanPresenceKeys` or the `presence_key_last_generation` setting:** READ ADR 2026-11.xp6d ("The
   presence key"). Both tables are `BackupTables.TRANSIENT`: a backup must not carry the means to recognise every
-  contact, and a restore mints its own keys afresh while the carried generation counter keeps their numbers above the
-  old ones. A peer's keys go with its `peers` row. Never log a row.
+  contact, and a restore mints its own keys afresh while the carried generation counter keeps their numbers above
+  everything as of the backup. Numbers minted after the backup can repeat, and the new root tells the eras apart. A
+  peer's keys go with its `peers` row. Never log a row.
 - **When touching `mesh/CloneWatch`, the self branch of `InboundPipeline.handleProfile`, the `clone_`
   settings keys, `ui/chatlist/CloneBanner`, the Settings clone row, or `ui/signout/`:** READ ADR
   2026-09.ypcc. One backup restored onto two phones is detected from the **profile stamp alone** — a

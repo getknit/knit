@@ -455,7 +455,6 @@ class MeshMetrics {
     private val presenceKeysSent = AtomicLong()
     private val presenceKeysStored = AtomicLong()
     private val presenceKeysReplaced = AtomicLong()
-    private val presenceKeysExcluded = AtomicLong()
     private val presenceKeyRotations = AtomicLong()
     private val presenceKeyGenerationClamped = AtomicLong()
     private val presenceMarkWrites = AtomicLong()
@@ -730,11 +729,6 @@ class MeshMetrics {
     /** A peer's `CTL_PRESENCE_KEY` opened under a new active root and replaced every key held for it (a new era). */
     fun onPresenceKeyReplaced() {
         presenceKeysReplaced.incrementAndGet()
-    }
-
-    /** A stored key left out of the listing: byte-equal to another listed contact's or to one of ours. */
-    fun onPresenceKeysExcluded(count: Int) {
-        if (count > 0) presenceKeysExcluded.addAndGet(count.toLong())
     }
 
     /** Our own presence keys moved: a mint, a fresh pair, an advance or a next key minted. */
@@ -1856,7 +1850,6 @@ class MeshMetrics {
             presenceKeysSent = presenceKeysSent.get(),
             presenceKeysStored = presenceKeysStored.get(),
             presenceKeysReplaced = presenceKeysReplaced.get(),
-            presenceKeysExcluded = presenceKeysExcluded.get(),
             presenceKeyRotations = presenceKeyRotations.get(),
             presenceKeyGenerationClamped = presenceKeyGenerationClamped.get(),
             presenceMarkWrites = presenceMarkWrites.get(),
@@ -2160,12 +2153,11 @@ class MeshMetrics {
             val introsAnswered: Long = 0,
             // ADR 2026-10.4mjm: a race loser moved back onto its own init, which the peer had answered.
             val ratchetSwappedBack: Long = 0,
-            // ADR 2026-11.xp6d: presence keys sent and stored, eras replaced, keys left out of the listing, our own
-            // rotations, a restored generation clamped, and a restore's resets sent over a link.
+            // ADR 2026-11.xp6d: presence keys sent and stored, eras replaced, our own rotations, a restored generation
+            // clamped, and a restore's resets sent over a link.
             val presenceKeysSent: Long = 0,
             val presenceKeysStored: Long = 0,
             val presenceKeysReplaced: Long = 0,
-            val presenceKeysExcluded: Long = 0,
             val presenceKeyRotations: Long = 0,
             val presenceKeyGenerationClamped: Long = 0,
             // Step 5b's durable mark write: asked for, committed with the FULL check passed, NORMAL not restored, refused

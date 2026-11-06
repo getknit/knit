@@ -33,8 +33,9 @@ import org.junit.Test
  * from the link that made it, through the answer the reader gives, to the dial decision and its release.
  */
 class BlindReaderTest {
-    private val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, slot = 1, restart = 0))
-    private val other = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 4 }, slot = 1, restart = 0))
+    private val tagOwner = ByteArray(NodeId.BYTES)
+    private val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, tagOwner, slot = 1, restart = 0))
+    private val other = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 4 }, tagOwner, slot = 1, restart = 0))
 
     private val sybil = NodeId.derive("sybil")
     private val secondSybil = NodeId.derive("second sybil")
@@ -43,7 +44,7 @@ class BlindReaderTest {
     private val contactKey = ByteArray(BlindTag.KEY_BYTES) { 5 }
 
     // In the expected-tag window, as `tag` and `other` are not: their slot is decades before WALL_MS.
-    private val contactsTag = NodeId.fromBytes(BlindTag.tag(contactKey, BlindTag.slotOf(WALL_MS), restart = 0))
+    private val contactsTag = NodeId.fromBytes(BlindTag.tag(contactKey, NodeId.toBytes(contact), BlindTag.slotOf(WALL_MS), restart = 0))
 
     // Any 26-char base32 run starting `zzzz`: a full tag in a line (security's grep for the trial).
     private val fullTag = Regex("zzzz[a-z2-7]{22}")
@@ -143,7 +144,7 @@ class BlindReaderTest {
         val keys = FormKeys(cap = 2) { evicted += it }
         val first = keys.keyFor(tag)
         keys.keyFor(other)
-        keys.keyFor(NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 5 }, slot = 1, restart = 0)))
+        keys.keyFor(NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 5 }, tagOwner, slot = 1, restart = 0)))
         assertEquals("the least recently used, so its owner forgets its entries with it", listOf(first), evicted)
         assertNull(keys.existing(tag))
         assertEquals("the cap bounds the table", 2, keys.size)

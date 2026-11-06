@@ -69,10 +69,13 @@ interface PresenceKeyDao {
     suspend fun deletePeerKeys(nodeId: String)
 
     /**
-     * Each peer key's (node, generation) and each own generation, as tokens: a change of either table re-lists the
-     * resolver's keys (an own key a peer's equals is listed for no one). Never a key.
+     * Each peer key's (node, generation, arrival), as tokens: a change re-lists the resolver's keys. The arrival is there
+     * for a new era that reuses a generation number with other bytes (a sender restored twice from one backup): `applyHeld`
+     * keeps a row's `receivedAt` only while its bytes and root both match, so the token moves exactly when the key or its
+     * era does, with neither in it. Never a key or a root tag, and no own row: own keys reach the advertiser through the
+     * engine, and the listing does not read them.
      */
-    @Query("SELECT nodeId || ':' || generation FROM peer_presence_keys UNION ALL SELECT ':' || generation FROM own_presence_keys")
+    @Query("SELECT nodeId || ':' || generation || ':' || receivedAt FROM peer_presence_keys")
     fun observeKeyRows(): Flow<List<String>>
 
     /** Every peer key's row without its key, for the debug bridge's `KEYS`. */

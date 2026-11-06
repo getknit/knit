@@ -535,7 +535,7 @@ class BluetoothMeshTransport internal constructor(
     // The blinded advert's writer (ADR 2026-11.xp6d, step 5b). [tagSchedule] is the one per transport, so per process,
     // never per bring-up (it caches each generation's mark); [rotation] times the slot turn, [staleLatch] asks for one key
     // pass per generation on a stale mark. All three, [workerKey], [sessionHadKey] and [airedGeneration] are the worker's.
-    private val tagSchedule: TagSchedule? = tagMarks?.let(::TagSchedule)
+    private val tagSchedule: TagSchedule? = tagMarks?.let { TagSchedule(it) { localNodeId } }
     private val rotation = AdvertRotation()
     private val staleLatch = StaleLatch()
     private var workerKey: OwnPresenceKey? = null

@@ -52,7 +52,7 @@ class KeyChurnLimiterTest {
         val applied = limiter.release(maxOf(now, due))
         assertNotNull(applied)
         list(applied!!)
-        val tag = NodeId.fromBytes(BlindTag.tag(newest.first(), BlindTag.slotOf(wall), 0))
+        val tag = NodeId.fromBytes(BlindTag.tag(newest.first(), NodeId.toBytes(bob), BlindTag.slotOf(wall), 0))
         val r = aliases.resolve(AdvertOrder.Form(tag, blinded = true))
         assertEquals(bob, (r as AdvertAliases.Resolution.Resolved).nodeId)
         assertTrue(limiter.held + limiter.coalesced > 0)
@@ -60,7 +60,7 @@ class KeyChurnLimiterTest {
 
     @Test
     fun aContactThatDropsOutAndComesBackIsStillHeldToOneGainAMinute() {
-        // The reviews of step 5a: every key colliding with one of ours (the store leaves them out), then a fresh one.
+        // The reviews of step 5a: a contact gone from the listing (a `DirectContacts` flap), then back with a fresh key.
         val limiter = KeyChurnLimiter()
         assertNotNull(limiter.offer(mapOf(bob to listOf(key())), now = 0))
         assertEquals("unlisted at once", emptySet<String>(), limiter.offer(emptyMap(), now = 1_000)!!.keys)

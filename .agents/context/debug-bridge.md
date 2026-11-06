@@ -896,7 +896,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   outlive a link by a claim lifetime, 16.5 min; a `voided` entry (256) lives that long from when it was made, link or no
   link. `deadlines` counts stale expiries too: four times those live entries plus 256 holds as of the last entry queued,
   and a read can land outside it either way, so it is no leak alarm. Nothing lapses for a read: a due entry counts until the reader's next blinded sighting or
-  handshake. Each read walks the expected-tag table once, for `collidedTags`), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>` while unresolved,
+  handshake), `peers[]` (`peer`: the resolved id, or the handle `~zzzz…<n>` while unresolved,
   never a tag; `resolved`; `blinded`, their form; `iDial`; `linked` and `linkedAs`, the live link's node id this entry
   is: its own, or for a handle the link whose known form is that tag) and `links[]` (`nodeId` as the HELLO named it,
   `proven` (264w), `dialedByMe`, `tagAware`: its HELLO carried `CAP_BLIND_ADVERT`; `blinded`: the kind of the form its
@@ -947,7 +947,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.KEYS` — **the presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
   (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
   `audience` ids, `markSlot`); `direct[]` per direct contact (`listed`: the generations the Bluetooth resolver lists for
-  it; `held`: whether it handed us any key); `excluded` (keys left out of the listing as equal to another's); `held[]`
+  it; `held`: whether it handed us any key); `held[]`
   per peer that handed us keys (`generations` with `receivedAt`, and whether it is a `direct` contact now); `linkOwed`
   (a restore's resets still owed over a link); `counts` (ctl 11 frames `sent` and keys `stored`, eras `replaced`,
   `rotations`, the link-owed resets, the link-up passes). Oracle for key delivery between two contacts: the sender's

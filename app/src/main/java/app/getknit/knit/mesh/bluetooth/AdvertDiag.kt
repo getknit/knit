@@ -210,8 +210,6 @@ internal data class AdvertStatus(
             "tableBuilds" to aliases.tableBuilds,
             "tableSlotSteps" to aliases.tableSlotSteps,
             "tableHmacs" to aliases.tableHmacs,
-            "keyCollisions" to aliases.keyCollisions,
-            "collidedTags" to aliases.collidedTags,
             "tableContacts" to aliases.tableContacts,
             "claims" to aliases.claims,
             "pending" to aliases.pending,

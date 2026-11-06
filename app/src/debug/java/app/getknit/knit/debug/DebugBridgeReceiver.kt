@@ -423,7 +423,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * - [ACTION_KEYS] — the **presence keys** (ADR 2026-11.xp6d), read only, never a key byte: `sendsOwnKeys`
  *   (`BuildConfig.PRESENCE_KEYS`); `own[]` per generation (`role` previous|current|next, `mintedAt`, `activatedAt`, the
  *   `audience` ids, the advertiser's `markSlot`); `direct` (the direct contacts as `DirectContacts.read` gives them) and,
- *   per contact, `listed` (the generations the resolver lists for it) or `excluded`; `held[]` per peer that handed us keys
+ *   per contact, `listed` (the generations the resolver lists for it); `held[]` per peer that handed us keys
  *   (`generations` with `receivedAt`, and `direct`: whether it is a direct contact now); `linkOwed` (a restore's resets
  *   still owed over a link); and the `STATE` counts (`presenceKeysSent`, `presenceKeysStored`, …).
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
@@ -1723,12 +1723,11 @@ class DebugBridgeReceiver :
             // demoted or deleted first (expected now and then).
             .put("presenceMarkNotFull", snap.keys.presenceMarkNotFull)
             .put("presenceMarkRefused", snap.keys.presenceMarkRefused)
-            // The presence keys themselves (ADR 2026-11.xp6d): ctl 11 frames sent and keys stored, eras replaced, keys left
-            // out of the resolver's listing, our own rotations, a restored generation clamped. `KEYS` has the per-key view.
+            // The presence keys themselves (ADR 2026-11.xp6d): ctl 11 frames sent and keys stored, eras replaced, our own
+            // rotations, a restored generation clamped. `KEYS` has the per-key view.
             .put("presenceKeysSent", snap.keys.presenceKeysSent)
             .put("presenceKeysStored", snap.keys.presenceKeysStored)
             .put("presenceKeysReplaced", snap.keys.presenceKeysReplaced)
-            .put("presenceKeysExcluded", snap.keys.presenceKeysExcluded)
             .put("presenceKeyRotations", snap.keys.presenceKeyRotations)
             .put("presenceKeyGenerationClamped", snap.keys.presenceKeyGenerationClamped)
             .put("linkOwedResetsSent", snap.keys.linkOwedResetsSent)
@@ -4050,7 +4049,7 @@ class DebugBridgeReceiver :
         val own = presenceKeys.ownKeys()
         val current = own.filter { it.activatedAt != null }.maxByOrNull { it.generation }?.generation
         val direct = directContacts.read()
-        val (listed, excluded) = presenceKeys.presenceKeysFor(direct)
+        val listed = presenceKeys.presenceKeysFor(direct)
         val held = presenceKeys.peerKeyRows().groupBy { it.nodeId }
         val k = metrics.snapshot().keys
         val ownJson =
@@ -4097,7 +4096,6 @@ class DebugBridgeReceiver :
             .put("sendsOwnKeys", BuildConfig.PRESENCE_KEYS)
             .put("own", ownJson)
             .put("direct", directJson)
-            .put("excluded", excluded)
             .put("held", heldJson)
             .put("linkOwed", JSONArray(presenceKeys.linkOwedResets().keys.sorted()))
             .put(
@@ -4106,7 +4104,6 @@ class DebugBridgeReceiver :
                     .put("sent", k.presenceKeysSent)
                     .put("stored", k.presenceKeysStored)
                     .put("replaced", k.presenceKeysReplaced)
-                    .put("excluded", k.presenceKeysExcluded)
                     .put("rotations", k.presenceKeyRotations)
                     .put("generationClamped", k.presenceKeyGenerationClamped)
                     .put("linkOwedResetsSent", k.linkOwedResetsSent)

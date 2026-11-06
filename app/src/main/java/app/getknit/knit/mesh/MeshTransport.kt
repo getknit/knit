@@ -439,10 +439,9 @@ interface MeshTransport {
 
     /**
      * The direct contacts' presence keys (ADR 2026-11.xp6d): node id → the keys held for it, newest first (at most
-     * three), as the key store lists them (a key equal to another contact's or to one of ours is already left out). The
-     * whole listing each time, on every change of the keys or of the direct contacts; never logged. Driven by
-     * `MeshManager`; forwarded to every child by [CompositeMeshTransport]. Default no-op — only the Bluetooth plane
-     * reads blinded adverts.
+     * three), as the key store lists them. The whole listing each time, on every change of the keys or of the direct
+     * contacts; never logged. Driven by `MeshManager`; forwarded to every child by [CompositeMeshTransport]. Default
+     * no-op — only the Bluetooth plane reads blinded adverts.
      */
     fun onPresenceKeys(keys: Map<String, List<ByteArray>>) {}
 

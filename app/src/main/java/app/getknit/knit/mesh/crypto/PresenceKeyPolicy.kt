@@ -4,9 +4,9 @@ import app.getknit.knit.mesh.protocol.PresenceKeyPayload
 
 /**
  * The presence key's rules (ADR 2026-11.xp6d, "The presence key"; knit-next #285), pure: which own key rotation is
- * due, what a linked contact is owed, what a received key does to the keys held for its sender, and which stored keys
- * may be listed. The key engine (`mesh/PresenceKeyEngine`) and the inbound arm (`InboundPipeline`) wire them; nothing
- * here reads a clock, a store or a link.
+ * due, what a linked contact is owed, and what a received key does to the keys held for its sender. The key engine
+ * (`mesh/PresenceKeyEngine`) and the inbound arm (`InboundPipeline`) wire them; nothing here reads a clock, a store or a
+ * link.
  *
  * **Own keys.** At most three rows: the previous key, the current one (the newest activated) and the next one (never
  * activated, never aired; handed to contacts ahead so a weekly rotation is seamless). Each row names its audience: the
@@ -356,38 +356,4 @@ object PresenceKeyPolicy {
     }
 
     private fun trim(rows: List<Held>): List<Held> = rows.sortedByDescending { it.generation }.take(PEER_GENERATIONS)
-
-    /**
-     * The read side's listing (security N7): per peer in [stored], its keys, leaving out — and counting in the second
-     * value — every key byte-equal to a key another listed peer holds, or to one of [own]. Never "first stored wins": a
-     * re-sealed copy that outran its owner's own ctl must not take the owner's tags, so a shared key is listed for no one.
-     */
-    fun listing(
-        stored: Map<String, List<Held>>,
-        own: List<ByteArray>,
-    ): Pair<Map<String, List<Held>>, Int> {
-        val owners = HashMap<KeyBytes, MutableSet<String>>()
-        stored.forEach { (peer, keys) -> keys.forEach { owners.getOrPut(KeyBytes(it.key)) { HashSet() } += peer } }
-        val ours = own.mapTo(HashSet()) { KeyBytes(it) }
-        var excluded = 0
-        val listed =
-            stored.mapValues { (_, keys) ->
-                keys.filter { held ->
-                    val bytes = KeyBytes(held.key)
-                    val shared = bytes in ours || (owners[bytes]?.size ?: 0) > 1
-                    if (shared) excluded++
-                    !shared
-                }
-            }
-        return listed to excluded
-    }
-
-    /** Byte-content equality for a key in a set. */
-    private class KeyBytes(
-        val bytes: ByteArray,
-    ) {
-        override fun equals(other: Any?): Boolean = other is KeyBytes && bytes.contentEquals(other.bytes)
-
-        override fun hashCode(): Int = bytes.contentHashCode()
-    }
 }

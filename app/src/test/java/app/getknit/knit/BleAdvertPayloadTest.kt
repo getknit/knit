@@ -197,7 +197,7 @@ class BleAdvertPayloadTest {
 
     // --- Blinded adverts (ADR 2026-11.xp6d) ---
 
-    private val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, slot = 5, restart = 1))
+    private val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 3 }, ByteArray(NodeId.BYTES), slot = 5, restart = 1))
 
     @Test
     fun aBlindedAdvertParsesAsItsTagWithTheCueZeroed() {

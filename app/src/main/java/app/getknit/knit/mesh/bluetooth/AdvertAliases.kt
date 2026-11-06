@@ -13,12 +13,12 @@ import java.util.PriorityQueue
  * 3. **Direct contacts' expected tags** ([setKeys], [ExpectedTagTable]): every contact key's tags over
  *    [BlindTag.window] of this phone's wall clock (the last 8 hours of 15-minute slots and the next half hour, every
  *    restart index), so a heard tag resolves with one hash lookup and an unknown one, a flood of them included, costs
- *    a miss and nothing else. A tag two contacts' keys both list resolves to nobody by key ([Counters.keyCollisions]):
- *    a contact who sends another's presence key as her own gains nothing over him. The table moves with the wall clock
- *    a slot at a time and rebuilds only a contact whose key changed. A contact's replaced key stays listed until a tag
- *    under its successor is heard, at most [Config.previousKeyMaxMs] (one key generation), since a tag carries no key
- *    generation and an idle phone can air an old-key tag for hours. A tag whose slot is outside the window (a sender's
- *    clock off by more than that) does not resolve; the phone links as a stranger and the link proves it ("Clocks").
+ *    a miss and nothing else. A tag binds its owner's id, so a contact who sends another's presence key as her own lists
+ *    tags of her own and gains nothing over him. The table moves with the wall clock a slot at a time and rebuilds only
+ *    a contact whose key changed. A contact's replaced key stays listed until a tag under its successor is heard, at
+ *    most [Config.previousKeyMaxMs] (one key generation), since a tag carries no key generation and an idle phone can
+ *    air an old-key tag for hours. A tag whose slot is outside the window (a sender's clock off by more than that) does
+ *    not resolve; the phone links as a stranger and the link proves it ("Clocks").
  * 4. **Link claims** ([onDialed], [onTagNext]): a tag a proven link told us is its own.
  * 5. **Hints** ([onAnswered]): a tag a dialer's HELLO told us is its own, for presence and RSSI only (below).
  *
@@ -249,10 +249,6 @@ internal class AdvertAliases<L : Any>(
         val tableSlotSteps: Long,
         /** Tags computed for the table: one HMAC each. Nothing else here computes one. */
         val tableHmacs: Long,
-        /** Lookups refused because two contacts' keys list the tag. */
-        val keyCollisions: Long,
-        /** Tags two contacts' keys list now (a walk of the table). */
-        val collidedTags: Int,
         /** Contacts the table lists keys for. */
         val tableContacts: Int,
         val claims: Int,
@@ -540,8 +536,8 @@ internal class AdvertAliases<L : Any>(
     }
 
     /**
-     * [Counters.keyProofMismatches] alone, without [counters]' walk of the table: the transport reads it around a tag
-     * dial's [onDialed] to learn that the dial met a replay.
+     * [Counters.keyProofMismatches] alone, without building [counters]: the transport reads it around a tag dial's
+     * [onDialed] to learn that the dial met a replay.
      */
     val keyProofMismatchCount: Long get() = keyProofMismatches
 
@@ -567,8 +563,6 @@ internal class AdvertAliases<L : Any>(
             tableBuilds = table.builds,
             tableSlotSteps = table.slotSteps,
             tableHmacs = table.tagsComputed,
-            keyCollisions = table.collisionHits,
-            collidedTags = table.collided,
             tableContacts = table.contactCount,
             claims = claims.size,
             pending = pending.size,

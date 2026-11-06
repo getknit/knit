@@ -151,7 +151,7 @@
     "a2o": "7edb0fc4d409c5e5243d651fb46fcfffdb00d37ff1cf9504bf55cca33c383840"
   },
   "blind": {
-    "about": "Blinded adverts (ADR 2026-11.xp6d, knit-next #285). tags: m = HMAC-SHA256(presenceKey, label ‖ u64be(slot) ‖ u8(restart)); tag = CE 73 (90 | m[0] >> 4) ‖ m[1..13]; slot = floor(wallMs / slotMs). hasPrefix: 16 bytes starting CE 73 9_, saying nothing of whose. link: Alice, blinding, dials Bob's tag; her HELLO tells her tag (t) and the tag she dialed (a), his tells his; both proofs sign the HELLOs as sent, so a rewritten t fails. helloFields: t and a are read only behind a valid nonce, in any order, as exactly 32 lowercase hex digits; a letter whose exact-shape field appears twice is absent (null). Caps c0009 throughout.",
+    "about": "Blinded adverts (ADR 2026-11.xp6d, knit-next #285). tags: m = HMAC-SHA256(presenceKey, label ‖ ownerNodeId (16 raw bytes, ownerId) ‖ u64be(slot) ‖ u8(restart)), a 44-byte message; tag = CE 73 (90 | m[0] >> 4) ‖ m[1..13]; slot = floor(wallMs / slotMs). aliceKeyUnderBob is Alice's key re-sent as Bob's own: another tag than aliceNowRestart0, since a tag is bound to the id airing it. hasPrefix: 16 bytes starting CE 73 9_, saying nothing of whose. link: Alice, blinding, dials Bob's tag; her HELLO tells her tag (t) and the tag she dialed (a), his tells his; both proofs sign the HELLOs as sent, so a rewritten t fails. helloFields: t and a are read only behind a valid nonce, in any order, as exactly 32 lowercase hex digits; a letter whose exact-shape field appears twice is absent (null). Caps c0009 throughout.",
     "presenceKeys": {
       "alice": "2930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb02",
       "bob": "2a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc03"
@@ -201,71 +201,96 @@
     "tags": {
       "aliceSlotMinus1": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": -1,
         "restart": 0,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f74ffffffffffffffff00",
-        "mac": "f1a449bf173c41200cc92c9edc27a0aec9ad853526180245282f2d2bb680660c",
-        "tag": "ce739fa449bf173c41200cc92c9edc27",
-        "asNodeId": "zzzz7jcjx4ltyqjabteszhw4e4"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17affffffffffffffff00",
+        "mac": "2fb6164b305991c5452c06c6ae62166a962d56cdf2d915ac496be51fb807b474",
+        "tag": "ce7392b6164b305991c5452c06c6ae62",
+        "asNodeId": "zzzzfnqwjmyfteofiuwanrvomi"
       },
       "aliceSlot0": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": 0,
         "restart": 0,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f74000000000000000000",
-        "mac": "996cb53008aaa93306cb7790d092706003b41ef88b2c44cfbe6d542ed8c9b01d",
-        "tag": "ce73996cb53008aaa93306cb7790d092",
-        "asNodeId": "zzzzs3fvgaekvkjta3fxpegqsi"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17a000000000000000000",
+        "mac": "b7efb9c521636aa0e56e278f14f4310e68a679b7fe050a9d22963573fcb2aaf9",
+        "tag": "ce739befb9c521636aa0e56e278f14f4",
+        "asNodeId": "zzzzx35zyuqwg2va4vxcpdyu6q"
       },
       "aliceNowRestart0": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": 1951222,
         "restart": 0,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f600",
-        "mac": "ca7cd904e70887dbc6e38d218d19fd3b1f7473d4aefcb0c0112260fcf717ffd2",
-        "tag": "ce739c7cd904e70887dbc6e38d218d19",
-        "asNodeId": "zzzzy7gzattqrb63y3ry2imnde"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17a00000000001dc5f600",
+        "mac": "6814ce56f79934b596a624f70cf000923b29634234a43761568fac7fe032baed",
+        "tag": "ce739614ce56f79934b596a624f70cf0",
+        "asNodeId": "zzzzmfgok33zsnfvs2tcj5ym6a"
       },
       "aliceNowRestart1": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": 1951222,
         "restart": 1,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f601",
-        "mac": "cea46ca62e91303c43a760068f32e37c1e98d9c382f9fe0c20b4304599a2c931",
-        "tag": "ce739ca46ca62e91303c43a760068f32",
-        "asNodeId": "zzzzzjdmuyxjcmb4iotwabupgi"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17a00000000001dc5f601",
+        "mac": "9ac9f045215d6bc51285dc74b38fd26e00927adb94ff22ed51a52befb9731646",
+        "tag": "ce7399c9f045215d6bc51285dc74b38f",
+        "asNodeId": "zzzztspqiuqv226fckc5y5ftr4"
       },
       "aliceNowRestart2": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": 1951222,
         "restart": 2,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f602",
-        "mac": "8af89b32e49564341a5fd484cf8834c39ff2f5c3ca479a844ff5e0ffe5cd9511",
-        "tag": "ce7398f89b32e49564341a5fd484cf88",
-        "asNodeId": "zzzzr6e3glsjkzbudjp5jbgpra"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17a00000000001dc5f602",
+        "mac": "57df84e94a7e6bc14e6eeee394d55110c061503cd4253ba00bff670410726211",
+        "tag": "ce7395df84e94a7e6bc14e6eeee394d5",
+        "asNodeId": "zzzzlx4e5ffh426bjzxo5y4u2u"
       },
       "aliceNowRestart3": {
         "key": "alice",
+        "owner": "alice",
+        "ownerId": "e08d0d3da73f9fb4ec05b4a84d88f17a",
         "slot": 1951222,
         "restart": 3,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f603",
-        "mac": "9764210db6bbba9a45c808cfc94ace333fc4b83a50625b743705db3b2e3b27fb",
-        "tag": "ce739964210db6bbba9a45c808cfc94a",
-        "asNodeId": "zzzzszbbbw3lxou2ixeart6jji"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f74e08d0d3da73f9fb4ec05b4a84d88f17a00000000001dc5f603",
+        "mac": "0559c5b5a36023975794ae6fefb48896231bfaac2f433f30452d81c8ec163705",
+        "tag": "ce739059c5b5a36023975794ae6fefb4",
+        "asNodeId": "zzzzawofwwrwai4xk6kk437pwq"
       },
       "bobNowRestart0": {
         "key": "bob",
+        "owner": "bob",
+        "ownerId": "8828dcbf9b96e4d161c94132637e8b68",
         "slot": 1951222,
         "restart": 0,
-        "macInput": "6b6e69742f6164766572742f76312f736c6f7400000000001dc5f600",
-        "mac": "ffe8ebf5a276b9c769276c0ec4a7ef380524b60bd83b11b5169dc5c9e27fa2ab",
-        "tag": "ce739fe8ebf5a276b9c769276c0ec4a7",
-        "asNodeId": "zzzz72hl6wrhnoohnetwydweu4"
+        "macInput": "6b6e69742f6164766572742f76312f736c6f748828dcbf9b96e4d161c94132637e8b6800000000001dc5f600",
+        "mac": "a48188bbbdbf86b8fdf31156787ed7e3a35f16f32102e629eba284b9d5fd71f5",
+        "tag": "ce739a8188bbbdbf86b8fdf31156787e",
+        "asNodeId": "zzzzvamixo637bvy7xzrcvtypy"
+      },
+      "aliceKeyUnderBob": {
+        "key": "alice",
+        "owner": "bob",
+        "ownerId": "8828dcbf9b96e4d161c94132637e8b68",
+        "slot": 1951222,
+        "restart": 0,
+        "macInput": "6b6e69742f6164766572742f76312f736c6f748828dcbf9b96e4d161c94132637e8b6800000000001dc5f600",
+        "mac": "5531483a4b710c02aac31489abac20e86b4d57c8a0cf3d0322718a7191a5dcc5",
+        "tag": "ce739531483a4b710c02aac31489abac",
+        "asNodeId": "zzzzkmkihjfxcdacvlbrjcnlvq"
       }
     },
     "hasPrefix": {
       "tag": {
-        "bytes": "ce739c7cd904e70887dbc6e38d218d19",
+        "bytes": "ce739614ce56f79934b596a624f70cf0",
         "hasPrefix": true
       },
       "aliceClearId": {
@@ -277,60 +302,60 @@
         "hasPrefix": true
       },
       "lastPrefixBitFlipped": {
-        "bytes": "ce738c7cd904e70887dbc6e38d218d19",
+        "bytes": "ce738614ce56f79934b596a624f70cf0",
         "hasPrefix": false
       },
       "short": {
-        "bytes": "ce739c7cd904e70887dbc6e38d218d",
+        "bytes": "ce739614ce56f79934b596a624f70c",
         "hasPrefix": false
       },
       "long": {
-        "bytes": "ce739c7cd904e70887dbc6e38d218d1900",
+        "bytes": "ce739614ce56f79934b596a624f70cf000",
         "hasPrefix": false
       }
     },
     "link": {
       "helloTaggedDialer": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
-        "record": "06000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137"
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|ace739a8188bbbdbf86b8fdf31156787e",
+        "record": "06000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733393631346365353666373939333462353936613632346637306366307c616365373339613831383862626264626638366238666466333131353637383765"
       },
       "helloTaggedReply": {
-        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739fe8ebf5a276b9c769276c0ec4a7",
-        "record": "06000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739a8188bbbdbf86b8fdf31156787e",
+        "record": "06000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339613831383862626264626638366238666466333131353637383765"
       },
       "proofTranscriptDialer": {
         "signer": "alice",
-        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6601000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6601000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733393631346365353666373939333462353936613632346637306366307c616365373339613831383862626264626638366238666466333131353637383765000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339613831383862626264626638366238666466333131353637383765"
       },
       "proofTranscriptResponder": {
         "signer": "bob",
-        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6602000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733396337636439303465373038383764626336653338643231386431397c616365373339666538656266356132373662396337363932373663306563346137000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339666538656266356132373662396337363932373663306563346137"
+        "hex": "6b6e69742f6c696e6b2f76312f70726f6f6602000000883463677132706e68683670336a336166777375653363687270697c317c63303030397c6e34303431343234333434343534363437343834393461346234633464346534667c7463653733393631346365353666373939333462353936613632346637306366307c616365373339613831383862626264626638366238666466333131353637383765000000667261756e7a7034337333736e63796f6a69657a676737756c6e617c317c63303030397c6e35303531353235333534353535363537353835393561356235633564356535667c746365373339613831383862626264626638366238666466333131353637383765"
       },
       "proofDialer": {
         "signer": "alice",
-        "record": "0800000080e4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df073e79971c9110029723632a80b707bf4f62c125763346e1e8718d6c0dcc3aa3ae29bad0607cf2ff65bb91de21088c9a6d618794f300036ff1f45683df8dbdc823ce9820be5bbe4627c16a54c4902e11e4d14c80995ee0a6b9f91c5403ac6d201"
+        "record": "0800000080e4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df073e79971c9110029723632a80b707bf4f62c125763346e1e8718d6c0dcc3aa3a1db68efc0c3ff41a10cf34cb4a9456b5b4ff46ebbc3ebef545cc4eb32928323b2df37b59f350b7d9029c1e06246e9556a240dbb4ce93192cdcd08ba8ee32380a"
       },
       "proofResponder": {
         "signer": "bob",
-        "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad0110370632813f544dea295d6226d7c6c96b25137c7d539b5661cb951a507bb9a8c7fdd9015a53a9f04443d1b801abc390f69bd0b966aa7ad6edde41ec08eb668f03"
+        "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad01101fe6aa8fb1bc50d2325680eeedb84aa6725cab298e5fd94e6b05faf73a36d99293730e8c305687637e4f384166ce03aa19a8d6465eff838348c8d52428bd480f"
       },
       "toldRewritten": {
         "checkedAs": "bob, responder, helloTaggedDialer and this payload",
-        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "raunzp43s3sncyojiezgg7ulna|1|c0009|n505152535455565758595a5b5c5d5e5f|tce739614ce56f79934b596a624f70cf0",
         "record": "proofResponder",
         "reason": "the signature does not cover this transcript"
       }
     },
     "advert": {
       "blinded": {
-        "tag": "ce739c7cd904e70887dbc6e38d218d19",
+        "tag": "ce739614ce56f79934b596a624f70cf0",
         "capabilities": "c0009",
         "digestVersionBeforeZeroing": 20015998343868,
         "psm": 131,
         "flags": 12,
-        "serviceData": "09ce739c7cd904e70887dbc6e38d218d190000000000830c",
+        "serviceData": "09ce739614ce56f79934b596a624f70cf00000000000830c",
         "parsed": {
-          "form": "zzzzy7gzattqrb63y3ry2imnde",
+          "form": "zzzzmfgok33zsnfvs2tcj5ym6a",
           "blinded": true,
           "capabilities": 9,
           "digestCue": 0,
@@ -343,96 +368,96 @@
         "reason": "FLAG_BLINDED over bytes without the tag prefix: dropped before anything is computed"
       },
       "clearWithTagBytes": {
-        "serviceData": "09ce739c7cd904e70887dbc6e38d218d1956789abc008300",
+        "serviceData": "09ce739614ce56f79934b596a624f70cf056789abc008300",
         "blinded": false,
         "reason": "no FLAG_BLINDED: read as a clear id, never keyed with the tag"
       }
     },
     "tagNext": {
-      "tag": "ce739a64ba5a7baf20b4eb0403e344ed",
+      "tag": "ce73942cd8a062e2fdd4d06b8b557b83",
       "slot": 1951223,
       "restart": 0,
-      "record": "0900000010ce739a64ba5a7baf20b4eb0403e344ed",
+      "record": "0900000010ce73942cd8a062e2fdd4d06b8b557b83",
       "wrongLength": {
-        "record": "090000000fce739a64ba5a7baf20b4eb0403e344",
+        "record": "090000000fce73942cd8a062e2fdd4d06b8b557b",
         "reason": "a TAG_NEXT is exactly 16 bytes; any other length is a framing error that drops the link"
       }
     },
     "helloFields": {
       "both": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|ace739a8188bbbdbf86b8fdf31156787e",
         "nonce": true,
-        "told": "ce739c7cd904e70887dbc6e38d218d19",
-        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+        "told": "ce739614ce56f79934b596a624f70cf0",
+        "addressed": "ce739a8188bbbdbf86b8fdf31156787e"
       },
       "reversed": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|ace739fe8ebf5a276b9c769276c0ec4a7|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|ace739a8188bbbdbf86b8fdf31156787e|tce739614ce56f79934b596a624f70cf0",
         "nonce": true,
-        "told": "ce739c7cd904e70887dbc6e38d218d19",
-        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+        "told": "ce739614ce56f79934b596a624f70cf0",
+        "addressed": "ce739a8188bbbdbf86b8fdf31156787e"
       },
       "unknownFieldSkipped": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|x0123|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|x0123|tce739614ce56f79934b596a624f70cf0",
         "nonce": true,
-        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "told": "ce739614ce56f79934b596a624f70cf0",
         "addressed": null
       },
       "duplicateTold": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tce739ca46ca62e91303c43a760068f32|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|tce7399c9f045215d6bc51285dc74b38f|ace739a8188bbbdbf86b8fdf31156787e",
         "nonce": true,
         "told": null,
-        "addressed": "ce739fe8ebf5a276b9c769276c0ec4a7"
+        "addressed": "ce739a8188bbbdbf86b8fdf31156787e"
       },
       "duplicateAddressed": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7|ace739ca46ca62e91303c43a760068f32",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|ace739a8188bbbdbf86b8fdf31156787e|ace7399c9f045215d6bc51285dc74b38f",
         "nonce": true,
-        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "told": "ce739614ce56f79934b596a624f70cf0",
         "addressed": null
       },
       "sameToldTwice": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|tce739614ce56f79934b596a624f70cf0",
         "nonce": true,
         "told": null,
         "addressed": null
       },
       "malformedSecondTold": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19|tzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0|tzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
         "nonce": true,
-        "told": "ce739c7cd904e70887dbc6e38d218d19",
+        "told": "ce739614ce56f79934b596a624f70cf0",
         "addressed": null
       },
       "upperHex": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tCE739C7CD904E70887DBC6E38D218D19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tCE739614CE56F79934B596A624F70CF0",
         "nonce": true,
         "told": null,
         "addressed": null
       },
       "shortTold": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d1",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf",
         "nonce": true,
         "told": null,
         "addressed": null
       },
       "longTold": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d190",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf00",
         "nonce": true,
         "told": null,
         "addressed": null
       },
       "noNonce": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|tce739c7cd904e70887dbc6e38d218d19|ace739fe8ebf5a276b9c769276c0ec4a7",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|tce739614ce56f79934b596a624f70cf0|ace739a8188bbbdbf86b8fdf31156787e",
         "nonce": false,
         "told": null,
         "addressed": null
       },
       "shortNonce": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|n404142434445464748494a4b4c4d4e4|tce739614ce56f79934b596a624f70cf0",
         "nonce": false,
         "told": null,
         "addressed": null
       },
       "nonceNotThird": {
-        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|x0123|n404142434445464748494a4b4c4d4e4f|tce739c7cd904e70887dbc6e38d218d19",
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|c0009|x0123|n404142434445464748494a4b4c4d4e4f|tce739614ce56f79934b596a624f70cf0",
         "nonce": false,
         "told": null,
         "addressed": null

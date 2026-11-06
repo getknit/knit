@@ -11,7 +11,7 @@ import java.util.Random
 
 /**
  * [ExpectedTagTable] (ADR 2026-11.xp6d): the window moves with the wall clock exactly as far as the clock moved, either
- * way, and a tag two contacts' keys list resolves to nobody. Keys come from a seeded [Random]; both clocks are fixed
+ * way, and a key two contacts list leaves each its own tags. Keys come from a seeded [Random]; both clocks are fixed
  * numbers the test passes in.
  */
 class ExpectedTagTableTest {
@@ -32,7 +32,8 @@ class ExpectedTagTableTest {
         key: ByteArray,
         atSlot: Long,
         restart: Int = 0,
-    ): String = NodeId.fromBytes(BlindTag.tag(key, atSlot, restart))
+        owner: String = bob,
+    ): String = NodeId.fromBytes(BlindTag.tag(key, NodeId.toBytes(owner), atSlot, restart))
 
     private fun table(): ExpectedTagTable =
         ExpectedTagTable(previousKeyMaxMs = 7L * 24 * 3_600_000).also {
@@ -60,9 +61,11 @@ class ExpectedTagTableTest {
         val hmacs = t.tagsComputed
         t.slide(wall - 3 * BlindTag.SLOT_MS)
         assertEquals(hmacs + 2 * 3 * BlindTag.RESTARTS, t.tagsComputed)
-        for (back in slot - 35..slot - 33) assertEquals("slot $back came back", carol, t.lookup(form(carolKey, back), now)?.nodeId)
-        for (ahead in slot..slot + 2) assertNull("slot $ahead now ahead of the window", t.lookup(form(carolKey, ahead), now))
-        assertEquals(carol, t.lookup(form(carolKey, slot - 1), now)?.nodeId)
+        for (back in slot - 35..slot - 33) {
+            assertEquals("slot $back came back", carol, t.lookup(form(carolKey, back, owner = carol), now)?.nodeId)
+        }
+        for (ahead in slot..slot + 2) assertNull("slot $ahead now ahead of the window", t.lookup(form(carolKey, ahead, owner = carol), now))
+        assertEquals(carol, t.lookup(form(carolKey, slot - 1, owner = carol), now)?.nodeId)
     }
 
     @Test
@@ -80,37 +83,53 @@ class ExpectedTagTableTest {
     }
 
     @Test
-    fun aKeyTwoContactsHoldResolvesToNeitherWhateverTheOrder() {
-        val t = table()
-        val bobs = form(bobKey, slot)
-        // Mallory sent Bob's presence key as her own, listed in a later call than his.
-        t.setKeys(mapOf(bob to ContactKey(bobKey), carol to ContactKey(carolKey), mallory to ContactKey(bobKey)), now, wall)
-        assertNull(t.lookup(bobs, now))
-        t.slide(wall + BlindTag.SLOT_MS)
-        assertNull("still nobody after the window moved", t.lookup(bobs, now))
-        assertNull(t.lookup(form(bobKey, slot + 3), now))
-        assertEquals(3L, t.collisionHits)
-        assertEquals((BlindTag.WINDOW_PAST_SLOTS + 1 + BlindTag.WINDOW_AHEAD_SLOTS).toInt() * BlindTag.RESTARTS, t.collided)
-        // Unlisting the copier leaves Bob's tags mapped to him.
-        t.setKeys(mapOf(bob to ContactKey(bobKey), carol to ContactKey(carolKey)), now, wall + BlindTag.SLOT_MS)
-        assertEquals(bob, t.lookup(bobs, now)?.nodeId)
-        assertEquals(bob, t.lookup(form(bobKey, slot + 3), now)?.nodeId)
-        assertEquals(0, t.collided)
+    fun aKeyAnotherContactListsLeavesEachFormItsOwnerWhateverTheOrder() {
+        // Mallory sent Bob's presence key as her own: as her current key, or as the previous one behind a key of hers.
+        for (mallorys in listOf(ContactKey(bobKey), ContactKey(key(), previous = bobKey))) {
+            for ((first, second) in listOf(bob to mallory, mallory to bob)) {
+                val listing = mapOf(bob to ContactKey(bobKey), mallory to mallorys)
+                val t = ExpectedTagTable(previousKeyMaxMs = 7L * 24 * 3_600_000)
+                t.setKeys(mapOf(first to listing.getValue(first)), now, wall)
+                t.setKeys(mapOf(second to listing.getValue(second), first to listing.getValue(first)), now, wall)
+                assertEquals(bob, t.lookup(form(bobKey, slot), now)?.nodeId)
+                assertEquals(mallory, t.lookup(form(bobKey, slot, owner = mallory), now)?.nodeId)
+                t.slide(wall + BlindTag.SLOT_MS)
+                assertEquals("a slot the window gained", bob, t.lookup(form(bobKey, slot + 3), now)?.nodeId)
+                assertEquals(mallory, t.lookup(form(bobKey, slot + 3, owner = mallory), now)?.nodeId)
+                // Unlisting the copier leaves Bob's tags mapped to him.
+                t.setKeys(mapOf(bob to ContactKey(bobKey)), now, wall + BlindTag.SLOT_MS)
+                assertEquals(bob, t.lookup(form(bobKey, slot), now)?.nodeId)
+                assertEquals(bob, t.lookup(form(bobKey, slot + 3), now)?.nodeId)
+                assertNull(t.lookup(form(bobKey, slot, owner = mallory), now))
+            }
+        }
     }
 
     @Test
-    fun aKeyListedAsAnothersPreviousCollidesToo() {
-        val t = table()
-        val bobs = form(bobKey, slot)
-        // Mallory, listed in a later call, names Bob's key as her previous one.
-        t.setKeys(
-            mapOf(bob to ContactKey(bobKey), carol to ContactKey(carolKey), mallory to ContactKey(key(), previous = bobKey)),
-            now,
-            wall,
-        )
-        assertNull(t.lookup(bobs, now))
-        assertNull(t.lookup(form(bobKey, slot - 32, 2), now))
-        assertEquals(carol, t.lookup(form(carolKey, slot), now)?.nodeId)
+    fun oneKeyUnderTwoGenerationsOfAContactStaysResolvedThroughLaterListings() {
+        // A fork: `PresenceKeyPolicy.receive` compares bytes only within one generation, so the store holds Bob's key twice.
+        val other = key()
+        val forked = mapOf(bob to ContactKey(listOf(bobKey, other, bobKey)), carol to ContactKey(carolKey))
+        val t = ExpectedTagTable(previousKeyMaxMs = 7L * 24 * 3_600_000)
+        t.setKeys(forked, now, wall)
+        val resolved = {
+            assertEquals(bob, t.lookup(form(bobKey, slot), now)?.nodeId)
+            assertEquals(bob, t.lookup(form(bobKey, slot - 32, 2), now)?.nodeId)
+        }
+        resolved()
+        val hmacs = t.tagsComputed
+        t.setKeys(forked, now, wall)
+        resolved()
+        // Another contact's change, then Bob's own listing without the fork.
+        t.setKeys(forked + (carol to ContactKey(key())), now, wall)
+        resolved()
+        t.setKeys(forked + (bob to ContactKey(listOf(bobKey, other))), now, wall)
+        resolved()
+        // Last, so a fork that darkened its own tags fails on staying resolved above, the claim this test makes.
+        assertEquals("it stands at its newest place", true, t.lookup(form(bobKey, slot), now)?.current)
+        assertEquals("Bob's two keys and Carol's two, each built once", 4L, t.builds)
+        val oneKey = (BlindTag.WINDOW_PAST_SLOTS + 1 + BlindTag.WINDOW_AHEAD_SLOTS).toInt() * BlindTag.RESTARTS
+        assertEquals("only Carol's new key listed", hmacs + oneKey, t.tagsComputed)
     }
 
     @Test

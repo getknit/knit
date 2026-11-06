@@ -62,12 +62,19 @@ class AdvertDiagTest {
     private val contactId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 40).toByte() })
     private val clearId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 90).toByte() })
     private val strangerId = NodeId.fromBytes(ByteArray(NodeId.BYTES) { (it + 120).toByte() })
-    private val schedule = TagSchedule(Store())
+    private val schedule = TagSchedule(Store()) { localId }
+
+    /** [owner]'s tag under [key] for the slot of [wall]. */
+    private fun tagOf(
+        key: ByteArray,
+        owner: String,
+        restart: Int,
+    ): String = NodeId.fromBytes(BlindTag.tag(key, NodeId.toBytes(owner), BlindTag.slotOf(wall), restart))
 
     /** A tag the schedule chose under [key] for the slot of [wall]: a known tag under a known generation. */
-    private val myTag = NodeId.fromBytes(BlindTag.tag(key.key, BlindTag.slotOf(wall), 0))
-    private val contactTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 6 }, BlindTag.slotOf(wall), 1))
-    private val strangerTag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, BlindTag.slotOf(wall), 2))
+    private val myTag = tagOf(key.key, localId, 0)
+    private val contactTag = tagOf(ByteArray(BlindTag.KEY_BYTES) { 6 }, contactId, 1)
+    private val strangerTag = tagOf(ByteArray(BlindTag.KEY_BYTES) { 7 }, strangerId, 2)
     private val handle = "~zzzz…3"
 
     private fun sighting(
@@ -398,7 +405,7 @@ class AdvertDiagTest {
         val reader = AdvertAliases<String>({ 1_000L }, { wall })
         reader.setKeys(mapOf(contactId to AdvertAliases.ContactKey(contactKey)))
         reader.onAnswered("answered", strangerTag, strangerId)
-        val announced = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 8 }, BlindTag.slotOf(wall), 3))
+        val announced = tagOf(ByteArray(BlindTag.KEY_BYTES) { 8 }, clearId, 3)
         reader.onTagNext("announced", clearId, announced)
         val mine = AdvertOrder.Form(myTag, blinded = true)
         val s = status(writerAiring(mine), mine, aliases = reader.counters(), formHandles = 7)
