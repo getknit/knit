@@ -461,3 +461,28 @@ Tests: `LoraDirectTransportTest` (the catch-up section: each trigger, two DMs to
 flapping relay, a resend's ack, the base gap behind an ack) and `RoomTickPlanesLabTest.dmsStrandedByARelayThatWentCatchUpOverTheAirAndTheFarSideAnswersThere`.
 Device trial owed: the #294 recipe on two phones with boards; a 10-DM chat at under 45 s spacing with relays off keeps
 `loraDirectResent` at 0; the far phone off with its board on, five DMs: resends stay within the re-probe's schedule.
+
+### Amendment (2026-11-06, #300, draft): "sealed by any path" covers the coalescer's hold too
+
+This section's rule, "A ✓✓ sealed by any path drops its ids from the hold, so none is sealed twice", was enforced for
+`heldTicks` alone. `DmAckCoalescer` is a second hold, and nothing told it: a DM heard compact and signed inside the
+45 s drew an instant receipt and then the flush's tick, so two signed ✓✓ for one id. Android only; the mechanism and its
+costs are ADR 2026-10.8hn6's 2026-11-06 amendment, and three things change here.
+
+- **The flush seals only what is unanswered.** `flushDmAcks` asks the 8hn6 rule by id and seals the rest. Every id keeps
+  its compact tick, so an author who hears only the board keeps a prompt ✓✓: one offer under the signed tick's id, or
+  under a fresh id when no signed tick goes. The exception is a seal that cannot be made: there each unanswered id takes
+  the cleartext receipt and no compact tick, and only the answered ids air. With every id answered it does not call
+  `originateDeliveryTick` at all, since an empty list would seal a tick of riders alone. Each skipped id counts on
+  `reAcksSkipped=`.
+- **The coalescer's tick and a held flush record.** This replaces the 2026-10-29 bullet's "`MeshManager.flushHeldTicks`
+  is the coalescer's batch shape and records nothing either": both file the ids they sealed, so the later copy reads
+  them as answered rather than costing one more receipt.
+- **The hold's detached set is covered by a claim.** `flushHeldTicks` takes the set out of `heldTicks` before it seals,
+  so `releaseHeldTicks` finds nothing from then on. `DmReAckLedger.claim`, taken before the read and the seal on all
+  three paths, is what keeps a root change and the pipeline's own re-ack from both sealing the one id. The path that
+  gives way holds the id, the claim's end flushes the hold, which settles it from the ledger, and an id goes back to
+  the hold when its flush throws.
+
+An id a reply carries inline (`DmAckCoalescer.take`) has no ledger entry, so its signed copy can still seal a receipt.
+Regression: `DmTickOnceLabTest`.

@@ -824,6 +824,7 @@ class MeshManager(
             offerLoraReceipt = ::offerLoraReceipt,
             holdDeclinedTick = { authorId, ackId -> holdDeclinedTicks(authorId, listOf(ackId)) },
             releaseHeldTicks = { authorId, ids -> releaseHeldTicks(authorId, ids) },
+            flushContestedTicks = ::flushContestedTicks,
             dmAcks = dmAcks,
             holdsLive = forwardStore::holdsLiveReceipt,
             flushPending = ::flushPendingFor,
@@ -2783,7 +2784,7 @@ class MeshManager(
                 is RatchetSessions.AnswerSeal.Sealed -> {
                     // Whatever this tick covers is answered now: a held copy of it must not be sealed again (shape 9).
                     releaseHeldTicks(authorId, ackIds)
-                    outcome.env
+                    outcome
                 }
 
                 RatchetSessions.AnswerSeal.Declined -> {
@@ -2807,9 +2808,10 @@ class MeshManager(
                         senderId = me,
                         sentAt = now,
                         recipientId = authorId,
-                        payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+                        payload = WireCodec.encodePayload(ChatContent(enc = sealed.env)),
                     ),
                 v3 = v3,
+                rootTag = sealed.rootTag,
             ),
         )
     }
@@ -2828,11 +2830,13 @@ class MeshManager(
     /**
      * A sealed tick and the scheme it was actually sealed under — the unsigned decision below must follow
      * the seal, not the capability read: a content the compact codec refused fell back to v2 and must stay
-     * signed.
+     * signed. [rootTag] names the root the seal committed under, the era a DM ✓✓ files itself in: read from the seal,
+     * since a reset adopted on another plane can commit before anything reads the session again (ADR 2026-10.8hn6).
      */
     private class SealedTick(
         val env: RelayEnvelope,
         val v3: Boolean,
+        val rootTag: Long,
     )
 
     /**
@@ -2856,6 +2860,10 @@ class MeshManager(
      * spool-eligible via the DM-scope frame-set rule) so it converges to an author who is out of link
      * range, exactly like the message it acks. Returns false when the seal fails and AckSync should
      * fall back to its per-id cleartext entries.
+     *
+     * A DM ✓✓ ([answer]) files itself in the pipeline's re-ack ledger here and never in [sealTick], which also serves
+     * AckSync's group ticks and whose list holds the riders: [ackIds] alone, once the frame is originated, so a copy
+     * landing later reads it as answered (#300, ADR 2026-10.8hn6's 2026-11-06 amendment). A decline files nothing.
      */
     private suspend fun originateDeliveryTick(
         authorId: String,
@@ -2866,6 +2874,9 @@ class MeshManager(
         fromBoard: Boolean = false,
         // Sealed as an answer without the compact offer: a held ✓✓'s retry ([flushHeldTicks]).
         answer: Boolean = fromBoard,
+        // What the compact copies cover when that is more than the signed tick seals: a batch's answered ids still air
+        // ([flushDmAcks]), in the same offer and under this tick's id.
+        compactIds: List<String> = ackIds,
     ): TickSent {
         // The best carrier there is (ADR 2026-09.aa27): this frame is already sealed to that author, already
         // originated and already custodied, so the room ticks waiting for a ride cost it a few bytes and no
@@ -2889,13 +2900,14 @@ class MeshManager(
                 }
             }
         originateSigned(tick.env)
+        if (answer) pipeline.recordDmReceipts(authorId, ackIds, tick.rootTag, tick.env.id, tick.env.sentAt)
         metrics.onReceiptCustodied()
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
         // Its compact copies for the LoRa plane (ADR 2026-10.x9fa): the same ids, in one-packet ticks — the DM path only.
         // The DM ids alone: the room ticks riding the signed tick never air (ADR 2026-10.rp3s), and one past ten would cost
         // the compact ✓✓ a second packet.
-        if (fromBoard) offerLoraTicks(authorId, tick.env.id, tick.env.sentAt, ackIds)
+        if (fromBoard) offerLoraTicks(authorId, tick.env.id, tick.env.sentAt, compactIds)
         return TickSent.SENT
     }
 
@@ -2990,8 +3002,14 @@ class MeshManager(
     }
 
     /**
-     * Flushes a coalesced batch of LoRa-held DM receipts (ADR 054): one sealed tick covering every id, or —
-     * the seal failing (author unpinned meanwhile) — the cleartext receipt per id, AckSync's fallback rule.
+     * Flushes a coalesced batch of LoRa-held DM receipts (ADR 054): one sealed tick covering every id still unanswered,
+     * or — the seal failing (author unpinned meanwhile) — the cleartext receipt per id, AckSync's fallback rule. An id
+     * already answered in this era ([InboundPipeline.claimUnansweredDmAcks]: its signed copy took an instant receipt, a
+     * held flush got there first) is not sealed again (#300), and still gets its compact tick, so an author who hears
+     * only the board keeps a prompt ✓✓; so does one another path is sealing right now, which that call also holds. The
+     * compact ticks go in one offer under the signed tick's id; a fresh id only
+     * when no signed tick goes at all, never an earlier receipt's. A compact tick is not a receipt in custody, so the
+     * ledger never hears of it.
      */
     private suspend fun flushDmAcks(
         authorId: String,
@@ -3002,23 +3020,46 @@ class MeshManager(
         // row of their own. Field case: the pocket member that owed two room ticks originated exactly this
         // frame 3 minutes later for an unrelated DM ack, and they would have crossed there instead of
         // waiting 45 minutes for a link.
-        when (originateDeliveryTick(authorId, ackIds, riderCap = DmAckCoalescer.MAX_LORA_TICK_ACKS, fromBoard = true)) {
-            TickSent.SENT -> {
-                metrics.onReceiptCoalesced(ackIds.size - 1)
-            }
-
-            // No session the author holds yet (ADR 2026-10.x9fa): the board's compact ticks alone, under a fresh id, and
-            // never the cleartext receipt — a sealed tick is not downgraded (ADR 018). The signed ✓✓ is the re-ack each
-            // DM's signed copy draws once its ratchet-only open lands (`InboundPipeline.loraDirectCopyTaken`).
-            TickSent.DECLINED -> {
+        val unanswered = pipeline.claimUnansweredDmAcks(authorId, ackIds)
+        try {
+            // Every id answered: no signed tick. An empty list would seal a tick of riders alone.
+            if (unanswered.isEmpty()) {
                 offerLoraTicks(authorId, FrameId.new(), clock(), ackIds)
-                holdDeclinedTicks(authorId, ackIds)
+                return
             }
+            val sent =
+                originateDeliveryTick(
+                    authorId,
+                    unanswered,
+                    riderCap = DmAckCoalescer.MAX_LORA_TICK_ACKS,
+                    fromBoard = true,
+                    compactIds = ackIds,
+                )
+            when (sent) {
+                TickSent.SENT -> {
+                    metrics.onReceiptCoalesced(unanswered.size - 1)
+                }
 
-            TickSent.CANNOT_SEAL -> {
-                val me = identity.nodeId()
-                ackIds.forEach { pipeline.ackCleartext(it, me) }
+                // No session the author holds yet (ADR 2026-10.x9fa): the board's compact ticks alone, under a fresh id, and
+                // never the cleartext receipt — a sealed tick is not downgraded (ADR 018). The signed ✓✓ is the re-ack each
+                // DM's signed copy draws once its ratchet-only open lands (`InboundPipeline.loraDirectCopyTaken`).
+                // Held before the offer, which suspends: the answer can commit inside it, and a root flush that found
+                // nothing would leave these for a heal. Finding them under our claim, it contests, and the release wakes it.
+                TickSent.DECLINED -> {
+                    holdDeclinedTicks(authorId, unanswered)
+                    offerLoraTicks(authorId, FrameId.new(), clock(), ackIds)
+                }
+
+                TickSent.CANNOT_SEAL -> {
+                    val me = identity.nodeId()
+                    unanswered.forEach { pipeline.ackCleartext(it, me) }
+                    // The answered ids keep their compact ticks: no signed tick went to carry them.
+                    val answered = ackIds - unanswered.toSet()
+                    if (answered.isNotEmpty()) offerLoraTicks(authorId, FrameId.new(), clock(), answered)
+                }
             }
+        } finally {
+            pipeline.releaseDmAcks(authorId, unanswered)
         }
     }
 
@@ -3302,15 +3343,26 @@ class MeshManager(
      */
     private val heldTicks = ConcurrentHashMap<String, MutableSet<String>>()
 
-    /** Holds [ids] for [authorId]'s signed ✓✓ until a session they hold exists; the pipeline's re-ack lands here too. */
+    /**
+     * Holds [ids] for [authorId]'s signed ✓✓ until a session they hold exists; the pipeline's re-ack lands here too. A
+     * concurrent [flushHeldTicks] may detach the set between the lookup and the lock, and an id landed in a detached set
+     * would be lost, so it retries into a fresh one (`DmAckCoalescer.hold`'s guard): a path that gave way to a claim
+     * rests on this hold.
+     */
     internal fun holdDeclinedTicks(
         authorId: String,
         ids: Collection<String>,
     ) {
-        val held = heldTicks.computeIfAbsent(authorId) { java.util.Collections.synchronizedSet(LinkedHashSet()) }
-        synchronized(held) {
-            held += ids
-            while (held.size > MAX_HELD_TICKS) held.remove(held.first())
+        while (true) {
+            val held = heldTicks.computeIfAbsent(authorId) { java.util.Collections.synchronizedSet(LinkedHashSet()) }
+            val landed =
+                synchronized(held) {
+                    if (heldTicks[authorId] !== held) return@synchronized false
+                    held += ids
+                    while (held.size > MAX_HELD_TICKS) held.remove(held.first())
+                    true
+                }
+            if (landed) return
         }
     }
 
@@ -3323,23 +3375,57 @@ class MeshManager(
         synchronized(held) { held.removeAll(ids.toSet()) }
     }
 
+    /**
+     * Seals the held ✓✓ for [authorId], the ids nothing else answered meanwhile. The set is detached first, so
+     * [releaseHeldTicks] finds nothing from here on and only the claim stands between this and a path sealing the same
+     * id: a root change wakes this while the commit that moved it carries on to its own re-ack (#300). What a throw leaves
+     * unsettled goes back to the hold, or a detached id would be gone with nothing to ask for it again.
+     */
     private suspend fun flushHeldTicks(authorId: String) {
         val held = heldTicks.remove(authorId) ?: return
         val ids = synchronized(held) { held.toList() }
-        ids.chunked(DmAckCoalescer.MAX_LORA_TICK_ACKS).forEach { chunk ->
-            when (originateDeliveryTick(authorId, chunk, riderCap = chunk.size, answer = true)) {
-                TickSent.SENT -> {}
-
-                TickSent.DECLINED -> {
-                    holdDeclinedTicks(authorId, chunk)
+        var settled = 0
+        try {
+            ids.chunked(DmAckCoalescer.MAX_LORA_TICK_ACKS).forEach { chunk ->
+                val unanswered = pipeline.claimUnansweredDmAcks(authorId, chunk)
+                try {
+                    if (unanswered.isNotEmpty()) flushHeldChunk(authorId, unanswered)
+                } finally {
+                    pipeline.releaseDmAcks(authorId, unanswered)
                 }
+                settled += chunk.size
+            }
+        } finally {
+            if (settled < ids.size) holdDeclinedTicks(authorId, ids.drop(settled))
+        }
+    }
 
-                // The author can no longer read a sealed tick at all (no pin, or the ratchet bit gone): the legacy receipt,
-                // as `flushDmAcks` sends one — the only ✓✓ such a peer reads.
-                TickSent.CANNOT_SEAL -> {
-                    val me = identity.nodeId()
-                    chunk.forEach { pipeline.ackCleartext(it, me) }
-                }
+    /**
+     * A claim ended with a ✓✓ waiting behind it (#300): the hold is asked now, off the releasing path, which may be
+     * inside `loraDirectLock`. With the mesh stopped it waits in the hold for the next start's heal.
+     */
+    private fun flushContestedTicks(authorId: String) {
+        sessionScope?.launch {
+            runRound({ Log.w(TAG, "contested ticks failed: ${it.message}") }) { flushHeldTicks(authorId) }
+        }
+    }
+
+    private suspend fun flushHeldChunk(
+        authorId: String,
+        chunk: List<String>,
+    ) {
+        when (originateDeliveryTick(authorId, chunk, riderCap = chunk.size, answer = true)) {
+            TickSent.SENT -> {}
+
+            TickSent.DECLINED -> {
+                holdDeclinedTicks(authorId, chunk)
+            }
+
+            // The author can no longer read a sealed tick at all (no pin, or the ratchet bit gone): the legacy receipt,
+            // as `flushDmAcks` sends one — the only ✓✓ such a peer reads.
+            TickSent.CANNOT_SEAL -> {
+                val me = identity.nodeId()
+                chunk.forEach { pipeline.ackCleartext(it, me) }
             }
         }
     }

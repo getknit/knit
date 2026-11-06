@@ -109,6 +109,84 @@ the exists-gate and a compact-marked signed copy — read the ledger. A decline 
 The hold is **not normative for a port**: it rests on the answer gate, which a port without the compact LoRa door
 (knit-ios today) does not have, and there the rule above stands as written.
 
+## Amendment (2026-11-06, #300, draft): every signed DM ✓✓ records, and a held id is asked the same rule
+
+Android only. It replaces these lines above: "neither are the LoRa coalescer's batch" (what is recorded), "`acknowledge`'s
+DM branch reads it on the exists-gate's call" (`sealDmReceipt` reads it now, on every copy off LoRa), "A DM first acked
+over LoRa (the coalescer) ... has no entry" (the coalescer's id has one; an inline ack still has none), and the 2026-10-29
+amendment's "a held tick's flush record nothing". The chaos sweep with a board on
+every node found one DM answered by two signed receipts: its compact copy waited in `DmAckCoalescer`, its signed copy
+sealed a re-ack at once, and the flush sealed again. A held re-ack flushed on a root move did the same, and so did the
+reverse orders, because neither flush recorded. The cost is the one this ADR exists for, a chain key and a custody row
+on every carrier for the frame's day.
+
+What changes:
+
+- **What is recorded.** "Neither are the LoRa coalescer's batch" no longer holds, nor does the 2026-10-29 amendment's
+  "a held tick's flush record nothing": `MeshManager.originateDeliveryTick` records the ids it actually sealed when it
+  seals as an answer, after `originateSigned`, under the frame id and the tag `AnswerSeal.Sealed.rootTag` returned.
+  Never room riders, never in `sealTick` (AckSync's group ticks pass through it), and never a compact tick's id, which
+  is not in custody and could never read as live. A decline still records nothing, so a held ✓✓ is never skipped. An
+  answered id does not re-record: only a sealed one does, so each DM keeps its own floor step.
+- **The rule is asked by id, and an id means its author's.** `answeredInEra(authorId, dmId)` takes no copy and no plane,
+  and rule 2 lives inside it: an author who lost the ratchet bit never reads as answered and keeps the cleartext
+  receipt. The author chooses the id, so the ledger and its claims are keyed by author and id together. Rule 4's custody
+  read counts only our own frame under the receipt's id. Only rule 1's LoRa exclusion stays at the re-ack, in
+  `acknowledge`.
+- **Every copy off LoRa asks, a first delivery too.** A copy that lost the commit race acks unmarked, with an `isNew` read
+  before either persist, so `sealDmReceipt` reads the ledger on the plane alone and never on `reDelivery`, which would
+  also move `answer`. A DM with no entry stops there and pays no locked root read.
+- **Rule 1 means something narrower now.** A LoRa re-delivery keeps its **compact** re-ack, always, and that is the heal
+  ADR 039 §3 and §7 need. Its **signed** re-ack is bounded by rules 2 to 5 at the coalescer's flush
+  (`flushDmAcks`), which seals only the unanswered ids and gives every id its compact tick in one offer: under the
+  signed tick's id, or under a fresh id when no signed tick goes. This is Android's rule alone. Rule 1 as written stays
+  normative for a port: knit-ios has no compact door, so nothing there re-acks a board's copy in two forms.
+- **A claim closes the concurrent road.** A record lands after the seal, so it cannot stop a path already past its
+  read, and one event starts two paths: a commit that moves the scope view fires `rootChanges`, a collector detaches
+  the hold, and the pipeline carries on to its own re-ack. `DmReAckLedger.claim` is non-suspending and per author and
+  id. Each seal of a DM ✓✓ (`sealDmReceipt`, `flushDmAcks`, `flushHeldTicks`) claims first, reads the ledger second, and
+  releases in a `finally`, after it recorded or after a decline's hold. A loser seals nothing and holds the id, as a
+  declined ✓✓ is held: the winner may seal under an era since replaced, or throw. The next flush or heal asks the ledger,
+  and skips the id if the winner recorded under the root held then, which costs no frame, or seals it if not. That
+  flush follows the claim's end: `contest` tells the winner, whose `release` asks for it, or the loser asks itself when
+  the winner has gone. A winner can decline just before the session is answered, and no root move would come after. What
+  a throw leaves in `flushHeldTicks` goes back to the hold, and `holdDeclinedTicks` retries when the set it found was
+  detached. A `Mutex` around the seal would be a new lock around a store path that `DmAckCoalescer.hold` reaches under
+  `loraDirectLock`. The cost section's "two copies landing on two planes at once" is closed for concurrent copies; a
+  late sequential copy is answered by the record, and stays open only where there is none to read or it no longer holds:
+  an inline ack's id, a receipt past its floor or out of custody, a new era.
+
+What it costs, plainly:
+
+- **The reverse order skips an off-board re-delivery that may be that DM's only one.** A flush that sealed now answers
+  the signed copy, so a receipt the author holds but never applied waits for a further re-delivery past the floor.
+  This widens the cost section's "a receipt the author holds but never applied" to DMs first heard compact. Their
+  compact ✓✓ crossed or was offered, and the receipt is live in custody.
+- **The reverse order skips the answer to a real ratchet step.** The signed copy's ratchet-only open advances the
+  session, and the receipt that would have answered it is not sealed. In a one-way stream the author's `highestPeAcked`,
+  and with it its turnaround rekey, trails by one receipt. That is a bounded delay to forward secrecy: no frame fails
+  to open, and the next receipt or DM of ours catches it up.
+- **The inline-reply road stays open.** `DmAckCoalescer.take` puts an id on a reply with no ledger entry, so its signed
+  copy can still seal a receipt, the "inline in a reply" this ADR already accepts.
+- **A throw inside `flushDmAcks` loses the winner's ids until a re-delivery.** The coalescer has already let go of the
+  batch, and nothing puts it back. A loser behind that claim is held and flushed, and a throw in a declined flush's
+  compact offer leaves its ids held, since the hold goes first.
+- **A decline can still miss the root move that would have sealed it.** A decline holds its ids before its compact
+  offer, so an answer committing during the offer finds them, under the claim. That leaves the few instructions between
+  the seal's lock and the hold, `flushHeldChunk`'s decline among them: an answer committing there fires a flush that
+  finds nothing, and the id waits for the next root move or heal. It is a delay of the signed ✓✓ alone.
+
+Sender-local: no byte on the wire, no vector, no schema and no capability bit moves, and a peer sees only fewer receipts.
+Regression: `DmReAckLedgerTest`'s claim cases; `InboundPipelineTest`'s
+`aDmHeldOverLoraAndAnsweredByItsSignedCopyLeavesTheFlushNothingToSeal`, `anIdAnotherPathIsSealingDrawsNoSecondSealAndIsHeld`,
+`anotherAuthorsClaimOnTheSameIdLeavesThisAuthorsReceiptToSeal`, `aFirstDeliveryTheLedgerFindsAnsweredDrawsNoSecondSeal`,
+`aSealInFlightAcrossAResetAdoptionStillTicksTheDmInTheNewEra`, `anAuthorWhoLostTheRatchetBitNeverReadsAsAnswered`;
+`MeshManagerTest`'s
+`aBatchAlreadyAnsweredFlushesItsCompactTickAndNoSignedTick`, `aBatchPartAnsweredSealsTheRestAndAirsEveryIdUnderThatTick`,
+`aHeldTickSealedFirstLeavesTheCoalescerItsCompactTickAlone`, `aFailedSealLeavesAnAnsweredIdItsCompactTick`,
+`aRootFlushDuringADeclinedFlushsOfferFindsTheIdHeld`;
+`DmTickOnceLabTest`, one scenario per order; `MaliciousForkLabTest.aCompactDmUnderAnotherAuthorsIdLeavesThatAuthorsReceiptAlone`.
+
 ## Companion change for knit-ios
 
 knit-ios ports the same exists-gate and the same unconditional sealed re-ack (#176), so it has the same loop. Port

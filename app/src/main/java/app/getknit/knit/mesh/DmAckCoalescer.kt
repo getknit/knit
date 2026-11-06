@@ -18,9 +18,10 @@ import java.util.concurrent.ConcurrentHashMap
  * Deliberately **not** folded into [AckSync]: that class encodes the broadcast/group rules (ADR 033/053 — a
  * live-link form, verbatim retries, a done-ledger). A DM tick has none of those: nothing retries it (it is
  * custodied once), and re-acking on re-delivery is the LoRa healing channel (ADR 039 §3), so there is no
- * ledger to keep. Only the debounce shape is shared, and it is mirrored here in style rather than reused. Off the
- * board a re-delivery's sealed re-ack is bounded per era by [DmReAckLedger]; a flush here records nothing there, so
- * a DM acked over LoRa costs at most one more receipt on a later re-delivery off it (ADR 2026-10.8hn6).
+ * ledger to keep here. Only the debounce shape is shared, and it is mirrored here in style rather than reused. A
+ * DM's signed ✓✓ is bounded per era by [DmReAckLedger] on either side of this hold: the flush seals only the ids that
+ * ledger does not find answered, keeps a compact tick for every id, and records what it sealed, so one DM draws one
+ * signed receipt whichever of its copies lands first (#300, ADR 2026-10.8hn6's 2026-11-06 amendment).
  *
  * In-memory only, like AckSync's ledger: a process death inside the hold loses the pending acks. Only a
  * re-delivery of the DM re-holds and re-ticks it, and since ADR 018 that is no longer a matter of course: we
@@ -31,7 +32,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class DmAckCoalescer(
     private val now: () -> Long = { System.currentTimeMillis() },
-    /** Seals ONE `CTL_RECEIPT` covering [ackIds] toward the author and originates it; owns its own fallback. */
+    /** Answers [ackIds] toward the author: ONE `CTL_RECEIPT` over the ids still unanswered, originated; owns its own fallback. */
     private val flush: suspend (authorId: String, ackIds: List<String>) -> Unit,
     /** Where the hold timer runs; null (the default) leaves [flushDue] to a caller's heartbeat. */
     private val flushScope: () -> CoroutineScope? = { null },

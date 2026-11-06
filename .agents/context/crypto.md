@@ -170,8 +170,9 @@ LoRa plane (2026-09.ggq4).
   by your own signed rejoin — nobody can add or remove anyone else. The seed carries the founding roster, so a
   member with no row pins the group from the seed through `reconcileGroup`'s one door (the relay-only case,
   #47); a seed without one (an older build's) is parked, never consumed.
-- **When touching the exists-gate's DM re-ack — `InboundPipeline.acknowledge`'s `reDelivery` / `answeredInEra`,
-  `InboundPipeline.sealDmReceipt`'s record, `DmReAckLedger`, `RatchetSessions.sealDmTagged` / `rootTagFor`:** READ ADR
+- **When touching the exists-gate's DM re-ack — `InboundPipeline.acknowledge`'s `reDelivery` / `answeredInEra` /
+  `claimUnansweredDmAcks`, `InboundPipeline.sealDmReceipt`'s record, `MeshManager.flushDmAcks` / `flushHeldTicks` /
+  `originateDeliveryTick`'s record, `DmReAckLedger` and its `claim`, `RatchetSessions.sealDmTagged` / `rootTagFor`:** READ ADR
   2026-10.8hn6 (draft), then ADR 018, ADR 039 §3 and §7, and ADR 2026-10.dmgw's 2026-10-29 amendment. A re-delivered DM
   to us draws a new sealed receipt only off LoRa (whose re-offer heals by re-acking), and only when the receipt we
   sealed for its id is under another session root than the one held now, has left our own custody (`ForwardStore.frame`,
@@ -181,9 +182,19 @@ LoRa plane (2026-09.ggq4).
   our own per-sender custody bucket. Both doors a re-delivery takes pass `reDelivery` (the exists-gate, and
   `loraDirectCopyTaken` for a marked signed copy), and a re-seal is an answer (`sealAnswer`, x9fa's 2026-10-29
   amendment, 8hn6's amendment): declined and held under our own unanswered reset (any reset stamp); only the
-  exists-gate's unmarked re-delivery rides our own first-contact init (`rideOwnFirstContact`); a decline and a held
-  tick's flush record nothing. Android-only: a port without the answer gate keeps 8hn6's rule as written.
-  Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases,
+  exists-gate's unmarked re-delivery rides our own first-contact init (`rideOwnFirstContact`); a decline records nothing.
+  Every signed DM ✓✓ records (#300, 8hn6's 2026-11-06 amendment): `sealDmReceipt`, and `originateDeliveryTick` for the
+  coalescer's tick and a held flush, the ids sealed and never a rider or a compact tick's id. The coalescer's flush
+  and a held flush ask the same rule by id, with the author's ratchet bit inside it, so a LoRa re-delivery keeps its
+  compact re-ack and is bounded for the signed one. Every copy off LoRa asks, a first delivery too, on the plane and
+  never on `reDelivery`. The author chooses the id, so the ledger and its claims are keyed by author and id, and the
+  custody read takes only our own frame. Each seal claims the DM first (`DmReAckLedger.claim`, never a `Mutex`), reads
+  the ledger second, and releases in a `finally` after it recorded or held: a record lands after the seal, and one root
+  change starts two paths. A loser holds the id (`holdDeclinedTicks`, which retries past a detached set) and the claim's
+  end flushes the hold (`contest`, `flushContestedTicks`), which asks the ledger, so a claim never ends a ✓✓. Android-only: a port without the answer gate keeps 8hn6's
+  rule as written.
+  Regression: `DmReAckLedgerTest`, `InboundPipelineTest`'s re-ack cases, `DmTickOnceLabTest`,
+  `MaliciousForkLabTest.aCompactDmUnderAnotherAuthorsIdLeavesThatAuthorsReceiptAlone`,
   `CustodyLabTest.aDeliveredDmBackFilledToItsRecipientPastItsSeenWindowDrawsNoSecondReceipt`.
 - **When touching `CTL_RECEIPT` / `CTL_REACTION` / `CTL_PROFILE`, `AckSync.sealTick`, `MeshManager.sealDeliveryTick` /
   `sealDeliveryTickEnvelope`, `InboundPipeline.sealDmReceipt`, or the sealed profile's fan-out:** READ ADR 018, ADR
@@ -311,7 +322,8 @@ LoRa plane (2026-09.ggq4).
   decided under the session lock; otherwise it is declined, nothing persisted, and the caller sends the compact copy
   alone — never a cleartext or v1 fallback (ADR 018), never a fresh init. Every re-delivery's re-ack is an answer too,
   bounded per era by ADR 2026-10.8hn6's ledger. A ✓✓ is re-drawn by the signed copy's re-ack;
-  a reaction is held until the root moves; a ✓✓ sealed by any path drops its ids from the hold. With no session it
+  a reaction is held until the root moves; a ✓✓ sealed by any path drops its ids from the hold, and the coalescer's
+  flush seals only what 8hn6's rule finds unanswered. With no session it
   declines even on an undecodable prekey. The race winner's intro answer still carries its init, and so may a
   re-delivery's re-ack riding it (#189's two doors); both are closed at the restored loser by rule C (ADR 2026-10.4mjm,
   below), not here. Regression: `RatchetSessionsSealTest`'s answer cases, `MeshManagerTest`'s

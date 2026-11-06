@@ -353,8 +353,8 @@ class PresenceKeyLabTest {
 
     /**
      * Keys cross a link and nothing else: on a line through Dave, Alice and Bob — direct contacts — hold none of each
-     * other's, and Dave carries every DM between them; once they link, the keys cross that link alone, and Dave never
-     * receives or holds a frame between them that he did not carry before.
+     * other's, and Dave carries every DM between them; once they link, the keys cross that link alone, as point-to-point
+     * frames Dave neither receives nor holds.
      */
     @Test
     fun aPassiveCarrierHoldsNothingAndKeysCrossOnlyTheirOwnLink() =
@@ -370,16 +370,21 @@ class PresenceKeyLabTest {
             bob.heal()
             assertHandedNothing(from = alice, to = listOf(bob, dave))
             assertHandedNothing(from = bob, to = listOf(alice, dave))
-            val carried = dave.custodiedChatsFrom(alice, bob) + dave.custodiedChatsFrom(bob, alice)
-            val pointToPoint = { pointToPointChats(alice, dave) + pointToPointChats(bob, dave) }
+            val pointToPoint = { pointToPointChatIds(alice, dave) + pointToPointChatIds(bob, dave) }
             val before = pointToPoint()
 
             lab.link(alice, bob)
             awaitHoldsKeysOf(bob, alice)
             awaitHoldsKeysOf(alice, bob)
-            assertEquals(carried, dave.custodiedChatsFrom(alice, bob) + dave.custodiedChatsFrom(bob, alice))
-            assertEquals("no point-to-point frame between them crossed to dave", before, pointToPoint())
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(dave)) { it.dmWith(if (it === alice) bob else alice) }
+            assertEquals("no point-to-point frame between them crossed to dave", before, pointToPoint())
+            // The frames the keys crossed in, by id. A count of Dave's custody against a baseline charged the link with a
+            // sealed frame of Bob's originated just after it came up (chaos seed 286559637): a late frame, not an extra one,
+            // sealed by a path not pinned.
+            val keyFrames = listOf(pointToPointChatIds(alice, bob), pointToPointChatIds(bob, alice))
+            assertTrue("each side's keys crossed point to point: $keyFrames", keyFrames.none { it.isEmpty() })
+            val taken = keyFrames.flatten().intersect(dave.custodyIds())
+            assertTrue("dave took on $taken\n${lab.report(listOf(alice, bob, dave))}", taken.isEmpty())
         }
 
     /**
@@ -725,14 +730,13 @@ class PresenceKeyLabTest {
     }
 
     /** The point-to-point chat frames [from] handed [to] — a sealed tick, a presence key, a link-owed reset. */
-    private fun pointToPointChats(
+    private fun pointToPointChatIds(
         from: LabNode,
         to: LabNode,
-    ): Int =
-        from.transport.sent.count {
-            it.contains(" ${to.nodeId.take(NODE_ID_CHARS)} ") && it.contains(" chat ") &&
-                it.contains("relay=false")
-        }
+    ): Set<String> =
+        from.transport.sent
+            .filter { it.contains(" ${to.nodeId.take(NODE_ID_CHARS)} ") && it.contains(" chat ") && it.contains("relay=false") }
+            .mapTo(HashSet()) { it.substringAfter(" chat ").substringBefore(' ') }
 
     private companion object {
         /** A link-up's presence-key wait no scenario sits out: the case's other triggers have to do the work. */

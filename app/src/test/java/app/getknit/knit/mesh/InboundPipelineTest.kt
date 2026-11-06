@@ -453,11 +453,23 @@ class InboundPipelineTest {
         /** `(authorId, frameId, content)` of every compact ✓✓ the pipeline offered the board (ADR 2026-10.x9fa). */
         val loraReceipts = mutableListOf<Triple<String, String, MessageContent>>()
 
+        /** How many ✓✓ the hold had taken when each compact ✓✓ was offered: a decline holds first, since the offer suspends. */
+        val heldAtLoraOffer = mutableListOf<Int>()
+
+        /** Runs inside each compact ✓✓ offer: past a sealed receipt's seal, before its record, with its claim held. */
+        var duringLoraReceiptOffer: suspend () -> Unit = {}
+
+        /** Runs as a ✓✓ reaches MeshManager's hold, before the path that held it goes on. */
+        var duringDeclinedHold: () -> Unit = {}
+
         /** `(authorId, ackId)` of every ✓✓ declined as an answer and handed to MeshManager's hold. */
         val heldTicks = mutableListOf<Pair<String, String>>()
 
         /** `(authorId, ackIds)` of every ✓✓ sealed and sent, for MeshManager to let go of a held copy. */
         val releasedTicks = mutableListOf<Pair<String, List<String>>>()
+
+        /** Every author whose hold a claim's end asked MeshManager to flush. */
+        val contestedFlushes = mutableListOf<String>()
 
         /**
          * The pipeline's clock. Fixed by default so every existing test behaves exactly as before; a test
@@ -633,9 +645,17 @@ class InboundPipelineTest {
                     dmAcks = dmAcks.takeIf { withDmAcks },
                     dmReAcks = dmReAcks,
                     holdsLive = forwardStore::holdsLiveReceipt,
-                    offerLoraReceipt = { author, frameId, _, content -> loraReceipts += Triple(author, frameId, content) },
-                    holdDeclinedTick = { author, ackId -> heldTicks += author to ackId },
+                    offerLoraReceipt = { author, frameId, _, content ->
+                        heldAtLoraOffer += heldTicks.size
+                        duringLoraReceiptOffer()
+                        loraReceipts += Triple(author, frameId, content)
+                    },
+                    holdDeclinedTick = { author, ackId ->
+                        heldTicks += author to ackId
+                        duringDeclinedHold()
+                    },
                     releaseHeldTicks = { author, ackIds -> releasedTicks += author to ackIds },
+                    flushContestedTicks = { contestedFlushes += it },
                     flushPending = { flushed += it },
                     classifyText = { text, _, isRoom ->
                         if (failClassify) error("moderation boom")
@@ -11202,7 +11222,7 @@ class InboundPipelineTest {
             assertFalse(rig.originated.any { it.type == FrameType.RECEIPT })
             assertEquals(1L, rig.metrics.receipts().receiptsSealed)
             assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
-            assertEquals(receipt.id, rig.dmReAcks.entry("v2-re1")?.receiptId)
+            assertEquals(receipt.id, rig.dmReAcks.entry(alice.nodeId, "v2-re1")?.receiptId)
         }
 
     /** Our receipt is gone from our own custody (quota, a sweep): nobody re-serves it, so the re-delivery re-seals. */
@@ -11223,7 +11243,7 @@ class InboundPipelineTest {
             val second = rig.lastReceiptTo(alice)
             assertTrue("a fresh receipt, under its own id", second.id != first.id)
             assertTrue("and custodied like the first", rig.forwardStore.has(second.id))
-            assertEquals(second.id, rig.dmReAcks.entry("v2-gone")?.receiptId)
+            assertEquals(second.id, rig.dmReAcks.entry(alice.nodeId, "v2-gone")?.receiptId)
             assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
         }
 
@@ -11262,7 +11282,7 @@ class InboundPipelineTest {
             rig.nowMs += DmReAckLedger.FLOOR_MS
             rig.deliver(alice, dm)
             assertEquals("past 15 min, held or not", 2L, rig.metrics.receipts().receiptsSealed)
-            assertEquals(1, rig.dmReAcks.entry("v2-floor")?.step)
+            assertEquals(1, rig.dmReAcks.entry(alice.nodeId, "v2-floor")?.step)
 
             rig.nowMs += DmReAckLedger.FLOOR_MS
             rig.deliver(alice, dm)
@@ -11271,7 +11291,7 @@ class InboundPipelineTest {
             rig.nowMs += DmReAckLedger.FLOOR_MS
             rig.deliver(alice, dm)
             assertEquals(3L, rig.metrics.receipts().receiptsSealed)
-            assertEquals(2, rig.dmReAcks.entry("v2-floor")?.step)
+            assertEquals(2, rig.dmReAcks.entry(alice.nodeId, "v2-floor")?.step)
         }
 
     /**
@@ -11290,7 +11310,7 @@ class InboundPipelineTest {
 
             rig.deliver(alice, dm)
             val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
-            assertEquals(oldTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
+            assertEquals(oldTag, rig.dmReAcks.entry(alice.nodeId, "v2-reset")?.rootTag)
 
             rig.deliver(alice, V2Author(alice, rig, at = 60_000L).dm("v2-reset-ctl", "", ctl = MessageContent.CTL_SESSION_RESET))
             assertEquals("the author's replacement was adopted", 60_000L, rig.ratchetStore.session(alice.nodeId)?.establishedAt)
@@ -11300,8 +11320,8 @@ class InboundPipelineTest {
 
             rig.deliver(alice, dm)
             assertEquals("one receipt for the new era", 2L, rig.metrics.receipts().receiptsSealed)
-            assertEquals(newTag, rig.dmReAcks.entry("v2-reset")?.rootTag)
-            assertEquals("a new era starts its own floor", 0, rig.dmReAcks.entry("v2-reset")?.step)
+            assertEquals(newTag, rig.dmReAcks.entry(alice.nodeId, "v2-reset")?.rootTag)
+            assertEquals("a new era starts its own floor", 0, rig.dmReAcks.entry(alice.nodeId, "v2-reset")?.step)
             assertEquals("a sealed re-ack lets go of any held copy", listOf(alice.nodeId to listOf("v2-reset")), rig.releasedTicks)
 
             rig.deliver(alice, dm)
@@ -11348,8 +11368,8 @@ class InboundPipelineTest {
             assertEquals("and no skip: the ledger holds the old era only", 0L, rig.metrics.receipts().receiptsReAckSkipped)
             assertEquals("nothing originated, cleartext or sealed", sent, rig.originated.size)
             assertEquals(listOf(alice.nodeId to "v2-ours", alice.nodeId to "v2-ours"), rig.heldTicks)
-            assertEquals("a decline files no era", oldTag, rig.dmReAcks.entry("v2-ours")?.rootTag)
-            assertEquals(0, rig.dmReAcks.entry("v2-ours")?.step)
+            assertEquals("a decline files no era", oldTag, rig.dmReAcks.entry(alice.nodeId, "v2-ours")?.rootTag)
+            assertEquals(0, rig.dmReAcks.entry(alice.nodeId, "v2-ours")?.step)
         }
 
     /**
@@ -11367,7 +11387,7 @@ class InboundPipelineTest {
 
             rig.deliver(alice, dm)
             val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId)) { "the receipt's seal initiated the session" }
-            assertEquals(tag, rig.dmReAcks.entry("v1-first")?.rootTag)
+            assertEquals(tag, rig.dmReAcks.entry(alice.nodeId, "v1-first")?.rootTag)
 
             rig.deliver(alice, dm)
             assertEquals(1L, rig.metrics.receipts().receiptsSealed)
@@ -11495,6 +11515,412 @@ class InboundPipelineTest {
             assertEquals(1L, rig.metrics.lora().loraTickDeferred)
             assertEquals(listOf("v2-lora"), rig.dmAcks.pending(alice.nodeId))
         }
+
+    /**
+     * #300, compact then signed: the board's copy waits in the coalescer, the signed copy's re-ack seals at once, and the
+     * flush's question finds the id answered, so the flush seals nothing. That the compact tick still goes is
+     * `MeshManagerTest`'s; here the ledger's half, through the door the manager uses.
+     */
+    @Test
+    fun aDmHeldOverLoraAndAnsweredByItsSignedCopyLeavesTheFlushNothingToSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-both", "two copies")
+
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+
+            assertEquals("the signed copy's instant receipt", 1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(listOf("v2-both"), rig.dmAcks.pending(alice.nodeId))
+            assertEquals(emptyList<String>(), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-both")))
+            assertEquals("counted, so reAcksSkipped= stays true", 1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** #300, signed then compact: the first delivery's receipt answers the board's later copy at the flush too. */
+    @Test
+    fun aDmAnsweredOffTheBoardAndHeardOverItLaterLeavesTheFlushNothingToSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-late", "the board was slower")
+
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+
+            assertEquals(listOf("v2-late"), rig.dmAcks.pending(alice.nodeId))
+            assertEquals(emptyList<String>(), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-late")))
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+        }
+
+    /** #300, flush then signed: a tick the flush filed answers the signed copy's re-ack, which seals nothing more. */
+    @Test
+    fun aDmFlushedOffTheHoldIsNotAnsweredAgainByItsSignedCopy() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-flush", "held first")
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+
+            assertEquals(listOf("v2-flush"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-flush")))
+            rig.custodyOwnTick("tick-1", alice)
+            rig.pipeline.recordDmReceipts(alice.nodeId, listOf("v2-flush"), tag, "tick-1", rig.nowMs)
+            rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-flush"))
+
+            rig.deliver(alice, dm, kind = TransportKind.Bluetooth)
+
+            assertEquals(0L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals("the ledger keeps the flush's own tick", "tick-1", rig.dmReAcks.entry(alice.nodeId, "v2-flush")?.receiptId)
+        }
+
+    /**
+     * The claim's point (#300): an id another path is sealing right now draws no seal of ours, whether the ledger has heard
+     * of it yet or not, and is not dropped either: that path may not answer it. It stands in for the collector
+     * `rootChanges` woke, which detached the hold and is inside its seal, so nothing is recorded and `releaseHeldTicks`
+     * finds nothing. The id goes to the hold, and the next flush asks the ledger.
+     */
+    @Test
+    fun anIdAnotherPathIsSealingDrawsNoSecondSealAndIsHeld() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val author = V2Author(alice, rig)
+            val dm = author.dm("v2-race", "one event, two sealers")
+            rig.deliver(alice, author.dm("v2-open", "opens the session"))
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+
+            assertTrue("the other path holds it", rig.dmReAcks.claim(alice.nodeId, "v2-race"))
+            rig.deliver(alice, dm)
+            assertEquals("the copy delivered", "one event, two sealers", rig.msgMap["v2-race"]?.body)
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals("held, not lost", listOf(alice.nodeId to "v2-race"), rig.heldTicks)
+            assertEquals("no skip yet: nothing says it is answered", 0L, rig.metrics.receipts().receiptsReAckSkipped)
+
+            rig.heldTicks.clear()
+            assertEquals(
+                "a flush that loses it holds it too",
+                emptyList<String>(),
+                rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-race")),
+            )
+            assertEquals(listOf(alice.nodeId to "v2-race"), rig.heldTicks)
+
+            rig.dmReAcks.release(alice.nodeId, listOf("v2-race"))
+            assertEquals(
+                "the winner recorded nothing, so the next flush seals it",
+                listOf("v2-race"),
+                rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-race")),
+            )
+        }
+
+    /**
+     * A ✓✓ that gave way waits only as long as the claim: the winner may decline just before the session is answered, and
+     * no root move comes after that to wake the hold. The winner's release asks for the flush; so does the loser, when
+     * the winner let go before it could say it had held the id.
+     */
+    @Test
+    fun theEndOfAContestedClaimFlushesTheHold() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+
+            assertEquals(listOf("v2-a"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-a")))
+            rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-a"))
+            assertTrue("no contest, no flush", rig.contestedFlushes.isEmpty())
+
+            assertEquals(listOf("v2-a"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-a")))
+            assertEquals(emptyList<String>(), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-a")))
+            assertTrue("not while the claim stands", rig.contestedFlushes.isEmpty())
+            rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-a"))
+            assertEquals(listOf(alice.nodeId), rig.contestedFlushes)
+        }
+
+    /** A declined ✓✓ over the board is held before its compact offer, which suspends: a root flush inside it must find the id. */
+    @Test
+    fun aDeclinedReceiptOverTheBoardIsHeldBeforeItsCompactTickIsOffered() =
+        runTest {
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            val dm = V2Author(alice, rig).dm("v2-order", "before our reset")
+            rig.deliver(alice, dm)
+            rig.ratchet.sealResetDm(
+                alice.nodeId,
+                alice.bundle.dhPublicKey(),
+                RatchetEngine.PeerPrekey(id = 2, pub = alicePrekey.pub),
+                "reset".toByteArray(),
+                "aad".toByteArray(),
+                rig.nowMs,
+            )
+
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+
+            assertEquals(listOf(alice.nodeId to "v2-order"), rig.heldTicks)
+            assertEquals("the compact tick still went, after the hold", listOf(1), rig.heldAtLoraOffer)
+        }
+
+    /** The author chooses the id, so a claim is the author's: another's on the same id costs this author nothing. */
+    @Test
+    fun anotherAuthorsClaimOnTheSameIdLeavesThisAuthorsReceiptToSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val other = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+
+            assertTrue(rig.dmReAcks.claim(other.nodeId, "v2-shared"))
+            rig.deliver(alice, V2Author(alice, rig).dm("v2-shared", "hers"))
+
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertTrue(rig.heldTicks.isEmpty())
+            assertEquals(rig.lastReceiptTo(alice).id, rig.dmReAcks.entry(alice.nodeId, "v2-shared")?.receiptId)
+        }
+
+    /** The ledger's entry is the author's too: a receipt to another author under one id moves neither her era nor her floor. */
+    @Test
+    fun anotherAuthorsReceiptUnderTheSameIdLeavesThisAuthorsEntry() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val other = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-entry", "hers")
+            rig.deliver(alice, dm)
+            val entry = checkNotNull(rig.dmReAcks.entry(alice.nodeId, "v2-entry"))
+
+            rig.pipeline.recordDmReceipts(other.nodeId, listOf("v2-entry"), entry.rootTag + 1, "theirs", rig.nowMs)
+            rig.deliver(alice, dm)
+
+            assertEquals("her receipt still answers her copy", 1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals(entry.receiptId, rig.dmReAcks.entry(alice.nodeId, "v2-entry")?.receiptId)
+        }
+
+    /** Only our own frame under a receipt's id is that receipt: a row anyone else sent under it reads as the receipt gone. */
+    @Test
+    fun aRowUnderOurReceiptsIdThatIsNotOursReadsAsGone() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-row", "evicted receipt")
+            rig.deliver(alice, dm)
+            val first = rig.lastReceiptTo(alice)
+
+            rig.forwardStore.remove(first.id)
+            val row =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = first.id,
+                    senderId = alice.nodeId,
+                    sentAt = rig.nowMs,
+                    recipientId = rig.self.nodeId,
+                    payload = ByteArray(0),
+                )
+            val wire = alice.sign(row)
+            rig.forwardStore.store(CarriedFrame(row, wire.sig, wire.signed), ForwardStore.ORIGIN_RELAY, rig.nowMs)
+            rig.deliver(alice, dm)
+
+            assertEquals("it re-seals", 2L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * A first delivery asks the ledger too (#300): a copy that lost the commit race acks with the `isNew` it read before
+     * either persist, so `reDelivery` cannot tell it from a true first. The entry the winner filed answers it.
+     */
+    @Test
+    fun aFirstDeliveryTheLedgerFindsAnsweredDrawsNoSecondSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val author = V2Author(alice, rig)
+            rig.deliver(alice, author.dm("v2-open", "opens the session"))
+            val tag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            rig.custodyOwnTick("tick-race", alice)
+            rig.pipeline.recordDmReceipts(alice.nodeId, listOf("v2-commit"), tag, "tick-race", rig.nowMs)
+
+            rig.deliver(alice, author.dm("v2-commit", "lost the race"))
+
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * A real seal in flight across a reset's adoption. The compact offer runs past the seal and before its record, with
+     * the claim held: the author's reset lands there, and the new era's copy loses the claim and holds the id. The seal
+     * then files the root it committed under, not the one held by then, so the next flush finds that era gone and owes the
+     * DM a seal in the era the author is on.
+     */
+    @Test
+    fun aSealInFlightAcrossAResetAdoptionStillTicksTheDmInTheNewEra() =
+        runTest {
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val old = V2Author(alice, rig, at = 5L)
+            rig.deliver(alice, old.dm("v2-open", "opens the session"))
+            val oldTag = checkNotNull(rig.ratchet.rootTagFor(alice.nodeId))
+            val dm = old.dm("v2-flight", "before the reset")
+            rig.duringLoraReceiptOffer = {
+                rig.duringLoraReceiptOffer = {}
+                assertNull("sealed, and not filed yet", rig.dmReAcks.entry(alice.nodeId, "v2-flight"))
+                rig.deliver(alice, V2Author(alice, rig, at = 60_000L).dm("v2-flight-ctl", "", ctl = MessageContent.CTL_SESSION_RESET))
+                assertTrue(checkNotNull(rig.ratchet.rootTagFor(alice.nodeId)) != oldTag)
+                rig.deliver(alice, dm)
+            }
+
+            rig.deliver(alice, dm, kind = TransportKind.LoRa)
+
+            assertEquals("the new era's copy gave way, and holds the id", listOf(alice.nodeId to "v2-flight"), rig.heldTicks)
+            assertEquals("filed under the seal's own root", oldTag, rig.dmReAcks.entry(alice.nodeId, "v2-flight")?.rootTag)
+            assertEquals("the claim's end woke the hold", listOf(alice.nodeId), rig.contestedFlushes)
+            assertEquals(
+                "the next flush owes it a seal",
+                listOf("v2-flight"),
+                rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-flight")),
+            )
+        }
+
+    /** A seal that threw past its commit lets go of its claim, or the DM could never be sealed again by any path. */
+    @Test
+    fun aSealThatThrewLetsGoOfItsClaim() =
+        runTest {
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val author = V2Author(alice, rig)
+            rig.deliver(alice, author.dm("v2-open", "opens the session"))
+            rig.duringLoraReceiptOffer = { error("board gone") }
+
+            // The inbound handler swallows the throw, so the seal running is what shows the offer was reached.
+            rig.deliver(alice, author.dm("v2-throw", "over the board"), kind = TransportKind.LoRa)
+
+            assertEquals("the seal ran", 2, rig.originated.count { it.type == FrameType.CHAT })
+            assertTrue("a seal that threw kept no claim", rig.dmReAcks.claim(alice.nodeId, "v2-throw"))
+        }
+
+    /**
+     * The other order of [theEndOfAContestedClaimFlushesTheHold]: the winner lets go while the loser is still holding the
+     * id, so `contest` finds no claim, and the loser asks for the flush itself.
+     */
+    @Test
+    fun aLoserWhoseWinnerHasGoneFlushesTheHoldItself() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            assertEquals(listOf("v2-a"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-a")))
+            rig.duringDeclinedHold = {
+                rig.duringDeclinedHold = {}
+                rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-a"))
+            }
+
+            assertEquals(emptyList<String>(), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-a")))
+
+            assertEquals(listOf(alice.nodeId), rig.contestedFlushes)
+        }
+
+    /** A flush's claims are its own until it lets go, and a path that reads an id as answered keeps no claim on it. */
+    @Test
+    fun aFlushHoldsOnlyTheIdsItMustSeal() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.deliver(alice, V2Author(alice, rig).dm("v2-done", "answered"))
+
+            assertEquals(listOf("v2-open"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-done", "v2-open")))
+
+            assertTrue("an answered id is let go at once", rig.dmReAcks.claim(alice.nodeId, "v2-done"))
+            assertFalse("the unanswered one is the caller's", rig.dmReAcks.claim(alice.nodeId, "v2-open"))
+            rig.pipeline.releaseDmAcks(alice.nodeId, listOf("v2-open"))
+            assertTrue(rig.dmReAcks.claim(alice.nodeId, "v2-open"))
+        }
+
+    /** A seal that gave up lets go of its id, so the next copy is free to answer: a decline first, then a ledger read that threw. */
+    @Test
+    fun aDeclineOrAReadThatThrewLetsGoOfItsClaim() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val alicePrekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(alice, alicePrekey.pub)
+            val dm = V2Author(alice, rig).dm("v2-gave-up", "before our reset")
+            rig.deliver(alice, dm)
+            rig.ratchet.sealResetDm(
+                alice.nodeId,
+                alice.bundle.dhPublicKey(),
+                RatchetEngine.PeerPrekey(id = 2, pub = alicePrekey.pub),
+                "reset".toByteArray(),
+                "aad".toByteArray(),
+                rig.nowMs,
+            )
+
+            rig.deliver(alice, dm)
+            assertEquals(listOf(alice.nodeId to "v2-gave-up"), rig.heldTicks)
+            assertTrue("a declining winner let go, after it held the id", rig.dmReAcks.claim(alice.nodeId, "v2-gave-up"))
+            rig.dmReAcks.release(alice.nodeId, listOf("v2-gave-up"))
+
+            coEvery { rig.peers.find(alice.nodeId) } throws IllegalStateException("store gone")
+            runCatching { rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-gave-up")) }
+            assertTrue("a read that threw kept no claim", rig.dmReAcks.claim(alice.nodeId, "v2-gave-up"))
+        }
+
+    /**
+     * 8hn6 rule 2, asked by id: an author who dropped the ratchet bit never reads as answered, or the flush would skip the
+     * one form they read. On the re-ack and at the flush alike, and a claim never costs them the cleartext receipt.
+     */
+    @Test
+    fun anAuthorWhoLostTheRatchetBitNeverReadsAsAnswered() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val dm = V2Author(alice, rig).dm("v2-bit", "sealed once")
+            rig.deliver(alice, dm)
+            assertEquals(1L, rig.metrics.receipts().receiptsSealed)
+
+            rig.pin(alice)
+
+            assertEquals(listOf("v2-bit"), rig.pipeline.claimUnansweredDmAcks(alice.nodeId, listOf("v2-bit")))
+            rig.deliver(alice, dm)
+            assertEquals(
+                "claimed by the flush, and the cleartext receipt goes all the same",
+                1,
+                rig.originated.count {
+                    it.type ==
+                        FrameType.RECEIPT
+                },
+            )
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** The stand-in for a tick the flush originated: the row custody holds, so [holdsLive] reads it as `originateSigned` left it. */
+    private suspend fun Rig.custodyOwnTick(
+        id: String,
+        author: Party,
+    ) {
+        val tick =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = self.nodeId,
+                sentAt = nowMs,
+                recipientId = author.nodeId,
+                payload = ByteArray(0),
+            )
+        val wire = self.sign(tick)
+        forwardStore.store(CarriedFrame(tick, wire.sig, wire.signed), ForwardStore.ORIGIN_SELF, nowMs)
+    }
 
     @Test
     fun aSealedReceiptFromANonRecipientIsIgnored() =

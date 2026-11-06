@@ -483,7 +483,10 @@ early), then `MeshManager.flushDmAcks` originates one signed tick (sealed only a
 custody, the spool and the links, and offers its compact copies as `DirectKind.RECEIPT`: the DM ids alone, nine a packet
 (`LORA_DIRECT_TICK_ACKS`), the first under the signed tick's id (`FrameClass.DIRECT` since ADR 2026-10.ug4a: shed
 before a DM). With no session the author holds yet the compact copies still go, under a fresh id, and the signed tick
-is held until one is answered (`holdDeclinedTicks`) — never downgraded to cleartext.
+is held until one is answered (`holdDeclinedTicks`) — never downgraded to cleartext. The signed tick seals only the ids
+still unanswered (ADR 2026-10.8hn6's 2026-11-06 amendment, #300): one the signed copy's re-ack or a held flush already
+sealed keeps its compact tick in the same offer, and a batch with nothing left to seal airs under a fresh id and
+originates nothing. What the tick seals is filed in `DmReAckLedger`, so a signed copy landing after the flush seals none.
 If we send the author a DM meanwhile, `sendChat` carries pending ids inline (`MessageContent.acks`), out of the
 composer's budget; the compact copy sheds them if they would cost a second packet. `heal()` is the flush backstop.
 The reader never retries a compact ✓✓: the author's resend or re-probe of a DM still without one draws a re-ack

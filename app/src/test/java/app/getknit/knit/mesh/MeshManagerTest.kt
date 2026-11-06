@@ -292,6 +292,9 @@ class MeshManagerTest {
 
     /** Minimal in-memory [ForwardStore] so a test can assert what the send path captured for custody. */
     private class FakeForwardStore : ForwardStore {
+        /** Runs at each store: past a tick's seal and before it files itself, since custody comes first in `originateSigned`. */
+        var duringStore: suspend () -> Unit = {}
+
         // Written from the manager's session coroutines and read by a test's `await` poll on another thread.
         private val frames = linkedMapOf<String, CarriedFrame>()
 
@@ -301,6 +304,7 @@ class MeshManagerTest {
             now: Long,
         ): Boolean {
             synchronized(frames) { frames.putIfAbsent(frame.envelope.id, frame) }
+            duringStore()
             return true
         }
 
@@ -514,6 +518,9 @@ class MeshManagerTest {
         /** Every compact copy the manager offered the LoRa plane, once [bindLora] has bound a sink (ADR 2026-10.x9fa). */
         val loraOffers = CopyOnWriteArrayList<LoraOffer>()
 
+        /** Runs inside each compact offer, before it is recorded: what a concurrent path sees while the offer is in flight. */
+        var duringLoraOffer: () -> Unit = {}
+
         // Hoisted so a test can pre-shape group-ratchet state (e.g. a stale outbox ack) around the
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
@@ -640,6 +647,7 @@ class MeshManagerTest {
                         plaintext: ByteArray,
                         kind: DirectKind,
                     ) {
+                        duringLoraOffer()
                         loraOffers += LoraOffer(recipientId, frameId, sentAtMs, plaintext, kind)
                     }
                 }
@@ -1727,6 +1735,393 @@ class MeshManagerTest {
             rig.manager.flushHeldReactions(rig.bob.nodeId)
             advanceUntilIdle()
             assertEquals("exactly one signed ✓✓ for it", 1, rig.sentChatFrames().size)
+        }
+
+    /** Runs [ids] through the coalescer's hold and out of it, as a batch off the board does. */
+    private suspend fun Rig.coalesce(vararg ids: String) {
+        ids.forEach { manager.dmAcks.hold(bob.nodeId, it) }
+        clockNow += DmAckCoalescer.HOLD_MS
+        manager.dmAcks.flushDue()
+    }
+
+    /** The ids a compact ✓✓ [offer] carries. */
+    private fun ackedBy(offer: LoraOffer): List<String> =
+        checkNotNull(MessageContentV2.decode(offer.plaintext)).let { listOfNotNull(it.ack) + it.acks.orEmpty() }
+
+    /**
+     * #300: the coalescer's tick files itself in the re-ack ledger, so a later compact copy of the same DM flushes no
+     * second signed tick. Its compact tick still goes, under a fresh id: no signed tick goes to lend it one, and an
+     * earlier receipt's would be a frame id the far side already took.
+     */
+    @Test
+    fun aBatchAlreadyAnsweredFlushesItsCompactTickAndNoSignedTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val dm = FrameId.new()
+
+            rig.coalesce(dm)
+            advanceUntilIdle()
+            val signed = rig.sentChatFrames().single()
+            assertEquals(signed.id, rig.loraOffers.single().frameId)
+
+            rig.coalesce(dm)
+            advanceUntilIdle()
+
+            assertEquals("exactly one signed ✓✓ for it", 1, rig.sentChatFrames().size)
+            assertEquals(2, rig.loraOffers.size)
+            assertEquals(listOf(dm), ackedBy(rig.loraOffers.last()))
+            assertTrue("a fresh id, never the earlier receipt's", rig.loraOffers.last().frameId != signed.id)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals("no -1 from an empty batch", 0L, rig.metrics.receipts().receiptsCoalesced)
+        }
+
+    /**
+     * #300: a batch part answered seals only the rest, and its compact ticks cover every id in one offer under that one
+     * signed tick's id. The answered id keeps its own floor: it does not re-record, so a batch cannot push its re-arm out.
+     */
+    @Test
+    fun aBatchPartAnsweredSealsTheRestAndAirsEveryIdUnderThatTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val answered = FrameId.new()
+            val fresh = FrameId.new()
+            rig.coalesce(answered)
+            advanceUntilIdle()
+
+            rig.coalesce(answered, fresh)
+            advanceUntilIdle()
+
+            assertEquals(2, rig.sentChatFrames().size)
+            assertEquals("one compact offer", 2, rig.loraOffers.size)
+            assertEquals(rig.sentChatFrames().last().id, rig.loraOffers.last().frameId)
+            assertEquals(listOf(answered, fresh), ackedBy(rig.loraOffers.last()))
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+            assertEquals("the tick sealed one id", 0L, rig.metrics.receipts().receiptsCoalesced)
+
+            // Past the answered id's own floor, counted from its one seal, whatever the batch between did.
+            rig.clockNow += DmReAckLedger.FLOOR_MS - 2 * DmAckCoalescer.HOLD_MS
+            rig.coalesce(answered)
+            advanceUntilIdle()
+            assertEquals("its floor ran from its own seal", 3, rig.sentChatFrames().size)
+        }
+
+    /** Every id answered and room ticks waiting: nothing seals, since a riders-only tick would answer nothing it owes. */
+    @Test
+    fun aBatchAlreadyAnsweredSealsNoTickOfRidersAlone() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val dm = FrameId.new()
+            rig.coalesce(dm)
+            advanceUntilIdle()
+
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf(FrameId.new()))
+            rig.coalesce(dm)
+            advanceUntilIdle()
+
+            assertEquals(1, rig.sentChatFrames().size)
+            assertEquals("the rider waits for a real tick", 0L, rig.metrics.receipts().receiptsRidden)
+            assertEquals(1, rig.manager.ackSync.ridingFor(rig.bob.nodeId))
+        }
+
+    /** A room id that rode a DM's signed tick was never answered as a DM: the ledger files [ackIds] alone (8hn6). */
+    @Test
+    fun aRoomRiderIsNeverFiledAsAnAnsweredDm() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val rider = FrameId.new()
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf(rider))
+            rig.coalesce(FrameId.new())
+            advanceUntilIdle()
+            assertEquals(1L, rig.metrics.receipts().receiptsRidden)
+
+            rig.coalesce(rider)
+            advanceUntilIdle()
+
+            assertEquals("not read as answered", 2, rig.sentChatFrames().size)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * #300, declined then the root moves: the signed copy's re-ack waited in the hold while the coalescer held the same
+     * id. The hold seals it and files it, so the coalescer's flush owes only the compact tick.
+     */
+    @Test
+    fun aHeldTickSealedFirstLeavesTheCoalescerItsCompactTickAlone() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            val id = FrameId.new()
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(id))
+            rig.answered(rig.bob)
+            rig.manager.dmAcks.hold(rig.bob.nodeId, id)
+
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            val signed = rig.sentChatFrames().single()
+            assertTrue("a held tick's retry airs nothing", rig.loraOffers.isEmpty())
+
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertEquals("exactly one signed ✓✓ for it", 1, rig.sentChatFrames().size)
+            assertEquals(listOf(id), ackedBy(rig.loraOffers.single()))
+            assertTrue(rig.loraOffers.single().frameId != signed.id)
+        }
+
+    /**
+     * The hold's own read (#300): an id answered while the set was detached from [MeshManager.releaseHeldTicks]' reach is
+     * dropped, not sealed. Here it is held after its answer, which is the state that race leaves.
+     */
+    @Test
+    fun aHeldTickAlreadyAnsweredIsDroppedNotSealed() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val id = FrameId.new()
+            rig.coalesce(id)
+            advanceUntilIdle()
+
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(id))
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            assertEquals(1, rig.sentChatFrames().size)
+            assertEquals(1L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * An author who drops the ratchet bit between the rule's read and the seal's own (ADR 2026-10.x9fa): the seal cannot be
+     * made, the unanswered id takes the cleartext receipt, and the answered id, with no signed tick to carry it, keeps its
+     * compact tick under a fresh id.
+     */
+    @Test
+    fun aFailedSealLeavesAnAnsweredIdItsCompactTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val answered = FrameId.new()
+            val fresh = FrameId.new()
+            rig.coalesce(answered)
+            advanceUntilIdle()
+            val signed = rig.sentChatFrames().single()
+
+            // The rule's read sees the bit, and the seal's own read a moment later does not: the author unpinned meanwhile.
+            val capable = checkNotNull(rig.peers.find(rig.bob.nodeId))
+            var reads = 0
+            coEvery { rig.peers.find(rig.bob.nodeId) } answers { if (++reads == 2) capable.copy(capabilities = 0L) else capable }
+            rig.coalesce(answered, fresh)
+            advanceUntilIdle()
+
+            assertEquals("no second signed ✓✓", 1, rig.sentChatFrames().size)
+            assertEquals("the unanswered id's cleartext receipt", 1, rig.sentFrames().count { it.type == FrameType.RECEIPT })
+            assertEquals(listOf(answered), ackedBy(rig.loraOffers.last()))
+            assertTrue(rig.loraOffers.last().frameId != signed.id)
+        }
+
+    /** A held ✓✓ the flush took out of the hold is not gone when its seal throws: it goes back, and the next flush seals it. */
+    @Test
+    fun aHeldTickWhoseSealThrewGoesBackToTheHold() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.answered(rig.bob)
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, listOf(FrameId.new()))
+
+            coEvery { rig.peers.find(rig.bob.nodeId) } throws IllegalStateException("store gone")
+            assertTrue(runCatching { rig.manager.flushHeldReactions(rig.bob.nodeId) }.isFailure)
+
+            rig.pinLoraDirect(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals(1, rig.sentChatFrames().size)
+        }
+
+    /**
+     * A declined flush holds its ids before its compact offer, which suspends: the answer can commit inside the offer, and
+     * the root flush it fires must find the ids. It does, under the flush's claim, so it gives way and contests (counted
+     * as held), and the release wakes the hold. Held after the offer, that flush would find nothing and the ids would wait
+     * for a heal.
+     */
+    @Test
+    fun aRootFlushDuringADeclinedFlushsOfferFindsTheIdHeld() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            var heldDuringOffer = -1L
+            rig.duringLoraOffer = {
+                rig.duringLoraOffer = {}
+                runBlocking { rig.manager.flushHeldReactions(rig.bob.nodeId) }
+                heldDuringOffer = rig.metrics.receipts().receiptsHeld
+            }
+
+            rig.coalesce(FrameId.new())
+            advanceUntilIdle()
+
+            assertEquals("the root flush met the id under the claim", 1L, heldDuringOffer)
+            assertEquals("the compact tick still went", 1, rig.loraOffers.size)
+            assertTrue(rig.sentChatFrames().isEmpty())
+
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("still held, and the claim let go", 1, rig.sentChatFrames().size)
+        }
+
+    /**
+     * The contest's wake, on a started manager: the answer commits inside a declined flush's offer, the root flush gives
+     * way to the flush's claim, and the claim's end seals the held ✓✓ with no further flush from anyone.
+     */
+    @Test
+    fun theEndOfAContestedClaimSealsTheHeldTickWithNoFurtherFlush() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(rig.now))
+            rig.stubHealState()
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.manager.start()
+            rig.duringLoraOffer = {
+                rig.duringLoraOffer = {}
+                runBlocking {
+                    rig.answered(rig.bob)
+                    rig.manager.flushHeldReactions(rig.bob.nodeId)
+                }
+            }
+
+            rig.coalesce(FrameId.new())
+
+            rig.await(1) { rig.sentChatFrames().size }
+            rig.manager.stop()
+        }
+
+    /**
+     * A tick files the root its seal committed under, never one read after it (ADR 2026-10.8hn6): a new root committing
+     * between the seal and the record leaves the id answered in the old era only, so the new era owes it a tick.
+     */
+    @Test
+    fun aTickFilesTheRootItsSealCommittedUnderNotTheOneHeldAfter() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val dm = FrameId.new()
+            rig.forwardStore.duringStore = {
+                rig.forwardStore.duringStore = {}
+                rig.answered(rig.bob)
+            }
+
+            rig.coalesce(dm)
+            advanceUntilIdle()
+            assertEquals(1, rig.sentChatFrames().size)
+
+            rig.coalesce(dm)
+            advanceUntilIdle()
+            assertEquals("the new era's own tick", 2, rig.sentChatFrames().size)
+        }
+
+    /**
+     * A held flush that throws on a later chunk keeps what it had not settled: the chunk that threw goes back to the hold,
+     * and the chunk already sealed does not.
+     */
+    @Test
+    fun aHeldFlushThatThrewOnItsSecondChunkKeepsThoseIds() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.answered(rig.bob)
+            rig.pinLoraDirect(rig.bob)
+            val capable = checkNotNull(rig.peers.find(rig.bob.nodeId))
+            rig.manager.holdDeclinedTicks(rig.bob.nodeId, List(DmAckCoalescer.MAX_LORA_TICK_ACKS + 1) { FrameId.new() })
+            var reads = 0
+            coEvery { rig.peers.find(rig.bob.nodeId) } answers { if (++reads == 2) error("store gone") else capable }
+
+            assertTrue(runCatching { rig.manager.flushHeldReactions(rig.bob.nodeId) }.isFailure)
+            assertEquals("the first chunk sealed", 1, rig.sentChatFrames().size)
+
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals("the second chunk's id", 2, rig.sentChatFrames().size)
+            assertEquals("the sealed chunk did not go back", 0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /** The hold comes first, so a declined flush whose offer throws leaves the id held and its claim released. */
+    @Test
+    fun aDeclinedFlushWhoseOfferThrewLeavesTheIdHeld() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.duringLoraOffer = { error("board gone") }
+
+            assertTrue(runCatching { rig.coalesce(FrameId.new()) }.isFailure)
+
+            rig.duringLoraOffer = {}
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertEquals(1, rig.sentChatFrames().size)
+        }
+
+    /** A decline files nothing: an id the flush could not seal is still unanswered when the session is, and seals then. */
+    @Test
+    fun aDeclinedFlushFilesNothingSoTheHeldTickStillSeals() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.coalesce(FrameId.new())
+            advanceUntilIdle()
+            assertTrue(rig.sentChatFrames().isEmpty())
+
+            rig.answered(rig.bob)
+            rig.manager.flushHeldReactions(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            assertEquals(1, rig.sentChatFrames().size)
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
+        }
+
+    /**
+     * 8hn6 rule 2 at the flush (#300): an author who lost the ratchet bit reads as unanswered whatever the ledger holds,
+     * so the flush still reaches its cleartext branch, the only ✓✓ they read.
+     */
+    @Test
+    fun anAuthorWhoLostTheRatchetBitKeepsTheFlushsCleartextReceipt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.bindLora()
+            rig.pinLoraDirect(rig.bob)
+            rig.answered(rig.bob)
+            val dm = FrameId.new()
+            rig.coalesce(dm)
+            advanceUntilIdle()
+
+            rig.pin(rig.bob)
+            rig.coalesce(dm)
+            advanceUntilIdle()
+
+            assertEquals(1, rig.sentChatFrames().size)
+            assertEquals(1, rig.sentFrames().count { it.type == FrameType.RECEIPT })
+            assertEquals(0L, rig.metrics.receipts().receiptsReAckSkipped)
         }
 
     /** A root moving for the author ([RatchetSessions.rootChanges]) is what seals a held ✓✓: the manager's own collector. */

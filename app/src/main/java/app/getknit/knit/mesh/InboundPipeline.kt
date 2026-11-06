@@ -215,6 +215,9 @@ class InboundPipeline(
     private val holdDeclinedTick: (authorId: String, ackId: String) -> Unit = { _, _ -> },
     // A ✓✓ sealed and sent for these ids: MeshManager lets go of any held copy, so none is sealed twice.
     private val releaseHeldTicks: (authorId: String, ackIds: List<String>) -> Unit = { _, _ -> },
+    // A ✓✓ that gave way to another path's claim waits in that hold, and the claim has ended: MeshManager flushes it now
+    // rather than at the next root move or heal. Nothing in the rigs' default.
+    private val flushContestedTicks: (authorId: String) -> Unit = {},
     // The DMs a compact LoRa copy delivered (ADR 2026-10.x9fa): what lets the signed copy still run its ratchet step
     // without rewriting the row, and what keeps a deleted one deleted. Over [db] by default, which every rig wants.
     private val loraSeen: LoraDirectSeenRepository = LoraDirectSeenRepository(db),
@@ -225,7 +228,7 @@ class InboundPipeline(
     // 2026-10.8hn6); [holdsLive] answers whether one is still live in our own custody (`ForwardStore.frame`, never `has`).
     // The rigs' default holds nothing, so every re-delivery re-acks there as it always did.
     private val dmReAcks: DmReAckLedger = DmReAckLedger(),
-    private val holdsLive: suspend (frameId: String, now: Long) -> Boolean = { _, _ -> false },
+    private val holdsLive: suspend (frameId: String, me: String, now: Long) -> Boolean = { _, _, _ -> false },
     private val flushPending: suspend (String) -> Unit,
     private val classifyText: suspend (String, String, Boolean) -> Boolean,
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
@@ -1251,7 +1254,11 @@ class InboundPipeline(
             .onFailure { Log.w(TAG, "lora direct ${opened.frameId} from ${opened.peerId}: ${it.message}") }
     }
 
-    /** Serialises [deliverLoraDirect]: never taken inside a transaction, and nothing under it takes the ratchet mutex. */
+    /**
+     * Serialises [deliverLoraDirect]: never taken inside a transaction. A held batch that fills flushes under it
+     * ([DmAckCoalescer.hold] into `MeshManager.flushDmAcks`), so a seal, and with it a transaction and the ratchet mutex,
+     * can sit inside this lock, in that order only. Nothing that holds either may come back for it.
+     */
     private val loraDirectLock = Mutex()
 
     @Suppress("ReturnCount") // a refusal ladder, as decryptAndDeliverV2's
@@ -4115,7 +4122,10 @@ class InboundPipeline(
      * out) — the message itself converges via custody, but the tick otherwise had no delay-tolerance.
      *
      * [reDelivery] is a signed copy of a DM whose row we already hold — the exists-gate's call, or a marked copy's
-     * ([loraDirectCopyTaken]): see [answeredInEra]. It always seals as an [answer].
+     * ([loraDirectCopyTaken]). It always seals as an [answer]. Every copy off LoRa asks [answeredInEra], a first delivery
+     * too: a copy that lost the commit race comes through here unmarked, and `isNew` was read before either persist. A
+     * copy over LoRa is not asked here, since that plane's re-offer heals a lost tick by its re-ack (ADR 039 §3, §7): its
+     * compact re-ack always goes, and the signed one is bounded at the flush instead (`MeshManager.flushDmAcks`, #300).
      */
     private suspend fun acknowledge(
         env: RelayEnvelope,
@@ -4142,11 +4152,8 @@ class InboundPipeline(
                 metrics.onLoraTickDeferred()
                 return
             }
-            if (reDelivery && answeredInEra(env, plane)) {
-                metrics.onReAckSkipped()
-                return
-            }
-            if (sealDmReceipt(env, me, plane, answer, rideOwnFirstContact) != ReceiptSeal.CANNOT_SEAL) return
+            val bounded = plane != DeliveryPlane.LoRa
+            if (sealDmReceipt(env, me, plane, answer, rideOwnFirstContact, bounded) != ReceiptSeal.CANNOT_SEAL) return
             ackCleartext(env.id, me)
         } else {
             // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author when
@@ -4188,25 +4195,97 @@ class InboundPipeline(
     }
 
     /**
-     * Whether a re-delivered DM to us is already answered by a sealed receipt of ours in the session's current era
+     * Whether [authorId]'s DM [dmId] to us is already answered by a sealed receipt of ours in the session's current era
      * (#176, ADR 2026-10.8hn6): one the ledger holds under the root we hold now, sealed less than its re-arm floor ago,
      * and still live in our own custody, so every carrier that meets the author re-serves it. Any one of those failing
      * re-seals: a new root after a reset (the old receipt was sealed into an era the author may have dropped), a
      * receipt our quota or the TTL evicted (nobody re-serves it), or the floor passed (the author may hold our receipt
      * in custody without ever having applied it). Never keyed on the copy's ratchet header or its signature: a
-     * verbatim re-serve after a reset carries the old era's header. Never over LoRa, whose re-offer heals a lost tick
-     * by its re-ack (ADR 039 §3, §7), and never for an author who reads only the cleartext receipt, which purges the DM
-     * and ends the loop itself.
+     * verbatim re-serve after a reset carries the old era's header. Never for an author who reads only the cleartext
+     * receipt, which purges the DM and ends the loop itself: a pinned author that lost the ratchet bit keeps it here, so
+     * a flush keeps its cleartext branch. Asked by id, with no copy and no plane, so a flush can ask it too (#300). Ask
+     * it holding the DM's [DmReAckLedger.claim], or a seal in flight reads as unanswered. A DM with no entry, every true
+     * first delivery, stops at the first line and pays no locked root read.
      */
     private suspend fun answeredInEra(
-        env: RelayEnvelope,
-        plane: DeliveryPlane,
+        authorId: String,
+        dmId: String,
     ): Boolean {
-        if (plane == DeliveryPlane.LoRa || !canSealDmReceipt(env.senderId)) return false
+        if (dmReAcks.entry(authorId, dmId) == null || !canSealDmReceipt(authorId)) return false
         val now = clock()
-        val receiptId = dmReAcks.heldReceipt(env.id, ratchet.rootTagFor(env.senderId), now) ?: return false
-        return holdsLive(receiptId, now)
+        val receiptId = dmReAcks.heldReceipt(authorId, dmId, ratchet.rootTagFor(authorId), now) ?: return false
+        return holdsLive(receiptId, identity.nodeId(), now)
     }
+
+    /**
+     * A DM ✓✓ another path is sealing right now. It goes to the hold rather than away: that path may be sealing under
+     * an era a reset has since replaced, or may throw, so the next flush or heal asks the ledger and settles it. When the
+     * winner recorded, that costs no frame. The flush follows the claim's end, on whichever side sees it: the winner's
+     * [releaseDmAcks], or here when the winner has already let go. Otherwise a winner that declined just before the
+     * session was answered leaves both ids waiting for a heal, though the loser could have sealed.
+     */
+    private fun holdContestedDmAck(
+        authorId: String,
+        ackId: String,
+    ) {
+        holdDeclinedTick(authorId, ackId)
+        metrics.onReceiptHeld()
+        if (!dmReAcks.contest(authorId, ackId)) flushContestedTicks(authorId)
+    }
+
+    /**
+     * Of [ackIds], the ones a signed ✓✓ must still answer, each claimed for this caller (#300). An id [answeredInEra]
+     * finds answered is left out and counted as a skipped re-ack; one another path is sealing right now is left out and
+     * held ([holdContestedDmAck]). The caller seals what comes back, records it ([recordDmReceipts]) and always
+     * [releaseDmAcks]s it, in a `finally`. Called by
+     * `MeshManager`'s flushes, which reach the ledger only through here: it is this pipeline's own.
+     */
+    internal suspend fun claimUnansweredDmAcks(
+        authorId: String,
+        ackIds: List<String>,
+    ): List<String> {
+        val claimed = ArrayList<String>(ackIds.size)
+        var done = false
+        try {
+            for (id in ackIds) {
+                if (!dmReAcks.claim(authorId, id)) {
+                    holdContestedDmAck(authorId, id)
+                    continue
+                }
+                claimed += id
+                if (answeredInEra(authorId, id)) {
+                    claimed -= id
+                    releaseDmAcks(authorId, listOf(id))
+                    metrics.onReAckSkipped()
+                }
+            }
+            done = true
+        } finally {
+            // A read that threw or was cancelled: the caller never sees these ids, so it could never let them go.
+            if (!done) releaseDmAcks(authorId, claimed)
+        }
+        return claimed
+    }
+
+    /** Lets go of ids [claimUnansweredDmAcks] returned, once they are recorded or the seal gave up. */
+    internal fun releaseDmAcks(
+        authorId: String,
+        ackIds: List<String>,
+    ) {
+        if (dmReAcks.release(authorId, ackIds)) flushContestedTicks(authorId)
+    }
+
+    /**
+     * Files the signed tick [receiptId] for each of [ackIds], sealed under the root [rootTag] names at [now]: the DM ids
+     * it answers and no room rider, with the tag the seal itself returned (ADR 2026-10.8hn6, #300).
+     */
+    internal fun recordDmReceipts(
+        authorId: String,
+        ackIds: List<String>,
+        rootTag: Long,
+        receiptId: String,
+        now: Long,
+    ) = ackIds.forEach { dmReAcks.record(authorId, it, rootTag, receiptId, now) }
 
     /** Whether [authorId] could read a sealed receipt: a pinned bundle carrying `CAP_RATCHET` (the seal itself may still fail). */
     private suspend fun canSealDmReceipt(authorId: String): Boolean {
@@ -4224,6 +4303,11 @@ class InboundPipeline(
      * The session usually exists (we just opened the author's v2 DM); the prekey path covers a capable
      * author whose DM arrived v1 (e.g. sent before our profile landed on their side).
      *
+     * The DM is claimed before anything is read or sealed ([DmReAckLedger.claim], #300): with a second path sealing it
+     * now this one seals nothing and holds the id ([holdContestedDmAck]). With [bounded], a receipt [answeredInEra] finds
+     * is a skip. An author who cannot read a sealed receipt returns before the claim, so a claim never costs them the
+     * cleartext form. The claim goes in the `finally`, after the record and after a decline's hold.
+     *
      * A sealed receipt is filed in [dmReAcks] under [env]'s id alone (the room ids riding with it are AckSync's), with
      * the root tag the seal itself committed under ([RatchetSessions.AnswerSeal.Sealed.rootTag]) — never a session read
      * after it, since a reset adopted on the other delivery plane can commit in between and file the receipt in an era
@@ -4239,11 +4323,37 @@ class InboundPipeline(
         me: String,
         plane: DeliveryPlane,
         answer: Boolean,
-        rideOwnFirstContact: Boolean = false,
+        rideOwnFirstContact: Boolean,
+        bounded: Boolean,
     ): ReceiptSeal {
         val peer = peers.find(env.senderId) ?: return ReceiptSeal.CANNOT_SEAL
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return ReceiptSeal.CANNOT_SEAL
         val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return ReceiptSeal.CANNOT_SEAL
+        if (!dmReAcks.claim(env.senderId, env.id)) {
+            holdContestedDmAck(env.senderId, env.id)
+            return ReceiptSeal.ANSWERED
+        }
+        try {
+            if (bounded && answeredInEra(env.senderId, env.id)) {
+                metrics.onReAckSkipped()
+                return ReceiptSeal.ANSWERED
+            }
+            return sealClaimedDmReceipt(env, me, plane, answer, rideOwnFirstContact, peer, bundle)
+        } finally {
+            releaseDmAcks(env.senderId, listOf(env.id))
+        }
+    }
+
+    /** [sealDmReceipt]'s seal, for an id this path has claimed and an author who can read the result. */
+    private suspend fun sealClaimedDmReceipt(
+        env: RelayEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+        answer: Boolean,
+        rideOwnFirstContact: Boolean,
+        peer: PeerEntity,
+        bundle: PublicKeyBundle,
+    ): ReceiptSeal {
         val prekey = pinnedPrekey(peer)
         val now = clock()
         val id = FrameId.new()
@@ -4267,10 +4377,11 @@ class InboundPipeline(
                 RatchetSessions.AnswerSeal.Declined -> {
                     // Nothing to answer under yet: the board's compact tick alone, under a fresh id, and the signed ✓✓
                     // left to the re-ack once the signed copy opens (ADR 2026-10.x9fa). The room riders wait for another.
-                    ackSync.giveBackRiding(env.senderId, riding)
-                    if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, FrameId.new(), now, content.copy(acks = null))
+                    // Held before the offer, which suspends: a root flush inside it then finds the id, under our claim.
                     holdDeclinedTick(env.senderId, env.id)
                     metrics.onReceiptHeld()
+                    ackSync.giveBackRiding(env.senderId, riding)
+                    if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, FrameId.new(), now, content.copy(acks = null))
                     return ReceiptSeal.DECLINED
                 }
 
@@ -4295,7 +4406,7 @@ class InboundPipeline(
         // The DM's own id alone over the board: the room riders ride the signed tick and never air (ADR 2026-10.rp3s).
         if (plane == DeliveryPlane.LoRa) offerLoraReceipt(env.senderId, id, now, content.copy(acks = null))
         metrics.onReceiptSealed()
-        dmReAcks.record(env.id, tagged.rootTag, id, now)
+        dmReAcks.record(env.senderId, env.id, tagged.rootTag, id, now)
         ackSync.rode(riding)
         metrics.onReceiptRidden(riding.size)
         return ReceiptSeal.SENT
@@ -4308,8 +4419,11 @@ class InboundPipeline(
         return RatchetEngine.PeerPrekey(id = pkid, pub = pub)
     }
 
-    /** What [sealDmReceipt] did: sealed and sent, declined as an answer with no session to answer under, or impossible. */
-    private enum class ReceiptSeal { SENT, DECLINED, CANNOT_SEAL }
+    /**
+     * What [sealDmReceipt] did: sealed and sent, declined as an answer with no session to answer under, skipped as
+     * answered already or held behind another path sealing it, or impossible.
+     */
+    private enum class ReceiptSeal { SENT, DECLINED, ANSWERED, CANNOT_SEAL }
 
     /**
      * Voice-call signaling (experimental), handed to the call layer post-commit — and, like a transfer offer, only

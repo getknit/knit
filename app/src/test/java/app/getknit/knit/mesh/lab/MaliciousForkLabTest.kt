@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
@@ -51,6 +52,59 @@ class MaliciousForkLabTest : StrandedLabBase() {
     fun tearDown() {
         lab.close()
     }
+
+    /**
+     * The author chooses a frame's id, so a DM's receipt is keyed by author and id together (#300). Bob's DM to Alice is
+     * delivered and ticked; a compact DM from Mallory under the same id then takes its own tick through the coalescer,
+     * and Bob's copy comes back past Alice's seen window. Bob's one receipt still answers it: Mallory's tick moved neither
+     * its era nor its floor, so Alice seals exactly one for each author and nothing more for Bob.
+     */
+    @Test
+    fun aCompactDmUnderAnotherAuthorsIdLeavesThatAuthorsReceiptAlone() =
+        runBlocking {
+            val held = LabLimits(dmAckHoldMs = TICK_HOLD_MS, loraLingerSweepMs = 200L)
+            val air = MeshLab.quickAir()
+            val alice = lab.node("alice", held, air = air).apply { setDisplayName("Alice") }
+            val mallory = lab.node("mallory", held, air = air).apply { setDisplayName("Mallory") }
+            val bob = lab.node("bob", held, board = false).apply { setDisplayName("Bob") }
+            lab.linkAll(alice to bob, alice to mallory, bob to mallory)
+            lab.awaitAcquainted(alice, bob, mallory)
+            lab.await(1) { alice.boardReadyFor(mallory) }
+            lab.await(1) { mallory.boardReadyFor(alice) }
+            assertTrue(alice.sendDm(mallory, "hello"))
+            lab.await(1) { if (mallory.session(alice)?.confirmed == true) 1 else 0 }
+            assertTrue(mallory.sendDm(alice, "hi"))
+            lab.await(1) { if (alice.session(mallory)?.confirmed == true) 1 else 0 }
+
+            fun sealed() = alice.metrics.receipts().receiptsSealed
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            lab.await(1) { sealed().toInt() }
+            val before = sealed()
+            assertTrue(bob.sendDm(alice, "for alice"))
+            val dm = bob.ownMessageId(bob.dmWith(alice), "for alice")
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory), conversation = thread)
+            lab.await(1) { (sealed() - before).toInt() }
+
+            lab.unlink(alice, mallory)
+            lab.unlink(bob, mallory)
+            val deferred = alice.metrics.lora().loraTickDeferred
+            mallory.airCompactDm(alice, dm, "mine")
+            lab.await(1) { (alice.metrics.lora().loraTickDeferred - deferred).toInt() }
+            lab.clock.advance(TICK_HOLD_MS + 1)
+            alice.heal()
+            assertEquals("mallory's tick is hers alone", before + 2, sealed())
+
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 1)
+            val skipped = alice.metrics.receipts().receiptsReAckSkipped
+            bob.reServe(dm)
+            lab.await(1) { (alice.metrics.receipts().receiptsReAckSkipped - skipped).toInt() }
+            // Counted as seals, not custody rows: alice's sealed profile to bob at the heal is a chat frame too.
+            assertEquals("bob's receipt still answers his copy\n${lab.report(listOf(alice, bob, mallory))}", before + 2, sealed())
+
+            lab.link(alice, mallory)
+            lab.link(bob, mallory)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory), conversation = thread)
+        }
 
     /**
      * A blob request marked for relay, with the whole pull budget: honoured, it would have Bob pull Carol's picture
@@ -623,6 +677,9 @@ class MaliciousForkLabTest : StrandedLabBase() {
     private companion object {
         // #282's budget case: four pictures of 4 KiB fill a 10 KiB budget on the third.
         const val MINUTE_MS = 60_000L
+
+        // Two, so this hold and the seen window together stay inside the re-ack ledger's 15 min floor.
+        const val TICK_HOLD_MS = 2 * MINUTE_MS
         const val BUDGET_BYTES = 10_240L
         const val PICTURE_BYTES = 4_096
         const val PICTURES = 5

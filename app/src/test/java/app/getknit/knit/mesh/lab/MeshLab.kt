@@ -112,6 +112,7 @@ import app.getknit.knit.mesh.link.FileIntake
 import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.lora.DirectDm
+import app.getknit.knit.mesh.lora.DirectKind
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.lora.FakeMeshtasticLink
 import app.getknit.knit.mesh.lora.LoraConfig
@@ -3303,6 +3304,22 @@ class LabNode internal constructor(
         forwardStore.liveFrames(now()).count {
             it.envelope.type == FrameType.CHAT && it.envelope.senderId == sender.nodeId && it.envelope.recipientId == recipient.nodeId
         }
+
+    /** Airs a compact DM reading [body] to [to] under [frameId], whatever frame that id named: one no build sends. */
+    internal fun airCompactDm(
+        to: LabNode,
+        frameId: String,
+        body: String,
+    ) {
+        val plaintext = checkNotNull(MessageContentV2.encodeOrNull(MessageContent(body = body)))
+        checkNotNull(lora) { "$name has no board" }.offer(to.nodeId, frameId, now(), plaintext, DirectKind.MESSAGE)
+    }
+
+    /** Sends the custodied frame [frameId] to every link as it stands, as a holder's relay would reach a neighbour. */
+    suspend fun reServe(frameId: String) {
+        val frame = checkNotNull(forwardStore.frame(frameId, now())) { "$name does not hold $frameId" }
+        flood(WireEnvelope(sig = frame.sig, signed = frame.signed))
+    }
 
     /** This node's board on the air, by its Meshtastic node number (what [FakeMeshtasticAir.knitAirings] counts). */
     internal val boardNum: UInt get() = loraNodeNum()
