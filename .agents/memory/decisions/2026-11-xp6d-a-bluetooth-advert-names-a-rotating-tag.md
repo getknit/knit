@@ -8,7 +8,7 @@ topics: [ble, mesh, privacy, wire, crypto]
 
 # ADR 2026-11.xp6d — A Bluetooth advert names a rotating tag, not the node id
 
-Status: Proposed (2026-11-02). Not built yet; this text has absorbed the design pass of 2026-11-02 (bluetooth, crypto,
+Status: Accepted (2026-11-05). Proposed 2026-11-02; this text has absorbed the design pass of 2026-11-02 (bluetooth, crypto,
 security and wifi-aware reviewers) and the presence key's own design pass and follow-up the same day. knit-next #285; lead of a paired change with knit-ios. The Wi-Fi Aware half and
 the cleanup are `docs/NEXT_WIRE_BREAK.md` item 13.
 
@@ -190,9 +190,9 @@ re-deliver, with the link up throughout; a passive carrier holds and floods noth
 `assertConverged`, and a `MaliciousForkLabTest` case
 in which a linked Sybil claims other phones' tags.
 
-## Amendment 2026-11-03: the reader's wiring (step 5a, draft)
+## Amendment 2026-11-03: the reader's wiring (step 5a)
 
-Status: draft, with the reader's change; the caller decides whether it stands.
+Status: Accepted (2026-11-05), with the reader's change.
 
 - **An unresolved form's key is a handle** (`FormKeys`, `~zzzz…<n>`), not the tag: it lives in a namespace no node id
   can take, and it is the redaction, so a log line, a collection's `toString()` or a debug read-back that prints a
@@ -231,9 +231,9 @@ Status: draft, with the reader's change; the caller decides whether it stands.
   change asks no pass; leavers' stored keys are still deleted and a restore's link-owed resets still go. Own keys a build
   with it on minted are left, never sent. `BuildConfig.BLIND_ADVERT` gates the writer alone.
 
-## Amendment 2026-11-03: the writer's key side (step 5b, Part A, draft)
+## Amendment 2026-11-03: the writer's key side (step 5b, Part A)
 
-Status: draft, with the key side of the writer's change; the caller decides whether it stands. The writer's own wiring
+Status: Accepted (2026-11-05), with the key side of the writer's change. The writer's own wiring
 is its own section.
 
 - **The advertiser's key is the engine's published value, never a Room read.** `PresenceKeyEngine.ownKey` (an
@@ -268,9 +268,9 @@ is its own section.
   (`presenceMarkRefused`, a rotation's race); `presenceMarkNotFull == 0` with `presenceMarksDurable > 0` is the device
   check the JVM cannot make (framework SQLite in memory there, SQLCipher in WAL on a phone).
 
-## Amendment 2026-11-03: the writer on the air (step 5b, Part B1, draft)
+## Amendment 2026-11-03: the writer on the air (step 5b, Part B1)
 
-Status: draft, with the writer's Bluetooth half; the caller decides whether it stands. `TAG_NEXT` sent, admission and
+Status: Accepted (2026-11-05), with the writer's Bluetooth half. `TAG_NEXT` sent, admission and
 dialing while blinded, and the carried fixes are Part B2's, so every rotation this part makes is unannounced on the air
 (the announcement's reservation is made, and the tag it names is the one aired).
 
@@ -346,9 +346,9 @@ dialing while blinded, and the carried fixes are Part B2's, so every rotation th
 - **Old builds** (addition). A shipped build keys sightings by bytes 1–16, never by the blinded phone's real id, so it
   scores the link to it at the floor (`neverSighted`, −90) and sheds it first at its six-link budget.
 
-## Amendment 2026-11-03: announced rotations and the blinding rows (step 5b, Part B2, draft)
+## Amendment 2026-11-03: announced rotations and the blinding rows (step 5b, Part B2)
 
-Status: draft, with the second half of the writer; the caller decides whether it stands. With it, B1's rotations are
+Status: Accepted (2026-11-05), with the second half of the writer. With it, B1's rotations are
 announced.
 
 - **`TAG_NEXT` sent** (`TagNextSends`), as a link record beside the keepalive (`FramedLink.sendTagNext`): never a frame,
@@ -394,9 +394,9 @@ announced.
   so a sniffer on a long-lived link follows every tag for as long as the link lasts, without catching a new HELLO. This
   is inside #286's accepted cost (the HELLO's `t` already names the tag).
 
-## Amendment 2026-11-04: the debug bridge, the switch on, the harnesses (step 6, draft)
+## Amendment 2026-11-04: the debug bridge, the switch on, the harnesses (step 6)
 
-Status: draft, with step 6's code; the caller decides whether it stands.
+Status: Accepted (2026-11-05), with step 6's code.
 
 - **The switch is on in debug builds.** `SettingsStore.DEBUG_BLIND_ADVERT_DEFAULT` is now true, so a debug build of this
   branch on a controller with extended advertising airs tags from its first bring-up. `…debug.ADVERT --ez blind false`

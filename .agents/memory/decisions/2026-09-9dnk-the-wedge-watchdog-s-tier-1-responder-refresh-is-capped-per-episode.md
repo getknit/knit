@@ -117,9 +117,9 @@ also republishes at the end of every presence window (`endWindow()`), so a peer 
 A due kill therefore lands only on a check that finds the peer still near. In a gap longer than 90 s the corroboration
 can lapse between windows, which makes Tier 2 a slower last resort, never a strand: Tier 1 and its caps are unchanged.
 
-## Amendment 2026-11-03 — a blinded stranger corroborates nothing (ADR 2026-11.xp6d, step 5b, draft)
+## Amendment 2026-11-03 — a blinded stranger corroborates nothing (ADR 2026-11.xp6d, step 5b)
 
-Status: draft, with the blinded advert's writer; the caller decides whether it stands. No Aware code changes.
+Status: Accepted (2026-11-05), with the blinded advert's writer. No Aware code changes.
 
 Corroboration is per owed peer: an episode reaches Tier 2 only when the peer the sync is owed to is corroborated
 (`NanSyncPolicy.anySyncOwed` with `corroboratedPresent`: linked here, or in `foreignNear`). Once peers blind their
