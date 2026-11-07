@@ -88,11 +88,15 @@ class TypingSigLabTest {
             lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
             lab.unlink(alice, carol)
             lab.unlink(bob, carol)
+            // Every member's subscription before the cue: a sig is never stored, so a member whose SUB lands after it is
+            // fanned never sees it (Bob, chaos seed 71524).
             lab.awaitGroupScope(alice, groupId, bob, carol)
+            lab.awaitGroupScope(bob, groupId, alice, carol)
             lab.awaitGroupScope(carol, groupId, alice, bob)
 
             alice.manager.sendTyping(groupId)
-            // Carol's only path is the relay; Bob may hear it over his link with Alice too, and keeps one copy.
+            // Both cues ride the relay's sig here (the lab's fast path is a no-op without pages); on a phone Bob may also hear
+            // it over his link with Alice, which these awaits do not pin.
             lab.await(1) { shows(carol, groupId, alice) }
             lab.await(1) { shows(bob, groupId, alice) }
         }
