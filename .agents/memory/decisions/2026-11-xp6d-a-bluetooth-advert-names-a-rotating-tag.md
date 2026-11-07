@@ -527,3 +527,23 @@ Pixel 3 dialed a Pixel 9 158 times in 40 s, 3 ms after the link it held to it ca
   (#309) were dials to a claim's old address timing out while the new tag went unseen behind the paused scan; a tag dial
   over 1M that times out now forgets the dialed address and the tag's Coded sibling, and a clear or Coded dial forgets
   nothing (`DialTargets.forgetDialed`; trialled 2026-11-07, see hj4a's amendment of 2026-11-06).
+
+## Amendment 2026-11-07: a replay mark at a spoofed address (#305)
+
+Status: Accepted (2026-11-07).
+
+A replay mark names the (tag, address) pair we dialed (`ReplayMarks.mark`), and nothing checks that the address is the
+replayer's own. So a radio that airs a contact's tag from the contact's own address and wins the connection marks the
+contact's real address. Sightings of that contact there then attribute nothing, and it is not dialed there by tag, until
+its tag rotates and the mark no longer matches. This is accepted as a residual.
+
+- **Why not keep the contact's address through the mark.** #305 recommended keeping `deviceFor` and `codedDeviceFor` on a
+  mark. The design pass found it a net loss. The address it keeps is the one the replayer answers at, so the dial it
+  restores goes back into the race the replayer just won. It also weakens the mark against a replayer at an address of
+  her own, which is what the mark is for.
+- **Why not let our proof outrank a mark.** The other option was that a mark does not override a pair where our own
+  proven dial proved the contact's id, recorded the way `dialHeld` is. It changes what a mark means, and the case it
+  covers is narrow.
+- **What the residual costs.** The attacker has to be in Bluetooth range, copy both the tag and the contact's current
+  address, and outrace the contact's own answer. The cost is one contact's tag dial at that address for at most one slot.
+  Wi-Fi Aware and the relays still carry the contact, and its next tag or address starts clean.

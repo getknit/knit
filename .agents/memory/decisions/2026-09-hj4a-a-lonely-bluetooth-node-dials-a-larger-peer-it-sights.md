@@ -158,8 +158,9 @@ backoff".
   That is the bound, not zero: at that age the link cannot be told from an honest one. The age is 264w's constant,
   borrowed: this bound moves if that does.
 - **What that bound does not cover.** An accepted dial resets its key by design, so a fork that accepts and proves escapes
-  the age gate at churn rate, two handshakes per dial. A fresh address is a fresh key and is not bounded here; that is an
-  open follow-up. A faked crossing books nothing, about one free dial per 8 to 12 s, so its dials are not on this backoff.
+  the age gate at churn rate, two handshakes per dial. A fresh address is a fresh key and is not bounded here; the
+  amendment of 2026-11-07 accepts that. A faked crossing books nothing, about one free dial per 8 to 12 s, so its dials
+  are not on this backoff.
 - **What the gate costs an honest peer.** A link under 15 s leaves its earned streak standing: at most about 24 s after one
   such link, and a run of short links can climb to the cap of about 216 s until a successful dial resets it.
 - **A dial that began held and fails after its link has gone is still booked,** with nothing left to clear it. Leaving it
@@ -177,3 +178,22 @@ backoff".
   with the change, against three timeouts at the Pixel 3's old address in one toggle without it. Neither arm met a
   40 s median relink, because the Pixel 3 refilled its three links with other phones first and the Pixel 9's dials to
   its new tag timed out at −90 dBm (5 of 10 relinked within 180 s with the change, 3 of 10 without).
+
+## Amendment 2026-11-07 — a fresh address stays unbounded (#304)
+
+Status: Accepted (2026-11-07).
+
+A tag dial is still backed off per tag and address (`DialKeys.tagDialKey`). A fork that airs a resolved peer's tag from a
+fresh address after each refusal is therefore dialed once per address with no backoff. Each such dial holds the scan off
+for its connect window (12 s, 25 s on Coded). This is accepted as a residual.
+
+- **Why not book the streak under the id.** That was #304's first option. Any radio that replays the tag at an address
+  of its own and refuses would then book the backoff of the id it claims, and so delay our dials to the real contact.
+  It would also hand an honest peer's rotation the streak its dead address earned, which #309 exists to stop (the
+  amendment of 2026-11-06 above).
+- **Why not a separate per-id budget.** The design pass also weighed a budget across addresses not yet proven for the id.
+  It is a second bound beside the backoff, with its own replay reasoning. The cost it would remove did not justify that.
+- **What the residual costs.** It needs a modified client in range that changes its own address once per dial. That
+  client gains connect windows, not a link, a claim or a proof. The cost is our scan time, so neighbours are found more
+  slowly while it lasts. An address we dialed and proved keeps the ordinary backoff and the held-dial rule
+  (ADR 2026-11.xp6d).
