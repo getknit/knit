@@ -1365,6 +1365,60 @@ class LoraMeshTransportTest {
             r.transport.stop()
         }
 
+    /**
+     * A Meshtastic room post the session ended under is requeued, not refused (#307): it airs after the reconnect and is
+     * counted sent once, and the refusal counter never moves for it.
+     */
+    @Test
+    fun aRoomPostCaughtByABoardDropIsCountedSentOnceAndNeverRefused() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+            val up = r.link.state.value
+            r.link.sessionEndsNext = true
+
+            assertNull(r.transport.postToPublicChannel("meet at the trailhead"))
+            runCurrent()
+            // The barrier: the scripted drop runs inside the send, so a link out of Ready says the send was made.
+            assertFalse("the session ended under the send", r.link.state.value is LinkState.Ready)
+            assertTrue("nothing reached the board", r.link.sent.isEmpty())
+            assertEquals(0L, r.metrics.meshtastic().publicPostSent)
+
+            r.link.resume(up)
+            advanceTimeBy(5_000)
+            runCurrent()
+
+            assertEquals(1, r.link.sent.count { it.decodeToString() == "meet at the trailhead" })
+            assertEquals(1L, r.metrics.meshtastic().publicPostSent)
+            assertEquals("a requeue is not a refusal", emptyMap<String, Long>(), r.metrics.meshtastic().publicPostRefusedByReason)
+            r.transport.stop()
+        }
+
+    /** The auto-reply's half of #307: requeued at a board drop, sent once after the reconnect, never counted refused. */
+    @Test
+    fun anAutoReplyCaughtByABoardDropIsCountedSentOnceAndNeverRefused() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+            val up = r.link.state.value
+            r.link.sessionEndsNext = true
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello? anyone there?", id = 11u, to = 1u)
+            runCurrent()
+            assertFalse("the session ended under the reply", r.link.state.value is LinkState.Ready)
+            assertTrue("nothing reached the board", r.link.sent.isEmpty())
+            assertEquals(0L, r.metrics.meshtastic().autoReplySent)
+
+            r.link.resume(up)
+            advanceTimeBy(5_000)
+            runCurrent()
+
+            assertEquals(1, r.link.sent.count { it.decodeToString() == DmAutoReplyPolicy.TEXT })
+            assertEquals(1L, r.metrics.meshtastic().autoReplySent)
+            assertEquals("a requeue is not a refusal", emptyMap<String, Long>(), r.metrics.meshtastic().autoReplyRefusedByReason)
+            r.transport.stop()
+        }
+
     /** A Meshtastic-room post our board refuses with 39 is the room's refusal alone: no contact, no keyless mark. */
     @Test
     fun aRoomPostRefusedWithA39NeverWritesAContact() =

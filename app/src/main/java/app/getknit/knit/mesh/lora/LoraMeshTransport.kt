@@ -2056,7 +2056,8 @@ internal class LoraMeshTransport(
         // fragments it already holds would both duplicate them on the air and book their airtime again — the
         // ledger only grows on a retry, so that inflates the hourly budget until it refuses the whole plane.
         for (message in frame.remaining) {
-            if (!sendMessage(message, ch, frame)) return
+            // OWED (requeued, or held for a key) and ENDED alike stop the frame here; the next take resumes an owed one.
+            if (sendMessage(message, ch, frame) != FragmentOutcome.SENT) return
         }
         metrics.onLoraSent()
         if (frame.fragmented) metrics.onLoraFragSent()
@@ -2077,7 +2078,12 @@ internal class LoraMeshTransport(
         // The auto-reply is the one direct send without `want_ack`: a stock client's board answers nobody's retries
         // for us, and the window would pay for them (ADR 2026-09.4n5p).
         val to = if (reply) LinkDestination.Direct(BoardAddr(frame.to), ack = false) else LinkDestination.Broadcast
-        if (!sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE, to)) {
+        val outcome = sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE, to)
+        // OWED is back on the queue (the board busy, or the session gone under it): not a refusal, and its airing after
+        // the reconnect is counted sent then, once (#307). Should it never air, the pacer's shed counts it
+        // `loraDroppedQueue`, as it does any frame; the refusal counters are for what the board refused.
+        if (outcome == FragmentOutcome.OWED) return
+        if (outcome == FragmentOutcome.ENDED) {
             if (reply) metrics.onAutoReplyRefused(AutoReplyRefusal.NAK.name) else metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
             return
         }
@@ -2091,9 +2097,10 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Sends one fragment; false ends the frame (a NAK, error, or no headroom). A compact DM goes to its board with
-     * `want_ack`, priced unsigned, every airing it may cost booked here and the unflown ones refunded on its ack
-     * (ADR 2026-10.x9fa).
+     * Sends one fragment and says what became of its frame ([FragmentOutcome]): taken, still owed (requeued for a busy
+     * board or a session that ended under it, or held for a missing key), or ended (a NAK, a give-up). A compact DM goes
+     * to its board with `want_ack`, priced unsigned, every airing it may cost booked here and the unflown ones refunded on
+     * its ack (ADR 2026-10.x9fa).
      */
     private suspend fun sendMessage(
         message: ByteArray,
@@ -2101,7 +2108,7 @@ internal class LoraMeshTransport(
         frame: OutboundFrame,
         portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
         to: LinkDestination = frame.direct?.let { LinkDestination.Direct(it.addr) } ?: LinkDestination.Broadcast,
-    ): Boolean {
+    ): FragmentOutcome {
         // The NodeInfo stream's stamp as the send is issued: a key streamed after it raced a `39`; one before is stale.
         val userSeq = link.userSeq()
         val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT, destination = to)
@@ -2110,13 +2117,13 @@ internal class LoraMeshTransport(
         // given up: the add_contact path decides what becomes of it.
         noKeyHandle(result)?.takeIf { frame.direct != null }?.let { handle ->
             onNoKey(frame, handle, userSeq)
-            return false
+            return FragmentOutcome.OWED
         }
         return when (result) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
                 onTaken(frame, message, result.id, userSeq)
-                true
+                FragmentOutcome.SENT
             }
 
             // The write went out and no queueStatus came back in time. A broadcast is given up as ever; a compact DM may
@@ -2126,11 +2133,11 @@ internal class LoraMeshTransport(
                 if (frame.direct == null) {
                     log("lora tx ${frame.label} gave up: $result")
                     abandon(frame)
-                    false
+                    FragmentOutcome.ENDED
                 } else {
                     log("lora tx ${frame.label} unconfirmed, awaited as id=${result.id}")
                     onTaken(frame, message, result.id, userSeq)
-                    true
+                    FragmentOutcome.SENT
                 }
             }
 
@@ -2139,12 +2146,12 @@ internal class LoraMeshTransport(
                 log("lora nak id=${result.id} reason=${result.reason} label=${frame.label}")
                 pace.onNak(result.reason, clock())
                 abandon(frame) // a no-op once a fragment has flown
-                false
+                FragmentOutcome.ENDED
             }
 
             SendResult.Busy -> {
                 requeue(frame)
-                false
+                FragmentOutcome.OWED
             }
 
             // The session ended with this unsent, or its write failed: the frame is owed, like one the link was already gone
@@ -2153,15 +2160,31 @@ internal class LoraMeshTransport(
             // parked behind it parked.
             is SendResult.NotReady -> {
                 requeue(frame)
-                false
+                FragmentOutcome.OWED
             }
 
             else -> {
                 log("lora tx ${frame.label} gave up: $result")
                 abandon(frame)
-                false
+                FragmentOutcome.ENDED
             }
         }
+    }
+
+    /**
+     * What [sendMessage] did with its frame. Three ways, not a Boolean, because a frame put back on the queue is not one
+     * the board refused: a Meshtastic room post or auto-reply caught by a board drop was counted refused, then sent when
+     * it aired after the reconnect (#307).
+     */
+    private enum class FragmentOutcome {
+        /** The board took the fragment (or may have, a compact DM's timeout): booked, the cursor moved. */
+        SENT,
+
+        /** Still owed: requeued at its cursor for a busy board or a session that ended, or a compact DM held for a missing key. */
+        OWED,
+
+        /** Ended: a NAK, a broadcast's timeout or another give-up. Abandoned unless a fragment already flew. */
+        ENDED,
     }
 
     /** The handle of a send our board refused for want of the destination's key (`39`), or null for any other result. */
