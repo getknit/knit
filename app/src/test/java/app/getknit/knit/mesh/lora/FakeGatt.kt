@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.lora
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +22,15 @@ internal class FakeGattChannel : GattChannel {
     /** One-shot overrides consumed on the next matching op (null = behave normally). */
     var nextWrite: GattResult<Unit>? = null
     var nextRead: GattResult<ByteArray>? = null
+
+    /**
+     * A one-shot unexpected throw under the actor, out of the next write or read. The real channel's `stackCall` turns the
+     * stack's own into `Failed(-2)` ([nextWrite] stages that), so this reaches only the session's backstops.
+     */
+    var nextThrow: Throwable? = null
+
+    /** A one-shot hold on the next read: it answers what this completes with, or waits for its cancellation. */
+    var readGate: CompletableDeferred<GattResult<ByteArray>>? = null
 
     /** Called synchronously inside [writeToRadio]; lets a test enqueue the board's response. */
     var onWrite: (ByteArray) -> Unit = {}
@@ -44,6 +55,7 @@ internal class FakeGattChannel : GattChannel {
         timeoutMs: Long,
     ): GattResult<Unit> =
         guarded {
+            throwIfScripted()
             writes += bytes
             onWrite(bytes)
             nextWrite?.also { nextWrite = null } ?: GattResult.Ok(Unit)
@@ -51,6 +63,11 @@ internal class FakeGattChannel : GattChannel {
 
     override suspend fun readFromRadio(timeoutMs: Long): GattResult<ByteArray> =
         guarded {
+            throwIfScripted()
+            readGate?.let {
+                readGate = null
+                return@guarded it.await()
+            }
             nextRead?.let {
                 nextRead = null
                 return@guarded it
@@ -60,6 +77,13 @@ internal class FakeGattChannel : GattChannel {
 
     override fun close() {
         closes++
+    }
+
+    private fun throwIfScripted() {
+        nextThrow?.let {
+            nextThrow = null
+            throw it
+        }
     }
 
     private inline fun <T> guarded(block: () -> T): T {
@@ -73,12 +97,29 @@ internal class FakeGattChannel : GattChannel {
     }
 }
 
+/**
+ * The adapter flag, whose next reads of [value] can be scripted apart from what its collectors see: a broadcast can flip
+ * the real flag between two reads with no suspension between them, which virtual time cannot otherwise stage.
+ */
+@OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+internal class ScriptedAdapterFlag(
+    private val flag: MutableStateFlow<Boolean> = MutableStateFlow(true),
+) : MutableStateFlow<Boolean> by flag {
+    val reads = ArrayDeque<Boolean>()
+
+    override var value: Boolean
+        get() = reads.removeFirstOrNull() ?: flag.value
+        set(on) {
+            flag.value = on
+        }
+}
+
 /** A scriptable [MeshtasticGattDialer] over one [FakeGattChannel]. */
 internal class FakeGattDialer(
     private val channel: FakeGattChannel,
     private val mtu: Int = 512,
 ) : MeshtasticGattDialer {
-    override val adapterOn = MutableStateFlow(true)
+    override val adapterOn = ScriptedAdapterFlag()
     var bond = BondState.BONDED
 
     /** Scripted dial outcomes, consumed in order; when empty, dials open [channel]. */
@@ -88,6 +129,9 @@ internal class FakeGattDialer(
     /** Each dial's mode and connect timeout, in order. */
     val modes = mutableListOf<DialMode>()
     val timeouts = mutableListOf<Long>()
+
+    /** A one-shot throw out of the next dial, as a stack that has gone away can do. */
+    var nextThrow: Throwable? = null
 
     /** Virtual time a scripted [DialResult.Timeout] takes, as the real wait would: the dial's own timeout. */
     var timeoutsTakeTheirWindow = false
@@ -102,6 +146,10 @@ internal class FakeGattDialer(
         dials++
         modes += mode
         timeouts += timeoutMs
+        nextThrow?.let {
+            nextThrow = null
+            throw it
+        }
         val result = if (dialResults.isEmpty()) DialResult.Opened(channel, mtu) else dialResults.removeFirst()
         if (result == DialResult.Timeout && timeoutsTakeTheirWindow) delay(timeoutMs)
         return result

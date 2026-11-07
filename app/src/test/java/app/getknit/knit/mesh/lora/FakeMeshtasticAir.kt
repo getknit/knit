@@ -416,6 +416,12 @@ internal class FakeMeshtasticLink(
      */
     var timeoutNext = false
 
+    /**
+     * When set, the next send finds its session ended before it reached the board: the link leaves Ready and the send is
+     * answered [SendResult.NotReady], never recorded. [resume] brings the session back. It clears.
+     */
+    var sessionEndsNext = false
+
     /** When set, the next send is refused with this NAK — the board's duty-cycle or rate refusal — and it clears. */
     var nakNext: RoutingError? = null
     private var nextId = 1u
@@ -510,6 +516,11 @@ internal class FakeMeshtasticLink(
 
     /** The refusal [nakNext] or [rejectNext] scripts for this send, each once; null to send. */
     private fun scriptedRefusal(): SendResult? {
+        if (sessionEndsNext) {
+            sessionEndsNext = false
+            drop()
+            return SendResult.NotReady(_state.value)
+        }
         nakNext?.let { reason ->
             nakNext = null
             return SendResult.Nak(nextId++, reason)
@@ -724,6 +735,11 @@ internal class FakeMeshtasticLink(
 
     fun drop() {
         _state.value = LinkState.Disconnected("test", retryAtMs = 0, streak = 1)
+    }
+
+    /** The next session up, as [state] was before a [drop]. */
+    fun resume(state: LinkState) {
+        _state.value = state
     }
 
     private companion object {

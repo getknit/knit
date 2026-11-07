@@ -93,6 +93,8 @@ document:
 
 ### Fixed
 
+- After Bluetooth was switched off and on, a LoRa board could show as connected while nothing went over it
+  until Knit restarted. Knit now reconnects to the board by itself and keeps messages queued meanwhile.
 - Text shared into a chat past the 2000-character limit locked the field, and sending cut off the end unseen.
   You can now edit it down with a counter showing how far over it is, and Knit won't send it until it fits.
 - Pasting a message too long for the chat did nothing, with no sign why. A toast now gives the limit, and in

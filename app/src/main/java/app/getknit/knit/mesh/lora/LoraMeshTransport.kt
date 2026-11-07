@@ -2148,6 +2148,15 @@ internal class LoraMeshTransport(
                 false
             }
 
+            // The session ended with this unsent, or its write failed: the frame is owed, like one the link was already gone
+            // for at [sendFrame] (`Timeout` is the answer for a write that likely went). It waits out the outage, resumes at
+            // its cursor, and has its gates asked again when it flies. Nothing was booked, and a compact DM keeps what is
+            // parked behind it parked.
+            is SendResult.NotReady -> {
+                requeue(frame)
+                false
+            }
+
             else -> {
                 log("lora tx ${frame.label} gave up: $result")
                 abandon(frame)

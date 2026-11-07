@@ -25,7 +25,7 @@ import app.getknit.knit.mesh.lora.GattChannel
 import app.getknit.knit.mesh.lora.GattEvent
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.MeshtasticGattDialer
-import kotlinx.coroutines.CancellationException
+import app.getknit.knit.mesh.lora.MeshtasticSession
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -48,7 +48,9 @@ import java.nio.ByteOrder
  * Everything protocol-shaped runs pure above it (`mesh/lora/MeshtasticSession`). Mirrors the mesh BLE
  * plane's hard-won idioms: the adapter is a **provider** (re-fetched per dial, never cached, so an adapter
  * off→on cycle doesn't strand us), and every GATT op carries an explicit timeout with the `settled`-race
- * watchdog so a callback that never comes can't wedge the actor.
+ * watchdog so a callback that never comes can't wedge the actor. The connect, every GATT op and the bond read go
+ * through [stackCall]: a stack that has gone away throws rather than answering, and the actor must see a failed op.
+ * [dial]'s own adapter reads and the receiver's `isEnabled` do not; what [dial] throws, the session's loop catches.
  *
  * Two ways to dial ([DialMode], ADR 2026-09.hp88). A **direct** dial (`autoConnect = false`) is what a board
  * that just dropped gets: fast, but a high-duty scan for its whole window, so it holds [BleConnectArbiter] and the
@@ -102,7 +104,7 @@ internal class MeshtasticGatt(
     }
 
     override fun bondState(address: String): BondState =
-        when (adapter?.getRemoteDevice(address)?.bondState) {
+        when (stackCall("bondState", null) { adapter?.getRemoteDevice(address)?.bondState }) {
             BluetoothDevice.BOND_BONDED -> BondState.BONDED
             BluetoothDevice.BOND_BONDING -> BondState.BONDING
             BluetoothDevice.BOND_NONE -> BondState.NONE
@@ -147,40 +149,37 @@ internal class MeshtasticGatt(
         timeoutMs: Long,
     ): DialResult {
         val channel = AndroidGattChannel()
+        var answered = false
         val gatt =
-            device.connectGatt(appContext, autoConnect, channel.callback, BluetoothDevice.TRANSPORT_LE)
-                ?: return DialResult.Failed(status = -1, phase = "connectGatt")
+            stackCall("connectGatt", null) {
+                device.connectGatt(appContext, autoConnect, channel.callback, BluetoothDevice.TRANSPORT_LE).also { answered = true }
+            } ?: return DialResult.Failed(status = if (answered) -1 else MeshtasticSession.STATUS_STACK_THREW, phase = "connectGatt")
         channel.attach(gatt)
-        // Every exit but Opened closes the client, cancellation included: a stop() or a board swap inside the
-        // wait used to leave the connect registered with the stack — up to 30 s for a direct dial, and for a
-        // background one until the board next came into range, reconnecting a session nobody owned.
+        // Every exit but Opened closes the client, cancellation and a throw included: a stop() or a board swap
+        // inside the wait used to leave the connect registered with the stack — up to 30 s for a direct dial, and
+        // for a background one until the board next came into range, reconnecting a session nobody owned.
+        var result: DialResult? = null
         try {
             // A refusal is Failed, never Timeout, so it takes the session's backoff: a background connect the
             // stack turns down at once (an address not in its cache is status 133 on some stacks) would
             // otherwise read as a spent window and be re-dialled straight away, in a loop.
-            val result =
+            result =
                 when (val wait = channel.awaitConnected(timeoutMs, adapterOn)) {
                     ConnectWait.Connected -> if (autoConnect) withArbiter { finishSetup(channel) } else finishSetup(channel)
                     is ConnectWait.Refused -> DialResult.Failed(status = wait.status, phase = "connect")
                     ConnectWait.TimedOut -> DialResult.Timeout
                     ConnectWait.AdapterOff -> DialResult.AdapterOff
                 }
-            if (result !is DialResult.Opened) channel.close()
             return result
-        } catch (e: CancellationException) {
-            channel.close()
-            throw e
+        } finally {
+            if (result !is DialResult.Opened) channel.close()
         }
     }
 
     private suspend fun finishSetup(channel: AndroidGattChannel): DialResult {
         val mtu = channel.negotiateMtu()
-        if (mtu < MIN_MTU) {
-            channel.close()
-            return DialResult.Failed(status = mtu, phase = "mtu")
-        }
+        if (mtu < MIN_MTU) return DialResult.Failed(status = mtu, phase = "mtu")
         if (!channel.discover(DISCOVER_TIMEOUT_MS) || !channel.resolveCharacteristics()) {
-            channel.close()
             return DialResult.Failed(status = -1, phase = "service")
         }
         Log.d(TAG, "dial opened mtu=$mtu")
@@ -407,7 +406,7 @@ internal class MeshtasticGatt(
         ): Int {
             val d = CompletableDeferred<Int>()
             mtuResult = d
-            if (gatt?.requestMtu(mtu) != true) return -1
+            if (!stackCall("requestMtu", false) { gatt?.requestMtu(mtu) == true }) return -1
             // stretches: give-up on a setup op; a lost callback holds the arbiter, so the mesh scan, up to ~43 s.
             return withTimeoutOrNull(timeoutMs) { d.await() } ?: -1
         }
@@ -415,7 +414,7 @@ internal class MeshtasticGatt(
         suspend fun discover(timeoutMs: Long): Boolean {
             val d = CompletableDeferred<Boolean>()
             discoverResult = d
-            if (gatt?.discoverServices() != true) return false
+            if (!stackCall("discoverServices", false) { gatt?.discoverServices() == true }) return false
             // stretches: give-up on a setup op; a lost callback holds the arbiter, so the mesh scan, up to ~43 s.
             return withTimeoutOrNull(timeoutMs) { d.await() } ?: false
         }
@@ -429,7 +428,7 @@ internal class MeshtasticGatt(
         }
 
         override suspend fun subscribeFromNum(timeoutMs: Long): GattResult<Unit> =
-            op(timeoutMs) {
+            op("subscribe", timeoutMs) {
                 val ch = fromNum ?: return@op false
                 val g = gatt ?: return@op false
                 g.setCharacteristicNotification(ch, true)
@@ -449,7 +448,7 @@ internal class MeshtasticGatt(
             bytes: ByteArray,
             timeoutMs: Long,
         ): GattResult<Unit> =
-            op(timeoutMs) {
+            op("write", timeoutMs) {
                 val ch = toRadio ?: return@op false
                 val g = gatt ?: return@op false
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -465,36 +464,49 @@ internal class MeshtasticGatt(
             }.map { }
 
         override suspend fun readFromRadio(timeoutMs: Long): GattResult<ByteArray> =
-            op(timeoutMs) {
+            op("read", timeoutMs) {
                 val ch = fromRadio ?: return@op false
                 gatt?.readCharacteristic(ch) == true
             }
 
         override fun close() {
-            runCatching {
-                gatt?.disconnect()
-                gatt?.close()
-            }
+            // Apart: a dead stack refusing the disconnect must not cost the close that unregisters the client.
+            runCatching { gatt?.disconnect() }
+            runCatching { gatt?.close() }
             gatt = null
             eventsChannel.close()
         }
 
-        /** Serializes one GATT op: issues [issue], awaits its callback, or Timeout/Closed/Failed. */
+        /**
+         * Serializes one GATT op: issues [issue], awaits its callback, or Timeout/Closed/Failed. A throw from the
+         * stack is a Failed like a refusal, under its own status, so the session's write-failure path ends the session.
+         */
         private suspend fun op(
+            what: String,
             timeoutMs: Long,
             issue: () -> Boolean,
         ): GattResult<ByteArray> =
             opLock.withLock {
                 val d = CompletableDeferred<GattResult<ByteArray>>()
                 pending = d
-                if (!issue()) {
+                try {
+                    when (stackCall<Boolean?>(what, null) { issue() }) {
+                        null -> {
+                            GattResult.Failed(MeshtasticSession.STATUS_STACK_THREW)
+                        }
+
+                        false -> {
+                            GattResult.Failed(-1)
+                        }
+
+                        true -> {
+                            // stretches: give-up on one GATT op after the dial opened, outside the arbiter.
+                            withTimeoutOrNull(timeoutMs) { d.await() } ?: GattResult.Timeout
+                        }
+                    }
+                } finally {
                     pending = null
-                    return@withLock GattResult.Failed(-1)
                 }
-                // stretches: give-up on one GATT op after the dial opened, outside the arbiter.
-                val result = withTimeoutOrNull(timeoutMs) { d.await() } ?: GattResult.Timeout
-                pending = null
-                result
             }
 
         private fun <T> GattResult<ByteArray>.map(block: (ByteArray) -> T): GattResult<T> =
@@ -538,5 +550,25 @@ internal class MeshtasticGatt(
         // transport sizes its fragments DOWN to whatever this is, so no single write ever needs splitting.
         const val MIN_MTU = 128
         const val UINT_BYTES = 4
+
+        /**
+         * One call into the stack, [fallback] if it throws. Bluetooth going off kills the binder under a live
+         * `BluetoothGatt`, and `writeCharacteristic` then throws `RuntimeException(DeadObjectException)` (Pixel 9,
+         * 2026-11-06); uncaught, that left the link dead and reading Ready. Any other throw from the stack is the same
+         * failed op.
+         */
+        inline fun <T> stackCall(
+            what: String,
+            fallback: T,
+            call: () -> T,
+        ): T =
+            try {
+                call()
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: RuntimeException, // whatever the stack throws, the op failed
+            ) {
+                Log.w(TAG, "lora gatt $what threw: $e")
+                fallback
+            }
     }
 }

@@ -196,7 +196,12 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   **Before touching `MeshtasticSession.connectLoop`, `BoardDialPolicy`, `MeshtasticGatt.dial`'s modes, or what the
   pacer does while the link is down:** READ ADR 2026-09.hp88 — three direct dials, then the controller's
   `autoConnect` with an hourly direct net and no arbiter while waiting; a refusal backs off, only a spent window
-  doesn't; the pacer parks on `link.state`, never its 1 s tick.
+  doesn't; the pacer parks on `link.state`, never its 1 s tick. Its 2026-11-06 amendment (draft): a throw costs one
+  pass of the loop and never the loop (`runRound`, `threw <class>`), the connect and every GATT op go through
+  `MeshtasticGatt.stackCall`, the adapter going off ends a session at once from `dialer.adapterOn`, and a session's
+  inbox ends with it, so every `send` / `provisionChannel` is answered. `NotReady` means the packet is owed (unsent, or
+  its write failed, which can rarely mean it got there), and `sendMessage` requeues on it; `Timeout` means it likely went,
+  and it is never re-aired.
 - **When touching the Meshtastic room — `onLoraPacket`'s slot-0 branch, `PublicChannelPolicy`, `PublicPostPolicy`
   (`onAirText`, `onAirBudget`), `postToPublicChannel`, `Ceiling.HALF`, `mesh/crypto/XeddsaVerify`,
   `ProfileContent.loraNode` / `loraKey`, `BoardBinding` / `onBoardBound`, `LoraFacts.roomSignedUpTo`,
