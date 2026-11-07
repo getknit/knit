@@ -128,7 +128,7 @@ narrower, refusing an unproven claim to an id that can prove itself.
 
 ## Amendment 2026-11-06 — only a crossing dial is excused
 
-Status: Draft (2026-11-06), for the caller to accept; its device trial is owed.
+Status: Accepted (2026-11-07), after its device trial.
 
 "A failure for a peer with a live link now bumps nothing" was written for the crossing above, a dial the peer's own link
 overtook, and said more than that. It also excused a dial that began with its peer already held, which crossed nothing:
@@ -168,3 +168,6 @@ backoff".
   (the 12 s watchdog, 25 s on Coded, plus the 5 s HELLO cut is the window in which it can happen).
 - **What is left.** A streak under an unresolved form's handle is not earned by any link: such a dial's record cannot say it
   began held, since a handle is never linked. It is the ordinary backoff, up to its cap.
+- **The trial (2026-11-07)** is ADR 2026-11.xp6d's of that date. One dial in 26 relinks began held, the Pixel 9's to
+  the Pixel 3 at its advert from before a Bluetooth toggle, 3.7 s after the Pixel 3's inbound link: it timed out and booked
+  45 s of backoff (streak 3), not none. No dial was refused.

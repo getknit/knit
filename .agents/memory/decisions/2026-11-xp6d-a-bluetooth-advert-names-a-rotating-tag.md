@@ -491,7 +491,7 @@ and the `blind` vectors' `aliceKeyUnderBob`, which pins one key under another's 
 
 ## Amendment 2026-11-06: a dial's proof holds off that dial
 
-Status: Draft (2026-11-06), for the caller to accept; its device trial is owed. From a field burst on the same day: a
+Status: Accepted (2026-11-07), after its device trial. From a field burst on 2026-11-06: a
 Pixel 3 dialed a Pixel 9 158 times in 40 s, 3 ms after the link it held to it came up, and every dial was refused.
 
 - **What went wrong.** The tag had been announced on a link that had ended, so it was heard as that link's claim, and the
@@ -519,3 +519,8 @@ Pixel 3 dialed a Pixel 9 158 times in 40 s, 3 ms after the link it held to it ca
   owner at another address is held off while her link is held. That is this ADR's existing residual, one tag per link.
 - **A blinded doorbell link** would hold its key for the link's life, past the moment its peer stopped listening. It
   cannot happen today: a `CAP_DOORBELL` phone does not air tags. A port that does must read this again.
+- **The trial (2026-11-07).** A Pixel 3 and a Pixel 9 a metre apart on build bf2472969: ten drops by the link cap, six
+  Bluetooth toggles on the Pixel 3, three short links, a forced rotation on each phone and two crossings, 26 relinks in
+  all, each held past 15 s but the short ones. Neither phone dialed the other within 10 s of a link coming up, no dial was
+  refused and no `held dial` edge was logged; the build before this one redialed 2 ms after a link came up, and was
+  refused. The one dial that began held was the inbound case above, bounded by hj4a's backoff.

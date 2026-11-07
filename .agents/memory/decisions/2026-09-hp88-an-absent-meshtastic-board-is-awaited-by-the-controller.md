@@ -62,7 +62,9 @@ before. Pinned by `BoardDialPolicyTest`, and in `MeshtasticSessionTest` by
 board off → three direct dials → background, with the mesh scan running; board on → `lora ready` within
 seconds; unpair during the wait → no leftover background connection in `dumpsys bluetooth_manager`.
 
-## Amendment (2026-11-06, draft): the loop outlives the adapter going off
+## Amendment (2026-11-06): the loop outlives the adapter going off
+
+Status: Accepted (2026-11-07), after its device trials.
 
 **What was observed.** On a Pixel 9 (2.11.0-alpha.3) Bluetooth went off from quick settings and no
 `GattEvent.Disconnected` reached the session. Ninety seconds later the heartbeat's `writeCharacteristic` threw
@@ -114,7 +116,7 @@ code is `LoraDirectTransportTest`'s `aSendTheSessionEndedAheadOfIsOwedUnbookedAn
 where the next session aired the frame, and pins the requeue's premise and the order above. `LoraFieldLogTest` pins the
 words. `stackCall` has no host test.
 
-Device trials owed:
+Device trials, all passed on 2026-11-07 (below):
 
 - **T1, the adapter path.** A bound board Ready, Bluetooth off from quick settings, then on. Pass is `…debug.LORA` reading
   `Unavailable` within a second or two of off, and `lora ready` within seconds of on, with no `MeshScope` line. This
@@ -130,3 +132,21 @@ Device trials owed:
 - **T4, repeated cuts.** About ten Bluetooth off/on cycles with DMs flowing, a Pixel 9 with a bound board and a second
   phone. Pass is the pacer sending after every cycle: the `…debug.LORA` send counters climb, and the second phone receives
   each DM.
+
+**The trials (2026-11-07).** Build bf2472969 on a Pixel 9 (API 37) with its bound board, and a Pixel 7 as the second
+phone, held to LoRa alone (link cap 0, Wi-Fi Aware off, relays off) so that its DMs rode the board.
+
+- **T1.** `Unavailable` 0.6 s after off, `lora ready` 7.9 s after on, no `MeshScope` line.
+- **T2.** `lora gatt write threw: … DeadObjectException`, then `send write Failed(status=-2)`, then `lora ready` 34 s after
+  on, in the same process. With the flag never moving, the first dial after on still met the stack coming up
+  (`dial connect 147`) and took its backoff.
+- **T3.** Twelve frames across a Bluetooth cut and thirty across the board switched off, each aired once and each reaching
+  the Pixel 7 once. DM 5, cut in its write, was requeued and aired once after the reconnect. A cut during a Setup left the
+  board's settings as they were, and a clean Setup after it found the channel in place.
+- **T4.** Ten cycles and twenty DMs, each aired and acked once, the board Ready again 11 to 31 s after each on. The last
+  four DMs waited for the airtime ledger's 15-minute window, which the trials before had nearly spent
+  (`loraAirtimeHeld`), not for the pacer.
+- **A trap for the next Setup trial.** `…debug.LORAPROV` holds its broadcast (`goAsync`) until the Setup answers, and the
+  evidence reads as the adapter's `STATE_CHANGED` queued behind it: with the bridge's Setup in flight the flag did not
+  move, no `lora adapter off mid-session` was logged, and the session read Ready until an op timed out, 45 s in one run.
+  A Setup started from the app holds no broadcast. Trial the adapter path mid-Setup from the UI.
