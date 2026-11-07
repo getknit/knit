@@ -2,6 +2,7 @@ package app.getknit.knit.ui.chat
 
 import android.content.Context
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
@@ -14,6 +15,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInputSelection
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.text.TextRange
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
@@ -344,6 +348,27 @@ class ChatMeshRoomTest {
             ApplicationProvider.getApplicationContext<Context>().getString(R.string.chat_mesh_post_too_long),
             ShadowToast.getTextOfLatestToast(),
         )
+    }
+
+    @Test
+    fun aDraftOverTheByteCapCanBeCutDownButNotGrown() {
+        // Emoji, so only a comparison in bytes passes: each is four bytes but two UTF-16 units.
+        val budget = PublicPostPolicy.MAX_ON_AIR_BYTES
+        inputState.setTextAndPlaceCursorAtEnd("🙂".repeat(budget))
+        render(listOf(row()))
+        val input = compose.onNodeWithTag("chat_input")
+
+        input.performTextInputSelection(TextRange(2))
+        assertEquals(TextRange(2), inputState.selection)
+
+        val shorter = "🙂".repeat(budget - 1)
+        input.performTextReplacement(shorter)
+        assertEquals(shorter, inputState.text.toString())
+        assertEquals("a deletion is not a refusal", 0, ShadowToast.shownToastCount())
+
+        input.performTextInput("x")
+        assertEquals(shorter, inputState.text.toString())
+        assertEquals(1, ShadowToast.shownToastCount())
     }
 
     @Test

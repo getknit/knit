@@ -1716,6 +1716,8 @@
     <string name="chat_mesh_post_dedicated">Não publicado — este rádio está numa frequência exclusiva, onde nenhum canal público pode ouvi-lo</string>
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Tamanho da publicação: %1$d de %2$d</string>
+    <string name="chat_message_length_a11y">Tamanho da mensagem: %1$d de %2$d</string>
+    <string name="chat_message_too_long_to_send">Não enviada: a mensagem está longa demais. Apague parte do texto e tente de novo.</string>
     <string name="chat_mesh_text_only">O canal de rádio leva só texto</string>
     <string name="chat_commons_text_only">A sala deste retransmissor aceita só texto</string>
     <string name="chat_commons_not_joined">Não enviada: este celular não está mais nesta sala comum</string>

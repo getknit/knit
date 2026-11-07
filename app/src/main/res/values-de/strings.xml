@@ -1683,6 +1683,8 @@
     <string name="chat_mesh_post_dedicated">Nicht gesendet – dieses Funkgerät nutzt eine eigene Frequenz, auf der kein öffentlicher Kanal es empfangen kann</string>
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Länge des Beitrags: %1$d von %2$d</string>
+    <string name="chat_message_length_a11y">Länge der Nachricht: %1$d von %2$d</string>
+    <string name="chat_message_too_long_to_send">Nicht gesendet: zu lang für eine Nachricht. Lösche etwas Text und versuche es noch einmal.</string>
     <string name="chat_mesh_text_only">Der Funkkanal überträgt nur Text</string>
     <string name="chat_commons_text_only">Der Raum dieses Relays nimmt nur Text an</string>
     <string name="chat_commons_not_joined">Nicht gesendet: Dieses Smartphone ist nicht mehr in diesem Gemeinschaftsraum</string>

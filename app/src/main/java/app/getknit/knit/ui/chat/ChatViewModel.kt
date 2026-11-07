@@ -96,6 +96,7 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.DeclaredLangs
@@ -2369,6 +2370,12 @@ class ChatViewModel(
             _showPublicConsent.value = true
             return
         }
+        // Shared text skips the composer's cap. Queued as it stands, the board would air only what fits while the
+        // user's own row showed all of it, so the draft stays and the counter says how much has to go.
+        if (state.value.publicPostBudget?.let { LoraSizeHint.utf8Length(text) > it } == true) {
+            _events.tryEmit(R.string.chat_mesh_post_too_large)
+            return
+        }
         if (_isSending.value) return
         _isSending.value = true
         viewModelScope.launch {
@@ -2603,6 +2610,22 @@ class ChatViewModel(
     }
 
     /**
+     * [bodyWithLocation] for a draft within [TextLimits.MESSAGE], or null for one past it. Only a draft set from
+     * outside the field gets that far, because the composer's cap stops typing and pasting. Sending it would lose its
+     * end unseen, so the draft stays and the composer's counter says how much has to go.
+     */
+    private fun bodyUnderCap(
+        text: String,
+        staged: StagedLocation?,
+    ): String? {
+        if (text.length > TextLimits.MESSAGE) {
+            _events.tryEmit(R.string.chat_message_too_long_to_send)
+            return null
+        }
+        return bodyWithLocation(text, staged)
+    }
+
+    /**
      * [text] with the staged position folded in, or null when the send must wait: a position still being
      * sought is not sent as nothing — the tile is visibly looking, the send says so, and the draft stays the
      * user's, the rule every refusal here follows.
@@ -2663,7 +2686,8 @@ class ChatViewModel(
         typedIn: String? = null,
         translatedFrom: TranslateLang? = null,
     ) {
-        val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
+        val whole = text.trim()
+        val trimmed = whole.clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
         if (trimmed.isEmpty() && _pendingAttachment.value == null && staged == null) return
         // A room its relay no longer runs takes nothing: a post would sit in the outbox of a scope we stopped
@@ -2676,7 +2700,7 @@ class ChatViewModel(
             postPublic(trimmed)
             return
         }
-        val body = bodyWithLocation(trimmed, staged) ?: return
+        val body = bodyUnderCap(whole, staged) ?: return
         // The bridged room above sends no formatting: its line goes to other clients as plain text.
         val spans = spansForBody(text, trimmed, staged, styles)
         // Ignore re-entrant taps while a send is in flight, and — on success — until the field is

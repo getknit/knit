@@ -1749,6 +1749,8 @@
     <string name="chat_mesh_post_dedicated">Не опубліковано — це радіо працює на виділеній частоті, де його не чує жоден публічний канал</string>
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Довжина допису: %1$d із %2$d</string>
+    <string name="chat_message_length_a11y">Довжина повідомлення: %1$d із %2$d</string>
+    <string name="chat_message_too_long_to_send">Не надіслано: задовге для одного повідомлення. Видаліть частину тексту й спробуйте ще раз.</string>
     <string name="chat_mesh_text_only">Радіоканал передає лише текст</string>
     <string name="chat_commons_text_only">Кімната цього ретранслятора приймає лише текст</string>
     <string name="chat_commons_not_joined">Не надіслано: цей телефон більше не в цій спільній кімнаті</string>

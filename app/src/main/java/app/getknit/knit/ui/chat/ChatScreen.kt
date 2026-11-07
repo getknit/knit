@@ -71,7 +71,6 @@ import androidx.compose.foundation.text.input.TextFieldBuffer
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
-import androidx.compose.foundation.text.input.maxLength
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.text.input.then
@@ -190,6 +189,7 @@ import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.maxTextLength
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -5124,10 +5124,11 @@ private fun MessageInput(
                                 inputTransformation =
                                     remember(maxBytes, onCapRefused) {
                                         MentionChips { currentMentions }.then(
-                                            SaysWhenRefused(
-                                                maxBytes?.let(::MaxUtf8Bytes) ?: InputTransformation.maxLength(TextLimits.MESSAGE),
-                                                onCapRefused,
-                                            ),
+                                            if (maxBytes != null) {
+                                                MaxUtf8Bytes(maxBytes, onCapRefused)
+                                            } else {
+                                                MaxUtf16Units(TextLimits.MESSAGE, onCapRefused)
+                                            },
                                         )
                                     },
                                 outputTransformation = remember(chipStyle) { MentionChipStyle({ currentMentions }, chipStyle) },
@@ -5212,14 +5213,16 @@ private fun MessageInput(
                 // The byte counter belongs to the button it constrains, not to the thread: it says what the
                 // *send* will carry, so it rides directly over the send button rather than across the width of
                 // the composer where the LoRa hint (about the message's chances, not its size) already lives.
-                // The column takes the button's own `CenterVertically` so a thread with no counter — every
-                // thread but the bridged room — lays out byte for byte as it did before.
+                // The column takes the button's own `CenterVertically` so a thread with no counter — any thread
+                // but the bridged room, until a draft runs over its cap — lays out byte for byte as it did before.
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.align(Alignment.CenterVertically),
                 ) {
                     if (maxBytes != null) {
                         PostLengthCounter(state = state, maxBytes = maxBytes)
+                    } else {
+                        MessageLengthCounter(state = state)
                     }
                     Surface(
                         shape = CircleShape,
@@ -5342,35 +5345,105 @@ private fun PostLengthCounter(
         }
     }
     used?.let { bytes ->
-        val spoken = stringResource(R.string.chat_mesh_post_length_a11y, bytes, maxBytes)
-        Text(
-            text = stringResource(R.string.chat_mesh_post_length, bytes, maxBytes),
-            style = MaterialTheme.typography.labelSmall,
-            // Red only once the budget is spent: up to then it is information, not a problem.
-            color =
-                if (bytes >= maxBytes) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            maxLines = 1,
-            // Never wrapped or ellipsised: at a large font scale it may out-measure the 48dp button and take
-            // a few dp off the field, which is cheaper than a counter that cannot be read.
-            softWrap = false,
-            modifier =
-                Modifier
-                    .padding(bottom = 2.dp)
-                    .testTag("chat_public_post_length")
-                    .semantics {
-                        contentDescription = spoken
-                        liveRegion = LiveRegionMode.Polite
-                    },
+        LengthCounter(
+            used = bytes,
+            max = maxBytes,
+            spoken = stringResource(R.string.chat_mesh_post_length_a11y, bytes, maxBytes),
+            tag = "chat_public_post_length",
         )
     }
 }
 
 /**
- * An [InputTransformation] that rejects any edit taking the field past [maxBytes] of **UTF-8** — the unit a
+ * `2500/2000` over the send button, for a draft past [TextLimits.MESSAGE]. Typing and pasting stop at the cap, so
+ * only a draft set from outside the field gets here: shared text, or a translation longer than its original. The
+ * send refuses it, and this says how much has to go. Measured as the send measures it, without the outer whitespace.
+ */
+@Composable
+private fun MessageLengthCounter(state: TextFieldState) {
+    val over by remember(state) {
+        derivedStateOf {
+            val length = state.text.trim().length
+            length.takeIf { it > TextLimits.MESSAGE }
+        }
+    }
+    over?.let { length ->
+        LengthCounter(
+            used = length,
+            max = TextLimits.MESSAGE,
+            spoken = stringResource(R.string.chat_message_length_a11y, length, TextLimits.MESSAGE),
+            tag = "chat_message_length",
+        )
+    }
+}
+
+/** The counter both caps draw. [spoken] replaces the visible `183/193`, which TalkBack would read as a fraction. */
+@Composable
+private fun LengthCounter(
+    used: Int,
+    max: Int,
+    spoken: String,
+    tag: String,
+) {
+    Text(
+        text = stringResource(R.string.chat_mesh_post_length, used, max),
+        style = MaterialTheme.typography.labelSmall,
+        // Red only once the budget is spent: up to then it is information, not a problem.
+        color =
+            if (used >= max) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        maxLines = 1,
+        // Never wrapped or ellipsised: at a large font scale it may out-measure the 48dp button and take
+        // a few dp off the field, which is cheaper than a counter that cannot be read.
+        softWrap = false,
+        modifier =
+            Modifier
+                .padding(bottom = 2.dp)
+                .testTag(tag)
+                .semantics {
+                    contentDescription = spoken
+                    liveRegion = LiveRegionMode.Polite
+                },
+    )
+}
+
+/**
+ * The composer's cap. Refuses, whole, an edit that leaves the draft past [limit] and longer than it was, and tells
+ * [onRefused]. A draft already over the cap (shared text, a translation, a budget that shrank under it) stays
+ * editable: a deletion or a cursor move gets through, or the only way out would be clearing the field.
+ */
+private abstract class DraftCap(
+    private val limit: Int,
+    private val onRefused: () -> Unit,
+) : InputTransformation {
+    abstract fun measure(text: CharSequence): Int
+
+    override fun TextFieldBuffer.transformInput() {
+        val size = measure(asCharSequence())
+        if (size > limit && size > measure(originalText)) {
+            revertAllChanges()
+            onRefused()
+        }
+    }
+}
+
+/** The cap in UTF-16 units, the unit [TextLimits.MESSAGE] is enforced in. */
+private class MaxUtf16Units(
+    private val maxUnits: Int,
+    onRefused: () -> Unit,
+) : DraftCap(maxUnits, onRefused) {
+    override fun measure(text: CharSequence): Int = text.length
+
+    override fun SemanticsPropertyReceiver.applySemantics() {
+        maxTextLength = maxUnits
+    }
+}
+
+/**
+ * A [DraftCap] of [maxBytes] of **UTF-8** — the unit a
  * Meshtastic frame is measured in, where `InputTransformation.maxLength` counts UTF-16 units and would let
  * fifty emoji through a two-hundred-byte line.
  *
@@ -5381,34 +5454,10 @@ private fun PostLengthCounter(
  * live region instead, which stays true whatever the draft is made of.
  */
 private class MaxUtf8Bytes(
-    private val maxBytes: Int,
-) : InputTransformation {
-    override fun TextFieldBuffer.transformInput() {
-        if (LoraSizeHint.utf8Length(asCharSequence()) > maxBytes) revertAllChanges()
-    }
-}
-
-/**
- * Tells [onRefused] when [cap] takes back an edit that grew the draft, so a paste too long for the field is
- * refused out loud rather than vanishing. The buffer ending shorter than the edit left it is the refusal: a cap
- * reverting a deletion ends longer, and a cursor move ends the same.
- */
-private class SaysWhenRefused(
-    private val cap: InputTransformation,
-    private val onRefused: () -> Unit,
-) : InputTransformation {
-    override val keyboardOptions: KeyboardOptions?
-        get() = cap.keyboardOptions
-
-    override fun SemanticsPropertyReceiver.applySemantics() {
-        with(cap) { applySemantics() }
-    }
-
-    override fun TextFieldBuffer.transformInput() {
-        val attempted = length
-        with(cap) { transformInput() }
-        if (length < attempted) onRefused()
-    }
+    maxBytes: Int,
+    onRefused: () -> Unit,
+) : DraftCap(maxBytes, onRefused) {
+    override fun measure(text: CharSequence): Int = LoraSizeHint.utf8Length(text)
 }
 
 /** A `Toast.LENGTH_LONG`: a key held at the cap waits out the toast on screen rather than queueing more behind it. */
