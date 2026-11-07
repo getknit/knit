@@ -200,8 +200,9 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   pass of the loop and never the loop (`runRound`, `threw <class>`), the connect and every GATT op go through
   `MeshtasticGatt.stackCall`, the adapter going off ends a session at once from `dialer.adapterOn`, and a session's
   inbox ends with it, so every `send` / `provisionChannel` is answered. `NotReady` means the packet is owed (unsent, or
-  its write failed, which can rarely mean it got there), and `sendMessage` requeues on it; `Timeout` means it likely went,
-  and it is never re-aired.
+  its write failed, which can rarely mean it got there), and `sendMessage` requeues on it (`FragmentOutcome.OWED`: a
+  requeued Meshtastic room post or auto-reply is never counted refused, #307); `Timeout` means it likely went, and it is
+  never re-aired.
 - **When touching the Meshtastic room — `onLoraPacket`'s slot-0 branch, `PublicChannelPolicy`, `PublicPostPolicy`
   (`onAirText`, `onAirBudget`), `postToPublicChannel`, `Ceiling.HALF`, `mesh/crypto/XeddsaVerify`,
   `ProfileContent.loraNode` / `loraKey`, `BoardBinding` / `onBoardBound`, `LoraFacts.roomSignedUpTo`,
