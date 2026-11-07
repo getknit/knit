@@ -2646,6 +2646,8 @@ class DebugBridgeReceiver :
                         .put("boardAirAgeMs", status.bandReadingAgeMs ?: JSONObject.NULL)
                 } ?: JSONObject.NULL,
             ).put("counters", metricsJson(metrics.snapshot()))
+            // The last `…debug.LORAPROV` (#308): `running`, or `done` with its `result`, `channel` and `endedAtMs`.
+            .put("provision", lastProv ?: JSONObject.NULL)
     }
 
     /**
@@ -2677,22 +2679,57 @@ class DebugBridgeReceiver :
      *
      * `--es mode restore` puts the board back the way it was instead. This is the two-board oracle for the
      * ADR 045 trial, so it persists exactly what the settings screen would.
+     *
+     * It answers at once and runs the Setup off the broadcast (#308): a broadcast held through a Setup of tens of seconds
+     * queues the Bluetooth adapter's state change behind it, so a trial that cut Bluetooth mid-Setup never reached the
+     * adapter path. The outcome lands in `…debug.LORA`'s `provision` block and as a `KnitBridge` line. A second request
+     * while one runs is refused rather than cancelling it, since a cancelled Setup can leave the board's edit open.
      */
-    private suspend fun handleLoraProv(intent: Intent): JSONObject {
-        val mode =
-            when (intent.getStringExtra(EXTRA_MODE)?.lowercase()) {
-                "restore" -> ProvisionMode.Restore
-
-                // ADR 067's debug-only setup, so that a dedicated-frequency trial is drivable headlessly
-                // exactly like the shared-frequency one.
-                "dedicated" -> ProvisionMode.SetupDedicated
-
-                // Its reverse: back onto the shared slot with the setup kept, so a trial can flip a board
-                // between the two bargains without a restore between.
-                "shared" -> ProvisionMode.SetupShared
-
-                else -> ProvisionMode.Setup
+    private fun handleLoraProv(intent: Intent): JSONObject {
+        val mode = loraProvMode(intent)
+        synchronized(provLock) {
+            if (provRun?.isActive == true) {
+                return reply("refused", "a Setup is already running").put("provision", lastProv ?: JSONObject.NULL)
             }
+            val startedAt = System.currentTimeMillis()
+            lastProv = JSONObject().put("status", "running").put("mode", mode.name).put("startedAtMs", startedAt)
+            provRun =
+                scope.launch {
+                    val outcome =
+                        runCatching { runLoraProv(mode) }
+                            .getOrElse { t ->
+                                Log.e(TAG, "LORAPROV failed", t)
+                                JSONObject().put("result", "Threw").put("error", t.message ?: t.javaClass.simpleName)
+                            }.put("status", "done")
+                            .put("mode", mode.name)
+                            .put("startedAtMs", startedAt)
+                            .put("endedAtMs", System.currentTimeMillis())
+                    lastProv = outcome
+                    Log.i(TAG, "LORAPROV ${outcome.put("action", "LORAPROV")}")
+                }
+        }
+        return reply("ok", "provision requested; poll LORA for `provision`")
+            .put("mode", mode.name)
+            .put("state", lora.status.value.state::class.simpleName)
+    }
+
+    private fun loraProvMode(intent: Intent): ProvisionMode =
+        when (intent.getStringExtra(EXTRA_MODE)?.lowercase()) {
+            "restore" -> ProvisionMode.Restore
+
+            // ADR 067's debug-only setup, so that a dedicated-frequency trial is drivable headlessly
+            // exactly like the shared-frequency one.
+            "dedicated" -> ProvisionMode.SetupDedicated
+
+            // Its reverse: back onto the shared slot with the setup kept, so a trial can flip a board
+            // between the two bargains without a restore between.
+            "shared" -> ProvisionMode.SetupShared
+
+            else -> ProvisionMode.Setup
+        }
+
+    /** The Setup itself, run off the broadcast by [handleLoraProv]; persists what the settings screen would. */
+    private suspend fun runLoraProv(mode: ProvisionMode): JSONObject {
         val recorded = settings.loraBoardSetup.first()
         val result =
             lora.provisionKnitChannel(
@@ -2751,8 +2788,7 @@ class DebugBridgeReceiver :
                 is app.getknit.knit.mesh.lora.ProvisionResult.Provisioned -> result.index
                 else -> -1
             }
-        return reply("ok", "provision requested")
-            .put("mode", mode.name)
+        return JSONObject()
             .put("result", result::class.simpleName)
             .put("channel", if (index >= 0) index else JSONObject.NULL)
             .put("state", lora.status.value.state::class.simpleName)
@@ -4622,6 +4658,13 @@ class DebugBridgeReceiver :
 
         @Volatile
         var lastPcm: JSONObject? = null
+
+        // The `LORAPROV` Setup under way and its outcome, which `LORA` reports as `provision` (#308).
+        val provLock = Any()
+        var provRun: Job? = null
+
+        @Volatile
+        var lastProv: JSONObject? = null
 
         const val TAG = "KnitBridge"
 

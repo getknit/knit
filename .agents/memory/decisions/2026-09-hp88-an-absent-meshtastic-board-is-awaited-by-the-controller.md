@@ -149,4 +149,5 @@ phone, held to LoRa alone (link cap 0, Wi-Fi Aware off, relays off) so that its 
 - **A trap for the next Setup trial.** `…debug.LORAPROV` holds its broadcast (`goAsync`) until the Setup answers, and the
   evidence reads as the adapter's `STATE_CHANGED` queued behind it: with the bridge's Setup in flight the flag did not
   move, no `lora adapter off mid-session` was logged, and the session read Ready until an op timed out, 45 s in one run.
-  A Setup started from the app holds no broadcast. Trial the adapter path mid-Setup from the UI.
+  A Setup started from the app holds no broadcast. Since #308 the bridge answers at once and runs the Setup off the
+  broadcast, so a bridge-driven Setup now reaches the adapter path too.

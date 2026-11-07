@@ -283,7 +283,11 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   restore between.
   `…debug.LORAPROV` writes the derived **Knit channel** onto the board over the
   Meshtastic admin API (the headless "Set up Knit channel") and binds the plane to the slot it lands in —
-  run it on both phones so the boards converge. All need the plane enabled and the board Ready. (New action
+  run it on both phones so the boards converge. It answers at once (`provision requested`) and runs the Setup off the
+  broadcast (#308): poll `…debug.LORA`'s `provision` block, `running` until it reads `done` with the `result`
+  (`Provisioned`, `Restored`, `Failed`, …), `channel` and `endedAtMs`; the outcome is also logged as a `KnitBridge` line. A
+  second request while one runs answers `refused`. Until #308 the reply waited for the Setup, and the held broadcast
+  queued Bluetooth's adapter-off change behind it. All need the plane enabled and the board Ready. (New action
   = add to BOTH the `when` and the debug manifest `<intent-filter>`.)
 - `…debug.XFER` — drives a **direct file transfer** (`transfer/TransferManager`: a whole file over a one-shot
   Wi-Fi Direct link, never the mesh), the only way to run one on a locked lab device. `--es to <peerNodeId>
