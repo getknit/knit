@@ -3371,6 +3371,26 @@ class LabNode internal constructor(
     /** How many skipped DM ratchet keys this node holds, every peer together — what a never-opened signed copy leaves. */
     suspend fun skippedDmKeys(): Int = db.ratchetDao().countSkippedKeys()
 
+    /**
+     * Whether [peer]'s receive chain has reached every frame this node has sealed to it in its current send epoch (that
+     * epoch only), under the root that sealed it. Read before [skippedDmKeys] is a verdict: a frame sealed ahead of another
+     * can land behind it, and the key the later one banks for it on arrival stands until it lands. A re-root since the last
+     * seal (a lost race, a replacement, a reclaim) moves that root to `prevRoot` and clears the send chain, leaving the
+     * send epoch and count on what it sealed.
+     */
+    suspend fun sealsReached(peer: LabNode): Boolean {
+        val mine = db.ratchetDao().session(peer.nodeId) ?: return true
+        if (mine.sendCount == 0) return true
+        val sealedUnder = if (mine.sendChainKey == null) mine.prevRoot else mine.root
+        val tag = RatchetCrypto.rootTag(sealedUnder ?: return true)
+        val chain =
+            peer.db
+                .ratchetDao()
+                .recvEpochs(nodeId, mine.sendEpoch)
+                .firstOrNull { it.rootTag == tag }
+        return chain != null && chain.next >= mine.sendCount
+    }
+
     /** The `lora_direct_seen` mark for [frameId] (ADR 2026-10.x9fa), or null. */
     suspend fun loraSeen(frameId: String) = db.loraDirectSeenDao().find(frameId)
 
