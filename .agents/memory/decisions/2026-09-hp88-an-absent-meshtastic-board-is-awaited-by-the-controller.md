@@ -61,3 +61,72 @@ before. Pinned by `BoardDialPolicyTest`, and in `MeshtasticSessionTest` by
 `MeshtasticGatt` half has no host test (there is no GATT stack on the JVM), and its device trial is owed:
 board off → three direct dials → background, with the mesh scan running; board on → `lora ready` within
 seconds; unpair during the wait → no leftover background connection in `dumpsys bluetooth_manager`.
+
+## Amendment (2026-11-06, draft): the loop outlives the adapter going off
+
+**What was observed.** On a Pixel 9 (2.11.0-alpha.3) Bluetooth went off from quick settings and no
+`GattEvent.Disconnected` reached the session. Ninety seconds later the heartbeat's `writeCharacteristic` threw
+`RuntimeException(DeadObjectException)`, which nothing caught: it ended `connectLoop` at `meshExceptionHandler`. Nothing
+restarts that loop, and `_state` was never moved, so the link read Ready, the plane `Healthy`, for the 88 minutes until
+somebody looked, while every mesh peer came back when Bluetooth did. A `send()` in that state queues a command nobody
+reads and awaits an answer that never comes.
+
+**What changed.**
+
+- **A call into the stack cannot throw out of the channel.** The connect, every GATT op and the bond read go through
+  `MeshtasticGatt.stackCall`; `dial`'s own adapter reads and the receiver's `isEnabled` do not, and what `dial` throws
+  the loop below catches. An op that threw is `GattResult.Failed(-2)` (`STATUS_STACK_THREW`, beside `-1` for one the
+  stack refused), `pending` cleared, so the session's write-failure path ends the session, a provisioning write's
+  included: an admin write's failure otherwise leaves the session up, so `-2` alone ends it, as `send write`.
+- **A throw costs one pass of the loop, never the loop.** `connectLoop` runs each pass through `runRound`: only its own
+  cancellation ends it. Anything that does throw reads as `threw <class>`, folded onto `LoraLinkEnd.IO`, and takes the
+  normal backoff, with a healthy session's streak reset, like a disconnect. An `Error` is not caught, by `runRound`'s rule.
+- **The adapter going off ends the session at once, from `dialer.adapterOn`**, in any phase and with an op in flight,
+  since the stack need not say so and an in-flight op's callback may never come. `Unavailable` is published first and the
+  session cancelled, and no backoff follows: the top of the loop parks on the adapter, then dials direct with the streak at
+  zero. The field log reads `Unavailable` as `ADAPTER_OFF`, so a new end reason was not needed for it.
+- **A command cannot outlive its session, and what it refuses is requeued.** The inbox is one per session, closed as the
+  session ends, and what it held is refused through `onUndeliveredElement`, which also covers an element a cancelled
+  `select` took. Before, a command caught by a session's end waited through the outage and took its answer from the next
+  session, or never, and its frame flew on gates asked before the outage. `SendResult.NotReady` now means the packet is
+  owed, and `LoraMeshTransport.sendMessage` requeues on it: the frame waits out the outage, resumes at its
+  cursor, has its gates asked again, books nothing until it flies, and a compact DM keeps what is parked behind it
+  parked. A packet that likely reached the board is `Timeout(id)` however the session ended: a write that timed out, a
+  compact DM's write lost to `Closed`, or a cancel inside the write or the drain, which the transport books and awaits,
+  and never re-airs. A broadcast's `Closed`, or a `Failed` from the write's callback, stays `NotReady`: it may have got
+  there, so a rare second airing is the price of not losing the frames that did not. The inbox is retired only after the
+  state has left Ready: a refusal under a link still reading Ready costs a pointless take and requeue per pacing gap, and
+  hung `aFrameBehindTheActorWhenTheSessionEndsAirsOnceAfterTheReconnect` at its `minGapMs = 0` until the order was fixed.
+  A new session replaces the box rather than overwriting it, since a flag read false then true passes both retirements.
+  A command taken is
+  answered in `serve`'s `finally`: a provisioning reply is held nowhere else, so a throw or a `stop()` stranded it.
+- **A dial reporting `AdapterOff` while the flag still reads on backs off** (`adapter off`, folded onto `ADAPTER_OFF`).
+  The dial reads the stack and the flag trails it by a broadcast, and that dial returns without suspending, so the loop
+  would otherwise spin until the broadcast landed.
+
+Pinned in `MeshtasticSessionTest`: `aHeartbeatOnADeadStackEndsTheSessionWithItsStatus` for the Pixel 9's path, a phone
+logging `heartbeat write Failed(status=-2)`; `aHeartbeatThatThrowsWhileReadyEndsTheSessionAndRedials` for the backstop,
+with `aHandshakeThatNeverNamesTheBoardBacksOffRatherThanEndingTheLoop` the backstop's test with a throw that can really
+happen; `theAdapterGoingOffEndsTheSessionAtOnceAndItRedialsWhenItReturns`,
+`aSendQueuedAsTheSessionEndsIsAnsweredAndNeverAiredByTheNextOne` and their neighbours. The requeue's pin against the old
+code is `LoraDirectTransportTest`'s `aSendTheSessionEndedAheadOfIsOwedUnbookedAndKeepsWhatIsParkedBehindIt`.
+`LoraMeshTransportTest`'s `aFrameBehindTheActorWhenTheSessionEndsAirsOnceAfterTheReconnect` is green on the old code,
+where the next session aired the frame, and pins the requeue's premise and the order above. `LoraFieldLogTest` pins the
+words. `stackCall` has no host test.
+
+Device trials owed:
+
+- **T1, the adapter path.** A bound board Ready, Bluetooth off from quick settings, then on. Pass is `…debug.LORA` reading
+  `Unavailable` within a second or two of off, and `lora ready` within seconds of on, with no `MeshScope` line. This
+  passes with `stackCall` deleted, because the adapter flag drops at TURNING_OFF, so it says nothing about that path.
+- **T2, the stack path.** A trial-only uncommitted build with the `stateReceiver` registration removed, so the flag never
+  moves. Bluetooth off, then a board send or the heartbeat. Pass is `lora gatt write threw … DeadObjectException`, then a
+  link end of `heartbeat write Failed(status=-2)` or `send write Failed(status=-2)`, then `lora ready` after Bluetooth on
+  with no app restart. It needs an API 33+ phone: on API 29–32 the deprecated `writeCharacteristic(ch)` catches the throw
+  and returns false, so the line is `Failed(status=-1)` with no `lora gatt write threw`.
+- **T3, frames at a session's end.** Stream room posts and DMs while the board power-cycles, with Bluetooth off during a
+  send, and once during a Setup. Pass is every frame not in flight at the cut arriving after the reconnect, and each
+  aired frame airing exactly once and booked; a broadcast in flight at the cut may be lost.
+- **T4, repeated cuts.** About ten Bluetooth off/on cycles with DMs flowing, a Pixel 9 with a bound board and a second
+  phone. Pass is the pacer sending after every cycle: the `…debug.LORA` send counters climb, and the second phone receives
+  each DM.

@@ -2,10 +2,13 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.crypto.XeddsaVerify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -703,6 +706,558 @@ class MeshtasticSessionTest {
             runCurrent()
             assertTrue(session.state.value is LinkState.Ready)
             session.stop()
+        }
+
+    // --- a link that dies under the session (Pixel 9, 2026-11-06: Bluetooth off, no Disconnected, a throwing write) ---
+
+    /**
+     * An unexpected throw under the actor; the real channel's `stackCall` turns the stack's own into `Failed(-2)`. This is
+     * what the stack threw on the Pixel 9, kept as the throw's shape: a test using it proves the backstops, not that path.
+     */
+    private fun deadBinder() = RuntimeException("android.os.DeadObjectException")
+
+    private fun TestScope.readySession(
+        ch: FakeGattChannel,
+        dialer: FakeGattDialer = FakeGattDialer(ch),
+    ): MeshtasticSession {
+        val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+        session.start("AA")
+        runCurrent()
+        assertTrue(session.state.value is LinkState.Ready)
+        return session
+    }
+
+    @Test
+    fun aHeartbeatThatThrowsWhileReadyEndsTheSessionAndRedials() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+
+            ch.nextThrow = deadBinder()
+            advanceTimeBy(180_001)
+            runCurrent()
+            val st = session.state.value
+            assertTrue("a throw reads as a lost link, not Ready, but was $st", st is LinkState.Disconnected)
+            st as LinkState.Disconnected
+            assertEquals("${MeshtasticSession.REASON_THREW} RuntimeException", st.reason)
+            assertEquals(1, st.streak)
+            assertEquals(LoraLinkEnd.IO to null, LoraLinkEnd.of(st))
+            assertEquals("the session's channel is closed", 1, ch.closes)
+
+            advanceTimeBy(5_001) // the base backoff
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            assertEquals(2, dialer.dials)
+            session.stop()
+        }
+
+    /** The path a phone takes: the real channel turns the throw into this status, so it is a failed write, never a throw. */
+    @Test
+    fun aHeartbeatOnADeadStackEndsTheSessionWithItsStatus() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+
+            ch.nextWrite = GattResult.Failed(MeshtasticSession.STATUS_STACK_THREW)
+            advanceTimeBy(180_001)
+            runCurrent()
+            val st = session.state.value as LinkState.Disconnected
+            assertEquals("${MeshtasticSession.REASON_HEARTBEAT_WRITE} Failed(status=-2)", st.reason)
+            assertEquals(LoraLinkEnd.IO to -2, LoraLinkEnd.of(st))
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            session.stop()
+        }
+
+    @Test
+    fun aSendOnADeadStackIsOwedAndEndsTheSession() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+
+            ch.nextWrite = GattResult.Failed(MeshtasticSession.STATUS_STACK_THREW)
+            val send = async { session.send(byteArrayOf(1), channelIndex = 1) }
+            runCurrent()
+            assertTrue(send.await() is SendResult.NotReady)
+            val st = session.state.value as LinkState.Disconnected
+            assertEquals("${MeshtasticSession.REASON_SEND_WRITE} Failed(status=-2)", st.reason)
+            session.stop()
+        }
+
+    /** A write that timed out may be on the board, so it must not read as one to send again; its answer still counts. */
+    @Test
+    fun aSendWhoseWriteTimedOutIsATimeoutAndStaysAwaited() =
+        runTest {
+            val ch = FakeGattChannel()
+            val session = queueingSession(ch)
+            val outcomes = mutableListOf<PacketOutcome>()
+            backgroundScope.launch { session.outcomes.collect { outcomes += it } }
+            session.start("AA")
+            runCurrent()
+
+            ch.nextWrite = GattResult.Timeout
+            val send =
+                async { session.send(byteArrayOf(0x11, 2, 3), channelIndex = 1, destination = LinkDestination.Direct(BoardAddr(0x1234u))) }
+            runCurrent()
+            val result = send.await()
+            assertTrue("got $result", result is SendResult.Timeout)
+            assertTrue(session.state.value is LinkState.Disconnected)
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            val id = (result as SendResult.Timeout).id
+            board(ch, BoardBytes.ack(from = 0x1234u, requestId = id))
+            assertEquals(listOf<PacketOutcome>(PacketOutcome.Acked(id, byDestination = true)), outcomes)
+            session.stop()
+        }
+
+    /** The write's answer never comes and the session is cancelled: nobody can say the board lacks it. */
+    @Test
+    fun aDirectSendCancelledInsideItsDrainIsATimeoutNeverARefusal() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+            ch.readGate = CompletableDeferred()
+            val send =
+                async { session.send(byteArrayOf(0x11, 2, 3), channelIndex = 1, destination = LinkDestination.Direct(BoardAddr(0x1234u))) }
+            runCurrent()
+
+            dialer.adapterOn.value = false
+            runCurrent()
+            assertTrue(send.isCompleted)
+            val result = send.await()
+            assertTrue("got $result", result is SendResult.Timeout)
+            session.stop()
+        }
+
+    @Test
+    fun aSendWhoseWriteThrowsIsAnsweredAndTheLoopGoesOn() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+
+            ch.nextThrow = deadBinder()
+            val send = async { session.send(byteArrayOf(1), channelIndex = 1) }
+            runCurrent()
+            assertTrue("got ${send.isCompleted}", send.isCompleted)
+            assertTrue(
+                "an unexpected throw cannot say the board lacks it; a dead stack's Failed(-2) answers NotReady",
+                send.await() is SendResult.Timeout,
+            )
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            session.stop()
+        }
+
+    @Test
+    fun aThrowAfterAHealthySessionStartsTheCurveOverLikeADisconnect() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            threeFailedDirectDials(dialer)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+
+            advanceTimeBy(BoardDialPolicy.HEALTHY_SESSION_MS)
+            ch.nextThrow = deadBinder()
+            advanceTimeBy(60_001) // the second heartbeat, six minutes into the session
+            runCurrent()
+            assertEquals(1, (session.state.value as LinkState.Disconnected).streak)
+            session.stop()
+        }
+
+    @Test
+    fun aDialThatThrowsBacksOffAndDialsAgain() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch).apply { nextThrow = deadBinder() }
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertEquals(1, (session.state.value as LinkState.Disconnected).streak)
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            session.stop()
+        }
+
+    @Test
+    fun aHandshakeThatNeverNamesTheBoardBacksOffRatherThanEndingTheLoop() =
+        runTest {
+            val ch = FakeGattChannel()
+            var handshakes = 0
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    if (handshakes++ > 0) ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Disconnected)
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            session.stop()
+        }
+
+    @Test
+    fun theAdapterGoingOffEndsTheSessionAtOnceAndItRedialsWhenItReturns() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            val states = mutableListOf<LinkState>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { session.state.toList(states) }
+            session.start("AA")
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            states.clear()
+
+            dialer.adapterOn.value = false // and the stack says nothing: no Disconnected, no failed op
+            runCurrent()
+            assertEquals("no heartbeat needed, and no backoff to read as", listOf<LinkState>(LinkState.Unavailable), states)
+            assertEquals(LoraLinkEnd.ADAPTER_OFF to null, LoraLinkEnd.of(session.state.value))
+            assertEquals(1, ch.closes)
+            assertTrue(session.send(byteArrayOf(1), channelIndex = 1) is SendResult.NotReady)
+
+            advanceTimeBy(3_600_000) // the field's hour off: nothing dials into it
+            runCurrent()
+            assertEquals(1, dialer.dials)
+
+            dialer.adapterOn.value = true
+            runCurrent()
+            assertEquals(2, dialer.dials)
+            assertEquals("the streak starts over on a direct dial", DialMode.Direct, dialer.modes.last())
+            assertEquals(LinkState.Connecting, states[1])
+            assertEquals(LinkState.Handshaking(null), states[2])
+            assertTrue("ends Ready, but was $states", states.last() is LinkState.Ready)
+            assertEquals(4, states.size)
+            session.stop()
+        }
+
+    @Test
+    fun theAdapterGoingOffDoesNotWaitOutAnOpInFlight() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+
+            ch.readGate = CompletableDeferred() // the stack has gone: this read's callback never comes
+            val send = async { session.send(byteArrayOf(1), channelIndex = 1) }
+            runCurrent()
+            assertFalse(send.isCompleted)
+
+            dialer.adapterOn.value = false
+            runCurrent()
+            assertEquals(LinkState.Unavailable, session.state.value)
+            assertTrue(send.isCompleted)
+            assertTrue("the write went out: the board may have it, so it is no refusal", send.await() is SendResult.Timeout)
+            session.stop()
+        }
+
+    @Test
+    fun theAdapterGoingOffMidHandshakeParksUnavailable() =
+        runTest {
+            val ch = FakeGattChannel().apply { readGate = CompletableDeferred() }
+            val dialer = FakeGattDialer(ch)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Handshaking)
+
+            dialer.adapterOn.value = false
+            runCurrent()
+            assertEquals(LinkState.Unavailable, session.state.value)
+            assertEquals(1, ch.closes)
+            session.stop()
+        }
+
+    @Test
+    fun aDialThatSeesTheAdapterGoBeforeItsFlagDoesBacksOffRatherThanSpins() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            dialer.dialResults.addLast(DialResult.AdapterOff) // the flag still reads on: its broadcast is on its way
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            assertEquals(1, dialer.dials)
+            val st = session.state.value as LinkState.Disconnected
+            assertEquals(MeshtasticSession.REASON_ADAPTER_OFF, st.reason)
+            assertEquals(LoraLinkEnd.ADAPTER_OFF to null, LoraLinkEnd.of(st))
+            session.stop()
+        }
+
+    /** Holds the actor in a send's drain, so what is posted next waits in the inbox for a session about to end. */
+    private fun TestScope.actorHeldInADrain(
+        session: MeshtasticSession,
+        ch: FakeGattChannel,
+    ): CompletableDeferred<GattResult<ByteArray>> {
+        val gate = CompletableDeferred<GattResult<ByteArray>>()
+        ch.readGate = gate
+        backgroundScope.launch { session.send(byteArrayOf(1), channelIndex = 1) }
+        runCurrent()
+        return gate
+    }
+
+    @Test
+    fun aSendQueuedAsTheSessionEndsIsAnsweredAndNeverAiredByTheNextOne() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+            val gate = actorHeldInADrain(session, ch)
+            val queued = async { session.send(byteArrayOf(2), channelIndex = 1) }
+            runCurrent()
+            assertFalse(queued.isCompleted)
+            val packets = ch.writes.count { BoardBytes.isPacket(it) }
+
+            gate.complete(GattResult.Closed)
+            runCurrent()
+            assertTrue("answered as the session ends, not when the next one comes", queued.isCompleted)
+            val refused = queued.await() as SendResult.NotReady
+            assertTrue(
+                "the state left Ready first, or the pacer takes it straight back: ${refused.state}",
+                refused.state is LinkState.Disconnected,
+            )
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            assertEquals(
+                "the answer hands it back to the transport: the session never airs it itself",
+                packets,
+                ch.writes.count { BoardBytes.isPacket(it) },
+            )
+            session.stop()
+        }
+
+    /** The flag reads off, so no backoff retires the box, then on, so no park does: the next session must end it. */
+    @Test
+    fun aSendQueuedAsTheFlagFlickersIsAnsweredByTheNextSession() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+            val gate = actorHeldInADrain(session, ch)
+            val queued = async { session.send(byteArrayOf(2), channelIndex = 1) }
+            runCurrent()
+            val states = mutableListOf<LinkState>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { session.state.toList(states) }
+
+            dialer.adapterOn.reads.addLast(false)
+            gate.complete(GattResult.Closed)
+            runCurrent()
+            assertTrue("the scripted false skips the backoff, so the next session is already up", session.state.value is LinkState.Ready)
+            assertEquals(2, dialer.dials)
+            assertFalse(
+                "that read must land on the backoff, or the park retires the box and no replace is exercised",
+                LinkState.Unavailable in states,
+            )
+            assertTrue("a box left open strands its sender for the process's life", queued.isCompleted)
+            assertTrue((queued.await() as SendResult.NotReady).state !is LinkState.Ready)
+            session.stop()
+        }
+
+    /** The incident's path: the stack says nothing, and the adapter's end of the session has to reach the inbox. */
+    @Test
+    fun aSendQueuedAsTheAdapterGoesOffIsAnswered() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+            actorHeldInADrain(session, ch)
+            val queued = async { session.send(byteArrayOf(2), channelIndex = 1) }
+            runCurrent()
+
+            dialer.adapterOn.value = false
+            runCurrent()
+            assertTrue(queued.isCompleted)
+            assertEquals(SendResult.NotReady(LinkState.Unavailable), queued.await())
+            session.stop()
+        }
+
+    @Test
+    fun aSendQueuedAsTheLinkStopsIsAnswered() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+            actorHeldInADrain(session, ch)
+            val queued = async { session.send(byteArrayOf(2), channelIndex = 1) }
+            runCurrent()
+
+            session.stop()
+            runCurrent()
+            assertTrue(queued.isCompleted)
+            assertTrue(queued.await() is SendResult.NotReady)
+        }
+
+    /** Published ahead of the cancel, so what the cancelled session answers on its way out says why. */
+    @Test
+    fun aProvisionInFlightAsTheAdapterGoesOffSaysSo() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            val session = readySession(ch, dialer)
+            ch.readGate = CompletableDeferred()
+            val provision = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+
+            dialer.adapterOn.value = false
+            runCurrent()
+            assertTrue(provision.isCompleted)
+            assertEquals(ProvisionResult.NotReady(LinkState.Unavailable), provision.await())
+            session.stop()
+        }
+
+    @Test
+    fun aWriteLostToClosedIsAwaitedForADirectSendAndOwedForABroadcast() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+            ch.nextWrite = GattResult.Closed
+            val direct =
+                async { session.send(byteArrayOf(0x11), channelIndex = 1, destination = LinkDestination.Direct(BoardAddr(0x1234u))) }
+            runCurrent()
+            assertTrue("one send in flight: it may be on the board", direct.await() is SendResult.Timeout)
+
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            ch.nextWrite = GattResult.Closed
+            val broadcast = async { session.send(byteArrayOf(1), channelIndex = 1) }
+            runCurrent()
+            assertTrue(broadcast.await() is SendResult.NotReady)
+
+            advanceTimeBy(10_001) // the second backoff
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            ch.nextWrite = GattResult.Closed
+            val autoReply =
+                async {
+                    session.send(
+                        byteArrayOf(1),
+                        channelIndex = 0,
+                        destination = LinkDestination.Direct(BoardAddr(0x1234u), ack = false),
+                    )
+                }
+            runCurrent()
+            assertTrue(
+                "no want_ack, so no answer to await: an auto-reply is owed like a broadcast",
+                autoReply.await() is SendResult.NotReady,
+            )
+            session.stop()
+        }
+
+    @Test
+    fun sendersSuspendedOnAFullInboxAreAnsweredWhenTheSessionEnds() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+            val gate = actorHeldInADrain(session, ch)
+            val queued = List(100) { async { session.send(byteArrayOf(2), channelIndex = 1) } } // past the box's 64
+            runCurrent()
+            assertTrue(queued.none { it.isCompleted })
+
+            gate.complete(GattResult.Closed)
+            runCurrent()
+            assertTrue(queued.all { it.isCompleted })
+            queued.forEach { assertTrue(it.await() is SendResult.NotReady) }
+            session.stop()
+        }
+
+    @Test
+    fun aProvisionQueuedAsTheSessionEndsIsAnswered() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+            val gate = actorHeldInADrain(session, ch)
+            val queued = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+            assertFalse(queued.isCompleted)
+
+            gate.complete(GattResult.Closed)
+            runCurrent()
+            assertTrue(queued.isCompleted)
+            assertTrue(queued.await() is ProvisionResult.NotReady)
+            session.stop()
+        }
+
+    @Test
+    fun aProvisionOnADeadStackIsAnsweredAndEndsTheSession() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+
+            ch.nextWrite = GattResult.Failed(MeshtasticSession.STATUS_STACK_THREW)
+            val provision = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+            assertTrue(provision.isCompleted)
+            assertTrue(provision.await() is ProvisionResult.Failed)
+            val st = session.state.value
+            assertTrue("not Ready until the next heartbeat, but was $st", st is LinkState.Disconnected)
+            assertEquals("${MeshtasticSession.REASON_SEND_WRITE} Failed(status=-2)", (st as LinkState.Disconnected).reason)
+            session.stop()
+        }
+
+    @Test
+    fun aRefusedProvisioningWriteLeavesTheSessionUp() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+
+            ch.nextWrite = GattResult.Failed(133)
+            val provision = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+            assertTrue(provision.await() is ProvisionResult.Failed)
+            assertTrue(session.state.value is LinkState.Ready)
+            session.stop()
+        }
+
+    @Test
+    fun aProvisionInFlightIsAnsweredWhenItsWriteThrows() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+
+            ch.nextThrow = deadBinder()
+            val provision = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+            assertTrue(provision.isCompleted)
+            assertTrue(provision.await() is ProvisionResult.NotReady)
+            session.stop()
+        }
+
+    @Test
+    fun aProvisionInFlightIsAnsweredByStop() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = readySession(ch)
+
+            ch.readGate = CompletableDeferred()
+            val provision = async { session.provisionChannel(provisionSpec) }
+            runCurrent()
+            assertFalse(provision.isCompleted)
+
+            session.stop()
+            runCurrent()
+            assertTrue(provision.isCompleted)
+            assertEquals(ProvisionResult.NotReady(LinkState.Idle), provision.await())
         }
 
     @Test

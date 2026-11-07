@@ -2,10 +2,15 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.bluetooth.ConnectBackoffPolicy
+import app.getknit.knit.mesh.runRound
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
 /**
@@ -27,8 +33,8 @@ private typealias AdminStep = (ByteArray?) -> ByteArray
 
 /**
  * The pure state machine that turns a [MeshtasticGattDialer] into a managed [MeshtasticLink]. An actor:
- * a single driver coroutine owns the open [GattChannel] and issues every GATT op sequentially, fed by one
- * inbox [Channel] that merges send commands, GATT events, and heartbeat ticks. It handles the config
+ * a single driver coroutine owns the open [GattChannel] and issues every GATT op sequentially, fed by the
+ * session's inbox [Channel] of send commands and heartbeat ticks, merged with the GATT events. It handles the config
  * handshake, the drain-until-empty read on every FromNum, the keep-alive heartbeat, packet-id/queueStatus
  * correlation, and reconnect-with-backoff — all against injected `now`/`rand`/`nonce`, so it runs on the
  * JVM under virtual time ([app.getknit.knit.mesh.lora.MeshtasticSessionTest]).
@@ -36,11 +42,16 @@ private typealias AdminStep = (ByteArray?) -> ByteArray
  * Android-free by construction (the only `android.bluetooth.*` lives behind the dialer seam), honouring
  * `.agents/rules/mesh.md`.
  *
- * `LargeClass` is suppressed because one actor owns the open GATT channel, so every op it serializes —
- * handshake, sends, heartbeat, admin provisioning — has to live here; splitting it would mean a second
+ * The loop outlives anything a session or a dial does short of [stop] (ADR 2026-09.hp88's 2026-11-06 amendment): on a
+ * Pixel 9 a write into a Bluetooth stack that had gone off threw out of the channel and ended the coroutine, leaving
+ * the link reading Ready for 88 minutes with nobody to serve it. A throw costs that one pass, the adapter going off
+ * ends the session at once, and every command the session took or was offered is answered.
+ *
+ * `LargeClass` and `TooManyFunctions` are suppressed because one actor owns the open GATT channel, so every op it
+ * serializes — handshake, sends, heartbeat, admin provisioning — has to live here; splitting it would mean a second
  * owner of the same channel.
  */
-@Suppress("LargeClass")
+@Suppress("LargeClass", "TooManyFunctions")
 internal class MeshtasticSession(
     private val dialer: MeshtasticGattDialer,
     private val scope: CoroutineScope,
@@ -84,7 +95,11 @@ internal class MeshtasticSession(
 
     override fun userSeq(): Long = userStamp.get()
 
-    private val inbox = Channel<Cmd>(Channel.BUFFERED)
+    /**
+     * The inbox of the session now ready, or null when there is none. One per session, retired as the session ends, so
+     * a command can never outlive the session it was posted to: it is served, or [refuse]d, or never taken ([post]).
+     */
+    private val inbox = AtomicReference<Channel<Cmd>?>(null)
     private var loopJob: Job? = null
 
     @Volatile
@@ -110,6 +125,9 @@ internal class MeshtasticSession(
     // When the reconnect loop last dialled direct; the hourly net under a background wait is timed from it.
     private var lastDirectAt: Long? = null
 
+    // The admin write the stack threw on during this provisioning, if one did; only the actor touches it.
+    private var adminWriteLost: GattResult<*>? = null
+
     // Pending sends awaiting their queueStatus, keyed by our packet id, so a late NAK can still be matched.
     private val pending = HashMap<UInt, CompletableDeferred<SendResult>>()
 
@@ -133,7 +151,7 @@ internal class MeshtasticSession(
         loopJob?.cancel()
         loopJob = null
         address = null
-        failAllPending(SendResult.NotReady(LinkState.Idle))
+        failAllPending()
         directTo.clear()
         _battery.value = null
         _boardAir.value = null
@@ -153,7 +171,7 @@ internal class MeshtasticSession(
         val st = _state.value
         if (st !is LinkState.Ready) return SendResult.NotReady(st)
         val reply = CompletableDeferred<SendResult>()
-        inbox.send(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply, destination))
+        if (!post(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply, destination))) return SendResult.NotReady(_state.value)
         return reply.await()
     }
 
@@ -161,58 +179,102 @@ internal class MeshtasticSession(
         val st = _state.value
         if (st !is LinkState.Ready) return ProvisionResult.NotReady(st)
         val reply = CompletableDeferred<ProvisionResult>()
-        inbox.send(Cmd.Provision(spec, reply))
+        if (!post(Cmd.Provision(spec, reply))) return ProvisionResult.NotReady(_state.value)
         return reply.await()
+    }
+
+    /** Offers [cmd] to the ready session; false when the session ended first, however recently, and nobody took it. */
+    private suspend fun post(cmd: Cmd): Boolean {
+        val box = inbox.get() ?: return false
+        return try {
+            box.send(cmd)
+            true
+        } catch (_: ClosedSendChannelException) {
+            false
+        }
+    }
+
+    /** Answers [cmd] as not served, if nothing has answered it yet: it never reached the board, and the transport requeues it. */
+    private fun refuse(cmd: Cmd) {
+        when (cmd) {
+            is Cmd.Send -> cmd.reply.complete(SendResult.NotReady(_state.value))
+            is Cmd.Provision -> cmd.reply.complete(ProvisionResult.NotReady(_state.value))
+            Cmd.Heartbeat -> Unit
+        }
     }
 
     // --- the reconnect loop (one coroutine per start) ---
 
+    /**
+     * Runs until [stop] or a terminal state. A throw from a dial or a session costs that pass and takes the normal
+     * backoff, like a disconnect: only the loop's own cancellation ends it, and nothing else ever starts it again (the
+     * transport calls [start] on a config change alone). An [Error] is not caught, by [runRound]'s rule.
+     */
     private suspend fun connectLoop(address: String) {
         var streak = 0
         lastDirectAt = null
-        while (scope.isActive) {
-            if (!dialer.adapterOn.value) {
-                _state.value = LinkState.Unavailable
-                dialer.adapterOn.first { it }
-                streak = 0
-                continue
+        try {
+            while (scope.isActive) {
+                runRound(onFailure = { e ->
+                    log("lora link threw: ${e.javaClass.simpleName}: ${e.message}")
+                    streak = backoffUnlessAdapterOff("$REASON_THREW ${e.javaClass.simpleName}", streak)
+                }) {
+                    streak = connectOnce(address, streak) ?: return
+                }
             }
-            val mode = BoardDialPolicy.mode(streak, now(), lastDirectAt)
-            val timeout = armDial(mode, streak)
-            readyAt = null
-            when (val result = dialer.dial(address, mode, timeout)) {
-                is DialResult.Opened -> {
-                    val end =
-                        try {
-                            runSession(address, result.channel, result.mtu)
-                        } finally {
-                            result.channel.close() // closes on a normal end AND on stop()'s cancellation
-                        }
-                    if (end.terminal != null) {
-                        _state.value = end.terminal
-                        return
+        } finally {
+            retireInbox()
+        }
+    }
+
+    /** One pass: waits out an adapter that is off, or dials and runs what opens. The next streak, or null to stop retrying. */
+    private suspend fun connectOnce(
+        address: String,
+        streak: Int,
+    ): Int? {
+        if (!dialer.adapterOn.value) {
+            _state.value = LinkState.Unavailable
+            retireInbox()
+            dialer.adapterOn.first { it }
+            return 0
+        }
+        val mode = BoardDialPolicy.mode(streak, now(), lastDirectAt)
+        val timeout = armDial(mode, streak)
+        readyAt = null
+        return when (val result = dialer.dial(address, mode, timeout)) {
+            is DialResult.Opened -> {
+                val end =
+                    try {
+                        sessionWhileAdapterOn(address, result.channel, result.mtu)
+                    } finally {
+                        result.channel.close() // closes on a normal end AND on stop()'s cancellation
                     }
-                    if (end.resetStreak || BoardDialPolicy.healthy(readyAt, now())) streak = 0
-                    streak = backoffAndWait(end.reason, streak)
+                if (end.terminal != null) {
+                    _state.value = end.terminal
+                    return null
                 }
+                backoffUnlessAdapterOff(end.reason, if (end.resetStreak) 0 else streak)
+            }
 
-                DialResult.NoHardware -> {
-                    _state.value = LinkState.Unavailable
-                    return
-                }
+            DialResult.NoHardware -> {
+                _state.value = LinkState.Unavailable
+                null
+            }
 
-                // Adapter went off mid-dial: fall through and let the loop re-check adapterOn at the top.
-                DialResult.AdapterOff -> {}
+            // Adapter went off mid-dial: the next pass parks on it. The dial can read the stack ahead of the flag, whose
+            // broadcast is still on its way, and that next pass must not dial straight back in a loop that never suspends.
+            DialResult.AdapterOff -> {
+                backoffUnlessAdapterOff(REASON_ADAPTER_OFF, streak)
+            }
 
-                is DialResult.Failed -> {
-                    streak = backoffAndWait("$REASON_DIAL ${result.phase} ${result.status}", streak)
-                }
+            is DialResult.Failed -> {
+                backoffAndWait("$REASON_DIAL ${result.phase} ${result.status}", streak)
+            }
 
-                // A background window that ran out is not a failure to back off from: the net's direct dial is
-                // due now, and the policy picks it on the next pass.
-                DialResult.Timeout -> {
-                    if (mode == DialMode.Direct) streak = backoffAndWait(REASON_DIAL_TIMEOUT, streak)
-                }
+            // A background window that ran out is not a failure to back off from: the net's direct dial is
+            // due now, and the policy picks it on the next pass.
+            DialResult.Timeout -> {
+                if (mode == DialMode.Direct) backoffAndWait(REASON_DIAL_TIMEOUT, streak) else streak
             }
         }
     }
@@ -253,11 +315,49 @@ internal class MeshtasticSession(
         val wait = ConnectBackoffPolicy.nextDelayMs(next, backoff, rand)
         log("lora backoff streak=$next ms=$wait ($reason)")
         _state.value = LinkState.Disconnected(reason, now() + wait, next)
+        retireInbox()
         delay(wait)
         return next
     }
 
+    /**
+     * The backoff after a link ended. A healthy session starts the curve over. With the adapter off there is no backoff:
+     * the next pass parks on [LinkState.Unavailable] until it returns, which beats reading as a retry that cannot happen.
+     */
+    private suspend fun backoffUnlessAdapterOff(
+        reason: String,
+        streak: Int,
+    ): Int {
+        val from = if (BoardDialPolicy.healthy(readyAt, now())) 0 else streak
+        return if (dialer.adapterOn.value) backoffAndWait(reason, from) else from
+    }
+
     // --- one connected session ---
+
+    /**
+     * [runSession], ended the moment the adapter goes off. The stack need not say so: on a Pixel 9 no
+     * [GattEvent.Disconnected] came as Bluetooth went off, so the session read Ready until its next heartbeat, up to
+     * 180 s on, and an op already in flight waits out its own timeout. Unavailable is published first, so what the
+     * cancelled session answers on its way out says so.
+     */
+    private suspend fun sessionWhileAdapterOn(
+        address: String,
+        channel: GattChannel,
+        mtu: Int,
+    ): SessionEnd =
+        coroutineScope {
+            val session = async { runSession(address, channel, mtu) }
+            val off = async { dialer.adapterOn.first { !it } }
+            select {
+                session.onAwait { it }
+                off.onAwait {
+                    log("lora adapter off mid-session")
+                    _state.value = LinkState.Unavailable
+                    session.cancelAndJoin()
+                    SessionEnd(reason = REASON_ADAPTER_OFF)
+                }
+            }.also { off.cancel() }
+        }
 
     private suspend fun runSession(
         address: String,
@@ -266,27 +366,48 @@ internal class MeshtasticSession(
     ): SessionEnd {
         val handshake = handshake(address, channel)
         if (handshake != null) return handshake
-        _state.value = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy)
+        val ready = LinkState.Ready(requireNotNull(board), channels, mtu, radio, signaturePolicy)
+        // Undelivered covers what closing the box leaves in it, and what a cancelled select took and never handed over.
+        val box = Channel<Cmd>(Channel.BUFFERED, onUndeliveredElement = ::refuse)
+        // Replaced, never overwritten: a session that ended on a flag read false then true, or a stop() whose finally has
+        // not run, can leave the last box open with its senders waiting. The state is not Ready here, so it may be refused.
+        retire(inbox.getAndSet(box))
+        _state.value = ready
         readyAt = now()
         lastWriteAt = now()
-        val heartbeat = scope.launch { heartbeatTicker() }
+        val heartbeat = scope.launch { heartbeatTicker(box) }
         try {
-            return sessionLoop(address, channel)
+            return sessionLoop(address, channel, box)
         } finally {
             heartbeat.cancel()
-            failAllPending(SendResult.NotReady(_state.value))
+            failAllPending()
         }
+    }
+
+    /**
+     * Ends the inbox, refusing what it holds. Always **after** the state has left Ready: the transport requeues a refused
+     * frame and goes back to the state, so a refusal under a link still reading Ready is a pointless take and requeue per
+     * pacing gap (a hang under a test's `minGapMs = 0`, where nothing suspends). Between a session's end and this, a
+     * command is only posted to a box nobody reads, and refused here.
+     */
+    private fun retireInbox() = retire(inbox.getAndSet(null))
+
+    /** Closed before it is cancelled, so a late sender gets the closed exception [post] reads, never a cancellation. */
+    private fun retire(box: Channel<Cmd>?) {
+        box?.close()
+        box?.cancel()
     }
 
     private suspend fun sessionLoop(
         address: String,
         channel: GattChannel,
+        box: Channel<Cmd>,
     ): SessionEnd {
         while (scope.isActive) {
             val outcome =
                 select {
                     channel.events.onReceive { it }
-                    inbox.onReceive { it }
+                    box.onReceive { it }
                 }
             val end = handleOutcome(address, channel, outcome)
             if (end != null) return end
@@ -303,10 +424,24 @@ internal class MeshtasticSession(
         when (outcome) {
             is GattEvent.Disconnected -> SessionEnd(reason = "$REASON_GATT_DISCONNECT ${outcome.status}")
             is GattEvent.Notified -> drain(address, channel, awaitId = null)
-            is Cmd.Send -> doSend(address, channel, outcome)
-            is Cmd.Provision -> runProvision(channel, outcome)
-            Cmd.Heartbeat -> maybeHeartbeat(address, channel)
+            is Cmd -> serve(address, channel, outcome)
             else -> null
+        }
+
+    /** Runs one [cmd]. It is answered however that ends: a provisioning reply is held nowhere else a throw or a stop can reach. */
+    private suspend fun serve(
+        address: String,
+        channel: GattChannel,
+        cmd: Cmd,
+    ): SessionEnd? =
+        try {
+            when (cmd) {
+                is Cmd.Send -> doSend(address, channel, cmd)
+                is Cmd.Provision -> provision(channel, cmd)
+                Cmd.Heartbeat -> maybeHeartbeat(address, channel)
+            }
+        } finally {
+            refuse(cmd)
         }
 
     // --- handshake ---
@@ -712,23 +847,34 @@ internal class MeshtasticSession(
         // Before the write: the destination's answer can only come later, but our board's own refusal can arrive in
         // the drain below, and has to be told from the destination's.
         if (packet.wantAck) awaitDirect(id, packet.to)
-        when (val write = channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS)) {
-            is GattResult.Ok -> {
-                lastWriteAt = now()
-            }
+        try {
+            when (val write = channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS)) {
+                is GattResult.Ok -> {
+                    lastWriteAt = now()
+                }
 
-            else -> {
-                pending.remove(id)
-                directTo.remove(id)
-                cmd.reply.complete(SendResult.NotReady(_state.value))
-                return classify(address, write) ?: SessionEnd(reason = "$REASON_SEND_WRITE $write")
+                else -> {
+                    // NotReady is the transport's word for "send it again". A write that timed out may be on the board, and
+                    // falls to the finally below, as does a compact DM's lost to Closed, to keep its one send in flight
+                    // (ADR 2026-10.x9fa). A broadcast's Closed, or a Failed from the write's callback, may have got there
+                    // too: resending risks a second airing, where giving up would lose a frame that mostly did not.
+                    val mayHaveGone = write is GattResult.Timeout || (write is GattResult.Closed && packet.wantAck)
+                    if (!mayHaveGone) {
+                        pending.remove(id)
+                        directTo.remove(id)
+                        cmd.reply.complete(SendResult.NotReady(_state.value))
+                    }
+                    return classify(address, write) ?: SessionEnd(reason = "$REASON_SEND_WRITE $write")
+                }
             }
+            return drain(address, channel, awaitId = id)
+        } finally {
+            // Still pending, however this ended (no matching queueStatus came back, or the adapter's cancel landed in the
+            // write or the drain) → the board may have it, so time it out, ahead of [serve]'s refusal: the transport books
+            // a timed-out direct send and keeps what is parked behind it parked. A direct send stays awaited, its answer
+            // still worth reading.
+            pending.remove(id)?.complete(SendResult.Timeout(id))
         }
-        val end = drain(address, channel, awaitId = id)
-        // Still pending after the drain (no matching queueStatus came back) → time it out; the transport retries.
-        // A direct send stays awaited: the board may have taken it, and its answer is still worth reading.
-        pending.remove(id)?.complete(SendResult.Timeout(id))
-        return end
     }
 
     private fun awaitDirect(
@@ -740,6 +886,30 @@ internal class MeshtasticSession(
     }
 
     // --- channel provisioning (an AdminMessage to the local node, over portnum ADMIN) ---
+
+    /**
+     * [runProvision], ended like any other write failure if the stack threw under it. An admin write's failure is
+     * otherwise a refusal, which leaves the session up, so this is what keeps a dead stack from reading Ready until the
+     * next heartbeat.
+     */
+    private suspend fun provision(
+        channel: GattChannel,
+        cmd: Cmd.Provision,
+    ): SessionEnd? {
+        adminWriteLost = null
+        val end = runProvision(channel, cmd)
+        return end ?: adminWriteLost?.let { SessionEnd(reason = "$REASON_SEND_WRITE $it") }
+    }
+
+    /** Writes one admin [packet]; true if it went. Notes a write the stack threw on for [provision]. */
+    private suspend fun writeAdminPacket(
+        channel: GattChannel,
+        packet: OutboundPacket,
+    ): Boolean {
+        val write = channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS)
+        if (write is GattResult.Failed && write.status == STATUS_STACK_THREW) adminWriteLost = write
+        return write is GattResult.Ok
+    }
 
     /**
      * Runs one [ProvisionSpec] against the board: GET a session passkey, then begin→writes→commit echoing it.
@@ -1247,7 +1417,7 @@ internal class MeshtasticSession(
                 payload = payload,
                 wantResponse = true,
             )
-        if (channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS) !is GattResult.Ok) return null
+        if (!writeAdminPacket(channel, packet)) return null
         return (awaitAdminResponse(channel, id, now() + ADMIN_TIMEOUT_MS) as? AdminResp.Admin)?.reply
     }
 
@@ -1268,7 +1438,7 @@ internal class MeshtasticSession(
                 payload = adminBytes,
                 wantResponse = expectReply,
             )
-        if (channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS) !is GattResult.Ok) return AdminOutcome.Failed
+        if (!writeAdminPacket(channel, packet)) return AdminOutcome.Failed
         if (!expectReply) return AdminOutcome.Applied
         return when (val resp = awaitAdminResponse(channel, id, now() + ADMIN_TIMEOUT_MS)) {
             is AdminResp.Routing -> {
@@ -1379,10 +1549,12 @@ internal class MeshtasticSession(
 
     // --- heartbeat ---
 
-    private suspend fun heartbeatTicker() {
+    private suspend fun heartbeatTicker(box: Channel<Cmd>) {
         while (scope.isActive) {
             delay(HEARTBEAT_MS)
-            inbox.send(Cmd.Heartbeat)
+            // Never a suspending send: a tick lost to a full box costs nothing (those commands write), and one to a
+            // closed box means the session is over.
+            box.trySend(Cmd.Heartbeat)
         }
     }
 
@@ -1430,8 +1602,9 @@ internal class MeshtasticSession(
         }
     }
 
-    private fun failAllPending(result: SendResult) {
-        pending.values.forEach { it.complete(result) }
+    /** Ends every send still waiting on its queueStatus. Each was written, or was being: it may be on the board. */
+    private fun failAllPending() {
+        pending.forEach { (id, reply) -> reply.complete(SendResult.Timeout(id)) }
         pending.clear()
     }
 
@@ -1495,6 +1668,15 @@ internal class MeshtasticSession(
         /** Then the [GattResult]: the keep-alive's write to a ready link failed. */
         const val REASON_HEARTBEAT_WRITE = "heartbeat write"
 
+        /** Then the exception's class: a dial or a session threw, which ends that pass like a disconnect. */
+        const val REASON_THREW = "threw"
+
+        /**
+         * The adapter went off. A session it ends goes straight to [LinkState.Unavailable], which is the field log's
+         * reading; it is published only in the moment a dial has seen the stack go ahead of [MeshtasticGattDialer.adapterOn].
+         */
+        const val REASON_ADAPTER_OFF = "adapter off"
+
         /** The board rebooted (or re-sent `my_info`) under a ready session; the next one re-handshakes. */
         const val REASON_REBOOTED = "rebooted"
 
@@ -1509,6 +1691,9 @@ internal class MeshtasticSession(
 
         /** The session's scope was cancelled; it ends terminal ([LinkState.Idle]), so it is never published either. */
         const val REASON_CANCELLED = "cancelled"
+
+        /** A [GattResult.Failed] status of ours, beside the `-1` of an op the stack refused: the stack threw. */
+        const val STATUS_STACK_THREW = -2
 
         private const val BASE_BACKOFF_MS = 5_000L
         private const val MAX_BACKOFF_MS = 180_000L

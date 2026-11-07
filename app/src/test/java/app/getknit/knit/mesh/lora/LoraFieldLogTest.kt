@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.legal.repoFile
+import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_ADAPTER_OFF
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_AUTH
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_CANCELLED
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_DIAL
@@ -14,6 +15,7 @@ import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_HEARTBEAT_W
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_PROVISIONED
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_REBOOTED
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_SEND_WRITE
+import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.REASON_THREW
 import app.getknit.knit.mesh.lora.MeshtasticSession.Companion.WAITING_FOR_BOARD
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -81,6 +83,8 @@ class LoraFieldLogTest {
             Case("REASON_DRAIN_READ", "$REASON_DRAIN_READ ${GattResult.Closed}", LoraLinkEnd.IO),
             Case("REASON_SEND_WRITE", "$REASON_SEND_WRITE ${GattResult.Failed(8)}", LoraLinkEnd.IO, 8),
             Case("REASON_HEARTBEAT_WRITE", "$REASON_HEARTBEAT_WRITE ${GattResult.Timeout}", LoraLinkEnd.IO),
+            Case("REASON_THREW", "$REASON_THREW RuntimeException", LoraLinkEnd.IO),
+            Case("REASON_ADAPTER_OFF", REASON_ADAPTER_OFF, LoraLinkEnd.ADAPTER_OFF),
             Case("REASON_REBOOTED", REASON_REBOOTED, LoraLinkEnd.REBOOTED),
             Case("REASON_PROVISIONED", REASON_PROVISIONED, LoraLinkEnd.PROVISIONED),
             // A dial mode, and the two words whose sessions end terminal: never a published reason.

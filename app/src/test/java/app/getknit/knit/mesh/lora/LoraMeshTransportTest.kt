@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.bluetooth.BackoffConfig
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
@@ -1668,6 +1669,91 @@ class LoraMeshTransportTest {
             assertEquals(0, a.metrics.lora().loraSent)
             a.transport.stop()
             b.transport.stop()
+        }
+
+    /** A real session over [ch], on a board that queues every packet, for a test the fake link has no actor to stand behind. */
+    private fun TestScope.realSession(ch: FakeGattChannel): MeshtasticSession {
+        val nonce = 0x11u
+        ch.onWrite = { bytes ->
+            if (BoardBytes.isWantConfig(bytes)) {
+                ch.enqueueRead(BoardBytes.myInfo(1u, "heltec-v4"))
+                ch.enqueueRead(BoardBytes.channel(0, KnitChannel.NAME, 1))
+                ch.enqueueRead(BoardBytes.configComplete(nonce))
+            } else if (BoardBytes.isPacket(bytes)) {
+                ch.enqueueRead(BoardBytes.queueStatus(free = 15, maxlen = 16, meshPacketId = BoardBytes.packetId(bytes)))
+            }
+        }
+        return MeshtasticSession(
+            dialer = FakeGattDialer(ch),
+            scope = backgroundScope,
+            backoff = BackoffConfig(baseMs = 5_000, maxMs = 180_000, jitterFraction = 0.0),
+            now = { testScheduler.currentTime },
+            rand = { 0.5 },
+            nonce = { nonce },
+            ids = PacketIdSource(1000L),
+        )
+    }
+
+    /**
+     * The real session under the transport. A notify holds the actor in a read while the pacer posts, then that read
+     * fails and the session ends with the frame still in its inbox.
+     */
+    @Test(timeout = 60_000) // the order this guards breaks as a spin on the test's one thread, which runTest cannot time out
+    fun aFrameBehindTheActorWhenTheSessionEndsAirsOnceAfterTheReconnect() =
+        runTest {
+            val now = { testScheduler.currentTime }
+            val ch = FakeGattChannel()
+            val session = realSession(ch)
+            val metrics = MeshMetrics()
+            val pace = LoraPacePolicy(minGapMs = 0)
+            val transport =
+                LoraMeshTransport(
+                    selfId = { "alice" },
+                    link = session,
+                    config = MutableStateFlow(LoraConfig("AA", 0)),
+                    onPublicPost = {},
+                    onBoardBound = {},
+                    scope = backgroundScope,
+                    metrics = metrics,
+                    state = LoraPlaneState.None,
+                    clock = now,
+                    wallClock = now,
+                    pace = pace,
+                )
+            transport.start()
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+
+            val gate = CompletableDeferred<GattResult<ByteArray>>()
+            ch.readGate = gate
+            ch.notify()
+            runCurrent()
+            transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten", sentAt = testScheduler.currentTime))
+            runCurrent()
+            val packets = { ch.writes.count { BoardBytes.isPacket(it) } }
+            assertEquals("behind the actor, not yet written", 0, packets())
+            assertEquals("the pacer holds it, posted to the session", 0, pace.pending)
+
+            gate.complete(GattResult.Closed)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Disconnected)
+            assertEquals(0, packets())
+            assertEquals("refused and back on the queue, not held for the next session", 1, pace.pending)
+            assertEquals(0L, pace.airtime.snapshot(testScheduler.currentTime).usedMs)
+
+            advanceTimeBy(5_001) // the base backoff
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+            assertEquals("it airs after the reconnect", 1, packets())
+            assertEquals(1L, metrics.lora().loraSent)
+            val booked = pace.airtime.snapshot(testScheduler.currentTime).usedMs
+            assertTrue("booked", booked > 0L)
+
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals("once", 1, packets())
+            assertEquals("and booked once", booked, pace.airtime.snapshot(testScheduler.currentTime).usedMs)
+            transport.stop()
         }
 
     /**

@@ -1274,6 +1274,33 @@ class LoraDirectTransportTest {
         }
 
     @Test
+    fun aSendTheSessionEndedAheadOfIsOwedUnbookedAndKeepsWhatIsParkedBehindIt() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val (a, b) = pair(air)
+            val up = a.link.state.value
+            a.link.sessionEndsNext = true
+            a.dm("bob", "f1")
+            a.dm("bob", "f2") // parked behind f1: bob is not yet confirmed
+            settle(500)
+            assertEquals("nothing reached the board", 0, a.link.sent.size)
+            assertEquals(
+                "and nothing is booked",
+                0L,
+                a.pace.airtime
+                    .snapshot(testScheduler.currentTime)
+                    .usedMs,
+            )
+
+            a.link.resume(up)
+            settle(500)
+            assertEquals("f1 airs after the reconnect, and f2 still waits on its answer", 1, a.link.sent.size)
+            settle()
+            assertEquals(listOf("f1", "f2"), b.delivered.map { it.frameId })
+            assertEquals("each once", 2, a.link.sent.size)
+        }
+
+    @Test
     fun aSendWhoseQueueStatusNeverCameIsAwaitedUnderItsHandleNotAbandoned() =
         runTest {
             val air = FakeMeshtasticAir()

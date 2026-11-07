@@ -23,7 +23,7 @@ internal enum class LoraLinkEnd {
     /** The config handshake failed or timed out. */
     HANDSHAKE,
 
-    /** A read or write on a ready link failed: the drain, a send, the heartbeat. */
+    /** A read or write on a ready link failed (the drain, a send, the heartbeat), or a dial or a session threw. */
     IO,
 
     /** The board rebooted under a ready session. */
@@ -82,6 +82,7 @@ internal enum class LoraLinkEnd {
                         IO_WORDS.any { reason.startsWith("$it ") } -> IO
                         reason == REASON_REBOOTED -> REBOOTED
                         reason == REASON_PROVISIONED -> PROVISIONED
+                        reason == REASON_ADAPTER_OFF -> ADAPTER_OFF
                         else -> OTHER
                     }
                 }
@@ -89,7 +90,12 @@ internal enum class LoraLinkEnd {
         }
 
         private val IO_WORDS =
-            listOf(MeshtasticSession.REASON_DRAIN_READ, MeshtasticSession.REASON_SEND_WRITE, MeshtasticSession.REASON_HEARTBEAT_WRITE)
+            listOf(
+                MeshtasticSession.REASON_DRAIN_READ,
+                MeshtasticSession.REASON_SEND_WRITE,
+                MeshtasticSession.REASON_HEARTBEAT_WRITE,
+                MeshtasticSession.REASON_THREW,
+            )
 
         private fun statusOf(reason: String): Int? =
             STATUS

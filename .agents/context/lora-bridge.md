@@ -294,6 +294,17 @@ resets the streak. A background refusal is `Failed` and backs off; only a spent 
 dial closes its GATT client on every non-`Opened` exit, cancellation included. While the link is down the pacer
 parks on `link.state`, never on its 1 s idle tick (#67).
 
+Bluetooth going off need not reach the session as a disconnect, so the session watches `dialer.adapterOn` and ends at
+once (`lora adapter off mid-session`): Ready goes straight to `Unavailable`, no backoff, and the loop dials direct when
+the adapter returns. The connect, a GATT op or the bond read that throws is a failed op (`lora gatt <op> threw`, status
+`-2`; `dial`'s adapter reads and the receiver's `isEnabled` are outside that guard); anything else that throws ends that
+pass as `threw <class>` (`lora link threw`) and takes the backoff. Nothing but `stop()` or a terminal state ends the
+loop, and nothing else would start it again. The inbox is one per session: a `send` or `provisionChannel` the session
+did not serve is answered `NotReady` as it ends, never carried to the next one, whose gates it was not asked under. The
+transport requeues on `NotReady`, a packet unsent or whose write failed; one that likely went (a write timed out, a
+compact DM's lost to `Closed`, a cancel in the write or drain) is `Timeout`, booked and never re-aired. A broadcast's
+`Closed` stays `NotReady`, at the risk of a second airing (hp88's 2026-11-06 amendment).
+
 ## Limiters that outlive the process (ADR 2026-09.7svb, ADR 2026-10.ug4a)
 
 **A limiter that resets on launch is not a limiter — where it bounds something a restart replays.** These are persisted
