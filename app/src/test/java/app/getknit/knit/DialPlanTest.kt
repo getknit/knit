@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.bluetooth.ConnectBackoffEntry
 import app.getknit.knit.mesh.bluetooth.ConnectBackoffs
 import app.getknit.knit.mesh.bluetooth.DialKeys
 import app.getknit.knit.mesh.bluetooth.DialPlan
+import app.getknit.knit.mesh.bluetooth.DialTargets
 import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.bluetooth.LonelyDialPolicy
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
@@ -484,6 +485,98 @@ class DialPlanTest {
         ConnectFailReason.entries.filter { it != ConnectFailReason.HANDSHAKE }.forEach {
             assertTrue("$it may have used a stale PSM", DialPlan.forgetsGattPayload(it))
         }
+    }
+
+    /** #309: only a connect no radio answered says the address is dead; a HELLO timeout or refusal means one did. */
+    @Test
+    fun onlyAConnectTimeoutForgetsTheDialedAddress() {
+        assertTrue(DialPlan.forgetsDialedAddress(ConnectFailReason.TIMEOUT))
+        ConnectFailReason.entries.filter { it != ConnectFailReason.TIMEOUT }.forEach {
+            assertFalse("$it: a radio answered, or nothing is known of the address", DialPlan.forgetsDialedAddress(it))
+        }
+    }
+
+    /**
+     * Only a tag dial over 1M that timed out forgets, under its own key and only the entry still there: the 1M address and
+     * the tag's Coded sibling (one toggle, one new tag on both sets). A clear dial (every release peer) and a Coded dial
+     * (range, its ordinary cause) keep both; so does a sighting that replaced the entry during the dial, and any other key.
+     */
+    @Test
+    fun onlyATimedOutTagDialOverOneMForgetsItsAddressAndItsCodedSibling() {
+        val tagForm = AdvertOrder.Form(TAG_MINE, blinded = true)
+        val clearForm = AdvertOrder.Form.clear("aaa")
+
+        fun forget(
+            reason: ConnectFailReason,
+            oneM: MutableMap<String, Pair<String, AdvertOrder.Form>>,
+            coded: MutableMap<String, Pair<String, AdvertOrder.Form>>,
+            dialed: String = "A",
+        ): Boolean {
+            val record = DialPlan.InFlight(DialPlan.DialKind.ORDINARY, "aaa", dialed, linkedAtStart = false)
+            return DialTargets.forgetDialed(reason, record, oneM, coded, { it.first }, { it.second })
+        }
+
+        val blindOneM = hashMapOf("aaa" to ("A" to tagForm), "bbb" to ("A" to tagForm))
+        val blindCoded = hashMapOf("aaa" to ("C" to tagForm), "bbb" to ("C" to tagForm))
+        assertTrue(forget(ConnectFailReason.TIMEOUT, blindOneM, blindCoded))
+        assertEquals("the dialed key only", setOf("bbb"), blindOneM.keys)
+        assertEquals("the tag's Coded sibling went too", setOf("bbb"), blindCoded.keys)
+
+        val clearOneM = hashMapOf("aaa" to ("A" to clearForm))
+        val clearCoded = hashMapOf("aaa" to ("C" to clearForm))
+        assertFalse("a clear 1M dial forgets nothing", forget(ConnectFailReason.TIMEOUT, clearOneM, clearCoded))
+        assertEquals("A", clearOneM.getValue("aaa").first)
+        assertEquals("C", clearCoded.getValue("aaa").first)
+
+        val codedOneM = hashMapOf("aaa" to ("A" to tagForm))
+        val codedDial = hashMapOf("aaa" to ("C" to tagForm))
+        assertFalse("a tag's Coded dial forgets nothing", forget(ConnectFailReason.TIMEOUT, codedOneM, codedDial, dialed = "C"))
+        assertEquals("A", codedOneM.getValue("aaa").first)
+        assertEquals("C", codedDial.getValue("aaa").first)
+
+        val movedOneM = hashMapOf("aaa" to ("B" to AdvertOrder.Form("zzzzother", blinded = true)))
+        val movedCoded = hashMapOf("aaa" to ("C" to tagForm))
+        assertFalse("heard at B during the dial", forget(ConnectFailReason.TIMEOUT, movedOneM, movedCoded))
+        assertEquals("B", movedOneM.getValue("aaa").first)
+        assertEquals("C", movedCoded.getValue("aaa").first)
+
+        val newSibling = AdvertOrder.Form("zzzznew", blinded = true)
+        val siblingOneM = hashMapOf("aaa" to ("A" to tagForm))
+        val siblingCoded = hashMapOf("aaa" to ("D" to newSibling))
+        assertTrue(forget(ConnectFailReason.TIMEOUT, siblingOneM, siblingCoded))
+        assertEquals("a Coded entry under a newer tag stays", "D", siblingCoded.getValue("aaa").first)
+
+        listOf(ConnectFailReason.HANDSHAKE, ConnectFailReason.OTHER).forEach { reason ->
+            val oneM = hashMapOf("aaa" to ("A" to tagForm))
+            val coded = hashMapOf("aaa" to ("C" to tagForm))
+            assertFalse("$reason", forget(reason, oneM, coded))
+            assertEquals(setOf("aaa"), oneM.keys)
+            assertEquals(setOf("aaa"), coded.keys)
+        }
+        assertFalse(
+            "a link's end has no record",
+            DialTargets.forgetDialed(
+                ConnectFailReason.TIMEOUT,
+                null,
+                hashMapOf("aaa" to ("A" to tagForm)),
+                hashMapOf(),
+                { it.first },
+                { it.second },
+            ),
+        )
+    }
+
+    /** #309: a tag's streak at an address a timed-out dial forgot stays in the book while the tag is present. */
+    @Test
+    fun aTagsDialKeyAtAForgottenAddressStaysPresentByItsHandle() {
+        val handle = FormKeys().keyFor(TAG_MINE)
+        val atOld = DialKeys.tagDialKey(handle, "A")
+        val present = setOf("aaa", DialKeys.tagDialKey(handle, null), handle)
+        assertTrue(DialKeys.present(atOld, present))
+        assertTrue("a per-peer key as before", DialKeys.present("aaa", present))
+        assertFalse("its handle gone, the tag left", DialKeys.present(atOld, setOf("aaa")))
+        assertFalse("a clear id is never read as a handle", DialKeys.present("bbb", present))
+        assertFalse("nor an address key", DialKeys.present(checkNotNull(DialKeys.addressKey(atOld)), present))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package app.getknit.knit
 
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.ConnectFailReason
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.bluetooth.AdvertAliases
 import app.getknit.knit.mesh.bluetooth.AdvertAliases.ClaimOutcome
@@ -17,6 +18,7 @@ import app.getknit.knit.mesh.bluetooth.ConnectBackoffEntry
 import app.getknit.knit.mesh.bluetooth.ConnectBackoffs
 import app.getknit.knit.mesh.bluetooth.DialKeys
 import app.getknit.knit.mesh.bluetooth.DialPlan
+import app.getknit.knit.mesh.bluetooth.DialTargets
 import app.getknit.knit.mesh.bluetooth.FormKeys
 import app.getknit.knit.mesh.bluetooth.HeldStreaks
 import app.getknit.knit.mesh.bluetooth.LinkEventStamps
@@ -186,6 +188,7 @@ class BlindReaderTest {
                 BtLines.lonelyDial(handle, 180_000, -60, 15_000),
                 BtLines.connectFailed(handle, "HANDSHAKE", 900, "idle", 0, 1, 10_000),
                 BtLines.connectFailed(dialKey, "TIMEOUT", 12_000, "idle", 0, 2, 20_000),
+                BtLines.targetForgotten(handle, "AA:BB:CC:DD:EE:FF"),
                 BtLines.promote(listOf(handle), emptyList(), setOf(dialKey, handle), "idle"),
                 BtLines.coldHunt(handle, 30_000, -99),
                 BtLines.coldHuntOver(handle, "backoff"),
@@ -563,6 +566,53 @@ class BlindReaderTest {
         assertEquals(3, reader.book[dialKey]?.streak)
     }
 
+    /**
+     * #309, the 2026-11-07 trial's shape: a claim answers for [stranger]'s old tag at [ADDRESS] after its link ended, and the
+     * peer's Bluetooth toggle moved it to a new tag at [OTHER_ADDRESS] that nothing resolves. The dial to the claim's
+     * address times out and forgets it, so the claim is not dialed again (backoff past or not) and the new tag's handle is
+     * a candidate; the old advert heard again puts its address back.
+     */
+    @Test
+    fun aTimedOutDialForgetsTheClaimsAddressAndTheNewTagIsDialed() {
+        val reader = Reader()
+        reader.claimThenDrop(stranger, tag)
+        reader.hear(tag)
+        reader.hear(other, at = OTHER_ADDRESS)
+        assertEquals(listOf(stranger), reader.dialsTo(tag))
+        val dialKey = reader.dialKey(stranger)
+        val record = reader.beginDial(checkNotNull(reader.dueDial(tag)))
+        assertEquals(ADDRESS, record.address)
+        reader.now += WATCHDOG_MS
+        reader.timeOut(record, dialKey)
+
+        assertNull("no dial target", reader.targetOf(stranger))
+        assertEquals(emptyList<String>(), reader.dialsTo(tag))
+        reader.now += PAST_FIRST_BACKOFF_MS
+        assertTrue("still sighted, inside presence's linger", reader.suppressorOf(stranger) is BlePresenceTracker.Suppressor.Claim)
+        assertNull("not dialed again once the backoff is past", reader.dueDial(tag))
+        assertEquals("the new tag's handle at its own address", listOf(reader.handle(other)), reader.dialsTo(other))
+        assertEquals(OTHER_ADDRESS, reader.targetOf(reader.handle(other)))
+
+        reader.hear(tag)
+        assertEquals("heard at the old address again", ADDRESS, reader.targetOf(stranger))
+        assertEquals(listOf(stranger), reader.dialsTo(tag))
+    }
+
+    /** The forget compares what it removes: a sighting that moved the claim's target during the dial survives its timeout. */
+    @Test
+    fun aSightingAtAnotherAddressDuringTheDialSurvivesItsTimeout() {
+        val reader = Reader()
+        reader.claimThenDrop(stranger, tag)
+        reader.hear(tag)
+        val dialKey = reader.dialKey(stranger)
+        val record = reader.beginDial(checkNotNull(reader.dueDial(tag)))
+        reader.hear(tag, at = OTHER_ADDRESS)
+        reader.now += WATCHDOG_MS
+        reader.timeOut(record, dialKey)
+        assertEquals(OTHER_ADDRESS, reader.targetOf(stranger))
+        assertEquals(listOf(stranger), reader.dialsTo(tag))
+    }
+
     @Test
     fun onlyAProvenDialToATagHoldsAnything() {
         val keys = FormKeys()
@@ -669,7 +719,8 @@ class BlindReaderTest {
      * A blinding phone's reader for the Sybil cases: the real [AdvertAliases], [BlindSightings], [BlePresenceTracker],
      * [FormKeys] and [DialPlan], on a virtual clock. Only what is private to `BluetoothMeshTransport` is mirrored: [hear]
      * stands in for `readBlind` with `rekeyForm`'s presence calls and `sight`'s `onSighting`, [links] for its `links`,
-     * [unproven] for `provenLinks`, [dialsTo] for `ordinaryCandidates`, and [link], [endLink], [beginDial] and [failDial] for
+     * [unproven] for `provenLinks`, [dialsTo] for `ordinaryCandidates` (its dial-target gate included), [targetOf] for
+     * `dialTarget` over the 1M `deviceFor` alone, and [link], [endLink], [beginDial], [failDial] and [timeOut] for
      * `registerLink`, `onLinkDown` with `teardownLink`, `initiateTo` and `failConnect`, over the real [ProvenDialStreak],
      * [HeldStreaks] and [ConnectBackoffs].
      */
@@ -688,8 +739,24 @@ class BlindReaderTest {
 
         fun handle(tag: String): String = formKeys.keyFor(tag)
 
-        /** The address a dial would go to now: `dialTarget`, which follows the latest sighting. */
+        /**
+         * Each per-peer key's address and the form it was heard under: `deviceFor`, which follows the latest sighting
+         * ([hear]), moves with a carried form (`rekeyForm`) and loses an address a dial timed out at ([timeOut], #309).
+         */
+        private val heard = HashMap<String, Pair<String, AdvertOrder.Form>>()
+
+        /**
+         * The address [hear] sights at and a dial goes to (`dialTarget`). Setting it moves every held target there, a fresh
+         * sighting at another address.
+         */
         var address = ADDRESS
+            set(value) {
+                field = value
+                heard.replaceAll { _, (_, form) -> value to form }
+            }
+
+        /** [key]'s dial target: `dialTarget`'s address, null when none is known. */
+        fun targetOf(key: String): String? = heard[key]?.first
 
         /** The backoff book, `failConnect`'s and `onLinkDown`'s. */
         val book = HashMap<String, ConnectBackoffEntry>()
@@ -751,7 +818,10 @@ class BlindReaderTest {
         ): ClaimOutcome {
             val held = link(id, dialedTag = tag)
             val outcome = aliases.onDialed(held, AdvertOrder.Form(tag, blinded = true), tag, id)
-            if (outcome == ClaimOutcome.Recorded) presence.rekey(handle(tag), id, BlePresenceTracker.Suppressor.Claim(held))
+            if (outcome == ClaimOutcome.Recorded) {
+                presence.rekey(handle(tag), id, BlePresenceTracker.Suppressor.Claim(held))
+                carry(handle(tag), id)
+            }
             return outcome
         }
 
@@ -785,9 +855,18 @@ class BlindReaderTest {
             return presence.snapshots(now).firstOrNull { it.nodeId in dialsTo(tag) && it.nodeId !in backoff }
         }
 
-        /** `initiateTo`'s record. */
+        /** `initiateTo`'s record, at the snapshot's dial target. */
         fun beginDial(due: BlePresenceTracker.Snapshot): DialPlan.InFlight =
-            DialPlan.InFlight(DialPlan.DialKind.ORDINARY, due.nodeId, address, linkedAtStart = due.nodeId in links)
+            DialPlan.InFlight(DialPlan.DialKind.ORDINARY, due.nodeId, targetOf(due.nodeId) ?: address, linkedAtStart = due.nodeId in links)
+
+        /** `failConnect` for a tag dial over 1M the watchdog timed out: its booking, then the address it forgets (#309). */
+        fun timeOut(
+            record: DialPlan.InFlight,
+            dialKey: String,
+        ) {
+            failDial(record, dialKey)
+            DialTargets.forgetDialed(ConnectFailReason.TIMEOUT, record, heard, HashMap(), { it.first }, { it.second })
+        }
 
         /** `failConnect`'s booking. */
         fun failDial(
@@ -798,16 +877,23 @@ class BlindReaderTest {
             heldStreaks.onDialFailed(record, dialKey, links::get)
         }
 
-        fun hear(tag: String) {
-            val resolution = aliases.resolve(AdvertOrder.Form(tag, blinded = true))
+        /** [tag] heard at [at]: `readBlind`'s attribution, `rekeyForm` and `sight`'s presence and `deviceFor` writes. */
+        fun hear(
+            tag: String,
+            at: String = address,
+        ) {
+            val form = AdvertOrder.Form(tag, blinded = true)
+            val resolution = aliases.resolve(form)
             val attribution = checkNotNull(BlindSightings.attribute(resolution, handle(tag), replayed = false))
             when (attribution.history) {
                 BlindSightings.History.CARRY -> {
                     presence.rekey(handle(tag), attribution.key, attribution.suppressor)
+                    carry(handle(tag), attribution.key)
                 }
 
                 BlindSightings.History.DROP -> {
                     presence.forget(handle(tag))
+                    if (handle(tag) != attribution.key) heard.remove(handle(tag))
                 }
 
                 BlindSightings.History.NONE -> {}
@@ -816,6 +902,15 @@ class BlindReaderTest {
                 sighting(attribution.key, -60, advertised = tag, blinded = true, suppressor = attribution.suppressor),
                 now,
             )
+            heard[attribution.key] = at to form
+        }
+
+        /** `rekeyForm`'s carry of a handle's address to the id it resolved to. */
+        private fun carry(
+            from: String,
+            to: String,
+        ) {
+            if (from != to) heard.remove(from)?.let { heard.putIfAbsent(to, it) }
         }
 
         /** The per-peer keys a dial to [tag] is a candidate under now: empty when nothing would dial it. */
@@ -830,19 +925,26 @@ class BlindReaderTest {
                         { DialKeys.dialHeld(it, held, ::dialKeyOf) },
                         links.keys - unproven,
                         links::get,
-                    ).filter { it.advertised == tag }
+                    ).filter { it.advertised == tag && targetOf(it.nodeId) != null }
                     .map { it.nodeId }
             }
 
         private fun heldDialKeys(): Set<String> =
             links.entries.mapNotNullTo(HashSet()) { (id, link) -> DialKeys.heldDial(dialedByMe[link], id !in unproven) }
 
-        private fun dialKeyOf(snap: BlePresenceTracker.Snapshot): String = DialKeys.dialKey(snap, formKeys::keyFor, address)
+        private fun dialKeyOf(snap: BlePresenceTracker.Snapshot): String =
+            DialKeys.dialKey(snap, formKeys::keyFor, targetOf(snap.nodeId) ?: address)
     }
 
     private companion object {
         const val WALL_MS = 1_800_000_000_000L
         const val FIVE_MINUTES_MS = 300_000L
+
+        /** The 1M connect watchdog's 12 s (`CodedPhyPolicy.connectTimeoutMs`). */
+        const val WATCHDOG_MS = 12_000L
+
+        /** Past a first failure's 10 s backoff (the rig draws the jitter's midpoint), inside presence's linger. */
+        const val PAST_FIRST_BACKOFF_MS = 20_000L
         const val ADDRESS = "5A:C4:2F:B3:C8:6D"
         const val OTHER_ADDRESS = "7E:3E:87:04:7A:A0"
 

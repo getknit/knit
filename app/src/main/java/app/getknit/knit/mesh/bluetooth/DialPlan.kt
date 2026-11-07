@@ -239,6 +239,14 @@ internal object DialPlan {
      */
     fun forgetsGattPayload(reason: ConnectFailReason): Boolean = reason != ConnectFailReason.HANDSHAKE
 
+    /**
+     * Whether a failed dial forgets the address it went to (#309): a connect that timed out found no radio there, as
+     * after the peer's Bluetooth toggle moved it to a new address. A HELLO timeout or a refusal (HANDSHAKE) means a radio
+     * answered, and any other failure says nothing of the address. A peer still there is heard again within a scan
+     * window once the dial frees the scan, and that sighting puts the address back.
+     */
+    fun forgetsDialedAddress(reason: ConnectFailReason): Boolean = reason == ConnectFailReason.TIMEOUT
+
     /** The `via=` a dial's `bt initiating to` line carries while the Coded experiment runs ([codedOn]); empty when off. */
     fun via(
         codedOn: Boolean,

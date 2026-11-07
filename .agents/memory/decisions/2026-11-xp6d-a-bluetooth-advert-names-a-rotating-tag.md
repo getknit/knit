@@ -523,4 +523,7 @@ Pixel 3 dialed a Pixel 9 158 times in 40 s, 3 ms after the link it held to it ca
   Bluetooth toggles on the Pixel 3, three short links, a forced rotation on each phone and two crossings, 26 relinks in
   all, each held past 15 s but the short ones. Neither phone dialed the other within 10 s of a link coming up, no dial was
   refused and no `held dial` edge was logged; the build before this one redialed 2 ms after a link came up, and was
-  refused. The one dial that began held was the inbound case above, bounded by hj4a's backoff.
+  refused. The one dial that began held was the inbound case above, bounded by hj4a's backoff. The slow relinks after the toggles
+  (#309) were dials to a claim's old address timing out while the new tag went unseen behind the paused scan; a tag dial
+  over 1M that times out now forgets the dialed address and the tag's Coded sibling, and a clear or Coded dial forgets
+  nothing (`DialTargets.forgetDialed`; trialled 2026-11-07, see hj4a's amendment of 2026-11-06).

@@ -84,6 +84,17 @@ internal object DialKeys {
     ): String? = if (!unresolved || !FormKeys.isForm(dialKey)) null else dialKey.substringBeforeLast('@')
 
     /**
+     * Whether the backoff book counts [key] present for its prune, given the [present] keys (per-peer keys, dial keys,
+     * address keys and blinded snapshots' handles): [key] itself, or a tag's dial key whose handle is present at any
+     * address. A timed-out dial forgets the address it went to (#309), so until the tag is heard there again its snapshot's
+     * dial key names no address, and the streak booked at the old one must not be pruned in that gap.
+     */
+    fun present(
+        key: String,
+        present: Set<String>,
+    ): Boolean = key in present || handleKey(key, unresolved = true)?.let { it in present } == true
+
+    /**
      * The per-peer keys of [snaps] backing off, for every filter that reads backoff by per-peer key ([PromotionPolicy],
      * the lonely pick, the boost trigger, the scan floor, the cold hunts): one whose dial key ([dialKeyOf]), whose own key
      * (a link's flap backs off the id) or, while it resolves to nobody, whose address ([addressKey]) is in [active].

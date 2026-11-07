@@ -170,4 +170,10 @@ backoff".
   began held, since a handle is never linked. It is the ordinary backoff, up to its cap.
 - **The trial (2026-11-07)** is ADR 2026-11.xp6d's of that date. One dial in 26 relinks began held, the Pixel 9's to
   the Pixel 3 at its advert from before a Bluetooth toggle, 3.7 s after the Pixel 3's inbound link: it timed out and booked
-  45 s of backoff (streak 3), not none. No dial was refused.
+  45 s of backoff (streak 3), not none. No dial was refused. Since #309 a tag dial over 1M that times out forgets
+  the address it dialed and the tag's Coded sibling, so for a blinded peer a toggle costs at most one such dial at the old
+  advert rather than one per backoff step. A clear dial and a Coded dial forget nothing, so a clear peer is as before. Trialled 2026-11-07 against
+  main without it, ten Bluetooth toggles on the Pixel 3 beside the Pixel 9 each: no dial went to a pre-toggle address
+  with the change, against three timeouts at the Pixel 3's old address in one toggle without it. Neither arm met a
+  40 s median relink, because the Pixel 3 refilled its three links with other phones first and the Pixel 9's dials to
+  its new tag timed out at −90 dBm (5 of 10 relinked within 180 s with the change, 3 of 10 without).

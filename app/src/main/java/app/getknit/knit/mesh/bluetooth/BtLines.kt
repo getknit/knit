@@ -45,6 +45,12 @@ internal object BtLines {
         retryMs: Long,
     ): String = "bt connect $key failed reason=$reason durMs=$durMs a2dp=$a2dp links=$links streak=$streak retryMs=$retryMs"
 
+    /** A timed-out dial to [key] forgot [address] as its dial target (#309), straight after its `bt connect … failed` line. */
+    fun targetForgotten(
+        key: String,
+        address: String,
+    ): String = "bt dial target forgotten $key $address (timeout)"
+
     fun promote(
         promote: Collection<String>,
         evict: Collection<String>,

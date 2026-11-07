@@ -224,7 +224,7 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
 - **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
   `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow` /
-  `honours`, `DialPlan.DialKind` / `InFlight`, `DialKeys`, `CodedPhyPolicy.dialsBack` /
+  `honours`, `DialPlan.DialKind` / `InFlight`, `DialKeys`, `DialTargets`, `CodedPhyPolicy.dialsBack` /
   `dialsBackAfterDrop`, `FormKeys`, `BlindQueue`, `LinkEventStamps`, `BlindSightings`, `ReplayMarks`, `KeyChurnLimiter`,
   `BtLines`, `ScanPlan.published`, `MeshTransport.onPresenceKeys`, `BleBlindDrop`, `Protocol.CAP_BLIND_ADVERT`, or any
   pre-link `localId > nodeId` in the plane:**
@@ -266,7 +266,13 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   Aware candidate sets also take an unresolved Aware-flagged tag (`ScanPlan.published`). `inFlight` and the backoff are
   booked by `DialKeys.dialKey` (a clear id, or a tag's handle and address), an unresolved form's failed dial also
   advances its address's and its handle's streaks (`DialKeys.addressKey`, `handleKey`), every candidate filter reads backoff through them
-  (`DialKeys.backedOff`), and device caches hold the form each address was heard under. A held proven link we dialed at a
+  (`DialKeys.backedOff`), and device caches hold the form each address was heard under. A tag dial over 1M that times out forgets the
+  address it dialed and the tag's Coded sibling, under the record's key and only while each entry is still that one
+  (`DialTargets.forgetDialed`, #309: a toggle moves the peer, and a claim at the old tag would be dialed there until
+  presence's linger ends); a clear dial (every release peer) and a Coded dial (range, yvn6) forget nothing. A peer still
+  there is re-seen once the scan resumes, and a tag's streaks at any address stay in the book while its handle is present
+  (`DialKeys.present`). An ordinary candidate needs a dial target,
+  as a lonely one does. A held proven link we dialed at a
   tag holds off that dial key, and only it (`DialKeys.heldDial` / `dialHeld`, `dialedByMe` now maps a link to its key; the
   2026-11-06 amendment: a sighting's answer can outlive the dial that settled it). `DialPlan.InFlight.linkedAtStart` ends
   the zero-wait retry: a dial that began with its peer held backs off, only a real crossing or a record-less end reads

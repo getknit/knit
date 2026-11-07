@@ -395,8 +395,10 @@ class BluetoothMeshTransport internal constructor(
 
     private class HeardDevice(
         val device: BluetoothDevice,
-        val advertised: String,
-    )
+        val form: AdvertOrder.Form,
+    ) {
+        val advertised: String get() = form.advertised
+    }
 
     // The node ids whose latest sighting came through a GATT payload (an iPhone, kwq2) rather than service data: this
     // phone's own evidence that a dialer claiming CAP_DOORBELL in its unauthenticated HELLO is one (AND-3). Kept with
@@ -3362,7 +3364,7 @@ class BluetoothMeshTransport internal constructor(
         if (coded) metrics.onBleCodedSighting()
         if (devices) {
             if (viaGatt) gattSighted.add(key) else gattSighted.remove(key)
-            val heard = HeardDevice(device, form.advertised)
+            val heard = HeardDevice(device, form)
             if (coded) {
                 // Its Coded set's address is not its presence advert's: kept apart, so a dial picks the PHY it opens on.
                 codedDeviceFor[key] = heard
@@ -3565,9 +3567,16 @@ class BluetoothMeshTransport internal constructor(
         return ConnectBackoffPolicy.nextDueWaitMs(now, nextDue, CONNECT_WAIT_MIN_MS, CONNECT_WAIT_MAX_MS)
     }
 
-    /** The sighted peers the tie-break has us dial: a smaller id, not linked, no dial to it in flight. */
+    /**
+     * The sighted peers the tie-break has us dial: a smaller id, not linked, no dial to it in flight, with an address to
+     * dial ([dialTarget], as [lonelyCandidates] reads it). One with none would win a promotion `initiateTo` then drops, and
+     * at the budget that promotion evicts a held link for nothing: a tag whose address a timed-out dial forgot (#309), or
+     * a peer heard on Coded alone once the Coded mode goes off, stays in presence's linger with none.
+     */
     private fun ordinaryCandidates(snaps: List<BlePresenceTracker.Snapshot>): List<BlePresenceTracker.Snapshot> =
-        DialPlan.ordinaryCandidates(mine(), snaps, links.keys, inFlightPeers(), dialHeld(), provenLinks(), links::get)
+        DialPlan
+            .ordinaryCandidates(mine(), snaps, links.keys, inFlightPeers(), dialHeld(), provenLinks(), links::get)
+            .filter { dialTarget(it) != null }
 
     private fun ordinaryDialDueMs(
         snaps: List<BlePresenceTracker.Snapshot>,
@@ -3662,15 +3671,19 @@ class BluetoothMeshTransport internal constructor(
         // The links this decision scores: an eviction closes the link it scored, never one that replaced it since.
         val scored = links.values.associateBy { it.nodeId }
         val linkSnaps = linkSnapshots(scored.values, snaps, now)
-        // Present by per-peer key or by dial key (a tag's at its address): what the backoff book keeps.
+        // Present by per-peer key, by dial key (a tag's at its address) or by a tag's handle: what the backoff book keeps.
+        // The handle keeps a tag's dial keys at every address, so a streak outlives the gap after a timed-out dial forgot
+        // its address (#309), when the snapshot's dial key reads no address until the tag is heard there again.
         val present =
             snaps.mapTo(HashSet()) { it.nodeId } +
-                snaps.filter { it.blinded }.flatMap { snap -> dialKeyOf(snap).let { listOfNotNull(it, DialKeys.addressKey(it)) } }
+                snaps.filter { it.blinded }.flatMap { snap ->
+                    dialKeyOf(snap).let { listOfNotNull(it, DialKeys.addressKey(it), formKeys.keyFor(snap.advertised)) }
+                }
         val active =
             synchronized(lock) {
                 // Drop backoff state for a peer that has left and whose window has passed, so a returning peer
                 // starts fresh instead of inheriting a maxed-out streak.
-                ConnectBackoffs.prune(backoffs, now) { id -> id in present || id in links.keys || id in inFlight.keys }
+                ConnectBackoffs.prune(backoffs, now) { id -> DialKeys.present(id, present) || id in links.keys || id in inFlight.keys }
                 ConnectBackoffs.active(backoffs, now)
             }
         val backoff = DialKeys.backedOff(snaps, active, ::dialKeyOf)
@@ -4738,6 +4751,7 @@ class BluetoothMeshTransport internal constructor(
         // PSM (GattPayloads, companion change A3).
         if (gattPeers && device != null && DialPlan.forgetsGattPayload(reason)) forgetGattPayload(device.address, "dial")
         var shown = peer ?: dialKey
+        var forgotTarget: String? = null
         val (streak, nextAt) =
             synchronized(lock) {
                 val record = if (releaseSlot) inFlight.remove(dialKey) else null
@@ -4753,6 +4767,7 @@ class BluetoothMeshTransport internal constructor(
                 listOfNotNull(DialKeys.addressKey(dialKey, unresolved), DialKeys.handleKey(dialKey, unresolved)).forEach {
                     ConnectBackoffs.onDialFailed(backoffs, it, linkedNow = linkedNow, now = elapsed(), config = backoffConfig)
                 }
+                forgotTarget = forgetTimedOutTarget(reason, record)
                 ConnectBackoffs
                     .onDialFailed(backoffs, dialKey, linkedNow = linkedNow, now = elapsed(), config = backoffConfig)
                     .also { heldStreaks.onDialFailed(record, dialKey, links::get) }
@@ -4763,7 +4778,23 @@ class BluetoothMeshTransport internal constructor(
         // Log the real exception (previously swallowed) + A2DP state, so the intermittent failure is diagnosable.
         val dur = elapsed() - startedAt
         Log.w(TAG, BtLines.connectFailed(shown, reason, dur, audioMonitor.state.value, links.size, streak, nextAt - elapsed()), cause)
+        forgotTarget?.let { Log.i(TAG, BtLines.targetForgotten(shown, it)) }
     }
+
+    /**
+     * A tag dial over 1M that timed out found no radio at the address it dialed: forget it and the tag's Coded sibling, so
+     * the next dial waits for a sighting instead of running the watchdog there again (#309, [DialTargets.forgetDialed]).
+     * A peer still there is heard again once the dial's end frees the scan; one that moved (a Bluetooth toggle) is dialed
+     * at its new address or handle. A clear dial or a Coded one forgets nothing.
+     * Returns the address forgotten, null when nothing went.
+     */
+    private fun forgetTimedOutTarget(
+        reason: ConnectFailReason,
+        record: DialPlan.InFlight?,
+    ): String? =
+        record?.address?.takeIf { _ ->
+            DialTargets.forgetDialed(reason, record, deviceFor, codedDeviceFor, { it.device.address }, { it.form })
+        }
 
     /**
      * Forgets [address]'s GATT payload and any wait before its next read, so its next advert reads it afresh (the
