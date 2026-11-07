@@ -145,6 +145,85 @@ internal object ConnectBackoffs {
 }
 
 /**
+ * The dial keys a held link's refused dials were booked under (hj4a's amendment of 2026-11-06), so the link's end clears
+ * exactly those and the real relink is not held off by a backoff the held link earned: an accepted link has no dial key, and
+ * a dialed one clears only its own, so no registration would. Keyed by what was booked, never read back from presence: an
+ * entry that aged out or a dial target that moved would miss the key, and a read could clear another address's streak,
+ * which `ProvenDialStreak`'s unconfirmed end must find as the dial left it (ADR 2026-11.264w).
+ *
+ * Only a link that outlived [ProvenDialStreak.CONFIRM_BY_AGE_MS] clears anything, a replacement chain counted whole, so a
+ * fork that dials in, refuses our dial and closes cannot reset the streak each cycle. What that bounds is refused dials per
+ * tag and address: holding each link that long buys the backoff's first two steps, two in 15 s. It does not bound three
+ * things. An accepted dial resets its key by design, so a fork that accepts and proves escapes the gate at churn rate, two
+ * handshakes a dial. A fresh address is a fresh key (an open follow-up). A faked crossing books nothing here, so its dials
+ * are not on this backoff at all: about one free dial per 8 to 12 s. The cost of the gate: an honest link under 15 s leaves
+ * its streak standing (hj4a's amendment).
+ *
+ * [L] is the link, compared by `equals`. Not thread-safe: the transport calls it under its lock, the backoff book's, which
+ * orders a booking against the end of the link it names.
+ */
+internal class HeldStreaks<L : Any> {
+    /** What a link earned, oldest first, and how long the links it replaced held before it. */
+    private class Earned {
+        val keys = LinkedHashSet<String>()
+        var priorMs = 0L
+
+        /** The current key is the one that matters: past the cap the oldest goes, left to its own backoff uncleared. */
+        fun add(key: String) {
+            keys -= key
+            keys += key
+            if (keys.size > MAX_KEYS_PER_LINK) keys -= keys.first()
+        }
+    }
+
+    private val earned = HashMap<L, Earned>()
+
+    /** A dial booked as [record] under [dialKey] failed: the link [held] names earns the key, if it began held and that link stands. */
+    fun onDialFailed(
+        record: DialPlan.InFlight?,
+        dialKey: String,
+        held: (String) -> L?,
+    ) {
+        if (record?.linkedAtStart != true) return
+        val link = held(record.peerKey) ?: return
+        earned.getOrPut(link) { Earned() }.add(dialKey)
+    }
+
+    /**
+     * [from], held [fromHeldMs], was replaced by [to] under the same id: the peer is still held, so what it earned stays
+     * earned and its hold counts towards [to]'s. A link that earned nothing still passes its age on: the chain held that long.
+     */
+    fun moved(
+        from: L,
+        to: L,
+        fromHeldMs: Long,
+    ) {
+        val carried = earned.remove(from)
+        val next = earned.getOrPut(to) { Earned() }
+        next.priorMs += fromHeldMs + (carried?.priorMs ?: 0L)
+        carried?.keys?.forEach(next::add)
+    }
+
+    /** [link] ended after [heldMs]: the keys it earned leave [book] if its chain outlived the confirm age. Forgotten either way. */
+    fun ended(
+        link: L,
+        heldMs: Long,
+        book: MutableMap<String, ConnectBackoffEntry>,
+    ) {
+        val ended = earned.remove(link) ?: return
+        // Borrowed from 264w: the age past which a responder has kept a link. This bound moves if that constant does.
+        if (heldMs + ended.priorMs >= ProvenDialStreak.CONFIRM_BY_AGE_MS) book.keys -= ended.keys
+    }
+
+    /** The radio went down with every link, and the book with them. */
+    fun clear() = earned.clear()
+
+    private companion object {
+        const val MAX_KEYS_PER_LINK = 16
+    }
+}
+
+/**
  * A best-effort bucket for a connect's (otherwise discarded) exception; the raw cause is logged regardless. A
  * watchdog-forced timeout is failed as [ConnectFailReason.TIMEOUT] at its call site, so it never lands here.
  */

@@ -62,7 +62,9 @@ import java.util.PriorityQueue
  * holds a proven one. A claim may only while its claimant's link ([Resolution.Resolved.claimant]) is held: past the
  * link's end, a new link from the same id included, it still names the peer for presence, but a dial
  * [AdvertOrder.iDial] calls for goes ahead, and its proof settles the claim ([onDialed]). A hint never may, and neither
- * may an unresolved answer. The wiring reads this against its live links when it decides a dial.
+ * may an unresolved answer. The wiring reads this against its live links when it decides a dial. Beside the answer, and
+ * whatever it says, the wiring skips one dial more: to the very tag and address its own proven dial reached, while that
+ * link is held ([DialKeys.dialHeld], the amendment of 2026-11-06). Nothing said on a link can bring that about.
  *
  * **Wiring: a sighting's history.** Until a form resolves, the wiring keys what it learns of the sighting (its dwell,
  * its admission sighting, its cold sightings) on the advertised form; once it resolves, that history carries over to
@@ -184,7 +186,7 @@ internal class AdvertAliases<L : Any>(
         /** One of my own tags, current or previous. */
         data object Own : Resolution
 
-        /** No contact's expected tag, claim or hint names it. Never suppresses a dial. */
+        /** No contact's expected tag, claim or hint names it. Suppresses no dial ([DialKeys.dialHeld] is the wiring's, not an answer's). */
         data object Unresolved : Resolution
 
         /** Marked blinded, but the bytes lack the tag prefix. */

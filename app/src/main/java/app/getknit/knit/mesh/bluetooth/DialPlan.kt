@@ -23,18 +23,22 @@ internal object DialPlan {
     /**
      * A dial in flight (ADR 2026-11.xp6d's reader, obligation 9): its [kind], recorded when it starts; the per-peer key
      * it was attributed to then ([peerKey]: the resolved id, or an unresolved form's handle), which `failConnect` reads
-     * as the dial's resolved id; and the [address] it went to, so no ACL release lands on it.
+     * as the dial's resolved id; the [address] it went to, so no ACL release lands on it; and whether [peerKey] already
+     * held a link when it began ([linkedAtStart]): such a dial crossed nothing, so its refusal backs off
+     * ([DialKeys.linkedNow]). Required, never defaulted: the two readings of a record are opposite failures.
      */
     data class InFlight(
         val kind: DialKind,
         val peerKey: String,
         val address: String?,
+        val linkedAtStart: Boolean,
     )
 
     /**
      * Whether a link held now suppresses a dial to [nodeId] whose answer names [suppressor]: any link ([linked]) for a
      * clear advert, a proven one ([proven]) for a key's, the claimant's own link (the one [held] names under the id now)
-     * for a claim's, none for a hint's or an unresolved form's.
+     * for a claim's, none for a hint's or an unresolved form's. The one thing beside it is [DialKeys.dialHeld]: our own
+     * proven dial to that same tag and address, which needs the dial key and so is read by the candidate filters.
      */
     fun suppressed(
         suppressor: BlePresenceTracker.Suppressor,
@@ -52,20 +56,22 @@ internal object DialPlan {
 
     /**
      * The sighted peers the ordinary order has me dial ([AdvertOrder.iDial] on [mine] against each snapshot's advertised
-     * form: for two clear phones, a smaller id), not [linked], no dial to it [inFlight]. A clear phone never dials a
-     * blinded advert here; the blinding side dials it.
+     * form: for two clear phones, a smaller id), not [linked], no dial to it [inFlight], not a tag and address a held dial
+     * of ours reached ([dialHeld], [DialKeys.dialHeld]: required, so a call site cannot drop it). A clear phone never dials
+     * a blinded advert here; the blinding side dials it.
      */
     fun ordinaryCandidates(
         mine: AdvertOrder.Mine,
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         inFlight: Set<String>,
+        dialHeld: (BlePresenceTracker.Snapshot) -> Boolean,
         proven: Set<String> = linked,
         held: (String) -> Any? = { null },
     ): List<BlePresenceTracker.Snapshot> =
         snaps.filter {
             AdvertOrder.iDial(mine.current, it.form) && !suppressed(it.suppressor, it.nodeId, linked, proven, held) &&
-                it.nodeId !in inFlight
+                it.nodeId !in inFlight && !dialHeld(it)
         }
 
     /**
@@ -109,29 +115,31 @@ internal object DialPlan {
         return snap.nodeId in PromotionPolicy.decide(listOf(ripe), links, backoff, config).promote
     }
 
-    /** The sighted peers [promotable] keeps: the scan's promotion work. */
+    /** The sighted peers [promotable] keeps, less a tag and address a held dial of ours reached: the scan's promotion work. */
     fun scanCandidates(
         mine: AdvertOrder.Mine,
         snaps: List<BlePresenceTracker.Snapshot>,
         linked: Set<String>,
         backoff: Set<String>,
         rssiFloorDbm: Double,
+        dialHeld: (BlePresenceTracker.Snapshot) -> Boolean,
         proven: Set<String> = linked,
         held: (String) -> Any? = { null },
     ): Set<String> =
         snaps
             .filter {
-                promotable(
-                    mine,
-                    it.form,
-                    it.nodeId,
-                    it.smoothedRssi,
-                    linked,
-                    rssiFloorDbm,
-                    it.suppressor,
-                    proven,
-                    held,
-                ) { id -> id in backoff }
+                !dialHeld(it) &&
+                    promotable(
+                        mine,
+                        it.form,
+                        it.nodeId,
+                        it.smoothedRssi,
+                        linked,
+                        rssiFloorDbm,
+                        it.suppressor,
+                        proven,
+                        held,
+                    ) { id -> id in backoff }
             }.mapTo(HashSet()) { it.nodeId }
 
     /**

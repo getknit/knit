@@ -488,3 +488,34 @@ under the writer's id and no other, a failure burns no mark), `ExpectedTagTableT
 in either listing order, one key under two generations stays resolved), `PresenceKeyForkLabTest` (either arrival order,
 through a real `ExpectedTagTable`), `PresenceKeyFeedLabTest` (a reused generation reaches the radio with its new bytes),
 and the `blind` vectors' `aliceKeyUnderBob`, which pins one key under another's id.
+
+## Amendment 2026-11-06: a dial's proof holds off that dial
+
+Status: Draft (2026-11-06), for the caller to accept; its device trial is owed. From a field burst on the same day: a
+Pixel 3 dialed a Pixel 9 158 times in 40 s, 3 ms after the link it held to it came up, and every dial was refused.
+
+- **What went wrong.** The tag had been announced on a link that had ended, so it was heard as that link's claim, and the
+  dial went, as this ADR wants. The dial's proof recorded a claim for the new link, but it reached only `AdvertAliases`.
+  The sighting's `Suppressor.Claim` still named the ended link, and `rekeyForm` moves only a handle's entry, so nothing
+  rewrote it until the tag was heard again. Dials in flight hold off the scan windows whose hit would end it, so the
+  burst feeds itself and 40 s is no natural bound. A second, routine gap gives one extra dial: an unresolved form's entry
+  sits under its handle until the worker runs `onTagDialed`, after `registerLink`'s `wake()`. Three of the four
+  `bt connect ok` lines to that peer were followed by an immediate redial.
+- **The rule.** While a proven link we dialed at a tag is held, a snapshot whose dial key is that link's (the same tag at
+  the same address) is not dialed, whatever its answer says (`DialKeys.dialHeld`). This is the one exception to "an
+  unresolved answer never suppresses a dial" and to `Suppressor.None`. It is read where the dial is decided, in
+  `ordinaryCandidates`, `scanCandidates`, `isBoostTrigger` and `mayBegin`. The lonely filter does not read it: a lonely
+  dial needs zero links, and a held key means a link. The key is written before `links.put` and read through the links
+  held, so it goes with its link.
+- **What it does not change.** Suppression still reads the answer: a claim only while its claimant's link is held, a
+  claimant that relinks suppresses nothing, a hint nothing. A key is written only by our own completed, proven dial, so no
+  claim, hint, `TAG_NEXT` or HELLO `t` makes one, and an inbound link has none. Those cases fall to the backoff (hj4a's
+  amendment of this date), which a fork churning inbound links does not reset: two refused dials per tag and address in each 15 s, within the limits
+  hj4a's amendment states.
+- **How far the Sybil guarantee reaches.** A held key covers one tag at one address. A replayer we dialed at her own
+  address gains that address and no other. That holds end to end for a contact's tag: the key outranks her proof, and the
+  contact's own address is still dialed. For a stranger's tag it does not hold end to end, and this rule is not why:
+  `onDialed` records the tag as dial-proven for the replayer, every address's copy then resolves to that claim, and the
+  owner at another address is held off while her link is held. That is this ADR's existing residual, one tag per link.
+- **A blinded doorbell link** would hold its key for the link's life, past the moment its peer stopped listening. It
+  cannot happen today: a `CAP_DOORBELL` phone does not air tags. A port that does must read this again.

@@ -21,6 +21,8 @@ import org.junit.Test
 
 /** Unit tests for [DialPlan]: which peers the connection engine hands its policies, and how their answers combine. */
 class DialPlanTest {
+    private val noHeldDial: (BlePresenceTracker.Snapshot) -> Boolean = { false }
+
     private val mine = AdvertOrder.Mine.clear("mmm")
 
     /** A blinding phone's forms (ADR 2026-11.xp6d): what the writer will set; this build never does. */
@@ -51,7 +53,15 @@ class DialPlanTest {
     @Test
     fun theTieBreakDialsOnlySmallerIdsNotLinkedAndNotInFlight() {
         val snaps = listOf(snap("aaa"), snap("bbb"), snap("ccc"), snap("zzz"))
-        val got = DialPlan.ordinaryCandidates(mine, snaps, linked = setOf("bbb"), inFlight = setOf("ccc")).map { it.nodeId }
+        val got =
+            DialPlan
+                .ordinaryCandidates(
+                    mine,
+                    snaps,
+                    linked = setOf("bbb"),
+                    inFlight = setOf("ccc"),
+                    dialHeld = noHeldDial,
+                ).map { it.nodeId }
         assertEquals("a larger id is the other side's to dial", listOf("aaa"), got)
     }
 
@@ -89,7 +99,15 @@ class DialPlanTest {
     @Test
     fun theScanCandidatesAreTheSightingsThatPassTheSameGate() {
         val snaps = listOf(snap("aaa", -70.0), snap("bbb", -95.0), snap("ccc", -70.0), snap("ddd", -70.0), snap("zzz", -50.0))
-        val got = DialPlan.scanCandidates(mine, snaps, linked = setOf("ccc"), backoff = setOf("ddd"), rssiFloorDbm = -90.0)
+        val got =
+            DialPlan.scanCandidates(
+                mine,
+                snaps,
+                linked = setOf("ccc"),
+                backoff = setOf("ddd"),
+                rssiFloorDbm = -90.0,
+                dialHeld = noHeldDial,
+            )
         assertEquals(setOf("aaa"), got)
     }
 
@@ -125,8 +143,8 @@ class DialPlanTest {
         // dial TAG_LOW (unit-test review of part 1).
         val between = AdvertOrder.Mine.clear(BETWEEN)
         val snaps = listOf(snap("aaa"), snap("bbb", tag = TAG_LOW), snap("ccc", tag = TAG_HIGH))
-        assertEquals(listOf("aaa"), DialPlan.ordinaryCandidates(between, snaps, emptySet(), emptySet()).map { it.nodeId })
-        assertEquals(setOf("aaa"), DialPlan.scanCandidates(between, snaps, emptySet(), emptySet(), -90.0))
+        assertEquals(listOf("aaa"), DialPlan.ordinaryCandidates(between, snaps, emptySet(), emptySet(), noHeldDial).map { it.nodeId })
+        assertEquals(setOf("aaa"), DialPlan.scanCandidates(between, snaps, emptySet(), emptySet(), -90.0, noHeldDial))
         assertFalse(
             "a tag sorting below my id is still the blinding side's to dial",
             DialPlan.promotable(between, AdvertOrder.Form(TAG_LOW, blinded = true), "bbb", -60.0, emptySet(), -90.0) { false },
@@ -151,7 +169,7 @@ class DialPlanTest {
         assertEquals(
             "a clear id sorting above my tag is dialed too",
             listOf("aaa", "zzz", ABOVE_MINE, "bbb"),
-            DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet()).map { it.nodeId },
+            DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet(), noHeldDial).map { it.nodeId },
         )
     }
 
@@ -179,7 +197,7 @@ class DialPlanTest {
         val entries = HashMap<String, ConnectBackoffEntry>()
         val config = BackoffConfig(baseMs = 10_000, maxMs = 180_000)
         var now = 0L
-        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB")
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB", linkedAtStart = false)
         repeat(3) { round ->
             val linked = DialKeys.linkedNow(record, dialKey, linked = emptySet())
             val (streak, nextAt) = ConnectBackoffs.onDialFailed(entries, dialKey, linked, now, config) { 0.5 }
@@ -201,7 +219,7 @@ class DialPlanTest {
         val keys = FormKeys()
         val dialKey = DialKeys.dialKey(snap(FormKeys.MARK + "x", tag = TAG_LOW), keys::keyFor, "AA:BB")
         val entries = HashMap<String, ConnectBackoffEntry>()
-        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = keys.keyFor(TAG_LOW), address = "AA:BB")
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = keys.keyFor(TAG_LOW), address = "AA:BB", linkedAtStart = false)
         // The reply named "ccc" and failed its proof: nothing is booked for "ccc", and an unresolved form is never linked.
         ConnectBackoffs.onDialFailed(entries, dialKey, DialKeys.linkedNow(record, dialKey, setOf("ccc")), 0, BackoffConfig()) { 0.5 }
         assertEquals(setOf(dialKey), entries.keys)
@@ -210,10 +228,44 @@ class DialPlanTest {
 
     @Test
     fun aDialWhosePeerLinkedMeanwhileIsNoFailure() {
-        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB")
+        val record = DialPlan.InFlight(DialPlan.DialKind.LONELY, peerKey = "bbb", address = "AA:BB", linkedAtStart = false)
         assertTrue("its resolved id linked: a crossing dial", DialKeys.linkedNow(record, "~zzzz…0@AA:BB", setOf("bbb")))
         assertFalse(DialKeys.linkedNow(record, "~zzzz…0@AA:BB", setOf("ccc")))
         assertTrue("a clear dial with no record reads its key", DialKeys.linkedNow(null, "bbb", setOf("bbb")))
+        assertFalse("no record, nothing linked", DialKeys.linkedNow(null, "bbb", setOf("ccc")))
+    }
+
+    @Test
+    fun aDialThatBeganWithItsPeerHeldCrossedNothing() {
+        val record = DialPlan.InFlight(DialPlan.DialKind.ORDINARY, peerKey = "bbb", address = "AA:BB", linkedAtStart = true)
+        assertFalse(DialKeys.linkedNow(record, "~zzzz…0@AA:BB", setOf("bbb")))
+    }
+
+    @Test
+    fun aTagAndAddressAHeldDialReachedGivesTheScanNoWork() {
+        val keys = FormKeys()
+        val peer = snap("bbb", tag = TAG_LOW, suppressor = BlePresenceTracker.Suppressor.None)
+        val keyOf: (BlePresenceTracker.Snapshot) -> String = { DialKeys.dialKey(it, keys::keyFor, "AA:BB") }
+        val held = setOf(keyOf(peer))
+        val free = DialPlan.scanCandidates(blinding, listOf(peer), emptySet(), emptySet(), -90.0, noHeldDial)
+        assertEquals(setOf("bbb"), free)
+        val got =
+            DialPlan.scanCandidates(
+                blinding,
+                listOf(peer),
+                emptySet(),
+                emptySet(),
+                -90.0,
+                dialHeld = { DialKeys.dialHeld(it, held, keyOf) },
+            )
+        assertEquals(emptySet<String>(), got)
+    }
+
+    @Test
+    fun aClearAdvertIsNeverReadAgainstTheHeldDials() {
+        val clear = snap("aaa")
+        assertFalse(DialKeys.dialHeld(clear, setOf("aaa")) { error("no key is built for a clear advert") })
+        assertFalse(DialKeys.dialHeld(snap("bbb", tag = TAG_LOW), emptySet()) { error("nor with nothing held") })
     }
 
     @Test
@@ -221,15 +273,23 @@ class DialPlanTest {
         // The bluetooth review of step 5a: suppression is read when the dial is decided, never frozen at the sighting.
         val contact = snap("bbb", tag = TAG_LOW, suppressor = BlePresenceTracker.Suppressor.Proven)
         val snaps = listOf(contact)
-        assertEquals(listOf("bbb"), DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet(), emptySet()).map { it.nodeId })
+        assertEquals(
+            listOf("bbb"),
+            DialPlan.ordinaryCandidates(blinding, snaps, emptySet(), emptySet(), noHeldDial, emptySet()).map { it.nodeId },
+        )
         // My tag dial proved bbb: the same snapshot, no new sighting.
         assertEquals(
             emptyList<String>(),
-            DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), setOf("bbb")).map { it.nodeId },
+            DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), noHeldDial, setOf("bbb")).map { it.nodeId },
         )
         assertEquals(0, DialPlan.lonelyCandidates(snaps, setOf("bbb"), emptySet(), setOf("bbb")) { true }.size)
         // A link to bbb that never proved itself suppresses nothing on a key's answer.
-        assertEquals(listOf("bbb"), DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), emptySet()).map { it.nodeId })
+        assertEquals(
+            listOf("bbb"),
+            DialPlan.ordinaryCandidates(blinding, snaps, setOf("bbb"), emptySet(), noHeldDial, emptySet()).map {
+                it.nodeId
+            },
+        )
         assertTrue(DialPlan.suppressed(BlePresenceTracker.Suppressor.Linked, "bbb", setOf("bbb"), emptySet()))
         assertFalse(DialPlan.suppressed(BlePresenceTracker.Suppressor.None, "bbb", setOf("bbb"), setOf("bbb")))
     }
@@ -292,13 +352,13 @@ class DialPlanTest {
         assertEquals(
             "the claimant's link held: suppressed",
             emptyList<String>(),
-            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), linked) { claimant }.map { it.nodeId },
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), noHeldDial, linked) { claimant }.map { it.nodeId },
         )
         // Its link ended, and the claimant relinked, proven: another link, so my dial to the claimed tag goes ahead.
         val relinked = Any()
         assertEquals(
             listOf("bbb"),
-            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), linked) { relinked }.map { it.nodeId },
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), noHeldDial, linked) { relinked }.map { it.nodeId },
         )
         assertEquals(listOf("bbb"), DialPlan.lonelyCandidates(snaps, linked, emptySet(), linked, { relinked }) { true }.map { it.nodeId })
     }
@@ -310,7 +370,7 @@ class DialPlanTest {
         assertEquals(
             "a hint or an unproven key answer leaves the dial standing",
             listOf("aaa"),
-            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet()).map { it.nodeId },
+            DialPlan.ordinaryCandidates(blinding, snaps, linked, emptySet(), noHeldDial).map { it.nodeId },
         )
         assertEquals(listOf("aaa"), DialPlan.lonelyCandidates(snaps, linked, emptySet()) { true }.map { it.nodeId })
         assertTrue(

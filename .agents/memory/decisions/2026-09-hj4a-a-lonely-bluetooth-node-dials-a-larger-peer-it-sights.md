@@ -125,3 +125,46 @@ time on a phone that suspends.
 lonely dial runs the same handshake as any dial, so the link it makes is registered only once the larger peer proved
 its id, and its failure backs off as a failed HELLO does. Nothing here widens what a responder admits; R1 makes it
 narrower, refusing an unproven claim to an id that can prove itself.
+
+## Amendment 2026-11-06 — only a crossing dial is excused
+
+Status: Draft (2026-11-06), for the caller to accept; its device trial is owed.
+
+"A failure for a peer with a live link now bumps nothing" was written for the crossing above, a dial the peer's own link
+overtook, and said more than that. It also excused a dial that began with its peer already held, which crossed nothing:
+such a dial wakes the loop with no backoff booked, and on 2026-11-06 that was 158 refused dials in 40 s (ADR 2026-11.xp6d's
+amendment of this date). It also contradicted "A refusal is an ordinary failed dial" here and xp6d's "its own no-reply
+backoff".
+
+- **The rule.** `DialPlan.InFlight.linkedAtStart` records whether the peer held a link when the dial began, and a dial
+  that did backs off as any refusal does (`DialKeys.linkedNow`). It is a required field: the two readings are opposite
+  failures, so no default is safe. A held peer's refusals are bounded below: a peer that does not churn gets the ordinary
+  backoff, and a fork that holds each link to the confirm age gets two refused dials per tag and address in each 15 s (the
+  limits of that bound are below). A dial with no record stays a
+  crossing: a clear crossing's record went with the inbound link's registration, and a link's end has none. A clear dial
+  is not moved by this, since `mayBegin` refuses one while its id is linked.
+- **The stale streak this would leave.** The wrinkle above was right to fear it. A bump on a tag's dial key while an inbound
+  link is held survives that link: an accepted link has no dial key to clear, and a proven dial clears only at its first
+  record. So `failConnect` records each key a dial that began held was booked under against the link holding then
+  (`HeldStreaks`), and that link's end clears exactly those keys, in `teardownLink`, before the flap is booked, so a link
+  closed for silence is covered. Nothing reads presence for it: an entry that aged out or a target that moved between 1M
+  and Coded would miss the key, and a read could clear another address's streak, which an unconfirmed proven dial must find
+  as the dial left it (ADR 2026-11.264w). A replaced link hands its keys and its age to its successor, since the peer is
+  still held and the chain really held that long. Past 16 keys a link drops its oldest, left to its own backoff: the
+  current key is the one that matters.
+- **Only a link that outlived `ProvenDialStreak.CONFIRM_BY_AGE_MS` clears anything.** Otherwise a fork that dials in, refuses
+  our dial and closes resets the streak each cycle. With the rule those refused dials stay on the growing backoff. Holding
+  each link 15 s buys it the backoff's first two steps, two refused dials per tag and address in each 15 s (at 0 and 10 s).
+  That is the bound, not zero: at that age the link cannot be told from an honest one. The age is 264w's constant,
+  borrowed: this bound moves if that does.
+- **What that bound does not cover.** An accepted dial resets its key by design, so a fork that accepts and proves escapes
+  the age gate at churn rate, two handshakes per dial. A fresh address is a fresh key and is not bounded here; that is an
+  open follow-up. A faked crossing books nothing, about one free dial per 8 to 12 s, so its dials are not on this backoff.
+- **What the gate costs an honest peer.** A link under 15 s leaves its earned streak standing: at most about 24 s after one
+  such link, and a run of short links can climb to the cap of about 216 s until a successful dial resets it.
+- **A dial that began held and fails after its link has gone is still booked,** with nothing left to clear it. Leaving it
+  unbooked would save an honest relink one step, but it conflicts with the bound: the fork closes first and refuses after,
+  its next inbound link resets the id's flap streak, and no dial is ever charged. The cost is one relink waiting about 10 s
+  (the 12 s watchdog, 25 s on Coded, plus the 5 s HELLO cut is the window in which it can happen).
+- **What is left.** A streak under an unresolved form's handle is not earned by any link: such a dial's record cannot say it
+  began held, since a handle is never linked. It is the ordinary backoff, up to its cap.

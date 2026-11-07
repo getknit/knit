@@ -25,7 +25,37 @@ internal object DialKeys {
         snap: BlePresenceTracker.Snapshot,
         formKey: (String) -> String,
         address: String?,
-    ): String = if (!snap.blinded) snap.nodeId else "${formKey(snap.advertised)}@${address ?: NO_ADDRESS}"
+    ): String = if (!snap.blinded) snap.nodeId else tagDialKey(formKey(snap.advertised), address)
+
+    /** A blinded advert's dial key, from its form's [handle] and the [address] it airs from. */
+    fun tagDialKey(
+        handle: String,
+        address: String?,
+    ): String = "$handle@${address ?: NO_ADDRESS}"
+
+    /**
+     * What a link holds off, of the [dialKey] it was dialed under: that key only when the link is [proven] and the dial
+     * went to a tag (the bluetooth design pass of 2026-11-06). A clear dial's key is an id, which `Suppressor.Linked`
+     * already covers; a link the peer dialed has none. Null when it holds off nothing.
+     */
+    fun heldDial(
+        dialKey: String?,
+        proven: Boolean,
+    ): String? = dialKey?.takeIf { proven && FormKeys.isForm(it) }
+
+    /**
+     * Whether [snap] is the tag at the address a held proven link of ours was dialed at ([held], from [heldDial]): that
+     * device answered our own dial and proved an id, so another dial reaches the same phone and is refused. The one
+     * exception to the [BlePresenceTracker.Suppressor] an answer carries (ADR 2026-11.xp6d's amendment of 2026-11-06),
+     * read beside it: only our own completed dial writes a key, and it names the address, so no claim, hint, `TAG_NEXT` or
+     * HELLO `t` can make one, and a replayer dialed at her own address adds only that address. [dialKeyOf] is read only
+     * when it can matter.
+     */
+    fun dialHeld(
+        snap: BlePresenceTracker.Snapshot,
+        held: Set<String>,
+        dialKeyOf: (BlePresenceTracker.Snapshot) -> String,
+    ): Boolean = snap.blinded && held.isNotEmpty() && dialKeyOf(snap) in held
 
     /**
      * The address streak a failed dial to an unresolved form also advances (the bluetooth review of step 5a): the
@@ -75,12 +105,15 @@ internal object DialKeys {
 
     /**
      * Whether a dial booked as [record] (under [dialKey]) that failed found its peer linked meanwhile: its resolved id
-     * holds a link (a lonely dial crossing the peer's own, ADR 2026-09.hj4a), so it is no failure to back off from. An
-     * unresolved form's handle is never linked.
+     * holds a link that came up during the dial (a lonely dial crossing the peer's own, ADR 2026-09.hj4a), so it is no
+     * failure to back off from. A dial that began with its peer already held ([DialPlan.InFlight.linkedAtStart]) crossed
+     * nothing: it is an ordinary refusal, and it backs off (hj4a's amendment of 2026-11-06: at zero wait those were 158
+     * dials in 40 s). No record reads as a crossing, by [dialKey] alone: a clear crossing's record went with the inbound
+     * link's registration, and a link's end has none. An unresolved form's handle is never linked.
      */
     fun linkedNow(
         record: DialPlan.InFlight?,
         dialKey: String,
         linked: Set<String>,
-    ): Boolean = (record?.peerKey ?: dialKey) in linked
+    ): Boolean = if (record == null) dialKey in linked else !record.linkedAtStart && record.peerKey in linked
 }

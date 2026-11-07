@@ -243,7 +243,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `stale` flag (start a new key generation) when the mark is past the window's lead; the announced tag is `reserve`d
   and aired with `take`, and the mark's store throws rather than answers null on error. When to rotate is the
   wiring's, on the confined worker. A claim suppresses a dial
-  only while its claimant's own link is held (not a later link from the same id), and an unresolved answer never does. The claim tables are capped (unproven voids and
+  only while its claimant's own link is held (not a later link from the same id), and an unresolved answer never does; the one
+  exception is no answer's: a tag and address our own held proven dial reached is not dialed again (`DialKeys.dialHeld`, below). The claim tables are capped (unproven voids and
   ended links' announcements evicted first) and expire off a deadline queue; every claim rule is in `AdvertAliases`'
   KDoc, and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`, `ExpectedTagTableTest`, `TagScheduleTest`.
   The reader (step 5a): every pre-link role reads `AdvertOrder` with my forms as one `AdvertOrder.Mine` snapshot (clear
@@ -265,7 +266,14 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   Aware candidate sets also take an unresolved Aware-flagged tag (`ScanPlan.published`). `inFlight` and the backoff are
   booked by `DialKeys.dialKey` (a clear id, or a tag's handle and address), an unresolved form's failed dial also
   advances its address's and its handle's streaks (`DialKeys.addressKey`, `handleKey`), every candidate filter reads backoff through them
-  (`DialKeys.backedOff`), and device caches hold the form each address was heard under. A dial to a blinded advert (lonely
+  (`DialKeys.backedOff`), and device caches hold the form each address was heard under. A held proven link we dialed at a
+  tag holds off that dial key, and only it (`DialKeys.heldDial` / `dialHeld`, `dialedByMe` now maps a link to its key; the
+  2026-11-06 amendment: a sighting's answer can outlive the dial that settled it). `DialPlan.InFlight.linkedAtStart` ends
+  the zero-wait retry: a dial that began with its peer held backs off, only a real crossing or a record-less end reads
+  `DialKeys.linkedNow` as hj4a's carve-out, and such a failure is booked even if its link has gone. A link's end clears
+  exactly the keys its refused dials were booked under (`HeldStreaks`, hj4a's 2026-11-06 amendment), only past
+  `ProvenDialStreak.CONFIRM_BY_AGE_MS`, so a fork closing inside that age resets nothing (one holding each link that long does
+  clear: two refused dials per tag and address in 15 s, within hj4a's limits); never read that back from presence. A dial to a blinded advert (lonely
   only, while this phone airs its id) is `LinkHandshake.dialTag`, registers under the proven id and feeds `onDialed`; a
   responder feeds a proven dialer's `t` to `onAnswered`, a proven tag-aware link's `TAG_NEXT` to `onTagNext`, every
   link end to `onLinkEnded`, `ACTION_TIME_CHANGED` to `slide`. Keys arrive through `MeshTransport.onPresenceKeys` (fed

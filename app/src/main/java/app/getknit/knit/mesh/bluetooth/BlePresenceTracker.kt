@@ -56,7 +56,10 @@ class BlePresenceTracker(
             override fun toString(): String = "Claim"
         }
 
-        /** Nothing: a hint's or an unresolved form's answer; the dial `iDial` calls for goes ahead. */
+        /**
+         * Nothing: a hint's or an unresolved form's answer; the dial `iDial` calls for goes ahead, unless our own held proven
+         * dial reached this very tag and address ([DialKeys.dialHeld], which no answer can bring about).
+         */
         data object None : Suppressor
     }
 
@@ -122,7 +125,7 @@ class BlePresenceTracker(
          * What may suppress a dial `AdvertOrder.iDial` calls for on the latest sighting's answer (ADR 2026-11.xp6d's
          * "What an answer may do"), evaluated when the dial is decided, never frozen at the sighting: a clear advert's
          * by any link to [nodeId], a key's only by a proven one, a claim's only by its claimant's own link while that is
-         * the link held under the id, a hint's and an unresolved form's never.
+         * the link held under the id, a hint's and an unresolved form's never. [DialKeys.dialHeld] is read beside it.
          */
         val suppressor: Suppressor = Suppressor.Linked,
     ) {

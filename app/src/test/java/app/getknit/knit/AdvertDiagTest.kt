@@ -567,12 +567,69 @@ class AdvertDiagTest {
         val removals = Regex("""linkForms\.remove\((\w+)\)""").findAll(transport).map { it.groupValues[1] }.toSet()
         assertEquals("registerLink's prev, teardownLink's fl, the sighting's undo", setOf("prev", "fl", "it"), removals)
         for (arg in listOf("prev", "fl")) assertTrue("dialedByMe.remove($arg)", "dialedByMe.remove($arg)" in transport)
-        assertTrue("only a dial registers as dialed", "if (dialStartedAt != null) dialedByMe.add(framed)" in transport)
+        assertTrue("only a dial registers as dialed", "if (dialStartedAt != null) dialedByMe[framed] = dialKey ?: nodeId" in transport)
         // The diag lambdas are a debug build's alone, and go at stop.
         assertTrue("if (BuildConfig.DEBUG) bindDebugDiags()" in transport)
         assertTrue("AdvertDiag.status = ::advertStatus" in transport.substringAfter("private fun bindDebugDiags()"))
         assertTrue("unbindDebugDiags()" in transport.substringAfter("override fun stop()").substringBefore("tearDownRadio()"))
         assertTrue("AdvertDiag.status = null" in transport.substringAfter("private fun unbindDebugDiags()"))
+    }
+
+    private fun stripped(source: String) = source.filterNot(Char::isWhitespace)
+
+    /** The whitespace-stripped body of the transport's private function [name], up to the next member. */
+    private fun inside(name: String) = stripped(transport.substringAfter("private fun $name(").split(Regex("\n\n    (?=\\S)")).first())
+
+    // The rig in BlindReaderTest computes each of these reads for itself, so only a pin on the source sees a dropped one.
+
+    @Test
+    fun aDialRecordsWhetherItsPerPeerKeyWasHeldNeverItsDialKey() {
+        // A tag dial's key is never in `links`: read by it, every dial looks unheld and refusals loop at zero wait.
+        assertTrue("linkedAtStart=links.containsKey(key)" in inside("initiateTo"))
+    }
+
+    @Test
+    fun theHeldDialKeysReadEachLinksOwnProof() {
+        // A constant here empties the set, and every filter over it still reads and still passes.
+        assertTrue("DialKeys.heldDial(dialedByMe[link],link.proven)" in inside("heldDialKeys"))
+    }
+
+    @Test
+    fun bothCandidateFiltersReadTheHeldDial() {
+        val read = "dialHeld(),provenLinks(),links::get"
+        assertEquals(2, Regex(Regex.escape(read)).findAll(stripped(transport)).count())
+        assertTrue("the promotion", read in inside("ordinaryCandidates"))
+        assertTrue("the scan's floor", read in inside("floorScan"))
+    }
+
+    @Test
+    fun theHeldDialIsReadWhereNoRequiredParameterReachesIt() {
+        // `ordinaryCandidates` and `scanCandidates` require it; these two have no such argument to forget.
+        assertTrue("the boost trigger", "if(form.blinded&&heardAtHeldDial(form,address))returnfalse" in inside("isBoostTrigger"))
+        assertTrue(
+            "a decision made before the link came up",
+            "mayBegin(backoffs,dialKey,links.keys+heldDialKeys()," in inside("beginConnect"),
+        )
+    }
+
+    @Test
+    fun aDialsKeyIsWrittenBeforeItsLinkCanBeSeen() {
+        val register = inside("registerLink")
+        val written = register.indexOf("dialedByMe[framed]=dialKey?:nodeId")
+        assertTrue("written", written >= 0)
+        assertTrue("before links.put, whose wake must find it", written < register.indexOf("links.put(nodeId,framed)"))
+    }
+
+    @Test
+    fun aLinksEarnedStreaksFollowItsReplacementAndItsEnd() {
+        // Dropping any of these compiles and leaves the pure tests green: the wiring is here alone.
+        assertTrue(
+            "a replaced link hands them on, and a successor that already ended strands none",
+            "if(links[nodeId]===framed){heldStreaks.moved(prev,framed,heldMs(prev))}else{heldStreaks.ended(prev,heldMs(prev),backoffs)}" in
+                inside("registerLink"),
+        )
+        assertTrue("a link's end clears them", "heldStreaks.ended(fl,heldMs(fl),backoffs)" in inside("teardownLink"))
+        assertTrue("a booking reaches them", "heldStreaks.onDialFailed(record,dialKey,links::get)" in inside("failConnect"))
     }
 
     @Test

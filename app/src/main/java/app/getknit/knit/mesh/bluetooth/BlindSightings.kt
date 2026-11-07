@@ -25,6 +25,10 @@ package app.getknit.knit.mesh.bluetooth
  *   channel's audience or the boost trigger, and never suppresses a dial: the dial [AdvertOrder.iDial] calls for still
  *   happens, and its proof is what voids a liar.
  * - **My own tag**, and a malformed one, attribute nothing.
+ *
+ * "Suppressing a dial" here is what an answer may do. Whatever it says, a tag at the address our own held proven dial
+ * reached is not dialed again ([DialKeys.dialHeld], ADR 2026-11.xp6d's amendment of 2026-11-06): that rests on our dial, not
+ * on any answer.
  */
 internal object BlindSightings {
     private val PROVEN = BlePresenceTracker.Suppressor.Proven

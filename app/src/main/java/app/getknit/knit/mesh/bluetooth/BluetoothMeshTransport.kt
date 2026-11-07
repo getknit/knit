@@ -573,10 +573,14 @@ class BluetoothMeshTransport internal constructor(
             wallMs = System::currentTimeMillis,
         )
 
-    // The live links this phone dialed (the dial path registers with `dialStartedAt`, the accept path without), keyed by
-    // link identity and dropped wherever [linkForms] drops the link, so a replaced link never reports its successor's role.
-    // Read by the debug bridge's `ADVERT` (`links[].dialedByMe`).
-    private val dialedByMe: MutableSet<FramedLink> = ConcurrentHashMap.newKeySet()
+    // The live links this phone dialed (the dial path registers with `dialStartedAt`, the accept path without), each with
+    // the dial key it was booked under. Keyed by link identity and dropped wherever [linkForms] drops the link, so a replaced
+    // link never reports its successor's role. Read by the debug bridge's `ADVERT` (`links[].dialedByMe`) and, through
+    // [heldDialKeys], by the candidate filters.
+    private val dialedByMe: MutableMap<FramedLink, String> = ConcurrentHashMap()
+
+    // The dial keys each held link's refused dials were booked under, cleared when it ends. Under [lock], with [backoffs].
+    private val heldStreaks = HeldStreaks<FramedLink>()
 
     // When the last rotation installed (elapsed clock, the worker's): `ADVERT_ROTATE`'s grace floor. [lastInstall]: what
     // the last install was (its cause, its tag's source), for the debug bridge's `ADVERT` alone; the worker's.
@@ -941,7 +945,7 @@ class BluetoothMeshTransport internal constructor(
         lastScanCoded = false
         synchronized(lock) {
             inFlight.clear()
-            backoffs.clear()
+            clearBackoffsLocked()
         }
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
@@ -3116,7 +3120,8 @@ class BluetoothMeshTransport internal constructor(
         val now = elapsed()
         val sighted = presence.snapshots(now)
         val backoff = activeBackoff(now, sighted)
-        val candidates = DialPlan.scanCandidates(mine(), sighted, links.keys, backoff, PROMOTE_RSSI_FLOOR, provenLinks(), links::get)
+        val candidates =
+            DialPlan.scanCandidates(mine(), sighted, links.keys, backoff, PROMOTE_RSSI_FLOOR, dialHeld(), provenLinks(), links::get)
         val demand =
             ScanDemandPolicy.decide(
                 linkCount = links.size,
@@ -3407,7 +3412,7 @@ class BluetoothMeshTransport internal constructor(
         healSignal.trySend(Unit) // connectLoop: react to every sighting to drive promotion
         // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
         // is what keeps a settled clique scanning continuously — gating here is what lets the floor engage.
-        if (reach && isBoostTrigger(form, key, suppressor)) scanWake.trySend(Unit)
+        if (reach && isBoostTrigger(form, key, suppressor, device.address)) scanWake.trySend(Unit)
     }
 
     /**
@@ -3480,13 +3485,16 @@ class BluetoothMeshTransport internal constructor(
 
     /** A just-sighted peer worth boosting the scan for: one we'd initiate to ([AdvertOrder.iDial] on its advertised
      *  [form]), not held off by a link its answer's [suppressor] counts, above the RSSI floor (so it can
-     *  actually promote), and off connect backoff by its dial key. Mirrors the [floorScan] candidate gate. */
+     *  actually promote), off connect backoff by its dial key, and not the tag and [address] a held dial of ours reached.
+     *  Mirrors the [floorScan] candidate gate. */
     private fun isBoostTrigger(
         form: AdvertOrder.Form,
         key: String,
         suppressor: BlePresenceTracker.Suppressor,
+        address: String,
     ): Boolean {
         if (!::localNodeId.isInitialized) return false
+        if (form.blinded && heardAtHeldDial(form, address)) return false
         val forms = mine()
         // Before the RSSI read, which takes the presence lock: a scan result for a linked or an order-exempt peer stops here.
         val linked = links.keys
@@ -3504,6 +3512,15 @@ class BluetoothMeshTransport internal constructor(
             ) {
                 backingOff(it, form.blinded)
             }
+    }
+
+    /** Whether [form], heard at [address], is a tag and address a held dial of ours reached: [DialKeys.dialHeld] with no snapshot. */
+    private fun heardAtHeldDial(
+        form: AdvertOrder.Form,
+        address: String,
+    ): Boolean {
+        val held = heldDialKeys()
+        return held.isNotEmpty() && formKeys.existing(form.advertised)?.let { DialKeys.tagDialKey(it, address) in held } == true
     }
 
     /**
@@ -3550,7 +3567,7 @@ class BluetoothMeshTransport internal constructor(
 
     /** The sighted peers the tie-break has us dial: a smaller id, not linked, no dial to it in flight. */
     private fun ordinaryCandidates(snaps: List<BlePresenceTracker.Snapshot>): List<BlePresenceTracker.Snapshot> =
-        DialPlan.ordinaryCandidates(mine(), snaps, links.keys, inFlightPeers(), provenLinks(), links::get)
+        DialPlan.ordinaryCandidates(mine(), snaps, links.keys, inFlightPeers(), dialHeld(), provenLinks(), links::get)
 
     private fun ordinaryDialDueMs(
         snaps: List<BlePresenceTracker.Snapshot>,
@@ -3711,7 +3728,7 @@ class BluetoothMeshTransport internal constructor(
         val psm = presence.psmFor(key) ?: return
         val form = snap.form
         val dialKey = DialKeys.dialKey(snap, formKeys::keyFor, device.address)
-        if (!beginConnect(dialKey, DialPlan.InFlight(kind, key, device.address))) return
+        if (!beginConnect(dialKey, DialPlan.InFlight(kind, key, device.address, linkedAtStart = links.containsKey(key)))) return
         val rssi = snap.smoothedRssi.toInt()
         Log.i(TAG, BtLines.initiating(key, psm, rssi, audioMonitor.state.value, links.size, noteDial(viaCoded)))
         // A tag dial forgets no GATT payload and arms its channel unnamed: the reply's id is unproven (`dialTag`'s KDoc).
@@ -4297,7 +4314,8 @@ class BluetoothMeshTransport internal constructor(
             confirmGattPayload(it.address, nodeId)
         }
         (form ?: presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.form)?.let { linkForms[framed] = it }
-        if (dialStartedAt != null) dialedByMe.add(framed) // the dial path passes it; the accept path never does
+        // The dial path passes both, the accept path neither. Before `links.put`: its `wake()` must find the key.
+        if (dialStartedAt != null) dialedByMe[framed] = dialKey ?: nodeId
         linkStamps.onLinkEvent(nodeId, elapsed())
         val prev = links.put(nodeId, framed)
         // R3 on this plane: a proven link took the place of an unproven one claiming the id (the prev close below).
@@ -4312,6 +4330,16 @@ class BluetoothMeshTransport internal constructor(
             lastPace.remove(prev)
             linkForms.remove(prev)
             dialedByMe.remove(prev)
+            synchronized(lock) {
+                // A teardown of [framed] since `links.put` already ran its `ended`: a move now would leave an entry nothing removes.
+                if (links[nodeId] ===
+                    framed
+                ) {
+                    heldStreaks.moved(prev, framed, heldMs(prev))
+                } else {
+                    heldStreaks.ended(prev, heldMs(prev), backoffs)
+                }
+            }
             scope.launch(worker) {
                 aliases.onLinkEnded(prev)
                 tagNextSends.forget(prev)
@@ -4470,6 +4498,8 @@ class BluetoothMeshTransport internal constructor(
         linkStamps.onLinkEvent(nodeId, elapsed())
         val form = linkForms.remove(fl)
         dialedByMe.remove(fl)
+        // Here and not at the flap's bump: a link closed for silence may never report its end (2ec2eb5b).
+        synchronized(lock) { heldStreaks.ended(fl, heldMs(fl), backoffs) }
         scope.launch(worker) {
             aliases.onLinkEnded(fl)
             tagNextSends.forget(fl)
@@ -4670,7 +4700,8 @@ class BluetoothMeshTransport internal constructor(
     ): Boolean {
         val begun =
             synchronized(lock) {
-                if (!ConnectBackoffs.mayBegin(backoffs, dialKey, links.keys, inFlight.keys, elapsed())) return false
+                // The held dial keys too: a decision made before the link came up must not dial the tag it just reached.
+                if (!ConnectBackoffs.mayBegin(backoffs, dialKey, links.keys + heldDialKeys(), inFlight.keys, elapsed())) return false
                 if (inFlight.values.any { it.peerKey == record.peerKey }) return false
                 inFlight[dialKey] = record
                 true
@@ -4685,7 +4716,9 @@ class BluetoothMeshTransport internal constructor(
     /**
      * A dial booked under [dialKey] failed: its streak advances on that key (a tag dial's is the tag's and address's,
      * never the id a reply names), unless its peer — [peer], or the per-peer key the dial was attributed to — is linked
-     * now.
+     * now and was not when the dial began ([DialPlan.InFlight.linkedAtStart], [DialKeys.linkedNow]). A dial that began held
+     * is booked even when that link has gone since: a free retry there would be a fork's to repeat, and it costs one relink
+     * about one backoff step (hj4a's amendment of 2026-11-06).
      */
     @Suppress("LongParameterList") // one failure's facts
     private fun failConnect(
@@ -4711,7 +4744,8 @@ class BluetoothMeshTransport internal constructor(
                 if (peer == null && record != null) shown = record.peerKey
                 // A dial the peer refused because its own dial to us linked first (a lonely dial crossing the
                 // ordinary one, ADR 2026-09.hj4a) is no failure to back off from: that link reset the streak already.
-                // A link's end (releaseSlot false) reads no record: [peer] is its id.
+                // One that began with its peer held crossed nothing, and backs off. A link's end (releaseSlot false)
+                // reads no record: [peer] is its id.
                 val linkedNow = DialKeys.linkedNow(record, peer ?: dialKey, links.keys)
                 // A dial to an unresolved form advances its address's streak and its handle's too (DialKeys.addressKey,
                 // handleKey): a new tag at one address, or one tag on its 1M and Coded sets' two addresses, still backs off.
@@ -4719,7 +4753,9 @@ class BluetoothMeshTransport internal constructor(
                 listOfNotNull(DialKeys.addressKey(dialKey, unresolved), DialKeys.handleKey(dialKey, unresolved)).forEach {
                     ConnectBackoffs.onDialFailed(backoffs, it, linkedNow = linkedNow, now = elapsed(), config = backoffConfig)
                 }
-                ConnectBackoffs.onDialFailed(backoffs, dialKey, linkedNow = linkedNow, now = elapsed(), config = backoffConfig)
+                ConnectBackoffs
+                    .onDialFailed(backoffs, dialKey, linkedNow = linkedNow, now = elapsed(), config = backoffConfig)
+                    .also { heldStreaks.onDialFailed(record, dialKey, links::get) }
             }
         metrics.onBtConnectFailed(reason)
         field.record(FieldEvent.BtFail(BtLines.fieldPeer(shown), reason, durationMs = elapsed() - startedAt, streak = streak))
@@ -4769,6 +4805,12 @@ class BluetoothMeshTransport internal constructor(
      */
     private fun forgetQuietGattPayloads(ms: Long) {
         gattPayloads.scanned(ms, linkAddresses.values.toSet()).forEach { Log.i(TAG, "bt gatt forget $it (quiet)") }
+    }
+
+    /** The radio went down with every link: nothing is backing off, and no link has anything earned. Holds [lock]. */
+    private fun clearBackoffsLocked() {
+        backoffs.clear()
+        heldStreaks.clear()
     }
 
     /** Advance [nodeId]'s failure streak and set its next-eligible deadline via [ConnectBackoffPolicy]. Holds [lock]. */
@@ -4822,7 +4864,7 @@ class BluetoothMeshTransport internal constructor(
                             awareCandidates.clear()
                             synchronized(lock) {
                                 inFlight.clear()
-                                backoffs.clear()
+                                clearBackoffsLocked()
                             }
                             _reachable.value = emptySet()
                             _near.value = emptySet()
@@ -4988,6 +5030,19 @@ class BluetoothMeshTransport internal constructor(
 
     /** The ids holding a proven link now: what a key's answer suppresses a dial on ([DialPlan.suppressed]). */
     private fun provenLinks(): Set<String> = links.entries.mapNotNullTo(HashSet()) { (id, link) -> id.takeIf { link.proven } }
+
+    /** The dial keys of the held proven links we dialed at a tag ([DialKeys.heldDial]). */
+    private fun heldDialKeys(): Set<String> =
+        links.values.mapNotNullTo(HashSet()) { link -> DialKeys.heldDial(dialedByMe[link], link.proven) }
+
+    /** How long [link] has been up; a link that never started has held nothing. */
+    private fun heldMs(link: FramedLink): Long = if (link.linkStartedAt > 0) elapsed() - link.linkStartedAt else 0L
+
+    /** The filter [DialKeys.dialHeld] over the links held now, for one decision's snapshots. */
+    private fun dialHeld(): (BlePresenceTracker.Snapshot) -> Boolean {
+        val held = heldDialKeys()
+        return { DialKeys.dialHeld(it, held, ::dialKeyOf) }
+    }
 
     /** The dial keys in flight. */
     private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.keys.toSet() }
