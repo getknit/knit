@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
@@ -338,11 +339,17 @@ class TransferManagerTest {
             assertEquals(TransferPhase.Connecting, a.record(id)!!.phase)
             assertTrue(a.signals.sent.any { it.phase == TransferPayload.PHASE_READY && it.id == id })
             assertTrue(a.log.events.none { it == "host" })
-            // Cancelled while the grace is still running: the host job ends without ever taking the radio.
+            // Cancelled while the grace is still running: the host job ends without ever taking the radio. Whether it
+            // had started by then is the dispatcher's choice (on the one-vCPU runner the cancel lands before its first
+            // resume, and a job cancelled before it starts never runs its body, so finish never releases), so the
+            // test waits for every job the managers launched to end and reads the one fact both orders share: nothing
+            // hosted, and nothing is left running that could.
             a.manager.cancel(id)
             awaitPhase(a, id, TransferPhase.Cancelled)
-            await("alice releases the radio") { a.wifi.released.isNotEmpty() }
-            delay(grace)
+            await("every job the managers launched ends") {
+                scope.coroutineContext.job.children
+                    .none()
+            }
             assertTrue(a.log.events.none { it == "host" })
         }
 
