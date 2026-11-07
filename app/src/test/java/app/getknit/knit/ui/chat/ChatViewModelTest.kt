@@ -11,6 +11,7 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.call.CallKind
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.data.AttachmentStore
@@ -1053,6 +1054,36 @@ class ChatViewModelTest {
             }
             assertEquals("the draft is never cleared on a refusal", 0, cleared)
             assertEquals(expected.size, mesh.sentPublicPosts.size)
+        }
+
+    @Test
+    fun aPostOverTheBudgetKeepsTheDraftRatherThanAiringPartOfIt() =
+        runTest {
+            // Shared text skips the composer's cap, and the board would air only what fits while the row kept it all.
+            publicConsentFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC)
+            val events = mutableListOf<Int>()
+            var cleared = 0
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.clearInput.collect { cleared++ } }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true)
+            advanceUntilIdle()
+            val budget = requireNotNull(vm.state.value.publicPostBudget)
+
+            vm.send("x".repeat(budget + 1))
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.chat_mesh_post_too_large), events)
+            assertTrue(mesh.sentPublicPosts.isEmpty())
+            assertEquals("the draft stays the user's", 0, cleared)
+            assertFalse(vm.isSending.value)
+
+            vm.send("x".repeat(budget))
+            advanceUntilIdle()
+
+            assertEquals(1, mesh.sentPublicPosts.size)
+            assertEquals(1, events.size)
         }
 
     @Test
@@ -2215,6 +2246,32 @@ class ChatViewModelTest {
             vm.send("again")
             advanceUntilIdle()
             assertEquals(2, mesh.sentChats.size)
+        }
+
+    @Test
+    fun aDraftOverTheCapIsRefusedWholeNotCutShort() =
+        runTest {
+            val vm = vm()
+            val events = mutableListOf<Int>()
+            var cleared = 0
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.clearInput.collect { cleared++ } }
+
+            vm.send("x".repeat(TextLimits.MESSAGE + 1))
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.chat_message_too_long_to_send), events)
+            assertTrue(mesh.sentChats.isEmpty())
+            assertEquals("the draft stays the user's", 0, cleared)
+            assertFalse(vm.isSending.value)
+
+            // The outer whitespace is trimmed before the send measures, so it cannot be what refuses a draft.
+            val fits = "x".repeat(TextLimits.MESSAGE)
+            vm.send("  $fits\n")
+            advanceUntilIdle()
+
+            assertEquals(fits, mesh.sentChats.single().text)
+            assertEquals(1, events.size)
         }
 
     @Test
@@ -4204,7 +4261,7 @@ class ChatViewModelTest {
             vm.startLocation()
             locationSource.readings.tryEmit(reading(accuracy = 12f))
             runCurrent()
-            vm.send("a".repeat(5_000))
+            vm.send("a".repeat(app.getknit.knit.TextLimits.MESSAGE))
             runCurrent()
             val body = mesh.sentChats.last().text
             assertTrue(

@@ -2046,6 +2046,9 @@
          because "183/193" is read aloud as a fraction. -->
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Post length: %1$d of %2$d</string>
+    <!-- A draft past the message cap, which only shared text or a translation can be: the spoken form of the counter over the send button, and the toast when the send refuses it. -->
+    <string name="chat_message_length_a11y">Message length: %1$d of %2$d</string>
+    <string name="chat_message_too_long_to_send">Not sent: too long for one message. Delete some text and try again.</string>
     <string name="chat_mesh_text_only">The radio channel carries text only</string>
     <string name="chat_commons_text_only">This relay\'s room takes text only</string>
     <string name="chat_commons_not_joined">Not sent: this phone is no longer in this commons</string>

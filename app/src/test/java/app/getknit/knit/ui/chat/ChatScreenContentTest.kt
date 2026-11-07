@@ -20,6 +20,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -39,11 +40,14 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextInputSelection
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.test.withKeyDown
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -654,6 +658,46 @@ class ChatScreenContentTest {
         ShadowSystemClock.advanceBy(Duration.ofMillis(3_500))
         input.performTextInput("y")
         assertEquals(2, ShadowToast.shownToastCount())
+    }
+
+    /**
+     * Shared text or a translation can land past the cap. The field must stay editable, or the only way out is
+     * clearing it; only an edit that makes the draft longer is refused. The deletions come first, because the
+     * toast's throttle would hide a false refusal that followed a real one.
+     */
+    @Test
+    fun aDraftOverTheCapCanBeCutDownButNotGrown() {
+        val limit = TextLimits.MESSAGE
+        val over = "x".repeat(limit + 500)
+        val state = TextFieldState(over)
+        compose.setContent(content(input = over, inputState = state))
+        val input = compose.onNodeWithTag("chat_input")
+        val counter = compose.onNodeWithTag("chat_message_length", useUnmergedTree = true)
+
+        counter.assertTextEquals("${limit + 500}/$limit")
+
+        input.performTextInputSelection(TextRange(3))
+        assertEquals(TextRange(3), state.selection)
+
+        val shorter = "x".repeat(limit + 100)
+        input.performTextReplacement(shorter)
+        assertEquals(shorter, state.text.toString())
+        counter.assertTextEquals("${limit + 100}/$limit")
+        assertEquals("a deletion is not a refusal", 0, ShadowToast.shownToastCount())
+
+        val sameLength = "z".repeat(limit + 100)
+        input.performTextReplacement(sameLength)
+        assertEquals(sameLength, state.text.toString())
+        assertEquals("an edit of the same length is not a refusal", 0, ShadowToast.shownToastCount())
+
+        input.performTextInput("y")
+        assertEquals(sameLength, state.text.toString())
+        assertEquals(1, ShadowToast.shownToastCount())
+
+        // The send trims before it measures, so a draft over only by a trailing space shows no counter.
+        input.performTextReplacement("x".repeat(limit) + " ")
+        assertEquals(limit + 1, state.text.length)
+        counter.assertDoesNotExist()
     }
 
     @Test

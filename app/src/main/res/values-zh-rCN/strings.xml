@@ -1650,6 +1650,8 @@
     <string name="chat_mesh_post_dedicated">未发送：此电台使用专用频率，任何公共频道都收不到</string>
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">发言长度：已用 %1$d，上限 %2$d</string>
+    <string name="chat_message_length_a11y">消息长度：已用 %1$d，上限 %2$d</string>
+    <string name="chat_message_too_long_to_send">未发送：内容太长，一条消息放不下。请删掉一些文字后重试。</string>
     <string name="chat_mesh_text_only">电台频道只传输文字</string>
     <string name="chat_commons_text_only">此中继的聊天室只接受文字</string>
     <string name="chat_commons_not_joined">未发送：这部手机已不在此公共聊天室中</string>

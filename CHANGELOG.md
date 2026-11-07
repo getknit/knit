@@ -93,6 +93,8 @@ document:
 
 ### Fixed
 
+- Text shared into a chat past the 2000-character limit locked the field, and sending cut off the end unseen.
+  You can now edit it down with a counter showing how far over it is, and Knit won't send it until it fits.
 - Pasting a message too long for the chat did nothing, with no sign why. A toast now gives the limit, and in
   the Meshtastic room it says the post won't fit in one radio packet.
 - When one of two people on LoRa switched their internet relays off, messages and delivery checkmarks between
