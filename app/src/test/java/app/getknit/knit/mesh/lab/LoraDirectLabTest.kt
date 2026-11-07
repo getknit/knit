@@ -139,7 +139,16 @@ class LoraDirectLabTest {
             coVerify(exactly = 0) { bob.notifier.notify(match { it.body == "over the board" }, any(), any(), any(), any()) }
             assertTrue("bob's session is confirmed", lab.tryAwait(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 })
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
-            assertEquals("no skipped key left behind", 0, bob.skippedDmKeys())
+            // Every frame alice sealed must have reached bob's chain first: one that crosses behind a later one stands as a
+            // banked key until it lands.
+            var skipped = -1
+            val reached =
+                lab.tryAwait(1) {
+                    skipped = bob.skippedDmKeys()
+                    if (alice.sealsReached(bob) && skipped == 0) 1 else 0
+                }
+            // The count the passing poll read: a seal after it whose frames cross may bank a key again.
+            assertEquals("no skipped key left behind (seals reached: $reached)\n${lab.report(listOf(alice, bob))}", 0, skipped)
         }
 
     /**
@@ -172,7 +181,16 @@ class LoraDirectLabTest {
             // skipped key that copy then spends (boards chaos seed 2002).
             lab.await(1) { if (alice.loraSeen(fromBob)?.ratchetDone == true) 1 else 0 }
             lab.await(1) { if (bob.loraSeen(fromAlice)?.ratchetDone == true) 1 else 0 }
-            assertEquals("no skipped key left behind", 0, alice.skippedDmKeys() + bob.skippedDmKeys())
+            // And every frame each side sealed must have reached the other's chain: the link-up's sealed profile and the
+            // ✓✓ tick sealed just after it can cross in either order, and the one ahead banks a key for the one behind until
+            // it lands (boards chaos seed 868807990).
+            var skipped = -1
+            val reached =
+                lab.tryAwait(1) {
+                    skipped = alice.skippedDmKeys() + bob.skippedDmKeys()
+                    if (alice.sealsReached(bob) && bob.sealsReached(alice) && skipped == 0) 1 else 0
+                }
+            assertEquals("no skipped key left behind (seals reached: $reached)\n${lab.report(listOf(alice, bob))}", 0, skipped)
         }
 
     /**
