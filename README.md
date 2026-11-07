@@ -139,6 +139,10 @@ TTL/hop-count), so the originator's Ed25519 signature survives every hop. A rela
 even recognize a frame still forwards it — an old build is never a black hole. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full protocol.
 
+For the mechanisms without the code, the **[Knit wiki](https://github.com/getknit/knit/wiki)** has
+plain-language guides to how a message crosses the mesh, the radios Knit uses, how pictures and files
+travel, LoRa and Meshtastic, and what an Internet relay can see.
+
 ## 🧭 Use it when
 
 Knit is built for situations where there's **no reliable network but people are physically nearby**:
@@ -525,6 +529,8 @@ stay on the phone mesh or an optional relay, and the radio sits idle until you p
 
 ## 📚 Documentation
 
+- [Knit wiki](https://github.com/getknit/knit/wiki) — guides to how Knit works for technical readers who
+  don't read code: the mesh, the radios, pictures and files, LoRa, and Internet relays.
 - [`AGENTS.md`](AGENTS.md) — build/test commands, toolchain constraints, architecture, conventions, and
   the hard-won gotchas (start here before changing build config, the mesh layer, or the DI graph).
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — detailed design: mesh algorithm, wire protocol, data
