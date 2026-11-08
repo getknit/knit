@@ -1,7 +1,7 @@
 # Direct links between contacts — which decision governs which symbol
 
 The symbol → ADR routing for direct Internet links: `mesh/inet/`, the `link` signal, the lane and the build flag. The
-normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Accepted 2026-10-28; off in release until Phase 3 flips it).
+normative description is `docs/DIRECT_LINKS.md`; the mechanism's decision is ADR 2026-10.a5yj (Accepted 2026-10-28; on in release since 2.11.0, its 2026-11-08 amendment, and off in the slim APK).
 
 Each entry names the symbols that trigger it and the ADRs to read (`.agents/memory/decisions.md` maps an id to its
 file, amendments included). An entry is an index into its ADRs, not a substitute: where they disagree, the ADR wins

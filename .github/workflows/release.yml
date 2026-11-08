@@ -375,13 +375,19 @@ jobs:
             echo "$apk: signed with AllowedAPKSigningKeys ($actual), universal, no VCS stamp: OK"
           done
 
-          # 4. The slim APK really is slim: no WebRTC, the one library only calls package. A flag that stopped
-          #    reaching the release build would otherwise ship a full APK under the slim name.
+          # 4. The slim APK really is slim: no WebRTC, Moonshine or translate-native, the libraries only calls, speech
+          #    and translation package. A flag that stopped reaching the release build, or one left in gradle.properties
+          #    (it beats the preset), would otherwise ship a full APK under the slim name.
           if [ "$PRERELEASE" != true ]; then
             slim_entries=$(unzip -Z1 "out/$SLIM_APK")
             case $slim_entries in
               *libjingle_peerconnection_so.so*)
                 echo "::error::$SLIM_APK packages WebRTC — did -Pslim=true stop turning calls off?"; exit 1 ;;
+              *libmoonshine.so*)
+                echo "::error::$SLIM_APK packages Moonshine — did -Pslim=true stop turning speech off?"; exit 1 ;;
+              *libknittranslate.so*)
+                echo "::error::$SLIM_APK packages translate-native — did -Pslim=true stop turning translation off?"
+                exit 1 ;;
             esac
             echo "$SLIM_APK: $(stat -c %s "out/$SLIM_APK") bytes vs $(stat -c %s "out/$APK") for the full APK"
           fi

@@ -4,12 +4,15 @@ package app.getknit.knit.legal
 enum class NoticeKind { RUNTIME, DATA }
 
 /**
- * Which builds package a notice's component. [TRANSLATE] rows ship only in a build made with `-Ptranslate=true`
- * (ADR 2026-10.t2h6): the in-app list shows them only there, `THIRD-PARTY-NOTICES.md` keeps them in a section of their
- * own, and `ReleaseClasspathNoticesTest` finds their coordinate on the release compile classpath, since the lockfile is
- * written without the flag.
+ * Which builds package a notice's component. [LIVE_CALLS] rows are WebRTC's and what its `.so` links (ADR 2026-10.3tee,
+ * 2026-10.swvp), [TRANSLATE] rows the offline translation runtime's (ADR 2026-10.t2h6), [STT] rows the speech runtime's
+ * (ADR 2026-10.nz3g, 2026-10.am8d). All three are on the default release runtime, so `ReleaseClasspathNoticesTest` finds
+ * their coordinates on the lockfile's `releaseRuntimeClasspath`, and each drops out of a build that does not package it:
+ * the slim APK, or `-PliveCalls=false`, `-Ptranslate=false`, `-Pstt=false`, and for speech a build with no call kind.
+ * The in-app list shows each kind only where it is wired ([ThirdPartyNotices.shipped]), and `THIRD-PARTY-NOTICES.md`
+ * keeps each in a section of its own.
  */
-enum class Packaging { ALWAYS, TRANSLATE }
+enum class Packaging { ALWAYS, LIVE_CALLS, TRANSLATE, STT }
 
 /**
  * One row of the in-app Open-source licenses list — and of `THIRD-PARTY-NOTICES.md`, which prints the same
@@ -20,7 +23,8 @@ enum class Packaging { ALWAYS, TRANSLATE }
  * claimant, so a new shipped dependency cannot slip past the list. Conventions: a trailing `.` claims a
  * group subtree (`androidx.`), a trailing `:` an exact group (`org.jetbrains.kotlin:` — the colon is what
  * keeps it off `kotlinx`), and `group:artifact-prefix` a family inside a group. Longest prefix wins. Empty
- * for a notice with no coordinate of its own (OpenSSL inside SQLCipher's `.so`; the bundled data files).
+ * for a notice with no coordinate of its own (OpenSSL inside SQLCipher's `.so`; the bundled data files; the code and
+ * model data inside Moonshine's native libraries).
  */
 data class ThirdPartyNotice(
     val key: String,
@@ -34,7 +38,8 @@ data class ThirdPartyNotice(
 )
 
 /**
- * The shipped third-party components, in the order `THIRD-PARTY-NOTICES.md` lists them. Hand-kept on purpose:
+ * The shipped third-party components, in the order `THIRD-PARTY-NOTICES.md` lists them, the speech runtime's last
+ * ([SpeechNotices], as its table is). Hand-kept on purpose:
  * a license plugin would put code on `:app`'s classpath and a generated file into a build F-Droid must
  * reproduce byte for byte; the two sync tests do the plugin's job at test time instead.
  */
@@ -227,6 +232,7 @@ object ThirdPartyNotices {
                 license = License.BSD_3_CLAUSE_WEBRTC,
                 // The community build of Google's retired libwebrtc AAR (libs.versions.toml).
                 artifacts = setOf("io.github.webrtc-sdk:"),
+                packaging = Packaging.LIVE_CALLS,
             ),
             // What libwebrtc links into its `.so`, from WebRTC's own `tools_webrtc/libs/generate_licenses.py` at the
             // AAR's branch (7871), kept to what the binary shows. No coordinate of its own, like OpenSSL in SQLCipher.
@@ -236,6 +242,7 @@ object ThirdPartyNotices {
                 project = "Google",
                 url = "https://github.com/abseil/abseil-cpp",
                 license = License.APACHE_2_0,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-boringssl",
@@ -243,6 +250,7 @@ object ThirdPartyNotices {
                 project = "Google",
                 url = "https://boringssl.googlesource.com/boringssl/",
                 license = License.APACHE_2_0,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-libsrtp",
@@ -250,6 +258,7 @@ object ThirdPartyNotices {
                 project = "Cisco Systems",
                 url = "https://github.com/cisco/libsrtp",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-opus",
@@ -257,6 +266,7 @@ object ThirdPartyNotices {
                 project = "Xiph.Org Foundation",
                 url = "https://opus-codec.org/",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-rnnoise",
@@ -264,6 +274,7 @@ object ThirdPartyNotices {
                 project = "Xiph.Org Foundation",
                 url = "https://github.com/xiph/rnnoise",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-libvpx",
@@ -271,6 +282,7 @@ object ThirdPartyNotices {
                 project = "The WebM Project",
                 url = "https://chromium.googlesource.com/webm/libvpx",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-libyuv",
@@ -278,6 +290,7 @@ object ThirdPartyNotices {
                 project = "The LibYuv Project",
                 url = "https://chromium.googlesource.com/libyuv/libyuv",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-crc32c",
@@ -285,6 +298,7 @@ object ThirdPartyNotices {
                 project = "Google",
                 url = "https://github.com/google/crc32c",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-jni-zero",
@@ -292,6 +306,7 @@ object ThirdPartyNotices {
                 project = "The Chromium Authors",
                 url = "https://chromium.googlesource.com/chromium/src/third_party/jni_zero/",
                 license = License.BSD_3_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-libaom",
@@ -299,6 +314,7 @@ object ThirdPartyNotices {
                 project = "Alliance for Open Media",
                 url = "https://aomedia.googlesource.com/aom/",
                 license = License.BSD_2_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-dav1d",
@@ -306,6 +322,7 @@ object ThirdPartyNotices {
                 project = "VideoLAN",
                 url = "https://code.videolan.org/videolan/dav1d",
                 license = License.BSD_2_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-sframe",
@@ -313,6 +330,7 @@ object ThirdPartyNotices {
                 project = "Cisco Systems",
                 url = "https://github.com/cisco/sframe",
                 license = License.BSD_2_CLAUSE_WEBRTC,
+                packaging = Packaging.LIVE_CALLS,
             ),
             ThirdPartyNotice(
                 key = "webrtc-audio",
@@ -320,6 +338,7 @@ object ThirdPartyNotices {
                 project = "The WebRTC project authors",
                 url = "https://webrtc.googlesource.com/src/",
                 license = License.WEBRTC_AUDIO,
+                packaging = Packaging.LIVE_CALLS,
             ),
             // The offline translation runtime: our own `translate-native` AAR (built from the knit-translate-native
             // repository), whose one native library statically links slimt and everything below it.
@@ -428,7 +447,7 @@ object ThirdPartyNotices {
                 license = License.MIT,
                 kind = NoticeKind.DATA,
             ),
-        )
+        ) + SpeechNotices.ALL
 
     /**
      * Release-classpath coordinates that ship no runtime code, so they need no notice: annotation-only jars
@@ -446,8 +465,23 @@ object ThirdPartyNotices {
             "org.jetbrains:annotations" to ANNOTATIONS_ONLY,
         )
 
-    /** The rows a build shows: every [Packaging.ALWAYS] one, and the [Packaging.TRANSLATE] ones where [translate]. */
-    fun shipped(translate: Boolean): List<ThirdPartyNotice> = ALL.filter { it.packaging == Packaging.ALWAYS || translate }
+    /**
+     * The rows a build shows: every [Packaging.ALWAYS] one, the [Packaging.LIVE_CALLS] ones where [liveCalls], the
+     * [Packaging.TRANSLATE] ones where [translate] and the [Packaging.STT] ones where [stt].
+     */
+    fun shipped(
+        liveCalls: Boolean,
+        translate: Boolean,
+        stt: Boolean,
+    ): List<ThirdPartyNotice> =
+        ALL.filter {
+            when (it.packaging) {
+                Packaging.ALWAYS -> true
+                Packaging.LIVE_CALLS -> liveCalls
+                Packaging.TRANSLATE -> translate
+                Packaging.STT -> stt
+            }
+        }
 
     /** The notice whose longest [ThirdPartyNotice.artifacts] prefix matches [coordinate] (`group:artifact`), or null. */
     fun claimant(coordinate: String): ThirdPartyNotice? =

@@ -32,6 +32,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.di.LIVE_CALLS_WIRED
+import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.legal.License
 import app.getknit.knit.legal.NoticeKind
@@ -50,7 +52,11 @@ fun LicensesScreen(
     onBack: () -> Unit,
     onOpenLicense: (License) -> Unit,
 ) {
-    LicensesScreenContent(notices = ThirdPartyNotices.shipped(TRANSLATE_WIRED), onBack = onBack, onOpenLicense = onOpenLicense)
+    LicensesScreenContent(
+        notices = ThirdPartyNotices.shipped(liveCalls = LIVE_CALLS_WIRED, translate = TRANSLATE_WIRED, stt = STT_WIRED),
+        onBack = onBack,
+        onOpenLicense = onOpenLicense,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -160,5 +166,9 @@ private fun NoticeRow(
 @Composable
 fun LicensesScreenPreview() =
     KnitPreview {
-        LicensesScreenContent(notices = ThirdPartyNotices.shipped(translate = false), onBack = {}, onOpenLicense = {})
+        LicensesScreenContent(
+            notices = ThirdPartyNotices.shipped(liveCalls = true, translate = false, stt = false),
+            onBack = {},
+            onOpenLicense = {},
+        )
     }

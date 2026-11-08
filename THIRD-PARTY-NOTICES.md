@@ -2,9 +2,9 @@
 
 Knit is licensed under the **GNU General Public License v3.0 or later** (see [`COPYING`](COPYING)).
 It redistributes, and depends on, the third-party open-source components listed below. Every component
-shipped in the Knit APK is under a **GPL-compatible** license (Apache-2.0, BSD, MIT, the Unicode License,
-or a permissive or public-domain notice; a build with offline translation adds GPL-2.0-or-later and MPL-2.0); the
-project deliberately carries **no Google Play services / GMS** dependency.
+shipped in the Knit APK is under a **GPL-compatible** license (Apache-2.0, BSD, MIT, MPL-2.0, HPND, the Unicode
+License, GPL-2.0-or-later, or a permissive or public-domain notice; the model data compiled into the speech runtime adds
+CC-BY-4.0); the project deliberately carries **no Google Play services / GMS** dependency.
 
 This file is provided for attribution and to satisfy the notice-retention terms of the Apache License
 2.0 (§4), the BSD license, and the MIT license. Where a component ships its own `NOTICE` file, that
@@ -44,6 +44,14 @@ classpath. Rows read: the component, then the project it comes from, then its SP
 | ZXing core — QR generation | [ZXing](https://github.com/zxing/zxing) | Apache-2.0 |
 | ARSCLib — on-device split-APK merge | [REAndroid/ARSCLib](https://github.com/REAndroid/ARSCLib) | Apache-2.0 |
 | apksig — on-device APK re-signing | [Android Open Source Project](https://android.googlesource.com/platform/tools/apksig/) | Apache-2.0 |
+
+QR *scanning* uses CameraX (an AndroidX library, above) plus ZXing core; the former ZXing Android Embedded
+dependency was dropped when the scanner moved to CameraX.
+
+## Live calls (packaged unless a build turns it off: not in the slim APK or a `-PliveCalls=false` build)
+
+| Component | Project | License |
+|---|---|---|
 | WebRTC (`io.github.webrtc-sdk:android` — libwebrtc, the media engine of live calls) | [The WebRTC project authors](https://webrtc.googlesource.com/src/) | BSD-3-Clause (WebRTC) |
 | &nbsp;&nbsp;↳ Abseil (`abseil-cpp`) | [Google](https://github.com/abseil/abseil-cpp) | Apache-2.0 |
 | &nbsp;&nbsp;↳ BoringSSL (with fiat-crypto) — TLS and DTLS for call media | [Google](https://boringssl.googlesource.com/boringssl/) | Apache-2.0 |
@@ -65,10 +73,7 @@ kept to what the shipped binary shows. Their texts are bundled as `BSD-3-Clause-
 `BSD-2-Clause-WebRTC.txt` and `WebRTC-audio-notices.txt`. The LLVM runtime it also links (libc++, libc++abi,
 libunwind) is under Apache-2.0 WITH LLVM-exception, which asks no notice of compiled code.
 
-QR *scanning* uses CameraX (an AndroidX library, above) plus ZXing core; the former ZXing Android Embedded
-dependency was dropped when the scanner moved to CameraX.
-
-## Offline translation (packaged only in a build made with `-Ptranslate=true`)
+## Offline translation (packaged unless a build turns it off: not in the slim APK or a `-Ptranslate=false` build)
 
 | Component | Project | License |
 |---|---|---|
@@ -84,9 +89,9 @@ dependency was dropped when the scanner moved to CameraX.
 [knit-translate-native](https://github.com/getknit/knit-translate-native) repository. Its one native library statically
 links slimt and the code under it, at the commits that repository's `sources.lock` pins. slimt's `COPYRIGHT` grants
 version 2 of the GPL "or (at your option) any later version", which is what lets it ship inside a GPL-3.0-or-later app.
-The translation models the app downloads are not bundled. The release workflow and F-Droid's rebuild never pass the
-flag, so their APKs carry none of this; the in-app list shows these rows only in a build that does. The texts are
-bundled as `GPL-2.0.txt`, `MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
+The translation models the app downloads are not bundled. A build without translation (the slim APK, or one made with
+`-Ptranslate=false`) carries none of this, and its in-app list hides these rows. The texts are bundled as `GPL-2.0.txt`,
+`MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
 
 ## Bundled ML models and data
 
@@ -116,6 +121,55 @@ bundled as `GPL-2.0.txt`, `MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
   © Unicode, Inc.), with more English keywords from [emojilib](https://github.com/muan/emojilib) 4.0.3 (MIT,
   © 2014 Mu-An Chiou). They are redistributed under those licenses; the full license texts, source URLs, pinned
   versions and transform rules are in [`app/src/main/assets/emoji/README.md`](app/src/main/assets/emoji/README.md).
+
+## Speech (packaged unless a build turns it off: not in the slim APK, a `-Pstt=false` build or one with no call kind)
+
+| Component | Project | License |
+|---|---|---|
+| Moonshine Voice (`ai.moonshine:moonshine-voice` — the speech runtime of walkie transcripts, live captions and voice-note transcripts, with cpp-annote, its speaker-diarization library) | [Moonshine AI](https://github.com/moonshine-ai/moonshine) | MIT |
+| &nbsp;&nbsp;↳ nlohmann/json (JSON for Modern C++) | [Niels Lohmann](https://github.com/nlohmann/json) | MIT |
+| &nbsp;&nbsp;↳ utf8proc (with its tables of Unicode data) | [JuliaStrings](https://github.com/JuliaStrings/utf8proc) | LicenseRef-utf8proc |
+| &nbsp;&nbsp;↳ Eigen (linear algebra, in `libmoonshine.so` and in ONNX Runtime's thread pool) | [Eigen project](https://gitlab.com/libeigen/eigen) | MPL-2.0 |
+| &nbsp;&nbsp;↳ kaldi-native-fbank (Kaldi-compatible filter-bank features) | [Xiaomi Corporation](https://github.com/csukuangfj/kaldi-native-fbank) | Apache-2.0 |
+| &nbsp;&nbsp;↳ KISS FFT | [Mark Borgerding](https://github.com/mborgerding/kissfft) | BSD-3-Clause (Moonshine) |
+| &nbsp;&nbsp;↳ pyannote.audio and pyannote.core (the diarization pipeline cpp-annote ports to C++) | [CNRS](https://github.com/pyannote/pyannote-audio) | MIT |
+| &nbsp;&nbsp;↳ VBx (the clustering cpp-annote ports, by way of pyannote.audio) | [Brno University of Technology](https://github.com/BUTSpeechFIT/VBx) | Apache-2.0 |
+| &nbsp;&nbsp;↳ ZipVoice (its Zipformer operators, ported for voice cloning) | [k2-fsa](https://github.com/k2-fsa/ZipVoice) | Apache-2.0 |
+| &nbsp;&nbsp;↳ Silero VAD model (`silero_vad.onnx`, converted to ORT format and compiled into `libmoonshine.so`) | [Silero Team](https://github.com/snakers4/silero-vad) | MIT |
+| &nbsp;&nbsp;↳ Speaker diarization parameters (the PLDA and x-vector transforms of pyannote's community-1 pipeline, compiled in) | [pyannoteAI — speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) | CC-BY-4.0 |
+| &nbsp;&nbsp;↳ Voice-cloning reference clips (15 VCTK Corpus recordings cut to 4-second, 24 kHz mono clips, compiled in) | [CSTR, University of Edinburgh — VCTK Corpus](https://doi.org/10.7488/ds/2645) | CC-BY-4.0 |
+| &nbsp;&nbsp;↳ ONNX Runtime (1.23.2 — `libonnxruntime.so`, Moonshine's minimal build) | [Microsoft](https://github.com/microsoft/onnxruntime) | MIT |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ Abseil (`abseil-cpp`) | [Google](https://github.com/abseil/abseil-cpp) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ Protocol Buffers (the runtime library, and the ONNX messages generated with it) | [Google](https://github.com/protocolbuffers/protobuf) | BSD-3-Clause (Moonshine) |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ ONNX (the model format's definitions) | [ONNX Project Contributors](https://github.com/onnx/onnx) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ FlatBuffers (the ORT model format) | [Google](https://github.com/google/flatbuffers) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ Microsoft GSL | [Microsoft](https://github.com/microsoft/GSL) | MIT |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ SafeInt | [dcleblanc/SafeInt](https://github.com/dcleblanc/SafeInt) | MIT |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ cpuinfo | [PyTorch](https://github.com/pytorch/cpuinfo) | BSD-2-Clause |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ KleidiAI (Arm's matrix-multiplication kernels, arm64 only) | [Arm](https://github.com/ARM-software/kleidiai) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ XNNPACK (the QNNPACK- and XNNPACK-derived kernels in ONNX Runtime's MLAS, arm64 only) | [Google](https://github.com/google/XNNPACK) | BSD-3-Clause (Moonshine) |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ TensorFlow (code ONNX Runtime derives from: its arena allocator, thread pool and status types) | [The TensorFlow Authors](https://github.com/tensorflow/tensorflow) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ Caffe2 (code ONNX Runtime derives from: its convolution and math routines) | [Facebook](https://github.com/pytorch/pytorch) | Apache-2.0 |
+| &nbsp;&nbsp;&nbsp;&nbsp;↳ Pillow (the resampling filters of ONNX Runtime's Resize) | [python-pillow/Pillow](https://github.com/python-pillow/Pillow) | HPND |
+
+`ai.moonshine:moonshine-voice` 0.1.5 is Moonshine AI's own Android AAR (© 2025 Useful Sensors, Inc., dba Moonshine
+AI). In each of its three ABIs it packages `libmoonshine-jni.so`, `libmoonshine.so`, built from Moonshine's `core/` at
+its `v0.1.5` tag, and `libonnxruntime.so`, the operator-reduced ONNX Runtime 1.23.2 that Moonshine vendors at that tag
+(byte for byte). The rows under it are what those binaries carry, kept to what they show: the libraries of Moonshine's
+`core/third-party/` and `core/cpp-annote/` that `libmoonshine.so`'s exported symbols name, the model data compiled into
+it, and, under ONNX Runtime, the entries of ONNX Runtime's own `ThirdPartyNotices.txt` at `v1.23.2` that its strings and
+source paths show. The speech, text-to-speech and diarization models the runtime loads are downloaded, not bundled.
+utfcpp and Boost.Mp11 (header-only, both BSL-1.0) and the LLVM runtime ask no notice of compiled code, and MurmurHash3
+is public domain, so they have no row.
+
+The two CC-BY-4.0 rows are redistributed under the [Creative Commons Attribution 4.0 International
+License](https://creativecommons.org/licenses/by/4.0/). The speaker-diarization parameters are pyannoteAI's
+[`pyannote/speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1), converted
+to C arrays by cpp-annote. The reference clips come from the CSTR VCTK Corpus (Christophe Veaux, Junichi Yamagishi and
+Kirsten MacDonald, The Centre for Speech Technology Research, University of Edinburgh), cut to 4-second, 24 kHz mono
+clips and stored with a transcript of what each clip says. The texts are bundled as `BSD-3-Clause-Moonshine.txt`,
+`utf8proc.txt`, `HPND-Pillow.txt` and `CC-BY-4.0.txt`; the MIT text carries the MIT rows' copyright lines, and the
+Apache-2.0, MPL-2.0 and cpuinfo texts are shared with the rows above.
 
 ## Build- and test-only dependencies (not distributed)
 

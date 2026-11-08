@@ -72,8 +72,9 @@ val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toB
 
 // The slim APK: `-Pslim=true` is a preset for the core radio messenger, which every stable GitHub Release ships beside
 // the full APK (`knit-X.Y.Z-slim.apk`, .github/workflows/release.yml). It defaults the Internet plane (relays, link
-// previews), both call kinds, speech and Knit Anywhere to OFF, and tags the versionName `-slim` so About, crash reports
-// and a shared APK name it. Each feature's own flag still wins. Same applicationId and key as the full build, so the
+// previews), the commons, direct links, both call kinds, speech, Knit Anywhere and translation to OFF, and tags the
+// versionName `-slim` so About, crash reports and a shared APK name it. Each feature's own flag still wins, so a flag
+// left in gradle.properties beats the preset: the shipped defaults live here, never there. Same applicationId and key as the full build, so the
 // two install over each other and keep the user's data. Absent, it changes nothing: F-Droid's -P-free rebuild stays
 // identical. See .agents/context/distribution.md.
 val slim = (project.findProperty("slim") as? String)?.toBoolean() == true
@@ -128,13 +129,12 @@ val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolea
 val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 
 // The commons (a private relay's group chat, ADR 2026-09.wx8e, spec §7.4) — the same kind of visibility
-// switch at the start of its life: ON in debug, OFF in a shipped artifact, overridable with
-// `-Pcommons=true|false`. It gates the store the mesh and the relay editor are handed (`CommonsStore`
-// stays null, so no room is ever subscribed, posted to or listed), the relay row's Join / Leave line, and
-// the room's notification channel. Not a code strip (R8 prunes the `if (COMMONS)` branches), and the
-// defaults live in source so F-Droid's -P-free rebuild stays identical. Flip the release default to ON
-// when the feature is introduced, the way ADR 064 and ADR 2026-09.6gtm did for the two planes.
-val commons = (project.findProperty("commons") as? String)?.toBoolean()
+// switch: introduced at 2.11.0, so ON in every build (the ADR's 2026-11-08 amendment) and OFF in the slim APK,
+// overridable with `-Pcommons=true|false`. It gates the store the mesh and the relay editor are handed
+// (`CommonsStore` stays null, so no room is ever subscribed, posted to or listed), the relay row's Join / Leave
+// line, and the room's notification channel. Not a code strip (R8 prunes the `if (COMMONS)` branches), and the
+// defaults live in source so F-Droid's -P-free rebuild stays identical.
+val commons = (project.findProperty("commons") as? String)?.toBoolean() ?: offWhenSlim
 
 // The developer view (ADR 2026-10.s7wg): the message inspector at the foot of Message details and the mesh HUD over
 // every screen, both behind a Diagnostics switch that is off by default. ON in debug, OFF in a shipped artifact,
@@ -200,22 +200,24 @@ val bleFeedWindow = (project.findProperty("bleFeedWindow") as? String)?.toBoolea
 // `if (WEAR_STATUS)` branch), and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 
-// Direct Internet links between contacts (ADR 2026-10.a5yj, Proposed): an on-demand UDP link to one contact, the
-// rendezvous cast through a spool. A spike: ON in debug, OFF in a shipped artifact, overridable with
-// `-PdirectLinks=true|false`. Read once, as `DIRECT_LINKS_WIRED` in `di/`; off, nothing of the link is wired, no
-// capability bit is advertised and no `link` signal is sent or answered. Not a code strip (R8 prunes the branches),
-// and the defaults live in source so F-Droid's -P-free rebuild stays identical.
-val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean()
+// Direct Internet links between contacts (ADR 2026-10.a5yj): an on-demand UDP link to one contact, the rendezvous cast
+// through a spool. Introduced at 2.11.0: ON in every build (the ADR's 2026-11-08 amendment) and OFF in the slim APK,
+// overridable with `-PdirectLinks=true|false`. Read once, as `DIRECT_LINKS_WIRED` in `di/`; off, nothing of the link is
+// wired, no capability bit is advertised and no `link` signal is sent or answered. The person's own switch
+// (`SettingsStore.directLinksEnabled`) still defaults off. Not a code strip (R8 prunes the branches), and the defaults
+// live in source so F-Droid's -P-free rebuild stays identical.
+val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean() ?: offWhenSlim
 
 // Voice calls (docs/VOICE_CALLS.md), speech and Knit Anywhere — four flags, each overridable on its own (ADR
 // 2026-10.swvp). Live calls, mesh calls and Knit Anywhere are introduced: ON in every build since 2.10.0-beta.0 (the
-// ADR's 2026-10-22 amendment). Speech is still an experiment: ON in debug, OFF in a shipped artifact.
+// ADR's 2026-10-22 amendment), and speech since 2.11.0 (its 2026-11-08 amendment). The slim APK turns all four off.
 //  - `-PliveCalls=true|false`: live calls over WebRTC (ADR 2026-10.3tee). The only one that packages libwebrtc, ~48 MB
 //    of native code across the four ABIs, with `src/liveCalls/keepRules`.
 //  - `-PmeshCalls=true|false`: the walkie-talkie over the mesh (§3.11, ADR 2026-10.79yb). Its Opus is the platform's
 //    MediaCodec, so a build with it and without live calls packages no WebRTC at all.
-//  - `-Pstt=true|false`: walkie transcripts and live captions (ADR 2026-10.nz3g). It listens to a call, so it is off
-//    wherever both call kinds are; on, it packages Moonshine and `src/stt/` (the model's download service, its keep rule).
+//  - `-Pstt=true|false`: walkie transcripts, live captions and voice-note transcripts (ADR 2026-10.nz3g, 2026-10.am8d).
+//    It is off wherever both call kinds are; on, it packages Moonshine and `src/stt/` (the model's download service, its
+//    keep rule).
 //  - `-PknitAnywhere=true|false`: getting and keeping Knit Anywhere tickets, free tickets and the supporter badge
 //    (ADR 2026-10.s3ep, 2026-10.r99s). No library of its own, so it decides only what is wired.
 // `-Pcalls=true|false` sets both call kinds at once (each kind's own flag still wins). Either kind brings core-telecom
@@ -223,9 +225,9 @@ val directLinks = (project.findProperty("directLinks") as? String)?.toBoolean()
 // its service, receiver and permissions). Main compiles in every variant against `compileOnly` WebRTC, core-telecom and
 // Moonshine; off, `di/CallWiring` builds none of a feature's graph and R8 drops the classes only that graph reached. The
 // debug build packages all three libraries whatever the flags say (it is locked); a release-shaped build with
-// libraries other than the default's (WebRTC and core-telecom) is a maintainer's or the slim APK, so its runtime
-// classpaths go unlocked (`dependencyLocking` below). The defaults live in source so F-Droid's -P-free rebuild stays
-// identical.
+// libraries other than the default's (WebRTC, core-telecom and Moonshine) is a maintainer's or the slim APK, so its
+// runtime classpaths go unlocked (`dependencyLocking` below). The defaults live in source so F-Droid's -P-free rebuild
+// stays identical.
 val calls = (project.findProperty("calls") as? String)?.toBoolean() ?: offWhenSlim
 val liveCalls = (project.findProperty("liveCalls") as? String)?.toBoolean() ?: calls
 val meshCalls = (project.findProperty("meshCalls") as? String)?.toBoolean() ?: calls
@@ -238,11 +240,11 @@ val meshCallsInRelease = meshCalls ?: true
 val callsInDebug = liveCallsInDebug || meshCallsInDebug
 val callsInRelease = liveCallsInRelease || meshCallsInRelease
 val sttInDebug = (stt ?: true) && callsInDebug
-val sttInRelease = (stt ?: false) && callsInRelease
-// `-Ptranslate=true`: the offline message-translation spike (ADR 2026-10.t2h6), off by default. It packages the
-// `translate-native` AAR (gradle/libs.versions.toml) in every build type it is given to, release and staging included,
-// for a testers' alpha; the release workflow and F-Droid never pass it while the ADR is Proposed.
-val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: false
+val sttInRelease = (stt ?: true) && callsInRelease
+// Offline message translation (ADR 2026-10.t2h6): introduced at 2.11.0, so ON in every build type (the ADR's 2026-11-08
+// amendment) and OFF in the slim APK, overridable with `-Ptranslate=true|false`. On, it packages the `translate-native`
+// AAR (gradle/libs.versions.toml). Nothing is downloaded until the reader first asks for a translation.
+val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: (offWhenSlim ?: true)
 
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
@@ -420,7 +422,7 @@ android {
         buildConfigField("boolean", "LIVE_CALLS", liveCallsInDebug.toString())
         buildConfigField("boolean", "MESH_CALLS", meshCallsInDebug.toString())
         buildConfigField("boolean", "STT", sttInDebug.toString())
-        // The translation spike is OFF unless `-Ptranslate=true`; see `translate` above.
+        // Translation is ON unless `-Ptranslate=false` or the slim preset; see `translate` above.
         buildConfigField("boolean", "TRANSLATE", translate.toString())
         buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
@@ -514,9 +516,9 @@ android {
             // visible and reachable, switched off, and inert until the user pairs a Meshtastic board.
             buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
             buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
-            // The commons is not introduced yet: a shipped artifact hides it (`-Pcommons=true` lights it
-            // for a maintainer build). Staging and nonMinifiedRelease inherit this through initWith.
-            buildConfigField("boolean", "COMMONS", (commons ?: false).toString())
+            // The commons is introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
+            // Staging and nonMinifiedRelease inherit this through initWith.
+            buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
             // The developer view is not shipped: `-PdevView=true` lights it for a testers' build.
             buildConfigField("boolean", "DEV_VIEW", (devView ?: false).toString())
             buildConfigField("boolean", "SPOOL_DIRECTORY", (spoolDirectory ?: false).toString())
@@ -534,14 +536,14 @@ android {
             buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
             // The Wear OS status service is a prototype: dark in a shipped artifact.
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
-            // Direct links are a spike (ADR 2026-10.a5yj, Proposed): dark in a shipped artifact.
-            buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: false).toString())
-            // Live calls, mesh calls and Knit Anywhere are introduced: on in a shipped artifact, which packages WebRTC and
-            // core-telecom. Speech is an experiment: dark there, and Moonshine is not packaged (see `calls` above).
+            // Direct links are introduced at 2.11.0: on in a shipped artifact, off in the slim APK.
+            buildConfigField("boolean", "DIRECT_LINKS", (directLinks ?: true).toString())
+            // Live calls, mesh calls, Knit Anywhere and speech are introduced: on in a shipped artifact, which packages
+            // WebRTC, core-telecom and Moonshine (see `calls` above).
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())
             buildConfigField("boolean", "MESH_CALLS", meshCallsInRelease.toString())
             buildConfigField("boolean", "STT", sttInRelease.toString())
-            // The translation spike ships only in a testers' alpha built with `-Ptranslate=true`; see `translate` above.
+            // Translation is introduced at 2.11.0: on in a shipped artifact, off in the slim APK; see `translate` above.
             buildConfigField("boolean", "TRANSLATE", translate.toString())
             buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
@@ -1285,15 +1287,15 @@ dependencyLocking {
 }
 
 // A release-shaped build whose runtime differs from the default's (`-PliveCalls=false`, `-PmeshCalls=false`,
-// `-Pstt=true`, `-Pslim=true`) is a maintainer's or the slim APK: it drops WebRTC or core-telecom from, or adds Moonshine
-// to, the runtime classpaths the lock state records, so those go unlocked rather than lock a second runtime. The slim
-// APK only removes libraries, and `gradle/verification-metadata.xml` still pins the bytes of everything it resolves.
-// `-Ptranslate=true` adds translate-native to every build type's, debug's included, so it unlocks those too. The versions
-// still come from the catalog; a -P-free build is never affected. Regenerate the lockfile with no such flag set,
-// `~/.gradle/gradle.properties` included.
-if (!liveCallsInRelease || !meshCallsInRelease || sttInRelease || translate) {
+// `-Pstt=false`, `-Ptranslate=false`, `-Pslim=true`) is a maintainer's or the slim APK: it drops WebRTC, core-telecom,
+// Moonshine or translate-native from the runtime classpaths the lock state records, so those go unlocked rather than lock
+// a second runtime. The slim APK only removes libraries, and `gradle/verification-metadata.xml` still pins the bytes of
+// everything it resolves. `-Ptranslate=false` drops translate-native from every build type's, debug's included, so it
+// unlocks those too. The versions still come from the catalog; a -P-free build is never affected. Regenerate the
+// lockfile with no such flag set, `~/.gradle/gradle.properties` included.
+if (!liveCallsInRelease || !meshCallsInRelease || !sttInRelease || !translate) {
     configurations.configureEach {
-        if (name.endsWith("RuntimeClasspath") && (translate || !name.startsWith("debug"))) {
+        if (name.endsWith("RuntimeClasspath") && (!translate || !name.startsWith("debug"))) {
             resolutionStrategy.deactivateDependencyLocking()
         }
     }
@@ -1427,8 +1429,8 @@ dependencies {
     // transitive: its appcompat/material/okhttp/WorkManager serve wrappers we never call (libs.versions.toml).
     compileOnly(libs.moonshine.voice) { isTransitive = false }
     debugImplementation(libs.moonshine.voice) { isTransitive = false }
-    // The translation runtime (ADR 2026-10.t2h6): compiled against everywhere, packaged only under `-Ptranslate=true`
-    // and then in every build type. Its keep rule travels in the AAR.
+    // The translation runtime (ADR 2026-10.t2h6): compiled against everywhere, packaged in every build type unless
+    // `-Ptranslate=false` or the slim preset. Its keep rule travels in the AAR.
     compileOnly(libs.translate.native)
     if (translate) runtimeOnly(libs.translate.native)
     android.buildTypes.names.filter { it != "debug" }.forEach { buildType ->

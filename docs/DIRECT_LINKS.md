@@ -1,7 +1,7 @@
 # Direct links between contacts
 
 Status: experimental (ADR 2026-10.a5yj, Accepted; Phases 0–2 built, and Phase 3's walkie trigger), behind `BuildConfig.DIRECT_LINKS` (`-PdirectLinks=`,
-on in debug, off in release until Phase 3) and the person's switch, off by default. Android-first: a peer without `Protocol.CAP_INET_LINK` is never offered a link. This file
+on in every build since 2.11.0 and off in the slim APK) and the person's switch, off by default. Android-first: a peer without `Protocol.CAP_INET_LINK` is never offered a link. This file
 is the normative description the iOS port reads; the clauses below are numbered so a test or a review can name them.
 
 A direct link is a UDP path between two contacts who each have an Internet route. Its offer and answer ride a spool's

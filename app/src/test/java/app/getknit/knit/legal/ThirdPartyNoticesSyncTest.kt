@@ -25,8 +25,19 @@ class ThirdPartyNoticesSyncTest {
     }
 
     @Test
+    fun liveCallsTableMatchesTheLiveCallsNotices() {
+        assertSectionMatches("Live calls", NoticeKind.RUNTIME, Packaging.LIVE_CALLS)
+    }
+
+    @Test
     fun translationTableMatchesTheTranslationNotices() {
         assertSectionMatches("Offline translation", NoticeKind.RUNTIME, Packaging.TRANSLATE)
+    }
+
+    @Test
+    fun speechTableMatchesTheSpeechNotices() {
+        // One table for the whole speech runtime: its libraries and the model data compiled into them, in list order.
+        assertSectionMatches("Speech", kind = null, Packaging.STT)
     }
 
     @Test
@@ -35,13 +46,26 @@ class ThirdPartyNoticesSyncTest {
     }
 
     @Test
-    fun aBuildWithoutTranslationShowsNoTranslationRow() {
-        assertTrue(ThirdPartyNotices.ALL.any { it.packaging == Packaging.TRANSLATE })
+    fun aBuildShowsOnlyThePackagedRuntimesRows() {
+        val gated = listOf(Packaging.LIVE_CALLS, Packaging.TRANSLATE, Packaging.STT)
+        gated.forEach { packaging -> assertTrue("no $packaging row", ThirdPartyNotices.ALL.any { it.packaging == packaging }) }
         assertEquals(
             ThirdPartyNotices.ALL.filter { it.packaging == Packaging.ALWAYS },
-            ThirdPartyNotices.shipped(translate = false),
+            ThirdPartyNotices.shipped(liveCalls = false, translate = false, stt = false),
         )
-        assertEquals(ThirdPartyNotices.ALL, ThirdPartyNotices.shipped(translate = true))
+        // Each flag on its own adds exactly its own rows, so a swapped or ignored flag fails here.
+        gated.forEach { on ->
+            assertEquals(
+                "$on alone",
+                ThirdPartyNotices.ALL.filter { it.packaging == Packaging.ALWAYS || it.packaging == on },
+                ThirdPartyNotices.shipped(
+                    liveCalls = on == Packaging.LIVE_CALLS,
+                    translate = on == Packaging.TRANSLATE,
+                    stt = on == Packaging.STT,
+                ),
+            )
+        }
+        assertEquals(ThirdPartyNotices.ALL, ThirdPartyNotices.shipped(liveCalls = true, translate = true, stt = true))
     }
 
     @Test
@@ -59,16 +83,17 @@ class ThirdPartyNoticesSyncTest {
         }
     }
 
+    /** [kind] null takes notices of either kind, for a section that lists a runtime's code and data together. */
     private fun assertSectionMatches(
         sectionPrefix: String,
-        kind: NoticeKind,
+        kind: NoticeKind?,
         packaging: Packaging,
     ) {
         val section = tables.keys.firstOrNull { it.startsWith(sectionPrefix) } ?: error("no '## $sectionPrefix…' table")
         val rows = tables.getValue(section)
-        val notices = ThirdPartyNotices.ALL.filter { it.kind == kind && it.packaging == packaging }
+        val notices = ThirdPartyNotices.ALL.filter { (kind == null || it.kind == kind) && it.packaging == packaging }
         assertEquals(
-            "'$section' rows vs $kind/$packaging notices (name → SPDX)",
+            "'$section' rows vs ${kind ?: "any kind"}/$packaging notices (name → SPDX)",
             rows.map { it.name to it.spdx },
             notices.map { it.name to it.license.spdx },
         )

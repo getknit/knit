@@ -354,8 +354,8 @@ cd knit
 
 The debug APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
 
-Every build includes [calls](#-calls); debug builds add their transcripts. A release build adds transcripts with
-`-Pstt=true`, and `-Pcalls=false` leaves calls out of any build.
+Every build includes [calls](#-calls), their transcripts and offline translation. `-Pcalls=false`, `-Pstt=false` and
+`-Ptranslate=false` leave them out, and `-Pslim=true` builds the slim APK without any of them.
 
 The Wear OS app is a separate module that is in the build only when you ask for it:
 

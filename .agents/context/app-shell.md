@@ -15,7 +15,12 @@ lines.
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s
   `releaseRuntimeClasspath` by `ReleaseClasspathNoticesTest` — a new shipped dependency is a row in both files
   (with the artifact prefixes that claim it) or a `NOT_SHIPPED` entry with its reason, and nothing else makes
-  those tests pass. The license texts are committed copies (no Gradle task; `assets/legal/COPYING` is
+  those tests pass. A native library's bundled code and data are coordinate-less rows under the row that claims it,
+  kept to what its `.so` files show (the WebRTC, translation and Moonshine rows; ADR 2026-10.swvp's 2026-10-22
+  amendment). `Packaging.LIVE_CALLS`, `Packaging.TRANSLATE` and `Packaging.STT` rows are on the default release runtime
+  and show in the app only where `LIVE_CALLS_WIRED` / `TRANSLATE_WIRED` / `STT_WIRED` (`ThirdPartyNotices.shipped`), so
+  the slim APK lists none of them. The license texts are committed copies
+  (no Gradle task; `assets/legal/COPYING` is
   byte-pinned to root `COPYING`), and nothing from the build machine — git SHA, timestamp — goes into a
   release's About: the release APK is byte-reproduced by F-Droid, so only the debug variant fills
   `BuildConfig.GIT_SHA`. No license plugin; `legal/InstallSource.kt` is the app's one installer read.

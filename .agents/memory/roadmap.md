@@ -172,8 +172,9 @@ doc). **Don't start a deferred item without explicit direction.**
 - **The walkie transcript past its experiment** (ADR 2026-10.nz3g, 2026-10-09; streaming since 2026-10-14). The
   receiver writes heard bursts out as text in debug builds, as they play, from a tap-to-download Moonshine v2
   Streaming model. Left out on purpose:
-  - **Release.** It would need moonshine-voice (its own ONNX Runtime prebuilt) on the F-Droid path, so a scanner and
-    reproducibility check, notices rows and a Data Safety answer for the download.
+  - ~~**Release.**~~ **On in release builds from 2.11.0** (ADR 2026-10.swvp's 2026-11-08 amendment; off in the slim
+    APK). The reproducibility check passed for 2.11.0-beta.0 and the notices rows landed with the flip. Still owed: a
+    Data Safety answer for the model download, and F-Droid's scanner on the first stable that carries moonshine-voice.
   - **Other languages.** Moonshine publishes streaming models for German, Spanish, Japanese, Arabic, Mandarin,
     Tagalog and Vietnamese (MIT), but the walkie has no language setting to pick one by.
   - **Hosting.** The nine files of each model must be uploaded to `getknit.app/models/stt/<id>/` before Download
@@ -498,7 +499,9 @@ doc). **Don't start a deferred item without explicit direction.**
   contact-card intro) were **not** complete at the flip — see ADR 064 for what was, and for the residual
   risk that carries.
 
-- **The commons is built but hidden in shipped builds** (2026-09-12, ADR 2026-09.wx8e) —
+- ~~**The commons is built but hidden in shipped builds**~~ **introduced 2026-11-08 for 2.11.0** (ADR 2026-09.wx8e's
+  amendment: on in every build, off in the slim APK; the maintainer's call, after 2.11.0-beta.0 carried it). The
+  "owed before the flip" items below were still open when it flipped. Was (2026-09-12) —
   `BuildConfig.COMMONS` is true in debug and false in release, `-Pcommons=true` lights it for a maintainer
   build. It gates the `CommonsStore` the DI hands `MeshManager` and `InternetRelayViewModel` (null while
   dark: no room in the scope table, no subscription, no post, no member sweep, no Join / Leave line on the
