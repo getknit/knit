@@ -1,0 +1,18 @@
+Knit in five new languages, translation on your phone, and speech turned into text
+
+Knit now comes in Brazilian Portuguese, Spanish, Ukrainian, French and German, and it translates messages:
+long-press one and pick Translate. Translation runs on your phone, between English and those five languages,
+and after a one-time download for each language it works offline. Knit can translate your own message before
+you send it, too. English speech becomes text on your phone: tap Transcribe on a voice message, turn on CC in
+a call, or read walkie-talkie bursts as they play.
+
+A private internet relay can now run shared rooms, and a new switch lets Knit connect you straight to a
+contact over the Internet when a relay is slow. You can make text bold or italic, pin up to three messages in
+a chat, search inside one chat, and see when someone is typing over a relay. In the US, Australia and New
+Zealand a LoRa board can use a frequency only Knit boards use. Calls ring with Knit's own ringtone, and stable
+releases on GitHub now include a much smaller slim APK.
+
+Fixed: a LoRa board that stopped carrying messages after Bluetooth was switched off and on, long shared text
+that locked the message field, Knit staying offline after an update, "Knit isn't responding" on some phones,
+the keyboard closing when you long-pressed a message, right-to-left text reading the wrong way, and Knit
+closing on phones with no Files app.

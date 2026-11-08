@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-10-30T23:39:43Z
+  updated: 2026-11-08T22:26:45Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,10 +18,27 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
+
+> Knit in five new languages, translation on your phone, and speech turned into text
 
 ### Added
 
+- Long-press a message and pick Translate to read it in your language. Knit translates between English and
+  Spanish, French, Ukrainian, German or Portuguese on your phone, and after a one-time download for each
+  language it works offline.
+- When a chat is in another language, Knit offers to translate your message before you send it, and you can
+  send your translation models to a contact. Your messages also tell people which language you write and which
+  you read. The Translation switch in Settings › Chats turns that off.
+- Knit can now turn English speech into text on your phone: tap Transcribe on a voice message, turn on CC in a
+  call, or read walkie-talkie bursts as they play. The speech model is a one-time download from getknit.app,
+  and Settings › Calls turns transcripts off.
+- A private internet relay can now run shared rooms, which you join under Internet relays with the invite its
+  operator gives you. Everyone in a room becomes a contact, and you can post, react and, where the relay
+  allows, send photos and files.
+- A new switch on the Internet relays screen, Connect directly to contacts, lets Knit link you straight to a
+  contact over the Internet when a relay is slow or won't carry a photo. You both need it on, and a contact
+  Knit tries to connect with learns your phone's IP address.
 - In the US, Australia and New Zealand, you can now set a LoRa board up on a frequency only Knit boards use.
   Knit then uses the full airtime your region allows, but other people's Meshtastic radios no longer pass
   your messages on.
@@ -54,6 +71,8 @@ document:
 
 - Message notifications now play Knit's own sound, a soft long-short-long chime that is K in Morse code. Only
   new installs get it, so if Knit is already on your phone, its notifications keep the sound they have now.
+- Calls now ring with Knit's own ringtone, a music-box tune built on the message chime. If you had picked a
+  different sound for Knit's calls in Android's settings, you'll need to pick it again.
 - Low-power mode in Settings is now a Wi-Fi Aware switch, and Battery Saver no longer turns it on. If you had
   Low-power mode on, Wi-Fi Aware stays off until you switch it back on.
 - Knit now turns Wi-Fi Aware off while no nearby phone can use it, and back on when one comes into Bluetooth
@@ -137,6 +156,11 @@ document:
   could keep seeing their old photo or initials until one of you restarted Knit.
 - On a phone with no Files app, Knit closed when you went to send a file or photo, save a file, or make or
   restore a backup. It now says the phone has no app for picking or saving files.
+- Messages and names written in Arabic, Hebrew or another right-to-left language now read right to left, with
+  their punctuation at the end of the line. Safety numbers, recovery keys and logs always read left to right.
+- An audio file you pick to send, such as an MP3, now shows its length and a waveform, like a voice message.
+  Long-pressing a voice message's waveform or play button now opens the message menu, as the rest of the
+  bubble does.
 
 ## [2.10.2](https://github.com/getknit/knit/releases/tag/v2.10.2) — 2026-11-02T03:32:31Z
 
