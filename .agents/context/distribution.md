@@ -311,7 +311,9 @@ while it is cheap to fix rather than at the next stable tag.
 
 A stable tag ships a second APK beside the full one: `knit-X.Y.Z-slim.apk`, built with `-Pslim=true`, for people who
 want the radio messenger and nothing else. The preset (`app/build.gradle.kts`) defaults the Internet plane (relays,
-link previews), both call kinds, speech and Knit Anywhere to OFF; LoRa stays. Each feature's own `-P` flag still wins.
+link previews), the commons, direct links, both call kinds, speech, Knit Anywhere and translation to OFF; LoRa stays.
+Each feature's own `-P` flag still wins, and so does one left in `gradle.properties`: a release tag must carry none of
+these keys there, or the slim APK ships the feature (the shipped defaults live in `app/build.gradle.kts`).
 Dropping calls drops WebRTC, which is most of the difference: 124.1 MB full against 74.8 MB slim, measured on
 2.11.0-alpha.0.
 
@@ -325,8 +327,8 @@ Dropping calls drops WebRTC, which is most of the difference: 124.1 MB full agai
   ABIs and the VCS stamp, and refuses an APK that still carries `libjingle_peerconnection_so.so`. `build-fdroid` is a
   matrix over preflight's `variants` output, so the slim APK gets its own cold rebuild in F-Droid's image, and
   `publish` runs `apksigcopier compare` on both.
-- **Its runtime classpaths are unlocked.** `-Pslim=true` turns calls off, which trips the existing `dependencyLocking`
-  carve-out for a release whose runtime differs from the default's. It only removes libraries, and
+- **Its runtime classpaths are unlocked.** `-Pslim=true` turns calls, speech and translation off, which trips the
+  existing `dependencyLocking` carve-out for a release whose runtime differs from the default's. It only removes libraries, and
   `gradle/verification-metadata.xml` still pins the bytes of everything it resolves.
 - **Pre-releases ship no slim APK.** `variants` is `["full"]` for them, and the slim build step is skipped.
 

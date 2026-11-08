@@ -8,7 +8,8 @@ topics: [mesh, spool, transport, privacy, wire]
 
 # ADR 2026-10.a5yj — A contact's direct Internet link is an on-demand, long-range MeshTransport child
 
-Status: Accepted (2026-10-28, the maintainer's call, after the signal-lane device run). Proposed 2026-10-18 as a draft on
+Status: Accepted (2026-10-28, the maintainer's call, after the signal-lane device run); on in release builds from 2.11.0
+(the 2026-11-08 amendment). Proposed 2026-10-18 as a draft on
 `exp/dht-links`; Phase 0 went 2026-10-27 (the go/no-go amendment below); Phases 1–2 are built and device-checked in
 debug builds, and Phase 3's walkie trigger since (the walkie amendment below). Accepted ahead of the rest of Phase 3,
 which still flips the release default: `BuildConfig.DIRECT_LINKS` stays off
@@ -967,3 +968,11 @@ Internet after all.
   `theRelayMarkerNamesADirectLinkOnlyInADmWhosePeerTakesLinksWhileOurSwitchIsOn`, `ChatRelayIndicatorTest`'s
   `theMarkerNamesADirectLinkWhereOneCanCarryTheFile`, `RelayReachTest`'s marker case, and the `MessageBubbleNotRelayedLocked`
   and `MessageInputStagedLocked` screenshots.
+
+## Amendment 2026-11-08: links ship in 2.11.0
+
+2.11.0-beta.0 carried direct links through `gradle.properties`. The maintainer asked for them on in release builds for
+good from 2.11.0, ahead of the rest of Phase 3, so `directLinks` now defaults to true in every build type in
+`app/build.gradle.kts`, where F-Droid's -P-free rebuild reads it, and to false under `-Pslim=true`, whose phones have no
+relay to cast a rendezvous through. Nothing else moves: `SettingsStore.directLinksEnabled` still defaults off, so a link
+is offered or answered only once the person turns it on, and `-PdirectLinks=false` still wires nothing.

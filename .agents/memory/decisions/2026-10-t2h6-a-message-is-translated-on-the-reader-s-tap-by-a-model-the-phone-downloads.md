@@ -8,7 +8,8 @@ topics: [ml, ui, moderation, privacy]
 
 # ADR 2026-10.t2h6 — A message is translated on the reader's tap by a model the phone downloads
 
-Status: Proposed (2026-10-22). The English ↔ Spanish spike ran on 2026-10-22 on the Pixel 7 and Pixel 9, a debug
+Status: Accepted (2026-11-08, the maintainer's call: on in release builds from 2.11.0, the last amendment). Proposed
+2026-10-22. The English ↔ Spanish spike ran on 2026-10-22 on the Pixel 7 and Pixel 9, a debug
 build made with `-Ptranslate=true` (results at the end). It answered the six questions below; what is left before
 acceptance is listed with them. No wire byte moves.
 
@@ -474,3 +475,18 @@ someone who has written little.
 The 2026-10-29 amendment's "Words the identifier is still sure of win, in any registry language" is overturned by ADR
 2026-11.tj49. When sure words and the sender's declared language disagree, the reader translates from whichever one
 has somewhere to go for them. A declaration that overrules sure words is marked guessed.
+
+## Amendment 2026-11-08: translation ships in 2.11.0
+
+2.11.0-alpha.4 and beta.0 carried translation through `gradle.properties`. The maintainer asked for it on in release
+builds for good from 2.11.0, so `translate` now defaults to true in every build type in `app/build.gradle.kts`, where
+F-Droid's -P-free rebuild reads it, and to false under `-Pslim=true`, which leaves translation out of the slim APK.
+
+- **The lock state records it.** `app.getknit:translate-native` is on every runtime classpath in `app/gradle.lockfile`.
+  The `dependencyLocking` carve-out now unlocks for `-Ptranslate=false` (every build type's runtime) instead of
+  `-Ptranslate=true`.
+- **The notices follow the build.** The slimt rows were already in `ThirdPartyNotices`, listed only where
+  `TRANSLATE_WIRED` is, so the slim APK does not list them. `ReleaseClasspathNoticesTest` now finds their coordinate
+  on `releaseRuntimeClasspath`, no longer on `releaseCompileClasspath` as above.
+- Nothing is downloaded until a reader first asks for a translation; the models still come from
+  `getknit.app/models/translate/` or a contact.

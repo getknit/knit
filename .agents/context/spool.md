@@ -53,10 +53,9 @@ lines.
   HELLO by an 8-byte tag of its scope id; `CommonsAdverts` is the one reader of `rooms` and `commons`, a spool that
   lists its rooms settles a stale room with no SUB, and nothing reads one room's name or `attach` for another's. An
   invite is never a rotation (C-7.4-18): never leave a room because another room's invite arrived at its relay.
-  **Hidden in shipped builds** behind `BuildConfig.COMMONS` (on in debug, off in release, `-Pcommons=`
-  overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
-  `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default
-  when it is introduced.
+  Behind `BuildConfig.COMMONS` (on in every build since 2.11.0, ADR 2026-09.wx8e's 2026-11-08 amendment; off in the
+  slim APK, `-Pcommons=` overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`,
+  `InternetRelayViewModel` and `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it.
 - **When touching the signal lane — `SpoolSig` / `SpoolSigInfo`, `SpoolHello.sig`, `SpoolConnection.canSig` / `sigOut`
   / `SendBudget`, `ScopeSync.sig` / `sigScope` / `handleSig`, `ScopeCrypto.sealSig` / `openSig` / `SIG_SEAL_VERSION`,
   `ScopeFrames.sigEligible` / `openSig` — or how a typing cue is sent or shown (`MeshManager.sendTyping`,

@@ -39,9 +39,9 @@ document:
   result takes you back to that message.
 - You can now see when a contact or group member is typing over an internet relay, and they can see when you
   are. A new Typing indicators switch in Settings › Chats turns this off both ways.
-- Stable releases on GitHub now include a slim APK, about 49 MB smaller, that leaves out internet relays,
-  calls, transcription and Knit Anywhere. You can switch between it and the full app without losing your
-  messages.
+- Stable releases on GitHub now include a much smaller slim APK that leaves out internet relays, calls,
+  transcription, translation and Knit Anywhere. You can switch between it and the full app without losing
+  your messages.
 - A message you send a contact over LoRa now shows the LoRa mark beside its single tick once their LoRa radio
   has it. The second tick still means it reached their phone.
 - In Diagnostics, long-press a node under Known, not reachable to hide it from that list, or hide them all at

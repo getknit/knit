@@ -42,10 +42,10 @@ servers_off() {
 servers_on
 trap servers_off EXIT
 
-# -Ptranslate=false: the lockfile's own rule (no maintainer flag), whatever ~/.gradle/gradle.properties says. The
-# translate-native AAR is on the compile classpaths either way.
+# -Ptranslate=true -Pstt=true: the lockfile's own rule (the shipped defaults, no maintainer flag), whatever
+# ~/.gradle/gradle.properties says. The translate-native and Moonshine AARs are on the compile classpaths either way.
 write() {
-  scripts/gradle-turn.sh ./gradlew -q --write-verification-metadata sha256,pgp --export-keys -Ptranslate=false "$@"
+  scripts/gradle-turn.sh ./gradlew -q --write-verification-metadata sha256,pgp --export-keys -Ptranslate=true -Pstt=true "$@"
 }
 
 passes() {
@@ -53,11 +53,11 @@ passes() {
   # ktlint, detekt, Kover and the screenshot plugin are among them), then a build of each kind for what AGP resolves
   # only while a task runs (AAPT2's platform binary among them).
   write :dependencies :app:dependencies :detekt-rules:dependencies :app:assembleDebug :app:assembleRelease
-  # The maintainer flags that unlock runtime classpaths (app/build.gradle.kts, `dependencyLocking`). Unlocked, Gradle
-  # walks every version a conflict offers and reads each one's metadata, versions the locked passes never see. The
-  # later -P wins over write()'s.
-  write -Ptranslate=true -Pstt=true :app:dependencies
-  write -Ptranslate=true -Pcalls=false :app:dependencies
+  # The slim APK and the maintainer flags that unlock runtime classpaths (app/build.gradle.kts, `dependencyLocking`).
+  # Unlocked, Gradle walks every version a conflict offers and reads each one's metadata, versions the locked passes
+  # never see. The later -P wins over write()'s, and an explicit flag beats the slim preset, so the slim pass names both.
+  write -Pslim=true -Ptranslate=false -Pstt=false :app:dependencies
+  write -Ptranslate=false -Pstt=false :app:dependencies
   # The opt-in modules.
   write -Pknit.wear=true -Pknit.baselineProfile=true \
     :wear:dependencies :watchface:dependencies :watchface-monogram:dependencies :baselineprofile:dependencies

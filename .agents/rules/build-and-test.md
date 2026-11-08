@@ -56,7 +56,8 @@ resolution break but are just a half-updated lockfile. Always regenerate with
 applies after **any** dependency change, including adding a test dep or bumping Kover.
 
 Write the lock with no maintainer flag in effect: CI and F-Droid build without one. `~/.gradle/gradle.properties`
-counts. `translate=true` there puts translate-native on every runtime classpath, so pass `-Ptranslate=false`.
+counts. `translate=false` or `stt=false` there takes translate-native or Moonshine off the runtime classpaths the lock
+records, so pass `-Ptranslate=true -Pstt=true` if it sets either.
 
 ## Regenerate dependency verification in the same commit
 

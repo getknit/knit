@@ -117,3 +117,25 @@ Checked on 2026-10-22: the default `assembleRelease` packages `libjingle_peercon
 no `ai.moonshine` or `MoonshineSpeech`, and its manifest has `CallActivity`, `CallService`, `MANAGE_OWN_CALLS`,
 `FOREGROUND_SERVICE_PHONE_CALL` and `USE_FULL_SCREEN_INTENT` but no speech service. The unsigned universal APK is
 123 MB. `KoinGraphVerifyTest` passes under `-Pstt=false`, the shipped wiring.
+
+## Amendment 2026-11-08: speech ships in 2.11.0
+
+2.11.0-alpha.4 and beta.0 carried speech (walkie transcripts, live captions, voice-note transcripts) through
+`gradle.properties`. The maintainer asked for it on in release builds for good from 2.11.0, so `stt` now defaults to true
+in every build type, still only beside a call kind, and to false under `-Pslim=true` with the call kinds and Knit Anywhere.
+
+- **The lock state records the shipped runtime.** Moonshine joins WebRTC and core-telecom on `releaseRuntimeClasspath`
+  and `stagingRuntimeClasspath`. A release-shaped build is unlocked when its runtime differs from that:
+  `-PliveCalls=false`, `-PmeshCalls=false`, `-Pstt=false`, `-Ptranslate=false` or `-Pslim=true`.
+- **Moonshine is a notice, and so is what its binaries link.** The beta shipped without rows, because its unlocked
+  release classpath kept `ReleaseClasspathNoticesTest` from seeing the library. `legal/SpeechNotices.kt` now holds a
+  `moonshine-voice` row and one coordinate-less row per library, model or data set its three `.so` files show (ONNX
+  Runtime 1.23.2 and what its notices name, Eigen, utf8proc, kaldi-native-fbank, Silero VAD, the diarization
+  parameters, the VCTK clips, …), mirrored in `THIRD-PARTY-NOTICES.md`'s `## Speech` table. They are `Packaging.STT`,
+  listed only where `STT_WIRED` is, so the slim APK does not list them.
+- **WebRTC's rows follow live calls.** Listed in every build since 2.10.0, they would have shown in the slim APK, which
+  packages no WebRTC. The `webrtc` row and the thirteen under it are now `Packaging.LIVE_CALLS`, listed only where
+  `LIVE_CALLS_WIRED` is, in `THIRD-PARTY-NOTICES.md`'s own `## Live calls` table.
+- **A shipped default never lives in `gradle.properties`.** A key there beats the `-Pslim=true` preset the way a `-P`
+  does, so the beta's four keys would have put the commons, direct links and translation in the slim APK. The defaults
+  are in `app/build.gradle.kts`, and a release tag carries none of these keys.

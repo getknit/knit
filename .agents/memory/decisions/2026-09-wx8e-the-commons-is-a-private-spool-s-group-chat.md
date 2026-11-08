@@ -100,3 +100,10 @@ which is what routes room moderation, volume retention and never-a-request — s
 mean "Nearby" must not. Kept true by `CommonsSyncTest` (the convergence harness — nothing crosses the
 mesh, so there is no `mesh/lab/` scenario), `ScopeFramesTest`'s commons arm, `FrameTypeTest`'s
 non-custodial pin, and `MessageRetentionTest`.
+
+## Amendment 2026-11-08: the commons ships in 2.11.0
+
+2.11.0-beta.0 carried the commons through `gradle.properties`. The maintainer asked for it on in release builds for good
+from 2.11.0, so `commons` now defaults to true in every build type in `app/build.gradle.kts`, where F-Droid's -P-free
+rebuild reads it, and to false under `-Pslim=true`: the slim APK has no relays to hold a room. `-Pcommons=false` still
+hides it. It flipped with the trials ADR 2026-10.xhfr and ADR 2026-09.tmbq owe still open (`.agents/memory/roadmap.md`).

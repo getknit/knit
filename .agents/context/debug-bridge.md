@@ -221,7 +221,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   (`invalid 1`, and the scope then never reads `converged`) — restart an in-memory daemon before a
   convergence trial; and there is no `unsub` record, so the daemon's `knit_spool_commons_subscribers` still
   counts a member that left until its connection drops. Refused with `error` in a build that hides the
-  commons (`BuildConfig.COMMONS` — off in release, and in a `-Pcommons=false` debug build).
+  commons (`BuildConfig.COMMONS` — off in the slim APK, and in a `-Pcommons=false` build).
 - `…debug.BACKUP` — drives the **backup** half of Backup and restore (ADR 2026-09.6mj7, `docs/BACKUP_FORMAT.md`)
   where the document picker is out of reach. No extras writes a backup under a fresh recovery key to
   `files/backup-test.knitbackup` (`--es path <file>` for another) through the real `BackupWriter` and replies with
@@ -538,8 +538,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     <model> loaded in <ms> ms`, and per burst `walkie: transcribed heard|spoken burst <b>: <ms> ms of audio, <n>
     look(s), <ms> ms in the model, final <ms> ms after its end, <n> chars`. A model that won't load latches `stt` under
     `…debug.MODEL` like the moderation models. The runtime's own `MoonshineJNI` debug lines carry no text.
-- `…debug.TRANSLATE` — the **offline translation spike** (ADR 2026-10.t2h6; a debug build made with
-  `-Ptranslate=true` only, else `error`). `--es op status` (the default) replies with each direction's model (`en->es`,
+- `…debug.TRANSLATE` — **offline translation** (ADR 2026-10.t2h6; a debug build with `BuildConfig.TRANSLATE`, so not
+  one made with `-Ptranslate=false`, else `error`). `--es op status` (the default) replies with each direction's model (`en->es`,
   `es->en`: `absent`, `downloading` with `done`/`total`, `ready`, `failed` with its `reason`), `resident` (which hold a
   model in memory), `bench` (the last bench) and `asked` (what the `translate` op asked for, text included: the bridge
   is the one place a translation leaves the screen; logcat `Translate` carries lengths and times only).

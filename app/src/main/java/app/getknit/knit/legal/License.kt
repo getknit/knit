@@ -47,6 +47,19 @@ enum class License(
         "legal/BSD-2-Clause-cpuinfo.txt",
         routeId = "bsd-2-clause-cpuinfo",
     ),
+
+    // The speech runtime's (ThirdPartyNotices' Packaging.STT rows), where no text above fits.
+    BSD_3_CLAUSE_MOONSHINE(
+        "BSD-3-Clause",
+        "BSD 3-Clause Licenses (the speech runtime's bundled code)",
+        "legal/BSD-3-Clause-Moonshine.txt",
+        routeId = "bsd-3-clause-moonshine",
+    ),
+
+    // No SPDX id fits: MIT twice over, then the Unicode data notice utf8proc's tables carry.
+    UTF8PROC("LicenseRef-utf8proc", "utf8proc License (MIT, with its Unicode data notice)", "legal/utf8proc.txt"),
+    HPND("HPND", "Historical Permission Notice and Disclaimer (Pillow)", "legal/HPND-Pillow.txt"),
+    CC_BY_4_0("CC-BY-4.0", "Creative Commons Attribution 4.0 International", "legal/CC-BY-4.0.txt"),
     ;
 
     companion object {
