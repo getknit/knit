@@ -692,9 +692,10 @@ that budget is a purely local knob that can differ per node without breaking cue
 - **`Notifier`** interface — `createChannel`, `notify`, `notifyMention`, `setVisibleConversation`, `clearConversation`,
   `onDismissed`. `NotificationChannels` registers the channels per context: `knit_msg_nearby`
   (`IMPORTANCE_DEFAULT` — the busy broadcast room), plus `knit_msg_dms`, `knit_msg_groups_v2`, and a
-  dedicated `knit_msg_mentions` (all `IMPORTANCE_HIGH`); separate app channels are the foreground-service
-  `knit_mesh` (`IMPORTANCE_MIN`), `knit_alerts` (`IMPORTANCE_LOW`), and `knit_open_to_chat`
-  (`IMPORTANCE_DEFAULT`) for the presence cue below.
+  dedicated `knit_msg_mentions_v2` (all `IMPORTANCE_HIGH`); separate app channels are the foreground-service
+  `knit_mesh` (`IMPORTANCE_MIN`), `knit_alerts` (`IMPORTANCE_LOW`), and `knit_open_to_chat_v2`
+  (`IMPORTANCE_DEFAULT`) for the presence cue below. Mentions and the cue have their own sounds (ADR
+  2026-10.xukf).
 - **The "open to chat" cue** (`presence/`): a profile flag (`ProfileContent.openToChat`, carried on both
   profile paths, stored as `PeerEntity.openToChat`) plus one standalone notification — "Sam is nearby and open
   to chat" / "3 people nearby are open to chat" — that opens the Nearby room. `OpenToChatWatch` (started by

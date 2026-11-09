@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.media.AudioAttributes
 import android.net.Uri
+import android.provider.Settings
 import androidx.annotation.RawRes
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationChannelGroupCompat
@@ -31,7 +32,9 @@ object NotificationChannels {
     // DEFAULT-importance `knit_msg_groups` is deleted (see [ensure]) and recreated under a fresh id.
     const val GROUPS = "knit_msg_groups_v2"
     const val DMS = "knit_msg_dms"
-    const val MENTIONS = "knit_msg_mentions"
+
+    // Bumped to _v2 for the mention sound (ADR 2026-10.xukf): a channel's sound is fixed once it exists.
+    const val MENTIONS = "knit_msg_mentions_v2"
 
     // The Meshtastic room — the paired radio's primary channel. LOW (silent) rather than Nearby's DEFAULT,
     // because it is the one room whose volume nobody here controls: it carries a whole neighbourhood's chat
@@ -54,8 +57,9 @@ object NotificationChannels {
 
     // The "someone nearby is open to chat" cue (presence/OpenToChatWatch). Its own channel rather than
     // [ALERTS] so the user can mute the nudge without muting connection alerts — and because [ALERTS] is LOW
-    // (silent) and a channel's importance is immutable once created.
-    const val OPEN_TO_CHAT = "knit_open_to_chat"
+    // (silent) and a channel's importance is immutable once created. Bumped to _v2 for its own sound (ADR
+    // 2026-10.xukf).
+    const val OPEN_TO_CHAT = "knit_open_to_chat_v2"
 
     private const val GROUP_MESSAGES = "knit_grp_messages"
     private const val GROUP_APP = "knit_grp_app"
@@ -69,6 +73,11 @@ object NotificationChannels {
     // The pre-bump LOW-importance Requests channel; replaced by [REQUESTS] (_v2) at HIGH importance.
     private const val LEGACY_REQUESTS = "knit_msg_requests"
 
+    // The channels made before mentions and the open-to-chat cue had sounds of their own; replaced by the _v2s,
+    // which carry over what the user set on the old ones ([carryFrom]).
+    private const val SOUNDLESS_MENTIONS = "knit_msg_mentions"
+    private const val SOUNDLESS_OPEN_TO_CHAT = "knit_open_to_chat"
+
     private val soundAttributes: AudioAttributes =
         AudioAttributes
             .Builder()
@@ -76,8 +85,14 @@ object NotificationChannels {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
-    /** Knit's own sound, which every channel in the Messages group plays (ADR 2026-10.xukf). */
+    /** Knit's own sound, which every channel in the Messages group but [MENTIONS] plays (ADR 2026-10.xukf). */
     fun messageSound(context: Context): Uri = rawSound(context, R.raw.knit)
+
+    /** The [MENTIONS] channel's sound: the message's K with a high pip after it. */
+    fun mentionSound(context: Context): Uri = rawSound(context, R.raw.knit_mention)
+
+    /** The [OPEN_TO_CHAT] channel's sound: a soft rising arpeggio, plainly not a message. */
+    fun openToChatSound(context: Context): Uri = rawSound(context, R.raw.knit_open_to_chat)
 
     /**
      * A channel sound for one of Knit's own `res/raw` sounds (ADR 2026-10.xukf). The URI names the resource
@@ -117,6 +132,10 @@ object NotificationChannels {
     @Suppress("LongMethod")
     fun ensure(context: Context) {
         val manager = NotificationManagerCompat.from(context)
+        // Read before anything below deletes them: a bumped channel starts from its defaults, so a user who had
+        // silenced, blocked or quietened the old one would otherwise hear it again.
+        val oldMentions = manager.getNotificationChannelCompat(SOUNDLESS_MENTIONS)
+        val oldOpenToChat = manager.getNotificationChannelCompat(SOUNDLESS_OPEN_TO_CHAT)
 
         manager.createNotificationChannelGroup(
             NotificationChannelGroupCompat
@@ -193,6 +212,8 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.mention_channel_name,
                 R.string.mention_channel_description,
+                sound = R.raw.knit_mention,
+                old = oldMentions,
             ),
         )
         manager.createNotificationChannel(
@@ -233,6 +254,8 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_DEFAULT,
                 R.string.channel_open_to_chat_name,
                 R.string.channel_open_to_chat_desc,
+                sound = R.raw.knit_open_to_chat,
+                old = oldOpenToChat,
             ),
         )
 
@@ -241,8 +264,19 @@ object NotificationChannels {
         manager.deleteNotificationChannel(LEGACY_MENTIONS)
         manager.deleteNotificationChannel(LEGACY_GROUPS)
         manager.deleteNotificationChannel(LEGACY_REQUESTS)
+        manager.deleteNotificationChannel(SOUNDLESS_MENTIONS)
+        manager.deleteNotificationChannel(SOUNDLESS_OPEN_TO_CHAT)
     }
 
+    /**
+     * A channel made under a new id, built on [old] (the channel it replaces) when that still exists: what the user set
+     * there carries over. Importance carries when the user turned it down (silenced, or blocked at
+     * `IMPORTANCE_NONE`); sound when it was None or one the user picked rather than the stock default or Knit's
+     * message sound, which the new sound replaces; vibration, lights and badge as they were. Lock-screen visibility
+     * and Do Not Disturb bypass can't carry: the platform resets both on any channel an app creates. Only the first
+     * `ensure` after the bump sees [old]; after that it is gone and the new channel is the user's to change.
+     */
+    @Suppress("LongParameterList")
     private fun channel(
         context: Context,
         id: String,
@@ -250,11 +284,33 @@ object NotificationChannels {
         importance: Int,
         nameRes: Int,
         descRes: Int,
-    ) = NotificationChannelCompat
-        .Builder(id, importance)
-        .setName(context.getString(nameRes))
-        .setDescription(context.getString(descRes))
-        .setGroup(group)
-        .apply { if (group == GROUP_MESSAGES) setSound(messageSound(context), soundAttributes) }
-        .build()
+        @RawRes sound: Int? = if (group == GROUP_MESSAGES) R.raw.knit else null,
+        old: NotificationChannelCompat? = null,
+    ): NotificationChannelCompat {
+        val builder =
+            NotificationChannelCompat
+                .Builder(id, old?.importance?.takeIf { it < importance } ?: importance)
+                .setName(context.getString(nameRes))
+                .setDescription(context.getString(descRes))
+                .setGroup(group)
+        if (sound != null) builder.setSound(rawSound(context, sound), soundAttributes)
+        if (old != null) {
+            val oldSound = old.sound
+            if (oldSound == null || oldSound !in stockSounds(context)) {
+                builder.setSound(oldSound, old.audioAttributes ?: soundAttributes)
+            }
+            builder
+                // Pattern first: the compat setter also sets vibration on only for a non-empty pattern, so a user's
+                // plain Vibrate toggle (on, no pattern) would be switched back off if the flag came first.
+                .setVibrationPattern(old.vibrationPattern)
+                .setVibrationEnabled(old.shouldVibrate())
+                .setLightsEnabled(old.shouldShowLights())
+                .setLightColor(old.lightColor)
+                .setShowBadge(old.canShowBadge())
+        }
+        return builder.build()
+    }
+
+    /** The sounds an old channel held without the user choosing one: the system default, or Knit's message sound. */
+    private fun stockSounds(context: Context): Set<Uri> = setOf(Settings.System.DEFAULT_NOTIFICATION_URI, messageSound(context))
 }

@@ -59,3 +59,28 @@ the old one: a channel's sound is fixed once it exists, and calls are still debu
 loses a setting. Both sounds reach their channels through `NotificationChannels.rawSound`, under the same
 never-rename rule. `CallNotificationsTest` pins the ring's URI resolving to its Ogg and the old channel's
 deletion.
+
+## Amendment (2026-11-09): mentions and the open-to-chat cue get sounds of their own
+
+Mentions played the same sound as every other message, so a mention in a busy room sounded no different from the
+room. The open-to-chat cue played the system default, so it sounded like another app. The maintainer picked from
+four takes of each. Mentions play `res/raw/knit_mention.ogg`: the message's K followed by a high A6 pip, "over,
+you", 1.5 s at -16 LUFS. It is still the K, so it still sounds like Knit. The open-to-chat cue plays
+`res/raw/knit_open_to_chat.ogg`: a slow rising arpeggio (A5, C#6, E6), 1.4 s at -19 LUFS. It has no K rhythm,
+because there is no message to read, and it is quieter because it is only a nudge. `scripts/gen-notification-sound.py`
+renders both from fixed seeds, and the two earlier sounds come out byte-identical.
+
+Both channels changed id, because a channel's sound is fixed once it exists: `knit_msg_mentions` became
+`knit_msg_mentions_v2`, and `knit_open_to_chat` became `knit_open_to_chat_v2`. A new channel starts from its
+defaults, so `NotificationChannels.ensure` reads each old channel before deleting it and builds the new one on
+what the user set there. Importance carries when the user turned it down (silenced, or blocked): the new channel
+is made at the lower of the two. The sound carries when it was None or one the user picked; only the stock
+default or Knit's message sound gets the new sound. Vibration, lights and the badge carry as they were.
+Lock-screen visibility and Do Not Disturb bypass can't carry: `PreferencesHelper.createNotificationChannel`
+resets both on any channel an app creates (to the package's visibility, and to no bypass without DND access). A
+user who had hidden mentions on the lock screen per channel sees them there again until they set it again.
+The maintainer accepted that, with a CHANGELOG line telling users so, over two alternatives: keeping the old
+channel unbumped for those users (they would miss the new sound), or storing the old setting and stamping it on
+every notification (a stricter setting nothing in Android's Settings could later clear).
+`NotificationChannelsTest` pins both sounds, each carried choice and the untouched defaults. The other message
+channels keep their ids, so a phone that had Knit before 2.11.0 still plays the system default on them.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate Knit's notification sounds: the message sound `knit.ogg` and the call ring `knit_ring.ogg`.
+"""Generate Knit's notification sounds: messages, mentions, the open-to-chat cue and the call ring.
 
     python3 scripts/gen-notification-sound.py
 
-Both land in `app/src/main/res/raw/`. Needs numpy, scipy and an ffmpeg built with libvorbis. The committed `.ogg`
+All four land in `app/src/main/res/raw/`. Needs numpy, scipy and an ffmpeg built with libvorbis. The committed `.ogg`
 files are what ships; this script is their source, so change a sound here and regenerate, never edit a file by
 hand (ADR 2026-10.xukf).
 
@@ -13,13 +13,21 @@ sound's identity, the part that still reads through a phone speaker or across a 
 marimba-like bar's partials, the overtones dying fast) and the 7 kHz ceiling are what keep it soft: its energy
 sits around 1.1 kHz, where a phone speaker is at its best, with next to none above 5 kHz.
 
+**The mention.** The message sound, then a high A6 pip answering it, "over, you": 1.5 s. It is still the K, so it
+still reads as Knit, and the pip an octave above the K's root is what sets it apart from a message in the same
+room.
+
+**The open-to-chat cue.** Someone nearby says they are open to chat, so there is nothing to read: no K rhythm,
+just a slow rising arpeggio on the home chord (A5, C#6, E6), like someone stepping in. 1.4 s.
+
 **The ring.** A music-box line on the same felt with a little more octave in it, built on the K: the motif, a
 turn around it, then the same shape a step up resolving home on A5, 4.6 s. The file is one loop with its pause
 inside, because an insistent call notification plays it over and over; whatever rings past the loop point is
 folded back onto its start, so the seam is silent.
 
-**Loudness.** Integrated loudness (ITU-R BS.1770, measured here): -16 LUFS for the message, its peak near -5
-dBFS, on purpose quieter than most notification sounds; -13 LUFS for the ring over three loops, since a call has
+**Loudness.** Integrated loudness (ITU-R BS.1770, measured here): -16 LUFS for the message and the mention, the
+message's peak near -5 dBFS, on purpose quieter than most notification sounds; -19 LUFS for the open-to-chat
+cue, a nudge rather than a message; -13 LUFS for the ring over three loops, since a call has
 to reach the next room. Raise a target a few dB if it gets missed.
 
 **Reproducible.** The noise in the mallet's contact and the room is drawn from a fixed seed per sound (the one
@@ -45,7 +53,7 @@ FELT = [(1.0, 1.0, 1.0), (2.0, 0.07, 0.5), (3.93, 0.16, 0.22), (9.6, 0.025, 0.08
 # The same felt with more octave and a third partial: the ring's, for presence in a pocket.
 BRIGHT_FELT = [(1.0, 1.0, 1.0), (2.0, 0.16, 0.55), (3.0, 0.05, 0.35), (3.93, 0.18, 0.25), (9.6, 0.03, 0.08)]
 
-E5, FS5, A5, B5, CS6, D6, E6, FS6 = 659.26, 739.99, 880.0, 987.77, 1108.73, 1174.66, 1318.51, 1479.98
+E5, FS5, A5, B5, CS6, D6, E6, FS6, A6 = 659.26, 739.99, 880.0, 987.77, 1108.73, 1174.66, 1318.51, 1479.98, 1760.0
 
 
 def note(rng, freq, tau, gain, gate=None, timbre=FELT, length=1.4):
@@ -99,6 +107,33 @@ def message():
     return buf / np.max(np.abs(buf))
 
 
+def fade_out(buf):
+    fade = int(0.08 * SR)
+    buf[-fade:] *= np.linspace(1, 0, fade) ** 2
+    return buf / np.max(np.abs(buf))
+
+
+def mention():
+    rng = np.random.default_rng(13)
+    events = [
+        (0.000, note(rng, A5, 0.30, 0.85, gate=0.165)),  # the message's K
+        (0.220, note(rng, E5, 0.30, 0.60, gate=0.055)),
+        (0.330, note(rng, CS6, 0.34, 1.00)),
+        (0.620, note(rng, A6, 0.22, 0.75)),  # the pip: "you"
+    ]
+    return fade_out(room(rng, place(events, int(1.5 * SR))))
+
+
+def open_to_chat():
+    rng = np.random.default_rng(22)
+    events = [
+        (0.00, note(rng, A5, 0.30, 0.60)),
+        (0.16, note(rng, CS6, 0.30, 0.70)),
+        (0.32, note(rng, E6, 0.45, 0.90)),
+    ]
+    return fade_out(room(rng, place(events, int(1.4 * SR))))
+
+
 def ring():
     rng = np.random.default_rng(2028935855)
     step = 0.15
@@ -122,6 +157,8 @@ def ring():
 # file name, title tag, render, target LUFS, how many copies the loudness is measured over
 SOUNDS = [
     ("knit.ogg", "Knit", message, -16.0, 1),
+    ("knit_mention.ogg", "Knit mention", mention, -16.0, 1),
+    ("knit_open_to_chat.ogg", "Knit open to chat", open_to_chat, -19.0, 1),
     ("knit_ring.ogg", "Knit ring", ring, -13.0, 3),
 ]
 
