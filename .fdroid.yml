@@ -141,19 +141,21 @@ Builds:
     gradle:
       - yes
 
-  - versionName: 2.10.1
-    versionCode: 34
-    commit: 7206899e8979c22154d86fa8cb1b06fbcf01b77a
-    subdir: app
-    gradle:
-      - yes
-
   - versionName: 2.10.2
     versionCode: 37
     commit: 96b8d79fb10494065471cf8ec2b1d67c8af40693
     subdir: app
     gradle:
       - yes
+
+  - versionName: 2.11.0
+    versionCode: 21100900
+    commit: 4fe98b1877bb3b43f7a6984008a12533c7aae009
+    subdir: app
+    gradle:
+      - yes
+    scandelete:
+      - third_party/emojilib/package.json
 
 AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
@@ -168,5 +170,5 @@ AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9.]+$
 UpdateCheckData: gradle.properties|knit\.versionCode=(\d+)|.|knit\.versionName=(.*)
-CurrentVersion: 2.10.2
-CurrentVersionCode: 37
+CurrentVersion: 2.11.0
+CurrentVersionCode: 21100900
