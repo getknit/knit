@@ -73,6 +73,16 @@ dexdump non-free-class scan and extra-signing-block scan are clean, and `UpdateC
 `knit.versionCode`/`knit.versionName` out of `gradle.properties`. `Categories` are validated against
 fdroiddata's `config/categories.yml` (108 entries) — a bare local repo has no category config, so
 `fdroid lint` will call *every* category invalid there; that is a local artifact, not a real failure.
+<!-- doc-lint: allow config/categories.yml — fdroiddata's file, not this repo's -->
+
+The scanner runs on every tag since 2.11.0: release.yml's `fdroid-scan` job runs `scripts/fdroid-scan.py` (fdroidserver's
+`scan_source` over a copy of the tracked tree, honouring the build entry's `scanignore` / `scandelete`) in the
+buildserver image, and `publish` waits on it. The image has no fdroidserver of its own, so the job clones it at a
+pinned master commit (`FDROIDSERVER_COMMIT`); fdroiddata runs master, so bump the pin when its scanner gains a rule.
+v2.11.0's first fdroiddata build failed on `third_party/emojilib/package.json` ("dependency file without lock") after
+release.yml had passed: fdroiddata's 2.11.0 entry carries a `scandelete` for it, and main replaced the file with a
+plain `VERSION`. Never vendor a `package.json` (or another manifest) without its lockfile.
+<!-- doc-lint: allow third_party/emojilib/package.json — removed on purpose; the history is the point -->
 <!-- doc-lint: allow config/categories.yml — a file in fdroiddata, not this tree -->
 
 Four inputs were deliberately de-machine-ified to keep it that way:

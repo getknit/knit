@@ -99,7 +99,7 @@ authorization of the copyright holder.
 
 Source: <https://github.com/muan/emojilib>, npm `emojilib@4.0.3`, `dist/emoji-en-US.json`. The keyword column
 appends these after CLDR's (lower-cased, `_` read as a space, duplicates dropped); the pinned file, its
-`LICENSE`, `package.json` and provenance are vendored under `third_party/emojilib/` (not shipped in the APK).
+`LICENSE`, `VERSION` and provenance are vendored under `third_party/emojilib/` (not shipped in the APK).
 
 ```
 The MIT License (MIT)

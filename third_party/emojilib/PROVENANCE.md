@@ -9,7 +9,10 @@ keywords (`third_party/unicode-cldr/`).
 - **Pinned files** (copied verbatim out of the tarball's `package/`):
   - `emoji-en-US.json` ← `dist/emoji-en-US.json`,
     sha256 `7974e9162e1505aa1b02d07a04e4eefa5c51864d6c32e477121c635201e2eca2`
-  - `package.json` (the generator reads the version from it and stamps it into the asset), `LICENSE`
+  - `LICENSE`
+- **`VERSION`:** the pinned npm version, which the generator stamps into the asset. `--update-emojilib` writes it
+  after checking the tarball's own `package.json` says the same; that manifest is not vendored, because F-Droid's
+  scanner refuses a `package.json` with no lockfile.
 - **Retrieved:** 2026-11-01
 - **License:** MIT, © 2014 Mu-An Chiou — see [`LICENSE`](LICENSE) in this directory
 

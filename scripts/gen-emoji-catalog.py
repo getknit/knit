@@ -15,8 +15,8 @@ Source: third_party/unicode-emoji/emoji-test.txt (Unicode License v3, (c) Unicod
 version/date recorded in the file's own header and in third_party/unicode-emoji/PROVENANCE.md; keywords from
 third_party/unicode-cldr/annotations-en.xml + annotationsDerived-en.xml (Unicode License v3), pinned at the
 CLDR release tag in third_party/unicode-cldr/RELEASE and third_party/unicode-cldr/PROVENANCE.md; more keywords
-from third_party/emojilib/emoji-en-US.json (MIT, (c) Mu-An Chiou), pinned at the npm version in its vendored
-package.json and in third_party/emojilib/PROVENANCE.md. This is a
+from third_party/emojilib/emoji-en-US.json (MIT, (c) Mu-An Chiou), pinned at the npm version in
+third_party/emojilib/VERSION and third_party/emojilib/PROVENANCE.md. This is a
 developer tool run on a workstation; it never runs in the app, so the app's no-INTERNET-permission design is
 unaffected. Nothing here is hard-coded to a Unicode version: the version, date and sha256 stamped into the
 asset header are read off the vendored file at run time, so a bump touches no constants.
@@ -107,10 +107,13 @@ CLDR_INHERIT = "↑↑↑"
 CLDR_URL_TEMPLATE = "https://raw.githubusercontent.com/unicode-org/cldr/{release}/{path}"
 EMOJILIB_DIR = REPO_ROOT / "third_party" / "emojilib"
 EMOJILIB_JSON = EMOJILIB_DIR / "emoji-en-US.json"
-EMOJILIB_PACKAGE = EMOJILIB_DIR / "package.json"
+# The npm version as plain text, not the package's own package.json: F-Droid's scanner refuses a package.json with no
+# lockfile beside it, and fdroiddata's 2.11.0 build needed a scandelete for the vendored one.
+EMOJILIB_VERSION = EMOJILIB_DIR / "VERSION"
 EMOJILIB_TARBALL = "https://registry.npmjs.org/emojilib/-/emojilib-{version}.tgz"
-# Tarball member -> vendored file name.
-EMOJILIB_FILES = {"package/dist/emoji-en-US.json": "emoji-en-US.json", "package/LICENSE": "LICENSE", "package/package.json": "package.json"}
+# Tarball member -> vendored file name. The tarball's package/package.json is read for its version, never vendored.
+EMOJILIB_FILES = {"package/dist/emoji-en-US.json": "emoji-en-US.json", "package/LICENSE": "LICENSE"}
+EMOJILIB_MANIFEST = "package/package.json"
 ASSET_DIR = REPO_ROOT / "app" / "src" / "main" / "assets" / "emoji"
 OUTPUT_TSV = ASSET_DIR / "emoji_en.tsv"
 
@@ -325,10 +328,10 @@ def read_cldr_locale(locale: str) -> tuple[str, ...]:
 
 
 def read_emojilib() -> Emojilib:
-    missing = [p.name for p in (EMOJILIB_JSON, EMOJILIB_PACKAGE) if not p.exists()]
+    missing = [p.name for p in (EMOJILIB_JSON, EMOJILIB_VERSION) if not p.exists()]
     if missing:
         raise FileNotFoundError(f"missing {', '.join(missing)} under {EMOJILIB_DIR} (see its PROVENANCE.md)")
-    version = json.loads(EMOJILIB_PACKAGE.read_text(encoding="utf-8"))["version"]
+    version = EMOJILIB_VERSION.read_text(encoding="utf-8").strip()
     return Emojilib(version, EMOJILIB_JSON.read_text(encoding="utf-8"))
 
 
@@ -469,11 +472,18 @@ def update_emojilib(version: str) -> None:
         data = resp.read()
     EMOJILIB_DIR.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        manifest = tar.extractfile(EMOJILIB_MANIFEST)  # read by name only: nothing in the archive picks a path on disk
+        if manifest is None:
+            raise ValueError(f"{url} has no {EMOJILIB_MANIFEST}")
+        stated = json.loads(manifest.read())["version"]
+        if stated != version:
+            raise ValueError(f"{url} says it is emojilib {stated}, not {version}")
         for member, name in EMOJILIB_FILES.items():
-            f = tar.extractfile(member)  # read by name only: nothing in the archive picks a path on disk
+            f = tar.extractfile(member)
             if f is None:
                 raise ValueError(f"{url} has no {member}")
             (EMOJILIB_DIR / name).write_bytes(f.read())
+    EMOJILIB_VERSION.write_text(version + "\n", encoding="utf-8")
     print(f"vendored emojilib {version}: now update third_party/emojilib/PROVENANCE.md (version, sha256, retrieved)", file=sys.stderr)
 
 

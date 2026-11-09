@@ -23,11 +23,12 @@ name: Release
 # setup-android gets an explicit `packages:` for the reason ci.yml's banner gives (its default
 # names the `tools` package, which Google no longer serves). See ci.yml.
 #
-# Three jobs, split by who holds the signing key:
+# Four jobs after preflight, split by who holds the signing key:
 #
 #   build-signed  ubuntu runner, HAS the distribution key   -> the APK we publish
 #   build-fdroid  F-Droid's own buildserver image, NO secrets -> the same APK, unsigned
-#   publish       proves those two are one APK modulo the signature, then cuts the Release
+#   fdroid-scan   F-Droid's source scanner in that image, NO secrets -> what fdroiddata's build would refuse
+#   publish       proves build-signed and build-fdroid made one APK modulo the signature, then cuts the Release
 #
 # A stable tag also ships the slim APK (knit-X.Y.Z-slim.apk, `-Pslim=true`): the core radio messenger without
 # relays, calls, speech or Knit Anywhere, for people who want only that. Same key and versionCode, so it swaps in
@@ -456,9 +457,41 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # fdroiddata's `fdroid build` scans the tagged source before it builds and refuses the build on any finding, after
+  # every gate here has passed: v2.11.0's first fdroiddata build failed on a vendored package.json with no lock. This
+  # runs the same scanner in the same image, honouring the tag's .fdroid.yml scanignore/scandelete as fdroiddata does
+  # (scripts/fdroid-scan.py). The image carries fdroidserver's dependencies but not fdroidserver itself, which
+  # fdroiddata's CI clones in, so this clones it at a pinned master commit: bump the pin when fdroiddata's scanner
+  # gains a rule. Its own job, with no secrets, so nothing it fetches runs beside a tree that is built or signed.
+  fdroid-scan:
+    name: F-Droid's source scanner
+    needs: preflight
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/fdroid/fdroidserver:buildserver
+    env:
+      FDROIDSERVER_COMMIT: cdfdce835a8231996b02392bc79c1879e6bef501 # master, 2026-11-08
+    steps:
+      - uses: actions/checkout@v7
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Fetch fdroidserver at the pinned commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/fdroidserver"
+          cd "$RUNNER_TEMP/fdroidserver"
+          git remote add origin https://gitlab.com/fdroid/fdroidserver.git
+          git fetch -q --depth 1 origin "$FDROIDSERVER_COMMIT"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$FDROIDSERVER_COMMIT"
+      - name: Scan the source as fdroiddata will
+        shell: bash
+        run: PYTHONPATH="$RUNNER_TEMP/fdroidserver" python3 scripts/fdroid-scan.py
+
   publish:
     name: Verify reproducible & publish Release
-    needs: [preflight, build-signed, build-fdroid]
+    needs: [preflight, build-signed, build-fdroid, fdroid-scan]
     runs-on: ubuntu-latest
     # The one human gate: the `release` environment (required reviewer, `v*` tags only) holds this job, the only
     # one that publishes anything, until it is approved. Everything it needs is built by then.
