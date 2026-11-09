@@ -28,9 +28,9 @@ document:
 - When two phones on this version link over Bluetooth or Wi-Fi Aware, the link is now encrypted, so a radio
   nearby can't read what passes between them. A link with a phone on an older version of Knit works as before
   until that phone updates (#286).
-- Mentions and the "open to chat" alert now have sounds of their own: Knit's chime with a high note after
-  it, and a soft rising chime. Your settings for both carry over, except hiding them on the lock screen,
-  which you'll need to set again.
+- Knit's message chime now plays on phones that had Knit before 2.11.0, and mentions and the "open to chat"
+  alert get chimes of their own. Your notification settings carry over, except hiding on the lock screen and
+  Priority conversations, which you'll need to set again.
 
 ### Fixed
 

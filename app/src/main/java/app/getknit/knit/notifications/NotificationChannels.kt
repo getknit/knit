@@ -25,31 +25,31 @@ import app.getknit.knit.data.message.ConversationKind
  * creation sites (MeshService's raw `NotificationChannel` and MessageNotifier's Compat builders).
  */
 object NotificationChannels {
-    // Messages group
-    const val NEARBY = "knit_msg_nearby"
+    // Messages group. Every channel in it was bumped once more for Knit's own sounds (ADR 2026-10.xukf): a channel's
+    // sound is fixed once it exists, so only a fresh id reaches a phone whose channels predate the sound. [REPLACED]
+    // maps each to the id it replaced.
+    const val NEARBY = "knit_msg_nearby_v2"
 
-    // Bumped to _v2 to raise importance to HIGH: a channel's importance is immutable once created, so the
-    // DEFAULT-importance `knit_msg_groups` is deleted (see [ensure]) and recreated under a fresh id.
-    const val GROUPS = "knit_msg_groups_v2"
-    const val DMS = "knit_msg_dms"
-
-    // Bumped to _v2 for the mention sound (ADR 2026-10.xukf): a channel's sound is fixed once it exists.
+    // _v2 raised importance to HIGH (a channel's importance is immutable once created, so the DEFAULT-importance
+    // `knit_msg_groups` was deleted and recreated under a fresh id); _v3 is the sound bump.
+    const val GROUPS = "knit_msg_groups_v3"
+    const val DMS = "knit_msg_dms_v2"
     const val MENTIONS = "knit_msg_mentions_v2"
 
     // The Meshtastic room — the paired radio's primary channel. LOW (silent) rather than Nearby's DEFAULT,
     // because it is the one room whose volume nobody here controls: it carries a whole neighbourhood's chat
     // plus whatever bots and MQTT uplinks are on it. Its own channel, so muting that firehose costs nothing else.
-    const val MESHTASTIC = "knit_msg_meshtastic"
+    const val MESHTASTIC = "knit_msg_meshtastic_v2"
 
     // A commons — a relay's private room for a household or team. DEFAULT like Nearby: its authors are
     // pinned peers the user chose to sit in a room with, but it is a room, so a post is not a DM's heads-up.
-    const val COMMONS = "knit_msg_commons"
+    const val COMMONS = "knit_msg_commons_v2"
 
     // Coalesced "message request received" heads-up for a stranger's first (unaccepted) DM/group.
-    // Bumped to _v2 to raise importance to HIGH so it pops up (even while the app is foregrounded): a
-    // channel's importance is immutable once created, so the LOW-importance `knit_msg_requests` is
-    // deleted (see [ensure]) and recreated under a fresh id.
-    const val REQUESTS = "knit_msg_requests_v2"
+    // _v2 raised importance to HIGH so it pops up (even while the app is foregrounded): a channel's importance is
+    // immutable once created, so the LOW-importance `knit_msg_requests` was deleted and recreated under a fresh
+    // id. _v3 is the sound bump.
+    const val REQUESTS = "knit_msg_requests_v3"
 
     // App group
     const val STATUS = "knit_mesh" // ongoing foreground notification; id kept stable
@@ -73,10 +73,22 @@ object NotificationChannels {
     // The pre-bump LOW-importance Requests channel; replaced by [REQUESTS] (_v2) at HIGH importance.
     private const val LEGACY_REQUESTS = "knit_msg_requests"
 
-    // The channels made before mentions and the open-to-chat cue had sounds of their own; replaced by the _v2s,
-    // which carry over what the user set on the old ones ([carryFrom]).
-    private const val SOUNDLESS_MENTIONS = "knit_msg_mentions"
-    private const val SOUNDLESS_OPEN_TO_CHAT = "knit_open_to_chat"
+    /**
+     * Each channel bumped for a sound (ADR 2026-10.xukf), keyed by the id it replaced. [ensure] builds the new channel
+     * on what the user set on the old one and moves the old one's conversations across, then deletes the old.
+     * Frozen: an entry stays for good, since a phone can skip any number of versions.
+     */
+    private val REPLACED: Map<String, String> =
+        mapOf(
+            "knit_msg_nearby" to NEARBY,
+            "knit_msg_groups_v2" to GROUPS,
+            "knit_msg_dms" to DMS,
+            "knit_msg_mentions" to MENTIONS,
+            "knit_msg_meshtastic" to MESHTASTIC,
+            "knit_msg_commons" to COMMONS,
+            "knit_msg_requests_v2" to REQUESTS,
+            "knit_open_to_chat" to OPEN_TO_CHAT,
+        )
 
     private val soundAttributes: AudioAttributes =
         AudioAttributes
@@ -133,9 +145,11 @@ object NotificationChannels {
     fun ensure(context: Context) {
         val manager = NotificationManagerCompat.from(context)
         // Read before anything below deletes them: a bumped channel starts from its defaults, so a user who had
-        // silenced, blocked or quietened the old one would otherwise hear it again.
-        val oldMentions = manager.getNotificationChannelCompat(SOUNDLESS_MENTIONS)
-        val oldOpenToChat = manager.getNotificationChannelCompat(SOUNDLESS_OPEN_TO_CHAT)
+        // silenced, blocked or quietened the old one would otherwise hear it again. A conversation the user set
+        // apart (its own sound, silenced) is a channel under its parent's id, so it would be left behind too.
+        val existing = manager.notificationChannelsCompat
+        val old = existing.filter { it.parentChannelId == null && it.id in REPLACED }.associateBy { REPLACED.getValue(it.id) }
+        val oldConversations = existing.filter { it.parentChannelId in REPLACED }
 
         manager.createNotificationChannelGroup(
             NotificationChannelGroupCompat
@@ -158,6 +172,7 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_DEFAULT,
                 R.string.channel_nearby_name,
                 R.string.channel_nearby_desc,
+                old = old[NEARBY],
             ),
         )
         manager.createNotificationChannel(
@@ -168,6 +183,7 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.channel_groups_name,
                 R.string.channel_groups_desc,
+                old = old[GROUPS],
             ),
         )
         manager.createNotificationChannel(
@@ -178,6 +194,7 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.channel_dms_name,
                 R.string.channel_dms_desc,
+                old = old[DMS],
             ),
         )
         manager.createNotificationChannel(
@@ -188,6 +205,7 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_LOW,
                 R.string.channel_meshtastic_name,
                 R.string.channel_meshtastic_desc,
+                old = old[MESHTASTIC],
             ),
         )
         // A channel is a row in the OS's notification settings, so a build that hides the commons
@@ -201,6 +219,7 @@ object NotificationChannels {
                     NotificationManagerCompat.IMPORTANCE_DEFAULT,
                     R.string.channel_commons_name,
                     R.string.channel_commons_desc,
+                    old = old[COMMONS],
                 ),
             )
         }
@@ -213,7 +232,7 @@ object NotificationChannels {
                 R.string.mention_channel_name,
                 R.string.mention_channel_description,
                 sound = R.raw.knit_mention,
-                old = oldMentions,
+                old = old[MENTIONS],
             ),
         )
         manager.createNotificationChannel(
@@ -224,6 +243,7 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.channel_requests_name,
                 R.string.channel_requests_desc,
+                old = old[REQUESTS],
             ),
         )
         manager.createNotificationChannel(
@@ -255,7 +275,7 @@ object NotificationChannels {
                 R.string.channel_open_to_chat_name,
                 R.string.channel_open_to_chat_desc,
                 sound = R.raw.knit_open_to_chat,
-                old = oldOpenToChat,
+                old = old[OPEN_TO_CHAT],
             ),
         )
 
@@ -264,17 +284,21 @@ object NotificationChannels {
         manager.deleteNotificationChannel(LEGACY_MENTIONS)
         manager.deleteNotificationChannel(LEGACY_GROUPS)
         manager.deleteNotificationChannel(LEGACY_REQUESTS)
-        manager.deleteNotificationChannel(SOUNDLESS_MENTIONS)
-        manager.deleteNotificationChannel(SOUNDLESS_OPEN_TO_CHAT)
+        // The conversations follow their parents across, then every replaced channel goes. A conversation whose new
+        // parent this build doesn't register (the commons, hidden) has nowhere to go and goes with it.
+        for (conversation in oldConversations) {
+            val parent = REPLACED[conversation.parentChannelId]?.let(manager::getNotificationChannelCompat)
+            if (parent != null) manager.createNotificationChannel(movedConversation(context, conversation, parent))
+            manager.deleteNotificationChannel(conversation.id)
+        }
+        REPLACED.keys.forEach(manager::deleteNotificationChannel)
     }
 
     /**
-     * A channel made under a new id, built on [old] (the channel it replaces) when that still exists: what the user set
-     * there carries over. Importance carries when the user turned it down (silenced, or blocked at
-     * `IMPORTANCE_NONE`); sound when it was None or one the user picked rather than the stock default or Knit's
-     * message sound, which the new sound replaces; vibration, lights and badge as they were. Lock-screen visibility
-     * and Do Not Disturb bypass can't carry: the platform resets both on any channel an app creates. Only the first
-     * `ensure` after the bump sees [old]; after that it is gone and the new channel is the user's to change.
+     * A channel made under a new id, built on [old] (the channel it replaces, see [REPLACED]) when that still exists:
+     * what the user set there carries over ([carry]). Importance carries only when the user turned it down
+     * (silenced, or blocked at `IMPORTANCE_NONE`), so a bump never raises a channel above its default. Only the
+     * first `ensure` after the bump sees [old]; after that it is gone and the new channel is the user's to change.
      */
     @Suppress("LongParameterList")
     private fun channel(
@@ -294,21 +318,54 @@ object NotificationChannels {
                 .setDescription(context.getString(descRes))
                 .setGroup(group)
         if (sound != null) builder.setSound(rawSound(context, sound), soundAttributes)
-        if (old != null) {
-            val oldSound = old.sound
-            if (oldSound == null || oldSound !in stockSounds(context)) {
-                builder.setSound(oldSound, old.audioAttributes ?: soundAttributes)
-            }
-            builder
-                // Pattern first: the compat setter also sets vibration on only for a non-empty pattern, so a user's
-                // plain Vibrate toggle (on, no pattern) would be switched back off if the flag came first.
-                .setVibrationPattern(old.vibrationPattern)
-                .setVibrationEnabled(old.shouldVibrate())
-                .setLightsEnabled(old.shouldShowLights())
-                .setLightColor(old.lightColor)
-                .setShowBadge(old.canShowBadge())
-        }
+        if (old != null) builder.carry(context, old)
         return builder.build()
+    }
+
+    /**
+     * [conversation], a channel Android made when the user set one conversation apart, moved under [parent], the
+     * channel that replaced its own. Its importance carries as it was (it is the user's, not a default); its sound
+     * becomes [parent]'s unless the user picked one; the rest as [carry]. Android finds it by parent and
+     * conversation id, never by channel id, so the id only has to be unique: the platform's own form is reused.
+     */
+    private fun movedConversation(
+        context: Context,
+        conversation: NotificationChannelCompat,
+        parent: NotificationChannelCompat,
+    ): NotificationChannelCompat {
+        val conversationId = checkNotNull(conversation.conversationId)
+        return NotificationChannelCompat
+            .Builder("${parent.id} : $conversationId", conversation.importance)
+            .setName(conversation.name)
+            .setDescription(conversation.description)
+            .setGroup(parent.group)
+            .setConversationId(parent.id, conversationId)
+            .setSound(parent.sound, parent.audioAttributes ?: soundAttributes)
+            .carry(context, conversation)
+            .build()
+    }
+
+    /**
+     * What the user set on [old] beyond importance: a sound that was None or one they picked (the stock default and
+     * Knit's message sound are replaced by the new channel's own), vibration, lights and the badge. Lock-screen
+     * visibility, Do Not Disturb bypass and a conversation's Priority can't carry: the platform resets all three on
+     * any channel an app creates (`PreferencesHelper.createNotificationChannel`).
+     */
+    private fun NotificationChannelCompat.Builder.carry(
+        context: Context,
+        old: NotificationChannelCompat,
+    ): NotificationChannelCompat.Builder {
+        val oldSound = old.sound
+        if (oldSound == null || oldSound !in stockSounds(context)) {
+            setSound(oldSound, old.audioAttributes ?: soundAttributes)
+        }
+        // Pattern first: the compat setter also sets vibration on only for a non-empty pattern, so a user's
+        // plain Vibrate toggle (on, no pattern) would be switched back off if the flag came first.
+        return setVibrationPattern(old.vibrationPattern)
+            .setVibrationEnabled(old.shouldVibrate())
+            .setLightsEnabled(old.shouldShowLights())
+            .setLightColor(old.lightColor)
+            .setShowBadge(old.canShowBadge())
     }
 
     /** The sounds an old channel held without the user choosing one: the system default, or Knit's message sound. */

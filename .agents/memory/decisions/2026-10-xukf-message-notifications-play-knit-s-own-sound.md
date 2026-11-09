@@ -84,3 +84,21 @@ channel unbumped for those users (they would miss the new sound), or storing the
 every notification (a stricter setting nothing in Android's Settings could later clear).
 `NotificationChannelsTest` pins both sounds, each carried choice and the untouched defaults. The other message
 channels keep their ids, so a phone that had Knit before 2.11.0 still plays the system default on them.
+
+## Amendment (2026-11-09): the rest of the Messages group is bumped too
+
+The first amendment left the other message channels on their ids, so a phone that had Knit before 2.11.0 still
+played the system default for every message. The maintainer chose to bump them as well: `knit_msg_nearby`,
+`knit_msg_dms`, `knit_msg_meshtastic` and `knit_msg_commons` became `_v2`, and `knit_msg_groups_v2` and
+`knit_msg_requests_v2` became `_v3`. `NotificationChannels.REPLACED` maps every bumped id to its successor, mentions
+and the open-to-chat cue included, and stays frozen, because a phone can skip any number of versions. The same
+carry builds each new channel on the old one.
+
+A conversation the user set apart in Android's settings (silenced, or given its own sound) is a channel of its own
+under its parent's id, and Android finds it by parent and conversation id. A parent bump would have left it behind,
+so a silenced chat would ring again. `ensure` moves each one under the parent's successor: its importance carries
+as it was, its sound becomes the new parent's unless the user picked one, and the rest carries as on a parent.
+Priority can't carry: the platform clears it on any channel an app creates, as it does lock-screen visibility, so a
+Priority conversation goes back to an ordinary one. A conversation whose new parent the build doesn't register
+(the commons, when hidden) is deleted with its parent. `NotificationChannelsTest` pins every replaced id, a moved
+conversation's importance and sound, and the hidden-parent case.

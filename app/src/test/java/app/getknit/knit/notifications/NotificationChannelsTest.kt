@@ -7,10 +7,12 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -133,6 +135,78 @@ class NotificationChannelsTest {
             NotificationChannels.openToChatSound(app),
             manager.getNotificationChannel(NotificationChannels.OPEN_TO_CHAT).sound,
         )
+    }
+
+    @Test
+    fun everyReplacedChannelGivesWayToItsSuccessor() {
+        // The ids the channels shipped under before the sound bump, frozen: literals, not the constants.
+        val replaced =
+            mapOf(
+                "knit_msg_nearby" to NotificationChannels.NEARBY,
+                "knit_msg_groups_v2" to NotificationChannels.GROUPS,
+                "knit_msg_dms" to NotificationChannels.DMS,
+                "knit_msg_mentions" to NotificationChannels.MENTIONS,
+                "knit_msg_meshtastic" to NotificationChannels.MESHTASTIC,
+                "knit_msg_requests_v2" to NotificationChannels.REQUESTS,
+                "knit_open_to_chat" to NotificationChannels.OPEN_TO_CHAT,
+            )
+        for (old in replaced.keys) {
+            manager.createNotificationChannel(NotificationChannel(old, "x", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        NotificationChannels.ensure(app)
+        for ((old, new) in replaced) {
+            assertNull(old, manager.getNotificationChannel(old))
+            assertNotNull(new, manager.getNotificationChannel(new))
+            assertTrue(new, new != old)
+        }
+    }
+
+    @Test
+    fun aConversationSetApartMovesWithItsParent() {
+        val picked = Uri.parse("content://media/internal/audio/media/7")
+        manager.createNotificationChannel(NotificationChannel("knit_msg_dms", "x", NotificationManager.IMPORTANCE_HIGH))
+        manager.createNotificationChannel(NotificationChannel("knit_msg_groups_v2", "x", NotificationManager.IMPORTANCE_HIGH))
+        // Silenced in its own settings, sound left as it came: the stock default.
+        manager.createNotificationChannel(
+            NotificationChannel("knit_msg_dms : ana", "Ana", NotificationManager.IMPORTANCE_LOW).apply {
+                setConversationId("knit_msg_dms", "ana")
+            },
+        )
+        // A sound of its own.
+        manager.createNotificationChannel(
+            NotificationChannel("knit_msg_groups_v2 : climbing", "Climbing", NotificationManager.IMPORTANCE_HIGH).apply {
+                setConversationId("knit_msg_groups_v2", "climbing")
+                setSound(picked, null)
+            },
+        )
+        NotificationChannels.ensure(app)
+
+        assertNull(manager.getNotificationChannel("knit_msg_dms : ana"))
+        assertNull(manager.getNotificationChannel("knit_msg_groups_v2 : climbing"))
+        val ana = manager.notificationChannels.single { it.conversationId == "ana" }
+        assertEquals(NotificationChannels.DMS, ana.parentChannelId)
+        assertEquals("Ana", ana.name.toString())
+        assertEquals(NotificationManager.IMPORTANCE_LOW, ana.importance)
+        assertEquals(NotificationChannels.messageSound(app), ana.sound)
+        val climbing = manager.notificationChannels.single { it.conversationId == "climbing" }
+        assertEquals(NotificationChannels.GROUPS, climbing.parentChannelId)
+        assertEquals(picked, climbing.sound)
+    }
+
+    @Test
+    fun aConversationWhoseParentThisBuildHidesGoesWithIt() {
+        // The commons is registered only when BuildConfig.COMMONS; either way its old conversations must not linger.
+        manager.createNotificationChannel(NotificationChannel("knit_msg_commons", "x", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.createNotificationChannel(
+            NotificationChannel("knit_msg_commons : home", "Home", NotificationManager.IMPORTANCE_LOW).apply {
+                setConversationId("knit_msg_commons", "home")
+            },
+        )
+        NotificationChannels.ensure(app)
+        assertNull(manager.getNotificationChannel("knit_msg_commons"))
+        assertNull(manager.getNotificationChannel("knit_msg_commons : home"))
+        val moved = manager.notificationChannels.filter { it.conversationId == "home" }
+        assertEquals(if (BuildConfig.COMMONS) listOf(NotificationChannels.COMMONS) else emptyList(), moved.map { it.parentChannelId })
     }
 
     @Test
