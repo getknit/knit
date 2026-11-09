@@ -9,8 +9,9 @@ Writes the preview manifest (`gen-screenshot-tests.py --manifest`), runs `Previe
 `-Pknit.previewLayout=<dir>` through `scripts/gradle-turn.sh`, then prints each case's findings: a text or a
 scrolling area cut off with no scroll to reach it, a text overflowing its box with no ellipsis, two texts on top of
 each other. The variants (a 360×640 dp phone, the same in en-XA long text, 411×891 at font scale 1.5) are
-`PreviewClippingTest.Variant`. Exits 1 when anything is found. A review list, not a gate: read each finding against
-the screenshot it names before changing a layout.
+`PreviewClippingTest.Variant`. Exits 1 when anything is found, or when a preview has no result for some variant (a
+crashed test JVM); GitHub CI's `preview-layout` job runs it on every change as a gate. Read a finding against the
+preview it names before changing a layout; a preview the audit cannot judge goes in `SKIP` with its reason.
 """
 
 import argparse
@@ -23,17 +24,29 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = ROOT / "app/build/preview-layout"
 TEST = "app.getknit.knit.ui.preview.PreviewClippingTest"
 
+# Previews the audit cannot judge, each with why. Keep this short: a skipped preview is a screen nobody checks.
+SKIP = {
+    # Its text field in a dialog never lets Compose idle under Robolectric (PreviewStringsTest fails on it too), and a
+    # dialog is its own window, outside the frame the audit reads.
+    "RenameGroupDialog": "never idles under Robolectric",
+}
+
 
 def run(out: Path, only: set[str] | None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     manifest = out / "manifest.json"
     subprocess.run([sys.executable, ROOT / "scripts/gen-screenshot-tests.py", "--manifest", manifest], check=True)
+    entries = json.loads(manifest.read_text(encoding="utf-8"))
+    known = {e["wrapper"] for e in entries}
+    stale = SKIP.keys() - known
+    if stale:
+        sys.exit(f"SKIP names previews that no longer exist: {', '.join(sorted(stale))}")
     if only:
-        entries = [e for e in json.loads(manifest.read_text(encoding="utf-8")) if e["wrapper"] in only]
-        missing = only - {e["wrapper"] for e in entries}
+        missing = only - known
         if missing:
             sys.exit(f"no preview wraps as: {', '.join(sorted(missing))}")
-        manifest.write_text(json.dumps(entries, indent=1) + "\n", encoding="utf-8")
+    entries = [e for e in entries if e["wrapper"] not in SKIP and (not only or e["wrapper"] in only)]
+    manifest.write_text(json.dumps(entries, indent=1) + "\n", encoding="utf-8")
     layout = out / "layout"
     for old in layout.glob("*.txt") if layout.exists() else []:
         old.unlink()
@@ -59,6 +72,15 @@ def report(out: Path) -> int:
     cases = sorted((out / "layout").glob("*.txt"))
     if not cases:
         sys.exit(f"no results under {out / 'layout'}: did Gradle fail before the test ran?")
+    # Every preview the manifest names must have a result for every variant: a test JVM that died part-way leaves
+    # previews unchecked, which must not read as clean.
+    wrappers = {e["wrapper"] for e in json.loads((out / "manifest.json").read_text(encoding="utf-8"))}
+    seen = [case.stem.split("@") for case in cases]
+    variants = {variant for _, variant in seen}
+    unchecked = sorted(f"{w}@{v}" for w in wrappers for v in variants if [w, v] not in seen)
+    if unchecked:
+        print(f"{len(unchecked)} cases have no result (did the test JVM die?): {', '.join(unchecked[:20])}")
+        return 1
     found = 0
     for case in cases:
         lines = [line for line in case.read_text(encoding="utf-8").splitlines() if line]

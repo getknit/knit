@@ -233,6 +233,37 @@ jobs:
             app/build/outputs/screenshotTest-results/preview/debug/
           if-no-files-found: ignore
 
+  preview-layout:
+    name: Preview layout audit
+    runs-on: ubuntu-latest
+    # Every @Preview composed under Robolectric on a 360×640 dp phone, the same in en-XA long text, and 411×891 at font
+    # scale 1.5, failing on a text cut off with no scroll to reach it, a text squeezed or overflowing with no ellipsis,
+    # or two texts drawn over each other (PreviewClippingTest, scripts/preview-layout-audit.py, .agents/context/testing.md).
+    # It exists for GitHub #62: the caller's card lost its last line on a short phone and passed screenshot-tests,
+    # because a reference records whatever it was rendered with. It compares no images, so it needs no LFS objects.
+    # On a failure the artifact holds each case's findings and the test report.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Audit every preview's layout
+        run: python3 -I scripts/preview-layout-audit.py
+      - name: Upload the findings
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: preview-layout-findings
+          path: |
+            app/build/preview-layout/layout/
+            app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
   weblate-screenshots:
     name: Weblate screenshots
     runs-on: ubuntu-latest

@@ -930,10 +930,12 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   with no ellipsis, and each pair of texts drawn over each other. A screen preview gets the variant's whole frame, a
   component only its width (its screenshot is content-sized too); a dialog is its own window and goes unaudited. It
   was built for GitHub #62 (the caller card's last line squeezed to 18 of 60 px), which it flags on the pre-fix code.
-  A review list, not a gate: a preview only shows its own sample data, so a screen whose previews use short names
-  needs a worst-case preview first. A text is judged by its lines where its box is wider than they are (a wrapped
-  label fills its width, and a segmented button shifts that box 1 dp past its edge for the check). The full run of
-  2026-11-09 (810 cases) is clean but for `RenameGroupDialog`, which never idles under Robolectric.
+  A text is judged by its lines where its box is wider than they are (a wrapped label fills its width, and a segmented
+  button shifts that box 1 dp past its edge for the check). **It is a gate:** GitHub CI's `preview-layout` job fails
+  on any finding, and on a preview left without a result (a test JVM that died). A preview it cannot judge goes in the
+  script's `SKIP` with its reason (`RenameGroupDialog` never idles under Robolectric); a skipped name that no longer
+  exists fails the run. It only sees each preview's sample data, so a screen whose previews use short names needs a
+  worst-case preview to be checked at all.
 - **Layoutlib's framework is not the device's.** `Formatter.formatShortFileSize` below a kilobyte renders its
   template: `(123) (B)` under en-US, the raw `${NUMBER} ${UNIT}` with no locale named (`MetricsSectionEmpty`'s
   "Bytes sent"). It is a renderer quirk the reference captures, not an app bug; 2.5 MB renders normally.

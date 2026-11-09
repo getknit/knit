@@ -47,9 +47,10 @@ import kotlin.math.abs
  * Whether any `@Preview` cuts its own content off on a small phone, in long text or at a large font: the shape of
  * GitHub #62, where the caller's card sat in a fixed-height box with no scroll and lost its last line.
  *
- * An audit, not a gate: it runs only when `-Pknit.previewLayout=<dir>` names a directory holding the manifest that
+ * It runs only when `-Pknit.previewLayout=<dir>` names a directory holding the manifest that
  * `scripts/gen-screenshot-tests.py --manifest` writes (`app/build.gradle.kts` leaves it out otherwise); drive it
- * with `scripts/preview-layout-audit.py`, which collates what each case writes to `<dir>/layout/`. Every preview
+ * with `scripts/preview-layout-audit.py`, which collates what each case writes to `<dir>/layout/` and is GitHub CI's
+ * `preview-layout` gate. Every preview
  * composes once per [Variant] inside a clipped frame of that size (a component, of that width), under
  * [LocalInspectionMode] as the screenshot render does, and the unmerged semantics tree is walked for three findings:
  *

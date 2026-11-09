@@ -714,7 +714,7 @@ android {
                     test.systemProperty("knit.previewStrings", previewStrings)
                 }
                 // `-Pknit.previewLayout=<dir>` runs PreviewClippingTest, the layout audit scripts/preview-layout-audit.py
-                // drives; its findings are a review list, not a gate, so every other run leaves it out.
+                // drives (CI's preview-layout job); it needs the script's manifest, so every other run leaves it out.
                 if (previewLayout == null) {
                     test.filter.excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
                 } else {
