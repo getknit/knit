@@ -172,6 +172,65 @@ class LinkProofTest {
         assertArrayEquals(first, second)
     }
 
+    // --- the sealed link's transcript (#286) ---
+
+    private val binding = LinkSeal.Binding(bytes(32, 0x40), bytes(32, 0x60))
+
+    @Test
+    fun theSealedTranscriptIsLabelRoleBothKeySharesThenBothHellos() {
+        val d = byteArrayOf(1, 2, 3)
+        val r = byteArrayOf(9)
+        val expected =
+            "knit/link/v2/proof".toByteArray(Charsets.US_ASCII) + byteArrayOf(0x02) + binding.eD + binding.eR +
+                byteArrayOf(0, 0, 0, 3) + d + byteArrayOf(0, 0, 0, 1) + r
+        assertEquals(18, LinkProof.LABEL_SEALED.length)
+        assertArrayEquals(expected, LinkProof.sealedTranscript(LinkProof.Role.RESPONDER, binding, d, r))
+        // It starts `k`, as v1 does: never a CBOR map.
+        assertEquals(0x6B.toByte(), expected[0])
+    }
+
+    @Test
+    fun aSealedProofVerifiesForItsRoleAndBinding() {
+        for (role in LinkProof.Role.entries) {
+            val proof = ann.prover.sealedProof(role, binding, helloD, helloR)
+            assertEquals(LinkProof.PAYLOAD_BYTES, proof.size)
+            assertNull(LinkProof.verifySealed(proof, ann.nodeId, role, binding, helloD, helloR))
+        }
+    }
+
+    @Test
+    fun aV1ProofFailsUnderABindingAndAV2ProofFailsWithoutOne() {
+        val v1 = ann.prover.proof(LinkProof.Role.DIALER, helloD, helloR)
+        val v2 = ann.prover.sealedProof(LinkProof.Role.DIALER, binding, helloD, helloR)
+        assertEquals(
+            LinkProof.Failure.SIGNATURE,
+            LinkProof.verifySealed(v1, ann.nodeId, LinkProof.Role.DIALER, binding, helloD, helloR),
+        )
+        assertEquals(LinkProof.Failure.SIGNATURE, LinkProof.verify(v2, ann.nodeId, LinkProof.Role.DIALER, helloD, helloR))
+    }
+
+    @Test
+    fun aV2ProofFailsWithTheRoleSwappedOrEitherKeyShareChanged() {
+        val v2 = ann.prover.sealedProof(LinkProof.Role.DIALER, binding, helloD, helloR)
+        assertEquals(
+            LinkProof.Failure.SIGNATURE,
+            LinkProof.verifySealed(v2, ann.nodeId, LinkProof.Role.RESPONDER, binding, helloD, helloR),
+        )
+        val swappedR = LinkSeal.Binding(binding.eD, ByteArray(32) { -1 })
+        val swappedD = LinkSeal.Binding(ByteArray(32) { -1 }, binding.eR)
+        val reversed = LinkSeal.Binding(binding.eR, binding.eD)
+        for (other in listOf(swappedR, swappedD, reversed)) {
+            assertEquals(
+                LinkProof.Failure.SIGNATURE,
+                LinkProof.verifySealed(v2, ann.nodeId, LinkProof.Role.DIALER, other, helloD, helloR),
+            )
+        }
+        assertEquals(
+            LinkProof.Failure.ID_MISMATCH,
+            LinkProof.verifySealed(v2, bob.nodeId, LinkProof.Role.DIALER, binding, helloD, helloR),
+        )
+    }
+
     private companion object {
         const val KEYS_BYTES = 64
         const val NONCE_BYTES = 16

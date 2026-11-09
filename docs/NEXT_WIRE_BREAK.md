@@ -440,8 +440,8 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **Bluetooth advert.** Every advert is a tag. Drop the `zzzz` prefix (it exists only so old builds never dial a tag)
   and spend all 128 bits on the slot MAC. `FLAG_BLINDED` stays set for good; never recycle the bit. `Parsed.nodeId`
   becomes a tag, and its clear-advert reader path goes: rule (b) ("a blinding phone dials every clear advert"),
-  `BleAdmissionPolicy`'s legacy-dialer refusal row, and `LinkHandshake.dial(expectedId)` with its `WrongPeer` outcome
-  (every Bluetooth dial becomes `dialTag`). `AdvertOrder` loses its classic id-order branch. Take the capability byte
+  `BleAdmissionPolicy`'s legacy-dialer refusal row, and `LinkHandshake.dialPlain` / `dialSealed(expectedId)` with their `WrongPeer` outcome
+  (every Bluetooth dial becomes `dialTagPlain` or `dialTagSealed`). `AdvertOrder` loses its classic id-order branch. Take the capability byte
   off the air (the decisions made before a link become flag bits; the full capabilities ride the HELLO) and drop the
   4-byte digest cue, which no Bluetooth decision ever read. The freed 5 bytes can widen the MAC or stay spare.
 - **Wi-Fi Aware.** Split `Protocol.advertise` so the SSI carries a tag (its own, never the Bluetooth one) while the
@@ -463,8 +463,9 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **iPhone.** knit-ios serves a tag from its GATT payload characteristic (`DoorbellPolicy.PAYLOAD_UUID`) and reads
   Android's. `GattPayloads.confirmed` and `forgetGattPayloadIfOther` compare a payload's id with the HELLO's, so they
   move to the alias table.
-- **The handshake.** If #286's encrypted link handshake rides the same break, the HELLO's `t` and `a` fields and the
-  `TAG_NEXT` record move inside it, and a passive listener stops learning the id from the HELLO too.
+- **The handshake.** Already done: #286 landed additively (ADR 2026-11.8mhs), so between two builds carrying
+  `CAP_LINK_SEAL` the HELLO's `t` and `a` fields and the `TAG_NEXT` record ride inside the seal, and a passive listener
+  no longer learns the id from the HELLO. Links with older builds stay plain until the break retires them.
 - **Markers and vectors.** The lockstep checklist above: `SERVICE_UUID`, `SERVICE_NAME`, `Protocol.VERSION`. The
   advert and HELLO entries in `vectors/keyed-v1.json` move (the only vectors that do). `CAP_BLIND_ADVERT` becomes
   diagnostic, like `CAP_E2E`. The `NodeId` derivation is untouched, so no identity is re-minted, the spool and its
@@ -480,7 +481,7 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **iOS cannot rotate its address with its characteristic.** It rotates the address on its own timer, so a reader
   that connects repeatedly can chain the two. Decide the iOS cadence in the paired change.
 - **The honeypot stays.** A device that advertises a small tag still gets dialed and reads proven ids in the HELLO;
-  only #286's handshake and link pseudonyms for strangers would change that.
+  the seal (ADR 2026-11.8mhs) stops listening, not linking, so only link pseudonyms for strangers would change that.
 
 ### 14. Sign the relay bit
 
@@ -489,8 +490,8 @@ flooded under the author's signature.
 
 **Why it is parked.** `relay` sits in the unsigned wrapper beside `ttl` and `hops` (`Wire.kt`, `WireEnvelope`), and
 every shipped verifier checks the signature over `signed` alone, so moving it is a break. Today anyone who holds a
-signed `relay = false` frame (the addressee, or a listener on a Bluetooth or Wi-Fi Aware link read in the clear:
-knit-next #286) can re-wrap it as `relay = true`, and every honest node verifies it, custodies it under the author's
+signed `relay = false` frame (the addressee, or a listener on a Bluetooth or Wi-Fi Aware link read in the clear, which
+since knit-next #286 means a link with a build before ADR 2026-11.8mhs) can re-wrap it as `relay = true`, and every honest node verifies it, custodies it under the author's
 quota and floods it 8 hops. The frames that rely on staying point to point: AckSync's live ticks, the presence key's
 `CTL_PRESENCE_KEY` and the restore's link-owed reset (ADR 2026-11.xp6d), which go over one link precisely so relays
 never learn who the user's direct contacts are. A re-wrapped copy tells every relay "this author wrote to that

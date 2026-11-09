@@ -562,6 +562,9 @@ class MeshMetrics {
     private val linksProven = AtomicLong()
     private val linkProofFailed = AtomicLong()
     private val linkClaimRefused = AtomicLong()
+    private val linksSealed = AtomicLong()
+    private val linkSealFailed = AtomicLong()
+    private val linkSealRefused = AtomicLong()
     private val photosOverCeiling = AtomicLong()
     private val avatarsOverCeiling = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
@@ -1126,6 +1129,25 @@ class MeshMetrics {
      */
     fun onLinkClaimRefused() {
         linkClaimRefused.incrementAndGet()
+    }
+
+    /** A link was registered after a sealed exchange (#286): its records ride `SEALED` frames, and it is proven too. */
+    fun onLinkSealed() {
+        linksSealed.incrementAndGet()
+    }
+
+    /**
+     * A seal failed on this side (#286): no `KEY_SHARE` where one was due, a refused key share, a record other than
+     * `SEALED` after the exchange, a frame that would not open, or a sealed HELLO without both bits and a nonce — during
+     * the handshake or on a live link. Each link counts once.
+     */
+    fun onLinkSealFailed() {
+        linkSealFailed.incrementAndGet()
+    }
+
+    /** A link opened in the plain form was refused because both HELLOs carry `CAP_LINK_SEAL` (#286's downgrade rule). */
+    fun onLinkSealRefused() {
+        linkSealRefused.incrementAndGet()
     }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
@@ -1831,6 +1853,9 @@ class MeshMetrics {
             linksProven = linksProven.get(),
             linkProofFailed = linkProofFailed.get(),
             linkClaimRefused = linkClaimRefused.get(),
+            linksSealed = linksSealed.get(),
+            linkSealFailed = linkSealFailed.get(),
+            linkSealRefused = linkSealRefused.get(),
             healsCompleted = healsCompleted.get(),
             roundsFailedBy = roundsFailed.mapValues { it.value.get() }.filterValues { it > 0 },
         )
@@ -2135,6 +2160,10 @@ class MeshMetrics {
             val linksProven: Long = 0,
             val linkProofFailed: Long = 0,
             val linkClaimRefused: Long = 0,
+            // #286: links registered sealed, failed seals, and plain-form links refused between two sealing builds.
+            val linksSealed: Long = 0,
+            val linkSealFailed: Long = 0,
+            val linkSealRefused: Long = 0,
             val healsCompleted: Long = 0,
             val roundsFailedBy: Map<MeshRound, Long> = emptyMap(),
         )

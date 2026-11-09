@@ -15,3 +15,10 @@ each initiator needs its own NDI. So coordination rides Wi-Fi Aware messages (no
 one ephemeral NDP brought up only for a digest-differing peer. Per-peer responders don't compose. Detail:
 `context/mesh-transport.md`. A concurrent-serve redesign is proposed in
 `docs/NAN_CONCURRENCY_REAUDIT.md` §5.
+
+## Amendment 2026-11-08 — the SSI's caps pick a link's form (ADR 2026-11.8mhs)
+
+The accept-any responder tells a sealed link from a plain one by the first record (`KEY_SHARE` or `HELLO`), so it
+still accepts without knowing the peer. A dialer opens with the sealed form when the SSI it dials from carries
+`CAP_LINK_SEAL`: the one decision the SSI's caps make about the handshake (the proof decision still reads the reply's
+caps). The fixed PMK stays; it keeps the data path off open air and now protects legacy links only.

@@ -59,7 +59,9 @@ import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
+import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.link.PaceConfig
+import app.getknit.knit.mesh.link.SealedLinkSocket
 import app.getknit.knit.mesh.power.ElapsedWait
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerState
@@ -393,9 +395,12 @@ class BluetoothMeshTransport internal constructor(
     // the form it was heard under: a dial uses it only while that form is the peer's current one (ADR 2026-11.xp6d).
     private val deviceFor = ConcurrentHashMap<String, HeardDevice>()
 
+    // [linkSeal] is FLAG_LINK_SEAL as the advert (or GATT payload) heard at this very address said it, last heard: a dial
+    // opens sealed on the flag of the address it dials, never the other PHY's (#286 contract §2, [LinkSealPolicy]).
     private class HeardDevice(
         val device: BluetoothDevice,
         val form: AdvertOrder.Form,
+        val linkSeal: Boolean,
     ) {
         val advertised: String get() = form.advertised
     }
@@ -3364,7 +3369,7 @@ class BluetoothMeshTransport internal constructor(
         if (coded) metrics.onBleCodedSighting()
         if (devices) {
             if (viaGatt) gattSighted.add(key) else gattSighted.remove(key)
-            val heard = HeardDevice(device, form)
+            val heard = HeardDevice(device, form, parsed.linkSeal)
             if (coded) {
                 // Its Coded set's address is not its presence advert's: kept apart, so a dial picks the PHY it opens on.
                 codedDeviceFor[key] = heard
@@ -3607,13 +3612,17 @@ class BluetoothMeshTransport internal constructor(
      * Coded set as a Coded dial too, even before its lag ripens (#148). Null when neither address is known.
      */
     private fun dialTarget(snap: BlePresenceTracker.Snapshot): Pair<BluetoothDevice, Boolean>? =
+        dialHeard(snap)?.let { (heard, viaCoded) -> heard.device to viaCoded }
+
+    /** [dialTarget] with what was heard at that address: its device and the advert's own seal flag (#286). */
+    private fun dialHeard(snap: BlePresenceTracker.Snapshot): Pair<HeardDevice, Boolean>? =
         DialPlan.target(codedOn() && CodedPhyPolicy.dialCoded(snap.codedLagMs), heardAs(deviceFor, snap), heardAs(codedDeviceFor, snap))
 
     /** [snap]'s address in [cache], only while it was heard under the form [snap] airs now (ADR 2026-11.xp6d). */
     private fun heardAs(
         cache: Map<String, HeardDevice>,
         snap: BlePresenceTracker.Snapshot,
-    ): BluetoothDevice? = cache[snap.nodeId]?.takeIf { it.advertised == snap.advertised }?.device
+    ): HeardDevice? = cache[snap.nodeId]?.takeIf { it.advertised == snap.advertised }
 
     /** [snap]'s dial key ([DialKeys.dialKey]) at the address a dial would go to now. */
     private fun dialKeyOf(snap: BlePresenceTracker.Snapshot): String =
@@ -3726,10 +3735,16 @@ class BluetoothMeshTransport internal constructor(
 
     /**
      * Dials the peer presence holds under [key] (ADR 2026-11.xp6d: a resolved id, or an unresolved form's handle). A
-     * clear advert is dialed by id ([LinkHandshake.dial], `a` = the id). A blinded one is dialed by its tag
-     * ([LinkHandshake.dialTag]: no id expected, a proof required, `t` absent while this phone airs its id), booked under
-     * its dial key (the tag's handle and the address), so a failure backs off that pair and never the unproven id a
-     * reply names; the link registers under the id the proof proved, and the outcome feeds [aliases] on the worker.
+     * clear advert is dialed by id ([LinkHandshake.dialPlain] / [LinkHandshake.dialSealed], `a` = the id). A blinded one
+     * is dialed by its tag ([LinkHandshake.dialTagPlain] / [LinkHandshake.dialTagSealed]: no id expected, a proof
+     * required, `t` absent while this phone airs its id), booked under its dial key (the tag's handle and the address),
+     * so a failure backs off that pair and never the unproven id a reply names; the link registers under the id the proof
+     * proved, and the outcome feeds [aliases] on the worker.
+     *
+     * The dial opens sealed (#286, ADR 2026-11.8mhs) exactly when the advert heard at the address it dials carries
+     * [BleAdvertPayload.FLAG_LINK_SEAL] ([LinkSealPolicy.dialsSealed]), read once with that address. Every way it ends
+     * short of a link takes the one refusal branch (`HANDSHAKE`, keyed on the dial key); a failed seal also counts
+     * `linkSealFailed` and a §7 refusal `linkSealRefused`, once each, and none of them touches [claims].
      */
     @Suppress("LongMethod") // the connect + watchdog + two-way HELLO is one linear flow; splitting it obscures it
     private fun initiateTo(
@@ -3737,14 +3752,18 @@ class BluetoothMeshTransport internal constructor(
         kind: DialPlan.DialKind,
     ) {
         val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == key } ?: return
-        val (device, viaCoded) = dialTarget(snap) ?: return
+        val target = dialHeard(snap) ?: return
+        val (heard, viaCoded) = target
+        val device = heard.device
+        // The flags byte of the advert heard at this very address (contract §2), never the other PHY's.
+        val sealed = LinkSealPolicy.dialsSealed(target, HeardDevice::linkSeal)
         val psm = presence.psmFor(key) ?: return
         val form = snap.form
         val dialKey = DialKeys.dialKey(snap, formKeys::keyFor, device.address)
         if (!beginConnect(dialKey, DialPlan.InFlight(kind, key, device.address, linkedAtStart = links.containsKey(key)))) return
         val rssi = snap.smoothedRssi.toInt()
         Log.i(TAG, BtLines.initiating(key, psm, rssi, audioMonitor.state.value, links.size, noteDial(viaCoded)))
-        // A tag dial forgets no GATT payload and arms its channel unnamed: the reply's id is unproven (`dialTag`'s KDoc).
+        // A tag dial forgets no GATT payload and arms its channel unnamed: the reply's id is unproven (`LinkHandshake.dialTagPlain`).
         val gattDevice = device.takeIf { !form.blinded }
         val named = key.takeIf { !form.blinded }
         scope.launch(Dispatchers.IO) {
@@ -3789,24 +3808,21 @@ class BluetoothMeshTransport internal constructor(
             // we dialed, so the link's identity is confirmed by the peer over the socket, not taken from the
             // (unauthenticated) scanned advert. When the reply carries CAP_LINK_PROOF the responder's PROOF follows it,
             // and ours goes back once it verifies (ADR 2026-11.264w). Writes-then-reads while the responder reads-then-
-            // replies, so neither blocks. A BluetoothSocket has no soTimeout, so one 5 s watchdog bounds the whole
-            // exchange, the reply and the PROOF read alike, by closing the socket.
-            val replyCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
-            // `a` = the form dialed (ADR 2026-11.xp6d), so the responder judges order on what we dialed; `t` absent while
-            // this phone airs its id (absent reads as `t` = id, and saves 34 B a HELLO).
-            val outcome = runCatching { handshake(link, form, key) }
-            val inTime = replyCut.finish()
-            val dialed = outcome.getOrNull()?.takeIf { inTime } ?: LinkHandshake.Dialed.NoReply
-            val error = outcome.exceptionOrNull()
-            val refusal = if (form.blinded) tagDialRefusal(dialed, error, inTime) else dialRefusal(key, device, dialed, error, inTime)
-            if (refusal != null || dialed !is LinkHandshake.Dialed.Linked) {
+            // replies, so neither blocks. A BluetoothSocket has no soTimeout, so a 5 s watchdog bounds each stage by
+            // closing the socket: the whole plain exchange, or the sealed form's key shares and then its exchange (#286).
+            val result = handshake(socket, link, form, key, sealed)
+            val dialed = result.outcome
+            val refusal = if (form.blinded) tagDialRefusal(dialed, result.cause) else dialRefusal(key, device, dialed, result.cause)
+            if (refusal != null || dialed !is LinkHandshake.DialOutcome.Linked) {
                 link.close()
+                countSeal(LinkSealPolicy.dialCount(dialed))
+                if (gattDevice != null) forgetUnsealedPayload(gattDevice.address, key, sealed, dialed)
                 failConnect(dialKey, ConnectFailReason.HANDSHAKE, startedAt, refusal ?: IllegalStateException("handshake"))
                 return@launch armUnlinked(device, named) // a channel that never became a link: a refusal, a failed proof (#142)
             }
             // A clear dial's reply named the id dialed; a tag dial's proved the id it registers under (never the tag).
             val provenId = dialed.reply.nodeId
-            Log.i(TAG, BtLines.connectOk(provenId, elapsed() - startedAt))
+            Log.i(TAG, BtLines.connectOk(provenId, elapsed() - startedAt, dialed.sealed))
             // The reply's full-width capabilities, as an accepted link takes the dialer's: the advert carries only
             // their low byte, which never holds CAP_DOORBELL, so a dialed iPhone would never be rung (A3, ADR 2026-09.dqvb).
             val framed =
@@ -3814,6 +3830,7 @@ class BluetoothMeshTransport internal constructor(
                     provenId,
                     dialed.reply,
                     link,
+                    dialed.link,
                     device = device,
                     dialMs = elapsed() - startedAt,
                     proven = dialed.proven,
@@ -3825,22 +3842,101 @@ class BluetoothMeshTransport internal constructor(
         }
     }
 
+    /** How a dial's handshake ended, and what to log for it: what the handshake threw, or the watchdog that cut it. */
+    private class DialResult(
+        val outcome: LinkHandshake.DialOutcome,
+        val cause: Throwable?,
+    )
+
     /**
-     * The dialer's handshake on [link] to [form]: by id ([LinkHandshake.dial], `a` = the id) for a clear advert, by tag
-     * ([LinkHandshake.dialTag], no id expected, a proof required) for a blinded one.
+     * The dialer's handshake on [link] to [form]: by id (`a` = the id) for a clear advert, by tag (no id expected, a proof
+     * required) for a blinded one; [sealed] opens with our `KEY_SHARE` (#286). The sealed form's two stages each get their
+     * own 5 s watchdog (contract §4: one cut must not cover both), and a first stage the watchdog cut ends the attempt
+     * there, so the second never starts on a socket the first one closed.
      */
     private fun handshake(
+        socket: BluetoothSocket,
         link: BluetoothSocketLink,
         form: AdvertOrder.Form,
         key: String,
-    ): LinkHandshake.Dialed {
+        sealed: Boolean,
+    ): DialResult {
         val dialed = NodeId.toBytes(form.advertised)
         val told = toldForm()
-        return if (form.blinded) {
-            LinkHandshake.dialTag(link.input, link.output, prover, dialed, told = told)
-        } else {
-            LinkHandshake.dial(link.input, link.output, prover, key, told = told, addressed = dialed)
+        if (!sealed) {
+            return boundedDial(socket, WATCHDOG_HELLO) {
+                if (form.blinded) {
+                    LinkHandshake.dialTagPlain(link, prover, dialed, told = told)
+                } else {
+                    LinkHandshake.dialPlain(link, prover, key, told = told, addressed = dialed)
+                }
+            }
         }
+        val keyCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+        val opening = runCatching { LinkHandshake.openSeal(link) }
+        val keyInTime = keyCut.finish()
+        val opened = opening.getOrNull()
+        val seal = (opened as? LinkHandshake.SealOpened.Sealed)?.link
+        val unopened = LinkSealPolicy.unopened(opened, keyInTime)
+        if (unopened != null || seal == null) {
+            val cut = TimeoutException("$WATCHDOG_KEY_SHARE ${ACCEPT_HELLO_TIMEOUT_MS}ms").takeIf { !keyInTime }
+            val cause = opening.exceptionOrNull() ?: cut ?: IllegalStateException("key share absent")
+            return DialResult(unopened ?: LinkHandshake.DialOutcome.NoReply, cause)
+        }
+        return boundedDial(socket, WATCHDOG_HELLO) {
+            if (form.blinded) {
+                LinkHandshake.dialTagSealed(seal, prover, dialed, told = told)
+            } else {
+                LinkHandshake.dialSealed(seal, prover, key, told = told, addressed = dialed)
+            }
+        }
+    }
+
+    /**
+     * One dial stage under its own 5 s watchdog ([cutAfter]): an outcome the watchdog beat stands, anything else is no
+     * reply, so a link the watchdog closed is never registered. A cut is never a failed seal (contract revision 1).
+     */
+    private fun boundedDial(
+        socket: BluetoothSocket,
+        watchdog: String,
+        stage: () -> LinkHandshake.DialOutcome,
+    ): DialResult {
+        val cut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+        val outcome = runCatching(stage)
+        val inTime = cut.finish()
+        val cause = outcome.exceptionOrNull() ?: if (inTime) null else TimeoutException("$watchdog ${ACCEPT_HELLO_TIMEOUT_MS}ms")
+        return DialResult(outcome.getOrNull()?.takeIf { inTime } ?: LinkHandshake.DialOutcome.NoReply, cause)
+    }
+
+    /** Counts a handshake's seal outcome ([LinkSealPolicy]), once: the transport's count, never the socket's. */
+    private fun countSeal(count: LinkSealPolicy.Count) {
+        when (count) {
+            LinkSealPolicy.Count.FAILED -> metrics.onLinkSealFailed()
+            LinkSealPolicy.Count.REFUSED -> metrics.onLinkSealRefused()
+            LinkSealPolicy.Count.NONE -> Unit
+        }
+    }
+
+    /**
+     * Contract §7, revision 1: a plain dial to [key] at [address] that drew no reply, made from a GATT payload without
+     * the seal flag, forgets that payload once, so the next dial reads the flag afresh ([LinkSealPolicy.forgetsUnsealedPayload],
+     * [GattPayloads.forgetUnsealed]). A sealed dial's silence forgets nothing (revision 2).
+     */
+    private fun forgetUnsealedPayload(
+        address: String,
+        key: String,
+        sealed: Boolean,
+        dialed: LinkHandshake.DialOutcome,
+    ) {
+        if (!gattPeers) return
+        val payload = gattPayloads.payload(of = address)
+        if (!LinkSealPolicy.forgetsUnsealedPayload(sealed, dialed, key in gattSighted, payload)) return
+        if (!gattPayloads.forgetUnsealed(address)) return
+        Log.i(TAG, "bt gatt forget $address (seal)")
+        // The device heard from that payload goes too, with its stale flag: until the re-read lands, presence has no
+        // address to dial, so a dial past the backoff waits for the fresh payload rather than opening plain again.
+        LinkSealPolicy.forgetHeardAt(deviceFor, key, address) { it.device.address }
+        LinkSealPolicy.forgetHeardAt(codedDeviceFor, key, address) { it.device.address }
     }
 
     /**
@@ -3851,37 +3947,44 @@ class BluetoothMeshTransport internal constructor(
 
     /**
      * Why a tag dial whose handshake ended as [dialed] is not a link, or null when it is one. Nothing here names, counts
-     * or forgets anything for the id a reply names: on a tag dial it is unproven until the proof ([LinkHandshake.dialTag]).
+     * or forgets anything for the id a reply names: on a tag dial it is unproven until the proof
+     * ([LinkHandshake.dialTagPlain]); a §7 refusal logs it as claimed, and nothing more.
      */
     private fun tagDialRefusal(
-        dialed: LinkHandshake.Dialed,
-        error: Throwable?,
-        inTime: Boolean,
+        dialed: LinkHandshake.DialOutcome,
+        cause: Throwable?,
     ): Throwable? =
         when (dialed) {
-            LinkHandshake.Dialed.NoReply -> {
-                error
-                    ?: if (inTime) {
-                        IllegalStateException(
-                            "tag dial: no reply",
-                        )
-                    } else {
-                        TimeoutException("hello watchdog ${ACCEPT_HELLO_TIMEOUT_MS}ms")
-                    }
+            LinkHandshake.DialOutcome.NoReply -> {
+                cause ?: IllegalStateException("tag dial: no reply")
             }
 
-            is LinkHandshake.Dialed.WrongPeer -> {
+            is LinkHandshake.DialOutcome.WrongPeer -> {
                 IllegalStateException("tag dial: the reply names this phone")
             }
 
-            is LinkHandshake.Dialed.ProofFailed -> {
+            is LinkHandshake.DialOutcome.ProofFailed -> {
                 IllegalStateException("tag dial: proof failed (${dialed.why})")
             }
 
-            is LinkHandshake.Dialed.Linked -> {
+            is LinkHandshake.DialOutcome.SealFailed -> {
+                IllegalStateException("tag dial: seal failed (${dialed.why})")
+            }
+
+            is LinkHandshake.DialOutcome.SealRefused -> {
+                logSealRefused(dialed.reply.nodeId)
+                IllegalStateException("tag dial: plain reply carries the seal bit")
+            }
+
+            is LinkHandshake.DialOutcome.Linked -> {
                 null
             }
         }
+
+    /** §7 on a dial: one line naming the id the plain reply claims (unproven: never a key, a penalty or a claim). */
+    private fun logSealRefused(claimed: String) {
+        Log.i(TAG, "bt dial refused $claimed (seal=plain)")
+    }
 
     /**
      * Our tag dial to [form] proved [provenId] on [link] (the responder's HELLO told [told]), on the worker: the dial feeds
@@ -3921,39 +4024,43 @@ class BluetoothMeshTransport internal constructor(
     }
 
     /**
-     * Why a dial to [nodeId] whose handshake ended as [dialed] is not a link, or null when it is one. [error] is what the
-     * handshake threw, and [inTime] false when the watchdog cut it. Counts and logs the proof cases through [claims].
+     * Why a dial to [nodeId] whose handshake ended as [dialed] is not a link, or null when it is one. [cause] is what the
+     * handshake threw, or the watchdog that cut it. Counts and logs the proof cases through [claims]; a failed seal or a
+     * §7 refusal never reaches [claims] (the transport counts them, [countSeal]).
      */
     private fun dialRefusal(
         nodeId: String,
         device: BluetoothDevice,
-        dialed: LinkHandshake.Dialed,
-        error: Throwable?,
-        inTime: Boolean,
+        dialed: LinkHandshake.DialOutcome,
+        cause: Throwable?,
     ): Throwable? =
         when (dialed) {
-            // Most often a refusal: the responder closed the channel (shzv, hj4a).
-            LinkHandshake.Dialed.NoReply -> {
-                error
-                    ?: if (inTime) {
-                        IllegalStateException("hello reply absent != expected $nodeId")
-                    } else {
-                        TimeoutException("hello watchdog ${ACCEPT_HELLO_TIMEOUT_MS}ms")
-                    }
+            // Most often a refusal: the responder closed the channel (shzv, hj4a), sealed or not (contract §4).
+            LinkHandshake.DialOutcome.NoReply -> {
+                cause ?: IllegalStateException("hello reply absent != expected $nodeId")
             }
 
-            is LinkHandshake.Dialed.WrongPeer -> {
+            is LinkHandshake.DialOutcome.WrongPeer -> {
                 // A reply naming another node: a new node took the address our payload came from. No reply keeps it.
                 forgetGattPayloadIfOther(device.address, dialed.reply.nodeId)
                 IllegalStateException("hello reply ${dialed.reply.nodeId} != expected $nodeId")
             }
 
-            is LinkHandshake.Dialed.ProofFailed -> {
+            is LinkHandshake.DialOutcome.ProofFailed -> {
                 claims.proofFailed(nodeId, PLANE, dialed.why)
                 IllegalStateException("link proof failed: ${dialed.why}")
             }
 
-            is LinkHandshake.Dialed.Linked -> {
+            is LinkHandshake.DialOutcome.SealFailed -> {
+                IllegalStateException("link seal failed: ${dialed.why}")
+            }
+
+            is LinkHandshake.DialOutcome.SealRefused -> {
+                logSealRefused(dialed.reply.nodeId)
+                IllegalStateException("plain reply carries the seal bit")
+            }
+
+            is LinkHandshake.DialOutcome.Linked -> {
                 // R1: a reply without the bit claiming an id that can prove itself is not that peer.
                 if (!dialed.proven && claims.isProofCapable(nodeId)) {
                     claims.refused(nodeId, PLANE, "unproven reply")
@@ -4012,20 +4119,82 @@ class BluetoothMeshTransport internal constructor(
      * gets our reply and PROOF in one write, and is registered only once its own PROOF verifies, under a second 5 s
      * watchdog; the link it displaces (R3) closes only then, and stays if the proof fails. Every close before
      * registration hands the channel to [armUnlinked], as the old refusals did (#142).
+     *
+     * Sealed links (#286, ADR 2026-11.8mhs): the first record tells the forms apart ([LinkHandshake.receiveOpening]). A
+     * `KEY_SHARE` is answered with ours before any admission row, the dialer's HELLO is read inside the seal under its own
+     * watchdog, and then every row above runs unchanged, now after our key share; the answer gets a third watchdog. A
+     * plain HELLO carrying `CAP_LINK_SEAL` is refused (§7) ahead of every other row, the no-nonce one and R1 included. A
+     * failed seal closes with no backoff and counts `linkSealFailed` once; an EOF or a timeout is never one.
+     *
+     * Read, refuse, answer, re-judge, register: one linear flow of early exits, hence the suppressions.
      */
-    @Suppress("LongMethod", "ReturnCount") // read, refuse, answer, re-judge, register: one linear flow of early exits
+    @Suppress("LongMethod", "ReturnCount", "CyclomaticComplexMethod")
     private fun superviseAccepted(socket: BluetoothSocket) {
         val link = BluetoothSocketLink(socket)
-        // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
-        val helloCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
-        val read = runCatching { LinkHandshake.receiveHello(link.input) }.getOrNull()
-        val helloInTime = helloCut.finish()
-        val hello = read?.takeIf { helloInTime }
         val device = socket.remoteDevice
-        if (hello == null) {
-            link.close()
-            armUnlinked(device, null)
-            return
+        // BluetoothSocket has no soTimeout, so bound each read by closing the socket if it stalls: one watchdog per stage.
+        val openCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+        val read = runCatching { LinkHandshake.receiveOpening(link) }.getOrNull()
+        val openInTime = openCut.finish()
+        val opening = read?.takeIf { openInTime } ?: LinkHandshake.Opening.None
+        countSeal(LinkSealPolicy.openingCount(opening))
+        val hello: LinkHandshake.ReceivedHello
+        // The seal the rest of the handshake rides, when the dialer opened with a KEY_SHARE.
+        val seal: SealedLinkSocket?
+        when (opening) {
+            LinkHandshake.Opening.None -> {
+                link.close()
+                armUnlinked(device, null)
+                return
+            }
+
+            is LinkHandshake.Opening.SealFailed -> {
+                Log.i(TAG, "bt seal failed client ${device.address} (key share: ${opening.why})")
+                link.close()
+                armUnlinked(device, null)
+                return
+            }
+
+            is LinkHandshake.Opening.Plain -> {
+                if (LinkHandshake.refusesPlain(opening.hello)) {
+                    // §7: both builds seal, so a plain link between them is a stripped flag (or a stale one): no reply.
+                    metrics.onLinkSealRefused()
+                    Log.i(TAG, "bt refused client ${opening.hello.wire.nodeId} (seal=plain)")
+                    link.close()
+                    armUnlinked(device, opening.hello.wire.nodeId)
+                    return
+                }
+                hello = opening.hello
+                seal = null
+            }
+
+            is LinkHandshake.Opening.Sealed -> {
+                // Our KEY_SHARE is out; the dialer's HELLO is the first inner record, under its own watchdog.
+                val helloCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
+                val sealedRead = runCatching { LinkHandshake.receiveSealedHello(opening.link) }.getOrNull()
+                val helloInTime = helloCut.finish()
+                val sealed = sealedRead?.takeIf { helloInTime } ?: LinkHandshake.SealedHello.None
+                countSeal(LinkSealPolicy.sealedHelloCount(sealed))
+                when (sealed) {
+                    LinkHandshake.SealedHello.None -> {
+                        link.close()
+                        armUnlinked(device, null)
+                        return
+                    }
+
+                    is LinkHandshake.SealedHello.SealFailed -> {
+                        Log.i(TAG, "bt seal failed client ${device.address} (hello: ${sealed.why})")
+                        link.close()
+                        armUnlinked(device, null)
+                        return
+                    }
+
+                    is LinkHandshake.SealedHello.Hello -> {
+                        hello = sealed.hello
+                        seal = opening.link
+                    }
+                }
+            }
         }
         val clientNodeId = hello.wire.nodeId
         if (hello.malformedOffer) {
@@ -4057,19 +4226,27 @@ class BluetoothMeshTransport internal constructor(
         // before registering), our PROOF behind it when the dialer offers one, then read the dialer's PROOF. We read
         // first, then reply: no mutual block. Its own watchdog: the HELLO's was cancelled at the read.
         val answerCut = cutAfter(socket, ACCEPT_HELLO_TIMEOUT_MS)
-        val outcome = runCatching { LinkHandshake.answer(link.input, link.output, prover, hello, told = toldForm()) }
+        val outcome =
+            runCatching {
+                if (seal != null) {
+                    LinkHandshake.answerSealed(seal, prover, hello, told = toldForm())
+                } else {
+                    LinkHandshake.answerPlain(link, prover, hello, told = toldForm())
+                }
+            }
         val inTime = answerCut.finish()
         val answered =
             outcome.getOrNull()?.takeIf { inTime }
-                ?: LinkHandshake.Answered.ProofFailed(if (inTime) "unreadable" else "timeout")
+                ?: LinkHandshake.AnswerOutcome.ProofFailed(if (inTime) "unreadable" else "timeout")
+        countSeal(LinkSealPolicy.answerCount(answered))
         when (answered) {
-            LinkHandshake.Answered.WriteFailed -> {
+            LinkHandshake.AnswerOutcome.WriteFailed -> {
                 link.close()
                 armUnlinked(device, clientNodeId)
                 return
             }
 
-            is LinkHandshake.Answered.ProofFailed -> {
+            is LinkHandshake.AnswerOutcome.ProofFailed -> {
                 // The held link (if any) is untouched: R3 displaces only on a verified proof.
                 claims.proofFailed(clientNodeId, PLANE, answered.why)
                 Log.i(TAG, "bt refused client $clientNodeId (proof=${answered.why.replace(' ', '-')})")
@@ -4078,7 +4255,23 @@ class BluetoothMeshTransport internal constructor(
                 return
             }
 
-            is LinkHandshake.Answered.Linked -> {}
+            is LinkHandshake.AnswerOutcome.SealFailed -> {
+                // The dialer's PROOF frame broke the seal: never a proof failure, never [claims].
+                Log.i(TAG, "bt refused client $clientNodeId (seal=failed why=${answered.why.replace(' ', '-')})")
+                link.close()
+                armUnlinked(device, clientNodeId)
+                return
+            }
+
+            LinkHandshake.AnswerOutcome.SealRefused -> {
+                // Unreachable while refusesPlain runs first; counted above as the §7 refusal it is.
+                Log.i(TAG, "bt refused client $clientNodeId (seal=plain)")
+                link.close()
+                armUnlinked(device, clientNodeId)
+                return
+            }
+
+            is LinkHandshake.AnswerOutcome.Linked -> {}
         }
         val proven = answered.proven
         // Up to 5 s went by: the held link may have gone, been replaced or proven, and the id may have become
@@ -4099,7 +4292,7 @@ class BluetoothMeshTransport internal constructor(
         }
         Log.i(TAG, "bt accepted client $clientNodeId (${late.verdict}, ${late.acceptFields})")
         val form = toldForm(hello, proven)
-        val framed = registerLink(clientNodeId, hello.wire, link, late.sighted, device, proven = proven, form = form)
+        val framed = registerLink(clientNodeId, hello.wire, link, answered.link, late.sighted, device, proven = proven, form = form)
         noteAnswered(framed, form, clientNodeId)
     }
 
@@ -4272,7 +4465,11 @@ class BluetoothMeshTransport internal constructor(
     private fun registerLink(
         nodeId: String,
         advert: Protocol.PeerWire,
+        // The raw channel: its stamps feed [LinkSilence] (ciphertext bytes on a sealed link, the same liveness).
         link: BluetoothSocketLink,
+        // The socket the link runs on, the handshake outcome's own: the [SealedLinkSocket] on a sealed link (#286), [link]
+        // otherwise. Never [link] after a sealed handshake: its records would go out in the clear to a peer that drops them.
+        carrier: LinkSocket,
         sighted: Boolean = true, // an initiator dials only a peer presence holds
         // The peer's device, for its doorbell and its address. [advert] is the peer's HELLO either way — the dialer's
         // on an accepted link, the reply on a dialed one — so its capabilities are full width and carry CAP_DOORBELL.
@@ -4294,7 +4491,7 @@ class BluetoothMeshTransport internal constructor(
             FramedLink(
                 nodeId = nodeId,
                 peer = Peer(nodeId, advert.protoVersion, advert.capabilities),
-                socket = link,
+                socket = carrier,
                 scope = scope,
                 cacheDir = appContext.cacheDir,
                 partials = partials,
@@ -4316,6 +4513,10 @@ class BluetoothMeshTransport internal constructor(
                 onTagNext = { bytes -> onTagNext(events.link, proven, advert, bytes) },
             )
         events.link = framed
+        // Before framed.start(): from here a fault on the live link (a frame that won't open, an inner KEY_SHARE / SEALED)
+        // counts once, on the socket; before it, the handshake's outcome was the only count (#286).
+        val sealed = carrier is SealedLinkSocket
+        (carrier as? SealedLinkSocket)?.armFailureCount { metrics.onLinkSealFailed() }
         // Before framed.start(), so the peer's announce finds it. An iPhone's is exempt from the whole check (#203).
         val silence = LinkSilence(exempt = DoorbellPolicy.serves(advert.capabilities), uptime = SystemClock::uptimeMillis)
         silences[framed] = SilentLink(silence, link.stamps)
@@ -4414,6 +4615,7 @@ class BluetoothMeshTransport internal constructor(
         if (proven) scope.launch(worker) { announcedTag?.let { sendForm(framed, TagNextSends.Kind.ANNOUNCE, it) } }
         // Once the link is in the table and up, so this plane's own R3/R4 hook finds it proven and leaves it.
         if (proven) {
+            if (sealed) metrics.onLinkSealed() // beside linksProven, which [claims] counts: a sealed link is always proven
             claims.proven(nodeId, PLANE, displaced)
         } else if (claims.isProofCapable(nodeId)) {
             // [LinkClaims] tells each id once: a seed or profile that made it proof-capable after this link's last R1
@@ -4798,7 +5000,7 @@ class BluetoothMeshTransport internal constructor(
 
     /**
      * Forgets [address]'s GATT payload and any wait before its next read, so its next advert reads it afresh (the
-     * contract's payload lifetime). Logged only when a payload went: `bt gatt forget <addr> (dial|hello <id>|quiet)`.
+     * contract's payload lifetime). Logged only when a payload went: `bt gatt forget <addr> (dial|hello <id>|quiet|seal)`.
      * Nothing here touches the read budget (#154): the re-read it makes due is charged when it ends.
      */
     private fun forgetGattPayload(
@@ -5366,6 +5568,11 @@ class BluetoothMeshTransport internal constructor(
 
         // Bound the responder's HELLO read (BluetoothSocket has no soTimeout) — close the socket if it stalls.
         private const val ACCEPT_HELLO_TIMEOUT_MS = 5_000L
+
+        // What a dial's failure line names for the watchdog that cut a stage: the HELLO exchange, or the sealed form's
+        // key shares (#286), each bounded by [ACCEPT_HELLO_TIMEOUT_MS] on its own.
+        private const val WATCHDOG_HELLO = "hello watchdog"
+        private const val WATCHDOG_KEY_SHARE = "key share watchdog"
 
         // This plane's name on [LinkClaims]' counters' log lines (ADR 2026-11.264w).
         private const val PLANE = "bt"

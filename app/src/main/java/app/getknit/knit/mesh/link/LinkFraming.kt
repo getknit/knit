@@ -70,6 +70,25 @@ internal object LinkFraming {
          * and drops the link. Read by the Bluetooth plane only; a plane that reads no tags ignores it.
          */
         TAG_NEXT(9),
+
+        /**
+         * A sealed link's opening record (#286): exactly [KEY_SHARE_BYTES], the sender's ephemeral X25519 public key
+         * ([app.getknit.knit.mesh.crypto.LinkSeal]), fresh for every connection attempt. Each side writes one, as its first
+         * record, and only on a link the dialer opened in the sealed form — chosen from the peer's advert flag or Wi-Fi
+         * Aware SSI caps, which only a build carrying `Protocol.CAP_LINK_SEAL` airs: every build before it throws on an
+         * unknown tag and drops the link. Any other length throws [SealFramingException] from the header, before the
+         * payload is read. Never valid inside a seal.
+         */
+        KEY_SHARE(10),
+
+        /**
+         * One AES-256-GCM frame of a sealed link (#286): `ciphertext ‖ tag(16)` of 1 to 65,536 plaintext bytes, so its
+         * length is [SEALED_MIN_BYTES]..[SEALED_MAX_BYTES]; anything else throws [SealFramingException] from the header.
+         * After the two [KEY_SHARE]s every record either side writes is one of these, and the plaintexts, concatenated in
+         * counter order, are the ordinary record stream ([app.getknit.knit.mesh.link.SealedLinkSocket]). Written only on a
+         * link opened in the sealed form, as [KEY_SHARE] is. Never valid inside a seal.
+         */
+        SEALED(11),
         ;
 
         companion object {
@@ -106,10 +125,25 @@ internal object LinkFraming {
     /** A [Type.TAG_NEXT] record's payload: one advertised form, the 16 bytes of a Bluetooth advert's bytes 1–16. */
     const val TAG_NEXT_BYTES = 16
 
+    /** A [Type.KEY_SHARE] record's payload: one raw X25519 public key. */
+    const val KEY_SHARE_BYTES = 32
+
+    /** The shortest [Type.SEALED] payload: one plaintext byte and the 16-byte GCM tag. */
+    const val SEALED_MIN_BYTES = 1 + 16
+
+    /** The longest [Type.SEALED] payload: 65,536 plaintext bytes and the 16-byte GCM tag. */
+    const val SEALED_MAX_BYTES = 65_536 + 16
+
     /** One [Type.TAG_NEXT] record for [tag] (exactly [TAG_NEXT_BYTES]; a caller's bug otherwise). */
     fun encodeTagNext(tag: ByteArray): ByteArray {
         require(tag.size == TAG_NEXT_BYTES) { "a tag-next payload is $TAG_NEXT_BYTES bytes" }
         return encode(Type.TAG_NEXT, tag)
+    }
+
+    /** One [Type.KEY_SHARE] record for [publicKey] (exactly [KEY_SHARE_BYTES]; a caller's bug otherwise). */
+    fun encodeKeyShare(publicKey: ByteArray): ByteArray {
+        require(publicKey.size == KEY_SHARE_BYTES) { "a key share is $KEY_SHARE_BYTES bytes" }
+        return encode(Type.KEY_SHARE, publicKey)
     }
 
     /** Encodes one record: `[type][big-endian length][payload]`. */
@@ -143,13 +177,38 @@ internal object LinkFraming {
     fun read(input: InputStream): Message? {
         val tagByte = input.read()
         if (tagByte == -1) return null // clean EOF at a record boundary
+        return readAfterTag(tagByte, input)
+    }
+
+    /**
+     * The rest of the record whose leading byte [tagByte] the caller already read from [input]: the sealed handshake
+     * reads the tag alone first, so it can tell "another record where a key share belongs" (a failed seal) from a stream
+     * that ended or timed out (no reply) without reading what follows. Throws as [read] does.
+     */
+    fun readAfterTag(
+        tagByte: Int,
+        input: InputStream,
+    ): Message {
         val type = Type.fromTag(tagByte.toByte()) ?: throw IOException("unknown record type $tagByte")
         val len = ByteBuffer.wrap(readFully(input, LENGTH_BYTES)).int
+        checkSealLength(type, len)
         // A fixed-size record of any other length is a desynced or hostile stream, as an out-of-range length is.
         val fixed = type == Type.TAG_NEXT && len != TAG_NEXT_BYTES
         if (len !in 0..MAX_PAYLOAD_BYTES || fixed) throw IOException("record type $tagByte length $len out of range")
         val payload = if (len == 0) EMPTY else readFully(input, len)
         return Message(type, payload)
+    }
+
+    /** A [Type.KEY_SHARE] or [Type.SEALED] header whose length is out of its range: a failed seal, read before the payload. */
+    fun checkSealLength(
+        type: Type,
+        len: Int,
+    ) {
+        when (type) {
+            Type.KEY_SHARE -> if (len != KEY_SHARE_BYTES) throw SealFramingException("key share length $len")
+            Type.SEALED -> if (len !in SEALED_MIN_BYTES..SEALED_MAX_BYTES) throw SealFramingException("sealed frame length $len")
+            else -> Unit
+        }
     }
 
     /** Reads exactly [n] bytes, or throws [EOFException] if the stream ends mid-record. */
@@ -201,6 +260,15 @@ internal object LinkFraming {
     fun decodeDigest(payload: ByteArray): DigestWire? =
         runCatching { json.decodeFromString<DigestWire>(payload.decodeToString()) }.getOrNull()
 }
+
+/**
+ * A [LinkFraming.Type.KEY_SHARE] or [LinkFraming.Type.SEALED] header whose length is out of range (#286): bytes that
+ * arrived and were wrong, so a caller counts it as a failed seal rather than a missing reply or a dead socket. Carries the
+ * length only, never a byte of payload.
+ */
+class SealFramingException(
+    message: String,
+) : IOException(message)
 
 /**
  * Sent as the [LinkFraming.Type.FILE_HEADER] record ahead of a file's chunks so the receiver can route

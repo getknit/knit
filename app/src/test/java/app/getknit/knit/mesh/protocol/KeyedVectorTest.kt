@@ -233,6 +233,9 @@ class KeyedVectorTest {
 
     private fun blindJson(): JsonObject = file.getValue("blind").jsonObject
 
+    // A sealed link (#286): Alice dials Bob in the sealed form, under `link.seal`.
+    private val seal = SealVectors(alice, bob)
+
     private val file: JsonObject by lazy { VectorFiles.read(FILE) }
 
     private fun frameHex(name: String): String =
@@ -421,6 +424,24 @@ class KeyedVectorTest {
     }
 
     @Test
+    fun `the sealed link rebuilds byte for byte and opens`() {
+        assumeFalse(VectorFiles.writing)
+        seal.assertRebuilds(link("seal"))
+    }
+
+    @Test
+    fun `every pinned split of a sealed link reads the same records`() {
+        assumeFalse(VectorFiles.writing)
+        seal.assertSplits(link("seal"))
+    }
+
+    @Test
+    fun `every pinned seal reject fails`() {
+        assumeFalse(VectorFiles.writing)
+        seal.assertRejects(link("seal"))
+    }
+
+    @Test
     fun `the link lane keys are pinned and both ends derive them`() {
         assumeFalse(VectorFiles.writing)
         val pinned = file.getValue("linkKeys").jsonObject
@@ -560,6 +581,7 @@ class KeyedVectorTest {
                 put("record", fileHeaderResumedRecord().toHex())
             }
             putLinkProof()
+            put("seal", seal.json())
             putJsonObject("advert") {
                 put("nodeId", alice.nodeId)
                 put("capabilities", CAPABILITIES)

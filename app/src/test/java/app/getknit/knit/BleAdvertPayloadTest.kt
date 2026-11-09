@@ -15,6 +15,9 @@ class BleAdvertPayloadTest {
     // A canonical 26-char base32 id (derived, so it round-trips through its raw 16 bytes).
     private val nodeA = NodeId.derive("peer-a")
 
+    // Bit 4, which every advert this build writes carries (#286): the older pins below read the other bits beside it.
+    private val seal = if (BleAdvertPayload.SEALS_LINKS) BleAdvertPayload.FLAG_LINK_SEAL else 0
+
     @Test
     fun encodeDecodeRoundTrips() {
         val bytes =
@@ -132,11 +135,14 @@ class BleAdvertPayloadTest {
 
     @Test
     fun theFlagsByteClaimsOnlyWhatThisNodeRuns() {
-        assertEquals(0, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = false))
-        assertEquals(BleAdvertPayload.FLAG_SIDE_CHANNEL, BleAdvertPayload.flags(sideLive = true, gattPeers = false, aware = false))
-        assertEquals(BleAdvertPayload.FLAG_DIALS_GATT_PEERS, BleAdvertPayload.flags(sideLive = false, gattPeers = true, aware = false))
+        assertEquals(seal, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = false))
+        assertEquals(BleAdvertPayload.FLAG_SIDE_CHANNEL or seal, BleAdvertPayload.flags(sideLive = true, gattPeers = false, aware = false))
         assertEquals(
-            BleAdvertPayload.FLAG_SIDE_CHANNEL or BleAdvertPayload.FLAG_DIALS_GATT_PEERS,
+            BleAdvertPayload.FLAG_DIALS_GATT_PEERS or seal,
+            BleAdvertPayload.flags(sideLive = false, gattPeers = true, aware = false),
+        )
+        assertEquals(
+            BleAdvertPayload.FLAG_SIDE_CHANNEL or BleAdvertPayload.FLAG_DIALS_GATT_PEERS or seal,
             BleAdvertPayload.flags(sideLive = true, gattPeers = true, aware = false),
         )
     }
@@ -145,9 +151,9 @@ class BleAdvertPayloadTest {
     fun theAwareBitIsBit2AndItsOwn() {
         // GitHub #44, 2t49's 2026-10-27 amendment: positive polarity, set while a peer may count on this phone's Aware.
         assertEquals(0x04, BleAdvertPayload.FLAG_AWARE)
-        assertEquals(BleAdvertPayload.FLAG_AWARE, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = true))
+        assertEquals(BleAdvertPayload.FLAG_AWARE or seal, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = true))
         val all = BleAdvertPayload.flags(sideLive = true, gattPeers = true, aware = true)
-        assertEquals(0x07, all)
+        assertEquals(0x07 or seal, all)
         val p = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, all))!!
         assertTrue(p.aware)
         assertTrue(p.sideChannel)
@@ -167,7 +173,7 @@ class BleAdvertPayloadTest {
                 val on = BleAdvertPayload.flags(sideLive = side, gattPeers = gatt, aware = true)
                 assertEquals("flags($side, $gatt, false)", 0, off and 0x0C)
                 assertEquals("flags($side, $gatt, true)", 0x04, on xor off)
-                assertEquals("bits 3..7 stay reserved", 0, on and 0xF8)
+                assertEquals("bit 3 and bits 5..7 stay clear", 0, on and 0xE8)
             }
         }
     }
@@ -179,7 +185,7 @@ class BleAdvertPayloadTest {
             val bytes = BleAdvertPayload.advert(nodeA, 0x7L, 42L, 0x0081, sideLive = true, gattPeers = false, aware = aware)
             assertEquals(BleAdvertPayload.SIZE, bytes.size)
             val flags = bytes[BleAdvertPayload.SIZE_V1].toInt() and 0xFF
-            assertEquals(if (aware) 0x05 else 0x01, flags)
+            assertEquals((if (aware) 0x05 else 0x01) or seal, flags)
             val p = BleAdvertPayload.parse(bytes)!!
             assertEquals(aware, p.aware)
             assertTrue(p.sideChannel)
@@ -193,6 +199,59 @@ class BleAdvertPayloadTest {
         assertFalse(BleAdvertPayload.parse(v1)!!.aware)
         assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x03))!!.aware)
         assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x00))!!.aware)
+    }
+
+    // --- The link-seal flag (#286, ADR 2026-11.8mhs) ---
+
+    @Test
+    fun theLinkSealFlagIsBit4AndSaysWhatTheHelloSays() {
+        assertEquals(0x10, BleAdvertPayload.FLAG_LINK_SEAL)
+        // Set exactly when this build's HELLO carries CAP_LINK_SEAL (contract §1), and this build's does.
+        assertEquals(Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L, BleAdvertPayload.SEALS_LINKS)
+        assertTrue(BleAdvertPayload.SEALS_LINKS)
+        for (side in listOf(false, true)) {
+            for (gatt in listOf(false, true)) {
+                for (aware in listOf(false, true)) {
+                    val flags = BleAdvertPayload.flags(sideLive = side, gattPeers = gatt, aware = aware)
+                    assertEquals("flags($side, $gatt, $aware)", BleAdvertPayload.FLAG_LINK_SEAL, flags and BleAdvertPayload.FLAG_LINK_SEAL)
+                }
+            }
+        }
+        assertEquals(0, BleAdvertPayload.flags(sideLive = false, gattPeers = false, aware = false, linkSeal = false))
+    }
+
+    @Test
+    fun theLinkSealFlagRoundTripsInTheClearForm() {
+        val bytes = BleAdvertPayload.advert(nodeA, 0x7L, 42L, 0x0081, sideLive = false, gattPeers = false, aware = false)
+        val p = BleAdvertPayload.parse(bytes)!!
+        assertTrue(p.linkSeal)
+        assertFalse(p.blinded)
+        assertEquals(nodeA, p.nodeId)
+        val unsealed = BleAdvertPayload.advert(nodeA, 0x7L, 42L, 0x0081, sideLive = true, gattPeers = true, aware = true, linkSeal = false)
+        assertFalse(BleAdvertPayload.parse(unsealed)!!.linkSeal)
+    }
+
+    @Test
+    fun theLinkSealFlagRoundTripsInTheBlindedForm() {
+        val bytes = BleAdvertPayload.advert(tag, 0x7L, 42L, 0x0081, sideLive = false, gattPeers = false, aware = true, blinded = true)
+        val p = BleAdvertPayload.parse(bytes)!!
+        assertTrue(p.blinded)
+        assertTrue("the blinded form reads the same byte", p.linkSeal)
+        assertTrue(p.aware)
+        assertEquals(tag, p.nodeId)
+    }
+
+    @Test
+    fun aTwentyThreeByteAdvertAndAnOlderFlagsByteReadTheLinkSealFlagAbsent() {
+        val sealed = BleAdvertPayload.advert(nodeA, 0L, 0L, 1, sideLive = true, gattPeers = true, aware = true)
+        assertFalse(BleAdvertPayload.parse(sealed.copyOf(BleAdvertPayload.SIZE_V1))!!.linkSeal)
+        // Every bit a 2.11.0 build or the iOS GATT value writes today, and none of them reads as the seal.
+        val older = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x07))!!
+        assertFalse(older.linkSeal)
+        // Bit 4 alone says nothing else.
+        val only = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, BleAdvertPayload.FLAG_LINK_SEAL))!!
+        assertTrue(only.linkSeal)
+        assertFalse(only.sideChannel || only.dialsGattPeers || only.aware || only.blinded)
     }
 
     // --- Blinded adverts (ADR 2026-11.xp6d) ---

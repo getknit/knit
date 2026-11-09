@@ -588,7 +588,7 @@ class FramedLink(
     private fun readLoop(input: java.io.InputStream) {
         try {
             while (scope.isActive && !closed) {
-                val msg = LinkFraming.read(input) ?: break
+                val msg = readRecord(input) ?: break
                 noteRecordIn()
                 when (msg.type) {
                     LinkFraming.Type.FRAME -> {
@@ -626,13 +626,39 @@ class FramedLink(
                     LinkFraming.Type.KEEPALIVE, LinkFraming.Type.TAG_NEXT, LinkFraming.Type.HELLO, LinkFraming.Type.PROOF -> {
                         handleControl(msg)
                     }
+
+                    // Only the handshake reads these (#286): on a live link they end it, as an unknown tag did before. Inside a
+                    // seal one is a failed seal (contract §4), counted once by the socket; a plain link (a direct link's
+                    // among them) just closes.
+                    LinkFraming.Type.KEY_SHARE, LinkFraming.Type.SEALED -> {
+                        sealViolated()
+                        throw IOException("${msg.type.name.lowercase()} record on a live link")
+                    }
                 }
             }
         } catch (e: IOException) {
+            // A read error only ends the link: the seal's own faults are counted by the socket.
             log("read loop ended for $nodeId: ${e.message}")
         } finally {
             callbacks.onLinkDown(nodeId)
         }
+    }
+
+    /**
+     * One record, as [LinkFraming.read]. An inner `KEY_SHARE` / `SEALED` whose length is out of range throws before it
+     * reaches [readLoop]'s `when`, and is the same violation as one of the right length (#286).
+     */
+    private fun readRecord(input: java.io.InputStream): LinkFraming.Message? =
+        try {
+            LinkFraming.read(input)
+        } catch (e: SealFramingException) {
+            sealViolated()
+            throw e
+        }
+
+    /** An inner record a seal never carries: a failed seal on a sealed socket, nothing to count on a plain one. */
+    private fun sealViolated() {
+        (socket as? SealedLinkSocket)?.sealViolated()
     }
 
     /** A record that carries no data, so it moves no quiescence clock. */

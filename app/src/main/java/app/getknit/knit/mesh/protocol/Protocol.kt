@@ -218,7 +218,8 @@ object Protocol {
     /**
      * Blinded adverts (ADR 2026-11.xp6d, knit-next #285): this build reads a Bluetooth advert whose bytes 1–16 are a
      * rotating tag rather than a node id (`BleAdvertPayload.FLAG_BLINDED`), dials such a tag without expecting an id
-     * back ([app.getknit.knit.mesh.link.LinkHandshake.dialTag]), and writes and reads the HELLO's advertised-form fields
+     * back ([app.getknit.knit.mesh.link.LinkHandshake.dialTagPlain],
+     * [app.getknit.knit.mesh.link.LinkHandshake.dialTagSealed]), and writes and reads the HELLO's advertised-form fields
      * ([hello]'s `told` and `addressed`). It says the build *reads* tags, not that it writes them. Unauthenticated, like
      * every HELLO bit: nothing private is decided on it; a dialer without it, while this phone blinds, is the older
      * build's lonely dial to a tag, and is refused. In [LOCAL_CAPABILITIES] since the Bluetooth plane reads tags (the
@@ -226,11 +227,27 @@ object Protocol {
      */
     const val CAP_BLIND_ADVERT = 0x80000L
 
+    /**
+     * Sealed links (ADR 2026-11.8mhs, knit-next #286, knit-ios #51): this build opens a Bluetooth or Wi-Fi Aware link with
+     * an ephemeral X25519 exchange (`KEY_SHARE` records, [app.getknit.knit.mesh.link.LinkFraming.Type.KEY_SHARE]) and
+     * then carries everything after it, its HELLO first, inside AES-256-GCM `SEALED` frames
+     * ([app.getknit.knit.mesh.crypto.LinkSeal]); the PROOF then signs both ephemeral keys (the v2 transcript,
+     * [app.getknit.knit.mesh.crypto.LinkProof]). A dialer picks that form from the Bluetooth advert's
+     * `BleAdvertPayload.FLAG_LINK_SEAL` or this bit in the Wi-Fi Aware SSI, never from a stored profile. On a link opened
+     * in the plain form, a HELLO carrying the bit toward a build that carries it too is refused
+     * ([app.getknit.knit.mesh.link.LinkHandshake.refusesPlain]): the bit rides inside the signed transcript, so a relay
+     * that strips only the advert flag gets no link rather than a plain proven one (one that strips the proof bit too
+     * poses a legacy build, which [app.getknit.knit.mesh.link.LinkClaims]' R1 refuses for a peer whose profile carries
+     * the proof bit). Carried only beside [CAP_LINK_PROOF]. The
+     * profile's copy is informational only.
+     */
+    const val CAP_LINK_SEAL = 0x100000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
             CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES or CAP_LINK_PREVIEW or
-            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF or CAP_BLIND_ADVERT
+            CAP_DIRECT_TRANSFER or CAP_BLOB_HAVE or CAP_LINK_PROOF or CAP_BLIND_ADVERT or CAP_LINK_SEAL
 
     /** The bytes of a link HELLO's nonce ([hello]): 16, written as 32 lowercase hex digits after an `n`. */
     const val HELLO_NONCE_BYTES = 16

@@ -50,6 +50,16 @@ advert and (authenticated) on `ProfileContent`.
 unknown tag. The SSI (`Protocol.advertise`) never carries the nonce. A stored peer's capabilities follow its profile's
 presentation version, not the prekey watermark, so an older profile cannot take a bit back.
 
+**The sealed link** (ADR 2026-11.8mhs, knit-next #286, paired with knit-ios #51). Toward a peer whose advert carries
+`BleAdvertPayload.FLAG_LINK_SEAL` (bit 4 of byte 23) or whose SSI caps carry `CAP_LINK_SEAL` (0x100000), a link's first
+record each way is a `KEY_SHARE` (tag 10, exactly 32 bytes: a fresh X25519 public key), not a HELLO; everything after
+rides `SEALED` frames (tag 11, `[0x0B][u32be len][ct ‖ tag]`, `len` 17..65,552, AAD = the 5 header bytes, nonce
+`0⁴ ‖ u64be(frame count)`), under `HKDF-SHA256(ss, eD ‖ eR, "knit/link/v1/seal/d2r" | "knit/link/v1/seal/r2d")`
+(`mesh/crypto/LinkSeal`, `mesh/link/SealedLinkSocket`). The plaintexts concatenated are today's record stream, from
+the HELLO on; frame boundaries mean nothing. The PROOF inside signs `"knit/link/v2/proof" ‖ role ‖ eD ‖ eR ‖ both
+HELLOs`; plain links keep v1 byte for byte. Tags 10 and 11 are never written on a plain link (every shipped build drops
+the link on them), and a plain link whose two HELLOs both carry the bit is refused. Direct links never seal.
+
 `WireCodec` exposes `encodeWire`/`decodeWire` (WireEnvelope), `encodeEnvelope`/`decodeEnvelope`
 (RelayEnvelope), and `encodePayload`/`decodePayload<T>` (content) — see `docs/WIRE_COMPAT.md`.
 

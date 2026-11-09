@@ -132,6 +132,136 @@
         "record": "080000007fe4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df073e79971c9110029723632a80b707bf4f62c125763346e1e8718d6c0dcc3aa3aa830629a9c4fe43e185b6ba98f446bdfe6c2169eb24fa582f76bdac44e5b86c847de7b2c704f2155c033dab59edb5c3b64e2e87773b05cc8d632b4a1663a85"
       }
     },
+    "seal": {
+      "about": "A sealed link (knit-next #286): Alice dials Bob with ephemeral scalars 40..5f and 60..7f (unclamped), the link proof's nonces and both HELLOs at caps 140009. Each frame is [0x0b][u32be len][AES-256-GCM ‖ tag], the 5 header bytes its AAD, nonce 00000000 ‖ u64be(counter), one counter per direction from 0. The PROOFs sign the v2 transcript; Android rebuilds them, a port with a randomized Ed25519 opens and verifies them. Every sealRejects entry must fail as its reason says.",
+      "dialer": "alice",
+      "responder": "bob",
+      "capabilities": "140009",
+      "keyShareDialer": {
+        "scalar": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "record": "0a0000002079a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a"
+      },
+      "keyShareResponder": {
+        "scalar": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+        "record": "0a00000020675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f"
+      },
+      "shared": "d6fb939511b2381bc8599b4b8edc5968829450dfd7a87aebe78a703cd04cd54e",
+      "keyD2R": "2e0f92304dc8fc0f52e4346a523b9687a6af9cd69857cb4a74dd3f14b2ec4454",
+      "keyR2D": "9d65bbe95e6144355ca53173bca2f972c8bc3f8447efc2a67e85469b1e1c123e",
+      "helloSealedDialer": {
+        "payload": "4cgq2pnhh6p3j3afwsue3chrpi|1|140009|n000102030405060708090a0b0c0d0e0f",
+        "key": "keyD2R",
+        "counter": 0,
+        "frame": "0b0000005a3876e6d0e8543d59402ce676678b6f2244275a476420c3e0241db2c5b58bb76a8a8f12d66c8ae32f86d502e67492622c726d70acbde9dc4e054c7ffa5bd917065548e50f96d056e907d6334df29fb1ef6dfe768b2ce669347786"
+      },
+      "helloSealedReply": {
+        "payload": "raunzp43s3sncyojiezgg7ulna|1|140009|n101112131415161718191a1b1c1d1e1f",
+        "key": "keyR2D",
+        "counter": 0,
+        "frame": "0b0000005abcae6d796127aba9fb77be6a8d96307aa77e82c11d80d9901c9fab79e3f44abcba4fc326ca4685c0bf4f1284907cf8e183cf39fa295577cc3b8e8520376b1a243735cd122dad5e655e56adb18d776456a77dbe8b7e429dc71aac"
+      },
+      "transcriptDialer": {
+        "signer": "alice",
+        "role": 1,
+        "hex": "6b6e69742f6c696e6b2f76322f70726f6f660179a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f000000453463677132706e68683670336a336166777375653363687270697c317c3134303030397c6e3030303130323033303430353036303730383039306130623063306430653066000000457261756e7a7034337333736e63796f6a69657a676737756c6e617c317c3134303030397c6e3130313131323133313431353136313731383139316131623163316431653166"
+      },
+      "transcriptResponder": {
+        "signer": "bob",
+        "role": 2,
+        "hex": "6b6e69742f6c696e6b2f76322f70726f6f660279a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f000000453463677132706e68683670336a336166777375653363687270697c317c3134303030397c6e3030303130323033303430353036303730383039306130623063306430653066000000457261756e7a7034337333736e63796f6a69657a676737756c6e617c317c3134303030397c6e3130313131323133313431353136313731383139316131623163316431653166"
+      },
+      "proofResponder": {
+        "signer": "bob",
+        "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad01104ad1abb210223c923759584ecb6ffde6774def5224525c77a3c4116de3b0720a0b749b6c3df68e506ef9c4ab8fc04c7060a0e8af74d8ba597826134d6cb79803",
+        "key": "keyR2D",
+        "counter": 1,
+        "frame": "0b00000095c061e7f3de68ceda9590d622ddcf92c4c4dce5c4239fa81afe30ec1cf63ca3d7664ed8ec85df525fd575355d203c7ff6192e57ee8f6ce23a26a837eded614c53fdd64f79a0206595583b0a0d1bbec3a80c947f1662703a0b9c1555895c84d153dea4b30a134ec2e29f76a9fc7f2bacb1758b784ffda3007cf21574c4f9311fb24b12d6ee2a3d8a7ab3d6730a4e714eee3238004513"
+      },
+      "proofDialer": {
+        "signer": "alice",
+        "record": "0800000080e4030998cfd5ad1723c169f956aa0b9eb8619b5992bd612c2af428ebc79f8df073e79971c9110029723632a80b707bf4f62c125763346e1e8718d6c0dcc3aa3ab432d2bf36298790400b951699d86bfc8a6a4a9c438f1441bc1fff2f661a36225eedd703946ceb17838cc39842cfebdec46873ec22769153d3249b23676acd0c",
+        "key": "keyD2R",
+        "counter": 1,
+        "frame": "0b00000095a8cfcbf204036bf1329c9c17eeab6bde07fa2d63c5f03a5ad923ce6d1e6ab5487f032baec5b2fe4d75684db1155809bc8fc262df30cf8cf57cd5eacee7b7c1324278240d1b0362d3e4b5d9c845836ef150dd5c11d25f9b5d2c81def4a5c9a1fed312ebb445eb00d658561d960ef2b37cfb43cdb12aa09b4d26bd90387a55fb9f9a5ebfea91724ab525e63a9c393c618b9ff56191f6"
+      },
+      "splits": {
+        "replyAndProofInOneFrame": {
+          "key": "keyR2D",
+          "frames": [
+            "0b000000dfbcae6d796127aba9fb77be6a8d96307aa77e82c11d80d9901c9fab79e3f44abcba4fc326ca4685c0bf4f1284907cf8e183cf39fa295577cc3b8e8520376b1a243735cd122dad5e655e567364247e964dc47bd14b8b06903970321bc546b39ed34b5077dc317b40f0e24a4a0f67aa4e855d34f6d909e217d5ef1067549a797c3b0b1f4396c1ab7e42192635c54208b8d94f2de1f52aebf54f9346b07218fde57401e6075509d0394ca86ca0d0ea226efa3c66e5ce3cd97ac033eb3ce7d4fe364bfdf73545cf723ac7a44748d5c51aa8a8b5d683fe890329d73af8a9ad7b3c8d"
+          ],
+          "records": [
+            "06000000457261756e7a7034337333736e63796f6a69657a676737756c6e617c317c3134303030397c6e3130313131323133313431353136313731383139316131623163316431653166",
+            "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad01104ad1abb210223c923759584ecb6ffde6774def5224525c77a3c4116de3b0720a0b749b6c3df68e506ef9c4ab8fc04c7060a0e8af74d8ba597826134d6cb79803"
+          ]
+        },
+        "dialerHelloInTwoFrames": {
+          "key": "keyD2R",
+          "frames": [
+            "0b000000243876e6d0e8543d59402ce676678b6f2244275a47d82a7a5889df6ca13202fbcddec8ff56",
+            "0b00000046c6b8b887e1d40b90d82320c6c8f49b83ce9cb75127266bf1b080433e02737154a4f1841505f629ec34986cd00c480fed17ad22c1f45f6263d2ab6963d1d9f5b7eb1291d76d82"
+          ],
+          "records": [
+            "06000000453463677132706e68683670336a336166777375653363687270697c317c3134303030397c6e3030303130323033303430353036303730383039306130623063306430653066"
+          ]
+        }
+      },
+      "sealRejects": {
+        "flippedBit": {
+          "reason": "one ciphertext bit of Bob's sealed reply flipped: the tag fails",
+          "frame": "0b0000005abcae6d786127aba9fb77be6a8d96307aa77e82c11d80d9901c9fab79e3f44abcba4fc326ca4685c0bf4f1284907cf8e183cf39fa295577cc3b8e8520376b1a243735cd122dad5e655e56adb18d776456a77dbe8b7e429dc71aac",
+          "key": "keyR2D",
+          "counter": 0,
+          "readBy": "alice"
+        },
+        "skippedCounter": {
+          "reason": "Bob's PROOF sealed at counter 2 where 1 is due: it opens only under nonce 2",
+          "frame": "0b00000095584a058db60737166b10eb5384ac875dc17db408f25bdb9cbdbae7bbad4edd017235f84ce20f68916805419dafaa6704764ba65f7e7d7bc4a411bbc4a88743762fbe10f134b90c76405a4757859ae0d1b738ea84d7912e49f364c6a853e9680392b9f751c3e74a5ea254e3e6f862cc0be4fc99144ca985988623e63657866205be97799302e600b95d3d5df54962eb567ae4826d56",
+          "key": "keyR2D",
+          "counter": 1,
+          "readBy": "alice"
+        },
+        "wrongDirection": {
+          "reason": "Alice's HELLO sealed under keyR2D: Bob opens her frames with keyD2R",
+          "frame": "0b0000005abcae6d796161a9bbe43fbe30d68d3579fa77c8cf119ecf9f1ecbff64fdea42bcba4fc326ca4685c0bf4f1384917cf9e182cf38fa285576cc3a8e8420366b1b243635cc122cad5f655f56d84c256ef15314fb57be7f771768c46e",
+          "key": "keyD2R",
+          "counter": 0,
+          "readBy": "bob"
+        },
+        "lowOrderKeyShare": {
+          "reason": "a KEY_SHARE of the all-zero point: X25519 refuses it (or yields an all-zero secret)",
+          "record": "0a000000200000000000000000000000000000000000000000000000000000000000000000",
+          "readBy": "bob"
+        },
+        "shortKeyShare": {
+          "reason": "a KEY_SHARE of 31 bytes: refused from the header",
+          "record": "0a0000001f79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a5",
+          "readBy": "bob"
+        },
+        "oversizeFrame": {
+          "reason": "a SEALED header stating 65,553 bytes: refused from the header, the body never read",
+          "record": "0b00010011",
+          "readBy": "alice"
+        },
+        "emptyFrame": {
+          "reason": "a SEALED header stating 16 bytes, a tag and no plaintext: refused from the header",
+          "record": "0b0000001000000000000000000000000000000000",
+          "readBy": "alice"
+        },
+        "v1ProofOnSealedLink": {
+          "reason": "Bob's v1 signature over the same HELLOs: it does not cover transcriptResponder",
+          "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad011088d06764231e31158dee8467c5774063b5ee6f54ec27868a632a5f0929100c1201f2d8259c557661125a5566e6aa3ee6f496f2e697f566cf6f6c059338d2c306",
+          "signer": "bob",
+          "verifyAs": "transcriptResponder"
+        },
+        "swappedKeyShare": {
+          "reason": "Bob's v2 signature over a transcript whose eR is ff..ff: it does not cover transcriptResponder",
+          "record": "0800000080755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276f74e5bb7515d565274967af75d88497dc6fc7fcd607da9dd91a617db86ad011070fa7d896fbdbccf2bb452fb451891f539d86e78020e03e2dfbc96ca440207252ce730800fde4fe72835e570b9f2cbaa56a38b8139db7791a61d431b9f546e08",
+          "signer": "bob",
+          "verifyAs": "transcriptResponder"
+        }
+      }
+    },
     "advert": {
       "nodeId": "4cgq2pnhh6p3j3afwsue3chrpi",
       "capabilities": 9,

@@ -575,6 +575,22 @@ class IosEmittedVectorTest {
         }
     }
 
+    /**
+     * Carol's sealed links as the iPhone writes them (#286, `link.seal`): every key share, key, HELLO, sealed HELLO frame
+     * and transcript rebuilds byte for byte, and her PROOF frame opens at counter 1 and verifies for her role, never under
+     * the other or the v1 label ([IosSealVectors]).
+     */
+    @Test
+    fun `carol's sealed links rebuild and her sealed proofs verify`() {
+        IosSealVectors(alice, carol).assertAll(
+            file
+                .getValue("link")
+                .jsonObject
+                .getValue("seal")
+                .jsonObject,
+        )
+    }
+
     private fun drawOf(entry: JsonObject): Draw =
         when (val kind = field(entry, "kind")) {
             "keyPair" -> Draw.Key(entry.int("seed"))

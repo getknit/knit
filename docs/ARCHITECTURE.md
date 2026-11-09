@@ -157,9 +157,12 @@ Implementations:
     down on quiescence — freeing the interface for the next pair. An idle mesh does **zero** data-path work.
 - **Accept-any responder handshake.** Since the responder accepts a data path from any initiator, the
   **initiator sends its advert as the first `LinkFraming.Type.HELLO` record** (`mesh/link/LinkHandshake`,
-  shared with BLE) so the responder learns who connected. A fixed app-wide 32-byte PMK (`setPmk` — skips
-  the per-NDP passphrase→PMK derivation; same public-constant security) encrypts the link; real
-  authentication is the per-frame signature + E2E layer above. Instant Communication Mode (API 33, when
+  shared with BLE) so the responder learns who connected. Between two builds carrying `CAP_LINK_SEAL` (the SSI's
+  caps say so) the first records are instead two `KEY_SHARE`s, and the HELLO and everything after it ride
+  AES-256-GCM under keys from that exchange (ADR 2026-11.8mhs); the responder tells the forms apart by the first
+  record. A fixed app-wide 32-byte PMK (`setPmk` — skips the per-NDP passphrase→PMK derivation; same
+  public-constant security) still encrypts the data path, which now matters only for links with older builds;
+  real authentication is the link proof, the per-frame signature and the E2E layer above. Instant Communication Mode (API 33, when
   supported) speeds discovery + data-path bring-up for the brief-encounter (festival) case.
 - **Neighbor vs. reachable.** `neighbors` is the ≤1 live NDP link — the routing target for `send` /
   `sendFile` and the "new neighbor" (store-and-forward / key-exchange) hooks — and it **flaps** as
@@ -795,11 +798,18 @@ A typed foreground service hosts `MeshManager` so the mesh survives backgroundin
 
 ## 14. Encryption posture
 
-**Two layers.** (1) *In transit:* the Wi-Fi Aware NDP is encrypted with a fixed app-wide PSK. Every build
-ships the same one, so it is a public constant: it defeats casual capture, not an eavesdropper who has read
-the APK. The Bluetooth LE L2CAP CoC is **not** encrypted: `BluetoothMeshTransport` opens it insecure
-(`listenUsingInsecureL2capChannel` / `createInsecureL2capChannel`), with no pairing, so room posts and every
-frame's routing fields are readable over the air. On both planes a frame is authenticated by its Ed25519
+**Two layers.** (1) *In transit:* between two builds carrying `CAP_LINK_SEAL`, every Bluetooth and Wi-Fi Aware
+link is sealed (ADR 2026-11.8mhs, #286): an ephemeral X25519 exchange (`KEY_SHARE` records) comes first, and the
+HELLO, the PROOF, the DIGEST, every frame and every file ride AES-256-GCM `SEALED` frames under keys from it
+(`mesh/crypto/LinkSeal`, `mesh/link/SealedLinkSocket`). The PROOF signs both ephemeral keys, so a relay in range of
+both phones can neither read a sealed link nor sit in its middle. A relay can still pose each phone to the other as an
+older build at a first meeting, before either holds the other's profile (the legacy pose ADR 2026-11.264w bounds with
+R1/R4). A listener sees two random public keys, then sizes and
+timing. Links with older builds stay as before: the Wi-Fi Aware NDP is encrypted with a fixed app-wide PSK, which
+every build ships, so it is a public constant that defeats casual capture, not an eavesdropper who has read the APK;
+the Bluetooth LE L2CAP CoC is opened insecure (`listenUsingInsecureL2capChannel` / `createInsecureL2capChannel`) with
+no pairing, so on such a link room posts and every frame's routing fields are readable over the air. Outside links,
+adverts, the SSI, Wi-Fi Aware follow-ups and the Bluetooth side channel stay readable. On both planes a frame is authenticated by its Ed25519
 signature, with two unsigned exceptions: the v3 `relay = false` delivery tick, which only its addressee can
 authenticate, by opening it (ADR 059), and the blob request, which asks for a content hash.
 (2) *End-to-end:* DM and group messages are encrypted to their recipients so relays — which flood every

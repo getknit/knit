@@ -130,8 +130,19 @@ class ProtocolTest {
         // HELLO and every signed profile.
         assertEquals(0x40000L, Protocol.CAP_LINK_PROOF)
         assertEquals(Protocol.CAP_INET_LINK shl 1, Protocol.CAP_LINK_PROOF)
-        // 0x42FFF until the Bluetooth reader added CAP_BLIND_ADVERT (ADR 2026-11.xp6d, step 5a).
-        assertEquals(0xC2FFFL, Protocol.LOCAL_CAPABILITIES)
+        // 0x42FFF until the Bluetooth reader added CAP_BLIND_ADVERT (ADR 2026-11.xp6d, step 5a), 0xC2FFF until sealed
+        // links added CAP_LINK_SEAL (#286).
+        assertEquals(0x1C2FFFL, Protocol.LOCAL_CAPABILITIES)
+    }
+
+    @Test
+    fun theLinkSealBitIsTheNextFreeOneAndRidesOnlyBesideTheProofBit() {
+        // knit-next #286: the bit after CAP_BLIND_ADVERT. A build carries it only together with CAP_LINK_PROOF, since a
+        // sealed link is always a proven link.
+        assertEquals(0x100000L, Protocol.CAP_LINK_SEAL)
+        assertEquals(Protocol.CAP_BLIND_ADVERT shl 1, Protocol.CAP_LINK_SEAL)
+        assertEquals(Protocol.CAP_LINK_SEAL, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL)
+        assertEquals(Protocol.CAP_LINK_PROOF, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_PROOF)
     }
 
     @Test

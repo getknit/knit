@@ -47,9 +47,19 @@ they are documented and out of scope for reports:
   rotations and restarts. Any Bluetooth scanner can therefore log when the same phone passes, and anyone
   who has seen that id once in the mesh can put a name to it, because profiles carry the name beside the
   id unsealed. Even with blinded adverts, a device that advertises itself as a Knit phone gets dialed
-  by the phones in range and reads each one's node id in the link handshake, which a listener nearby
-  can also read. A phone's own messages, typing cues and receipts sent over Bluetooth's connectionless
-  side channel name it as their author whenever another Knit phone is near.
+  by the phones in range and reads each one's node id in the link handshake. A phone's own messages,
+  typing cues and receipts sent over Bluetooth's connectionless side channel name it as their author
+  whenever another Knit phone is near.
+- **What a listener reads off a link.** Between two phones on this build or later, a Bluetooth or Wi-Fi
+  Aware link is sealed: after two random public keys, everything (the handshake with the node id, every
+  frame and file) is AES-256-GCM ciphertext. Once the two phones hold each other's profile, a device
+  relaying between them can't read the link or sit in its middle. At their first meeting, a relay can still
+  pass each phone off to the other as an older build and link them unsealed, as it could before. A listener
+  still sees the sizes and timing of what crosses, since nothing is
+  padded. A link with a phone on an older build (v2.11.0 and earlier) is not sealed: its handshake and
+  every frame's routing fields are readable as before (the Wi-Fi Aware data path's key is a constant every
+  build ships). Outside links, the adverts, the Wi-Fi Aware discovery messages and the Bluetooth side
+  channel stay readable.
 
 See the README's *Security note* and [`docs/`](docs/) for the full threat model and design detail. Novel
 issues **beyond** these documented trade-offs — key handling, the crypto envelope, signature

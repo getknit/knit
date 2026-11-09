@@ -1,5 +1,5 @@
 {
-  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction; ratchet says how to open them. Carol's link proofs as dialer and responder, under link, with every HELLO at caps 40009 (link-hello-proof). Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
+  "about" : "Frames the iOS port emits: Carol's identity from fixed keys, her signed profile and room post, a v1 DM she seals to Bob from keyed-v1.json, their safety number, and a group she makes with Alice and Bob: a v1 group message, her rename and her leave. With the ratchet (A10): her ratchet profile, and what her mesh engine sends Bob and Alice with the ratchet on: a v3 DM that opens a session, inline acks, a sealed receipt, profile, reaction and retraction, seeds for a group of the three, a group-form message and a group-form reaction; ratchet says how to open them. Carol's link proofs as dialer and responder, under link, with every HELLO at caps 40009 (link-hello-proof), and her sealed links as dialer and responder, under link.seal, with every HELLO at caps 140009 (link-seal). Written by knit-ios with KNIT_WRITE_VECTORS=1; IosEmittedVectorTest checks it. See vectors/README.md.",
   "frames" : {
     "carolDmToBob" : {
       "body" : "Hi Bob, from Swift",
@@ -350,6 +350,77 @@
       "role" : 1,
       "signer" : "carol",
       "transcript" : "6b6e69742f6c696e6b2f76312f70726f6f66010000004437766f33706e6c6b63666265337168617736376671626f7933347c317c34303030397c6e3230323132323233323432353236323732383239326132623263326432653266000000443463677132706e68683670336a336166777375653363687270697c317c34303030397c6e3330333133323333333433353336333733383339336133623363336433653366"
+    },
+    "seal" : {
+      "about" : "Carol's sealed links (link-seal, knit-next #286). carolDialsAlice: Carol dials Alice, Carol's ephemeral scalar 80..9f and nonce 20..2f, Alice's a0..bf and 30..3f; Carol's sealed HELLO (counter 0, keyD2R) and her dialer PROOF (role 1, counter 1). aliceDialsCarol: Alice dials Carol with the same keys and nonces in the other roles; Carol's sealed reply HELLO (counter 0, keyR2D) and her responder PROOF (role 2, counter 1). Every HELLO carries caps 140009, as keyed-v1's link.seal does. Each entry gives both KEY_SHAREs with their scalars, shared, keyD2R, keyR2D, both HELLO payloads and the v2 transcript Carol signed; all but the PROOF are deterministic. CryptoKit randomizes Ed25519: open the PROOF frame and verify its signature, never compare it.",
+      "aliceDialsCarol" : {
+        "capabilities" : "140009",
+        "dialer" : "alice",
+        "helloDialer" : "4cgq2pnhh6p3j3afwsue3chrpi|1|140009|n303132333435363738393a3b3c3d3e3f",
+        "helloResponder" : "7vo3pnlkcfbe3qhaw67fqboy34|1|140009|n202122232425262728292a2b2c2d2e2f",
+        "helloSealed" : {
+          "counter" : 0,
+          "frame" : "0b0000005af8f318f63233f4bb5f095bd072036547fed631c3cfb3613407a8d0c135586c7443d44720988c8e430dca58096595d7df3fcee4de07e7763c537d27f82d799a6fd6218fd62c083e4fec574727e79e0b342d7a235875dec42db84d",
+          "key" : "keyR2D",
+          "payload" : "7vo3pnlkcfbe3qhaw67fqboy34|1|140009|n202122232425262728292a2b2c2d2e2f"
+        },
+        "keyD2R" : "01a8646ae88d866d6bcdf84c6ee01d320754b52848dd4819d146c30425aa3618",
+        "keyR2D" : "0762c47ca977a1a986aca46dc66b89f032bbbfc5ed2806c185be99a569dc11ba",
+        "keyShareDialer" : {
+          "record" : "0a00000020605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c",
+          "scalar" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+        },
+        "keyShareResponder" : {
+          "record" : "0a00000020493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+          "scalar" : "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+        },
+        "proof" : {
+          "counter" : 1,
+          "frame" : "0b000000959c38da4fc4e282b25ce0dd6906e583d9612b526246fc112c20fa60fdeb36ecc660d97fc8610f92ba7889a59f0316d24fd9112be1770d3d63d92dbca5804bd2eaf0d8d1d29c53fc530ca7251fcc3162b8e8d107fb20a0aeabe2c1cafe3db81da27a316a9b500d689ddac9ce369690b3f010fa92faedb32594d116781d7a422f29ccb53c4fd06fabbc5a4960d8d198069dacf91561ec",
+          "key" : "keyR2D",
+          "record" : "08000000801ef7dac4d02588a8225565b1e0efcefeddc4f59f7b2e55493f9b4f307e3474f2a596d3fe605488b6a1f5e88fc69eb8a15fc9d9e75e7b152c66ba6b353e36a279b1556f73243278a7bc5394fa67f6d4c536d2bedf5a3550a6bdbfc781c756de606afc1ea6f74aeb01cdf9baf9b17015b7de67d1a9634e6c3e7c7729140da7a602",
+          "signer" : "carol"
+        },
+        "responder" : "carol",
+        "role" : 2,
+        "shared" : "c6dea8dd115ef27b7e0953539b2b19e59b7abf3ffd57985ec76de86ec31d1b42",
+        "signer" : "carol",
+        "transcript" : "6b6e69742f6c696e6b2f76322f70726f6f6602605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d000000453463677132706e68683670336a336166777375653363687270697c317c3134303030397c6e33303331333233333334333533363337333833393361336233633364336533660000004537766f33706e6c6b63666265337168617736376671626f7933347c317c3134303030397c6e3230323132323233323432353236323732383239326132623263326432653266"
+      },
+      "carolDialsAlice" : {
+        "capabilities" : "140009",
+        "dialer" : "carol",
+        "helloDialer" : "7vo3pnlkcfbe3qhaw67fqboy34|1|140009|n202122232425262728292a2b2c2d2e2f",
+        "helloResponder" : "4cgq2pnhh6p3j3afwsue3chrpi|1|140009|n303132333435363738393a3b3c3d3e3f",
+        "helloSealed" : {
+          "counter" : 0,
+          "frame" : "0b0000005a08aaa870f0af5bf21f489c9915efdae0d0b98be829f8393fd54f59d77e8ef6c316ac723b31481e701b20b0352f8d61d7caca4d9ac2b5206bf8235d8c5bd62d127b43a33f60fb5cca0212642ea18f8b4ec9ac374d04f74ac991ff",
+          "key" : "keyD2R",
+          "payload" : "7vo3pnlkcfbe3qhaw67fqboy34|1|140009|n202122232425262728292a2b2c2d2e2f"
+        },
+        "keyD2R" : "e5bfb2aed9c6a379f1de4734eb116e913173cff614be042d75bdfbb0cd9d2946",
+        "keyR2D" : "d16b78a60181277d6c69b74da8e4d05cf82f7499763efb3c4bb063d65bd1c0be",
+        "keyShareDialer" : {
+          "record" : "0a00000020493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+          "scalar" : "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f"
+        },
+        "keyShareResponder" : {
+          "record" : "0a00000020605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c",
+          "scalar" : "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+        },
+        "proof" : {
+          "counter" : 1,
+          "frame" : "0b00000095f450cb06dc15fcf5e133918c2353092db4974aa5bc2b3e12568081f1bf2870cfff410dca9ae8017c78c3c2b850144de5b8167c8482e945cd316b3987c3fc81feb91586977bb6760a963c92f37ff7017b0a5ce34e3f5fd1d3618071bb450b55f7e7043ba09475b9cb50855b5d34da6545ed45b61521ed7782c15f05186a8b93f5bfbf876b4c4fb95d2743577683e6727fc6a8c8184b",
+          "key" : "keyD2R",
+          "record" : "08000000801ef7dac4d02588a8225565b1e0efcefeddc4f59f7b2e55493f9b4f307e3474f2a596d3fe605488b6a1f5e88fc69eb8a15fc9d9e75e7b152c66ba6b353e36a279c5eeeb87754ce6cd0155259fd52cb8299c7c9ed348d50c759647bed5a11de4befd5e7d0fb024da7906f0b5570f07051db5ca7e05bef0c8561f9a06bcef291c06",
+          "signer" : "carol"
+        },
+        "responder" : "alice",
+        "role" : 1,
+        "shared" : "c6dea8dd115ef27b7e0953539b2b19e59b7abf3ffd57985ec76de86ec31d1b42",
+        "signer" : "carol",
+        "transcript" : "6b6e69742f6c696e6b2f76322f70726f6f6601493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c0000004537766f33706e6c6b63666265337168617736376671626f7933347c317c3134303030397c6e3230323132323233323432353236323732383239326132623263326432653266000000453463677132706e68683670336a336166777375653363687270697c317c3134303030397c6e3330333133323333333433353336333733383339336133623363336433653366"
+      }
     }
   },
   "ratchet" : {

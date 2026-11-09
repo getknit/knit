@@ -1809,6 +1809,11 @@ class DebugBridgeReceiver :
             .put("linksProven", snap.frames.linksProven)
             .put("linkProofFailed", snap.frames.linkProofFailed)
             .put("linkClaimRefused", snap.frames.linkClaimRefused)
+            // Sealed links (#286): links registered sealed, failed seals, plain links refused between two sealing builds.
+            // knit-ios reports the same key.
+            .put("linksSealed", snap.frames.linksSealed)
+            .put("linkSealFailed", snap.frames.linkSealFailed)
+            .put("linkSealRefused", snap.frames.linkSealRefused)
             .put("spoolTablesDerived", snap.spool.spoolTablesDerived)
             .put("spoolPushed", snap.spool.spoolPushed)
             .put("spoolPulled", snap.spool.spoolPulled)

@@ -141,3 +141,15 @@ A proven link that takes an unproven link's place on its own plane now counts th
 (`LinkClaims.proven` with `displaced`), as iOS already did. The count had covered only another plane's R3 close and
 R4. No plane's listener sees the replaced link (each skips a proven one), so it is counted once. Regression:
 `LinkClaimsTest.aSameRadioDisplacementCountsOneClosedClaim`.
+
+## Amendment 2026-11-08 — a sealed link can't be relayed (ADR 2026-11.8mhs)
+
+The relayed handshake this ADR accepted ("What it costs") is closed for every sealed link. Two builds that both carry
+`CAP_LINK_SEAL` run an ephemeral X25519 exchange before the HELLOs, carry everything after it inside AES-256-GCM
+frames, and sign the v2 transcript (`knit/link/v2/proof`), which binds both ephemeral keys: a relay can neither
+compute the keys nor swap its own in without breaking a signature, and a v1 proof never verifies on a sealed link.
+Between two such builds a plain-form proven link is refused (ADR 2026-11.8mhs, §7), so the relay can't fall back to a
+plain proven link either; it can still pose both as v2.10.x builds, which this ADR's R1 refuses once each holds the
+other's profile and R4 closes when the profile arrives. Links with v2.10.x and v2.11.0 keep this ADR's exchange, and its accepted cost, byte for byte: the v1
+transcript does not move. The exchange inside the seal keeps every rule here (R1-R4, the claims, the counters); a seal
+failure never feeds `LinkClaims`.

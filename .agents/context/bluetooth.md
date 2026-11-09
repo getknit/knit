@@ -85,10 +85,11 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
 - **When touching `BluetoothMeshTransport.initiateTo` / `superviseAccepted`'s handshake, `judge`, `refusesClaim`,
   `closeClaimed` / `closedForClaim`, `cutAfter`, `registerLink`'s `proven` / `dialStartedAt`, `ProvenDialStreak`,
   `FramedLink.onFirstRecord`, `BleAdmissionPolicy.decide`'s `heldProven` / `offersProof` / `proofCapable` rows or
-  `BtDownReason.CLAIM`:** READ ADR 2026-11.264w and `mesh/link/LinkClaims`. The dial runs `LinkHandshake.dial` under one
-  5 s `elapsedWait` watchdog (reply and PROOF read alike); the accept reads the HELLO under one and runs
-  `LinkHandshake.answer` under a second, and a watchdog and the handshake settle on one compare-and-set, so a socket the
-  watchdog closed is never registered. R1 (`refusesClaim`, counted by `LinkClaims`) and a bit-carrying HELLO with no
+  `BtDownReason.CLAIM`:** READ ADR 2026-11.264w and `mesh/link/LinkClaims`. A plain dial runs `LinkHandshake.dialPlain`
+  under one 5 s `elapsedWait` watchdog (reply and PROOF read alike); the accept reads the first record under one and runs
+  `LinkHandshake.answerPlain` under a second, and a watchdog and the handshake settle on one compare-and-set, so a socket
+  the watchdog closed is never registered. A sealed link adds one stage on each side, under its own watchdog (the next
+  entry). R1 (`refusesClaim`, counted by `LinkClaims`) and a bit-carrying HELLO with no
   nonce close with no reply ahead of every admission row; R3 admits a bit-carrying dialer over an unproven held link
   whatever its sighting, age or the tie-break, and the held link closes only at registration; R2 keeps a proven held
   link from any dialer without the bit. After `answer` the verdict is judged again against the link held now (and R1
@@ -100,6 +101,26 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `bt refused client <id> (claim=unproven)` / `(proof=<why>)` and a late re-judge's `… late=true`, beside `LinkClaims`'
   own lines; `bt connect ok` and `bt accepted client` come only after the proof. Tests: `BleAdmissionPolicyTest`,
   `ProvenDialStreakTest`, `FramedLinkTest`.
+- **When touching `BleAdvertPayload.FLAG_LINK_SEAL` / `SEALS_LINKS` / `Parsed.linkSeal`, `LinkSealPolicy`,
+  `HeardDevice.linkSeal` / `dialHeard`, `GattPayloads.forgetUnsealed`, the sealed stages of `initiateTo` / `handshake` /
+  `boundedDial` / `superviseAccepted`, `registerLink`'s `carrier`, `countSeal`, or `FramedLink`'s `sealViolated`:** READ ADR
+  2026-11.8mhs (#286) and its contract (`docs/WIRE_COMPAT.md`'s flag and record rows). Bit 4 of the flags byte says the
+  build seals; every advert this build writes carries it (presence, Coded, clear and blinded: one writer). A dial opens
+  sealed exactly when the advert heard at the address it dials carries it — kept per address on `HeardDevice`, last heard,
+  never OR'd across PHYs or read from presence's latest sighting — and its two stages (`openSeal`, then
+  `dialSealed` / `dialTagSealed`) each get their own 5 s watchdog; a first stage the watchdog cut ends the attempt. Every
+  end short of a link takes the one `HANDSHAKE` refusal branch keyed on the dial key; a failed seal counts
+  `linkSealFailed`, a plain reply with the bit (§7) `linkSealRefused` and `bt dial refused <claimed> (seal=plain)`, once,
+  never through `claims`. An EOF or a timeout is never a failed seal. The responder reads the first record
+  (`receiveOpening`), refuses a plain HELLO carrying the bit before every other row (`bt refused client <id> (seal=plain)`),
+  reads a sealed HELLO under a second watchdog and answers under a third; its other rows are unchanged, now after our
+  `KEY_SHARE`. A registered sealed link runs FramedLink over the `SealedLinkSocket` (the raw socket's stamps still feed
+  `LinkSilence`), counts `linksSealed` beside `linksProven`, and arms the socket's own fault count, the only count on a
+  live link; FramedLink calls `sealViolated` for an inner `KEY_SHARE` / `SEALED` and only closes a plain link (direct
+  links share it). A plain dial that drew no reply from an unflagged GATT payload, with our HELLO carrying the bit,
+  forgets that payload once (`bt gatt forget <addr> (seal)`, the contract's revision 1); a sealed dial's silence forgets
+  nothing (revision 2). `bt connect ok` gains `sealed=` after `durMs=`. Tests: `LinkSealPolicyTest`,
+  `BleAdvertPayloadTest`, `GattPayloadsTest`, `FramedLinkSealTest`.
 - **When touching a TX power in `BleAdvertiser` (`presenceParams` / `sideParams` / `codedParams`), an RSSI threshold
   on an advert reading, `PromotionPolicy.msUntilDue`, `nextConnectWaitMs`, `mesh/power/ElapsedWait`, or any wait in
   `BluetoothMeshTransport`'s scan loop, connect loop or dial/HELLO watchdogs or `BleGattPayloadReader`'s give-up:**
@@ -220,7 +241,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   charged; and no new read while the connect loop has a dial it can make, `DialPlan.dialWaiting` over promoted peers
   with an address). A payload lives until one of the contract's three rules forgets it: a
   dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
-  or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
+  or 60 s of scanning unheard with no link up; and, since #286, once when a plain dial made from a payload without the
+  seal flag drew no reply (`GattPayloads.forgetUnsealed`, ADR 2026-11.8mhs). The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
   release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
 - **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
   `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow` /
@@ -280,7 +302,7 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   exactly the keys its refused dials were booked under (`HeldStreaks`, hj4a's 2026-11-06 amendment), only past
   `ProvenDialStreak.CONFIRM_BY_AGE_MS`, so a fork closing inside that age resets nothing (one holding each link that long does
   clear: two refused dials per tag and address in 15 s, within hj4a's limits); never read that back from presence. A dial to a blinded advert (lonely
-  only, while this phone airs its id) is `LinkHandshake.dialTag`, registers under the proven id and feeds `onDialed`; a
+  only, while this phone airs its id) is `LinkHandshake.dialTagPlain` or `dialTagSealed`, registers under the proven id and feeds `onDialed`; a
   responder feeds a proven dialer's `t` to `onAnswered`, a proven tag-aware link's `TAG_NEXT` to `onTagNext`, every
   link end to `onLinkEnded`, `ACTION_TIME_CHANGED` to `slide`. Keys arrive through `MeshTransport.onPresenceKeys` (fed
   by `MeshManager` from `PresenceKeyRepository.presenceKeysFor` on every change of the keys or the direct contacts),

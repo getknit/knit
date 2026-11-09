@@ -29,10 +29,12 @@ internal object BtLines {
         dwellMs: Long,
     ): String = "bt lonely dial $key (alone=${aloneMs}ms rssi=$rssi dwell=${dwellMs}ms)"
 
+    /** `sealed=` (#286) comes after `durMs=`, which `scripts/ble-link-trial.py`'s `connect_ok` reads up to. */
     fun connectOk(
         provenId: String,
         durMs: Long,
-    ): String = "bt connect ok $provenId durMs=$durMs"
+        sealed: Boolean = false,
+    ): String = "bt connect ok $provenId durMs=$durMs sealed=$sealed"
 
     @Suppress("LongParameterList") // one line's fields
     fun connectFailed(

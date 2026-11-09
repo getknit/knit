@@ -315,6 +315,60 @@ class GattPayloadsTest {
         assertTrue(reads.begin(phone, now = 0))
     }
 
+    // --- The seal flag's one-shot forget (#286 contract §7, revision 1) ---
+
+    private fun readPayload(
+        address: String,
+        served: BleAdvertPayload.Parsed,
+        now: Long,
+    ) {
+        assertTrue(reads.begin(address, now))
+        reads.finish(address, Outcome.Read(served), now)
+    }
+
+    @Test
+    fun aPayloadWithoutTheSealFlagIsForgottenOnceAndItsReReadIsDue() {
+        readPayload(phone, payload, now = 0)
+        assertTrue(reads.forgetUnsealed(phone))
+        assertNull(reads.payload(of = phone))
+        assertTrue("the next advert reads it afresh", reads.begin(phone, now = 1))
+    }
+
+    @Test
+    fun theSameUnsealedPayloadReadAgainIsNotForgottenAgain() {
+        readPayload(phone, payload, now = 0)
+        assertTrue(reads.forgetUnsealed(phone))
+        // The peer really does not seal: the re-read serves the same node, PSM and flags (its cue moved meanwhile).
+        readPayload(phone, payload.copy(digestCue = 7), now = 10)
+        assertFalse("one re-read, not one per dial", reads.forgetUnsealed(phone))
+        assertEquals(7, reads.payload(of = phone)?.digestCue)
+    }
+
+    @Test
+    fun aDifferentUnsealedPayloadAtTheAddressIsForgottenOnceMore() {
+        readPayload(phone, payload, now = 0)
+        assertTrue(reads.forgetUnsealed(phone))
+        readPayload(phone, payload.copy(psm = 0x83), now = 10)
+        assertTrue("a new PSM is a new payload", reads.forgetUnsealed(phone))
+    }
+
+    @Test
+    fun aPayloadThatCarriesTheSealFlagIsNeverForgottenByIt() {
+        readPayload(phone, payload.copy(flags = BleAdvertPayload.FLAG_LINK_SEAL), now = 0)
+        assertFalse(reads.forgetUnsealed(phone))
+        assertEquals(BleAdvertPayload.FLAG_LINK_SEAL, reads.payload(of = phone)?.flags)
+        assertFalse("nothing held, nothing forgotten", reads.forgetUnsealed(other))
+    }
+
+    @Test
+    fun theUpgradedPeersReReadIsKept() {
+        readPayload(phone, payload, now = 0)
+        assertTrue(reads.forgetUnsealed(phone))
+        readPayload(phone, payload.copy(flags = BleAdvertPayload.FLAG_LINK_SEAL), now = 10)
+        assertFalse(reads.forgetUnsealed(phone))
+        assertTrue(reads.payload(of = phone)!!.linkSeal)
+    }
+
     private fun readOn(
         payloads: GattPayloads,
         address: String,

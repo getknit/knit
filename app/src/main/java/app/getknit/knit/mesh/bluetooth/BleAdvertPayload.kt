@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.BlindTag
+import app.getknit.knit.mesh.protocol.Protocol
 import java.nio.ByteBuffer
 
 /**
@@ -17,7 +18,7 @@ import java.nio.ByteBuffer
  * bytes 17..20 digest cue = low 32 bits of StoreDigest.version (BE) — both BLE peers truncate identically
  * bytes 21..22 L2CAP PSM (unsigned 16-bit, BE) so an initiator knows which channel to connect to
  * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS], bit 2 [FLAG_AWARE],
- *              bit 3 [FLAG_BLINDED]; bits 4..7 reserved (0). Optional on the wire: a build before it advertised 23
+ *              bit 3 [FLAG_BLINDED], bit 4 [FLAG_LINK_SEAL]; bits 5..7 reserved (0). Optional on the wire: a build before it advertised 23
  *              bytes, and this parser reads a missing byte as 0. Every shipped parser tests only the bits it knows, so a
  *              new bit is additive.
  * ```
@@ -38,8 +39,10 @@ import java.nio.ByteBuffer
  *
  * Byte 23 is the **last** byte the legacy advert can carry, and it is deliberately not a second capabilities
  * byte: `Protocol` reserves the bits from 0x100 up for the authenticated profile and the Wi-Fi Aware advert,
- * and what rides here is a fact about *this controller* (it can advertise and scan extended pages), which the
- * build-wide `Protocol.LOCAL_CAPABILITIES` could never vouch for.
+ * and what rides here is mostly a fact about *this controller* (it can advertise and scan extended pages), which the
+ * build-wide `Protocol.LOCAL_CAPABILITIES` could never vouch for. [FLAG_LINK_SEAL] is the exception: a fact about the
+ * *build* (its HELLO carries `Protocol.CAP_LINK_SEAL`), which rides here because a dialer must pick the link's opening
+ * record before any record has crossed, and the low capabilities byte has no bit to spare (#286).
  *
  * There is **no** format-version byte: the layout/`protoVersion` is implied by the versioned service UUID (a
  * peer matching our UUID is our version; a breaking change bumps the UUID and hard-partitions at discovery,
@@ -88,20 +91,35 @@ internal object BleAdvertPayload {
     const val FLAG_BLINDED = 0x08
 
     /**
+     * This build seals its links (#286, ADR 2026-11.8mhs): a dialer opens with a `KEY_SHARE` rather than a HELLO exactly
+     * when the advert heard at the address it dials carries this bit. Set in every advert this build writes exactly when
+     * its HELLO carries `Protocol.CAP_LINK_SEAL` ([SEALS_LINKS]), clear, blinded and Coded alike, since they all come
+     * from [flags]. Unauthenticated: a relay that strips it gets no link, since both HELLOs then carry the bit and §7
+     * refuses the plain form (`LinkHandshake.refusesPlain`). A shipped parser tests only the bits it knows.
+     */
+    const val FLAG_LINK_SEAL = 0x10
+
+    /** This build's HELLO carries `Protocol.CAP_LINK_SEAL`: what [FLAG_LINK_SEAL] says, and the only thing that sets it. */
+    val SEALS_LINKS: Boolean = Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_SEAL != 0L
+
+    /**
      * The flags byte this node advertises: [FLAG_SIDE_CHANNEL] while its side channel is [sideLive],
      * [FLAG_DIALS_GATT_PEERS] while its GATT reader runs ([gattPeers]), so it never claims a read it cannot make, and
-     * [FLAG_AWARE] while a peer may count on this phone's Wi-Fi Aware ([aware]).
+     * [FLAG_AWARE] while a peer may count on this phone's Wi-Fi Aware ([aware]), and [FLAG_LINK_SEAL] whenever this
+     * build seals ([SEALS_LINKS]; a parameter only so a test can write an older build's byte).
      */
     fun flags(
         sideLive: Boolean,
         gattPeers: Boolean,
         aware: Boolean,
         blinded: Boolean = false,
+        linkSeal: Boolean = SEALS_LINKS,
     ): Int =
         (if (sideLive) FLAG_SIDE_CHANNEL else 0) or
             (if (gattPeers) FLAG_DIALS_GATT_PEERS else 0) or
             (if (aware) FLAG_AWARE else 0) or
-            (if (blinded) FLAG_BLINDED else 0)
+            (if (blinded) FLAG_BLINDED else 0) or
+            (if (linkSeal) FLAG_LINK_SEAL else 0)
 
     /**
      * This node's presence advert, [encode] over [flags]: the bytes `BluetoothMeshTransport.readvertise` puts on air.
@@ -118,7 +136,9 @@ internal object BleAdvertPayload {
         gattPeers: Boolean,
         aware: Boolean,
         blinded: Boolean = false,
-    ): ByteArray = encode(nodeId, capabilities, if (blinded) 0L else digestVersion, psm, flags(sideLive, gattPeers, aware, blinded))
+        linkSeal: Boolean = SEALS_LINKS,
+    ): ByteArray =
+        encode(nodeId, capabilities, if (blinded) 0L else digestVersion, psm, flags(sideLive, gattPeers, aware, blinded, linkSeal))
 
     private const val CAP_MASK = 0xFFL
     private const val PSM_MASK = 0xFFFF
@@ -144,6 +164,12 @@ internal object BleAdvertPayload {
 
         /** [nodeId] is a tag's form, not an id ([FLAG_BLINDED]): [form] is what a reader keys it by until it resolves. */
         val blinded: Boolean get() = flags and FLAG_BLINDED != 0
+
+        /**
+         * The advert says its build seals links ([FLAG_LINK_SEAL]); false for a 23-byte advert and every build before
+         * #286. Read per address: a dial decides from the advert heard at the address it dials, never from another PHY's.
+         */
+        val linkSeal: Boolean get() = flags and FLAG_LINK_SEAL != 0
 
         /** The advertised form: the id itself for a clear advert, the tag for a blinded one (ADR 2026-11.xp6d). */
         val form: AdvertOrder.Form get() = AdvertOrder.Form(nodeId, blinded)

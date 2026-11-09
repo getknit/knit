@@ -17,7 +17,7 @@ package app.getknit.knit.mesh.bluetooth
  *   waits [Configuration.strangerRetryMs]: `0xFE30` is not Knit's alone, and a stranger's device should not be
  *   connected to twice a minute.
  *
- * Two Android additions, both pacing on this side alone:
+ * Three Android additions, the first two pacing on this side alone:
  *
  * - **An address cap.** Each map holds at most [Configuration.maxAddresses] addresses, the least recently used going
  *   first. An iPhone rotates its resolvable private address about every fifteen minutes, and iOS never prunes.
@@ -31,6 +31,10 @@ package app.getknit.knit.mesh.bluetooth
  *   read's charge ([confirmed]), once. An honest iPhone that links costs nothing net; a charge nothing refunds ages
  *   out of the window. A cancelled read is free. And while the transport has a dial to make ([yieldTo]), no new read
  *   starts: the dial waits at most for the read already in flight, never for a second.
+ * - **A payload without the seal flag is forgotten once after a plain dial drew no reply** ([forgetUnsealed], #286
+ *   contract §7 revision 1, ADR 2026-11.8mhs): the peer may have upgraded since the read, and a §7 refusal reaches the
+ *   dialer as no reply. Once per payload: a re-read naming the same node, PSM and flags is not forgotten again, so a peer
+ *   that really does not seal costs one re-read, not one per dial. iOS checks its own forget rules for the same case.
  *
  * Pure and thread-safe (the scan callback runs on the main thread, a read ends on the transport's scope, a failed
  * dial on an IO thread), so the rules are a JVM test ([app.getknit.knit.GattPayloadsTest]).
@@ -88,6 +92,10 @@ internal class GattPayloads(
     )
 
     private val payloads = lru<Held>()
+
+    // The payload each address last had forgotten by [forgetUnsealed], its digest cue zeroed (the cue moves with the
+    // peer's store, not with its build): an identical re-read is the same payload, and is not forgotten again.
+    private val unsealedForgotten = lru<BleAdvertPayload.Parsed>()
 
     // How long the scan has run in all: the clock [Configuration.quietMs] is counted on.
     private var scanClock = 0L
@@ -229,6 +237,22 @@ internal class GattPayloads(
     fun forget(address: String) {
         payloads.remove(address)
         retryAt.remove(address)
+    }
+
+    /**
+     * Forgets [address]'s payload as [forget] does, when it lacks [BleAdvertPayload.FLAG_LINK_SEAL] and is not the one
+     * this already forgot for it: a plain dial made from it drew no reply ([LinkSealPolicy.forgetsUnsealedPayload] decided
+     * that). Answers whether a payload went. A payload that carries the flag is never forgotten here.
+     */
+    @Synchronized
+    fun forgetUnsealed(address: String): Boolean {
+        val held = payloads[address]?.payload ?: return false
+        if (held.linkSeal) return false
+        val same = held.copy(digestCue = 0)
+        if (unsealedForgotten[address] == same) return false
+        unsealedForgotten[address] = same
+        forget(address)
+        return true
     }
 
     // Drops the charges older than the budget's window. A filter, not a pop from the front: the elapsed time a read's

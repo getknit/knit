@@ -514,3 +514,16 @@ key's recipient; a clock 46 min ahead or 9 h behind, slot phase pinned, links as
 `aSybilOnOneLinkHoldsOneClaimSoItHoldsOffOnePhoneAtATime`), which walk a linked Sybil's claim on other phones' tags
 through `AdvertAliases`, `BlindSightings`, `BlePresenceTracker` and `DialPlan.ordinaryCandidates` to the dial decision
 and its release.
+
+## Amendment 2026-11-08 — the HELLO's tags and `TAG_NEXT` ride inside the seal (ADR 2026-11.8mhs)
+
+The costs this ADR accepted "while links are read in the clear (#286)" now hold only on a link with a build before
+ADR 2026-11.8mhs (v2.10.x, v2.11.0). Between two builds carrying `CAP_LINK_SEAL`, the HELLO (with its `t` and `a`),
+the PROOF, `TAG_NEXT` and every frame ride AES-256-GCM after an ephemeral exchange, so a listener in radio range no
+longer reads the id or the tags from the handshake, no longer follows a long-lived link's next tags, and no longer
+sees that a ctl 11 crossed at link-up (only its size and timing: there is no padding beyond `PresenceKeyFrame`'s).
+Knit-next #286 landed additively, outside a wire break, so `docs/NEXT_WIRE_BREAK.md` item 13's handshake bullet is already
+met. The advert itself is unchanged and outside the seal: `FLAG_LINK_SEAL` (bit 4 of byte 23) is a fact about the
+build, set in the clear and blinded forms alike. The honeypot stays: a device that advertises still gets dialled and,
+by linking, reads the proven id inside the seal. The re-wrap of a `relay = false` frame (item 14) is now open only to
+the addressee and to a listener on a legacy link.

@@ -277,7 +277,7 @@ LoRa plane (2026-09.ggq4).
   open is never reset evidence. Lane keys come from both sides' fresh `k`, salted by the link id and bound to both ids
   in role order — never the pairwise root. Regression: `LinkKeysTest`, `LinkSignalsTest`, `InboundPipelineTest`'s link
   cases, `MeshManagerTest.aLinkSignalIsSealedOnly…`, `KeyedVectorTest`'s `linkKeys`.
-- **When touching `mesh/crypto/LinkProof` / `LinkProver`, `LinkHandshake.dial` / `answer`, `mesh/link/LinkClaims`,
+- **When touching `mesh/crypto/LinkProof` / `LinkProver`, `LinkHandshake.dialPlain` / `answerPlain`, `mesh/link/LinkClaims`,
   `Protocol.CAP_LINK_PROOF` / `Protocol.hello`, the capabilities line of `InboundPipeline.storeProfileRow`, or
   `MeshManager.republishProfileIfCapabilitiesChanged`:** READ ADR 2026-11.264w (paired with knit-ios #25; the contract
   is byte-exact law). A link proof signs `"knit/link/v1/proof" ‖ role ‖ u32be(len) ‖ helloD ‖ u32be(len) ‖ helloR` over

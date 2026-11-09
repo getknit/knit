@@ -506,10 +506,10 @@ class BleAdmissionPolicyTest {
         // quiet the row refuses (RefuseHeld) and the probe is poked; the probe going unanswered makes the link quiet, and
         // the forged dial then reaches shzv's replace, which the transport applies only after the dialer's proof verifies
         // (R3/R2: a proven held link is displaced only by a verified proof). What a failed proof then does is not this
-        // policy's. `LinkHandshake.answer` returns `ProofFailed`, pinned by
+        // policy's. `LinkHandshake.answerPlain` returns `ProofFailed`, pinned by
         //   LinkHandshakeTest.aDialersMissingWrongOrMisplacedProofFailsTheResponder,
         // and the responder returns before its late pass, leaving the held link: no JVM test pins that last step (the
-        // transport's `Answered.ProofFailed` branch). Should the late pass ever run on an unproven dialer,
+        // transport's `AnswerOutcome.ProofFailed` branch). Should the late pass ever run on an unproven dialer,
         //   aProvenHeldLinkIsNeverReplacedByAnUnprovenDialer
         // pins its refusal.
         val mine = AdvertOrder.Mine(AdvertOrder.Form(myTag, blinded = true))

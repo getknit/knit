@@ -122,7 +122,12 @@ checks the switch.
 payload as a signed link (`mesh/crypto/ContactCard`): body `{v, id, pk, name?, sp?, iat}`, Ed25519 over
 `"knit/card/v1" ‖ body`, never re-encoded to verify. The identity key's fourth signing input is the link proof,
 `"knit/link/v1/proof" ‖ role ‖ u32be(len) ‖ helloD ‖ u32be(len) ‖ helloR` (`mesh/crypto/LinkProof`, ADR 2026-11.264w),
-disjoint from the card's and the prekey's labels at byte 5 and from frame CBOR by its leading `k`. Import pins + accepts, never verifies. The intro
+disjoint from the card's and the prekey's labels at byte 5 and from frame CBOR by its leading `k`. On a sealed link
+(ADR 2026-11.8mhs) the proof signs the v2 transcript instead, `"knit/link/v2/proof" ‖ role ‖ eD ‖ eR ‖ …`, which binds
+both ephemeral X25519 keys; its label parts from v1 at byte 11, so neither form's signature verifies as the other's.
+The link's AEAD keys come from `HKDF(ss, eD ‖ eR, "knit/link/v1/seal/d2r" | "…/r2d")` (`mesh/crypto/LinkSeal`), KDF
+info disjoint from every other label (the shared `knit/link/v1/` prefix with the lane keys and the v1 proof is
+harmless: KDF info is never signed). Import pins + accepts, never verifies. The intro
 handshake is the existing sealed `CTL_PROFILE` DM sent to a peer with no session (`MeshManager.sendIntroTo`
 → `sendCtlDm` → `ratchet.sealDm` initiates X3DH off the card-pinned prekey), driven by the pure
 `mesh/IntroSync` (send when sealable, re-send every 20 h while unconfirmed, answer an init-bearing peer

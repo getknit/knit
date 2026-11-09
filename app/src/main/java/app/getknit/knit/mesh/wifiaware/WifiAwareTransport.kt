@@ -71,6 +71,7 @@ import app.getknit.knit.mesh.link.LinkClaims
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.link.LinkSocket
 import app.getknit.knit.mesh.link.NetSocketLink
+import app.getknit.knit.mesh.link.SealedLinkSocket
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -171,7 +172,9 @@ class WifiAwareTransport(
     // dormancy.
     private val wontRunHere: MutableStateFlow<Boolean> = MutableStateFlow(false),
     // Who must prove the node id its HELLO claims (R1–R4, ADR 2026-11.264w), shared by every link plane, and this
-    // phone's half of a proof. Every NDP handshake runs [LinkHandshake.dial] / [LinkHandshake.answer] with them.
+    // phone's half of a proof. Every NDP handshake runs with them: the dial [LinkHandshake.dialPlain], or
+    // [LinkHandshake.openSeal] then [LinkHandshake.dialSealed]; the accept [LinkHandshake.receiveOpening], then
+    // [LinkHandshake.answerPlain] or [LinkHandshake.answerSealed] (ADR 2026-11.8mhs).
     private val claims: LinkClaims,
     private val prover: LinkProver,
 ) : MeshTransport {
@@ -3682,15 +3685,25 @@ class WifiAwareTransport(
     }
 
     /**
-     * The NDP came up: open the socket and run the dialer's half of the handshake ([LinkHandshake.dial], ADR
-     * 2026-11.264w). Every outcome ends in [failConnect] or [registerConn], never a bare return, and nothing escapes
-     * as a throw (this runs on a bare IO launch). The reply read and, when the reply carries the bit, the responder's
-     * PROOF read are both under `soTimeout`, so a stalled responder can't pin the NDI; reads go back to blocking only
-     * after. Whether the link proves anything is decided by the reply's caps, never the SSI advert's (unauthenticated,
-     * and stale across an upgrade).
+     * The NDP came up: open the socket and run the dialer's half of the handshake (ADR 2026-11.264w), sealed or plain
+     * (#286, ADR 2026-11.8mhs). Every outcome ends in [failConnect] or [registerConn], never a bare return, and nothing
+     * escapes as a throw (this runs on a bare IO launch). Every read — the responder's `KEY_SHARE`, its reply, and its
+     * PROOF when the reply carries the bit — is under the per-read `soTimeout`, so a stalled responder can't pin the NDI;
+     * reads go back to blocking only after.
+     *
+     * The SSI's caps (the [advert] this dial is made from) pick the **form** and nothing else
+     * ([NanHandshakePolicy.opensSealed], contract §2): `CAP_LINK_SEAL` there opens with our `KEY_SHARE`
+     * ([LinkHandshake.openSeal]) and runs the exchange inside the seal, otherwise the plain HELLO goes first as before.
+     * Whether the link proves anything is still decided by the reply's caps, never the SSI's (unauthenticated, and stale
+     * across an upgrade). What each outcome costs is [NanHandshakePolicy.dialed]'s: a responder that refuses us reads as
+     * no reply (before or after its key share) and stays on the flat retry; bytes that came and were wrong hold the peer
+     * on [claimRefusals]' growing wait. Every failure after the socket is up closes it and keeps the NDP for the release
+     * grace, so the responder sees the FIN; none drops the handle (258369aa).
      *
      * The registered [Peer] carries the reply's version and caps when the link is proven (they are inside the signed
-     * transcript), the advert's otherwise — today's behaviour for a legacy link, whose reply is no more authentic.
+     * transcript), the advert's otherwise — today's behaviour for a legacy link, whose reply is no more authentic. A sealed
+     * link is always proven and registers the [SealedLinkSocket], never the raw socket below it (cleartext to a peer that
+     * would count a failed seal).
      */
     private fun connectAndRegister(
         peerNodeId: String,
@@ -3705,51 +3718,96 @@ class WifiAwareTransport(
                 ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
         val link = NetSocketLink(socket)
         runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS }
-        val dialed =
-            runCatching { LinkHandshake.dial(link.input, link.output, prover, peerNodeId) }
-                .getOrDefault(LinkHandshake.Dialed.NoReply) // our HELLO or PROOF could not be written
+        val verdict = dialHandshake(peerNodeId, advert, link)
         runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
-        val refusal: String? =
-            when (dialed) {
-                // No reply, a wrong peer, or a responder that refused us (R1, a failed proof of ours: it closes with
-                // no reply, so it reads as contention here). The flat contention backoff, as before.
-                LinkHandshake.Dialed.NoReply, is LinkHandshake.Dialed.WrongPeer -> {
+        val linked =
+            when (verdict) {
+                is NanHandshakePolicy.DialVerdict.Register -> {
+                    verdict.linked
+                }
+
+                is NanHandshakePolicy.DialVerdict.Retry -> {
+                    // No reply, a wrong peer, a responder that refused us (R1, a failed proof of ours, §7, a refusal after
+                    // its key share: it closes with no reply, so it reads as contention here), or a proof cut off
+                    // mid-handshake. The flat contention backoff, as before.
+                    verdict.proofFailed?.let { claims.proofFailed(peerNodeId, PLANE, it) }
                     link.close()
                     return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
                 }
 
-                is LinkHandshake.Dialed.ProofFailed -> {
-                    claims.proofFailed(peerNodeId, PLANE, dialed.why)
-                    if (LinkHandshake.isTransient(dialed.why)) {
-                        // The responder went quiet or away mid-handshake: contention, not an answer it will repeat.
-                        link.close()
-                        return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
-                    }
-                    "proof failed"
-                }
-
-                is LinkHandshake.Dialed.Linked -> {
-                    if (!dialed.proven && claims.isProofCapable(peerNodeId)) {
-                        claims.refused(peerNodeId, PLANE, "unproven reply")
-                        "unproven reply"
-                    } else {
-                        null
-                    }
+                is NanHandshakePolicy.DialVerdict.Hold -> {
+                    holdRefusedDial(peerNodeId, verdict)
+                    link.close()
+                    return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
                 }
             }
-        if (refusal != null) {
-            // The same peer will answer the same way next time: hold it out of the sync gates on a growing wait
-            // ([NanClaimRefusalPolicy]) rather than the 10 s contention retry. The handle stays (258369aa).
-            val waitMs = claimRefusals.refused(peerNodeId)
-            Log.i(TAG, "claim refused by our dial to $peerNodeId ($refusal) — not owed for ${waitMs}ms")
-            link.close()
-            return failConnect(peerNodeId, cb, staleHandle = false, releaseGrace = true)
-        }
-        val linked = dialed as LinkHandshake.Dialed.Linked
-        val displaced = registerConn(peerNodeId, if (linked.proven) linked.reply else advert, link, cb, proven = linked.proven)
+        val displaced = registerConn(peerNodeId, if (linked.proven) linked.reply else advert, linked.link, cb, proven = linked.proven)
         if (linked.proven) {
             claimRefusals.forget(peerNodeId)
             claims.proven(peerNodeId, PLANE, displaced = displaced)
+        }
+    }
+
+    /**
+     * The dialer's handshake on [link] in the form the SSI picks, sorted by [NanHandshakePolicy]. The sealed form is two
+     * calls, each read under the socket's own `soTimeout`: the key shares, then the exchange on the sealed socket.
+     */
+    private fun dialHandshake(
+        peerNodeId: String,
+        advert: Protocol.PeerWire,
+        link: NetSocketLink,
+    ): NanHandshakePolicy.DialVerdict {
+        val proofCapable = { claims.isProofCapable(peerNodeId) }
+        if (!NanHandshakePolicy.opensSealed(advert.capabilities)) {
+            val dialed =
+                runCatching { LinkHandshake.dialPlain(link, prover, peerNodeId) }
+                    .getOrDefault(LinkHandshake.DialOutcome.NoReply) // our HELLO or PROOF could not be written
+            return NanHandshakePolicy.dialed(dialed, proofCapable)
+        }
+        val opened =
+            runCatching { LinkHandshake.openSeal(link) }
+                .getOrDefault(LinkHandshake.SealOpened.NoReply)
+        NanHandshakePolicy.opened(opened)?.let { return it }
+        val sealed = (opened as LinkHandshake.SealOpened.Sealed).link
+        val dialed =
+            runCatching { LinkHandshake.dialSealed(sealed, prover, peerNodeId) }
+                .getOrDefault(LinkHandshake.DialOutcome.NoReply)
+        return NanHandshakePolicy.dialed(dialed, proofCapable)
+    }
+
+    /**
+     * A dial of ours that the peer's answer refused: the same peer will answer the same way next time, so hold it out of
+     * the sync gates on a growing wait ([NanClaimRefusalPolicy]) rather than the 10 s contention retry. The handle stays
+     * (258369aa); a fresh one lifts the wait, and a peer that upgraded or downgraded comes back with exactly that. Each
+     * kind tells its own tally, once per link; a seal failure or refusal never reaches [claims].
+     */
+    private fun holdRefusedDial(
+        peerNodeId: String,
+        verdict: NanHandshakePolicy.DialVerdict.Hold,
+    ) {
+        when (verdict.hold) {
+            NanHandshakePolicy.HoldKind.PROOF_FAILED -> claims.proofFailed(peerNodeId, PLANE, verdict.why)
+            NanHandshakePolicy.HoldKind.UNPROVEN_REPLY -> claims.refused(peerNodeId, PLANE, verdict.why)
+            NanHandshakePolicy.HoldKind.SEAL_FAILED -> metrics.onLinkSealFailed()
+            NanHandshakePolicy.HoldKind.SEAL_REFUSED -> metrics.onLinkSealRefused()
+        }
+        val waitMs = claimRefusals.refused(peerNodeId)
+        when (verdict.hold) {
+            NanHandshakePolicy.HoldKind.PROOF_FAILED -> {
+                Log.i(TAG, "claim refused by our dial to $peerNodeId (proof failed) — not owed for ${waitMs}ms")
+            }
+
+            NanHandshakePolicy.HoldKind.UNPROVEN_REPLY -> {
+                Log.i(TAG, "claim refused by our dial to $peerNodeId (unproven reply) — not owed for ${waitMs}ms")
+            }
+
+            NanHandshakePolicy.HoldKind.SEAL_FAILED -> {
+                Log.w(TAG, "seal failed on our dial to $peerNodeId (${verdict.why}) — not owed for ${waitMs}ms")
+            }
+
+            NanHandshakePolicy.HoldKind.SEAL_REFUSED -> {
+                Log.w(TAG, "plain link refused by our dial to $peerNodeId (${verdict.why}) — not owed for ${waitMs}ms")
+            }
         }
     }
 
@@ -3910,8 +3968,9 @@ class WifiAwareTransport(
     }
 
     /**
-     * A client connected to our accept-any responder: read its HELLO, decide, answer, and register the link (ADR
-     * 2026-11.264w). In order: a bit without a nonce is a failed proof; an unproven claim to a proof-capable id is
+     * A client connected to our accept-any responder: read its first record, decide, answer, and register the link (ADR
+     * 2026-11.264w; sealed or plain, #286 ADR 2026-11.8mhs, see [admitAndAnswer]). In order: §7 (a plain HELLO with the
+     * seal bit) on a plain opening; a bit without a nonce is a failed proof; an unproven claim to a proof-capable id is
      * refused (R1, before every older refusal, so it is counted even when they would refuse it too); then the
      * tie-break; then the held link to the same id, which no longer refuses a dialer offering a proof when the held
      * link is unproven (R3) but still refuses everything else (a proven held link: R2 and NAN's never-replace). An
@@ -3933,14 +3992,17 @@ class WifiAwareTransport(
             }
             val link = NetSocketLink(socket)
             runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS } // bound the identity read so a stall can't pin the slot
-            val (hello, proven) =
+            val admitted =
                 when (val outcome = admitAndAnswer(link)) {
-                    is AcceptOutcome.Admitted -> outcome.hello to outcome.proven
+                    is AcceptOutcome.Admitted -> outcome
                     is AcceptOutcome.Refused -> return refuseAccept(link, outcome.dialerAlive)
                 }
-            runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
+            runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop, on the raw socket
+            val hello = admitted.hello
+            val proven = admitted.linked.proven
             val clientNodeId = hello.wire.nodeId
-            val displaced = registerConn(clientNodeId, hello.wire, link, callback = null, proven = proven)
+            // The link the answer names: the sealed socket on a sealed link, never the raw one below it.
+            val displaced = registerConn(clientNodeId, hello.wire, admitted.linked.link, callback = null, proven = proven)
             Log.i(TAG, "accepted client $clientNodeId")
             if (proven) claims.proven(clientNodeId, PLANE, displaced = displaced)
         } finally {
@@ -3949,37 +4011,81 @@ class WifiAwareTransport(
     }
 
     /**
-     * The responder's half of the handshake on an accepted [link]: the dialer's HELLO, the admission decision
-     * ([admits]), our reply and — when the dialer offered one — its PROOF, read under the caller's `soTimeout`. The
-     * HELLO and whether the link is proven, or a refusal (nothing registered; a held link stays) saying whether the
-     * dialer is known to be still there — which decides whether [refuseAccept] may recycle the request in place.
+     * The responder's half of the handshake on an accepted [link], each read under the caller's `soTimeout`: the first
+     * record ([LinkHandshake.receiveOpening]) tells the forms apart, as ADR 004's accept-any responder can't know which
+     * one it accepted. A `KEY_SHARE` gets ours back at once, before any admission decision, then the dialer's sealed HELLO
+     * ([LinkHandshake.receiveSealedHello]), the admission ([admits]) and the sealed answer; a HELLO is the plain form,
+     * refused under §7 when it carries the seal bit ([LinkHandshake.refusesPlain], before the malformed check, R1 and every
+     * older refusal), else admitted and answered as before. The answer is what [registerConn] takes, or a refusal
+     * (nothing registered; a held link stays) saying whether the dialer is known to be still there
+     * ([NanHandshakePolicy.Refusal.dialerAlive]), which decides whether [refuseAccept] may recycle the request in place.
+     * Each refusal tells its tally once ([tallyRefusal]).
      */
+    @Suppress("ReturnCount") // one early return per stage that can refuse, in the order the records arrive
     private fun admitAndAnswer(link: LinkSocket): AcceptOutcome {
-        // Reads the HELLO from the cached buffered stream that the FramedLink read loop then reuses. None within the
-        // soTimeout: the dialer may be gone and its NDP with it.
-        val hello = LinkHandshake.receiveHello(link.input) ?: return AcceptOutcome.Refused(dialerAlive = false)
-        // Refused on what it just sent: it is blocked on its reply read, so its NDP is alive.
-        if (!admits(hello)) return AcceptOutcome.Refused(dialerAlive = true)
-        // Reply (and prove) so the initiator can confirm it reached the intended peer; read its PROOF when it
-        // offered one. We read first, then reply — no block.
+        // Reads from the cached buffered stream that the FramedLink read loop (or the sealed socket above it) then reuses.
+        val opening = runCatching { LinkHandshake.receiveOpening(link) }.getOrDefault(LinkHandshake.Opening.None)
+        NanHandshakePolicy.refusal(opening)?.let { return refused(it, claimedId = null) }
         val answered =
-            runCatching { LinkHandshake.answer(link.input, link.output, prover, hello) }
-                .getOrDefault(LinkHandshake.Answered.WriteFailed)
-        return when (answered) {
-            LinkHandshake.Answered.WriteFailed -> {
-                AcceptOutcome.Refused(dialerAlive = true)
+            when (opening) {
+                is LinkHandshake.Opening.Plain -> {
+                    val hello = opening.hello
+                    if (LinkHandshake.refusesPlain(hello)) return refused(NanHandshakePolicy.PLAIN_REFUSED, hello.wire.nodeId)
+                    if (!admits(hello)) return refused(NanHandshakePolicy.NOT_ADMITTED, hello.wire.nodeId)
+                    // Reply (and prove) so the initiator can confirm it reached the intended peer; read its PROOF when it
+                    // offered one. We read first, then reply — no block.
+                    hello to
+                        runCatching { LinkHandshake.answerPlain(link, prover, hello) }
+                            .getOrDefault(LinkHandshake.AnswerOutcome.WriteFailed)
+                }
+
+                is LinkHandshake.Opening.Sealed -> {
+                    val sealed = opening.link
+                    val read = runCatching { LinkHandshake.receiveSealedHello(sealed) }.getOrDefault(LinkHandshake.SealedHello.None)
+                    NanHandshakePolicy.refusal(read)?.let { return refused(it, claimedId = null) }
+                    val hello = (read as LinkHandshake.SealedHello.Hello).hello
+                    if (!admits(hello)) return refused(NanHandshakePolicy.NOT_ADMITTED, hello.wire.nodeId)
+                    hello to
+                        runCatching { LinkHandshake.answerSealed(sealed, prover, hello) }
+                            .getOrDefault(LinkHandshake.AnswerOutcome.WriteFailed)
+                }
+
+                // Sorted by the policy above; never reached.
+                is LinkHandshake.Opening.SealFailed, LinkHandshake.Opening.None -> {
+                    return AcceptOutcome.Refused(dialerAlive = false)
+                }
+            }
+        val (hello, outcome) = answered
+        // A held link to the id stays on any refusal: only a proof displaces it.
+        NanHandshakePolicy.refusal(outcome)?.let { return refused(it, hello.wire.nodeId) }
+        return AcceptOutcome.Admitted(hello, outcome as LinkHandshake.AnswerOutcome.Linked)
+    }
+
+    /** Tells a refused accept's tally once ([NanHandshakePolicy.Refusal]) and returns it for [refuseAccept]. */
+    private fun refused(
+        refusal: NanHandshakePolicy.Refusal,
+        claimedId: String?,
+    ): AcceptOutcome {
+        refusal.proofFailed?.let { why -> claimedId?.let { claims.proofFailed(it, PLANE, why) } }
+        tallyRefusal(refusal, claimedId)
+        return AcceptOutcome.Refused(refusal.dialerAlive)
+    }
+
+    private fun tallyRefusal(
+        refusal: NanHandshakePolicy.Refusal,
+        claimedId: String?,
+    ) {
+        when (refusal.tally) {
+            NanHandshakePolicy.Tally.NONE -> {}
+
+            NanHandshakePolicy.Tally.SEAL_FAILED -> {
+                metrics.onLinkSealFailed()
+                Log.w(TAG, "seal failed on an accepted dial${claimedId?.let { " claiming $it" }.orEmpty()} (${refusal.why})")
             }
 
-            is LinkHandshake.Answered.ProofFailed -> {
-                claims.proofFailed(hello.wire.nodeId, PLANE, answered.why)
-                // A held link to the id stays: only a proof displaces it. An eof (the dialer's FIN, its release grace
-                // holding the NDP), a misplaced record or a failed verify say the dialer was there a moment ago; an
-                // unreadable PROOF (our soTimeout cut it, or a reset) does not — its NDP may already be gone.
-                AcceptOutcome.Refused(dialerAlive = answered.why != LinkHandshake.WHY_UNREADABLE)
-            }
-
-            is LinkHandshake.Answered.Linked -> {
-                AcceptOutcome.Admitted(hello, answered.proven)
+            NanHandshakePolicy.Tally.SEAL_REFUSED -> {
+                metrics.onLinkSealRefused()
+                Log.w(TAG, "plain link refused on accept: hello claiming $claimedId carries the seal bit")
             }
         }
     }
@@ -4015,9 +4121,10 @@ class WifiAwareTransport(
 
     /** How [admitAndAnswer] ended. */
     private sealed interface AcceptOutcome {
+        /** [linked] names the socket to register: the sealed one on a sealed link. */
         class Admitted(
             val hello: LinkHandshake.ReceivedHello,
-            val proven: Boolean,
+            val linked: LinkHandshake.AnswerOutcome.Linked,
         ) : AcceptOutcome
 
         /** Refused; [dialerAlive] when the dialer is known to hold its NDP up right now (see [refuseAccept]). */
@@ -4031,11 +4138,12 @@ class WifiAwareTransport(
      * so the request now pins the NDI exactly as after a serve (docs/NAN_CONCURRENCY_REAUDIT.md §2): record it, or the
      * discovery loop's `responderPinsNdi && initiateOwedToReachable()` recovery never fires for a refused claim.
      *
-     * When [dialerAlive] — refused on its HELLO (it is blocked on its reply read), our reply unwritable, or a proof
-     * failure that is not an unreadable read — and this was the last inbound with no other accept mid-HELLO and an
+     * When [dialerAlive] — refused on bytes it just sent while it blocks on its next read ([NanHandshakePolicy.refusal]'s
+     * table: §7, a refused key share, a HELLO plain or sealed we would not admit or that broke the seal, our reply
+     * unwritable, a proof failure that is not an unreadable read) — and this was the last inbound with no other accept mid-HELLO and an
      * initiate of ours is owed, recycle the request NOW, before the close, while the NDP is still alive: the same
-     * ghost-proof recycle [teardownPeer] runs after an EOF-driven serve. Never when the dialer may be gone (no HELLO
-     * within the soTimeout, an unreadable PROOF): its `failConnect` may have released the NDP already, and an
+     * ghost-proof recycle [teardownPeer] runs after an EOF-driven serve. Never when the dialer may be gone (no first
+     * record or sealed HELLO within the soTimeout, an unreadable PROOF): its `failConnect` may have released the NDP already, and an
      * unregister at zero NDPs is the `role=1 state=104` ghost (7e457907, 724a3fed) — worse, the re-file would clear
      * the pin flag that names it. There the pin stays set for the discovery loop's session cycle (a NAN-down, safe at
      * zero NDPs). Never under siblings either: recycling ends every connection on the shared request.
@@ -4082,6 +4190,11 @@ class WifiAwareTransport(
      * Register a link whose handshake ended [proven] or legacy. Returns whether it displaced an unproven link claiming
      * the same id (R3, ADR 2026-11.264w; the caller passes it to [LinkClaims.proven]). The displaced link is closed
      * here, through its own guarded callbacks ([ConnCallbacks]), so its loops ending never touch the newcomer.
+     *
+     * [link] is the socket the handshake named: on a sealed link (#286) the [SealedLinkSocket], whose frames ride the raw
+     * NDP socket below it (its `soTimeout` already back to 0). Its live failure count is armed here, before the loops
+     * start — until now the handshake's outcome was the only count — and the link is counted sealed beside the proven
+     * count `LinkClaims.proven` takes.
      */
     private fun registerConn(
         peerNodeId: String,
@@ -4090,6 +4203,10 @@ class WifiAwareTransport(
         callback: ConnectivityManager.NetworkCallback?,
         proven: Boolean,
     ): Boolean {
+        if (link is SealedLinkSocket) {
+            link.armFailureCount { metrics.onLinkSealFailed() }
+            metrics.onLinkSealed()
+        }
         val callbacks = ConnCallbacks()
         val framed =
             FramedLink(

@@ -258,6 +258,7 @@ internal class BlindVectors(
         }
 
     // Alice's blinded presence advert: her tag in bytes 1–16, the digest cue zeroed, FLAG_BLINDED and FLAG_AWARE set.
+    // FLAG_LINK_SEAL (#286) stays clear: the entry was pinned before it, and a vector entry never moves.
     private fun blindedAdvert(): ByteArray =
         BleAdvertPayload.advert(
             NodeId.fromBytes(aliceTag),
@@ -268,6 +269,7 @@ internal class BlindVectors(
             gattPeers = false,
             aware = true,
             blinded = true,
+            linkSeal = false,
         )
 
     /** The same layout with a prefixless "tag" (Alice's clear id) under FLAG_BLINDED: malformed, dropped unread. */

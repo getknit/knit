@@ -163,6 +163,9 @@ if one ever happens they all ride it together and no single item has to justify 
 > Bit 2 is `FLAG_AWARE` (GitHub #44, ADR 2026-10.2t49's 2026-10-27 amendment): "count on my Wi-Fi Aware now",
 > positive, so an advert from a build that predates it never makes a peer an Aware candidate. Additive like the
 > others; main builds from 2026-10-24 to 2026-10-27 wrote it with the opposite meaning, which never shipped.
+> Bit 4 is `FLAG_LINK_SEAL` (knit-next #286, ADR 2026-11.8mhs): "dial me in the sealed form", a fact about the build
+> rather than the controller, set exactly when the HELLO carries `CAP_LINK_SEAL`, in the clear and blinded forms
+> alike. Additive like the others; it is the one bit a dialer reads to decide what its first link record is.
 > The value that payload characteristic serves (`DoorbellPolicy.PAYLOAD_UUID`) is the same 24-byte advert
 > payload with the digest cue zeroed, so it grows under the same rules as the advert.
 
@@ -796,6 +799,33 @@ bind both ids (ADR 2026-10.a5yj). No `type`, no version bump, no discovery marke
 → `link` gained `helloProofDialer`, `helloProofReply`, both transcripts, `proofDialer`, `proofResponder` and
 `proofRejects`; `link.hello` (caps 0x9) and everything else did not move. *Metadata cost:* a proven link tells its peer
 our two public keys, which our signed profile already publishes to everyone; the nonces say nothing.
+
+**Precedent — a capability bit, an advert flag and two link record tags written only to a peer whose advert carries
+the flag (`CAP_LINK_SEAL` 0x100000, `FLAG_LINK_SEAL` 0x10, `KEY_SHARE` tag 10, `SEALED` tag 11, ADR 2026-11.8mhs;
+knit-next #286, knit-ios #51).** A link between two builds carrying the bit runs an ephemeral X25519 exchange and
+carries everything after it inside AES-256-GCM frames. The pieces, each additive:
+
+- *The bit* rides the HELLO, the profile and the Wi-Fi Aware SSI (`LOCAL_CAPABILITIES` 0x1C2FFF), only beside
+  `CAP_LINK_PROOF`. The profile's copy decides nothing.
+- *The advert flag* is the flags-byte rule above. On Wi-Fi Aware, whose SSI has no flags byte, the bit in the SSI's caps
+  plays its part.
+- *The records.* A link's **first record is something other than a HELLO only toward a peer advertising the flag**
+  (or, on Wi-Fi Aware, whose SSI carries the bit): every shipped build throws on tags 10 and 11 (`LinkFraming.read`
+  knows 1-8 in v2.11.0, 1-7 before) and drops the link. This is new: before it, every link opened with a HELLO and the
+  gate for a record was always the peer's HELLO. Here the gate is the advert the dial is made from, because the
+  record comes before any HELLO. `KEY_SHARE` is exactly 32 bytes; `SEALED` is `[0x0B][u32be len][ct ‖ tag]`, `len`
+  17..65,552, checked from the header before the payload. Tag 12 stays unknown.
+- *The transcript.* The PROOF inside the seal signs `"knit/link/v2/proof" ‖ role ‖ eD ‖ eR ‖ …`; a plain link keeps the
+  v1 transcript byte for byte, because v2.11.0 verifies it.
+
+A stale flag (a peer that downgraded inside the presence linger) costs one dial: the old build throws on tag 10 and
+closes, which the dialer reads as no reply. A plain-form link between two builds carrying the bit is refused, so a
+stripped flag alone gets no link rather than a plain proven one (stripping the HELLOs' proof bit too is the legacy pose
+that ADR 2026-11.264w's R1 and R4 bound). Links with v2.10.x and v2.11.0 are untouched: they never see the
+flag, never get the records, and link exactly as before. Direct links never seal and run no `KEY_SHARE` (their lane is
+already encrypted). No version bump, no discovery marker, no DB change. `vectors/keyed-v1.json` → `link.seal` was added
+and nothing moved. *Metadata cost:* none new; a listener now reads two random public keys, then ciphertext, sizes and
+timing, instead of the HELLO, PROOF, DIGEST and frames.
 
 **Precedent — a receiver's progress report (`blobprog`, under `CAP_BLOB_HAVE`, ADR 2026-10.nsr7).** A third type under
 the holder query's bit, with no bit of its own: none of 6e5t or this had been pushed when it was added. It is unsigned and

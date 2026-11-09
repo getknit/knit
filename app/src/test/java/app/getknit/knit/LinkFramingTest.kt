@@ -3,10 +3,12 @@ package app.getknit.knit
 import app.getknit.knit.mesh.link.DigestWire
 import app.getknit.knit.mesh.link.FileHeaderWire
 import app.getknit.knit.mesh.link.LinkFraming
+import app.getknit.knit.mesh.link.SealFramingException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -110,8 +112,51 @@ class LinkFramingTest {
     }
 
     @Test
-    fun theTagAfterTagNextIsStillUnknownAndThrows() {
-        assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(byteArrayOf(10, 0, 0, 0, 0))) }
+    fun theTagAfterSealedIsStillUnknownAndThrows() {
+        // #286 took tags 10 and 11; 12 stays unknown on both platforms, and is the generic framing error, not a seal's.
+        val e = assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(byteArrayOf(12, 0, 0, 0, 0))) }
+        assertFalse(e is SealFramingException)
+    }
+
+    @Test
+    fun aKeyShareRoundTripsUnderTagTenAtExactly32Bytes() {
+        val key = ByteArray(LinkFraming.KEY_SHARE_BYTES) { (0x40 + it).toByte() }
+        val bytes = LinkFraming.encodeKeyShare(key)
+        assertEquals(37, bytes.size)
+        assertEquals(10.toByte(), bytes[0])
+        assertEquals(LinkFraming.Message(LinkFraming.Type.KEY_SHARE, key), LinkFraming.read(ByteArrayInputStream(bytes)))
+        assertThrows(IllegalArgumentException::class.java) { LinkFraming.encodeKeyShare(ByteArray(31)) }
+    }
+
+    @Test
+    fun aKeyShareOfAnyOtherLengthIsASealFramingErrorReadFromTheHeader() {
+        for (len in listOf(0, 31, 33, 1024)) {
+            // The header alone: the check never waits for a payload that may never come.
+            val header = LinkFraming.encode(LinkFraming.Type.KEY_SHARE, ByteArray(len)).copyOf(5)
+            assertThrows("length $len", SealFramingException::class.java) { LinkFraming.read(ByteArrayInputStream(header)) }
+        }
+    }
+
+    @Test
+    fun aSealedRecordRoundTripsUnderTagElevenAtEveryLengthInItsRange() {
+        for (len in listOf(LinkFraming.SEALED_MIN_BYTES, 4096, LinkFraming.SEALED_MAX_BYTES)) {
+            val payload = ByteArray(len) { it.toByte() }
+            val bytes = LinkFraming.encode(LinkFraming.Type.SEALED, payload)
+            assertEquals(11.toByte(), bytes[0])
+            assertEquals(LinkFraming.Message(LinkFraming.Type.SEALED, payload), LinkFraming.read(ByteArrayInputStream(bytes)))
+        }
+        assertEquals(17, LinkFraming.SEALED_MIN_BYTES)
+        assertEquals(65_552, LinkFraming.SEALED_MAX_BYTES)
+    }
+
+    @Test
+    fun aSealedRecordOutOfItsRangeIsASealFramingErrorReadFromTheHeader() {
+        for (len in listOf(0, 16, 65_553, LinkFraming.MAX_PAYLOAD_BYTES)) {
+            val header = LinkFraming.encode(LinkFraming.Type.SEALED, ByteArray(len)).copyOf(5)
+            assertThrows("length $len", SealFramingException::class.java) { LinkFraming.read(ByteArrayInputStream(header)) }
+        }
+        val negative = byteArrayOf(11, 0x80.toByte(), 0, 0, 0)
+        assertThrows(SealFramingException::class.java) { LinkFraming.read(ByteArrayInputStream(negative)) }
     }
 
     @Test

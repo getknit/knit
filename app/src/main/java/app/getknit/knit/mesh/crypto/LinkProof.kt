@@ -32,9 +32,25 @@ import java.nio.ByteBuffer
  *    prekey `knit/dm/v2/spk ‖ id ‖ pub`; both labels part from this one at byte 5 (`c`, `d` against `l`), so no
  *    label is a prefix of another and no message of one kind is a message of another. The `knit/link/v1/` prefix it
  *    shares with [LinkKeys]' HKDF lane labels is harmless: those are KDF info, never signed.
+ *
+ * **On a sealed link** (#286, [LinkSeal]) each side signs the v2 transcript instead ([sealedTranscript]):
+ *
+ * ```
+ * transcript = "knit/link/v2/proof" (18 ASCII) ‖ role (1) ‖ eD (32) ‖ eR (32) ‖ u32be(len hD) ‖ hD ‖ u32be(len hR) ‖ hR
+ * ```
+ *
+ * where `eD` and `eR` are the two `KEY_SHARE` payloads, the dialer's first. Signing both ephemeral keys is what keeps a
+ * relay out of the middle: it can't compute the keys of a link it didn't open, and swapping its own key share in breaks
+ * a signature. The label keeps the two forms apart, so a v1 signature never verifies on a sealed link and a v2 one never
+ * on a plain link: a relay can't open the sealed form toward one peer and the plain form toward the other. It starts `k`
+ * as v1 does (never a CBOR map) and parts from v1 at byte 11. The payload is unchanged. Plain links keep the v1
+ * transcript byte for byte: v2.11.0 peers depend on it.
  */
 object LinkProof {
     const val LABEL = "knit/link/v1/proof"
+
+    /** The sealed link's label (#286). Its own transcript, [sealedTranscript]; never a flag on v1's. */
+    const val LABEL_SEALED = "knit/link/v2/proof"
 
     /** An Ed25519 signature (RFC 8032). */
     private const val SIGNATURE_BYTES = 64
@@ -43,6 +59,7 @@ object LinkProof {
     const val PAYLOAD_BYTES = 2 * PublicKeyBundle.RAW_KEY_BYTES + SIGNATURE_BYTES
 
     private val LABEL_BYTES = LABEL.toByteArray(Charsets.US_ASCII)
+    private val LABEL_SEALED_BYTES = LABEL_SEALED.toByteArray(Charsets.US_ASCII)
 
     /** Which end of the link the signer is. The byte is wire: it is in the transcript. */
     enum class Role(
@@ -59,6 +76,19 @@ object LinkProof {
         helloResponder: ByteArray,
     ): ByteArray =
         LABEL_BYTES + byteArrayOf(role.byte) + u32be(helloDialer.size) + helloDialer + u32be(helloResponder.size) + helloResponder
+
+    /**
+     * The sealed link's transcript (#286): `"knit/link/v2/proof" ‖ role ‖ eD ‖ eR ‖ u32be(len helloDialer) ‖ helloDialer ‖
+     * u32be(len helloResponder) ‖ helloResponder`, [binding] carrying both key shares as they crossed the link.
+     */
+    fun sealedTranscript(
+        role: Role,
+        binding: LinkSeal.Binding,
+        helloDialer: ByteArray,
+        helloResponder: ByteArray,
+    ): ByteArray =
+        LABEL_SEALED_BYTES + byteArrayOf(role.byte) + binding.eD + binding.eR + u32be(helloDialer.size) + helloDialer +
+            u32be(helloResponder.size) + helloResponder
 
     /** Why a proof failed. Every one fails the handshake; the plane decides what to do with the link (`LinkClaims`). */
     enum class Failure {
@@ -82,6 +112,23 @@ object LinkProof {
         role: Role,
         helloDialer: ByteArray,
         helloResponder: ByteArray,
+    ): Failure? = verifyOver(payload, claimedId) { transcript(role, helloDialer, helloResponder) }
+
+    /** As [verify], over the sealed link's transcript ([sealedTranscript]) for [binding]. Never throws. */
+    fun verifySealed(
+        payload: ByteArray,
+        claimedId: String,
+        role: Role,
+        binding: LinkSeal.Binding,
+        helloDialer: ByteArray,
+        helloResponder: ByteArray,
+    ): Failure? = verifyOver(payload, claimedId) { sealedTranscript(role, binding, helloDialer, helloResponder) }
+
+    /** The length, then the id, then the signature over [transcript]'s bytes, as both transcripts verify. */
+    private inline fun verifyOver(
+        payload: ByteArray,
+        claimedId: String,
+        transcript: () -> ByteArray,
     ): Failure? {
         if (payload.size != PAYLOAD_BYTES) return Failure.LENGTH
         val keyBytes = PublicKeyBundle.RAW_KEY_BYTES
@@ -102,7 +149,7 @@ object LinkProof {
                 MessageCrypto.verify(
                     bundle,
                     signature,
-                    transcript(role, helloDialer, helloResponder),
+                    transcript(),
                 )
             }.getOrDefault(false)
         return if (holds) null else Failure.SIGNATURE
@@ -127,4 +174,12 @@ class LinkProver(
         helloDialer: ByteArray,
         helloResponder: ByteArray,
     ): ByteArray = keys + signRaw(LinkProof.transcript(role, helloDialer, helloResponder))
+
+    /** sigPub(32) ‖ hpkePub(32) ‖ Ed25519 signature(64) over the sealed link's transcript ([LinkProof.sealedTranscript]). */
+    fun sealedProof(
+        role: LinkProof.Role,
+        binding: LinkSeal.Binding,
+        helloDialer: ByteArray,
+        helloResponder: ByteArray,
+    ): ByteArray = keys + signRaw(LinkProof.sealedTranscript(role, binding, helloDialer, helloResponder))
 }
