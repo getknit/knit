@@ -83,6 +83,13 @@ CUSTOM = {
         '@Preview(name = "Rtl", showBackground = true, device = "spec:width=411dp,height=891dp", locale = RIGHT_TO_LEFT)',
         '@Preview(name = "Small", showBackground = true, device = "spec:width=360dp,height=640dp", locale = ENGLISH)',
     ],
+    # GitHub #62: a connected call's face, a wrapped name and a quality note crowd the caller's card on a phone of
+    # this height, which is what picks the face's size.
+    "CallScreenLongNameCallerPreview": [
+        '@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=810dp", locale = ENGLISH)',
+        '@Preview(name = "LongText", showBackground = true, device = "spec:width=411dp,height=810dp", locale = LONG_TEXT)',
+        '@Preview(name = "Rtl", showBackground = true, device = "spec:width=411dp,height=810dp", locale = RIGHT_TO_LEFT)',
+    ],
 }
 
 # Previews also rendered at a large font scale: (wrapper suffix, KDoc, scale).

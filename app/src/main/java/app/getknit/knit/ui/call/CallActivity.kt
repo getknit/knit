@@ -85,6 +85,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
@@ -98,6 +100,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -148,6 +151,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import kotlin.math.roundToInt
 
 /**
  * The one call screen (experimental, `CALLS_WIRED`): the peer's face and name, incoming Answer/Decline, then status, the
@@ -403,6 +407,13 @@ private val CompactAvatarSize = 104.dp
 private val CompactRingReach = 16.dp
 private val InlineAvatarSize = 72.dp
 
+// Above a stacked face, the share of the spare height that goes over it rather than around the card below it.
+private const val FACE_SPACER_WEIGHT = 0.6f
+
+// A smaller face's gap under the header, and the room kept above and below the card in the slot under the face.
+private val CompactFaceGap = 8.dp
+private val CardSlotPadding = 16.dp
+
 /** The kind a Call back places: a live call where the build takes one, else a mesh call (ADR 2026-10.swvp). */
 private fun callBackKind(calls: CallManager): CallKind = if (calls.liveEnabled) CallKind.LIVE else CallKind.WALKIE
 
@@ -520,34 +531,44 @@ internal fun CallScreen(
                         if (walkieUp) showTranscript = on else onCaptions(on)
                     },
                 )
-                if (inline) {
-                    Spacer(Modifier.height(8.dp))
-                    InlineFace(state, name, avatarHash, caller?.status, view, note, clock)
+                // Who this is to you, and what was said last — the why of most calls — until the call ends.
+                val callerCard = caller?.takeIf { !card && callerShown }
+                if (callerCard != null) {
+                    FaceOverCard(
+                        face = { fit ->
+                            when (fit) {
+                                FaceFit.INLINE -> InlineFace(state, name, avatarHash, callerCard.status, view, note, clock)
+                                else -> StackedFace(state, name, avatarHash, callerCard.status, view, note, fit == FaceFit.COMPACT, clock)
+                            }
+                        },
+                        card = { CallerCard(callerCard, name, locked, hideFlagged, clock, onOpenChat) },
+                        modifier = Modifier.weight(FACE_SPACER_WEIGHT + 1f).fillMaxWidth(),
+                    )
                 } else {
-                    if (card) Spacer(Modifier.height(8.dp)) else Spacer(Modifier.weight(0.6f))
-                    StackedFace(state, name, avatarHash, caller?.status, view, note, compact = card, clock)
-                }
-                if (transcribed != null) {
-                    // The transcript scrolls itself, to keep its newest line in view.
-                    Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp)) {
-                        WalkieTranscript(transcribed, name, onSttDownload, onSttCancel, Modifier.fillMaxSize(), onSttDismiss)
+                    if (inline) {
+                        Spacer(Modifier.height(CompactFaceGap))
+                        InlineFace(state, name, avatarHash, caller?.status, view, note, clock)
+                    } else {
+                        if (card) Spacer(Modifier.height(CompactFaceGap)) else Spacer(Modifier.weight(FACE_SPACER_WEIGHT))
+                        StackedFace(state, name, avatarHash, caller?.status, view, note, compact = card, clock)
                     }
-                } else if (captioned != null) {
-                    Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp)) {
-                        LiveCaptions(captioned, name, onSttDownload, onSttCancel, onOff = { onCaptions(false) }, Modifier.fillMaxSize())
+                    if (transcribed != null) {
+                        // The transcript scrolls itself, to keep its newest line in view.
+                        Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = CardSlotPadding)) {
+                            WalkieTranscript(transcribed, name, onSttDownload, onSttCancel, Modifier.fillMaxSize(), onSttDismiss)
+                        }
+                    } else if (captioned != null) {
+                        Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = CardSlotPadding)) {
+                            LiveCaptions(captioned, name, onSttDownload, onSttCancel, onOff = { onCaptions(false) }, Modifier.fillMaxSize())
+                        }
+                    } else if (diagnostics != null) {
+                        // The room between the face and the controls; a short screen scrolls the card rather than clip it.
+                        Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = CardSlotPadding), contentAlignment = Alignment.Center) {
+                            diagnostics(Modifier.verticalScroll(rememberScrollState()))
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
                     }
-                } else if (diagnostics != null) {
-                    // The room between the face and the controls; a short screen scrolls the card rather than clip it.
-                    Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                        diagnostics(Modifier.verticalScroll(rememberScrollState()))
-                    }
-                } else if (callerShown && caller != null) {
-                    // Who this is to you, and what was said last — the why of most calls — until the call ends.
-                    Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                        CallerCard(caller, name, locked, hideFlagged, clock, onOpenChat)
-                    }
-                } else {
-                    Spacer(Modifier.weight(1f))
                 }
                 if (walkieUp) {
                     WalkieControls(state, name, talk, link, routing, onHangUp, onRoute, onTalk, onTalkSend, onTalkCancel)
@@ -568,6 +589,69 @@ internal fun CallScreen(
         }
     }
 }
+
+/** The sizes [FaceOverCard] tries, largest first. */
+private enum class FaceFit { STACKED, COMPACT, INLINE }
+
+private object CardSlot
+
+/**
+ * The face over the caller's card, at the largest size that leaves the card whole: the stacked face, then the compact
+ * one, then the face beside the name. Fitting by content, not by screen height, because what crowds the card is the
+ * content: a name that wraps and a quality note left a 411 dp-wide phone's card clipped at both edges (GitHub #62).
+ * The stacked face sits where the screen's weighted spacer put it, the room left over split [FACE_SPACER_WEIGHT] above
+ * it to 1 around the card, except that the card always keeps the height it needs; a smaller face sits [CompactFaceGap]
+ * under the header, as it does above the diagnostics card. Where not even the face beside the name leaves room, the
+ * card scrolls rather than clip.
+ */
+@Composable
+private fun FaceOverCard(
+    face: @Composable (FaceFit) -> Unit,
+    card: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    SubcomposeLayout(modifier) { constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val loose = Constraints(maxWidth = width)
+        val padding = CardSlotPadding.roundToPx()
+        val gap = CompactFaceGap.roundToPx()
+        val slot = subcompose(CardSlot) { Box(Modifier.verticalScroll(rememberScrollState())) { card() } }.single()
+        val need = slot.maxIntrinsicHeight(width) + 2 * padding
+        var fit = FaceFit.INLINE
+        var chosen: Placeable? = null
+        for (candidate in FaceFit.entries) {
+            val measured = subcompose(candidate) { Box { face(candidate) } }.single().measure(loose)
+            val top = if (candidate == FaceFit.STACKED) 0 else gap
+            if (top + measured.height + need <= height || candidate == FaceFit.INLINE) {
+                fit = candidate
+                chosen = measured
+                break
+            }
+        }
+        val shown = checkNotNull(chosen)
+        val left = (height - shown.height).coerceAtLeast(0)
+        val top =
+            if (fit == FaceFit.STACKED) {
+                // The spacer's share, short of what the card needs below the face.
+                (left * FACE_SPACER_WEIGHT / (FACE_SPACER_WEIGHT + 1f)).roundToInt().coerceAtMost(left - need)
+            } else {
+                gap.coerceAtMost(left)
+            }
+        val room = (left - top - 2 * padding).coerceAtLeast(0)
+        val cardShown = slot.measure(Constraints(maxWidth = width, maxHeight = room))
+        layout(width, height) {
+            shown.placeRelative(centred(width, shown.width), top)
+            cardShown.placeRelative(centred(width, cardShown.width), top + shown.height + padding + centred(room, cardShown.height))
+        }
+    }
+}
+
+/** Where [size] starts to sit centred in [space], rounded as `Alignment.Center` rounds it. */
+private fun centred(
+    space: Int,
+    size: Int,
+): Int = ((space - size) / 2f).roundToInt()
 
 /** The face as every call screen draws it: the avatar centred over the name, the status and the route. */
 @Composable
@@ -1591,6 +1675,19 @@ fun CallScreenPoorPreview() =
         route = "srflx/srflx",
         stats = CallStats(localType = "srflx", remoteType = "srflx", networkType = "cellular"),
         quality = Quality(QualityLevel.POOR, QualityIssue.HEARING_BREAKS),
+        caller = previewCaller(),
+        statsShown = false,
+    )
+
+// GitHub #62: a name that wraps, the quality note and the caller's card, on a Galaxy Note20's height under its bars.
+@Preview(name = "Connected, long name, caller context", widthDp = 411, heightDp = 810)
+@Composable
+fun CallScreenLongNameCallerPreview() =
+    PreviewCall(
+        CallPhase.Connected,
+        name = "Norbert (KindlyAbleSummit)",
+        route = "host/host/wifi-direct",
+        quality = Quality(QualityLevel.POOR, QualityIssue.NOT_HEARING),
         caller = previewCaller(),
         statsShown = false,
     )

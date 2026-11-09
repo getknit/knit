@@ -32,6 +32,8 @@ document:
   battery and radio time. It now leaves a link it holds alone.
 - Knit now waits until you accept a message request before it downloads the request's pictures and files.
   They arrive after you tap Accept, so a stranger's attachments no longer take up space on your phone first.
+- On shorter phones, the call screen could cut off the last message from someone with a long name. The
+  picture above it now shrinks when it has to, so the message shows in full.
 
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 
