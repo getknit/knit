@@ -297,8 +297,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `AdvertStatus`, `AdvertSwitch`, `ForcedRotation`, `AdvertWriter.aired`, `AdvertRotation.View`, the transport's `readvertise`,
   `bringUp`, `rotate`, `rotationLoop`, `acceptLoop`, `advertStatus`, `forceRotate`, `awaitAdvertSwitch` or `dialedByMe`, or
   `MeshTransport.onOwnPresenceKey` / `onOwnPresenceKeySource` on
-  the Bluetooth side:** READ ADR 2026-11.xp6d, its "writer on the air" amendment (step 5b, Part B1) above all, and its
-  step-6 amendment for the bridge (`…debug.ADVERT` / `ADVERT_ROTATE`: debug replies carry the cause, tag source,
+  the Bluetooth side:** READ ADR 2026-11.xp6d, its "The writer on the air" section (step 5b, Part B1) above all, and its
+  "The debug bridge and the harnesses" section (step 6) for the bridge (`…debug.ADVERT` / `ADVERT_ROTATE`: debug replies carry the cause, tag source,
   `resolvable` / `stale` and generations, never a key or a full tag). The writer airs a tag only under `BLIND_ADVERT` (passed
   in, the one seam), the runtime switch (on by default in debug since step 6, `ADVERT --ez blind false` for a harness
   that needs the classic order) and

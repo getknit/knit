@@ -133,7 +133,7 @@ Status: Accepted (2026-11-07), after its device trial.
 "A failure for a peer with a live link now bumps nothing" was written for the crossing above, a dial the peer's own link
 overtook, and said more than that. It also excused a dial that began with its peer already held, which crossed nothing:
 such a dial wakes the loop with no backoff booked, and on 2026-11-06 that was 158 refused dials in 40 s (ADR 2026-11.xp6d's
-amendment of this date). It also contradicted "A refusal is an ordinary failed dial" here and xp6d's "its own no-reply
+"A dial's proof holds off that dial"). It also contradicted "A refusal is an ordinary failed dial" here and xp6d's "its own no-reply
 backoff".
 
 - **The rule.** `DialPlan.InFlight.linkedAtStart` records whether the peer held a link when the dial began, and a dial
@@ -169,7 +169,7 @@ backoff".
   (the 12 s watchdog, 25 s on Coded, plus the 5 s HELLO cut is the window in which it can happen).
 - **What is left.** A streak under an unresolved form's handle is not earned by any link: such a dial's record cannot say it
   began held, since a handle is never linked. It is the ordinary backoff, up to its cap.
-- **The trial (2026-11-07)** is ADR 2026-11.xp6d's of that date. One dial in 26 relinks began held, the Pixel 9's to
+- **The trial (2026-11-07)** is ADR 2026-11.xp6d's "No held redial". One dial in 26 relinks began held, the Pixel 9's to
   the Pixel 3 at its advert from before a Bluetooth toggle, 3.7 s after the Pixel 3's inbound link: it timed out and booked
   45 s of backoff (streak 3), not none. No dial was refused. Since #309 a tag dial over 1M that times out forgets
   the address it dialed and the tag's Coded sibling, so for a blinded peer a toggle costs at most one such dial at the old

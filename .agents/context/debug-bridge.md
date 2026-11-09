@@ -874,7 +874,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   relinks a tuned link on the way out; `--boost on|off` runs one half of the boost's A/B (pace then defaults to 4096)
   and the summary adds `earned` and `releaseAfterS` (feed end to the tuner's served `ask priority=BALANCED`). An ask lasts the link's life: relink (`BLECAP --ei max 0`, then `--ez clear true`) between
   cells.
-- `…debug.ADVERT` — the **blinded Bluetooth advert** (ADR 2026-11.xp6d's step-6 amendment; reads on any debug build,
+- `…debug.ADVERT` — the **blinded Bluetooth advert** (ADR 2026-11.xp6d's "The debug bridge and the harnesses", step 6; reads on any debug build,
   the writer needs `BuildConfig.BLIND_ADVERT`). `--ez blind true|false` stores the runtime switch
   (`SettingsStore.debugBleBlindAdvert`, a `debug_` key, never in a backup; on by default in a debug build since step 6),
   `--ez clear true` clears it back to that default; no extras reads. After a store the action waits, at most about 6 s of

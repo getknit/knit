@@ -350,7 +350,7 @@ LoRa plane (2026-09.ggq4).
   last generation more than a year ahead and sends the direct contacts `wipedPeers` misses their `AFTER_WIPE` reset over
   the first link, sealed once and re-sent verbatim until the session confirms — never the flood. Keys of people who stop
   being direct contacts are deleted. A direct contact's keys are listed under its id whatever another peer holds: the tag
-  binds that id (xp6d's owner-bound amendment). Minting and sending this phone's own keys ride `BuildConfig.PRESENCE_KEYS`
+  binds that id (xp6d's "The tag binds its owner"). Minting and sending this phone's own keys ride `BuildConfig.PRESENCE_KEYS`
   (`MeshManager.sendsPresenceKeys` → `PresenceKeyEngine`'s `sendsOwnKeys`; on in every build as shipped, independent of
   writing tags, `BLIND_ADVERT`), while receiving, storing, resolving, leavers' deletion and link-owed resets run in every
   build whatever it says.
@@ -372,7 +372,7 @@ LoRa plane (2026-09.ggq4).
   meanwhile put her in the key's audience) left the fresh pair waiting for a heal (#285). `observe` is for the
   level-triggered key listing alone. The mark write (`markStore`) is never inside a
   transaction, commits only after an in-transaction `PRAGMA synchronous` reads FULL, and only while its generation is
-  the newest activated (xp6d's step 5b key-side amendment). Never a key, a tag or a root tag in a log line beside a peer
+  the newest activated (xp6d's "The writer's key side"). Never a key, a tag or a root tag in a log line beside a peer
   id. Regression: `PresenceKeyPolicyTest`, `PresenceKeyEngineTest`, `PresenceKeyRepositoryTest`, `InboundPipelineTest`'s
   presence-key cases, `GoldenVectorTest`'s `messageContentPresenceKey*`, `CompositeMeshTransportTest`'s own-key case,
   `PresenceKeyLabTest`, `PresenceKeyFeedLabTest` (the key handed to the radio and the `TAG_NEXT` predicate),
