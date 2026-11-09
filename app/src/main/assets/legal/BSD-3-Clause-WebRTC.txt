@@ -1,4 +1,4 @@
-WebRTC is distributed under the license below, followed by the licenses of the third-party code it statically links into libjingle_peerconnection_so.so (WebRTC branch-heads/7871, the 150.7871.01 build Knit packages).
+WebRTC is distributed under the license below, followed by the licenses of the third-party code it statically links into libjingle_peerconnection_so.so (WebRTC branch-heads/7871, the 150.7871.04 build Knit packages).
 
 WebRTC
 

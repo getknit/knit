@@ -1,4 +1,4 @@
-Third-party code inside the speech runtime's native libraries (Moonshine Voice 0.1.5: libmoonshine.so, and libonnxruntime.so, its build of ONNX Runtime 1.23.2) distributed under the 3-clause BSD license.
+Third-party code inside the speech runtime's native libraries (Moonshine Voice 0.1.6: libmoonshine.so, and libonnxruntime.so, its build of ONNX Runtime 1.23.2) distributed under the 3-clause BSD license.
 
 Protocol Buffers
 

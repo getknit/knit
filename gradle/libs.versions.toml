@@ -1,11 +1,11 @@
 [versions]
-agp = "9.5.0"
+agp = "9.5.1"
 coreKtx = "1.19.1"
 junit = "4.13.2"
 junitVersion = "1.3.0"
 # JVM-only mocking for the InboundPipeline seam test (relaxed mocks of the concrete Room-backed repos
 # the pipeline pulls in, so the test exercises the real DTN services + crypto without the full DB graph).
-mockk = "1.14.11"
+mockk = "1.14.12"
 espressoCore = "3.7.0"
 # 2.11.0's lifecycle-viewmodel-compose AAR requires minCompileSdk=37 (lifecycle-runtime itself is only 34 —
 # when re-testing this group, check the *compose* artifacts, not the base one). compileSdk is 37.1, so it
@@ -39,8 +39,9 @@ room3 = "3.0.3"
 # litert to 1.4.x. 4.18.0 is also what supplies SQLCipherDriver, so Room 3 and SQLCipher move together.
 # 4.19.0 kept both deps and the alignment identical but raised its OWN aar-metadata minCompileSdk to 37;
 # 4.19.1 drops it back to 36 (upstream now compiles against 36) and adds the common-page-size linker flag —
-# still 0x4000 on all four ABIs.
-sqlcipher = "4.19.1"
+# still 0x4000 on all four ABIs. 4.20.0 moves the SQLite baseline to 3.54.1 with the same deps, minCompileSdk 36 and
+# 0x4000 alignment (RELRO filling its first RW LOAD) on all four ABIs.
+sqlcipher = "4.20.0"
 coroutines = "1.11.0"
 kotlinxSerializationJson = "1.12.0"
 # 1.3.0 is the first stable line with the fix for the dropped update a `data` collector that subscribes mid-write
@@ -95,24 +96,24 @@ tink = "1.24.0"
 # 2.10.0-beta.0; `-PliveCalls`, app/build.gradle.kts), so the release APK carries its ~10 MB per ABI and F-Droid's
 # rebuild fetches it. The community build of Google's retired AAR (BSD-3, no transitive deps, no
 # aar-metadata, 16 KB-aligned .so, and no consumer keep rules: `app/src/calls/keepRules` pins it).
-webrtc = "150.7871.01"
+webrtc = "150.7871.04"
 # Jetpack core-telecom: each call (live or walkie) is a self-managed Telecom call, which owns its audio
 # route — earpiece, speaker, wired, Bluetooth HFP/LE Audio — and lets a headset, watch or car answer and hang up
 # (docs/VOICE_CALLS.md §3.13). Packaged only where calls are, like webrtc (its manifest brings an exported
 # ConnectionService), every androidx.core.telecom import in ui/call/TelecomCalls.kt; on in release since 2.10.0-beta.0,
-# so releaseRuntimeClasspath carries it. An RC by a recorded exception (context/toolchain.md): 1.0.1, the newest stable,
-# reverts a call switched to speaker during setup (a walkie starts there) and can start an audio call on speaker on
-# Android 14-16; 1.1.0-alpha05/06 fixed both. Move to 1.1.0
-# when it goes stable. minCompileSdk 36.1.
-coreTelecom = "1.1.0-rc01"
+# so releaseRuntimeClasspath carries it. Never below 1.1.0: 1.0.1 reverts a call switched to speaker during setup (a
+# walkie starts there) and can start an audio call on speaker on Android 14-16; 1.1.0-alpha05/06 fixed both, and 1.1.0
+# is the first stable with the fixes (it sat on 1.1.0-rc01 by a recorded exception until then). minCompileSdk 36.
+coreTelecom = "1.1.0"
 # moonshine-voice (Moonshine AI, MIT): Moonshine's own runtime — its C++ core over a slim ONNX Runtime — for the walkie
 # transcript's streaming speech models (Moonshine v2 Tiny/Small/Medium Streaming EN; docs/VOICE_CALLS.md C-3.11-9). Packaged
 # only where calls are, like webrtc (`compileOnly` + debug, `-Pcalls`), every ai.moonshine import in ui/call/stt/, and taken
 # without its transitive dependencies (appcompat, material, okhttp, work-runtime): only its `JNI` class is called, and that
-# needs none of them. From Maven Central (sha256 ee2d95c2…); arm64-v8a, armeabi-v7a and x86_64, the 64-bit .so files
+# needs none of them. From Maven Central (sha256 65282ac1…); arm64-v8a, armeabi-v7a and x86_64, the 64-bit .so files
 # 16 KB-aligned with RELRO filling the first RW LOAD. 0.1.5 is the first to load the `quantized_26_08_21` weights' split
-# frontend (frontend.model.ort + frontend.weights.ort).
-moonshineVoice = "0.1.5"
+# frontend (frontend.model.ort + frontend.weights.ort). 0.1.6 rebuilds libmoonshine*.so with the Java API we call
+# unchanged; its libonnxruntime.so (ONNX Runtime 1.23.2) is byte-identical to 0.1.5's on every ABI.
+moonshineVoice = "0.1.6"
 # translate-native (ours, GPL-3.0-or-later): slimt and CLD2 behind a JNI, the offline translation runtime (ADR
 # 2026-10.t2h6), built reproducibly and published to Maven Central by the knit-translate-native repository; its README
 # says how a version is cut. `compileOnly` everywhere and packaged only under `-Ptranslate=true`, like moonshine-voice.
@@ -149,7 +150,7 @@ zxingCore = "3.5.4"
 # its default signer 16 KB-page-aligns uncompressed lib/*.so, matching the app's own 16 KB alignment
 # requirement (see litert).
 arsclib = "1.4.0"
-apksig = "9.5.0"
+apksig = "9.5.1"
 # detekt static analysis, applied as the `dev.detekt` Gradle plugin (see [plugins] below). 2.0.0-alpha.x
 # is the first detekt line that supports Gradle 9 — 1.23.x caps at Gradle 8.12.1, and this build is on
 # 9.7.0 — and it ships the new `dev.detekt` plugin/group id (was io.gitlab.arturbosch.detekt). Runs in its
@@ -187,7 +188,9 @@ robolectric = "4.17"
 # `app/src/screenshotTest/` through layoutlib on the host JVM and diffs them against committed reference PNGs.
 # A standing exception to the stable-only rule (context/toolchain.md): the plugin has never shipped a stable
 # release. alpha12 is the first with AGP 9, alpha15 the first that renders under Kotlin 2.1+ (it was missing
-# kotlin-stdlib). Plugin and validation API share one version. Test-only: nothing reaches :app's runtime
+# kotlin-stdlib). Plugin and validation API share one version, so bump only to a version the plugin marker
+# (com.android.compose.screenshot.gradle.plugin) has: screenshot-validation-api 0.0.1-alpha17 shipped without a
+# matching plugin, which catalog-outdated.py reports as an update. Test-only: nothing reaches :app's runtime
 # classpath, and the release APK is byte-identical with the plugin applied.
 composeScreenshot = "0.0.1-alpha16"
 androidxTestCore = "1.7.0"
@@ -204,7 +207,7 @@ androidxTestServices = "1.6.0"
 # a resource-id, so By.res(...) matches the same tags the Compose suite asserts on. 2.4.0 went stable and
 # adds a new Kotlin DSL alongside the classic UiDevice/By/Until API this suite uses (unchanged); its AAR is
 # minCompileSdk=34, well under our 36.1. androidTest-only, no APK/runtime impact on the app.
-uiautomator = "2.4.0"
+uiautomator = "2.4.1"
 # Macrobenchmark, used ONLY by the :baselineprofile module to generate app/src/main/baseline-prof.txt.
 # It never enters :app's dependency graph, never appears in app/gradle.lockfile, and never ships — the
 # module is only in the build under `-Pknit.baselineProfile=true`. 1.5.0 — the line that knows about AGP 9
@@ -224,7 +227,7 @@ media3 = "1.11.1"
 # Wear OS — used ONLY by the opt-in :wear module (the watch app for the mesh-status prototype), which is in
 # the build only under `-Pknit.wear=true`: never in :app's graph, app/gradle.lockfile or a shipped artifact.
 # Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.1 is minCompileSdk 37 + AGP 9.1, both
-# cleared by compileSdk 37.1 / AGP 9.5.0.
+# cleared by compileSdk 37.1 / AGP 9.5.1.
 wearComplications = "1.3.0"
 wearCompose = "1.7.1"
 # Tiles 1.6.2 / ProtoLayout 1.4.2: Material3TileService and the M3 Expressive tile layouts; tiles ask for

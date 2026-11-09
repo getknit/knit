@@ -152,9 +152,9 @@ The translation models the app downloads are not bundled. A build without transl
 | &nbsp;&nbsp;&nbsp;&nbsp;↳ Caffe2 (code ONNX Runtime derives from: its convolution and math routines) | [Facebook](https://github.com/pytorch/pytorch) | Apache-2.0 |
 | &nbsp;&nbsp;&nbsp;&nbsp;↳ Pillow (the resampling filters of ONNX Runtime's Resize) | [python-pillow/Pillow](https://github.com/python-pillow/Pillow) | HPND |
 
-`ai.moonshine:moonshine-voice` 0.1.5 is Moonshine AI's own Android AAR (© 2025 Useful Sensors, Inc., dba Moonshine
+`ai.moonshine:moonshine-voice` 0.1.6 is Moonshine AI's own Android AAR (© 2025 Useful Sensors, Inc., dba Moonshine
 AI). In each of its three ABIs it packages `libmoonshine-jni.so`, `libmoonshine.so`, built from Moonshine's `core/` at
-its `v0.1.5` tag, and `libonnxruntime.so`, the operator-reduced ONNX Runtime 1.23.2 that Moonshine vendors at that tag
+its `v0.1.6` tag, and `libonnxruntime.so`, the operator-reduced ONNX Runtime 1.23.2 that Moonshine vendors at that tag
 (byte for byte). The rows under it are what those binaries carry, kept to what they show: the libraries of Moonshine's
 `core/third-party/` and `core/cpp-annote/` that `libmoonshine.so`'s exported symbols name, the model data compiled into
 it, and, under ONNX Runtime, the entries of ONNX Runtime's own `ThirdPartyNotices.txt` at `v1.23.2` that its strings and
