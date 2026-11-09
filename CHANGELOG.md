@@ -18,6 +18,13 @@ document:
 
 # Knit changelog
 
+## Unreleased
+
+### Fixed
+
+- On shorter phones, the call screen could cut off the last message from someone with a long name. The
+  picture above it now shrinks when it has to, so the message shows in full.
+
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 
 > Knit in five new languages, translation on your phone, and speech turned into text

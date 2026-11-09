@@ -19,6 +19,7 @@ import app.getknit.knit.ui.call.CallScreenDroppedPreview
 import app.getknit.knit.ui.call.CallScreenEndedPreview
 import app.getknit.knit.ui.call.CallScreenHeadsetPreview
 import app.getknit.knit.ui.call.CallScreenIncomingPreview
+import app.getknit.knit.ui.call.CallScreenLongNameCallerPreview
 import app.getknit.knit.ui.call.CallScreenLongNamePreview
 import app.getknit.knit.ui.call.CallScreenPoorPreview
 import app.getknit.knit.ui.call.CallScreenReconnectingPreview
@@ -92,6 +93,13 @@ fun CallScreenHeadset() = CallScreenHeadsetPreview()
 @ScreenShots
 @Composable
 fun CallScreenPoor() = CallScreenPoorPreview()
+
+@PreviewTest
+@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=810dp", locale = ENGLISH)
+@Preview(name = "LongText", showBackground = true, device = "spec:width=411dp,height=810dp", locale = LONG_TEXT)
+@Preview(name = "Rtl", showBackground = true, device = "spec:width=411dp,height=810dp", locale = RIGHT_TO_LEFT)
+@Composable
+fun CallScreenLongNameCaller() = CallScreenLongNameCallerPreview()
 
 @PreviewTest
 @ScreenShots
