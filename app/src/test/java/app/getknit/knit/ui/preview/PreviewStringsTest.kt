@@ -149,7 +149,7 @@ class PreviewStringsTest(
 }
 
 @Composable
-private fun InvokePreview(
+internal fun InvokePreview(
     owner: String,
     method: String,
 ) {

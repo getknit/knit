@@ -677,6 +677,7 @@ android {
                 .get()
         val labChaosRuns = providers.gradleProperty("knit.labChaosRuns").orNull
         val previewStrings = providers.gradleProperty("knit.previewStrings").orNull
+        val previewLayout = providers.gradleProperty("knit.previewLayout").orNull
         val wireVectors = rootProject.layout.projectDirectory.dir("vectors")
         val writeVectors = providers.environmentVariable("KNIT_WRITE_VECTORS").orElse("")
         // Run instrumentation tests under Android Test Orchestrator (each test in its own process; combined
@@ -711,6 +712,15 @@ android {
                     test.filter.excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
                 } else {
                     test.systemProperty("knit.previewStrings", previewStrings)
+                }
+                // `-Pknit.previewLayout=<dir>` runs PreviewClippingTest, the layout audit scripts/preview-layout-audit.py
+                // drives; its findings are a review list, not a gate, so every other run leaves it out.
+                if (previewLayout == null) {
+                    test.filter.excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
+                } else {
+                    test.systemProperty("knit.previewLayout", previewLayout)
+                    // A preview that formats an absolute time uses the JVM's zone; pin it as the screenshot tasks do.
+                    test.systemProperty("user.timezone", "UTC")
                 }
                 // `-Pknit.labBoards=true` gives every mesh-lab node a LoRa board (MeshLab.BOARDS_ENV, ADR
                 // 2026-10.x9fa), so each scenario also runs with compact DMs and ticks racing its signed copies.
@@ -1142,9 +1152,12 @@ if (labChaosShards > 0) {
             filter {
                 patterns.forEach(::includeTestsMatching)
                 if (boards) labClassesNotBoardReady.forEach { excludeTestsMatching("app.getknit.knit.mesh.lab.$it") }
-                // The recorder runs only under -Pknit.previewStrings (unitTests.all leaves it out of the variant tasks).
+                // The recorder and the layout audit run only under their -Pknit.preview* properties (as in unitTests.all).
                 if (!providers.gradleProperty("knit.previewStrings").isPresent) {
                     excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
+                }
+                if (!providers.gradleProperty("knit.previewLayout").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
                 }
             }
             outputs.upToDateWhen { false }
@@ -1185,9 +1198,12 @@ if (unitStressShards > 0) {
             useJUnit()
             filter {
                 patterns.forEach(::includeTestsMatching)
-                // The recorder runs only under -Pknit.previewStrings (unitTests.all leaves it out of the variant tasks).
+                // The recorder and the layout audit run only under their -Pknit.preview* properties (as in unitTests.all).
                 if (!providers.gradleProperty("knit.previewStrings").isPresent) {
                     excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
+                }
+                if (!providers.gradleProperty("knit.previewLayout").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.ui.preview.PreviewClippingTest")
                 }
             }
             outputs.upToDateWhen { false }

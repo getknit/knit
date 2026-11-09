@@ -923,6 +923,16 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   unnamed Light rendered as en-XA. A new multipreview must name one too. The references only record what each
   locale looks like: a clipped label passes once its image is committed, so the review of a new subject's
   `LongText` and `Rtl` images is the check.
+- **The layout audit finds what the references only record.** `python3 scripts/preview-layout-audit.py` (`--only
+  <wrappers>` to narrow it) composes every preview under Robolectric (`PreviewClippingTest`, run only under
+  `-Pknit.previewLayout=<dir>`) on a 360×640 dp phone, the same in en-XA, and 411×891 at font scale 1.5, and lists
+  each text or scrolling viewport cut off with no scroll to reach it, each text whose layout loses lines or width
+  with no ellipsis, and each pair of texts drawn over each other. A screen preview gets the variant's whole frame, a
+  component only its width (its screenshot is content-sized too); a dialog is its own window and goes unaudited. It
+  was built for GitHub #62 (the caller card's last line squeezed to 18 of 60 px), which it flags on the pre-fix code.
+  A review list, not a gate: a preview only shows its own sample data, so a screen whose previews use short names
+  needs a worst-case preview first. The first full run (2026-11-09, 810 cases) left two segmented-button labels
+  clipped by 1 dp and `RenameGroupDialog`, which never idles under Robolectric.
 - **Layoutlib's framework is not the device's.** `Formatter.formatShortFileSize` below a kilobyte renders its
   template: `(123) (B)` under en-US, the raw `${NUMBER} ${UNIT}` with no locale named (`MetricsSectionEmpty`'s
   "Bytes sent"). It is a renderer quirk the reference captures, not an app bug; 2.5 MB renders normally.
