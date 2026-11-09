@@ -41,6 +41,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
 import java.util.Locale
+import kotlin.math.abs
 
 /**
  * Whether any `@Preview` cuts its own content off on a small phone, in long text or at a large font: the shape of
@@ -52,8 +53,8 @@ import java.util.Locale
  * composes once per [Variant] inside a clipped frame of that size (a component, of that width), under
  * [LocalInspectionMode] as the screenshot render does, and the unmerged semantics tree is walked for three findings:
  *
- * - **cut off**: a node with text or a description (or a scroll container's viewport) shows less than its measured
- *   size, and no scroll container above it can bring the rest into view;
+ * - **cut off**: a text's lines, or the box of a node with a description (or of a scroll container's viewport), show
+ *   less than they measure, and no scroll container above can bring the rest into view;
  * - **overflows**: a text's layout overflows its box with no ellipsis (an editable field, which scrolls, is skipped);
  * - **overlaps**: two texts, neither inside the other, cover each other within the same scroll container.
  *
@@ -192,23 +193,37 @@ class PreviewClippingTest(
             label: String?,
             scrollers: Scrollers,
         ) {
-            val full = Rect(node.positionInRoot, node.size.toSize())
-            val shown = node.boundsInRoot
-            // A node out of view entirely has empty bounds on both axes, so either axis's scroll may be what hid it.
-            val cut =
-                if (shown.isEmpty) {
-                    scrollers.x == null && scrollers.y == null
-                } else {
-                    (scrollers.x == null && shown.width < full.width - TOLERANCE_PX) ||
-                        (scrollers.y == null && shown.height < full.height - TOLERANCE_PX)
-                }
-            if (cut) {
+            // A text is judged by its lines, not its box: a wrapped line fills its constraint's width, and a segmented
+            // button shifts that box past its own edge for the check while the centred words sit well inside.
+            val full = textLayout(node)?.let { inkOf(node, it) } ?: Rect(node.positionInRoot, node.size.toSize())
+            val box = node.boundsInRoot
+            // How much of [full] shows on each axis, 0 when none: a box in view can still have every line clipped.
+            val shownWidth = (minOf(box.right, full.right) - maxOf(box.left, full.left)).coerceAtLeast(0f)
+            val shownHeight = (minOf(box.bottom, full.bottom) - maxOf(box.top, full.top)).coerceAtLeast(0f)
+            if (isCut(full, box.isEmpty, shownWidth, shownHeight, scrollers)) {
                 val what = label?.let { "\"$it\"" } ?: "a scrolling area's viewport"
-                findings += "cut off: $what shows ${shown.width.px()}×${shown.height.px()} of ${full.width.px()}×${full.height.px()} px"
+                findings += "cut off: $what shows ${shownWidth.px()}×${shownHeight.px()} of ${full.width.px()}×${full.height.px()} px"
             }
             if (label == null) return
             textLayout(node)?.let(::overflow)?.let { findings += "overflows: \"$label\" $it" }
-            if (SemanticsProperties.Text in node.config && !shown.isEmpty) texts += Shown(node, label, shown, scrollers.y ?: scrollers.x)
+            if (SemanticsProperties.Text in node.config && shownWidth > 0f && shownHeight > 0f) {
+                texts += Shown(node, label, box.intersect(full), scrollers.y ?: scrollers.x)
+            }
+        }
+
+        /** Whether what shows falls short of [full] on an axis no scroll container above can bring into view. */
+        private fun isCut(
+            full: Rect,
+            outOfView: Boolean,
+            shownWidth: Float,
+            shownHeight: Float,
+            scrollers: Scrollers,
+        ): Boolean {
+            // A node out of view entirely has empty bounds on both axes, so either axis's scroll may be what hid it. Read
+            // from the node's own bounds: its lines can all be clipped while its box is still in view.
+            if (outOfView) return scrollers.x == null && scrollers.y == null
+            return (scrollers.x == null && shownWidth < full.width - TOLERANCE_PX) ||
+                (scrollers.y == null && shownHeight < full.height - TOLERANCE_PX)
         }
 
         fun overlaps() {
@@ -275,6 +290,32 @@ class PreviewClippingTest(
                 cut -> "needs ${wide.px()}×${tall.px()} px in ${layout.size.width}×${layout.size.height}"
                 else -> null
             }
+        }
+
+        /**
+         * Where a text's lines are in the root, when its box is wider than they are: a wrapped text fills its constraint's
+         * width. The layout's line positions are in its paragraph's frame, which is the node's only when the paragraph
+         * fills it; a text narrower than its paragraph is one whose box is already tight around the words, so null keeps
+         * the box. The lines are also relative to the text's own layout, and the node's position is its outermost
+         * semantics modifier's: a `clickable` or `semantics` before a `padding` puts the two apart, so a node a different
+         * size from its text keeps the box too. An `offset` that moves the text without resizing it is not seen.
+         */
+        private fun inkOf(
+            node: SemanticsNode,
+            layout: TextLayoutResult,
+        ): Rect? {
+            val sameBox =
+                abs(node.size.width - layout.size.width) <= TOLERANCE_PX &&
+                    abs(node.size.height - layout.size.height) <= TOLERANCE_PX
+            if (layout.lineCount == 0 || !sameBox || layout.multiParagraph.width > layout.size.width + TOLERANCE_PX) return null
+            val lines = 0 until layout.lineCount
+            val at = node.positionInRoot
+            return Rect(
+                at.x + lines.minOf(layout::getLineLeft),
+                at.y + layout.getLineTop(0),
+                at.x + lines.maxOf(layout::getLineRight),
+                at.y + layout.getLineBottom(layout.lineCount - 1),
+            ).takeUnless { it.isEmpty }
         }
 
         /** The text's layout, except an editable field's: a field scrolls its own text. */
