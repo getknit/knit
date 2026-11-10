@@ -97,7 +97,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -237,6 +236,7 @@ private fun callGraph(): Module =
  */
 private fun Scope.callManager(): CallManager {
     val demo = if (LIVE_CALLS_WIRED) demoCallMediaOrNull() else null
+    val direct = if (LIVE_CALLS_WIRED && demo == null) get<DirectCallPath>() else CallDirect.None
     return CallManager(
         signals = demoCallSignalsOrNull() ?: CallSignals { peerId, payload -> get<MeshManager>().sendCallSignal(peerId, payload) },
         turn = if (LIVE_CALLS_WIRED && demo == null) get<TurnSource>() else TurnSource.None,
@@ -244,8 +244,8 @@ private fun Scope.callManager(): CallManager {
         scope = get<CoroutineScope>(),
         selfId = { get<Identity>().nodeId() },
         log = { Log.i(TAG, it) },
-        direct = if (LIVE_CALLS_WIRED && demo == null) get<DirectCallPath>() else CallDirect.None,
-        walkie = if (WALKIE_WIRED) walkieRoute() else CallWalkie.None,
+        direct = direct,
+        walkie = if (WALKIE_WIRED) walkieRoute(direct) else CallWalkie.None,
         relayAll = if (LIVE_CALLS_WIRED) get<RelayAllCalls>().read else ({ true }),
         tombs = get<CallTombStore>(),
         reach = callReach(),
@@ -588,10 +588,10 @@ private fun Scope.fieldLog(): FieldRecorder = FieldRecorder { event -> get<Field
 /**
  * When a call is placed as a walkie (§3.11): the peer must run one, and a live call must look impossible — the peer
  * takes none (a build may take mesh calls only, ADR 2026-10.swvp), or there is no Internet route here (no spool, no STUN
- * or TURN) and no Wi-Fi Direct leg, which wants a neighbour that runs the transfer's radio with direct calls on, and
- * this phone able to host it. A wrong guess costs little: a live call with no path drops to a walkie anyway.
+ * or TURN) and [direct] would offer no Wi-Fi Direct leg (C-3.10-1). A wrong guess costs the call: a live call with no
+ * path ends `no_route`, since the drop to a walkie is parked (`CallManager.dropToWalkie`).
  */
-private fun Scope.walkieRoute(): CallWalkie =
+private fun Scope.walkieRoute(direct: CallDirect): CallWalkie =
     object : CallWalkie {
         override val enabled = true
 
@@ -602,11 +602,8 @@ private fun Scope.walkieRoute(): CallWalkie =
             val caps = get<PeerRepository>().find(peerId)?.capabilities ?: 0L
             if (caps and Protocol.CAP_CALL == 0L) return false
             if (get<InternetGate>().isOnline()) return true
-            val neighbour = get<MeshController>().neighbors.value.any { it.nodeId == peerId }
-            val direct = caps and Protocol.CAP_DIRECT_TRANSFER != 0L
-            // The caller hosts the leg, so a phone that may not host has none to offer (ADR 2026-10.w3dw).
-            val hosts = get<DirectWifiLease>().mayHost()
-            return neighbour && direct && hosts && !get<SettingsStore>().debugDirectCallsOff.first()
+            // The leg's own answer, not a copy of its gates: a copy missed a switched-off Wi-Fi radio (#63).
+            return direct.canOffer(peerId)
         }
 
         override fun castTicketed() = get<MeshManager>().castTicketed()

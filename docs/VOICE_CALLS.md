@@ -813,7 +813,8 @@ its media (`REASON_MEDIA`).
   audio bit is absent.
 - **C-3.11-3** A call placed without a kind (`CallKind.AUTO`) is a walkie session only when the peer carries
   `CAP_WALKIE` and no live path looks possible. "Possible" means a validated Internet route here, or a Wi-Fi Direct
-  leg (§3.10) to a neighbour. Anything else is a live call.
+  leg (§3.10) this phone would offer a neighbour now, by C-3.10-1's own test (`CallDirect.canOffer`), so a phone
+  whose Wi-Fi is switched off places a walkie. Anything else is a live call.
 
   The profile offers each kind as its own button beside Message, Call and Mesh call, toward a peer carrying that
   kind's bit (`CAP_CALL`, `CAP_WALKIE`); with both offered they share a row under Message.

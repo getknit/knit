@@ -18,8 +18,9 @@ interface CallWalkie {
     suspend fun capable(peerId: String): Boolean
 
     /**
-     * Whether a live call to [peerId] could connect: an Internet route here, or a Wi-Fi Direct leg to a neighbour. A
-     * guess either way — a live call that turns out to have no path still drops to a walkie (§3.11).
+     * Whether a live call to [peerId] could connect: an Internet route here, or a Wi-Fi Direct leg this phone would
+     * offer a neighbour now (C-3.10-1). A guess either way, and a wrong one costs the call: with the drop to a walkie
+     * parked (§3.11, C-3.11-4), a live call that turns out to have no path ends `no_route`.
      */
     suspend fun liveLikely(peerId: String): Boolean
 

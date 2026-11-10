@@ -162,6 +162,8 @@ class CallManagerTest {
             peerId: String,
         ): DirectInvite? = if (offering) INVITE else null
 
+        override suspend fun canOffer(peerId: String): Boolean = offering
+
         override fun canJoin(
             peerId: String,
             prewarm: Boolean,

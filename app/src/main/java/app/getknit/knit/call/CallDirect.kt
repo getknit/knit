@@ -94,6 +94,12 @@ interface CallDirect {
         peerId: String,
     ): DirectInvite?
 
+    /**
+     * Whether [invite] would offer [peerId] a leg now, minting nothing: what a call placed without a kind asks before
+     * it goes live (§3.11, C-3.11-3), so the two can never disagree.
+     */
+    suspend fun canOffer(peerId: String): Boolean
+
     /** Whether this phone could join [peerId]'s group for a call now; [prewarm] asks for a join while it only rings. */
     fun canJoin(
         peerId: String,
@@ -152,6 +158,8 @@ interface CallDirect {
             callId: String,
             peerId: String,
         ): DirectInvite? = null
+
+        override suspend fun canOffer(peerId: String): Boolean = false
 
         override fun canJoin(
             peerId: String,

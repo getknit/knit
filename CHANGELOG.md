@@ -24,6 +24,8 @@ document:
 
 - On shorter phones, the call screen could cut off the last message from someone with a long name. The
   picture above it now shrinks when it has to, so the message shows in full.
+- With your Wi-Fi switched off and no internet, the call button in a chat now starts a mesh call to a contact
+  nearby. It used to start a regular call that rang on their phone but could never connect.
 
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 
