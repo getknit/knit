@@ -37,6 +37,7 @@ import app.getknit.knit.call.TurnSource
 import app.getknit.knit.call.TurnTargets
 import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.VoiceNoteTranscriber
+import app.getknit.knit.call.WalkieRoute
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -250,6 +251,7 @@ private fun Scope.callManager(): CallManager {
         tombs = get<CallTombStore>(),
         reach = callReach(),
         takesIncoming = get<IncomingCalls>()::takes,
+        networked = { get<AndroidInternetGate>().hasAnyNetwork() },
         field = fieldLog(),
         ranking = if (LIVE_CALLS_WIRED) get<TurnRanking>() else TurnRanking(),
     )
@@ -585,29 +587,14 @@ private fun walkieCue(tones: TonePlayer): (TalkCue) -> Unit = { how -> if (how =
  */
 private fun Scope.fieldLog(): FieldRecorder = FieldRecorder { event -> get<FieldLog>().record(event) }
 
-/**
- * When a call is placed as a walkie (§3.11): the peer must run one, and a live call must look impossible — the peer
- * takes none (a build may take mesh calls only, ADR 2026-10.swvp), or there is no Internet route here (no spool, no STUN
- * or TURN) and [direct] would offer no Wi-Fi Direct leg (C-3.10-1). A wrong guess costs the call: a live call with no
- * path ends `no_route`, since the drop to a walkie is parked (`CallManager.dropToWalkie`).
- */
+/** §3.11's [WalkieRoute] over the pinned profiles, the Internet gate and [direct], the call's own leg. */
 private fun Scope.walkieRoute(direct: CallDirect): CallWalkie =
-    object : CallWalkie {
-        override val enabled = true
-
-        override suspend fun capable(peerId: String) =
-            (get<PeerRepository>().find(peerId)?.capabilities ?: 0L) and Protocol.CAP_WALKIE != 0L
-
-        override suspend fun liveLikely(peerId: String): Boolean {
-            val caps = get<PeerRepository>().find(peerId)?.capabilities ?: 0L
-            if (caps and Protocol.CAP_CALL == 0L) return false
-            if (get<InternetGate>().isOnline()) return true
-            // The leg's own answer, not a copy of its gates: a copy missed a switched-off Wi-Fi radio (#63).
-            return direct.canOffer(peerId)
-        }
-
-        override fun castTicketed() = get<MeshManager>().castTicketed()
-    }
+    WalkieRoute(
+        capabilities = { id -> get<PeerRepository>().find(id)?.capabilities ?: 0L },
+        online = { get<InternetGate>().isOnline() },
+        direct = direct,
+        ticketed = { get<MeshManager>().castTicketed() },
+    )
 
 /**
  * C-3.3-5's evidence that a call's signals can reach a peer, read off the mesh's own sets by [CallReachRule]: a live

@@ -49,8 +49,9 @@ document:
   They arrive after you tap Accept, so a stranger's attachments no longer take up space on your phone first.
 - On shorter phones, the call screen could cut off the last message from someone with a long name. The
   picture above it now shrinks when it has to, so the message shows in full.
-- With your Wi-Fi switched off and no internet, the call button in a chat now starts a mesh call to a contact
-  nearby. It used to start a regular call that rang on their phone but could never connect.
+- A call from a chat to a nearby contact now becomes a mesh call when either phone has its Wi-Fi switched off
+  and no internet. It used to ring on their phone and never connect. When only their Wi-Fi is off, their phone
+  needs this version too.
 
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 

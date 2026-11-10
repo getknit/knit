@@ -53,6 +53,13 @@ class AndroidInternetGate(
     override fun isOnline(): Boolean = currentNetwork() != null
 
     /**
+     * Whether the phone has a default network at all this instant, validated or not: a LAN with no Internet, or a route
+     * still validating, counts. What a call's callee asks before refusing a live offer it could gather for on nothing
+     * (docs/VOICE_CALLS.md C-3.3-8). A Wi-Fi Aware or Wi-Fi Direct network is never the default.
+     */
+    fun hasAnyNetwork(): Boolean = connectivity?.activeNetwork != null
+
+    /**
      * One address this phone holds on a network: its raw bytes (4 or 16), whether it is an IPv6 temporary one, and the
      * length of its network's prefix — which peers are on the same link.
      */

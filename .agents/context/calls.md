@@ -33,6 +33,11 @@ lines.
   `takesIncoming`) answer a switched-off kind `DECLINE rsn=timeout` — the caller's "No answer" — without ringing, busy
   or not; a blocked contact's offer never reaches the manager, since every DM of theirs drops before decrypt (ADR
   2026-10.fcrd).
+  **Before touching `call/WalkieRoute`, `CallDirect.canOffer`, `CallManager`'s `networked` / `noLivePath` /
+  `asWalkieInstead` (`Live.walkieInstead`) or `AndroidInternetGate.hasAnyNetwork`:** READ ADR 2026-11.mfbq and
+  `docs/VOICE_CALLS.md` C-3.3-8/9 and C-3.11-3 — a call from the chat goes live only where this phone has an Internet
+  route or a Wi-Fi Direct leg the leg itself would offer (never a copy of its gates); a callee with no network at all and
+  no group it could join refuses a live offer `no_route` unrung; and the caller re-places that call as a walkie once.
   `CallManager.onSignal` runs on the inbound path — never make it wait on TURN or the media — and a TURN credential is
   never logged or put in a frame. A call's line in its thread (`data/message/CallRecord`, `MessageEntity.KIND_CALL`,
   `call/CallLog`) is §3.12: a record this phone writes when the call ends, never sent, saved off the inbound path.

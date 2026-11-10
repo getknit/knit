@@ -187,6 +187,11 @@ data class CallTimings(
  * off is answered `DECLINE rsn=timeout`, the caller's "No answer", without ringing, a record or a missed call — busy or
  * not, so it says nothing about a call in progress. A glare offer is still taken: this phone was calling that peer.
  *
+ * **A live call with no path at the callee becomes a mesh call** (ADR 2026-11.mfbq): a callee with no network at all
+ * ([networked]) and no group it could join ([direct]) answers a live offer `DECLINE rsn=no_route` without ringing
+ * (C-3.3-8), and a caller whose [CallKind.AUTO] call to a peer that runs the walkie gets that answer before an ANSWER
+ * re-places it as a walkie session under a new id, once (C-3.3-9). The caller cannot see the callee's radios.
+ *
  * **A call to a peer nothing reaches says so** ([reach], C-3.3-5): until a RINGING comes back, the caller looks every
  * [CallTimings.reachLookMs] at whether any link, mesh path, Wi-Fi Aware sighting or shared spool reaches the peer, flags
  * the call [CallState.unreachable] while none does, and withdraws it with `CANCEL no_route` once none has for
@@ -228,6 +233,8 @@ class CallManager(
     private val tombs: CallTombJournal = CallTombJournal.None,
     private val reach: CallReach = CallReach.Assumed,
     private val takesIncoming: (walkie: Boolean) -> Boolean = { true },
+    // C-3.3-8: whether this phone holds any network a live call could gather on, validated or not.
+    private val networked: () -> Boolean = { true },
     private val field: FieldRecorder = FieldRecorder.NONE,
     private val ranking: TurnRanking = TurnRanking(),
 ) : CallControl {
@@ -289,6 +296,10 @@ class CallManager(
         var degraded = false
         var offeredWalkie = false
         var walkieOk = false
+
+        // C-3.3-9: a live call placed without a kind toward a peer that runs the walkie, re-placed as one on a
+        // `no_route` DECLINE. Never set on the walkie it becomes, so a call is re-placed once.
+        var walkieInstead = false
 
         // §2.7: the peer's last OFFER or ANSWER carried `ct`.
         var peerCastTicketed = false
@@ -405,11 +416,13 @@ class CallManager(
             }
         if (!asWalkie && !liveEnabled) return CallRefusal.NO_LIVE
         if (!asWalkie && relayBlocked()) return CallRefusal.NO_RELAY
+        val instead = mayBecomeWalkie(peerId, kind, asWalkie)
         val l =
             mutex.withLock {
                 if (live?.phase?.let { it != CallPhase.Ended } == true) return CallRefusal.BUSY
                 Live(id = newId(), peerId = peerId, outgoing = true, startedAt = clock(), phase = CallPhase.Calling).also {
                     it.walkie = asWalkie
+                    it.walkieInstead = instead
                     live = it
                     armRingOut(it)
                     watchReach(it)
@@ -421,6 +434,13 @@ class CallManager(
         setup(l) { if (asWalkie) dialWalkie(l) else dial(l) }
         return null
     }
+
+    /** C-3.3-9: whether a live call placed as [kind] to [peerId] is re-placed as a walkie when the callee has no path. */
+    private suspend fun mayBecomeWalkie(
+        peerId: String,
+        kind: CallKind,
+        asWalkie: Boolean,
+    ): Boolean = kind == CallKind.AUTO && !asWalkie && walkie.enabled && walkie.capable(peerId)
 
     /** Whether this build runs the walkie at all (§3.11): the chat offers a mesh call beside the live one. */
     val walkieEnabled: Boolean get() = walkie.enabled
@@ -612,13 +632,16 @@ class CallManager(
         return listOf(Send(sender, CallPayload(id = p.id, ph = CallPayload.PHASE_RINGING, dx = directVerdict(l))))
     }
 
-    /** An offer this phone declines without ringing — a kind switched off, or nothing to relay through — or null. */
+    /**
+     * An offer this phone declines without ringing — a kind switched off, nothing to relay through, or no live path at
+     * all — or null.
+     */
     private fun declinedUnrung(
         sender: String,
         p: CallPayload,
         current: Live?,
         now: Long,
-    ): List<Send>? = switchedOff(sender, p, current) ?: relayRefused(sender, p, current, now)
+    ): List<Send>? = switchedOff(sender, p, current) ?: relayRefused(sender, p, current, now) ?: noLivePath(sender, p, current)
 
     /**
      * C-3.3-7: the no-answer DECLINE for an offer of a kind the person switched off, or null to go on. Busy or not, so
@@ -654,6 +677,25 @@ class CallManager(
         loggedCalls.trySend(CallLogged(sender, now, CallRecord(id = p.id, outgoing = false, walkie = false, missed = true)))
         refused(sender, p, CallEndReason.NO_ROUTE, missed = true)
         log("call ${p.id} from $sender: relay all calls, but no TURN server; declined")
+        return listOf(Send(sender, CallPayload(id = p.id, ph = CallPayload.PHASE_DECLINE, rsn = CallPayload.REASON_NO_ROUTE)))
+    }
+
+    /**
+     * C-3.3-8 (ADR 2026-11.mfbq): a live offer this phone has no path for, declined `no_route` without ringing. It holds
+     * no network ICE could gather on and no group it could join (Wi-Fi off, no permission, the radio held), so an answer
+     * would only fail 20 s later. A caller that placed it without a kind re-places it as a walkie (C-3.3-9), which rings
+     * next, so no missed call is left. Null to go on, and while a call is live, which answers busy or glare first.
+     */
+    private fun noLivePath(
+        sender: String,
+        p: CallPayload,
+        current: Live?,
+    ): List<Send>? {
+        if (current != null || isWalkieOnly(p) || networked()) return null
+        if (directInviteOf(p) != null && direct.canJoin(sender, prewarm = false)) return null
+        bury(p.id, CallPayload.PHASE_DECLINE, CallPayload.REASON_NO_ROUTE)
+        refused(sender, p, CallEndReason.NO_ROUTE)
+        log("call ${p.id} from $sender: no network and no group to join; declined")
         return listOf(Send(sender, CallPayload(id = p.id, ph = CallPayload.PHASE_DECLINE, rsn = CallPayload.REASON_NO_ROUTE)))
     }
 
@@ -903,11 +945,45 @@ class CallManager(
         val l = live
         if (l != null && l.id == p.id && l.peerId == sender) {
             if (l.phase == CallPhase.Ended) return emptyList()
+            if (rePlaced(l, p)) return asWalkieInstead(l)
             val missed = !l.outgoing && l.phase == CallPhase.Alerting && p.ph == CallPayload.PHASE_CANCEL
             return finish(l, p.rsn ?: CallPayload.REASON_USER, byPeer = true, missed = missed)
         }
         // A call we never saw, or one already replaced: remembered, so its late offer never rings (C-3.4-3).
         if (p.id !in tombstones) bury(p.id, p.ph, p.rsn)
+        return emptyList()
+    }
+
+    /** C-3.3-9: whether [p] is the callee's no-path refusal (C-3.3-8) of [l], a live call that may become a walkie. */
+    private fun rePlaced(
+        l: Live,
+        p: CallPayload,
+    ): Boolean =
+        l.walkieInstead &&
+            l.outgoing &&
+            !l.walkie &&
+            (l.phase == CallPhase.Calling || l.phase == CallPhase.Ringing) &&
+            p.ph == CallPayload.PHASE_DECLINE &&
+            p.rsn == CallPayload.REASON_NO_ROUTE
+
+    /**
+     * C-3.3-9: [l], refused by a callee with no live path, re-placed as a walkie session under a new id. Its peer and
+     * start carry over, so the call screen and the system's call follow it as they follow glare. The live attempt
+     * sends no CANCEL (the callee buried it) and leaves no record, only its field line; the walkie is never re-placed.
+     */
+    private fun asWalkieInstead(l: Live): List<Send> {
+        drop(l)
+        l.byPeer = true
+        field.record(endLine(l, CallPayload.REASON_NO_ROUTE, l.phase, clock(), unreached = false))
+        val w = Live(id = newId(), peerId = l.peerId, outgoing = true, startedAt = l.startedAt, phase = CallPhase.Calling)
+        w.walkie = true
+        live = w
+        armRingOut(w)
+        watchReach(w)
+        publish()
+        began(w)
+        log("call ${l.id}: the peer has no live path; re-placed as walkie ${w.id}")
+        setup(w) { dialWalkie(w) }
         return emptyList()
     }
 

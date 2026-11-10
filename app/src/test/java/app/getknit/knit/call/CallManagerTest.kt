@@ -20,6 +20,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -311,6 +313,9 @@ class CallManagerTest {
         var takesLive = true
         var takesWalkie = true
 
+        // C-3.3-8: whether this side holds any network a live call could gather on.
+        var networked = true
+
         val state: CallState? get() = manager.state.value
 
         fun phases(): List<Int> = synchronized(sent) { sent.map { it.ph } }
@@ -374,6 +379,7 @@ class CallManagerTest {
                 tombs = tombs,
                 reach = { side.reachable },
                 takesIncoming = { CallIntake(live = side.takesLive, walkie = side.takesWalkie).takes(it) },
+                networked = { side.networked },
                 field = FieldRecorder { field += it },
                 ranking = ranking,
                 log = { side.logs += it },
@@ -1986,6 +1992,139 @@ class CallManagerTest {
             assertEquals(CallPayload.REASON_USER, alice.state!!.reason)
             assertEquals(listOf(CallPayload.PHASE_OFFER), alice.phases())
             assertEquals(listOf(CallPayload.PHASE_RINGING, CallPayload.PHASE_ANSWER, CallPayload.PHASE_END), bob.phases())
+        }
+
+    /** C-3.3-8: with no network and no group to join, a live offer is refused no_route at once and leaves nothing. */
+    @Test
+    fun aLiveOfferWithNoNetworkAndNoLegIsDeclinedNoRouteUnrung() =
+        runTest {
+            val (_, alice, bob) = pair()
+            bob.networked = false
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertNull(bob.state)
+            assertEquals(CallPayload.PHASE_DECLINE, bob.sent.single().ph)
+            assertEquals(CallPayload.REASON_NO_ROUTE, bob.sent.single().rsn)
+            assertTrue(bob.media.sessions.isEmpty() && bob.turnAsks.isEmpty())
+            assertTrue(bob.missed.isEmpty() && bob.logged.isEmpty())
+            // No walkie on this caller: the call ends no_route, as a live call placed on purpose does.
+            assertEquals(CallPhase.Ended, alice.state!!.phase)
+            assertEquals(CallPayload.REASON_NO_ROUTE, alice.state!!.reason)
+            assertEquals(listOf(CallPayload.PHASE_OFFER), alice.phases())
+
+            // An offered group this phone cannot join (its Wi-Fi off, the radio held) is no path either.
+            alice.direct.offering = true
+            bob.direct.joinable = false
+            bob.sent.clear()
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertNull(bob.state)
+            assertEquals(CallPayload.REASON_NO_ROUTE, bob.sent.single().rsn)
+            assertTrue(bob.direct.joins.isEmpty())
+        }
+
+    /** C-3.3-8 is narrow: a group this phone can join, or any network at all, is a path, so the offer rings. */
+    @Test
+    fun aLiveOfferThisPhoneCouldJoinStillRingsWithNoNetwork() =
+        runTest {
+            val (_, alice, bob) = neighbours()
+            bob.networked = false
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertEquals(CallPhase.Alerting, bob.state!!.phase)
+            assertEquals(CallPayload.PHASE_RINGING, bob.sent.single().ph)
+            bob.manager.decline(bob.state!!.id)
+            runCurrent()
+
+            bob.networked = true
+            bob.direct.joinable = false
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertEquals(CallPhase.Alerting, bob.state!!.phase)
+        }
+
+    /** C-3.3-8 is for live offers only: a walkie needs no network, so its offer rings with none. */
+    @Test
+    fun aWalkieOfferRingsWithNoNetwork() =
+        runTest {
+            val (_, alice, bob) = walkies(live = false)
+            bob.networked = false
+            assertNull(alice.manager.start(BOB, CallKind.WALKIE))
+            runCurrent()
+            assertEquals(CallPhase.Alerting, bob.state!!.phase)
+            assertTrue(bob.state!!.walkie)
+        }
+
+    /**
+     * C-3.3-9 (GitHub #63): a call from the chat that looked live is refused by a callee with no path, and the caller
+     * re-places it as a walkie under a new id, with no record or CANCEL for the live attempt. It does so once.
+     */
+    @Test
+    fun anAutoLiveCallDeclinedNoRouteIsRePlacedAsAWalkieOnce() =
+        runTest {
+            val (_, alice, bob) = walkies(live = true, dropToWalkie = false)
+            bob.networked = false
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertEquals(2, alice.sent.size)
+            val (liveOffer, walkieOffer) = alice.sent.toList()
+            assertNotNull(liveOffer.sdp)
+            assertEquals(CallPayload.PHASE_OFFER, walkieOffer.ph)
+            assertEquals(CallPayload.MEDIA_WALKIE, walkieOffer.m)
+            assertNotEquals(liveOffer.id, walkieOffer.id)
+            assertEquals(walkieOffer.id, alice.state!!.id)
+            assertTrue(alice.state!!.walkie)
+            assertEquals(CallPhase.Ringing, alice.state!!.phase)
+            assertTrue(alice.media.last.closed)
+            assertTrue(alice.logged.isEmpty())
+            val liveEnd = alice.field.filterIsInstance<FieldEvent.CallEnd>().single()
+            assertEquals(CallEndReason.NO_ROUTE, liveEnd.reason)
+            assertTrue(liveEnd.byPeer && !liveEnd.walkie)
+            // The callee refused the live offer and rings for the walkie, with nothing missed between them.
+            assertEquals(listOf(CallPayload.PHASE_DECLINE, CallPayload.PHASE_RINGING), bob.phases())
+            assertEquals(walkieOffer.id, bob.state!!.id)
+            assertTrue(bob.state!!.walkie)
+            assertTrue(bob.missed.isEmpty())
+
+            // The walkie is never re-placed: the same refusal ends it.
+            alice.manager.onSignal(
+                BOB,
+                CallPayload(id = walkieOffer.id, ph = CallPayload.PHASE_DECLINE, rsn = CallPayload.REASON_NO_ROUTE),
+                sentAt = testScheduler.currentTime,
+            )
+            runCurrent()
+            assertEquals(CallPhase.Ended, alice.state!!.phase)
+            assertEquals(2, alice.sent.size)
+        }
+
+    /** C-3.3-9 is for a peer that runs the walkie: toward one that does not, the same refusal ends the call. */
+    @Test
+    fun anAutoLiveCallToAPeerWithoutTheWalkieEndsOnTheSameDecline() =
+        runTest {
+            val (_, alice, bob) = walkies(live = true, dropToWalkie = false)
+            alice.walkie.peerCapable = false
+            bob.networked = false
+            assertNull(alice.manager.start(BOB))
+            runCurrent()
+            assertEquals(CallPhase.Ended, alice.state!!.phase)
+            assertEquals(CallPayload.REASON_NO_ROUTE, alice.state!!.reason)
+            assertFalse(alice.state!!.walkie)
+            assertEquals(listOf(CallPayload.PHASE_OFFER), alice.phases())
+        }
+
+    /** C-3.3-9 is for a call placed without a kind: one placed live on purpose ends on the same refusal. */
+    @Test
+    fun aLiveCallPlacedOnPurposeEndsOnTheSameDecline() =
+        runTest {
+            val (_, alice, bob) = walkies(live = true, dropToWalkie = false)
+            bob.networked = false
+            assertNull(alice.manager.start(BOB, CallKind.LIVE))
+            runCurrent()
+            assertEquals(CallPhase.Ended, alice.state!!.phase)
+            assertEquals(CallPayload.REASON_NO_ROUTE, alice.state!!.reason)
+            assertFalse(alice.state!!.walkie)
+            assertEquals(listOf(CallPayload.PHASE_OFFER), alice.phases())
+            assertNull(bob.state)
         }
 
     @Test
