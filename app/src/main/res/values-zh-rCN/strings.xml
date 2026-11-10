@@ -962,6 +962,29 @@
     <string name="camera_capturing">正在拍照</string>
     <string name="camera_switch_lens">切换相机</string>
     <string name="diagnostics_title">诊断</string>
+    <string name="diagnostics_reports">报告和日志</string>
+    <string name="diagnostics_debug_section">调试选项</string>
+    <string name="diagnostics_metric_links_sealed">已加密的连接</string>
+    <string name="diagnostics_metric_link_seal_failed">连接加密失败</string>
+    <string name="diagnostics_metric_link_seal_refused">已拒绝的未加密连接</string>
+    <string name="diagnostics_metric_links_proven">已验证的连接</string>
+    <string name="diagnostics_metric_link_proof_failed">连接验证失败</string>
+    <string name="diagnostics_metric_link_claim_refused">已拒绝的未验证连接</string>
+    <string name="diagnostics_metric_presence_keys_held">持有的联系人识别密钥</string>
+    <string name="diagnostics_metric_presence_keys_of" tools:ignore="PluralsCandidate">%1$d / %2$d</string>
+    <string name="diagnostics_metric_presence_keys_sent">已发送的识别密钥</string>
+    <string name="diagnostics_metric_presence_keys_stored">已存储的识别密钥</string>
+    <string name="diagnostics_metric_presence_mark_not_full">识别密钥未持久保存</string>
+    <string name="diagnostics_metric_tags_unresolvable">广播了无法识别的轮换 ID</string>
+    <string name="diagnostics_metric_tags_stale">过期的轮换标记</string>
+    <string name="diagnostics_metric_blind_drops">已丢弃的轮换 ID 广播</string>
+    <string name="diagnostics_advert_debug_label">轮换 ID 读取器</string>
+    <string name="diagnostics_advert_debug_by_key">按密钥识别</string>
+    <string name="diagnostics_advert_debug_by_claim">按声明识别</string>
+    <string name="diagnostics_advert_debug_expected">预期标签</string>
+    <string name="diagnostics_advert_debug_expected_value" tools:ignore="PluralsCandidate">%1$d（%2$d 位联系人）</string>
+    <string name="diagnostics_advert_debug_form">广播内容</string>
+    <string name="diagnostics_advert_form_clear">节点 ID</string>
     <string name="diagnostics_self">此设备</string>
     <string name="diagnostics_supervised_family_link">受 Family Link 监管</string>
     <string name="diagnostics_supervised_managed">受管理的手机</string>
@@ -1080,6 +1103,11 @@
         <item quantity="other">收到 %1$d 台电台的信号</item>
     </plurals>
     <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">收到 %1$d 台电台的信号</string>
+    <plurals name="diagnostics_transport_links">
+        <item quantity="other">%1$d 条直连</item>
+    </plurals>
+    <string name="diagnostics_transport_links_zero" tools:ignore="PluralsCandidate">%1$d 条直连</string>
+    <string name="diagnostics_transport_blinded">轮换 ID</string>
     <string name="diagnostics_transport_unsupported">这部手机不支持</string>
     <string name="diagnostics_transport_needs_android_12">需要 Android 12 或更高版本</string>
     <string name="diagnostics_transport_lora_down">开发板未连接</string>
@@ -1087,6 +1115,15 @@
     <string name="diagnostics_tag_nan">NAN</string>
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">互联网</string>
+    <string name="diagnostics_tag_link">直连</string>
+    <string name="diagnostics_link_encrypted">已加密</string>
+    <string name="diagnostics_link_encrypted_cd">此连接已加密</string>
+    <string name="diagnostics_link_plain">未加密</string>
+    <string name="diagnostics_link_plain_cd">此连接未加密</string>
+    <string name="diagnostics_key_chip">密钥</string>
+    <string name="diagnostics_key_chip_cd">持有此联系人的识别密钥</string>
+    <string name="diagnostics_presence_key_held">识别密钥：已有</string>
+    <string name="diagnostics_presence_key_none">识别密钥：暂无</string>
     <string name="diagnostics_tag_via">经由 %1$s</string>
     <string name="diagnostics_transport_audio">音频</string>
     <string name="diagnostics_transport_held">已暂停</string>
@@ -1119,8 +1156,8 @@
     <string name="diagnostics_transport_low_power">低功耗</string>
     <string name="diagnostics_transport_switched_off">已在设置中关闭</string>
     <string name="diagnostics_transport_dormant">空闲：附近没有支持 Wi-Fi Aware 的手机</string>
-    <string name="diagnostics_ble_phy_label">远距离 Bluetooth（实验）</string>
-    <string name="diagnostics_ble_phy_body">“关闭”即目前的 Bluetooth。“自动”能发现更远的手机，并在对方走远时降低连接速度以保持连接。Coded 和 1M 让所有连接固定在同一速度，用于比较距离。</string>
+    <string name="diagnostics_ble_phy_label">远距离 Bluetooth</string>
+    <string name="diagnostics_ble_phy_body">“自动”为默认设置，能找到更远的手机，并在对方走远时降低连接速度以保持连接。“关闭”只使用标准 Bluetooth。“Coded”和“1M”让所有连接固定使用同一速率，便于比较距离。</string>
     <string name="diagnostics_ble_phy_off">关闭</string>
     <string name="diagnostics_ble_phy_auto">自动</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
@@ -1238,7 +1275,6 @@
     <string name="licenses_section_data">内置模型和数据</string>
     <string name="licenses_row_subtitle">%1$s · %2$s</string>
     <string name="license_text_error">无法加载许可文本。</string>
-    <string name="crash_section">问题报告</string>
     <string name="crash_last_label">上次崩溃</string>
     <string name="crash_open_action">打开崩溃详情</string>
     <string name="crash_title">上次崩溃</string>
@@ -1262,7 +1298,6 @@
     <string name="crash_delete_body">此操作会从这部手机上移除所有已保存的崩溃报告，且无法撤消。</string>
     <string name="crash_delete_confirm">全部删除</string>
     <string name="crash_deleted">崩溃详情已删除</string>
-    <string name="field_log_section">现场数据</string>
     <string name="field_log_row_label">现场日志</string>
     <string name="field_log_row_supporting">过去三天里你的无线模块的运行情况</string>
     <string name="field_log_open_action">打开现场日志</string>

@@ -1,6 +1,7 @@
 package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
+import app.getknit.knit.ui.diagnostics.AdvertDebugSectionPreview
 import app.getknit.knit.ui.diagnostics.BleLinkCapRowPreview
 import app.getknit.knit.ui.diagnostics.BlePhyModeRowPreview
 import app.getknit.knit.ui.diagnostics.CrashLogScreenEmptyPreview
@@ -21,9 +22,12 @@ import app.getknit.knit.ui.diagnostics.MeshControlsSectionUnavailableBleOnlyPrev
 import app.getknit.knit.ui.diagnostics.MeshControlsSectionUnavailablePreview
 import app.getknit.knit.ui.diagnostics.MetricsSectionEmptyPreview
 import app.getknit.knit.ui.diagnostics.MetricsSectionPopulatedPreview
+import app.getknit.knit.ui.diagnostics.NodeRowAllChipsPreview
 import app.getknit.knit.ui.diagnostics.NodeRowCodedPreview
+import app.getknit.knit.ui.diagnostics.NodeRowDirectLinkPreview
 import app.getknit.knit.ui.diagnostics.NodeRowDirectPreview
 import app.getknit.knit.ui.diagnostics.NodeRowIndirectPreview
+import app.getknit.knit.ui.diagnostics.NodeRowPlainLinkPreview
 import app.getknit.knit.ui.diagnostics.NodeRowRelayPreview
 import app.getknit.knit.ui.diagnostics.SelfSectionPreview
 import app.getknit.knit.ui.diagnostics.TransportsSectionAbsentPreview
@@ -75,6 +79,11 @@ fun MetricsSectionPopulated() = MetricsSectionPopulatedPreview()
 @PreviewTest
 @ComponentShots
 @Composable
+fun AdvertDebugSection() = AdvertDebugSectionPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
 fun MetricsSectionEmpty() = MetricsSectionEmptyPreview()
 
 @PreviewTest
@@ -91,6 +100,21 @@ fun TransportsSectionAbsent() = TransportsSectionAbsentPreview()
 @ComponentShots
 @Composable
 fun NodeRowDirect() = NodeRowDirectPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun NodeRowPlainLink() = NodeRowPlainLinkPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun NodeRowAllChips() = NodeRowAllChipsPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun NodeRowDirectLink() = NodeRowDirectLinkPreview()
 
 @PreviewTest
 @ComponentShots

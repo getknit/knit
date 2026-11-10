@@ -16,6 +16,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.PeerLabels
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PRESENCE_LINGER_MS
@@ -305,6 +306,8 @@ class DiagnosticsViewModelTest {
         loraFacts: Flow<LoraFacts> = MutableStateFlow(LoraFacts()),
         hidden: MutableStateFlow<Map<String, Long>>? = null,
         directory: MutableStateFlow<PeerDirectory>? = null,
+        keyHolders: Flow<Set<String>> = MutableStateFlow(emptySet()),
+        directContacts: Flow<Set<String>>? = null,
     ): DiagnosticsViewModel {
         val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.spoolEnabled } returns MutableStateFlow(false)
@@ -331,6 +334,9 @@ class DiagnosticsViewModelTest {
             loraFacts = loraFacts,
             clock = clock,
             hiddenKnown = hidden?.let(::FakeHiddenKnown),
+            presenceKeyHolders = keyHolders,
+            directContacts = directContacts,
+            advertDebug = null,
         )
     }
 
@@ -345,6 +351,94 @@ class DiagnosticsViewModelTest {
 
     private fun directoryOf(peers: List<PeerEntity>) =
         PeerDirectory(peers, PeerLabels.index(peers.map { it.nodeId to it.name }, SELF to "Walter"))
+
+    /**
+     * ADR 2026-11.8mhs: a row's chip is the weakest live link its section claims — the short-range links on a direct row,
+     * a direct Internet link on a long-range one — and no live link is no chip, never "plain".
+     */
+    @Test
+    fun aRowShowsTheWeakestLinkItsSectionClaimsAndNoneWithoutALink() =
+        runTest {
+            val controller = FakeMeshController()
+            val ada = peer("ada", "Ada", 900L)
+            val grace = peer("grace", "Grace", 800L)
+            val edsger = peer("edsger", "Edsger", 700L)
+            val frances = peer("frances", "Frances", 600L)
+            val radia = peer("radia", "Radia", 500L)
+            controller.neighbors.value = setOf(Peer("ada"), Peer("grace"), Peer("edsger"))
+            controller.reachable.value = controller.neighbors.value + setOf(Peer("frances"), Peer("radia"))
+            controller.linkSecurity.value =
+                mapOf(
+                    // One plain link beside a sealed one: the row must not read safer than its weakest link.
+                    "ada" to mapOf(TransportKind.Bluetooth to LinkSecurity.SEALED, TransportKind.WifiAware to LinkSecurity.LEGACY),
+                    "grace" to mapOf(TransportKind.Bluetooth to LinkSecurity.SEALED),
+                    // A direct row never claims a direct Internet link, which is no radio.
+                    "edsger" to mapOf(TransportKind.DirectLink to LinkSecurity.SEALED),
+                    "frances" to mapOf(TransportKind.DirectLink to LinkSecurity.SEALED),
+                )
+            val vm = reachVm(controller, listOf(ada, grace, edsger, frances, radia))
+            val job = backgroundScope.launch { vm.state.collect { } }
+            runCurrent()
+
+            val state = vm.state.value
+            val direct = state.directNodes.associate { it.nodeId to it.link }
+            assertEquals(LinkSecurity.LEGACY, direct["ada"])
+            assertEquals(LinkSecurity.SEALED, direct["grace"])
+            assertNull("no short-range link is no chip, never a plain one", direct["edsger"])
+            val longRange = state.longRangeNodes.associate { it.nodeId to it.link }
+            assertEquals(LinkSecurity.SEALED, longRange["frances"])
+            assertNull(longRange["radia"])
+            job.cancel()
+        }
+
+    /** The narrowing alone: an indirect or merely known row claims no link, whatever the peer holds. */
+    @Test
+    fun indirectAndKnownRowsClaimNoLink() {
+        val links = mapOf(TransportKind.Bluetooth to LinkSecurity.SEALED, TransportKind.DirectLink to LinkSecurity.PROVEN)
+        val short = setOf(TransportKind.Bluetooth, TransportKind.WifiAware)
+        assertNull(DiagnosticsViewModel.rowLinkSecurity(Reach.Indirect, links, short))
+        assertNull(DiagnosticsViewModel.rowLinkSecurity(Reach.Known, links, short))
+        assertEquals(LinkSecurity.SEALED, DiagnosticsViewModel.rowLinkSecurity(Reach.Direct, links, short))
+        assertEquals(LinkSecurity.PROVEN, DiagnosticsViewModel.rowLinkSecurity(Reach.LongRange, links, short))
+        assertNull(DiagnosticsViewModel.rowLinkSecurity(Reach.Direct, emptyMap(), short))
+    }
+
+    /**
+     * ADR 2026-11.xp6d: the Key chip and the "held" count read only direct contacts' keys (a stored key of anyone else is
+     * never listed), and the own-key line follows the controller.
+     */
+    @Test
+    fun presenceCountsOnlyDirectContactsKeys() =
+        runTest {
+            val controller = FakeMeshController()
+            val holders = MutableStateFlow(setOf("ada", "grace", "stranger"))
+            val contacts = MutableStateFlow(setOf("ada", "grace", "edsger"))
+            val vm = reachVm(controller, emptyList(), keyHolders = holders, directContacts = contacts)
+            val job = backgroundScope.launch { vm.presence.collect { } }
+            runCurrent()
+
+            assertEquals(PresenceKeyInfo(ownKeyHeld = false, keyHolders = setOf("ada", "grace"), directContacts = 3), vm.presence.value)
+
+            controller.ownPresenceKeyHeld.value = true
+            contacts.value = setOf("ada")
+            runCurrent()
+            assertEquals(PresenceKeyInfo(ownKeyHeld = true, keyHolders = setOf("ada"), directContacts = 1), vm.presence.value)
+            job.cancel()
+        }
+
+    /** Without a direct-contact source there is no "of M", and every stored key's holder is shown as is. */
+    @Test
+    fun presenceWithoutAContactSourceHasNoTotal() =
+        runTest {
+            val controller = FakeMeshController()
+            val vm = reachVm(controller, emptyList(), keyHolders = MutableStateFlow(setOf("ada")))
+            val job = backgroundScope.launch { vm.presence.collect { } }
+            runCurrent()
+
+            assertNull(vm.presence.value.directContacts)
+            assertEquals(setOf("ada"), vm.presence.value.keyHolders)
+            job.cancel()
+        }
 
     /**
      * The field report this fixes: on a mesh with two boards, every peer whose frames a gateway put on air

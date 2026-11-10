@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.inet
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
@@ -443,6 +444,28 @@ class DirectLinkTransportTest {
                 a.closed.await()
                 // The link's end reached bob's stream, whose framing ended and took the link out of bob's neighbours.
                 b.transport.neighbors.first { it.isEmpty() }
+            }
+        }
+
+    /** ADR 2026-11.u5je: a direct link's lane is AES-GCM, so each adopted link reads sealed, and goes with its link. */
+    @Test
+    fun anAdoptedLinkReadsSealedAndLeavesWithTheLink() =
+        runBlocking<Unit> {
+            val a = End(alice)
+            val b = End(bob)
+            linked(a, b)
+            withTimeout(WAIT_MS) {
+                a.transport.linkSecurity.first { it == mapOf(bob to LinkSecurity.SEALED) }
+                b.transport.linkSecurity.first { it == mapOf(alice to LinkSecurity.SEALED) }
+            }
+            a.transport.stop()
+            assertTrue(
+                a.transport.linkSecurity.value
+                    .isEmpty(),
+            )
+            withTimeout(WAIT_MS) {
+                // The far end's stream ended with the link, and its entry went with it.
+                b.transport.linkSecurity.first { it.isEmpty() }
             }
         }
 

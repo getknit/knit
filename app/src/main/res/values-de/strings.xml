@@ -977,6 +977,29 @@
     <string name="camera_capturing">Foto wird aufgenommen</string>
     <string name="camera_switch_lens">Kamera wechseln</string>
     <string name="diagnostics_title">Diagnose</string>
+    <string name="diagnostics_reports">Berichte und Protokolle</string>
+    <string name="diagnostics_debug_section">Debug-Optionen</string>
+    <string name="diagnostics_metric_links_sealed">Verschlüsselte Verbindungen</string>
+    <string name="diagnostics_metric_link_seal_failed">Verbindungsverschlüsselung fehlgeschlagen</string>
+    <string name="diagnostics_metric_link_seal_refused">Unverschlüsselte Verbindungen abgelehnt</string>
+    <string name="diagnostics_metric_links_proven">Geprüfte Verbindungen</string>
+    <string name="diagnostics_metric_link_proof_failed">Verbindungsnachweise fehlgeschlagen</string>
+    <string name="diagnostics_metric_link_claim_refused">Nicht nachgewiesene Verbindungen abgelehnt</string>
+    <string name="diagnostics_metric_presence_keys_held">Präsenzschlüssel von Kontakten</string>
+    <string name="diagnostics_metric_presence_keys_of" tools:ignore="PluralsCandidate">%1$d von %2$d</string>
+    <string name="diagnostics_metric_presence_keys_sent">Gesendete Präsenzschlüssel</string>
+    <string name="diagnostics_metric_presence_keys_stored">Gespeicherte Präsenzschlüssel</string>
+    <string name="diagnostics_metric_presence_mark_not_full">Präsenzschlüssel nicht dauerhaft gespeichert</string>
+    <string name="diagnostics_metric_tags_unresolvable">Gesendete nicht erkennbare wechselnde IDs</string>
+    <string name="diagnostics_metric_tags_stale">Veraltete Rotationsmarken</string>
+    <string name="diagnostics_metric_blind_drops">Verworfene Adverts mit wechselnder ID</string>
+    <string name="diagnostics_advert_debug_label">Leser für wechselnde IDs</string>
+    <string name="diagnostics_advert_debug_by_key">Per Schlüssel erkannt</string>
+    <string name="diagnostics_advert_debug_by_claim">Per Angabe erkannt</string>
+    <string name="diagnostics_advert_debug_expected">Erwartete Tags</string>
+    <string name="diagnostics_advert_debug_expected_value" tools:ignore="PluralsCandidate">%1$d (%2$d Kontakte)</string>
+    <string name="diagnostics_advert_debug_form">Gesendet</string>
+    <string name="diagnostics_advert_form_clear">Knoten-ID</string>
     <string name="diagnostics_self">Dieses Gerät</string>
     <string name="diagnostics_supervised_family_link">Mit Family Link beaufsichtigt</string>
     <string name="diagnostics_supervised_managed">Verwaltetes Smartphone</string>
@@ -1102,6 +1125,12 @@
         <item quantity="other">%1$d empfangen</item>
     </plurals>
     <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">%1$d empfangen</string>
+    <plurals name="diagnostics_transport_links">
+        <item quantity="one">%1$d Verbindung</item>
+        <item quantity="other">%1$d Verbindungen</item>
+    </plurals>
+    <string name="diagnostics_transport_links_zero" tools:ignore="PluralsCandidate">%1$d Verbindungen</string>
+    <string name="diagnostics_transport_blinded">wechselnde ID</string>
     <string name="diagnostics_transport_unsupported">Von diesem Smartphone nicht unterstützt</string>
     <string name="diagnostics_transport_needs_android_12">Erfordert Android 12 oder neuer</string>
     <string name="diagnostics_transport_lora_down">Board nicht verbunden</string>
@@ -1109,6 +1138,15 @@
     <string name="diagnostics_tag_nan">NAN</string>
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">Internet</string>
+    <string name="diagnostics_tag_link">Link</string>
+    <string name="diagnostics_link_encrypted">Verschlüsselt</string>
+    <string name="diagnostics_link_encrypted_cd">Diese Verbindung ist verschlüsselt</string>
+    <string name="diagnostics_link_plain">Unverschlüsselt</string>
+    <string name="diagnostics_link_plain_cd">Diese Verbindung ist nicht verschlüsselt</string>
+    <string name="diagnostics_key_chip">Schlüssel</string>
+    <string name="diagnostics_key_chip_cd">Hat den Präsenzschlüssel dieses Kontakts</string>
+    <string name="diagnostics_presence_key_held">Präsenzschlüssel: vorhanden</string>
+    <string name="diagnostics_presence_key_none">Präsenzschlüssel: noch keiner</string>
     <string name="diagnostics_tag_via">über %1$s</string>
     <string name="diagnostics_transport_audio">Audio</string>
     <string name="diagnostics_transport_held">angehalten</string>
@@ -1141,8 +1179,8 @@
     <string name="diagnostics_transport_low_power">Stromsparmodus</string>
     <string name="diagnostics_transport_switched_off">in den Einstellungen aus</string>
     <string name="diagnostics_transport_dormant">Ruht – kein Wi-Fi-Aware-Smartphone in der Nähe</string>
-    <string name="diagnostics_ble_phy_label">Bluetooth mit großer Reichweite (Experiment)</string>
-    <string name="diagnostics_ble_phy_body">„Aus“ nutzt Bluetooth wie bisher. „Auto“ findet weiter entfernte Smartphones und verlangsamt eine Verbindung, damit sie hält, während sich die Smartphones entfernen. „Coded“ und „1M“ halten jede Verbindung auf einer Geschwindigkeit, um die Reichweite zu vergleichen.</string>
+    <string name="diagnostics_ble_phy_label">Bluetooth mit großer Reichweite</string>
+    <string name="diagnostics_ble_phy_body">Auto, die Standardeinstellung, findet weiter entfernte Smartphones und drosselt eine Verbindung, um sie zu halten, wenn sich die Person entfernt. Aus nutzt nur Standard-Bluetooth. Coded und 1M halten jede Verbindung auf einer Geschwindigkeit, um die Reichweite zu vergleichen.</string>
     <string name="diagnostics_ble_phy_off">Aus</string>
     <string name="diagnostics_ble_phy_auto">Auto</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
@@ -1262,7 +1300,6 @@
     <string name="licenses_section_data">Mitgelieferte Modelle und Daten</string>
     <string name="licenses_row_subtitle">%1$s · %2$s</string>
     <string name="license_text_error">Der Lizenztext konnte nicht geladen werden.</string>
-    <string name="crash_section">Problemberichte</string>
     <string name="crash_last_label">Letzter Absturz</string>
     <string name="crash_open_action">Absturzdetails öffnen</string>
     <string name="crash_title">Letzter Absturz</string>
@@ -1286,7 +1323,6 @@
     <string name="crash_delete_body">Damit werden alle gespeicherten Absturzberichte von diesem Smartphone entfernt. Das lässt sich nicht rückgängig machen.</string>
     <string name="crash_delete_confirm">Alle löschen</string>
     <string name="crash_deleted">Absturzdetails gelöscht</string>
-    <string name="field_log_section">Felddaten</string>
     <string name="field_log_row_label">Feldprotokoll</string>
     <string name="field_log_row_supporting">Wie sich deine Funkmodule in den letzten drei Tagen verhalten haben</string>
     <string name="field_log_open_action">Feldprotokoll öffnen</string>

@@ -37,6 +37,7 @@ import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.FileProgress
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.OwnPresenceKey
@@ -432,8 +433,20 @@ class BluetoothMeshTransport internal constructor(
     // [BluetoothAudioMonitor]); read at failure time and exposed via [radioContended] + the periodic diag line.
     private val audioMonitor = BluetoothAudioMonitor(appContext, adapter) { Log.d(TAG, it) }
 
+    // [neighbors] and [linkSecurity] are published together from one `links` snapshot under [neighborsLock]
+    // ([refreshNeighbors]): registers and teardowns run unlocked on several threads, and a stale snapshot written last
+    // would keep a replaced link's state — an R3 swap of an unproven link for a sealed one moves [linkSecurity] while the
+    // neighbour set does not. Nothing else is taken, or called, under it.
+    private val neighborsLock = Any()
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors = _neighbors.asStateFlow()
+
+    // Each live link's [FramedLink.security] by node id (ADR 2026-11.8mhs): the Diagnostics screen's chip, nothing else.
+    private val _linkSecurity = MutableStateFlow<Map<String, LinkSecurity>>(emptyMap())
+    override val linkSecurity = _linkSecurity.asStateFlow()
+
+    // What [writer] has on the air, not what [blinding] asks for (ADR 2026-11.xp6d): the "rotating ID" tag, nothing else.
+    override val advertBlinded = writer.blindedOnAir
 
     private val _reachable = MutableStateFlow<Set<Peer>>(emptySet())
     override val reachable = _reachable.asStateFlow()
@@ -954,7 +967,7 @@ class BluetoothMeshTransport internal constructor(
             inFlight.clear()
             clearBackoffsLocked()
         }
-        _neighbors.value = emptySet()
+        clearNeighbors()
         _reachable.value = emptySet()
         _near.value = emptySet()
         _awareCandidatesNear.value = emptySet()
@@ -5049,8 +5062,24 @@ class BluetoothMeshTransport internal constructor(
     /** Advance [nodeId]'s failure streak and set its next-eligible deadline via [ConnectBackoffPolicy]. Holds [lock]. */
     private fun bumpBackoffLocked(nodeId: String): Pair<Int, Long> = ConnectBackoffs.bump(backoffs, nodeId, elapsed(), backoffConfig)
 
+    /** The transport stopped: no neighbours and no link states, under [neighborsLock] as [refreshNeighbors] writes them. */
+    private fun clearNeighbors() {
+        synchronized(neighborsLock) {
+            _neighbors.value = emptySet()
+            _linkSecurity.value = emptyMap()
+        }
+    }
+
+    /**
+     * Publishes [neighbors] and [linkSecurity] from one snapshot of [links], under [neighborsLock] so the snapshot taken
+     * last is the one written last: no stale view from a register or teardown on another thread outlives a newer one.
+     */
     private fun refreshNeighbors() {
-        _neighbors.value = links.values.map { it.peer }.toSet()
+        synchronized(neighborsLock) {
+            val view = NeighborView.of(links)
+            _neighbors.value = view.neighbors
+            _linkSecurity.value = view.security
+        }
     }
 
     // --- Availability (adapter on/off) ---

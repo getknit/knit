@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -199,7 +200,7 @@ class DiagnosticsScreenContentTest {
             }
         }
 
-        compose.onNodeWithText(context.getString(R.string.crash_section)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_reports)).assertIsDisplayed()
         compose.onNodeWithText(context.getString(R.string.diagnostics_moderation_latched_label)).assertIsDisplayed()
     }
 
@@ -251,7 +252,7 @@ class DiagnosticsScreenContentTest {
         compose.onNodeWithText(context.getString(R.string.diagnostics_moderation_latched_label)).assertDoesNotExist()
     }
 
-    /** ADR 2026-10.yvn6: a directly-connected Bluetooth link the experiment holds a handle on carries its PHY chip. */
+    /** ADR 2026-10.yvn6: a directly-connected Bluetooth link the transport holds a PHY handle on carries its PHY chip. */
     @Test
     fun aCodedLinkCarriesItsPhyChipAndAnUnhandledOneNone() {
         val far = NodeInfo("aaaa1111bbbb", "Ada", Reach.Direct, null, setOf(TransportKind.Bluetooth))
@@ -322,6 +323,8 @@ class DiagnosticsScreenContentTest {
             }
         }
 
+        // Transports sits under the reports and the controls, past Robolectric's viewport: bring the row into view.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(context.getString(R.string.diagnostics_transport_wifi_aware)))
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_held)).assertExists()
         // Below Transports, past Robolectric's viewport, so a lazy item the list may not have composed yet: scroll the
         // list to it before reading its label or tapping its button.
@@ -493,6 +496,8 @@ class DiagnosticsScreenContentTest {
         val sets = mutableListOf<Boolean>()
         setNanSwitchContent(offered = true, off = true, onSet = { sets += it })
 
+        // Transports sits under the reports and the controls, past Robolectric's viewport: bring the row into view.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(context.getString(R.string.diagnostics_transport_wifi_aware)))
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_debug_off)).assertIsDisplayed()
         compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("nan_switch"))
         compose.onNodeWithTag("nan_switch").assertIsOff().performClick()
@@ -588,6 +593,8 @@ class DiagnosticsScreenContentTest {
 
         // The section sits below the controls, past Robolectric's small viewport: composed, so `assertExists`
         // is the honest check (`assertIsDisplayed` would need a scroll the real screen never asks for).
+        // Transports sits under the reports and the controls, past Robolectric's viewport: bring the row into view.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(context.getString(R.string.diagnostics_transport_wifi_aware)))
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_wifi_aware)).assertExists()
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_unsupported)).assertExists()
         compose.onNodeWithText(context.getString(R.string.lora_status_off)).assertExists()
@@ -657,6 +664,8 @@ class DiagnosticsScreenContentTest {
             }
         }
 
+        // Transports sits under the reports and the controls, past Robolectric's viewport: bring the row into view.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(context.getString(R.string.diagnostics_transport_wifi_aware)))
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_needs_android_12)).assertExists()
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_unsupported)).assertDoesNotExist()
     }

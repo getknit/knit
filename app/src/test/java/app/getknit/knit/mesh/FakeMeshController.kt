@@ -36,6 +36,12 @@ class FakeMeshController : MeshController {
     override val transportHealth = MutableStateFlow(TransportHealth.Healthy)
     override val transportStatuses = MutableStateFlow<List<TransportStatus>>(emptyList())
     override val peerTransports = MutableStateFlow<Map<String, Set<TransportKind>>>(emptyMap())
+
+    /** What protects each live link, by node and plane (ADR 2026-11.8mhs); a test puts a link in it. */
+    override val linkSecurity = MutableStateFlow<Map<String, Map<TransportKind, LinkSecurity>>>(emptyMap())
+
+    /** Whether the phone holds an own presence key (ADR 2026-11.xp6d). */
+    override val ownPresenceKeyHeld = MutableStateFlow(false)
     override val typing = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
 
     /** What the links report streaming in; a state flow, so `advanceUntilIdle()` idles where a real poll would not. */

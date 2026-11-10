@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.bluetooth.TagSchedule
 import app.getknit.knit.mesh.crypto.PresenceKeyPolicy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -170,6 +171,14 @@ class PresenceKeyRepository(
      * never tick it.
      */
     fun keyChanges(): Flow<List<String>> = dao.observeKeyRows().distinctUntilChanged()
+
+    /**
+     * The peers we hold at least one presence key for, by node id, as it changes: the Diagnostics screen's Key chip and its
+     * "held" count (ADR 2026-11.xp6d). Ids only: a generation is a mint time, and dates a rotation (so a removal or a block),
+     * so none leaves here. Anyone's stored key counts, so a reader that means "a direct contact's" intersects it with
+     * [app.getknit.knit.contacts.DirectContacts], as [presenceKeysFor] lists.
+     */
+    fun observePeersWithKeys(): Flow<Set<String>> = dao.observePeersWithKeys().map { it.toSet() }.distinctUntilChanged()
 
     /**
      * [TagSchedule.MarkStore] over the own key rows: the mark of a generation lives in that key's row, written and deleted

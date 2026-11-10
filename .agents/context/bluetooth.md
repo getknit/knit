@@ -365,6 +365,15 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `TagNextSendsTest`, `LinkSilenceTest`, `BleAdmissionPolicyTest`, `ScanDemandPolicyTest`, `KeyChurnLimiterTest`, `DialPlanTest`,
   `AdvertOrderTest`, `CodedDialsBackTest`, `FramedLinkTest`, `CompositeMeshTransportTest`.
 
+- **When touching `NeighborView`, `AdvertWriter.blindedOnAir`, the transport's `refreshNeighbors` / `neighborsLock`, or
+  `MeshTransport.linkSecurity` / `advertBlinded` on the Bluetooth side:** READ ADR 2026-11.8mhs (the seal a link runs on)
+  and ADR 2026-11.xp6d (the writer). Both are the Diagnostics screen's and nothing else's: nothing routes, sends or
+  custodies on them. `linkSecurity` is each live link's `FramedLink.security` by the id it is registered under,
+  published with `neighbors` from one `links` snapshot under `neighborsLock` (no stale snapshot written last; nothing
+  else is taken or called under it). `advertBlinded` is what the writer has on the air, set under its lock: false at
+  `up` (a pending tag airs nothing yet), the form's `blinded` at `install`, false at `down`; never `AdvertStatus.blinding`
+  (what it asks for) nor `form()` alone (`aired` outlives `down`). Tests: `NeighborViewTest`, `AdvertWriterTest`.
+
 ## Adding an entry
 
 A new decision about this plane gets a bullet here — the symbols that trigger it, the ADR, and the invariant in a

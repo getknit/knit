@@ -34,6 +34,8 @@ document:
 
 ### Changed
 
+- Diagnostics lists who your phone reaches right under the radios, and each person shows whether your link to
+  them is encrypted. The crash report and field log now share one section at the top.
 - The supporter badge now sits after a person's name instead of on their photo. You'll see it in the chat
   list, contacts, group members, the chat header and their profile.
 - A green dot on someone's photo now shows when your phone's radios can see them, in the chat list and the

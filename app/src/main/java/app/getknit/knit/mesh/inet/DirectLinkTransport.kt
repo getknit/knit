@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.PairView
@@ -147,6 +148,11 @@ class DirectLinkTransport(
     // The adopted links that were made free, updated with [neighbors], so a peer is named here only once a file can go.
     private val _freeLinked = MutableStateFlow<Set<String>>(emptySet())
     override val freeLinked: StateFlow<Set<String>> = _freeLinked.asStateFlow()
+
+    // Every adopted link, as sealed: its lane is AES-GCM end to end before a byte reaches the stream (ADR 2026-11.8mhs's
+    // chip; the lane is ADR 2026-10.a5yj's). Updated with [neighbors].
+    private val _linkSecurity = MutableStateFlow<Map<String, LinkSecurity>>(emptyMap())
+    override val linkSecurity: StateFlow<Map<String, LinkSecurity>> = _linkSecurity.asStateFlow()
 
     // The composite never reads it ([viaInternet]); the switch around this plane reads Unavailable while it holds it off.
     override val health: StateFlow<TransportHealth> = MutableStateFlow(TransportHealth.Healthy)
@@ -331,9 +337,17 @@ class DirectLinkTransport(
         publish()
     }
 
+    // Held while [publish] reads [links] and writes what it read, so two publishes racing (a link adopted as another
+    // drops) cannot land the older read last. Nothing is called out under it.
+    private val publishLock = Any()
+
     private fun publish() {
-        _neighbors.value = links.values.mapTo(HashSet()) { it.peer }
-        _freeLinked.value = links.keys.filterTo(HashSet(), freeLink)
+        synchronized(publishLock) {
+            val live = links.toMap()
+            _neighbors.value = live.values.mapTo(HashSet()) { it.peer }
+            _freeLinked.value = live.keys.filterTo(HashSet(), freeLink)
+            _linkSecurity.value = live.keys.associateWith { LinkSecurity.SEALED }
+        }
     }
 
     override suspend fun send(

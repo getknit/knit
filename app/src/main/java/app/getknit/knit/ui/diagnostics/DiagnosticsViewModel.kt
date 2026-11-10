@@ -19,13 +19,17 @@ import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.di.WALKIE_WIRED
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.RelayedHeard
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.AdvertDiag
+import app.getknit.knit.mesh.bluetooth.AdvertStatus
 import app.getknit.knit.mesh.bluetooth.CodedPhyDiag
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.LinkPhy
@@ -74,6 +78,38 @@ data class NodeInfo(
     val viaSpool: Boolean = false,
     /** The neighbour that last handed us this peer's frame, as a display label; set on [Reach.Indirect] rows only. */
     val via: String? = null,
+    /**
+     * What protects the live links this row is claiming (ADR 2026-11.8mhs), narrowed like [transports]: the short-range
+     * links on a [Reach.Direct] row, a direct Internet link on a [Reach.LongRange] row, null otherwise. Any plain link
+     * wins over a sealed one. Null also means no live link right now — never "plain" — which on Wi-Fi Aware, whose links
+     * last one sync, is most of the time.
+     */
+    val link: LinkSecurity? = null,
+)
+
+/**
+ * The presence-key facts Diagnostics shows (ADR 2026-11.xp6d): whether, and how many, never a key, a tag or a
+ * generation — a generation is a mint time, and dates a rotation, so a removal or a block.
+ */
+data class PresenceKeyInfo(
+    /** This phone holds an own key to hand its direct contacts. */
+    val ownKeyHeld: Boolean = false,
+    /** The direct contacts whose presence key this phone holds, by node id: the Key chip on their rows. */
+    val keyHolders: Set<String> = emptySet(),
+    /** How many direct contacts this phone has, the "of M" of the metric row; null where that source is not wired. */
+    val directContacts: Int? = null,
+)
+
+/**
+ * The blinded advert's reader as a debug build sees it, through `AdvertDiag` (ADR 2026-11.xp6d): counts and table sizes
+ * only, never a tag or a key. [airingTag] is the form on the air now.
+ */
+data class AdvertDebugInfo(
+    val resolvedByKey: Long,
+    val resolvedByClaim: Long,
+    val expectedTags: Int,
+    val expectedContacts: Int,
+    val airingTag: Boolean,
 )
 
 data class DiagnosticsUiState(
@@ -114,6 +150,8 @@ private data class DiagExtras(
     val loraPlane: LoraPlane,
     // Raw radio-mesh relay stamps; the linger is applied in [DiagnosticsViewModel.state] with the clock.
     val heardIndirectly: Map<String, RelayedHeard>,
+    // What protects each live link, by node and plane; narrowed per row in [DiagnosticsViewModel.state].
+    val linkSecurity: Map<String, Map<TransportKind, LinkSecurity>>,
 )
 
 /**
@@ -155,6 +193,14 @@ class DiagnosticsViewModel(
     awareSwitchOn: Flow<Boolean> = flowOf(true),
     // The Known rows hidden here (GitHub #54, ADR 2026-11.b37x). Null in a test that never hides: no row offers it.
     private val hiddenKnown: HiddenKnownRows? = null,
+    // The peers this phone holds a presence key for, by node id (`PresenceKeyRepository.observePeersWithKeys`, ADR 2026-11.xp6d).
+    presenceKeyHolders: Flow<Set<String>> = flowOf(emptySet()),
+    // This phone's direct contacts (`DirectContacts.observe`): the key holders that count, and the "of M". Null in a test
+    // that never shows the presence rows.
+    directContacts: Flow<Set<String>>? = null,
+    // The blinded advert's reader as a debug build reads it (`AdvertDiag.status`); null, as in every release build and most
+    // tests, hides the debug row. Polled on the metrics tick.
+    advertDebug: (suspend () -> AdvertDebugInfo?)? = if (BuildConfig.DEBUG) ::readAdvertDebug else null,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -308,7 +354,7 @@ class DiagnosticsViewModel(
 
     /**
      * The PHY each Bluetooth link with a PHY handle is on, by node id — a chip on its row. Empty where the build keeps
-     * the experiment dark. The transport publishes it ([CodedPhyDiag.linkPhys]); its own flow, like [blePhyMode].
+     * long-range Bluetooth dark. The transport publishes it ([CodedPhyDiag.linkPhys]); its own flow, like [blePhyMode].
      */
     val blePhys: StateFlow<Map<String, LinkPhy>> =
         (if (BuildConfig.BLE_CODED_PHY) CodedPhyDiag.linkPhys else flowOf(emptyMap()))
@@ -319,6 +365,32 @@ class DiagnosticsViewModel(
         if (!BuildConfig.DEBUG || !BuildConfig.BLE_CODED_PHY) return
         viewModelScope.launch { settings.setDebugBlePhyMode(mode) }
     }
+
+    /**
+     * The presence-key facts (ADR 2026-11.xp6d): the line under *This device*, the Key chip, and the "held" metric. Its
+     * own flow, like [blePhys], because [state]'s combine is at its five-source limit.
+     */
+    val presence: StateFlow<PresenceKeyInfo> =
+        combine(meshManager.ownPresenceKeyHeld, presenceKeyHolders, directContacts ?: flowOf(null)) { own, holders, contacts ->
+            PresenceKeyInfo(
+                ownKeyHeld = own,
+                keyHolders = if (contacts == null) holders else holders intersect contacts,
+                directContacts = contacts?.size,
+            )
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PresenceKeyInfo())
+
+    /** The debug row's advert reader counts, or null where the build has none or the Bluetooth plane is not running. */
+    val advertDebugInfo: StateFlow<AdvertDebugInfo?> =
+        (
+            advertDebug?.let { read ->
+                flow<AdvertDebugInfo?> {
+                    while (true) {
+                        emit(read())
+                        delay(REFRESH_MS)
+                    }
+                }
+            } ?: flowOf<AdvertDebugInfo?>(null)
+        ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Live radio health, shown as a status line above the mesh controls. */
     val health: StateFlow<TransportHealth> =
@@ -407,16 +479,18 @@ class DiagnosticsViewModel(
                 meshManager.reachable,
                 loraFacts.map { it.plane }.distinctUntilChanged(),
                 meshManager.heardIndirectly,
-            ) { r, l, h -> Triple(r, l, h) },
-        ) { snapshot, statuses, peerTransports, spools, (reachable, loraPlane, heard) ->
+                meshManager.linkSecurity,
+            ) { r, l, h, s -> Reach4(r, l, h, s) },
+        ) { snapshot, statuses, peerTransports, spools, reach ->
             DiagExtras(
                 snapshot,
                 statuses,
                 peerTransports,
                 spools,
-                reachable.mapTo(mutableSetOf()) { it.nodeId },
-                loraPlane,
-                heard,
+                reach.reachable.mapTo(mutableSetOf()) { it.nodeId },
+                reach.loraPlane,
+                reach.heard,
+                reach.links,
             )
         }
 
@@ -467,6 +541,7 @@ class DiagnosticsViewModel(
                             },
                         viaSpool = spooled && reach == Reach.LongRange,
                         via = indirect[id]?.takeIf { reach == Reach.Indirect }?.let { directory.label(it).text },
+                        link = rowLinkSecurity(reach, extra.linkSecurity[id].orEmpty(), meshManager.shortRangeKinds),
                     )
                 }
             // A hide holds while the row's profile is no newer than the version hidden (ADR 2026-11.b37x).
@@ -497,6 +572,29 @@ class DiagnosticsViewModel(
 
     companion object {
         /**
+         * The one [LinkSecurity] a row in [reach]'s section shows from [links], the peer's live links by plane: the
+         * short-range planes on a [Reach.Direct] row, a direct Internet link on a [Reach.LongRange] row (the only links
+         * those sections claim), nothing on the others. A plain link wins over a sealed one, and an unproven over a proven
+         * one, so a row never reads safer than its weakest link. Null when the row's planes hold no live link.
+         */
+        fun rowLinkSecurity(
+            reach: Reach,
+            links: Map<TransportKind, LinkSecurity>,
+            shortRangeKinds: Set<TransportKind>,
+        ): LinkSecurity? {
+            val claimed =
+                when (reach) {
+                    Reach.Direct -> links.filterKeys { it in shortRangeKinds }
+                    Reach.LongRange -> links.filterKeys { it == TransportKind.DirectLink }
+                    Reach.Indirect, Reach.Known -> emptyMap()
+                }
+            return claimed.values.minByOrNull { WEAKEST_FIRST.indexOf(it) }
+        }
+
+        // Weakest first: [rowLinkSecurity] shows the weakest live link a row claims.
+        private val WEAKEST_FIRST = listOf(LinkSecurity.LEGACY, LinkSecurity.PROVEN, LinkSecurity.SEALED)
+
+        /**
          * How many unreachable-but-known nodes the screen lists. The peer table holds everyone whose profile
          * ever arrived, and dumping all of it was the old "reachable via relay" bug in a new section — the
          * few most recent are the ones a field test is actually looking for.
@@ -514,4 +612,30 @@ class DiagnosticsViewModel(
             compareByDescending<NodeInfo> { it.profileUpdatedAt ?: 0L }
                 .thenBy { it.displayName.lowercase() }
     }
+}
+
+/** The inner combine's four sources, named: the reach set, the LoRa plane, the relay stamps and the live links. */
+private data class Reach4(
+    val reachable: Set<Peer>,
+    val loraPlane: LoraPlane,
+    val heard: Map<String, RelayedHeard>,
+    val links: Map<String, Map<TransportKind, LinkSecurity>>,
+)
+
+/**
+ * One read of the Bluetooth plane's advert reader through [AdvertDiag], bound only while the plane runs on a debug build:
+ * its counts and table sizes and the form on the air, never a tag or a key. Null while unbound, or if the read fails (the
+ * row then shows nothing rather than a stale count).
+ */
+private suspend fun readAdvertDebug(): AdvertDebugInfo? {
+    val read = AdvertDiag.status ?: return null
+    val status = runCatching { read() }.getOrNull() ?: return null
+    return AdvertDebugInfo(
+        resolvedByKey = status.aliases.resolvedByKey,
+        resolvedByClaim = status.aliases.resolvedByClaim,
+        expectedTags = status.aliases.tableSize,
+        expectedContacts = status.aliases.tableContacts,
+        // The snapshot on the air outlives the radio going down, so a dark radio airs nothing, tag or not.
+        airingTag = status.radioUp && status.form == AdvertStatus.FORM_TAG,
+    )
 }

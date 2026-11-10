@@ -1007,6 +1007,29 @@
     <string name="camera_capturing">Фотографування</string>
     <string name="camera_switch_lens">Перемкнути камеру</string>
     <string name="diagnostics_title">Діагностика</string>
+    <string name="diagnostics_reports">Звіти та журнали</string>
+    <string name="diagnostics_debug_section">Параметри налагодження</string>
+    <string name="diagnostics_metric_links_sealed">Зашифровані з’єднання</string>
+    <string name="diagnostics_metric_link_seal_failed">Збої шифрування з’єднань</string>
+    <string name="diagnostics_metric_link_seal_refused">Відхилені незашифровані з’єднання</string>
+    <string name="diagnostics_metric_links_proven">Підтверджені з’єднання</string>
+    <string name="diagnostics_metric_link_proof_failed">Невдалі підтвердження з’єднань</string>
+    <string name="diagnostics_metric_link_claim_refused">Відхилені непідтверджені з’єднання</string>
+    <string name="diagnostics_metric_presence_keys_held">Ключі присутності контактів</string>
+    <string name="diagnostics_metric_presence_keys_of" tools:ignore="PluralsCandidate">%1$d із %2$d</string>
+    <string name="diagnostics_metric_presence_keys_sent">Надіслані ключі присутності</string>
+    <string name="diagnostics_metric_presence_keys_stored">Збережені ключі присутності</string>
+    <string name="diagnostics_metric_presence_mark_not_full">Незбережені назавжди ключі присутності</string>
+    <string name="diagnostics_metric_tags_unresolvable">Нерозпізнані змінні ID в ефірі</string>
+    <string name="diagnostics_metric_tags_stale">Застарілі позначки ротації</string>
+    <string name="diagnostics_metric_blind_drops">Відкинуті оголошення зі змінним ID</string>
+    <string name="diagnostics_advert_debug_label">Зчитувач змінних ID</string>
+    <string name="diagnostics_advert_debug_by_key">Розпізнано за ключем</string>
+    <string name="diagnostics_advert_debug_by_claim">Розпізнано за заявою</string>
+    <string name="diagnostics_advert_debug_expected">Очікувані теги</string>
+    <string name="diagnostics_advert_debug_expected_value" tools:ignore="PluralsCandidate">%1$d (контактів: %2$d)</string>
+    <string name="diagnostics_advert_debug_form">В ефірі</string>
+    <string name="diagnostics_advert_form_clear">ID вузла</string>
     <string name="diagnostics_self">Цей пристрій</string>
     <string name="diagnostics_supervised_family_link">Контролюється через Family Link</string>
     <string name="diagnostics_supervised_managed">Керований телефон</string>
@@ -1146,6 +1169,14 @@
         <item quantity="other">%1$d почутих</item>
     </plurals>
     <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">%1$d почутих</string>
+    <plurals name="diagnostics_transport_links">
+        <item quantity="one">%1$d з’єднання</item>
+        <item quantity="few">%1$d з’єднання</item>
+        <item quantity="many">%1$d з’єднань</item>
+        <item quantity="other">%1$d з’єднання</item>
+    </plurals>
+    <string name="diagnostics_transport_links_zero" tools:ignore="PluralsCandidate">%1$d з’єднань</string>
+    <string name="diagnostics_transport_blinded">змінний ID</string>
     <string name="diagnostics_transport_unsupported">Не підтримується на цьому телефоні</string>
     <string name="diagnostics_transport_needs_android_12">Потрібен Android 12 або новіший</string>
     <string name="diagnostics_transport_lora_down">Плату не підключено</string>
@@ -1153,6 +1184,15 @@
     <string name="diagnostics_tag_nan">NAN</string>
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">Інтернет</string>
+    <string name="diagnostics_tag_link">З’єднання</string>
+    <string name="diagnostics_link_encrypted">Зашифровано</string>
+    <string name="diagnostics_link_encrypted_cd">Це з’єднання зашифроване</string>
+    <string name="diagnostics_link_plain">Не зашифровано</string>
+    <string name="diagnostics_link_plain_cd">Це з’єднання не зашифроване</string>
+    <string name="diagnostics_key_chip">Ключ</string>
+    <string name="diagnostics_key_chip_cd">Має ключ присутності цього контакту</string>
+    <string name="diagnostics_presence_key_held">Ключ присутності: є</string>
+    <string name="diagnostics_presence_key_none">Ключ присутності: ще немає</string>
     <string name="diagnostics_tag_via">через %1$s</string>
     <string name="diagnostics_transport_audio">аудіо</string>
     <string name="diagnostics_transport_held">призупинено</string>
@@ -1185,8 +1225,8 @@
     <string name="diagnostics_transport_low_power">енергозбереження</string>
     <string name="diagnostics_transport_switched_off">вимкнено в налаштуваннях</string>
     <string name="diagnostics_transport_dormant">Неактивно — поруч немає телефонів з Wi-Fi Aware</string>
-    <string name="diagnostics_ble_phy_label">Bluetooth великої дальності (експеримент)</string>
-    <string name="diagnostics_ble_phy_body">«Вимк.» — звичайний Bluetooth. «Авто» знаходить телефони далі й сповільнює з’єднання, щоб не втратити його, коли люди віддаляються. Coded і 1M тримають усі з’єднання на одній швидкості, щоб порівнювати дальність.</string>
+    <string name="diagnostics_ble_phy_label">Bluetooth великої дальності</string>
+    <string name="diagnostics_ble_phy_body">Авто, типовий режим, знаходить телефони подалі й сповільнює з’єднання, щоб утримати його, коли вони віддаляються. Вимк. використовує лише стандартний Bluetooth. Coded і 1M утримують кожне з’єднання на одній швидкості, щоб порівнювати дальність.</string>
     <string name="diagnostics_ble_phy_off">Вимк.</string>
     <string name="diagnostics_ble_phy_auto">Авто</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
@@ -1310,7 +1350,6 @@
     <string name="licenses_section_data">Вбудовані моделі та дані</string>
     <string name="licenses_row_subtitle">%1$s · %2$s</string>
     <string name="license_text_error">Не вдалося завантажити текст ліцензії.</string>
-    <string name="crash_section">Звіти про проблеми</string>
     <string name="crash_last_label">Останній збій</string>
     <string name="crash_open_action">Відкрити дані про збій</string>
     <string name="crash_title">Останній збій</string>
@@ -1334,7 +1373,6 @@
     <string name="crash_delete_body">Буде видалено всі збережені звіти про збої з цього телефона. Цю дію не можна скасувати.</string>
     <string name="crash_delete_confirm">Видалити все</string>
     <string name="crash_deleted">Дані про збої видалено</string>
-    <string name="field_log_section">Польові дані</string>
     <string name="field_log_row_label">Польовий журнал</string>
     <string name="field_log_row_supporting">Як працювали ваші радіомодулі за останні три дні</string>
     <string name="field_log_open_action">Відкрити польовий журнал</string>

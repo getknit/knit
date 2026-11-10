@@ -2,6 +2,9 @@ package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.OwnPresenceKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The one writer of the presence advert (ADR 2026-11.xp6d's writer; step 5b's W3, a blocking finding of both the
@@ -85,6 +88,19 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
     private var epoch = 0
     private var installs = 0L
 
+    // [blindedOnAir]'s one source, written only under [lock] beside the snapshot it describes.
+    private val _blindedOnAir = MutableStateFlow(false)
+
+    /**
+     * Whether the form this writer has on the air is blinded, while the radio is up: false at [up] (a clear form, or a
+     * pending tag that has aired nothing yet), the new form's [AdvertOrder.Form.blinded] at each [install], false at
+     * [down]. What is aired, never what the build or the switch asks for (`AdvertStatus.blinding` stays true through an
+     * adapter off, a stop, a pending bring-up and a failed install; [aired] outlives [down]). A rotation's [begin] and a
+     * Coded power change move nothing: the sets keep airing the same form until an [install]. Diagnostic-only: the
+     * Diagnostics screen's "rotating ID" tag (`MeshTransport.advertBlinded`, ADR 2026-11.xp6d); nothing acts on it.
+     */
+    val blindedOnAir: StateFlow<Boolean> = _blindedOnAir.asStateFlow()
+
     /** Payloads dropped because a blinded snapshot's bytes 1–16 were not its tag (the id, or another form). */
     @Volatile var clearRefused = 0L
         private set
@@ -133,6 +149,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
             up = true
             pending = pendingTag
             pushWanted = false
+            _blindedOnAir.value = false
             if (!pendingTag && clear != null) {
                 if (clear.form.blinded) error("a clear bring-up names a clear form")
                 aired?.let { old -> retireReplaced(old, clear) }
@@ -173,6 +190,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
             stale = true
             pending = false
             pushWanted = false
+            _blindedOnAir.value = false
             aired?.let {
                 it.presence.stop()
                 it.coded?.stop()
@@ -202,6 +220,7 @@ internal class AdvertWriter<S : AdvertWriter.Sink>(
             aired?.let { old -> retireReplaced(old, next) }
             aired = next.stamped(++installs, wallMs())
             onStamped(installs)
+            _blindedOnAir.value = next.form.blinded
             stale = false
             pending = false
             pushWanted = false

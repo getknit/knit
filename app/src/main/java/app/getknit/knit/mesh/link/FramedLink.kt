@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.FileFeed
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.Peer
@@ -109,6 +110,21 @@ class FramedLink(
     // nothing and ignores it. A wrong length never gets here: [LinkFraming.read] throws and the link drops.
     private val onTagNext: (ByteArray) -> Unit = {},
 ) {
+    /**
+     * Whether this link's bytes ride the link seal (ADR 2026-11.8mhs): fixed for the link's life, like [proven], which a
+     * sealed link always is. Read by the planes for the Diagnostics chip (`MeshTransport.linkSecurity`) and nothing else.
+     */
+    val sealed: Boolean get() = socket is SealedLinkSocket
+
+    /** [sealed] and [proven] as the Diagnostics chip reads them: one state per link, both planes the same way. */
+    val security: LinkSecurity
+        get() =
+            when {
+                sealed -> LinkSecurity.SEALED
+                proven -> LinkSecurity.PROVEN
+                else -> LinkSecurity.LEGACY
+            }
+
     private val outbound = Channel<Outbound>(Channel.UNLIMITED)
 
     // The custody digest waiting in [outbound] to be written, if one is. Whoever swaps it from null queues one

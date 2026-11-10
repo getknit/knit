@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.spool.MoveResult
 import app.getknit.knit.mesh.spool.SpoolStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 
@@ -67,6 +68,19 @@ interface MeshController {
 
     /** nodeId → the radios each node is reachable over, so Diagnostics can tag a node BLE / NAN. */
     val peerTransports: StateFlow<Map<String, Set<TransportKind>>>
+
+    /**
+     * nodeId → what protects each live link to it, by plane ([LinkSecurity], ADR 2026-11.8mhs), for the Diagnostics
+     * chip on a node row. Presentation only. Defaulted for the fakes: no link.
+     */
+    val linkSecurity: StateFlow<Map<String, Map<TransportKind, LinkSecurity>>> get() = NO_LINKS_BY_KIND
+
+    /**
+     * Whether this phone holds a presence key of its own to hand its direct contacts (ADR 2026-11.xp6d), for the
+     * Diagnostics line under *This device*. Only whether: the key, its generation and when it was minted never leave the
+     * mesh layer, since a generation dates a rotation and so a removal or a block. Defaulted for the fakes: none.
+     */
+    val ownPresenceKeyHeld: StateFlow<Boolean> get() = NO_OWN_PRESENCE_KEY
 
     /** conversationId → the set of peers currently shown as "typing" there, for the chat UI. */
     val typing: StateFlow<Map<String, Set<String>>>
@@ -314,3 +328,9 @@ class RatchetPeerState(
     /** Our surviving local epoch privs for this peer, most recently minted first, as (epoch, createdAt). */
     val localEpochs: List<Pair<Int, Long>> = emptyList(),
 )
+
+/** [MeshController.linkSecurity]'s default: no live link to anyone. */
+private val NO_LINKS_BY_KIND: StateFlow<Map<String, Map<TransportKind, LinkSecurity>>> = MutableStateFlow(emptyMap())
+
+/** [MeshController.ownPresenceKeyHeld]'s default: no key. */
+private val NO_OWN_PRESENCE_KEY: StateFlow<Boolean> = MutableStateFlow(false)

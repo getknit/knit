@@ -6,6 +6,7 @@ import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.call.OwnIceServers
 import app.getknit.knit.call.VoiceNoteSpeech
+import app.getknit.knit.contacts.DirectContacts
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
@@ -15,6 +16,7 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
+import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.AwareSwitch
@@ -154,6 +156,8 @@ val uiModule =
                 captureHealth = if (LIVE_CALLS_WIRED) get<CaptureHealth>() else null,
                 awareSwitchOn = get<AwareSwitch>().on,
                 hiddenKnown = get<HiddenKnownStore>(),
+                presenceKeyHolders = get<PresenceKeyRepository>().observePeersWithKeys(),
+                directContacts = get<DirectContacts>().observe(),
             )
         }
         viewModel { CrashLogViewModel(get(), get()) }

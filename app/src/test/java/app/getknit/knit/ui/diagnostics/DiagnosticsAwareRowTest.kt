@@ -3,8 +3,11 @@ package app.getknit.knit.ui.diagnostics
 import android.content.Context
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
@@ -51,6 +54,8 @@ class DiagnosticsAwareRowTest {
                 )
             }
         }
+        // Transports sits under the reports and the controls, past Robolectric's viewport: bring the row into view.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(context.getString(R.string.diagnostics_transport_wifi_aware)))
     }
 
     /** A resting plane says it is idle, not off, in place of its (zero) counts. */

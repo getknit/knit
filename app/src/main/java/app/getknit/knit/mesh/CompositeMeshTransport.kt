@@ -191,8 +191,27 @@ class CompositeMeshTransport(
                         TransportStatus(child.kind, health, linked.size, nearby.size, contended, held)
                     }.combine(child.switchedOff) { status, off -> status.copy(switchedOff = off) }
                         .combine(child.dormant) { status, dormant -> status.copy(dormant = dormant) }
+                        .combine(child.advertBlinded) { status, blinded -> status.copy(blindedAdvert = blinded) }
                 },
             ) { it.toList() }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+        }
+
+    /**
+     * nodeId → what protects each live link to it, by the plane it runs on ([MeshTransport.linkSecurity], ADR
+     * 2026-11.8mhs): the Diagnostics screen narrows it to the kinds a row's section claims, as it does [peerTransports].
+     * Read-only and presentation only; derived from the children's own flows, so it never perturbs routing.
+     */
+    val linkSecurityByKind: StateFlow<Map<String, Map<TransportKind, LinkSecurity>>> =
+        if (children.isEmpty()) {
+            MutableStateFlow(emptyMap())
+        } else {
+            combine(children.map { it.linkSecurity }) { maps ->
+                val byNode = HashMap<String, MutableMap<TransportKind, LinkSecurity>>()
+                children.forEachIndexed { i, child ->
+                    maps[i].forEach { (nodeId, security) -> byNode.getOrPut(nodeId) { mutableMapOf() }[child.kind] = security }
+                }
+                byNode.mapValues { it.value.toMap() }
+            }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
         }
 
     /**

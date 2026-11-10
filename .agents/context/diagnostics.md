@@ -46,3 +46,12 @@ lines.
   peer table's remainder, newest profile first, five shown) and ADR 2026-11.b37x (a Known row can be hidden, pinned to
   the profile version it showed; presentation only, so no mesh code reads the key and the peer row is never touched).
   The tiers come from `reachOf`, shared with the profile line; never add a tier rule here.
+- **When touching the Diagnostics screen's order, its link or Key chips, its presence-key rows or the rotating-ID tag
+  (`NodeInfo.link`, `DiagnosticsViewModel.rowLinkSecurity`, `PresenceKeyInfo`, `AdvertDebugInfo`, `LinkChip`, `KeyChip`,
+  `PresenceMetrics`, `AdvertDebugSection`), or the flows behind them (`LinkSecurity`, `MeshTransport.linkSecurity`,
+  `CompositeMeshTransport.linkSecurityByKind`, `MeshController.linkSecurity`, `FramedLink.security`,
+  `MeshTransport.advertBlinded`, `TransportStatus.blindedAdvert`, `MeshController.ownPresenceKeyHeld`,
+  `PresenceKeyRepository.observePeersWithKeys`):** READ ADR 2026-11.u5je. No live link is no chip, never "Not
+  encrypted"; a row shows the weakest link its section claims; the tag is the installed advert form while the radio is
+  up, never `AdvertStatus.blinding`. Never show a key, a tag, a generation, a mint time or a rotation count: each dates
+  a removal or a block (ADR 2026-11.xp6d).

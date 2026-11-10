@@ -50,6 +50,17 @@ enum class TransportHealth { Healthy, ForegroundOnly, Degraded, Unavailable }
 enum class TransportKind { Bluetooth, WifiAware, LoRa, Other, DirectLink }
 
 /**
+ * What protects one live link's bytes, for the Diagnostics screen's chip on a node row (ADR 2026-11.8mhs). Presentation
+ * only: nothing routes, sends, relays or custodies by it, and a peer's claim never sets it — each is what this phone's
+ * own end of the link runs on.
+ * - [SEALED]: every byte after the handshake rides the link seal (`SealedLinkSocket`), or a direct link's lane, which is
+ *   always AES-GCM (`mesh/inet/LinkLane`). A sealed radio link is proven too.
+ * - [PROVEN]: plain bytes, but the handshake proved the peer's key (ADR 2026-11.264w): an older build without the seal.
+ * - [LEGACY]: plain and unproven, an older build without either.
+ */
+enum class LinkSecurity { SEALED, PROVEN, LEGACY }
+
+/**
  * A per-radio status line for the Diagnostics screen, produced by [CompositeMeshTransport.statuses]. [linked]
  * is the count of live data-path links right now (≤1 for Wi-Fi Aware's ephemeral NDP, up to the link budget
  * for Bluetooth); [nearby] is the smoothed coordination-plane [MeshTransport.reachable] count. [contended] is
@@ -59,7 +70,8 @@ enum class TransportKind { Bluetooth, WifiAware, LoRa, Other, DirectLink }
  * [MeshTransport.switchedOff]: Knit itself has the plane off (the Settings switch, low-power mode, or a debug build's
  * switch), so its [TransportHealth.Unavailable] is not a radio the user turned off and asks nothing of them (ADR
  * 2026-10.d44b). [dormant] is its [MeshTransport.dormant]: the plane is up but detached because no phone that could use
- * it is near (GitHub #44) — idle, not off, and its health says nothing worse for it.
+ * it is near (GitHub #44) — idle, not off, and its health says nothing worse for it. [blindedAdvert] is its
+ * [MeshTransport.advertBlinded]: the advert on air carries a rotating tag rather than the node id (ADR 2026-11.xp6d).
  */
 data class TransportStatus(
     val kind: TransportKind,
@@ -70,6 +82,7 @@ data class TransportStatus(
     val initiatorHeld: Boolean = false,
     val switchedOff: Boolean = false,
     val dormant: Boolean = false,
+    val blindedAdvert: Boolean = false,
 )
 
 /** Shared "never contended" default for [MeshTransport.radioContended], so a transport without the signal
@@ -90,6 +103,12 @@ internal val NO_AWARE_CANDIDATES: StateFlow<Set<String>> = MutableStateFlow(empt
 
 // [MeshTransport.freeLinked]'s default: a transport that makes no direct links holds no free one.
 private val NO_FREE_LINKS: StateFlow<Set<String>> = MutableStateFlow(emptySet())
+
+/** Shared "no live link" default for [MeshTransport.linkSecurity]: a plane that makes no link names none. */
+internal val NO_LINK_SECURITY: StateFlow<Map<String, LinkSecurity>> = MutableStateFlow(emptyMap())
+
+/** Shared "never blinded" default for [MeshTransport.advertBlinded] (only the Bluetooth plane overrides it). */
+internal val NEVER_BLINDED: StateFlow<Boolean> = MutableStateFlow(false)
 
 /** Shared "no newcomer watch" default for [MeshTransport.seesNewcomers]: a plane that does not say so never counts. */
 internal val SEES_NO_NEWCOMERS: StateFlow<Boolean> = MutableStateFlow(false)
@@ -372,6 +391,21 @@ interface MeshTransport {
      * ([NEVER_DORMANT]); only Wi-Fi Aware overrides it, and `SwitchableTransport` passes its child's through.
      */
     val dormant: StateFlow<Boolean> get() = NEVER_DORMANT
+
+    /**
+     * What protects each live link this plane holds right now, by the peer's node id ([LinkSecurity], ADR 2026-11.8mhs):
+     * one entry per link, gone with the link. Diagnostic-only: the Diagnostics screen's chip on a node row; nothing
+     * routes, sends or custodies on it. [CompositeMeshTransport.linkSecurity] merges the children by kind. Defaults to
+     * none ([NO_LINK_SECURITY]); the planes that make links override it.
+     */
+    val linkSecurity: StateFlow<Map<String, LinkSecurity>> get() = NO_LINK_SECURITY
+
+    /**
+     * Whether the advert this plane has on air now carries a rotating tag instead of the node id (ADR 2026-11.xp6d): what
+     * is aired, never what the build or a switch asks for. Diagnostic-only, carried as [TransportStatus.blindedAdvert].
+     * Defaults to never ([NEVER_BLINDED]); only the Bluetooth plane overrides it.
+     */
+    val advertBlinded: StateFlow<Boolean> get() = NEVER_BLINDED
 
     /**
      * The peers this short-range plane has positive evidence can run Wi-Fi Aware, heard **near** enough to be worth

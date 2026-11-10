@@ -375,4 +375,50 @@ class AdvertWriterTest {
         assertEquals(2L, stamped.aired()!!.installs)
         assertEquals("a stale install tells no stamp", -1L, told)
     }
+
+    /**
+     * [AdvertWriter.blindedOnAir], the Diagnostics "rotating ID" tag (`MeshTransport.advertBlinded`): what the writer has
+     * on the air, never what the switch asks for. A pending bring-up, a rotation begun, a refused install and a radio
+     * that went down all read false or keep the form already airing; only an install moves it.
+     */
+    @Test
+    fun blindedOnAirFollowsTheFormInstalledNotTheFormAskedFor() {
+        assertFalse("nothing aired yet", writer.blindedOnAir.value)
+        writer.up(pendingTag = false, clear = clearAired(), ::encode, ::write)
+        assertFalse("a clear bring-up", writer.blindedOnAir.value)
+
+        writer.down()
+        val token = writer.up(pendingTag = true, clear = null, ::encode, ::write)
+        assertFalse("a blinding bring-up whose tag is still pending has aired nothing blinded", writer.blindedOnAir.value)
+        val form = TagChoice.choose(schedule, key, key, announced = false, wallMs = wall).form
+        assertTrue(install(token, form))
+        assertTrue("the blinded install", writer.blindedOnAir.value)
+
+        val rotation = writer.begin()
+        assertTrue("a rotation begun keeps the form already airing", writer.blindedOnAir.value)
+        writer.replaceCoded(sink("coded"), ::encode, ::write)
+        assertTrue("a Coded power change keeps the form", writer.blindedOnAir.value)
+        writer.abandon(rotation)
+        assertTrue(writer.blindedOnAir.value)
+
+        writer.down()
+        assertFalse("the radio went down", writer.blindedOnAir.value)
+        assertFalse("a stale install moves nothing", install(token, form))
+        assertFalse(writer.blindedOnAir.value)
+
+        // The switch flipped off: a clear form installed by a rotation reads false.
+        val again = writer.up(pendingTag = true, clear = null, ::encode, ::write)
+        assertTrue(install(again, form))
+        assertTrue(writer.blindedOnAir.value)
+        assertTrue(install(writer.begin(), AdvertOrder.Form.clear(localId)))
+        assertFalse("a clear install", writer.blindedOnAir.value)
+
+        // A blinding bring-up over a blinded form still on the air (no down between) reads false until its own install:
+        // up() resets the flag itself, never leaning on down() having run.
+        val third = writer.up(pendingTag = true, clear = null, ::encode, ::write)
+        assertTrue(install(third, form))
+        assertTrue(writer.blindedOnAir.value)
+        writer.up(pendingTag = true, clear = null, ::encode, ::write)
+        assertFalse("a bring-up whose tag is pending airs nothing blinded yet", writer.blindedOnAir.value)
+    }
 }

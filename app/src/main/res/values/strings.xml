@@ -1200,6 +1200,38 @@
 
     <!-- Diagnostics -->
     <string name="diagnostics_title">Diagnostics</string>
+    <!-- Section header: the last crash, a switched-off model and the field log, the things a user is asked to send. -->
+    <string name="diagnostics_reports">Reports and logs</string>
+    <!-- Section header at the foot of a debug build's Diagnostics: the developer switches. -->
+    <string name="diagnostics_debug_section">Debug options</string>
+    <!-- Metric rows: links between phones, encrypted and proven (shown only once any link has been made). -->
+    <string name="diagnostics_metric_links_sealed">Links encrypted</string>
+    <string name="diagnostics_metric_link_seal_failed">Link encryption failed</string>
+    <string name="diagnostics_metric_link_seal_refused">Unencrypted links refused</string>
+    <string name="diagnostics_metric_links_proven">Links proven</string>
+    <string name="diagnostics_metric_link_proof_failed">Link proofs failed</string>
+    <string name="diagnostics_metric_link_claim_refused">Unproven links refused</string>
+    <!-- Metric rows: presence keys. "held" reads "%1$d of %2$d", the contacts whose key this phone holds of all of them. -->
+    <string name="diagnostics_metric_presence_keys_held">Contacts\' presence keys held</string>
+    <string name="diagnostics_metric_presence_keys_of" tools:ignore="PluralsCandidate">%1$d of %2$d</string>
+    <string name="diagnostics_metric_presence_keys_sent">Presence keys sent</string>
+    <string name="diagnostics_metric_presence_keys_stored">Presence keys stored</string>
+    <string name="diagnostics_metric_presence_mark_not_full">Presence key saves not durable</string>
+    <!-- This phone aired a rotating ID none of its contacts can recognise (its clock was behind), or one from a stale
+         rotation mark. Faults; shown only when they happen. -->
+    <string name="diagnostics_metric_tags_unresolvable">Unrecognisable rotating IDs aired</string>
+    <string name="diagnostics_metric_tags_stale">Stale rotation marks</string>
+    <string name="diagnostics_metric_blind_drops">Rotating-ID adverts dropped</string>
+    <!-- Debug build only: the rotating-ID reader's counts. -->
+    <string name="diagnostics_advert_debug_label">Rotating ID reader</string>
+    <string name="diagnostics_advert_debug_by_key">Recognised by key</string>
+    <string name="diagnostics_advert_debug_by_claim">Recognised by claim</string>
+    <string name="diagnostics_advert_debug_expected">Expected tags</string>
+    <!-- %1$d expected tags listed for %2$d contacts. -->
+    <string name="diagnostics_advert_debug_expected_value" tools:ignore="PluralsCandidate">%1$d (%2$d contacts)</string>
+    <string name="diagnostics_advert_debug_form">On air</string>
+    <!-- The advert carries this phone's node ID in the clear (the alternative is diagnostics_transport_blinded). -->
+    <string name="diagnostics_advert_form_clear">node ID</string>
     <string name="diagnostics_self">This device</string>
     <string name="diagnostics_supervised_family_link">Supervised with Family Link</string>
     <string name="diagnostics_supervised_managed">Managed phone</string>
@@ -1337,6 +1369,17 @@
     </plurals>
     <!-- Shown at 0 in place of diagnostics_transport_heard; %1$d is that 0. Word it for zero. Only ever 0, so not a plural. -->
     <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">%1$d heard</string>
+    <!-- The Direct link row's count: the contacts this phone holds a direct Internet link to now. Never "nearby": a link is
+         not a radio. -->
+    <plurals name="diagnostics_transport_links">
+        <item quantity="one">%1$d link</item>
+        <item quantity="other">%1$d links</item>
+    </plurals>
+    <!-- Shown at 0 in place of diagnostics_transport_links; %1$d is that 0. Word it for zero. Only ever 0, so not a plural. -->
+    <string name="diagnostics_transport_links_zero" tools:ignore="PluralsCandidate">%1$d links</string>
+    <!-- A tag on the Bluetooth row while the advert carries a rotating tag rather than this phone's node ID, so a stranger
+         cannot follow it. Short, lower case, like "audio". -->
+    <string name="diagnostics_transport_blinded">rotating ID</string>
     <!-- Where the counts go on a plane the phone cannot run, or a LoRa plane with a board that is bound but
          not up (no board at all reads lora_status_off, shared with the LoRa screen). -->
     <string name="diagnostics_transport_unsupported">Not supported by this phone</string>
@@ -1346,6 +1389,21 @@
     <string name="diagnostics_tag_nan">NAN</string>
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">Internet</string>
+    <!-- A contact reached over a direct Internet link, on a long-range row beside BLE, NAN, LoRa and Internet. Short. -->
+    <string name="diagnostics_tag_link">Link</string>
+    <!-- A chip on a node row: the live link to this person is encrypted end to end between the two phones. -->
+    <string name="diagnostics_link_encrypted">Encrypted</string>
+    <string name="diagnostics_link_encrypted_cd">This link is encrypted</string>
+    <!-- A chip on a node row: the live link to this person is not encrypted (an older Knit, or a link whose identity is
+         not yet proven). Say only that; never blame the other phone. -->
+    <string name="diagnostics_link_plain">Not encrypted</string>
+    <string name="diagnostics_link_plain_cd">This link is not encrypted</string>
+    <!-- A chip on a node row: this phone holds the person's presence key, so it can recognise their rotating ID. Short. -->
+    <string name="diagnostics_key_chip">Key</string>
+    <string name="diagnostics_key_chip_cd">Holds this contact\'s presence key</string>
+    <!-- Under This device: whether this phone has a presence key of its own to give its contacts. -->
+    <string name="diagnostics_presence_key_held">Presence key: held</string>
+    <string name="diagnostics_presence_key_none">Presence key: none yet</string>
     <!-- An indirect row's tag: the nearby phone that last handed us this peer's message, by name. -->
     <string name="diagnostics_tag_via">via %1$s</string>
     <string name="diagnostics_transport_audio">audio</string>
@@ -1389,8 +1447,8 @@
     <!-- The Wi-Fi Aware plane is up but resting, detached, because no phone nearby can use it (GitHub #44). In place
          of the transport's counts. -->
     <string name="diagnostics_transport_dormant">Idle — no Wi-Fi Aware phone nearby</string>
-    <string name="diagnostics_ble_phy_label">Long-range Bluetooth (experiment)</string>
-    <string name="diagnostics_ble_phy_body">Off is today\'s Bluetooth. Auto finds phones further away and slows a link down to keep it as they walk off. Coded and 1M hold every link on one speed, for comparing range.</string>
+    <string name="diagnostics_ble_phy_label">Long-range Bluetooth</string>
+    <string name="diagnostics_ble_phy_body">Auto, the default, finds phones further away and slows a link down to keep it as they walk off. Off uses standard Bluetooth only. Coded and 1M hold every link on one speed, for comparing range.</string>
     <string name="diagnostics_ble_phy_off">Off</string>
     <string name="diagnostics_ble_phy_auto">Auto</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
@@ -1543,7 +1601,6 @@
 
     <!-- Crash log — a manual, opt-in report the user reads and hands over themselves. Reached from
          Diagnostics; nothing here is ever uploaded. See ui/diagnostics/CrashLogScreen.kt. -->
-    <string name="crash_section">Problem reports</string>
     <string name="crash_last_label">Last crash</string>
     <string name="crash_open_action">Open crash details</string>
     <string name="crash_title">Last crash</string>
@@ -1568,7 +1625,6 @@
     <string name="crash_delete_confirm">Delete all</string>
     <string name="crash_deleted">Crash details deleted</string>
     <!-- The field log (ADR 2026-10.a239): a record of how the radios behaved, kept on the phone, shared only by the user. -->
-    <string name="field_log_section">Field data</string>
     <string name="field_log_row_label">Field log</string>
     <string name="field_log_row_supporting">How your radios have behaved over the last three days</string>
     <string name="field_log_open_action">Open field log</string>

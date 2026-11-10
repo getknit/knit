@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.OwnPresenceKey
@@ -87,6 +88,18 @@ class CompositeMeshTransportTest {
         override val awareCandidatesHeard = candidatesHeard.asStateFlow()
         private val watching = MutableStateFlow(false)
         override val seesNewcomers = watching.asStateFlow()
+        private val linkSecurityState = MutableStateFlow<Map<String, LinkSecurity>>(emptyMap())
+        override val linkSecurity = linkSecurityState.asStateFlow()
+        private val blindedState = MutableStateFlow(false)
+        override val advertBlinded = blindedState.asStateFlow()
+
+        fun setLinkSecurity(vararg links: Pair<String, LinkSecurity>) {
+            linkSecurityState.value = links.toMap()
+        }
+
+        fun setAdvertBlinded(blinded: Boolean) {
+            blindedState.value = blinded
+        }
 
         /** What [onForeignAwareCandidates] was handed, in order: near, heard, seesNewcomers. */
         val candidateCalls = mutableListOf<Triple<Set<String>, Set<String>, Boolean>>()
@@ -1499,6 +1512,63 @@ class CompositeMeshTransportTest {
             assertEquals(
                 TransportStatus(TransportKind.WifiAware, TransportHealth.Degraded, linked = 1, nearby = 2),
                 statuses.first { it.kind == TransportKind.WifiAware },
+            )
+        }
+
+    /**
+     * ADR 2026-11.8mhs: each child's live links merge by node and plane, so Diagnostics can narrow a row to the planes its
+     * section claims; a link that goes leaves its entry with it.
+     */
+    @Test
+    fun linkSecurityMergesTheChildrenByNodeAndPlane() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setLinkSecurity("p" to LinkSecurity.SEALED, "q" to LinkSecurity.LEGACY)
+            nan.setLinkSecurity("p" to LinkSecurity.PROVEN)
+            advanceUntilIdle()
+
+            assertEquals(
+                mapOf(
+                    "p" to mapOf(TransportKind.Bluetooth to LinkSecurity.SEALED, TransportKind.WifiAware to LinkSecurity.PROVEN),
+                    "q" to mapOf(TransportKind.Bluetooth to LinkSecurity.LEGACY),
+                ),
+                composite.linkSecurityByKind.value,
+            )
+
+            nan.setLinkSecurity()
+            advanceUntilIdle()
+            assertEquals(mapOf(TransportKind.Bluetooth to LinkSecurity.SEALED), composite.linkSecurityByKind.value["p"])
+        }
+
+    /** ADR 2026-11.xp6d: a plane airing a rotating tag says so on its status line, and only that plane. */
+    @Test
+    fun statusesCarryABlindedAdvert() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setAdvertBlinded(true)
+            advanceUntilIdle()
+
+            assertTrue(
+                composite.statuses.value
+                    .first { it.kind == TransportKind.Bluetooth }
+                    .blindedAdvert,
+            )
+            assertFalse(
+                composite.statuses.value
+                    .first { it.kind == TransportKind.WifiAware }
+                    .blindedAdvert,
+            )
+
+            bt.setAdvertBlinded(false)
+            advanceUntilIdle()
+            assertFalse(
+                composite.statuses.value
+                    .first { it.kind == TransportKind.Bluetooth }
+                    .blindedAdvert,
             )
         }
 

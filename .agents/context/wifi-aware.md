@@ -178,6 +178,13 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   forgotten on `LinkClaims`' capable/released edges — never the flat 10 s contention backoff, which drove the watchdog's
   tiers; a transient proof failure, and a responder refusing us (read as `NoReply`), stay on that flat backoff. Tests:
   `NanClaimRefusalPolicyTest`, `NanHandshakePolicyTest`.
+- **When touching `refreshNeighbors`, `recomputeReachable` / `publishReachable`, `linkSecurity`, `linkViewLock` or
+  `NanLinkView`:** READ ADR 2026-11.8mhs. `neighbors`, `linkSecurity` (the Diagnostics chip, presentation only) and
+  the reachable set's live half are built from ONE read of `peers` under `linkViewLock` (never `lock`), so a racing
+  caller's older snapshot can't land last; nothing calls out under it. `linkSecurity` is read off each link's
+  `FramedLink.security`, never stored beside it: a node with no live link has no entry. Every change to `peers` (the
+  `registerConn` put, the `teardownPeer` remove) ends in `refreshNeighbors`; stop and NAN-down clear both flows.
+  Tests: `NanLinkViewTest`.
 
 ## Adding an entry
 

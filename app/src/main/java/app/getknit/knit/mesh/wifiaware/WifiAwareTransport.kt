@@ -48,6 +48,7 @@ import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.PartialBlobs
@@ -202,6 +203,17 @@ class WifiAwareTransport(
     // come and go. [reachable] is the smoothed UI signal instead.
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors = _neighbors.asStateFlow()
+
+    // What protects each live link, by node id (ADR 2026-11.8mhs): the Diagnostics chip and nothing else. Read off the
+    // link in [peers] at every [refreshNeighbors], never kept beside it, so it can't outlive the link it describes.
+    private val _linkSecurity = MutableStateFlow<Map<String, LinkSecurity>>(emptyMap())
+    override val linkSecurity = _linkSecurity.asStateFlow()
+
+    // Serializes [refreshNeighbors] / [recomputeReachable]: they run on IO, the handler and the links' coroutines, and
+    // each reads [peers] then writes the flows, so unlocked a stale snapshot could be written last and leave a torn-down
+    // link in [neighbors] / [linkSecurity] until the next change. Its own lock, not [lock] (that one guards the handshake
+    // bookkeeping); nothing calls out under it — it reads [peers] and the reachable maps and sets StateFlow values.
+    private val linkViewLock = Any()
 
     // "Who's nearby": peers seen recently over the coordination plane (no data path needed), so it stays
     // steady while _neighbors flaps through ephemeral syncs.
@@ -1345,7 +1357,10 @@ class WifiAwareTransport(
         lonelySince = 0L
         healRearmOwed = false
         lonelyRelaxedLogged = false
-        _neighbors.value = emptySet()
+        synchronized(linkViewLock) {
+            _neighbors.value = emptySet()
+            _linkSecurity.value = emptyMap()
+        }
         _reachable.value = emptySet()
         closeStoppedGeneration()
     }
@@ -4581,9 +4596,18 @@ class WifiAwareTransport(
         synchronized(lock) { if (accepting > 0) accepting-- }
     }
 
+    /**
+     * Publish the live links: [neighbors], [linkSecurity] and the reachable set's live half, all from ONE read of
+     * [peers] under [linkViewLock], so a racing caller's older snapshot can't land after a newer one. Called on every
+     * change to [peers] — the put in [registerConn] and the remove in [teardownPeer], which every removal goes through.
+     */
     private fun refreshNeighbors() {
-        _neighbors.value = peers.values.map { it.link.peer }.toSet()
-        recomputeReachable()
+        synchronized(linkViewLock) {
+            val view = NanLinkView.of(peers.values.toList().map { it.link.peer to it.link.security })
+            _neighbors.value = view.neighbors
+            _linkSecurity.value = view.security
+            publishReachable(view.neighbors)
+        }
     }
 
     /** Note a peer seen over the coordination plane, keeping the best Peer we know for the reachable set. */
@@ -4599,9 +4623,13 @@ class WifiAwareTransport(
 
     /** Reachable = the live link(s) ∪ peers seen within [REACHABLE_LINGER_MS] over the coordination plane. */
     private fun recomputeReachable() {
+        synchronized(linkViewLock) { publishReachable(peers.values.map { it.link.peer }) }
+    }
+
+    /** [recomputeReachable]'s body over a given [live] set; under [linkViewLock] only. */
+    private fun publishReachable(live: Collection<Peer>) {
         val now = SystemClock.elapsedRealtime()
         lastSeenAt.entries.removeAll { now - it.value > REACHABLE_LINGER_MS }
-        val live = peers.values.map { it.link.peer }
         val liveIds = live.mapTo(HashSet()) { it.nodeId }
         val nearby = reachablePeers.filterKeys { it in lastSeenAt.keys && it !in liveIds }.values
         _reachable.value = (live + nearby).toSet()
@@ -4721,7 +4749,10 @@ class WifiAwareTransport(
                 hopTable.clear()
                 lastSeenAt.clear()
                 reachablePeers.clear()
-                _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
+                synchronized(linkViewLock) {
+                    _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
+                    _linkSecurity.value = emptyMap()
+                }
                 _reachable.value = emptySet()
                 refreshAwareEvidence()
             }

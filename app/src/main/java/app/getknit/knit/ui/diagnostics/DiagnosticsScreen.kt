@@ -4,8 +4,10 @@ import android.text.format.Formatter
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RestartAlt
@@ -72,6 +75,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.onLongClick
@@ -88,6 +92,7 @@ import app.getknit.knit.call.CaptureProfile
 import app.getknit.knit.call.CaptureReason
 import app.getknit.knit.crash.CrashReportRef
 import app.getknit.knit.di.DEV_VIEW_WIRED
+import app.getknit.knit.mesh.LinkSecurity
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.PlaneSupport
 import app.getknit.knit.mesh.RadioSupport
@@ -146,6 +151,8 @@ fun DiagnosticsScreen(
     val callCapture by viewModel.callCapture.collectAsStateWithLifecycle()
     val blePhyMode by viewModel.blePhyMode.collectAsStateWithLifecycle()
     val blePhys by viewModel.blePhys.collectAsStateWithLifecycle()
+    val presence by viewModel.presence.collectAsStateWithLifecycle()
+    val advertDebug by viewModel.advertDebugInfo.collectAsStateWithLifecycle()
     var confirmingModerationReset by remember { mutableStateOf(false) }
     // The Known rows picked for hiding, kept across a rotation. Read through [state]'s shown rows, so a node that became
     // reachable since it was picked leaves the selection on its own (ADR 2026-11.b37x).
@@ -241,6 +248,8 @@ fun DiagnosticsScreen(
         blePhyMode = blePhyMode,
         onSetBlePhyMode = viewModel::setBlePhyMode,
         blePhys = blePhys,
+        presence = presence,
+        advertDebug = advertDebug,
         selected = selection,
         onToggleSelected = { id -> picked = if (id in selection) (selection - id).toList() else (selection + id).toList() },
         onClearSelection = { picked = emptyList() },
@@ -316,12 +325,17 @@ internal fun DiagnosticsScreenContent(
     // Which microphone path calls record from (ADR 2026-10.kw29); null, or the standard path by default, hides the row.
     callCapture: CaptureChoice? = null,
     onResetCallCapture: () -> Unit = {},
-    // The Coded PHY experiment's mode; null (a build that keeps it dark, and every other caller) hides the row.
+    // Long-range Bluetooth's debug mode (ADR 2026-10.yvn6); null (a release build, one that keeps it dark, and every
+    // other caller) hides the row.
     blePhyMode: CodedPhyMode? = null,
     onSetBlePhyMode: (CodedPhyMode) -> Unit = {},
     // The PHY each Bluetooth link with a PHY handle is on, by node id: a chip on its directly-connected row. Empty
-    // (no chips) while the experiment is off or dark.
+    // (no chips) where the build keeps long-range Bluetooth dark.
     blePhys: Map<String, LinkPhy> = emptyMap(),
+    // The presence-key facts (ADR 2026-11.xp6d): the line under This device, the Key chips and the "held" metric.
+    presence: PresenceKeyInfo = PresenceKeyInfo(),
+    // A debug build's rotating-ID reader counts; null (a release build, the plane down, every other caller) hides the row.
+    advertDebug: AdvertDebugInfo? = null,
     // The Known rows picked for hiding (ADR 2026-11.b37x); non-empty, the top bar turns into the selection's.
     selected: Set<String> = emptySet(),
     onToggleSelected: (String) -> Unit = {},
@@ -355,25 +369,27 @@ internal fun DiagnosticsScreenContent(
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
-            item { SelfSection(name = state.myName, nodeId = state.myNodeId, supervision = supervision) }
-
-            // Only when something was actually captured — the same conditional-row idiom MetricsSection
-            // uses, so a phone that has never crashed sees this screen exactly as it was. It sits above
-            // the controls because a user told "open Diagnostics and send me the crash" should not have
-            // to scroll past forty metric rows to find it.
-            //
-            // The header is keyed on *either* row, not on lastCrash: a native crash captures no report —
-            // that is the whole premise of the poison-pill it latched — so a latched phone very often has
-            // no crash to show, and hanging the header off lastCrash would hide the latch row with it.
-            if (lastCrash != null || moderationLatched) {
-                item { SectionHeader(stringResource(R.string.crash_section)) }
-                if (lastCrash != null) {
-                    item { CrashRow(crash = lastCrash, now = now, onClick = onOpenCrashLog) }
-                }
-                if (moderationLatched) {
-                    item { ModerationLatchSection(onReset = onResetModeration) }
-                }
+            item {
+                SelfSection(
+                    name = state.myName,
+                    nodeId = state.myNodeId,
+                    supervision = supervision,
+                    presenceKeyHeld = presence.ownKeyHeld,
+                )
             }
+
+            // What a user is asked to send, above everything else: "open Diagnostics and send me the crash" or "the field
+            // log" should not mean scrolling past the node lists and forty metric rows. The field log row is always here;
+            // the crash and latch rows only when there is one — a native crash captures no report (the premise of the
+            // poison-pill it latched), so a latched phone very often has the latch and no crash.
+            item { SectionHeader(stringResource(R.string.diagnostics_reports)) }
+            if (lastCrash != null) {
+                item { CrashRow(crash = lastCrash, now = now, onClick = onOpenCrashLog) }
+            }
+            if (moderationLatched) {
+                item { ModerationLatchSection(onReset = onResetModeration) }
+            }
+            item { FieldLogRow(onClick = onOpenFieldLog) }
 
             item { SectionHeader(stringResource(R.string.diagnostics_controls)) }
             item {
@@ -384,8 +400,110 @@ internal fun DiagnosticsScreenContent(
                     onScan = onScan,
                 )
             }
-            // The constant first, so R8 drops the row from a build without the view (ADR 2026-10.s7wg).
-            if (DEV_VIEW_WIRED && devViewOffered) {
+
+            item { SectionHeader(stringResource(R.string.diagnostics_transports)) }
+            item { TransportsSection(state.transports, nanOff = nanSwitchOffered && nanOff, wifiAwareOff = wifiAwareOff) }
+            // Under the rows they explain, in every build: a plane holding its initiator role, a phone that may not host
+            // a Wi-Fi Direct group, a call microphone off its standard path. Each comes with its way back.
+            if (state.transports.any { it is TransportRow.Live && it.status.initiatorHeld }) {
+                item { InitiatorHoldSection(onRelease = onReleaseInitiatorHold) }
+            }
+            if (directHost != HostVerdict.Allowed) {
+                item { DirectHostSection(verdict = directHost, onReset = onResetDirectHost) }
+            }
+            callCapture?.reason?.let { reason ->
+                item { CallCaptureSection(profile = callCapture.profile, reason = reason, onReset = onResetCallCapture) }
+            }
+
+            // Who this phone reaches, strongest evidence first, straight under the planes that reach them.
+            item {
+                SectionHeader(
+                    stringResource(R.string.diagnostics_directly_connected, state.directNodes.size),
+                )
+            }
+            if (state.directNodes.isEmpty()) {
+                item { EmptyLine(stringResource(R.string.diagnostics_none_direct)) }
+            } else {
+                items(state.directNodes, key = { it.nodeId }) {
+                    NodeRow(it, now, phy = blePhys[it.nodeId], keyHeld = it.nodeId in presence.keyHolders)
+                }
+            }
+
+            item {
+                SectionHeader(stringResource(R.string.diagnostics_indirect, state.indirectNodes.size))
+            }
+            if (state.indirectNodes.isEmpty()) {
+                item { EmptyLine(stringResource(R.string.diagnostics_none_indirect)) }
+            } else {
+                items(state.indirectNodes, key = { it.nodeId }) { NodeRow(it, now, keyHeld = it.nodeId in presence.keyHolders) }
+            }
+
+            item {
+                SectionHeader(stringResource(R.string.diagnostics_via_relay, state.longRangeNodes.size))
+            }
+            if (state.longRangeNodes.isEmpty()) {
+                item { EmptyLine(stringResource(R.string.diagnostics_none_relay)) }
+            } else {
+                items(state.longRangeNodes, key = { it.nodeId }) { NodeRow(it, now, keyHeld = it.nodeId in presence.keyHolders) }
+            }
+
+            // Everyone else we hold a profile for. Capped: this is the peer table, and listing all of it was
+            // exactly what made the old "reachable via relay" section meaningless.
+            // Hidden rows still count here: with every row hidden, the section stays for its Show hidden button.
+            if (state.knownTotal > 0 || state.hiddenKnownCount > 0) {
+                item {
+                    SectionHeader(stringResource(R.string.diagnostics_known_nodes, state.knownTotal))
+                }
+                items(state.knownNodes, key = { it.nodeId }) { node ->
+                    if (state.hidingOffered) {
+                        SelectableNodeRow(
+                            node = node,
+                            now = now,
+                            selecting = selected.isNotEmpty(),
+                            selected = node.nodeId in selected,
+                            keyHeld = node.nodeId in presence.keyHolders,
+                            onToggle = { onToggleSelected(node.nodeId) },
+                        )
+                    } else {
+                        NodeRow(node, now, keyHeld = node.nodeId in presence.keyHolders)
+                    }
+                }
+                val more = state.knownTotal - state.knownNodes.size
+                if (more > 0) {
+                    item { EmptyLine(pluralStringResource(R.plurals.diagnostics_known_more, more, more)) }
+                }
+                if (state.hidingOffered && selected.isEmpty()) {
+                    item { KnownActions(state.hideableKnown.size, state.hiddenKnownCount, onHideAll, onShowHidden) }
+                }
+            }
+
+            // Shown only while the Internet plane is actually running, so a mesh-only install (the default) never sees an
+            // empty section. Below the node lists: the relay's own state matters less than who it reaches.
+            if (state.spools.isNotEmpty()) {
+                item { SectionHeader(stringResource(R.string.diagnostics_spools)) }
+                items(state.spools, key = { it.url }) { SpoolSection(it) }
+            }
+
+            item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
+            item { MetricsSection(state.metrics, presence) }
+
+            // A debug build's switches, together at the foot, so they never sit between the planes and who they reach.
+            val btLive = state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }
+            val awareLive = state.transports.any { it is TransportRow.Live && it.kind == TransportKind.WifiAware }
+            // The constant first, so R8 drops the dev view's row from a build without the view (ADR 2026-10.s7wg).
+            val devViewShown = DEV_VIEW_WIRED && devViewOffered
+            val debugOffered =
+                devViewShown ||
+                    (bleLinkCapOffered && btLive) ||
+                    (nanSwitchOffered && awareLive) ||
+                    directCallsSwitchOffered ||
+                    walkieClipsOffered ||
+                    (blePhyMode != null && btLive) ||
+                    advertDebug != null
+            if (debugOffered) {
+                item { SectionHeader(stringResource(R.string.diagnostics_debug_section)) }
+            }
+            if (devViewShown) {
                 item {
                     DebugSwitchRow(
                         label = R.string.diagnostics_dev_view_label,
@@ -396,17 +514,13 @@ internal fun DiagnosticsScreenContent(
                     )
                 }
             }
-
-            item { SectionHeader(stringResource(R.string.diagnostics_transports)) }
-            item { TransportsSection(state.transports, nanOff = nanSwitchOffered && nanOff, wifiAwareOff = wifiAwareOff) }
-            // Under the rows it explains: the one plane that can put itself on hold says so with the way back.
-            if (state.transports.any { it is TransportRow.Live && it.status.initiatorHeld }) {
-                item { InitiatorHoldSection(onRelease = onReleaseInitiatorHold) }
-            }
-            if (bleLinkCapOffered && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }) {
+            if (bleLinkCapOffered && btLive) {
                 item { BleLinkCapRow(cap = bleLinkCap, onSet = onSetBleLinkCap) }
             }
-            if (nanSwitchOffered && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.WifiAware }) {
+            if (blePhyMode != null && btLive) {
+                item { BlePhyModeRow(mode = blePhyMode, onSet = onSetBlePhyMode) }
+            }
+            if (nanSwitchOffered && awareLive) {
                 item {
                     DebugSwitchRow(
                         label = R.string.diagnostics_nan_switch_label,
@@ -440,89 +554,7 @@ internal fun DiagnosticsScreenContent(
                     )
                 }
             }
-            if (blePhyMode != null && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }) {
-                item { BlePhyModeRow(mode = blePhyMode, onSet = onSetBlePhyMode) }
-            }
-            // Every build: a transfer's sender hosts, and this says why this phone cannot be one.
-            if (directHost != HostVerdict.Allowed) {
-                item { DirectHostSection(verdict = directHost, onReset = onResetDirectHost) }
-            }
-            callCapture?.reason?.let { reason ->
-                item { CallCaptureSection(profile = callCapture.profile, reason = reason, onReset = onResetCallCapture) }
-            }
-
-            // Always offered, above the metrics: a user asked to "send the field log from Diagnostics" finds it
-            // without scrolling past forty metric rows, and the controls and radio rows keep their place above it.
-            item { SectionHeader(stringResource(R.string.field_log_section)) }
-            item { FieldLogRow(onClick = onOpenFieldLog) }
-
-            item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
-            item { MetricsSection(state.metrics) }
-
-            // Shown only while the Internet plane is actually running, so a mesh-only install (the
-            // default) never sees an empty section.
-            if (state.spools.isNotEmpty()) {
-                item { SectionHeader(stringResource(R.string.diagnostics_spools)) }
-                items(state.spools, key = { it.url }) { SpoolSection(it) }
-            }
-
-            item {
-                SectionHeader(
-                    stringResource(R.string.diagnostics_directly_connected, state.directNodes.size),
-                )
-            }
-            if (state.directNodes.isEmpty()) {
-                item { EmptyLine(stringResource(R.string.diagnostics_none_direct)) }
-            } else {
-                items(state.directNodes, key = { it.nodeId }) { NodeRow(it, now, phy = blePhys[it.nodeId]) }
-            }
-
-            item {
-                SectionHeader(stringResource(R.string.diagnostics_indirect, state.indirectNodes.size))
-            }
-            if (state.indirectNodes.isEmpty()) {
-                item { EmptyLine(stringResource(R.string.diagnostics_none_indirect)) }
-            } else {
-                items(state.indirectNodes, key = { it.nodeId }) { NodeRow(it, now) }
-            }
-
-            item {
-                SectionHeader(stringResource(R.string.diagnostics_via_relay, state.longRangeNodes.size))
-            }
-            if (state.longRangeNodes.isEmpty()) {
-                item { EmptyLine(stringResource(R.string.diagnostics_none_relay)) }
-            } else {
-                items(state.longRangeNodes, key = { it.nodeId }) { NodeRow(it, now) }
-            }
-
-            // Everyone else we hold a profile for. Capped: this is the peer table, and listing all of it was
-            // exactly what made the old "reachable via relay" section meaningless.
-            // Hidden rows still count here: with every row hidden, the section stays for its Show hidden button.
-            if (state.knownTotal > 0 || state.hiddenKnownCount > 0) {
-                item {
-                    SectionHeader(stringResource(R.string.diagnostics_known_nodes, state.knownTotal))
-                }
-                items(state.knownNodes, key = { it.nodeId }) { node ->
-                    if (state.hidingOffered) {
-                        SelectableNodeRow(
-                            node = node,
-                            now = now,
-                            selecting = selected.isNotEmpty(),
-                            selected = node.nodeId in selected,
-                            onToggle = { onToggleSelected(node.nodeId) },
-                        )
-                    } else {
-                        NodeRow(node, now)
-                    }
-                }
-                val more = state.knownTotal - state.knownNodes.size
-                if (more > 0) {
-                    item { EmptyLine(pluralStringResource(R.plurals.diagnostics_known_more, more, more)) }
-                }
-                if (state.hidingOffered && selected.isEmpty()) {
-                    item { KnownActions(state.hideableKnown.size, state.hiddenKnownCount, onHideAll, onShowHidden) }
-                }
-            }
+            advertDebug?.let { info -> item { AdvertDebugSection(info) } }
         }
     }
 }
@@ -532,6 +564,8 @@ private fun SelfSection(
     name: String,
     nodeId: String,
     supervision: DeviceSupervision = DeviceSupervision.None,
+    // Whether this phone holds a presence key of its own (ADR 2026-11.xp6d): never the key, its generation or its age.
+    presenceKeyHeld: Boolean = false,
 ) {
     SectionHeader(stringResource(R.string.diagnostics_self))
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -557,6 +591,15 @@ private fun SelfSection(
                 modifier = Modifier.testTag("diagnostics_supervised"),
             )
         }
+        Text(
+            text =
+                stringResource(
+                    if (presenceKeyHeld) R.string.diagnostics_presence_key_held else R.string.diagnostics_presence_key_none,
+                ),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("diagnostics_presence_key"),
+        )
     }
 }
 
@@ -623,7 +666,10 @@ private fun MeshControlsSection(
 }
 
 @Composable
-private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
+private fun MetricsSection(
+    metrics: MeshMetrics.Snapshot,
+    presence: PresenceKeyInfo = PresenceKeyInfo(),
+) {
     val context = LocalContext.current
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         MetricRow(stringResource(R.string.diagnostics_metric_originated), metrics.frames.framesOriginated.toString())
@@ -644,6 +690,38 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
                 MetricRow(SUB_ROW_INDENT + reason.name, count.toString())
             }
         }
+        // Links between phones (ADR 2026-11.264w, 2026-11.8mhs): shown once any link was proven or sealed. A seal that
+        // failed, or a plain link refused between two sealing builds, is the "investigate" pair, so each shows only when
+        // it happened.
+        if (metrics.frames.linksSealed > 0 || metrics.frames.linksProven > 0) {
+            MetricRow(stringResource(R.string.diagnostics_metric_links_sealed), metrics.frames.linksSealed.toString())
+            if (metrics.frames.linkSealFailed > 0) {
+                MetricRow(
+                    SUB_ROW_INDENT + stringResource(R.string.diagnostics_metric_link_seal_failed),
+                    metrics.frames.linkSealFailed.toString(),
+                )
+            }
+            if (metrics.frames.linkSealRefused > 0) {
+                MetricRow(
+                    SUB_ROW_INDENT + stringResource(R.string.diagnostics_metric_link_seal_refused),
+                    metrics.frames.linkSealRefused.toString(),
+                )
+            }
+            MetricRow(stringResource(R.string.diagnostics_metric_links_proven), metrics.frames.linksProven.toString())
+            if (metrics.frames.linkProofFailed > 0) {
+                MetricRow(
+                    SUB_ROW_INDENT + stringResource(R.string.diagnostics_metric_link_proof_failed),
+                    metrics.frames.linkProofFailed.toString(),
+                )
+            }
+            if (metrics.frames.linkClaimRefused > 0) {
+                MetricRow(
+                    SUB_ROW_INDENT + stringResource(R.string.diagnostics_metric_link_claim_refused),
+                    metrics.frames.linkClaimRefused.toString(),
+                )
+            }
+        }
+        PresenceMetrics(metrics, presence)
         // Key recovery (inbound key-request): surfaced only once it's been exercised, so a mesh that never
         // hit a missing-key drop stays uncluttered. A rising NO_SENDER_KEY drop with a matching rise in
         // recovered keys is the signal that the gap is self-healing rather than losing frames.
@@ -895,6 +973,12 @@ private fun LiveTransportStatus(
             )
             Spacer(Modifier.width(8.dp))
         }
+        // The advert carries a rotating tag, not the node id (ADR 2026-11.xp6d): what is aired while the radio is up,
+        // never what the build asks for. Whether the advert is live is the dot's to say.
+        if (status.blindedAdvert) {
+            TransportTag(stringResource(R.string.diagnostics_transport_blinded))
+            Spacer(Modifier.width(8.dp))
+        }
         // Diagnostic flag: this radio reports itself contended (Bluetooth ↔ A2DP audio streaming).
         if (status.contended) {
             TransportTag(stringResource(R.string.diagnostics_transport_audio))
@@ -916,10 +1000,20 @@ private fun LiveTransportStatus(
                 when (row.lora) {
                     // Detached on purpose while no phone nearby can use it (GitHub #44): idle, not off; its counts are 0.
                     null -> {
-                        if (status.dormant) {
-                            stringResource(R.string.diagnostics_transport_dormant)
-                        } else {
-                            stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
+                        when {
+                            status.dormant -> {
+                                stringResource(R.string.diagnostics_transport_dormant)
+                            }
+
+                            // A direct link is no radio (ADR 2026-10.a5yj): its "nearby" was its link count again, and
+                            // false besides, since a contact on a link is never near. Only the links are counted.
+                            status.kind == TransportKind.DirectLink -> {
+                                countText(R.plurals.diagnostics_transport_links, R.string.diagnostics_transport_links_zero, status.linked)
+                            }
+
+                            else -> {
+                                stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
+                            }
                         }
                     }
 
@@ -1001,7 +1095,7 @@ private fun transportName(kind: TransportKind): String =
 
 /**
  * The planes on a node's row — `BLE·NAN` for a directly-connected node, `via Alex` for one another phone
- * carried, `LoRa` / `Internet` for one reached long-range — or null when the row has nothing to claim. The
+ * carried, `LoRa` / `Link` / `Internet` for one reached long-range — or null when the row has nothing to claim. The
  * caller has already narrowed [transports] to the kinds its section may show (see [NodeInfo.transports]);
  * [viaSpool] is the Internet plane, which is deliberately not a transport at all (ADR 019) and so has no
  * [TransportKind]; [via] is the neighbour that handed us an indirect peer's frame (ADR 2026-10.fw8g).
@@ -1017,11 +1111,13 @@ private fun transportTag(
     val nan = stringResource(R.string.diagnostics_tag_nan)
     val lora = stringResource(R.string.diagnostics_tag_lora)
     val spool = stringResource(R.string.diagnostics_tag_spool)
+    val link = stringResource(R.string.diagnostics_tag_link)
     val parts =
         buildList {
             if (TransportKind.Bluetooth in transports) add(ble)
             if (TransportKind.WifiAware in transports) add(nan)
             if (TransportKind.LoRa in transports) add(lora)
+            if (TransportKind.DirectLink in transports) add(link)
             if (viaSpool) add(spool)
         }
     return parts.joinToString("·").ifEmpty { null }
@@ -1049,8 +1145,8 @@ private fun TransportTag(label: String) {
 }
 
 /**
- * The PHY a Bluetooth link is on (the Coded PHY experiment, ADR 2026-10.yvn6), in the transport tag's style: a Coded
- * link takes the tertiary colour, so a long-range link stands out on a walk.
+ * The PHY a Bluetooth link is on (long-range Bluetooth, ADR 2026-10.yvn6), in the transport tag's style: a Coded link
+ * takes the tertiary colour, so a long-range link stands out on a walk.
  */
 @Composable
 private fun PhyTag(
@@ -1079,6 +1175,127 @@ private fun PhyTag(
                 .background(if (coded) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer)
                 .padding(horizontal = 6.dp, vertical = 2.dp),
     )
+}
+
+/**
+ * What protects the live link a node row claims ([NodeInfo.link], ADR 2026-11.8mhs), in the transport tag's shape:
+ * "Encrypted" with a lock on a sealed link, "Not encrypted" outlined and muted on a plain one (an older build, or a claim
+ * not yet closed). Its description is neutral on purpose: a plain link's cause is not known to this row.
+ */
+@Composable
+private fun LinkChip(
+    security: LinkSecurity,
+    nodeId: String,
+) {
+    val sealed = security == LinkSecurity.SEALED
+    val label = stringResource(if (sealed) R.string.diagnostics_link_encrypted else R.string.diagnostics_link_plain)
+    val description = stringResource(if (sealed) R.string.diagnostics_link_encrypted_cd else R.string.diagnostics_link_plain_cd)
+    val shape = RoundedCornerShape(4.dp)
+    val content = if (sealed) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier =
+            Modifier
+                .testTag("link_chip_$nodeId")
+                .clearAndSetSemantics { contentDescription = description }
+                .clip(shape)
+                .then(
+                    if (sealed) {
+                        Modifier.background(MaterialTheme.colorScheme.secondaryContainer)
+                    } else {
+                        Modifier.border(1.dp, MaterialTheme.colorScheme.outline, shape)
+                    },
+                ).padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (sealed) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.knitColors.positive,
+                modifier = Modifier.size(12.dp),
+            )
+            Spacer(Modifier.width(3.dp))
+        }
+        Text(text = label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = content)
+    }
+}
+
+/** This phone holds the node's presence key (ADR 2026-11.xp6d), so it can recognise the node's rotating ID. */
+@Composable
+private fun KeyChip(nodeId: String) {
+    val description = stringResource(R.string.diagnostics_key_chip_cd)
+    Box(
+        modifier =
+            Modifier
+                .testTag("key_chip_$nodeId")
+                .clearAndSetSemantics { contentDescription = description },
+    ) {
+        TransportTag(stringResource(R.string.diagnostics_key_chip))
+    }
+}
+
+/**
+ * Presence keys (ADR 2026-11.xp6d): how many direct contacts' keys this phone holds, what it sent and stored, and the
+ * faults, each only once it happened. Never a generation, a rotation count or a time: any of them dates a rotation, and so
+ * a removal or a block.
+ */
+@Composable
+private fun PresenceMetrics(
+    metrics: MeshMetrics.Snapshot,
+    presence: PresenceKeyInfo,
+) {
+    val contacts = presence.directContacts
+    if (contacts != null && contacts > 0) {
+        MetricRow(
+            stringResource(R.string.diagnostics_metric_presence_keys_held),
+            stringResource(R.string.diagnostics_metric_presence_keys_of, presence.keyHolders.size, contacts),
+        )
+    }
+    if (metrics.keys.presenceKeysSent > 0 || metrics.keys.presenceKeysStored > 0) {
+        MetricRow(stringResource(R.string.diagnostics_metric_presence_keys_sent), metrics.keys.presenceKeysSent.toString())
+        MetricRow(stringResource(R.string.diagnostics_metric_presence_keys_stored), metrics.keys.presenceKeysStored.toString())
+    }
+    if (metrics.keys.presenceMarkNotFull > 0) {
+        MetricRow(stringResource(R.string.diagnostics_metric_presence_mark_not_full), metrics.keys.presenceMarkNotFull.toString())
+    }
+    if (metrics.bluetooth.bleTagsUnresolvable > 0) {
+        MetricRow(stringResource(R.string.diagnostics_metric_tags_unresolvable), metrics.bluetooth.bleTagsUnresolvable.toString())
+    }
+    if (metrics.bluetooth.bleTagsStale > 0) {
+        MetricRow(stringResource(R.string.diagnostics_metric_tags_stale), metrics.bluetooth.bleTagsStale.toString())
+    }
+    val blindDrops = metrics.bluetooth.bleBlindDropsByReason.filterValues { it > 0 }
+    if (blindDrops.isNotEmpty()) {
+        MetricRow(stringResource(R.string.diagnostics_metric_blind_drops), blindDrops.values.sum().toString())
+        blindDrops.forEach { (reason, count) -> MetricRow(SUB_ROW_INDENT + reason.name, count.toString()) }
+    }
+}
+
+/**
+ * A debug build's rotating-ID reader (ADR 2026-11.xp6d), through `AdvertDiag`: how many sightings it recognised by a
+ * contact's key and by a link's claim, how many tags it expects and for how many contacts, and the form on the air. Counts
+ * only, never a tag or a key; "resolved" by a claim is not "recognised by key", so the two stay apart.
+ */
+@Composable
+private fun AdvertDebugSection(info: AdvertDebugInfo) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("advert_debug")) {
+        Text(
+            text = stringResource(R.string.diagnostics_advert_debug_label),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        MetricRow(stringResource(R.string.diagnostics_advert_debug_by_key), info.resolvedByKey.toString())
+        MetricRow(stringResource(R.string.diagnostics_advert_debug_by_claim), info.resolvedByClaim.toString())
+        MetricRow(
+            stringResource(R.string.diagnostics_advert_debug_expected),
+            stringResource(R.string.diagnostics_advert_debug_expected_value, info.expectedTags, info.expectedContacts),
+        )
+        MetricRow(
+            stringResource(R.string.diagnostics_advert_debug_form),
+            stringResource(if (info.airingTag) R.string.diagnostics_transport_blinded else R.string.diagnostics_advert_form_clear),
+        )
+    }
 }
 
 /** The top bar while Known rows are picked: how many, a way out, and Hide (ADR 2026-11.b37x). */
@@ -1121,6 +1338,7 @@ private fun SelectableNodeRow(
     selecting: Boolean,
     selected: Boolean,
     onToggle: () -> Unit,
+    keyHeld: Boolean = false,
 ) {
     val selectLabel = stringResource(R.string.diagnostics_hide_select)
     val haptics = LocalHapticFeedback.current
@@ -1163,7 +1381,7 @@ private fun SelectableNodeRow(
                 modifier = Modifier.padding(start = 16.dp).size(24.dp),
             )
         }
-        Box(modifier = Modifier.weight(1f)) { NodeRow(node, now) }
+        Box(modifier = Modifier.weight(1f)) { NodeRow(node, now, keyHeld = keyHeld) }
     }
 }
 
@@ -1194,14 +1412,16 @@ private fun KnownActions(
 private fun NodeRow(
     node: NodeInfo,
     now: Long,
-    // The PHY of this peer's Bluetooth link, when the experiment holds a handle on it; null draws no chip.
+    // The PHY of this peer's Bluetooth link, when the transport holds a handle on it; null draws no chip.
     phy: LinkPhy? = null,
+    // This phone holds the peer's presence key (ADR 2026-11.xp6d): the Key chip.
+    keyHeld: Boolean = false,
 ) {
     // The tags and the profile's age move under the name, past its dot, rather than ellipsizing the name.
     AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         stackedIndent = DOT_INDENT,
-        trailing = { NodeTags(node, now, phy) },
+        trailing = { NodeTags(node, now, phy, keyHeld) },
     ) {
         NodeName(node)
     }
@@ -1242,21 +1462,28 @@ private fun NodeTags(
     node: NodeInfo,
     now: Long,
     phy: LinkPhy?,
+    keyHeld: Boolean,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        val tag = transportTag(node.transports, node.viaSpool, node.via)
-        val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now, labels = relativeTimeLabels()) }
+    val tag = transportTag(node.transports, node.viaSpool, node.via)
+    val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now, labels = relativeTimeLabels()) }
+    // Plane, PHY, link, key, then the profile's age. A flow, not a row: a long language or a row with every chip wraps
+    // onto a second line rather than squeezing the last chip into a column of letters.
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
         tag?.let { TransportTag(it) }
-        phy?.let {
-            if (tag != null) Spacer(Modifier.width(4.dp))
-            PhyTag(it, node.nodeId)
-        }
-        if ((tag != null || phy != null) && age != null) Spacer(Modifier.width(8.dp))
+        phy?.takeIf { it != LinkPhy.UNKNOWN }?.let { PhyTag(it, node.nodeId) }
+        node.link?.let { LinkChip(it, node.nodeId) }
+        if (keyHeld) KeyChip(node.nodeId)
         age?.let {
+            val chips = tag != null || (phy != null && phy != LinkPhy.UNKNOWN) || node.link != null || keyHeld
             Text(
                 text = stringResource(R.string.diagnostics_profile_age, it),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = if (chips) Modifier.padding(start = 4.dp) else Modifier,
             )
         }
     }
@@ -1597,7 +1824,7 @@ private fun DebugSwitchRow(
     }
 }
 
-/** The four modes of the Coded PHY experiment, in the row's order, with their labels. */
+/** The four modes of long-range Bluetooth, in the row's order, with their labels. */
 private val BLE_PHY_MODES =
     listOf(
         CodedPhyMode.OFF to R.string.diagnostics_ble_phy_off,
@@ -1607,8 +1834,8 @@ private val BLE_PHY_MODES =
     )
 
 /**
- * The BLE Coded PHY experiment's mode (`SettingsStore.debugBlePhyMode`, ADR 2026-10.yvn6), so a walk test can switch
- * between today's Bluetooth, the automatic steps and the two pinned PHYs without adb. The transport applies a change
+ * Long-range Bluetooth's mode (`SettingsStore.debugBlePhyMode`, ADR 2026-10.yvn6, on in release since 2026-10-08), so a
+ * walk test can switch between standard Bluetooth, the automatic steps and the two pinned PHYs without adb. The transport applies a change
  * without a restart. Debug builds only: a release build always runs AUTO and never shows the row.
  */
 @Composable
@@ -1738,7 +1965,7 @@ fun SelfSectionPreview() =
     KnitPreview {
         // SelfSection emits a header + a Column as siblings; wrap so the preview lays them out vertically
         // (the real screen places it in a LazyColumn item).
-        Column { SelfSection(name = "Ada Lovelace", nodeId = "8f3a2b1c9d4e5f60") }
+        Column { SelfSection(name = "Ada Lovelace", nodeId = "8f3a2b1c9d4e5f60", presenceKeyHeld = true) }
     }
 
 @Preview(showBackground = true)
@@ -1790,8 +2017,23 @@ fun MetricsSectionPopulatedPreview() =
                             framesSuppressed = 12,
                             framesDeduped = 340,
                             bytesSent = 2_500_000,
+                            linksProven = 14,
+                            linksSealed = 12,
+                            linkSealRefused = 1,
                         ),
+                    keys = MeshMetrics.Snapshot.Keys(presenceKeysSent = 9, presenceKeysStored = 7),
                 ),
+            presence = PresenceKeyInfo(ownKeyHeld = true, keyHolders = setOf("a1b2c3d4e5f6", "b2c3d4e5f6a1"), directContacts = 3),
+        )
+    }
+
+/** A debug build's rotating-ID reader, under Debug options. */
+@Preview(showBackground = true)
+@Composable
+fun AdvertDebugSectionPreview() =
+    KnitPreview {
+        AdvertDebugSection(
+            AdvertDebugInfo(resolvedByKey = 42, resolvedByClaim = 7, expectedTags = 1_024, expectedContacts = 8, airingTag = true),
         )
     }
 
@@ -1813,13 +2055,22 @@ fun TransportsSectionPreview() =
             rows =
                 listOf(
                     TransportRow.Live(
-                        TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5, contended = true),
+                        TransportStatus(
+                            TransportKind.Bluetooth,
+                            TransportHealth.Healthy,
+                            linked = 3,
+                            nearby = 5,
+                            contended = true,
+                            blindedAdvert = true,
+                        ),
                     ),
                     TransportRow.Live(TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 4)),
                     TransportRow.Live(
                         TransportStatus(TransportKind.LoRa, TransportHealth.Healthy, linked = 0, nearby = 2),
                         lora = LoraPlane.Live,
                     ),
+                    // A direct link's own neighbours are its links: the row counts links, never "nearby".
+                    TransportRow.Live(TransportStatus(TransportKind.DirectLink, TransportHealth.Healthy, linked = 2, nearby = 2)),
                 ),
         )
     }
@@ -1854,8 +2105,70 @@ fun NodeRowDirectPreview() =
                     reach = Reach.Direct,
                     profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
                     transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                    link = LinkSecurity.SEALED,
                 ),
             now = PREVIEW_NOW,
+            keyHeld = true,
+        )
+    }
+
+/** A neighbour on an older build: its live link is plain. */
+@Preview(showBackground = true)
+@Composable
+fun NodeRowPlainLinkPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "b2c3d4e5f6a1",
+                    displayName = "Edsger Dijkstra",
+                    reach = Reach.Direct,
+                    profileUpdatedAt = PREVIEW_NOW - 20 * 60_000L,
+                    transports = setOf(TransportKind.Bluetooth),
+                    link = LinkSecurity.LEGACY,
+                ),
+            now = PREVIEW_NOW,
+        )
+    }
+
+/** The worst case for the row's width: a long name and every chip — planes, PHY, link, key — beside the profile age. */
+@Preview(showBackground = true)
+@Composable
+fun NodeRowAllChipsPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "c3d4e5f6a1b2",
+                    displayName = "Margaret Hamilton-Lovelace of the Apollo Guidance Computer",
+                    reach = Reach.Direct,
+                    profileUpdatedAt = PREVIEW_NOW - 26 * 60 * 60_000L,
+                    transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                    link = LinkSecurity.SEALED,
+                ),
+            now = PREVIEW_NOW,
+            phy = LinkPhy.CODED,
+            keyHeld = true,
+        )
+    }
+
+/** A contact reached over a direct Internet link: long-range, tagged Link, sealed by its lane. */
+@Preview(showBackground = true)
+@Composable
+fun NodeRowDirectLinkPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "f6a1b2c3d4e5",
+                    displayName = "Frances Allen",
+                    reach = Reach.LongRange,
+                    profileUpdatedAt = PREVIEW_NOW - 2 * 60 * 60_000L,
+                    transports = setOf(TransportKind.DirectLink),
+                    link = LinkSecurity.SEALED,
+                ),
+            now = PREVIEW_NOW,
+            keyHeld = true,
         )
     }
 
@@ -2027,6 +2340,7 @@ fun DiagnosticsScreenPopulatedPreview() =
                                 reach = Reach.Direct,
                                 profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
                                 transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                                link = LinkSecurity.SEALED,
                             ),
                             NodeInfo(
                                 nodeId = "b2c3d4e5f6a1",
@@ -2034,6 +2348,7 @@ fun DiagnosticsScreenPopulatedPreview() =
                                 reach = Reach.Direct,
                                 profileUpdatedAt = PREVIEW_NOW - 20 * 60_000L,
                                 transports = setOf(TransportKind.Bluetooth),
+                                link = LinkSecurity.LEGACY,
                             ),
                         ),
                     indirectNodes =
@@ -2071,10 +2386,20 @@ fun DiagnosticsScreenPopulatedPreview() =
                         ),
                     transports =
                         listOf(
-                            TransportRow.Live(TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 2, nearby = 4)),
+                            TransportRow.Live(
+                                TransportStatus(
+                                    TransportKind.Bluetooth,
+                                    TransportHealth.Healthy,
+                                    linked = 2,
+                                    nearby = 4,
+                                    blindedAdvert = true,
+                                ),
+                            ),
                             TransportRow.Live(TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 3)),
+                            TransportRow.Live(TransportStatus(TransportKind.DirectLink, TransportHealth.Healthy, linked = 0, nearby = 0)),
                         ),
                 ),
+            presence = PresenceKeyInfo(ownKeyHeld = true, keyHolders = setOf("a1b2c3d4e5f6"), directContacts = 2),
             health = TransportHealth.Healthy,
             lastCrash = PREVIEW_CRASH,
             moderationLatched = false,

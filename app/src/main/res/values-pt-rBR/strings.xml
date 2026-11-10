@@ -992,6 +992,29 @@
     <string name="camera_capturing">Tirando foto</string>
     <string name="camera_switch_lens">Trocar câmera</string>
     <string name="diagnostics_title">Diagnóstico</string>
+    <string name="diagnostics_reports">Relatórios e registros</string>
+    <string name="diagnostics_debug_section">Opções de depuração</string>
+    <string name="diagnostics_metric_links_sealed">Links criptografados</string>
+    <string name="diagnostics_metric_link_seal_failed">Falhas na criptografia do link</string>
+    <string name="diagnostics_metric_link_seal_refused">Links sem criptografia recusados</string>
+    <string name="diagnostics_metric_links_proven">Links comprovados</string>
+    <string name="diagnostics_metric_link_proof_failed">Falhas na comprovação de links</string>
+    <string name="diagnostics_metric_link_claim_refused">Links não comprovados recusados</string>
+    <string name="diagnostics_metric_presence_keys_held">Chaves de presença de contatos retidas</string>
+    <string name="diagnostics_metric_presence_keys_of" tools:ignore="PluralsCandidate">%1$d de %2$d</string>
+    <string name="diagnostics_metric_presence_keys_sent">Chaves de presença enviadas</string>
+    <string name="diagnostics_metric_presence_keys_stored">Chaves de presença guardadas</string>
+    <string name="diagnostics_metric_presence_mark_not_full">Gravações de chave de presença não duráveis</string>
+    <string name="diagnostics_metric_tags_unresolvable">IDs rotativos irreconhecíveis transmitidos</string>
+    <string name="diagnostics_metric_tags_stale">Marcas de rotação obsoletas</string>
+    <string name="diagnostics_metric_blind_drops">Anúncios com ID rotativo descartados</string>
+    <string name="diagnostics_advert_debug_label">Leitor de ID rotativo</string>
+    <string name="diagnostics_advert_debug_by_key">Reconhecidos por chave</string>
+    <string name="diagnostics_advert_debug_by_claim">Reconhecidos por declaração</string>
+    <string name="diagnostics_advert_debug_expected">Tags esperadas</string>
+    <string name="diagnostics_advert_debug_expected_value" tools:ignore="PluralsCandidate">%1$d (%2$d contatos)</string>
+    <string name="diagnostics_advert_debug_form">No ar</string>
+    <string name="diagnostics_advert_form_clear">ID do nó</string>
     <string name="diagnostics_self">Este celular</string>
     <string name="diagnostics_supervised_family_link">Supervisionado pelo Family Link</string>
     <string name="diagnostics_supervised_managed">Celular gerenciado</string>
@@ -1124,6 +1147,13 @@
         <item quantity="other">%1$d ouvidos</item>
     </plurals>
     <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">%1$d ouvidos</string>
+    <plurals name="diagnostics_transport_links">
+        <item quantity="one">%1$d link</item>
+        <item quantity="many">%1$d links</item>
+        <item quantity="other">%1$d links</item>
+    </plurals>
+    <string name="diagnostics_transport_links_zero" tools:ignore="PluralsCandidate">%1$d links</string>
+    <string name="diagnostics_transport_blinded">ID rotativo</string>
     <string name="diagnostics_transport_unsupported">Não compatível com este celular</string>
     <string name="diagnostics_transport_needs_android_12">Requer Android 12 ou mais recente</string>
     <string name="diagnostics_transport_lora_down">Placa não conectada</string>
@@ -1131,6 +1161,15 @@
     <string name="diagnostics_tag_nan">NAN</string>
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">Internet</string>
+    <string name="diagnostics_tag_link">Link</string>
+    <string name="diagnostics_link_encrypted">Criptografado</string>
+    <string name="diagnostics_link_encrypted_cd">Este link é criptografado</string>
+    <string name="diagnostics_link_plain">Sem criptografia</string>
+    <string name="diagnostics_link_plain_cd">Este link não é criptografado</string>
+    <string name="diagnostics_key_chip">Chave</string>
+    <string name="diagnostics_key_chip_cd">Tem a chave de presença deste contato</string>
+    <string name="diagnostics_presence_key_held">Chave de presença: tem</string>
+    <string name="diagnostics_presence_key_none">Chave de presença: ainda não tem</string>
     <string name="diagnostics_tag_via">via %1$s</string>
     <string name="diagnostics_transport_audio">áudio</string>
     <string name="diagnostics_transport_held">em espera</string>
@@ -1163,8 +1202,8 @@
     <string name="diagnostics_transport_low_power">baixo consumo</string>
     <string name="diagnostics_transport_switched_off">desligado em Configurações</string>
     <string name="diagnostics_transport_dormant">Em repouso — nenhum celular com Wi-Fi Aware por perto</string>
-    <string name="diagnostics_ble_phy_label">Bluetooth de longo alcance (experimento)</string>
-    <string name="diagnostics_ble_phy_body">Desligado é o Bluetooth de sempre. Automático encontra celulares mais distantes e deixa o link mais lento para mantê-lo enquanto as pessoas se afastam. Coded e 1M mantêm todos os links em uma só velocidade, para comparar o alcance.</string>
+    <string name="diagnostics_ble_phy_label">Bluetooth de longo alcance</string>
+    <string name="diagnostics_ble_phy_body">Automático, o padrão, encontra celulares mais distantes e reduz a velocidade do link para mantê-lo enquanto se afastam. Desligado usa só o Bluetooth padrão. Coded e 1M mantêm todo link em uma só velocidade, para comparar o alcance.</string>
     <string name="diagnostics_ble_phy_off">Desligado</string>
     <string name="diagnostics_ble_phy_auto">Automático</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
@@ -1286,7 +1325,6 @@
     <string name="licenses_section_data">Modelos e dados incluídos</string>
     <string name="licenses_row_subtitle">%1$s · %2$s</string>
     <string name="license_text_error">Não foi possível carregar o texto da licença.</string>
-    <string name="crash_section">Relatórios de problemas</string>
     <string name="crash_last_label">Última falha</string>
     <string name="crash_open_action">Abrir detalhes da falha</string>
     <string name="crash_title">Última falha</string>
@@ -1310,7 +1348,6 @@
     <string name="crash_delete_body">Isto remove todos os relatórios de falha salvos neste celular. Não dá para desfazer.</string>
     <string name="crash_delete_confirm">Excluir tudo</string>
     <string name="crash_deleted">Detalhes da falha excluídos</string>
-    <string name="field_log_section">Dados de campo</string>
     <string name="field_log_row_label">Registro de campo</string>
     <string name="field_log_row_supporting">Como seus rádios se comportaram nos últimos três dias</string>
     <string name="field_log_open_action">Abrir registro de campo</string>

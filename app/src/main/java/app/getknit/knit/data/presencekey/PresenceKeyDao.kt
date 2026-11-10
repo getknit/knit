@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
  * caller's `withWriteTransaction`.
  */
 @Dao
+@Suppress("TooManyFunctions") // one small query each for the engine, the resolver, the bridge and Diagnostics
 interface PresenceKeyDao {
     /** Every own generation, newest first: at most three (previous, current, next). */
     @Query("SELECT * FROM own_presence_keys ORDER BY generation DESC")
@@ -85,6 +86,10 @@ interface PresenceKeyDao {
     /** Every peer we hold a key for. */
     @Query("SELECT DISTINCT nodeId FROM peer_presence_keys")
     suspend fun peersWithKeys(): List<String>
+
+    /** [peersWithKeys] as it changes: the node ids alone, never a generation or an arrival, for the Diagnostics screen. */
+    @Query("SELECT DISTINCT nodeId FROM peer_presence_keys")
+    fun observePeersWithKeys(): Flow<List<String>>
 
     @Query("DELETE FROM peer_presence_keys WHERE nodeId = :nodeId AND generation NOT IN (:keep)")
     suspend fun deletePeerKeysExcept(

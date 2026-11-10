@@ -1237,6 +1237,22 @@ class MeshManager(
                 .map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
                 .stateIn(scope, SharingStarted.Eagerly, emptyMap())
 
+    /** nodeId → what protects each live link to it, by plane (ADR 2026-11.8mhs): the Diagnostics chip on a node row. */
+    override val linkSecurity: StateFlow<Map<String, Map<TransportKind, LinkSecurity>>> =
+        (transport as? CompositeMeshTransport)?.linkSecurityByKind
+            ?: transport.linkSecurity
+                .map { links -> links.mapValues { (_, security) -> mapOf(transport.kind to security) } }
+                .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /** Whether [presenceKeys] holds an own key now; the key and its generation stay here (ADR 2026-11.xp6d). */
+    override val ownPresenceKeyHeld: StateFlow<Boolean> =
+        presenceKeys
+            ?.ownKey
+            ?.map { it != null }
+            ?.distinctUntilChanged()
+            ?.stateIn(scope, SharingStarted.Eagerly, false)
+            ?: MutableStateFlow(false)
+
     /** conversationId → the set of peers currently shown as "typing" there, for the chat UI. Ephemeral (TTL'd). */
     override val typing: StateFlow<Map<String, Set<String>>> get() = typingTracker.typing
 
