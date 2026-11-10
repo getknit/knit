@@ -76,6 +76,7 @@ import app.getknit.knit.ui.components.CharCounter
 import app.getknit.knit.ui.components.DetailCard
 import app.getknit.knit.ui.components.DetailRow
 import app.getknit.knit.ui.components.DisplayNameField
+import app.getknit.knit.ui.components.NameBadgeMark
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.launchOrSay
@@ -260,9 +261,6 @@ internal fun ProfileScreenContent(
                     textStyle = MaterialTheme.typography.displaySmall,
                     contentDescription = stringResource(R.string.profile_change_photo_desc),
                     onClick = onPickPhoto,
-                    // The mark contacts see, while the switch is on and a held badge verifies, so the toggle shows
-                    // its effect here. Lapsed draws nothing, as it does for them.
-                    badge = badgeRow?.takeIf { it.on }?.showing,
                 )
                 // Only offer "remove" when a photo is set. This also covers a dangling hash whose blob is
                 // gone (the avatar shows the initial fallback, but the hash is still non-null), giving the
@@ -428,7 +426,16 @@ private fun SupporterBadgeRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(text = stringResource(R.string.profile_badge_toggle), style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.profile_badge_toggle),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                // The mark contacts see after your name, while the switch is on and a held badge verifies, so the
+                // toggle shows its effect here (your own name is an edit field). Lapsed draws nothing, as for them.
+                row.showing?.takeIf { row.on }?.let { NameBadgeMark(badge = it, textStyle = MaterialTheme.typography.titleMedium) }
+            }
             Text(
                 text =
                     stringResource(

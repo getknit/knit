@@ -1763,7 +1763,7 @@
     <string name="badge_supporter_mark">Insignia de patrocinador</string>
     <string name="badge_supporter_sheet">%1$s apoya a Knit.</string>
     <string name="profile_badge_toggle">Mostrar mi insignia de patrocinador</string>
-    <string name="profile_badge_toggle_summary">Agrega una pequeña marca a tu foto para las personas a las que llega tu perfil.</string>
+    <string name="profile_badge_toggle_summary">Agrega una pequeña marca junto a tu nombre para las personas a las que llega tu perfil.</string>
     <string name="profile_badge_lapsed">Tu insignia caducó, por eso no se muestra. Vuelve cuando tu clave de pases esté vigente.</string>
     <string name="chat_action_translate">Traducir</string>
     <string name="translate_label">Traducido (original: %1$s)</string>

@@ -1763,7 +1763,7 @@
     <string name="badge_supporter_mark">Selo de apoiador</string>
     <string name="badge_supporter_sheet">%1$s apoia o Knit.</string>
     <string name="profile_badge_toggle">Mostrar meu selo de apoiador</string>
-    <string name="profile_badge_toggle_summary">Adiciona uma pequena marca à sua foto para as pessoas que seu perfil alcança.</string>
+    <string name="profile_badge_toggle_summary">Adiciona uma pequena marca ao lado do seu nome para as pessoas que seu perfil alcança.</string>
     <string name="profile_badge_lapsed">Seu selo expirou, por isso não está aparecendo. Ele volta a aparecer quando sua chave de passes estiver válida.</string>
     <string name="chat_action_translate">Traduzir</string>
     <string name="translate_label">Traduzido (original: %1$s)</string>

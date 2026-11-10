@@ -134,6 +134,22 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
+- **Stories, and the stitched ring that marks them** (2026-11-09, no ADR yet). Knit has no stories or status posts.
+  When it gets them, the avatar ring that says "this person posted one" is already chosen: the maintainer picked the
+  *Stitched* ring from the supporter-ring mockups and set it aside for this, after the supporter badge went after the
+  name instead (ADR 2026-10.r99s, amended 2026-11-09). Its design, from the Yarnworld logo's own colours:
+  - A sky-blue band (`#71A4D8`) drawn outside the avatar's circle, so the photo keeps its size and the layout
+    doesn't move: ring width `size × 0.055` clamped to 2–5.5 dp, and a gap in the surface colour of `size × 0.03`
+    clamped to 1.5–3 dp between the band and the photo.
+  - A white running stitch along the band's centre line: stroke `max(0.9 dp, ring × 0.3)`, round caps, about one
+    stitch per `ring × 2.3` of circumference (a whole number of them), each dash half its pitch minus the stroke.
+    Below a 48 dp avatar the stitches dissolve into noise, so they drop out and the plain band stays.
+  - A slate hairline (`#454551`, 0.8 dp) on the band's outer edge in the light theme only, echoing the logo's
+    outline; on the dark surface it would not show.
+  - Keep the online dot's corner (lower end, 45°) readable: the dot sits over the band with its surface-colour rim.
+  - The story convention is that the ring greys or disappears once seen. Decide that with the feature, and keep
+    supporter status off the avatar so the two never share it.
+
 - **Shared pinned messages** (GitHub #42, ADR 2026-10.2r7e, 2026-10-28). v1 pins are local to the phone that made
   them: a `pins` row (`PinEntity`, keyed by message id, deleted on unpin), at most `PinRepository.MAX_PER_CHAT` per
   thread, a bar under the chat's title, nothing framed. Left out on purpose, and each still an open "Still to decide"

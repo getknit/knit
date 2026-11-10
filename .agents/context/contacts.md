@@ -11,8 +11,8 @@ lines.
 ## Entries
 
 - **When touching `badge/`, `ProfilePayload.badges` / `BadgeEntry` / `ProfileV2` label 8, `peer_badges` /
-  `PeerBadgeEntity`, `data/settings/BadgeStore`, `OkHttpTicketIssuer.issueBadge`, `ui/components/BadgeVisuals` (`BadgeMark`) or
-  `Avatar`'s `badge`:** READ `docs/SUPPORTER_BADGE.md` and ADR 2026-10.r99s (knit-spool-coordinator owns the
+  `PeerBadgeEntity`, `data/settings/BadgeStore`, `OkHttpTicketIssuer.issueBadge`, `ui/components/BadgeVisuals` (`BadgeMark`,
+  `NameBadgeMark`) or `PeerNameText`'s `badge`:** READ `docs/SUPPORTER_BADGE.md` and ADR 2026-10.r99s (knit-spool-coordinator owns the
   credential's bytes and the route). The badge rides the two sealed profile layouts only, never `ProfileContent`; a
   receiver stores it apart and only a sealed profile replaces it; it is verified when drawn, never only on arrival,
   against the pinned keys in `BadgeKeys`. The

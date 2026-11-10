@@ -32,6 +32,11 @@ document:
   alert get chimes of their own. Your notification settings carry over, except hiding on the lock screen and
   Priority conversations, which you'll need to set again.
 
+### Changed
+
+- The supporter badge now sits after a person's name instead of on their photo. You'll see it in the chat
+  list, contacts, group members, the chat header and their profile.
+
 ### Fixed
 
 - A phone already linked to another over Bluetooth could keep dialing it again every few seconds, wasting

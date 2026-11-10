@@ -9,9 +9,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -20,14 +20,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import app.getknit.knit.R
 import app.getknit.knit.badge.Badges
 import app.getknit.knit.badge.VerifiedBadge
@@ -79,9 +82,9 @@ val LocalPeerBadges = compositionLocalOf<Map<String, List<VerifiedBadge>>> { emp
 fun peerBadge(nodeId: String?): String? = nodeId?.let { LocalPeerBadges.current[it]?.firstOrNull()?.b }
 
 /**
- * The small mark a badge puts on an avatar of diameter [avatarSize]: the badge's artwork, untinted, ringed in the
- * surface colour, so it reads against a photo and against the tinted initial alike, in light and dark. Sized to the
- * avatar, with a floor that keeps the 36 dp chat header's mark legible. Tappable only when [onClick] is set.
+ * A badge's artwork, untinted, ringed in the surface colour: the profile's Supporter pill leads with it, and the badge
+ * sheet draws it large. Sized as if for an avatar of diameter [avatarSize] (0 gives the 14 dp floor). Tappable only
+ * when [onClick] is set. A name's mark is [NameBadgeMark], which needs no ring.
  */
 @Composable
 fun BadgeMark(
@@ -119,29 +122,83 @@ fun BadgeMark(
     }
 }
 
+/**
+ * The mark a badge puts after a person's name ([PeerNameText]'s `badge`, docs/SUPPORTER_BADGE.md C-7-1): the badge's
+ * artwork, untinted, about as tall as the name's [textStyle] so it grows with the font scale. No surface ring: beside
+ * text there is no photo to part it from. Never a tap target on its own (the profile's pill is the one that opens the
+ * sheet), and it carries the start gap itself, so an id with no artwork leaves no stray space after the name.
+ */
+@Composable
+fun NameBadgeMark(
+    badge: String,
+    textStyle: TextStyle,
+    modifier: Modifier = Modifier,
+) {
+    val size = nameMarkSize(textStyle)
+    val icon = BadgeVisuals.iconFor(badge, size) ?: return
+    val label = BadgeVisuals.markLabelFor(badge)?.let { stringResource(it) }
+    // A logo in its own colours, never a tinted glyph: no theme or wallpaper recolours it (C-7-4).
+    Image(
+        painter = painterResource(icon),
+        contentDescription = label,
+        contentScale = ContentScale.Fit,
+        modifier = modifier.padding(start = NAME_MARK_GAP).size(size),
+    )
+}
+
+/** The name mark's diameter: the name's font size in dp (font scale included), never under 14 dp nor over 28 dp. */
+@Composable
+private fun nameMarkSize(textStyle: TextStyle): Dp {
+    val fontSize = textStyle.fontSize.takeIf { it.isSpecified } ?: MaterialTheme.typography.bodyLarge.fontSize
+    return with(LocalDensity.current) { fontSize.toDp() }.coerceIn(MIN_MARK, MAX_MARK)
+}
+
+private val NAME_MARK_GAP = 4.dp
+
 /** The mark's diameter for an avatar of [avatarSize]: about a third of it, never under 14 dp nor over 28 dp. */
 internal fun markSize(avatarSize: Dp): Dp = (avatarSize * MARK_FRACTION).coerceIn(MIN_MARK, MAX_MARK)
 
 private const val MARK_FRACTION = 0.36f
 private val MIN_MARK = 14.dp
 
-// A mark narrower than this draws the badge's simplified artwork: avatars under about 44 dp, and the profile pill.
+// A mark narrower than this draws the badge's simplified artwork: the profile pill, and a name set smaller than 16 sp.
 private val SMALL_MARK = 16.dp
 private val MAX_MARK = 28.dp
 private val RING = 1.5.dp
 
-/** Every avatar size the mark rides, with and without it, light and dark (docs/SUPPORTER_BADGE.md §7). */
+/**
+ * Every name style the mark follows (the lists' titleMedium, the DM header's titleLarge), a long name that ellipsizes
+ * with the mark kept, and a name collision's muted alias, light and dark (docs/SUPPORTER_BADGE.md §7).
+ */
 @Preview(showBackground = true)
 @Preview(showBackground = true, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-fun AvatarBadgeSizesPreview() =
+fun NameBadgeStylesPreview() =
     KnitPreview {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(12.dp)) {
-            for (size in listOf(30.dp, 36.dp, 40.dp, 48.dp, 52.dp, 96.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(avatarHash = null, name = "Ada", nodeId = "ada", size = size)
-                    Avatar(avatarHash = null, name = "Ada", nodeId = "ada", size = size, badge = Badges.SUPPORTER)
-                }
-            }
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(12.dp).width(260.dp)) {
+            PeerNameText(
+                text = "Ada",
+                discriminator = null,
+                style = MaterialTheme.typography.titleMedium,
+                badge = Badges.SUPPORTER,
+            )
+            PeerNameText(
+                text = "Ada",
+                discriminator = null,
+                style = MaterialTheme.typography.titleLarge,
+                badge = Badges.SUPPORTER,
+            )
+            PeerNameText(
+                text = "Adaeze Okonkwo-Fairweather of the Long Valley",
+                discriminator = null,
+                style = MaterialTheme.typography.titleMedium,
+                badge = Badges.SUPPORTER,
+            )
+            PeerNameText(
+                text = "Alice (JoyfulFerret)",
+                discriminator = "JoyfulFerret",
+                style = MaterialTheme.typography.titleMedium,
+                badge = Badges.SUPPORTER,
+            )
         }
     }

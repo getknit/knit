@@ -1730,7 +1730,7 @@
     <string name="badge_supporter_mark">Unterstützer-Abzeichen</string>
     <string name="badge_supporter_sheet">%1$s unterstützt Knit.</string>
     <string name="profile_badge_toggle">Mein Unterstützer-Abzeichen zeigen</string>
-    <string name="profile_badge_toggle_summary">Zeigt an deinem Foto ein kleines Zeichen für alle, die dein Profil erreicht.</string>
+    <string name="profile_badge_toggle_summary">Zeigt hinter deinem Namen ein kleines Zeichen für alle, die dein Profil erreicht.</string>
     <string name="profile_badge_lapsed">Dein Abzeichen ist abgelaufen und wird deshalb nicht angezeigt. Es erscheint wieder, sobald dein Ticket-Schlüssel aktuell ist.</string>
     <string name="chat_action_translate">Übersetzen</string>
     <string name="translate_label">Übersetzt aus: %1$s</string>

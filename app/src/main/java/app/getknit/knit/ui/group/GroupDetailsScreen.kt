@@ -344,7 +344,6 @@ internal fun MemberRow(
             name = member.displayName,
             nodeId = member.nodeId,
             size = 48.dp,
-            badge = peerBadge(member.nodeId),
         )
         Spacer(Modifier.width(12.dp))
         PeerNameText(
@@ -352,6 +351,7 @@ internal fun MemberRow(
             discriminator = member.discriminator,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.weight(1f),
+            badge = peerBadge(member.nodeId),
         )
         if (member.isSelf) {
             Text(

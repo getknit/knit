@@ -2107,7 +2107,7 @@
     <string name="badge_supporter_mark">Supporter badge</string>
     <string name="badge_supporter_sheet">%1$s supports Knit.</string>
     <string name="profile_badge_toggle">Show my supporter badge</string>
-    <string name="profile_badge_toggle_summary">Adds a small mark to your photo for the people your profile reaches.</string>
+    <string name="profile_badge_toggle_summary">Adds a small mark after your name for the people your profile reaches.</string>
     <string name="profile_badge_lapsed">Your badge has lapsed, so it isn\'t showing. It comes back once your ticket key is current.</string>
     <!-- The offline translation spike (ADR 2026-10.t2h6): debug builds made with -Ptranslate=true only. -->
     <string name="chat_action_translate">Translate</string>

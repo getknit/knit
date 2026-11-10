@@ -1441,7 +1441,6 @@ internal fun ChatScreenContent(
                                         size = 36.dp,
                                         contentDescription = stringResource(R.string.chat_view_profile, state.title),
                                         onClick = { onOpenProfile(conversationId) },
-                                        badge = peerBadge(conversationId),
                                     )
                                     Spacer(Modifier.width(10.dp))
                                     PeerNameText(
@@ -1454,6 +1453,7 @@ internal fun ChatScreenContent(
                                         // fixed-size badges — measured first as non-weighted children —
                                         // always keep their room. Short names stay snug against the icons.
                                         modifier = Modifier.weight(1f, fill = false),
+                                        badge = peerBadge(conversationId),
                                     )
                                     EncryptionBadge { showEncryptionInfo = true }
                                     if (state.verified) {

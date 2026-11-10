@@ -1,10 +1,12 @@
 package app.getknit.knit.ui.components
 
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
@@ -24,6 +26,12 @@ import app.getknit.knit.ui.preview.KnitPreview
  *
  * One `Text`, one semantics node: the announced text is the full label, and nothing here sets a
  * `contentDescription`, so the accessibility suite sees no redundant description.
+ *
+ * [badge] is a verified badge id to mark the name with ([NameBadgeMark], docs/SUPPORTER_BADGE.md §7). Its mark
+ * follows the name outside the `Text`, so a long name ellipsizes and the mark always shows; it is the one node here
+ * with a description, read after the name. With a badge this is a `Row` whose name is a `weight(1f, fill = false)`
+ * child, so it needs a bounded width — a weighted child or a filled column, as every caller gives it — or the name
+ * would be measured at zero.
  */
 @Composable
 fun PeerNameText(
@@ -35,6 +43,7 @@ fun PeerNameText(
     fontWeight: FontWeight? = null,
     maxLines: Int = 1,
     overflow: TextOverflow = TextOverflow.Ellipsis,
+    badge: String? = null,
 ) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val mutedSize = MaterialTheme.typography.labelMedium.fontSize
@@ -52,15 +61,31 @@ fun PeerNameText(
                 }
             }
         }
-    Text(
-        text = annotated,
-        modifier = modifier,
-        style = style,
-        color = color,
-        fontWeight = fontWeight,
-        maxLines = maxLines,
-        overflow = overflow,
-    )
+    if (badge == null) {
+        Text(
+            text = annotated,
+            modifier = modifier,
+            style = style,
+            color = color,
+            fontWeight = fontWeight,
+            maxLines = maxLines,
+            overflow = overflow,
+        )
+        return
+    }
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = annotated,
+            // Measured after the mark, so the name gives way and the mark keeps its room.
+            modifier = Modifier.weight(1f, fill = false),
+            style = style,
+            color = color,
+            fontWeight = fontWeight,
+            maxLines = maxLines,
+            overflow = overflow,
+        )
+        NameBadgeMark(badge = badge, textStyle = style)
+    }
 }
 
 @Preview(showBackground = true)

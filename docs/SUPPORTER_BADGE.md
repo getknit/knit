@@ -137,17 +137,23 @@ not a wire change.
 
 ## 7. Display
 
-- **C-7-1** A small mark on the avatar, drawn outside its circle (`Avatar`'s `badge`), on the profile sheet, the DM chat
-  header, the contacts list, the chat list row and group member lists, and on your own profile screen's photo while the
-  switch is on and a held badge verifies (what contacts see). Not on message-sender avatars, call screens or
-  notifications.
-- **C-7-2** A "Supporter" pill in the profile sheet's badge row. Tapping the mark or the pill opens a sheet:
-  "<Name> supports Knit."
+- **C-7-1** A small mark after the person's name (`PeerNameText`'s `badge`), on the profile sheet, the DM chat
+  header, the contacts list, the chat list row and group member lists, and after your own profile's "Show my supporter
+  badge" switch while the switch is on and a held badge verifies (your own name there is an edit field). Not on
+  message-sender names, call screens or notifications. The avatar carries no mark, so its lower end stays free for a
+  presence dot.
+- **C-7-2** A "Supporter" pill in the profile sheet's badge row. Tapping the pill opens a sheet: "<Name> supports
+  Knit." The mark after a name is not a tap target.
 - **C-7-3** Copy: no link, no price, no product name, no "Get" / "Upgrade" / "Become" / "Donate", and no call to action
   shown to anyone who holds no badge. The badge says the person supports Knit, not what they bought.
-- **C-7-4** The supporter mark is the Knit Anywhere logo (Yarnworld) in its own colours, never tinted, inside a ring of
+- **C-7-4** The supporter mark is the Knit Anywhere logo (Yarnworld) in its own colours, never tinted. After a name
+  it is about the name's font size (14–28 dp) and has no ring; on the pill and in the sheet it sits inside a ring of
   the surface colour. A mark under 16 dp draws its simplified form (`ic_badge_supporter_small`); larger ones draw the
   full logo (`ic_badge_supporter`).
+- **C-7-5** A display name can end in a glyph that looks like the mark (🧶, or another yarn or globe symbol), and names
+  are not screened for one, because blocking a single emoji would leave every other lookalike open. The mark after a
+  name is therefore a hint. The authoritative sign is the profile's Supporter pill and the sheet it opens, which appear
+  only for a verified badge. Accepted as a residual by the security review of 2026-11-09.
 
 ## 8. The `sub` vector (owned here)
 

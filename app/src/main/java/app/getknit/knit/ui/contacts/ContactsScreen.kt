@@ -283,7 +283,6 @@ private fun ContactRow(
             name = contact.displayName,
             nodeId = contact.nodeId,
             size = 48.dp,
-            badge = peerBadge(contact.nodeId),
         )
         Spacer(Modifier.width(12.dp))
         PeerNameText(
@@ -291,6 +290,7 @@ private fun ContactRow(
             discriminator = contact.discriminator,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.weight(1f),
+            badge = peerBadge(contact.nodeId),
         )
         // A filled dot marks a contact currently connected to the mesh.
         if (contact.online) {

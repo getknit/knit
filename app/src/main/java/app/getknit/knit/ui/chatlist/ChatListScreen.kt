@@ -98,6 +98,7 @@ import app.getknit.knit.ui.chat.deliveryIcon
 import app.getknit.knit.ui.chat.deliveryLabel
 import app.getknit.knit.ui.chat.resolve
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BadgeVisuals
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.PeerNameText
@@ -626,8 +627,12 @@ internal fun ConversationListItem(
                 languageName(TranslateLang(it.from)),
             )
         }
+    // A DM's conversation id is the peer's node id; the room and a group never wear a badge. Its mark follows the
+    // name, and the row's summary says it too, since clearAndSetSemantics drops the mark's own description.
+    val badge = if (row.isRoom || row.isGroup) null else peerBadge(row.id)
+    val spokenBadge = badge?.let { BadgeVisuals.markLabelFor(it) }?.let { stringResource(it) }
     val rowDescription =
-        listOfNotNull(row.title, spokenMark, preview, spokenTime, spokenStatus, spokenUnread).joinToString(", ")
+        listOfNotNull(row.title, spokenBadge, spokenMark, preview, spokenTime, spokenStatus, spokenUnread).joinToString(", ")
     val deleteLabel = stringResource(R.string.chat_list_delete_action)
 
     Box(modifier = modifier) {
@@ -666,6 +671,7 @@ internal fun ConversationListItem(
                     text = row.title,
                     discriminator = row.discriminator,
                     style = MaterialTheme.typography.titleMedium,
+                    badge = badge,
                 )
                 Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -850,7 +856,7 @@ private fun LeadingVisual(row: ConversationRow) {
 
         else -> {
             // A DM's conversation id is the peer's node id.
-            Avatar(avatarHash = row.avatarHash, name = row.title, nodeId = row.id, size = size, badge = peerBadge(row.id))
+            Avatar(avatarHash = row.avatarHash, name = row.title, nodeId = row.id, size = size)
         }
     }
 }

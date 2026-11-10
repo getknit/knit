@@ -535,15 +535,15 @@ private fun PeerHeader(
                 },
             onClickLabel = stringResource(R.string.profile_details_view_photo),
             onClick = if (state.avatarHash != null) onViewPhoto else null,
-            badge = badge,
-            onBadgeClick = { badgeSheet = true },
         )
 
+        // The badge's mark follows the name; the Supporter pill below is what opens its sheet.
         PeerNameText(
             text = state.displayName,
             discriminator = state.discriminator,
             style = MaterialTheme.typography.titleLarge,
             maxLines = Int.MAX_VALUE,
+            badge = badge,
         )
 
         // Four separate centred rows became one wrapping strip of pills. Each is present only when it has

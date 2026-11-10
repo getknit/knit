@@ -2,7 +2,6 @@ package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
 import app.getknit.knit.ui.components.AdaptiveRowPreview
-import app.getknit.knit.ui.components.AvatarBadgeSizesPreview
 import app.getknit.knit.ui.components.AvatarInitialPreview
 import app.getknit.knit.ui.components.AvatarLargeEmojiPreview
 import app.getknit.knit.ui.components.AvatarPalettePreview
@@ -27,6 +26,7 @@ import app.getknit.knit.ui.components.GroupAvatarClusterPreview
 import app.getknit.knit.ui.components.GroupAvatarGlyphPreview
 import app.getknit.knit.ui.components.GroupAvatarLargePreview
 import app.getknit.knit.ui.components.KnitStitchIndicatorPreview
+import app.getknit.knit.ui.components.NameBadgeStylesPreview
 import app.getknit.knit.ui.components.PeerNameTextPlainPreview
 import app.getknit.knit.ui.components.PeerNameTextPreview
 import app.getknit.knit.ui.components.RoomAvatarPreview
@@ -57,7 +57,7 @@ fun AvatarPalette() = AvatarPalettePreview()
 @PreviewTest
 @ComponentShots
 @Composable
-fun AvatarBadgeSizes() = AvatarBadgeSizesPreview()
+fun NameBadgeStyles() = NameBadgeStylesPreview()
 
 @PreviewTest
 @ComponentShots

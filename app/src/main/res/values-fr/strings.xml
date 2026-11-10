@@ -1763,7 +1763,7 @@
     <string name="badge_supporter_mark">Badge de soutien</string>
     <string name="badge_supporter_sheet">%1$s soutient Knit.</string>
     <string name="profile_badge_toggle">Afficher mon badge de soutien</string>
-    <string name="profile_badge_toggle_summary">Ajoute une petite marque à votre photo pour les personnes que votre profil atteint.</string>
+    <string name="profile_badge_toggle_summary">Ajoute une petite marque à côté de votre nom pour les personnes que votre profil atteint.</string>
     <string name="profile_badge_lapsed">Votre badge a expiré et n’est donc plus affiché. Il reviendra dès que votre clé de pass sera à jour.</string>
     <string name="chat_action_translate">Traduire</string>
     <string name="translate_label">Traduit (original : %1$s)</string>

@@ -1796,7 +1796,7 @@
     <string name="badge_supporter_mark">Значок прихильника</string>
     <string name="badge_supporter_sheet">%1$s підтримує Knit.</string>
     <string name="profile_badge_toggle">Показувати мій значок прихильника</string>
-    <string name="profile_badge_toggle_summary">Додає маленьку позначку до вашого фото для людей, до яких доходить ваш профіль.</string>
+    <string name="profile_badge_toggle_summary">Додає маленьку позначку поруч із вашим іменем для людей, до яких доходить ваш профіль.</string>
     <string name="profile_badge_lapsed">Термін дії вашого значка минув, тому він не показується. Він повернеться, щойно ваш ключ перепусток стане чинним.</string>
     <string name="chat_action_translate">Перекласти</string>
     <string name="translate_label">Оригінал: %1$s</string>

@@ -1697,7 +1697,7 @@
     <string name="badge_supporter_mark">支持者徽章</string>
     <string name="badge_supporter_sheet">%1$s 支持 Knit。</string>
     <string name="profile_badge_toggle">显示我的支持者徽章</string>
-    <string name="profile_badge_toggle_summary">在你的头像上加一个小标记，你的个人资料能触达的人都会看到。</string>
+    <string name="profile_badge_toggle_summary">在你的名字旁加一个小标记，你的个人资料能触达的人都会看到。</string>
     <string name="profile_badge_lapsed">你的徽章已失效，因此没有显示。你的通行证密钥恢复有效后，徽章就会重新显示。</string>
     <string name="chat_action_translate">翻译</string>
     <string name="translate_label">译自%1$s</string>

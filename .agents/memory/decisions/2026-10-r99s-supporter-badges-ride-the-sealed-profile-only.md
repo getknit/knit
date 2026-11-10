@@ -72,3 +72,13 @@ heart, then the Knit K on `tertiary`, read as the app's online green. The full l
 16 dp (avatars under about 44 dp, and the profile pill) draws `ic_badge_supporter_small`, a vector reduction to the
 ball, one swirl, one island and its spiral. The logo's green sits near the online dot's: the mark's place on the
 avatar and its blue ball are what tell them apart.
+
+**Amended 2026-11-09 (the mark follows the name):** the mark left the avatar and now follows the person's name
+(`PeerNameText`'s `badge`, drawn by `NameBadgeMark`) on the same placements: the profile sheet, the DM chat header, the
+contacts list, the chat list row and the group member list. On your own profile it follows the "Show my supporter
+badge" switch's title, because your name there is an edit field. Two decorations on one 48 dp avatar crowded the
+presence dot, and a coloured ring round the avatar was rejected because it reads as a story ring in other messengers.
+The name's mark is about the name's font size (14–28 dp, font scale included), untinted and without the surface ring,
+and it is never a tap target: the profile's Supporter pill opens the sheet. It sits outside the name's `Text`, so a long
+name ellipsizes and the mark stays. The chat list row's spoken summary names it, since the row clears its children's
+semantics. `Avatar` no longer takes a badge.
