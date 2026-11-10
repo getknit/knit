@@ -454,6 +454,35 @@ jobs:
       - name: ktlint
         run: ./gradlew ktlintCheck --stacktrace --console=plain
 
+  lint:
+    name: Android Lint
+    runs-on: ubuntu-latest
+    # Enforced, unlike detekt/ktlint: `lint {}` in app/build.gradle.kts makes every warning an error and :app sits at
+    # zero, so a finding is new (MissingTranslation included). Same job as .gitlab-ci.yml's verify:lint. Lint keeps
+    # ~3.6 GB live after a full GC, so the project's 2 GB daemon heap cannot hold it; 6g (of the runner's 16 GB) runs
+    # it in about 2 min.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Android Lint
+        run: ./gradlew lint -Dorg.gradle.jvmargs="-Xmx6g -Dfile.encoding=UTF-8" --stacktrace --console=plain
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-report
+          path: |
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: ignore
+
   qodana:
     name: Qodana inspections (advisory)
     runs-on: ubuntu-latest

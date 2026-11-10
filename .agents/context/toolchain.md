@@ -128,7 +128,9 @@ Two rules that follow from this, when a warning has no clean fix:
 only the ones with no site: the version-advice checks (`GradleDependency`, `NewerVersionAvailable`,
 `AndroidGradlePluginVersion`, `OldTargetApi`) are off because they change with the calendar rather than the code,
 and the launcher PNGs stay beside the adaptive icon for F-Droid's icon extraction. lintVital (`assembleRelease`)
-runs only fatal checks, so the release build is untouched.
+runs only fatal checks, so the release build is untouched. Both CIs enforce it: GitLab's `verify:lint` and GitHub's
+`lint` run `./gradlew lint` with a 6 GB daemon heap, because lint keeps ~3.6 GB live (a 3 GB heap stalls it for
+minutes in `lintAnalyzeDebug`).
 
 ## Static analysis: detekt / ktlint Gradle plugins
 

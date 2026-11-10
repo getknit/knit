@@ -621,6 +621,28 @@ verify:ktlint:
       - build/reports/ktlint/
     expire_in: 1 week
 
+# Android Lint over :app's debug variant, the check the Stop hook runs beside ktlint and detekt. Enforced, unlike those
+# two: `lint {}` in app/build.gradle.kts makes every warning an error and the module sits at zero, so a finding here is
+# new (MissingTranslation included, the gate .agents/context/translations.md names). lintVital in build:release checks
+# fatal issues only. Its own heap: lint's analysis keeps ~3.6 GB live after a full GC (GC log, 2026-11-09), so the 3g
+# every other job gets cannot hold it (lintAnalyzeDebug sat 17+ min at 95% old gen locally), and 5g finished in 4 min
+# with 46 full GCs. 6g did it in 2 min and leaves skuld's 8 GiB container ~2 GB, with no test JVM beside it.
+verify:lint:
+  extends: .android
+  stage: verify
+  tags: [skuld]
+  needs: [{job: "build:debug", artifacts: false}]
+  variables:
+    GRADLE_HEAP: "6g"
+  script:
+    - ./gradlew lint --stacktrace --console=plain
+  artifacts:
+    when: always
+    paths:
+      - app/build/reports/lint-results-debug.html
+      - app/build/reports/lint-results-debug.xml
+    expire_in: 1 week
+
 verify:trivy:
   image:
     name: aquasec/trivy:latest
