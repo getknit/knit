@@ -122,9 +122,11 @@ class RestoreLabTest {
     fun aReArmThatReadTheUnopenedFrameNeverReHoldsTheResealsPlainWant() =
         runBlocking {
             // Alice queries before she asks (ADR 2026-10.6e5t): her plain want's first step is a query, so nothing is asked
-            // before the re-arm applies, and what the answer then finds is the want as the re-arm left it.
-            val alice = lab.node("alice", LabLimits(blobQuery = true)).apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            // before the re-arm applies, and what the answer then finds is the want as the re-arm left it. No boards, whatever
+            // the run: a compact DM is sealed to Alice's identity, not the session her restore wiped, so it opens at once
+            // and writes the row before the re-arm can read the unopened signed copy alone.
+            val alice = lab.node("alice", LabLimits(blobQuery = true), board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
