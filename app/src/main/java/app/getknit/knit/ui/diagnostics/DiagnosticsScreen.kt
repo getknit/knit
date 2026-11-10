@@ -1417,18 +1417,20 @@ private fun NodeRow(
     // This phone holds the peer's presence key (ADR 2026-11.xp6d): the Key chip.
     keyHeld: Boolean = false,
 ) {
-    // The tags and the profile's age move under the name, past its dot, rather than ellipsizing the name.
-    AdaptiveRow(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        stackedIndent = DOT_INDENT,
-        trailing = { NodeTags(node, now, phy, keyHeld) },
-    ) {
-        NodeName(node)
+    // The profile's age sits at the end of the name's line; the chips always take their own line under the node ID,
+    // past the dot, so every row with chips has the same shape however many it carries.
+    val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now, labels = relativeTimeLabels()) }
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        NodeName(node, age)
+        NodeTags(node, phy, keyHeld)
     }
 }
 
 @Composable
-private fun NodeName(node: NodeInfo) {
+private fun NodeName(
+    node: NodeInfo,
+    age: String?,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         // Four strengths of evidence, four dots: filled = a radio saw this peer itself; lighter = another phone
         // carried its traffic over the radio mesh; faded = a long-range plane did; muted = we only hold its profile.
@@ -1441,13 +1443,33 @@ private fun NodeName(node: NodeInfo) {
             }
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))
-        Column {
-            Text(
-                text = node.displayName,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Column(modifier = Modifier.weight(1f)) {
+            val name: @Composable () -> Unit = {
+                Text(
+                    text = node.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (age == null) {
+                name()
+            } else {
+                // The age moves under the name, rather than squeezing it, when a long name and a long translation
+                // won't share the line.
+                AdaptiveRow(
+                    trailing = {
+                        Text(
+                            text = stringResource(R.string.diagnostics_profile_age, age),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    stackedGap = 0.dp,
+                    alignFirstBaselines = true,
+                    content = name,
+                )
+            }
             Text(
                 text = node.nodeId,
                 style = MaterialTheme.typography.labelMedium,
@@ -1460,32 +1482,25 @@ private fun NodeName(node: NodeInfo) {
 @Composable
 private fun NodeTags(
     node: NodeInfo,
-    now: Long,
     phy: LinkPhy?,
     keyHeld: Boolean,
 ) {
     val tag = transportTag(node.transports, node.viaSpool, node.via)
-    val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now, labels = relativeTimeLabels()) }
-    // Plane, PHY, link, key, then the profile's age. A flow, not a row: a long language or a row with every chip wraps
-    // onto a second line rather than squeezing the last chip into a column of letters.
+    val shownPhy = phy?.takeIf { it != LinkPhy.UNKNOWN }
+    val chips = listOfNotNull(tag, shownPhy, node.link, keyHeld.takeIf { it })
+    if (chips.isEmpty()) return
+    // Plane, PHY, link, then key. A flow, not a row: a long language or a row with every chip wraps onto another line
+    // rather than squeezing the last chip into a column of letters.
     FlowRow(
+        modifier = Modifier.padding(start = DOT_INDENT, top = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         itemVerticalAlignment = Alignment.CenterVertically,
     ) {
         tag?.let { TransportTag(it) }
-        phy?.takeIf { it != LinkPhy.UNKNOWN }?.let { PhyTag(it, node.nodeId) }
+        shownPhy?.let { PhyTag(it, node.nodeId) }
         node.link?.let { LinkChip(it, node.nodeId) }
         if (keyHeld) KeyChip(node.nodeId)
-        age?.let {
-            val chips = tag != null || (phy != null && phy != LinkPhy.UNKNOWN) || node.link != null || keyHeld
-            Text(
-                text = stringResource(R.string.diagnostics_profile_age, it),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = if (chips) Modifier.padding(start = 4.dp) else Modifier,
-            )
-        }
     }
 }
 

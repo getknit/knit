@@ -8,6 +8,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.AlignmentLine
+import androidx.compose.ui.layout.FirstBaseline
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
@@ -26,7 +28,8 @@ import app.getknit.knit.ui.preview.KnitPreview
  * word a line, or ellipsized it to nothing, as soon as the trailing part grew.
  *
  * Each slot is one layout: wrap several pieces in a `Row` or a `Column`. Beside, the content fills what the trailing part
- * leaves and both are centred on each other vertically. Placement is relative, so a right-to-left layout mirrors it.
+ * leaves and both are centred on each other vertically, or, with [alignFirstBaselines], share their first line's
+ * baseline (a small status beside a title that may wrap). Placement is relative, so a right-to-left layout mirrors it.
  */
 @Composable
 fun AdaptiveRow(
@@ -37,6 +40,7 @@ fun AdaptiveRow(
     stackedAtEnd: Boolean = false,
     stackedIndent: Dp = 0.dp,
     maxTrailingShare: Float = DEFAULT_TRAILING_SHARE,
+    alignFirstBaselines: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Layout(
@@ -75,10 +79,24 @@ fun AdaptiveRow(
                     ),
                 )
             val rowWidth = if (constraints.hasBoundedWidth) width else mainPlaced.width + gapPx + trailingPlaced.width
-            val height = maxOf(mainPlaced.height, trailingPlaced.height).coerceAtLeast(constraints.minHeight)
-            layout(rowWidth, height) {
-                mainPlaced.placeRelative(0, (height - mainPlaced.height) / 2)
-                trailingPlaced.placeRelative(rowWidth - trailingPlaced.width, (height - trailingPlaced.height) / 2)
+            val mainBaseline = mainPlaced[FirstBaseline]
+            val trailingBaseline = trailingPlaced[FirstBaseline]
+            if (alignFirstBaselines && mainBaseline != AlignmentLine.Unspecified && trailingBaseline != AlignmentLine.Unspecified) {
+                val baseline = maxOf(mainBaseline, trailingBaseline)
+                val mainTop = baseline - mainBaseline
+                val trailingTop = baseline - trailingBaseline
+                val height =
+                    maxOf(mainTop + mainPlaced.height, trailingTop + trailingPlaced.height).coerceAtLeast(constraints.minHeight)
+                layout(rowWidth, height) {
+                    mainPlaced.placeRelative(0, mainTop)
+                    trailingPlaced.placeRelative(rowWidth - trailingPlaced.width, trailingTop)
+                }
+            } else {
+                val height = maxOf(mainPlaced.height, trailingPlaced.height).coerceAtLeast(constraints.minHeight)
+                layout(rowWidth, height) {
+                    mainPlaced.placeRelative(0, (height - mainPlaced.height) / 2)
+                    trailingPlaced.placeRelative(rowWidth - trailingPlaced.width, (height - trailingPlaced.height) / 2)
+                }
             }
         } else {
             val indentPx = if (stackedAtEnd) 0 else stackedIndent.roundToPx()
