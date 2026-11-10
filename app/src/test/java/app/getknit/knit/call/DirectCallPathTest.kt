@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.protocol.DirectInvite
 import app.getknit.knit.transfer.DirectWifiLease
 import app.getknit.knit.transfer.FakeDirectWifi
 import app.getknit.knit.transfer.SideLog
+import app.getknit.knit.transfer.TransferRefusal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -256,6 +257,7 @@ class DirectCallPathTest {
         runBlocking {
             alice.enabled = false
             bob.enabled = false
+            assertFalse(alice.path.canOffer(BOB))
             assertNull(alice.path.invite(ID, BOB))
             assertFalse(bob.path.canJoin(ALICE, prewarm = false))
             assertTrue(synchronized(alice.lines) { alice.lines.any { "switched off" in it } })
@@ -263,6 +265,7 @@ class DirectCallPathTest {
 
             alice.enabled = true
             bob.enabled = true
+            assertTrue(alice.path.canOffer(BOB))
             assertNotNull(alice.path.invite(ID, BOB))
             assertTrue(bob.path.canJoin(ALICE, prewarm = false))
         }
@@ -272,9 +275,26 @@ class DirectCallPathTest {
         runBlocking {
             // ADR 2026-10.w3dw: the caller hosts (C-3.10-3), and hosting takes this phone down, so it offers nothing.
             alice.wifi.cannotHost = true
+            assertFalse(alice.path.canOffer(BOB))
             assertNull(alice.path.invite(ID, BOB))
             assertTrue(synchronized(alice.lines) { alice.lines.any { "CannotHost" in it } })
             assertTrue(alice.path.canJoin(BOB, prewarm = true))
+            assertEquals(0, alice.radioCalls("host"))
+        }
+
+    @Test
+    fun aPhoneWhoseWifiIsOffNeitherOffersNorJoinsALeg() =
+        runBlocking {
+            // #63: with Wi-Fi switched off the leg is impossible, so a call placed without a kind must not count on it.
+            alice.wifi.refusal = TransferRefusal.WifiOff
+            assertFalse(alice.path.canOffer(BOB))
+            assertNull(alice.path.invite(ID, BOB))
+            assertTrue(synchronized(alice.lines) { alice.lines.any { "WifiOff" in it } })
+            assertFalse(alice.path.canJoin(BOB, prewarm = true))
+
+            alice.wifi.refusal = null
+            assertTrue(alice.path.canOffer(BOB))
+            assertNotNull(alice.path.invite(ID, BOB))
             assertEquals(0, alice.radioCalls("host"))
         }
 
@@ -289,6 +309,7 @@ class DirectCallPathTest {
                 1_000L,
             )
             assertFalse(bob.path.canJoin(ALICE, prewarm = true))
+            assertFalse(bob.path.canOffer(ALICE))
             assertNull(bob.path.invite(ID, ALICE))
             bob.path.join(ID, ALICE, invite())
             until("given up") { !bob.path.pending(ID) }

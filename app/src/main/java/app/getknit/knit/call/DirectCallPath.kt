@@ -194,6 +194,15 @@ class DirectCallPath(
         )
     }
 
+    // invite's own gates, read without minting or logging. A caller's radio that is switched off (#63), lacks
+    // permission or may never host refuses here, so a call with no other route goes out as a walkie.
+    override suspend fun canOffer(peerId: String): Boolean =
+        enabled() &&
+            lease.owner == null &&
+            nearby(peerId) &&
+            capable(peerId) &&
+            lease.leasedTo(PROBE).hostRefusal() == null
+
     override fun canJoin(
         peerId: String,
         prewarm: Boolean,
