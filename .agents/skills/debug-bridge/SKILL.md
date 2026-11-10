@@ -108,7 +108,8 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
   (hold the Bluetooth scan at the hunt's gap for a trial, bounded; costs battery while held), `KEYS`
   (the presence keys: own generations and audiences, what each contact handed us, the counts).
 - **Planes:** `SPOOL`, `COMMONS`, `LORA`, `LORATX`, `LORAPROV`, `XFER`, `CALL` (experimental voice calls), `LINK`
-  (direct Internet links with a contact, the a5yj spike), `STT`
+  (direct Internet links with a contact, the a5yj spike), `WEAR` (Settings › Watch and whether the watch status
+  server is up), `STT`
   (the walkie transcript's model and lines), `TRANSLATE` (the offline translation spike's models and bench;
   `-Ptranslate=true` builds only).
 - **Identity, crypto, data:** `INTRO` (contact cards), `RATCHET`, `BACKUP`.

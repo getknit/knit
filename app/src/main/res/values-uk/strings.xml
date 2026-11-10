@@ -916,6 +916,9 @@
     <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
     <string name="settings_wifi_aware_subtitle_on">Фото й файли швидко передаються між телефонами поруч. Коли поруч телефон, що використовує цю функцію, Wi-Fi та аудіо через Bluetooth на цьому телефоні можуть сповільнюватися.</string>
     <string name="settings_wifi_aware_subtitle_off">Вимкнено. Bluetooth підтримує mesh-мережу, тож повідомлення надходять, але фото й файли йдуть довше.</string>
+    <string name="settings_watch_title">Годинник</string>
+    <string name="settings_watch_subtitle_on">Пристрої, сполучені з цим телефоном через Bluetooth, як-от годинник Wear OS, можуть зчитувати стан mesh-мережі: чи вона працює, скільки людей поруч і через які радіо, а також скільки повідомлень цей телефон передає далі й зберігає для інших.</string>
+    <string name="settings_watch_subtitle_off">Вимкнено. Увімкніть, щоб бачити mesh-мережу на годиннику Wear OS, сполученому з цим телефоном.</string>
     <string name="profile_details_message">Написати</string>
     <string name="profile_details_call">Подзвонити</string>
     <string name="profile_details_online">У мережі</string>

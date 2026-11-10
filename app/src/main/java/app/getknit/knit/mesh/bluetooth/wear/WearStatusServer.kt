@@ -34,7 +34,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.io.IOException
 
@@ -66,6 +68,10 @@ import java.io.IOException
  * every radio call is `runCatching`-wrapped so a revoked grant degrades to "no server" rather than a crash.
  * The radio permission is the onboarding's (`ui/Permissions.kt`), hence the class-level suppression.
  *
+ * Served only while the user's Settings › Watch switch is on ([enabled], `SettingsStore.wearStatusEnabled`, off by
+ * default; ADR 2026-09.wetm's seventh amendment): off, the RFCOMM socket, its SDP record, the GATT service and the
+ * pause advert are all closed, so a watch's read fails as it does with the phone out of range.
+ *
  * Prototype, dark in release behind `BuildConfig.WEAR_STATUS` (the DI hands `MeshService` null then).
  * Device-verified only: there is no host GATT stack; the snapshot logic is [WearStatusPolicy], which is tested.
  */
@@ -74,6 +80,8 @@ internal class WearStatusServer(
     context: Context,
     private val source: WearStatusSource,
     private val scope: CoroutineScope,
+    // Settings › Watch. Every open is gated on its last value ([allowed]); its changes open and close the server.
+    private val enabled: Flow<Boolean>,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val appContext = context.applicationContext
@@ -86,6 +94,12 @@ internal class WearStatusServer(
 
     @Volatile private var rfcomm: BluetoothServerSocket? = null
     private var collector: Job? = null
+
+    // Between [start] and [stop], and the switch's last value. Both are written and read under this object's monitor,
+    // so neither the adapter receiver's reopen nor a switch emission that lands as [stop] runs can open the server
+    // after a switch-off or a stop.
+    private var started = false
+    private var allowed = false
 
     // The pause advert (see the class note). Guarded by this object's monitor, like [open]/[close].
     private var wantAdvert = false
@@ -129,24 +143,13 @@ internal class WearStatusServer(
             }
         }
 
+    /** Whether the RFCOMM socket or the GATT service is open now; the debug bridge's `WEAR` reports it. */
+    val serving: Boolean get() = rfcomm != null || server != null
+
     /** Idempotent; main thread (`MeshService.startMesh`). */
     fun start() {
         if (collector != null) return
-        collector =
-            scope.launch {
-                // Latest, so a new emission cancels the wait for the old deadline.
-                source.inputs.collectLatest { latest ->
-                    inputs = latest
-                    val until = if (latest.enabled) MeshPause.activeDeadline(latest.pausedUntil, clock()) else null
-                    setAdvert(until != null)
-                    // A pause that lapses on the clock may not move any input before the mesh is back up.
-                    if (until != null) {
-                        // stretches: a late end keeps this advert up only while the mesh is down; a resume cancels it.
-                        delay(until - clock())
-                        setAdvert(false)
-                    }
-                }
-            }
+        synchronized(this) { started = true }
         receiverRegistered =
             runCatching {
                 ContextCompat.registerReceiver(
@@ -156,24 +159,69 @@ internal class WearStatusServer(
                     ContextCompat.RECEIVER_NOT_EXPORTED,
                 )
             }.onFailure { Log.w(TAG, "adapter-state receiver not registered: ${it.message}") }.isSuccess
-        open()
+        collector =
+            scope.launch {
+                // Latest, so a switch-off cancels the status collection below it.
+                enabled.distinctUntilChanged().collectLatest { on ->
+                    if (!gate(on)) return@collectLatest
+                    Log.i(TAG, "watch switch ${if (on) "on" else "off"}")
+                    // Off, nothing is collected: the relay poll and the carrying query behind the status are the
+                    // standing costs of a server that serves.
+                    if (!on) return@collectLatest
+                    // Latest, so a new emission cancels the wait for the old deadline.
+                    source.inputs.collectLatest { latest ->
+                        inputs = latest
+                        val until = if (latest.enabled) MeshPause.activeDeadline(latest.pausedUntil, clock()) else null
+                        setAdvert(until != null)
+                        // A pause that lapses on the clock may not move any input before the mesh is back up.
+                        if (until != null) {
+                            // stretches: a late end keeps this advert up only while the mesh is down; a resume cancels it.
+                            delay(until - clock())
+                            setAdvert(false)
+                        }
+                    }
+                }
+            }
     }
 
     /** Idempotent; main thread (`MeshService.onDestroy`). */
     fun stop() {
         collector?.cancel()
         collector = null
+        synchronized(this) {
+            started = false
+            allowed = false
+            wantAdvert = false
+            close()
+        }
         if (receiverRegistered) {
             runCatching { appContext.unregisterReceiver(stateReceiver) }
             receiverRegistered = false
         }
-        close()
         inputs = null
+    }
+
+    /**
+     * Applies the switch: open on, close and forget the snapshot off. False once [stop] has run, which a cancelled
+     * collector's body can still reach.
+     */
+    @Synchronized
+    private fun gate(on: Boolean): Boolean {
+        if (!started) return false
+        allowed = on
+        if (on) {
+            open()
+        } else {
+            wantAdvert = false
+            close()
+            inputs = null
+        }
+        return true
     }
 
     @Synchronized
     private fun open() {
-        if (adapter?.isEnabled != true) return
+        if (!started || !allowed || adapter?.isEnabled != true) return
         openRfcomm()
         openGatt()
     }
@@ -275,6 +323,7 @@ internal class WearStatusServer(
 
     @Synchronized
     private fun setAdvert(on: Boolean) {
+        if (!started || !allowed) return
         wantAdvert = on
         if (on) startAdvert() else stopAdvert()
     }

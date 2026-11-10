@@ -266,3 +266,44 @@ build.
 The face this ADR left for later is ADR 2026-10.3y2s: a Watch Face Format v4 face in `:watchface` whose bezel ring
 is drawn from one more source here, `RingComplicationService`, carrying `WearExtra.links` as a text code
 (`RingCode`). It ages on the same timeline as every other source; the phone side is unchanged.
+
+## Amendment 2026-11-09 (7) — Settings › Watch, off by default
+
+The privacy cost above kept the flag dark in release "until this ADR is revisited with a device trial and a
+user-facing switch". The device trial is the Pixel 9 Pro XL and Pixel Watch 3 pair, which has read the phone daily
+since early October, through every phone trial since. The switch is Settings › Watch (`SettingsStore.wearStatusEnabled`,
+key `wear_status_enabled`), **off by default**: the subtitle says what the watch reads (how many people are nearby,
+over which radios, what the phone relays and holds for others) when on, and how to turn it on when off. It is folded
+with `BuildConfig.WEAR_STATUS`, so a build without the service reads off and shows no row; it rides a backup, being
+the person's choice.
+
+`WearStatusServer` collects the switch for as long as it runs. Off, it holds nothing: no RFCOMM socket and so no SDP
+record, no GATT service, and so no pause advert (which needs the service), and it collects no status either, so the
+relay poll and the carrying query behind the snapshot cost nothing. A watch's read then fails as it does with the
+phone out of range, so the watch's out-of-reach hint (`unreachable_hint`) now names the switch too. The switch and a
+`started` flag are written and read under the server's monitor, so neither the adapter receiver's reopen nor a switch
+emission landing as `stop()` runs can open the server after a switch-off or a stop.
+
+The subtitle says "devices paired with this phone", not "your watch": the server answers any bonded device, as the
+first paragraphs say, and a car or a laptop bonded to the phone can ask too. What they read is counts and radio planes,
+never a message or a name. Checking that the reader is a watch (its Bluetooth class) was passed over: watches report
+their class unreliably.
+
+The verification on 2026-11-09 found the lab watch reading over LE, with an LE re-pairing on the phone at every
+read, since a reinstall of the phone app two hours earlier: `ReadRoutes` led with whichever route answered last, so
+the one Classic miss during the restart made LE stick for as long as LE kept answering. RFCOMM now leads every read
+of a Classic or dual bond; LE stays the fallback behind it. A Classic miss faster than `ReadRoutes.FAST_MISS_MS` (2 s)
+skips the LE legs: it reached the phone and found no record, so the switch is off and LE has no service to read, while
+each LE leg would still connect to the phone through its connectable presence advert, take an LE slot and run a
+service discovery.
+
+Device trial, 2026-11-09, Pixel 9 Pro XL and Pixel Watch 3, every step passed. With the switch off the phone opened
+nothing and the watch's reads missed over Classic in 341, 596 and 1,317 ms, then skipped LE. Switched on, RFCOMM and
+GATT opened within 30 ms and the next read answered over Classic on its first attempt (899 ms). During a pause the
+advert came up; a switch-off dropped it and closed both; a switch-on reopened them and raised it again; a resume
+dropped it. A Bluetooth off and on cycle reopened nothing with the switch off, and closed then reopened both with it
+on. The phone logged no LE connection or re-pairing from the watch from the fixed watch build onwards. The 2 s line
+stands, at about 1.5 times the slowest miss measured.
+
+Release still builds `WEAR_STATUS` off; turning it on is the next step toward the Play release, with the rest of
+what amendment 5 lists as owed.

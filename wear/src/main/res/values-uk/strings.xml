@@ -150,7 +150,7 @@
     <string name="nearby_last_12h">Поруч · останні 12 год</string>
     <string name="chart_empty">Заповнюється, коли годинник зчитує дані з телефона</string>
     <string name="busiest">Найбільше: %1$d о %2$s</string>
-    <string name="unreachable_hint">Тримайте Bluetooth увімкненим, а Knit — запущеним на телефоні.</string>
+    <string name="unreachable_hint">Тримайте Bluetooth увімкненим, а Knit — запущеним на телефоні, з увімкненим пунктом «Налаштування › Годинник».</string>
     <string name="last_reading">Останнє зчитування %1$s</string>
     <string name="paused_hint">Мережа продовжить роботу сама або через сповіщення Knit на телефоні.</string>
     <string name="off_hint">Запустіть її в Knit на телефоні.</string>

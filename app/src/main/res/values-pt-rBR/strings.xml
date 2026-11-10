@@ -902,6 +902,9 @@
     <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
     <string name="settings_wifi_aware_subtitle_on">Fotos e arquivos vão rápido entre celulares por perto. Enquanto um celular que o usa estiver por perto, o Wi-Fi e o áudio Bluetooth deste celular podem ficar mais lentos.</string>
     <string name="settings_wifi_aware_subtitle_off">Desligado. O Bluetooth mantém a mesh, então as mensagens continuam chegando, mas fotos e arquivos demoram mais.</string>
+    <string name="settings_watch_title">Relógio</string>
+    <string name="settings_watch_subtitle_on">Dispositivos pareados com este celular por Bluetooth, como um relógio Wear OS, podem ler o status da mesh: se ela está funcionando, quantas pessoas estão por perto e por quais rádios, e quantas mensagens este celular retransmite e guarda para outras pessoas.</string>
+    <string name="settings_watch_subtitle_off">Desligado. Ative para ver a mesh em um relógio Wear OS pareado com este celular.</string>
     <string name="profile_details_message">Mensagem</string>
     <string name="profile_details_call">Ligar</string>
     <string name="profile_details_online">Online</string>

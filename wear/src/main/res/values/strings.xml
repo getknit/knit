@@ -182,7 +182,7 @@
     <string name="chart_empty">Builds up as the watch reads your phone</string>
     <!-- %1$d is the most people in range at once today, %2$s the time of day it happened. -->
     <string name="busiest">Busiest: %1$d at %2$s</string>
-    <string name="unreachable_hint">Keep Bluetooth on, with Knit running on your phone.</string>
+    <string name="unreachable_hint">Keep Bluetooth on, with Knit running on your phone and Settings › Watch on.</string>
     <!-- %1$s is how long ago ("14 min ago"). -->
     <string name="last_reading">Last reading %1$s</string>
     <string name="paused_hint">It resumes on its own, or from Knit\'s notification on your phone.</string>

@@ -67,6 +67,7 @@
                 <action android:name="app.getknit.knit.debug.XFER" />
                 <action android:name="app.getknit.knit.debug.CALL" />
                 <action android:name="app.getknit.knit.debug.LINK" />
+                <action android:name="app.getknit.knit.debug.WEAR" />
                 <action android:name="app.getknit.knit.debug.STT" />
                 <action android:name="app.getknit.knit.debug.TRANSLATE" />
                 <action android:name="app.getknit.knit.debug.DEMOCALL" />

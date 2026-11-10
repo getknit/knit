@@ -312,6 +312,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   - A force-stop mid-transfer really does strand a group on air (`dumpsys wifip2p` shows
     `curState=GroupCreatedState` with the app dead). `--ez sweep true` is the same sweep the app runs 8 s into
     launch, on demand — the way to prove a leftover is gone without waiting out a restart.
+- `…debug.WEAR` — the **watch status service** (ADR 2026-09.wetm; any debug build). `--es op on|off` flips Settings ›
+  Watch (`SettingsStore.wearStatusEnabled`, off by default); every call answers `enabled`, `built`
+  (`BuildConfig.WEAR_STATUS`) and `serving` (`WearStatusServer` holds its RFCOMM socket or GATT service now). The reads
+  themselves are in `logcat -s KnitWear` (`RFCOMM read served`) and, on the watch, `phone answered over Classic|LE`.
 - `…debug.LINK` — drives **direct Internet links** (ADR 2026-10.a5yj; a debug build with
   `DIRECT_LINKS`). `--es op on|off` flips this phone's switch (`SettingsStore.directLinksEnabled`, off by default);
   `--es op hold --es peer <nodeId> --ez on true|false` holds an up link through idle pauses (its 90 s keepalive with no

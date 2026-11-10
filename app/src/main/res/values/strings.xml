@@ -1088,6 +1088,10 @@
     <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
     <string name="settings_wifi_aware_subtitle_on">Photos and files travel fast between nearby phones. While a phone that uses it is near, this phone\'s Wi-Fi and Bluetooth audio can slow down.</string>
     <string name="settings_wifi_aware_subtitle_off">Off. Bluetooth carries the mesh, so messages still arrive, but photos and files take longer.</string>
+    <!-- Settings › Watch (ADR 2026-09.wetm). Whether a device paired with this phone (a Wear OS watch, but any bonded device can ask) may read the mesh status: counts and radios, never messages or names. The subtitle says what it reads, or how to turn it on. -->
+    <string name="settings_watch_title">Watch</string>
+    <string name="settings_watch_subtitle_on">Devices paired with this phone over Bluetooth, such as a Wear OS watch, can read the mesh status: whether it is running, how many people are nearby and over which radios, and how many messages this phone relays and holds for others.</string>
+    <string name="settings_watch_subtitle_off">Off. Turn on to see the mesh on a Wear OS watch paired with this phone.</string>
 
     <!-- Profile details (another peer) -->
     <string name="profile_details_message">Message</string>

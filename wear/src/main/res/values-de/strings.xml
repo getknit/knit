@@ -134,7 +134,7 @@
     <string name="nearby_last_12h">In der Nähe · letzte 12 Std.</string>
     <string name="chart_empty">Füllt sich, während die Uhr dein Smartphone abfragt</string>
     <string name="busiest">Höchststand: %1$d um %2$s</string>
-    <string name="unreachable_hint">Lass Bluetooth an und Knit auf deinem Smartphone laufen.</string>
+    <string name="unreachable_hint">Lass Bluetooth an und Knit auf deinem Smartphone laufen, und schalte dort Einstellungen › Uhr ein.</string>
     <string name="last_reading">Letzte Abfrage %1$s</string>
     <string name="paused_hint">Das Mesh wird von selbst fortgesetzt oder über die Knit-Benachrichtigung auf deinem Smartphone.</string>
     <string name="off_hint">Starte das Mesh in Knit auf deinem Smartphone.</string>

@@ -113,6 +113,7 @@ import app.getknit.knit.mesh.bluetooth.ScanDiag
 import app.getknit.knit.mesh.bluetooth.ScanHold
 import app.getknit.knit.mesh.bluetooth.TunePhy
 import app.getknit.knit.mesh.bluetooth.TunePriority
+import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
@@ -373,6 +374,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   oneMSeenAgoMs, codedSeenAgoMs, each PHY's own rssi1m / rssiCoded, and codedLagMs — the 1M listening its Coded hits
  *   outlast its 1M ones by; over 8000 is Coded alone), then `hunting` (whether the last scan window hunted) and
  *   `hunted` (the peers lost at range it is hunting).
+ * - [ACTION_WEAR] — the **watch status service** (ADR 2026-09.wetm; a debug build serves it). `--es op on|off` flips
+ *   Settings › Watch (`SettingsStore.wearStatusEnabled`, off by default); every call answers `enabled` (the switch),
+ *   `built` (`BuildConfig.WEAR_STATUS`) and `serving` (whether `WearStatusServer` holds its RFCOMM socket or GATT
+ *   service right now; false with the mesh stopped).
  * - [ACTION_LINKTUNE] — the **Bluetooth drain trial's lever** (#120; any debug build, no Coded flag needed). `--es node
  *   <id prefix>|all` names the links; `--es phy 1m|2m|1m2m`, `--es priority high|balanced|low` and `--ei mtu N` (23..517)
  *   are asked of each, in that order, through a GATT client on the link's own ACL made on first use, then `--ez read
@@ -542,6 +547,10 @@ class DebugBridgeReceiver :
 
                         ACTION_LINK -> {
                             handleLink(intent)
+                        }
+
+                        ACTION_WEAR -> {
+                            handleWear(intent)
                         }
 
                         ACTION_STT -> {
@@ -1913,6 +1922,34 @@ class DebugBridgeReceiver :
             .put("autoReplyHeard", snap.meshtastic.autoReplyHeard)
             .put("autoReplySent", snap.meshtastic.autoReplySent)
             .put("autoReplyRefusedByReason", JSONObject(snap.meshtastic.autoReplyRefusedByReason))
+
+    /** [ACTION_WEAR]: flips Settings › Watch with `--es op on|off`, and reports the switch and whether the server is up. */
+    private suspend fun handleWear(intent: Intent): JSONObject {
+        val reply =
+            when (val op = intent.getStringExtra(EXTRA_OP)) {
+                "on", "off" -> {
+                    settings.setWearStatusEnabled(op == "on")
+                    // The server applies the switch on its own collector: wait for it, so `serving` reports the flip
+                    // (a stopped mesh never serves, and answers after the bound).
+                    withTimeoutOrNull(WEAR_SETTLE_MS) {
+                        while (getKoin().getOrNull<WearStatusServer>()?.serving != (op == "on")) delay(WEAR_POLL_MS)
+                    }
+                    reply("ok", "watch $op")
+                }
+
+                null -> {
+                    reply("ok", "watch")
+                }
+
+                else -> {
+                    return reply("error", "unknown op $op (on|off)")
+                }
+            }
+        return reply
+            .put("enabled", settings.wearStatusEnabled.first())
+            .put("built", BuildConfig.WEAR_STATUS)
+            .put("serving", getKoin().getOrNull<WearStatusServer>()?.serving ?: false)
+    }
 
     /**
      * Direct links (ADR 2026-10.a5yj, the Phase 0 spike): `--es op on|off` flips this phone's switch, `--es op try --es
@@ -4722,6 +4759,9 @@ class DebugBridgeReceiver :
         const val ACTION_XFER = "app.getknit.knit.debug.XFER"
         const val ACTION_CALL = "app.getknit.knit.debug.CALL"
         const val ACTION_LINK = "app.getknit.knit.debug.LINK"
+        const val ACTION_WEAR = "app.getknit.knit.debug.WEAR"
+        private const val WEAR_SETTLE_MS = 2_000L
+        private const val WEAR_POLL_MS = 50L
         const val ACTION_STT = "app.getknit.knit.debug.STT"
         const val ACTION_TRANSLATE = "app.getknit.knit.debug.TRANSLATE"
         const val ACTION_DEMOCALL = "app.getknit.knit.debug.DEMOCALL"

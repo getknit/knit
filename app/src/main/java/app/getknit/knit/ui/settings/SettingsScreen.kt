@@ -97,6 +97,8 @@ internal data class SettingsFormState(
     val lowPower: LowPowerSummary = LowPowerSummary(),
     /** Settings › Wi-Fi Aware (GitHub #44): on by default. */
     val wifiAwareOn: Boolean = true,
+    /** Settings › Watch (ADR 2026-09.wetm's seventh amendment): off by default. */
+    val watchOn: Boolean = false,
 )
 
 /**
@@ -127,6 +129,7 @@ fun SettingsScreen(
     val cloneVisible by viewModel.cloneVisible.collectAsStateWithLifecycle()
     val lowPower by viewModel.lowPower.collectAsStateWithLifecycle()
     val wifiAwareOn by viewModel.wifiAwareOn.collectAsStateWithLifecycle()
+    val watchOn by viewModel.watchOn.collectAsStateWithLifecycle()
     // The clone row's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
     var showSignOut by remember { mutableStateOf(false) }
 
@@ -152,6 +155,7 @@ fun SettingsScreen(
                 cloneVisible = cloneVisible,
                 lowPower = lowPower,
                 wifiAwareOn = wifiAwareOn,
+                watchOn = watchOn,
             ),
         battery = rememberOnResume { backgroundBattery(context) },
         unusedPause = rememberOnResume { unusedAppPause(context) },
@@ -163,6 +167,7 @@ fun SettingsScreen(
         onToggleDynamicColor = viewModel::setDynamicColor,
         onToggleLowPower = viewModel::setLowPowerMode,
         onToggleWifiAware = viewModel::setWifiAwareOn,
+        onToggleWatch = viewModel::setWatchOn,
         onOpenRelays = onOpenRelays,
         onOpenLora = onOpenLora,
         onOpenCalls = onOpenCalls,
@@ -190,6 +195,7 @@ internal fun SettingsScreenContent(
     onToggleDynamicColor: (Boolean) -> Unit = {},
     onToggleLowPower: (Boolean) -> Unit = {},
     onToggleWifiAware: (Boolean) -> Unit = {},
+    onToggleWatch: (Boolean) -> Unit = {},
     onOpenRelays: () -> Unit,
     onOpenLora: () -> Unit = {},
     onOpenCalls: () -> Unit = {},
@@ -205,6 +211,8 @@ internal fun SettingsScreenContent(
     showInternetRelays: Boolean = BuildConfig.INTERNET_PLANE,
     // Same, for the LoRa plane.
     showLoraRadio: Boolean = BuildConfig.LORA_PLANE,
+    // Same, for the Wear OS status service: only a build that serves the watch has a Watch switch.
+    showWatch: Boolean = BuildConfig.WEAR_STATUS,
     // Same, for calls (experimental): only a build that wires live calls or speech (`CALL_SETTINGS_WIRED`) has a Calls
     // screen.
     showCalls: Boolean = CALL_SETTINGS_WIRED,
@@ -345,6 +353,19 @@ internal fun SettingsScreenContent(
             if (showInternetRelays) InternetRelayRow(summary = form.relay, onClick = onOpenRelays)
 
             if (showLoraRadio) LoraRadioRow(summary = form.lora, onClick = onOpenLora)
+
+            // What this phone tells a paired watch. Off by default: the status leaves the phone, so the subtitle says
+            // what the watch reads (ADR 2026-09.wetm's seventh amendment).
+            if (showWatch) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_watch_title),
+                    subtitle =
+                        stringResource(if (form.watchOn) R.string.settings_watch_subtitle_on else R.string.settings_watch_subtitle_off),
+                    enabled = form.watchOn,
+                    onToggle = onToggleWatch,
+                    modifier = Modifier.testTag("settings_watch"),
+                )
+            }
 
             NavigatingRow(
                 title = stringResource(R.string.settings_backup_title),
@@ -817,8 +838,10 @@ fun SettingsScreenPreview() =
             onBack = {},
             onOpenRelays = {},
             onAllowBattery = {},
-            // The screen a shipped build shows: it has no calls (`CALL_SETTINGS_WIRED` off), and so no Calls row.
+            // The screen a shipped build shows: it has no calls (`CALL_SETTINGS_WIRED` off), and so no Calls row, and
+            // serves no watch (`WEAR_STATUS` off), and so no Watch row.
             showCalls = false,
+            showWatch = false,
         )
     }
 
@@ -834,6 +857,7 @@ fun SettingsScreenClonePreview() =
             onOpenRelays = {},
             onAllowBattery = {},
             showCalls = false,
+            showWatch = false,
         )
     }
 
@@ -850,5 +874,6 @@ fun SettingsScreenNewUserPreview() =
             onOpenRelays = {},
             onAllowBattery = {},
             showCalls = false,
+            showWatch = false,
         )
     }

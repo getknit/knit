@@ -187,6 +187,16 @@ class SettingsStore(
     val fieldLogEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_FIELD_LOG] ?: false }
 
     /**
+     * Whether a device bonded to this phone, a Wear OS watch above all, may read the mesh status (Settings › Watch, ADR
+     * 2026-09.wetm's seventh amendment). **Off by default**: the status — how many people are in reach, over which radios, what this
+     * phone relays and carries — leaves the phone for the watch, and that is the user's call. Off, `WearStatusServer`
+     * holds no RFCOMM socket, no GATT service and no pause advert. Folded with `BuildConfig.WEAR_STATUS` so a build
+     * without the service reads off whatever the store holds. A choice the person made, so it rides a backup.
+     */
+    val wearStatusEnabled: Flow<Boolean> =
+        dataStore.data.map { BuildConfig.WEAR_STATUS && (it[KEY_WEAR_STATUS] ?: false) }
+
+    /**
      * Whether this device's profile declares its user "open to chat". Defaults to off. A profile field like
      * [displayName]/[status]: a change bumps [profileVersion] and republishes the profile on both paths
      * (`MeshManager.watchProfileChanges`), and while on, the presence cue (`presence/OpenToChatWatch`) nudges
@@ -788,6 +798,8 @@ class SettingsStore(
 
     suspend fun setFieldLogEnabled(value: Boolean) = dataStore.edit { it[KEY_FIELD_LOG] = value }
 
+    suspend fun setWearStatusEnabled(value: Boolean) = dataStore.edit { it[KEY_WEAR_STATUS] = value }
+
     suspend fun setOpenToChat(value: Boolean) = dataStore.edit { it[KEY_OPEN_TO_CHAT] = value }
 
     suspend fun setDynamicColor(value: Boolean) = dataStore.edit { it[KEY_DYNAMIC_COLOR] = value }
@@ -1178,6 +1190,7 @@ class SettingsStore(
         val KEY_TRANSLATION_ENABLED = booleanPreferencesKey("translation_enabled")
         val KEY_CALLS_RELAY_ALL = booleanPreferencesKey("calls_relay_all")
         val KEY_FIELD_LOG = booleanPreferencesKey("field_log_enabled")
+        val KEY_WEAR_STATUS = booleanPreferencesKey("wear_status_enabled")
         val KEY_OPEN_TO_CHAT = booleanPreferencesKey("open_to_chat")
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val KEY_THEME_MODE = stringPreferencesKey("theme_mode")

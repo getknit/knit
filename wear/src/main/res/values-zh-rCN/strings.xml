@@ -126,7 +126,7 @@
     <string name="nearby_last_12h">附近 · 过去 12 小时</string>
     <string name="chart_empty">手表读取你的手机后，这里会逐渐显示数据</string>
     <string name="busiest">最多：%2$s 有 %1$d 人</string>
-    <string name="unreachable_hint">请保持 Bluetooth 开启，并在手机上运行 Knit。</string>
+    <string name="unreachable_hint">请保持 Bluetooth 开启，在手机上运行 Knit，并开启“设置 › 手表”。</string>
     <string name="last_reading">上次读取：%1$s</string>
     <string name="paused_hint">Mesh 会自动恢复，你也可以通过手机上的 Knit 通知恢复。</string>
     <string name="off_hint">在手机上的 Knit 中开启 Mesh。</string>

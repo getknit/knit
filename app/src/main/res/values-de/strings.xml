@@ -888,6 +888,9 @@
     <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
     <string name="settings_wifi_aware_subtitle_on">Fotos und Dateien werden schnell zwischen Smartphones in der Nähe übertragen. Solange ein Smartphone in der Nähe ist, das Wi-Fi Aware nutzt, können WLAN und Bluetooth-Audio auf diesem Smartphone langsamer werden.</string>
     <string name="settings_wifi_aware_subtitle_off">Aus. Das Mesh läuft über Bluetooth, Nachrichten kommen also weiter an, aber Fotos und Dateien brauchen länger.</string>
+    <string name="settings_watch_title">Uhr</string>
+    <string name="settings_watch_subtitle_on">Mit diesem Smartphone über Bluetooth gekoppelte Geräte, etwa eine Wear-OS-Uhr, können den Mesh-Status abfragen: ob das Mesh läuft, wie viele Personen in der Nähe sind und über welche Funkverbindungen, und wie viele Nachrichten dieses Smartphone weitergibt und für andere aufbewahrt.</string>
+    <string name="settings_watch_subtitle_off">Aus. Schalte es ein, um das Mesh auf einer mit diesem Smartphone gekoppelten Wear-OS-Uhr zu sehen.</string>
     <string name="profile_details_message">Nachricht</string>
     <string name="profile_details_call">Anrufen</string>
     <string name="profile_details_online">Online</string>

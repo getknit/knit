@@ -76,6 +76,9 @@ class SettingsScreenContentTest {
         onSignOut: () -> Unit = {},
         wifiAwareOn: Boolean = true,
         onToggleWifiAware: (Boolean) -> Unit = {},
+        watchOn: Boolean = false,
+        onToggleWatch: (Boolean) -> Unit = {},
+        showWatch: Boolean = true,
     ) {
         compose.setContent {
             KnitTheme {
@@ -90,6 +93,7 @@ class SettingsScreenContentTest {
                             lora = lora,
                             cloneVisible = cloneVisible,
                             wifiAwareOn = wifiAwareOn,
+                            watchOn = watchOn,
                         ),
                     battery = battery,
                     supervision = supervision,
@@ -100,6 +104,8 @@ class SettingsScreenContentTest {
                     showThemeMode = showThemeMode,
                     wifiAware = wifiAware,
                     onToggleWifiAware = onToggleWifiAware,
+                    onToggleWatch = onToggleWatch,
+                    showWatch = showWatch,
                     onOpenCalls = onOpenCalls,
                     showCalls = showCalls,
                     onToggleDynamicColor = onToggleDynamicColor,
@@ -179,6 +185,30 @@ class SettingsScreenContentTest {
     fun theWifiAwareRowIsAbsentOnAPhoneWithoutIt() {
         render(wifiAware = false)
         compose.onNodeWithTag("settings_wifi_aware").assertDoesNotExist()
+    }
+
+    /** ADR 2026-09.wetm's seventh amendment: Settings › Watch off says how to turn it on, and toggles (its default: SettingsStoreTest). */
+    @Test
+    fun theWatchRowOffSaysHowToTurnItOnAndToggles() {
+        var toggled: Boolean? = null
+        render(onToggleWatch = { toggled = it })
+        compose.onNodeWithTag("settings_watch").performScrollTo().assertIsOff()
+        compose.onNodeWithText(context.getString(R.string.settings_watch_subtitle_off)).assertExists()
+        compose.onNodeWithTag("settings_watch").performClick()
+        assertEquals(true, toggled)
+    }
+
+    @Test
+    fun theWatchRowOnSaysWhatTheWatchReads() {
+        render(watchOn = true)
+        compose.onNodeWithTag("settings_watch").performScrollTo().assertIsOn()
+        compose.onNodeWithText(context.getString(R.string.settings_watch_subtitle_on)).assertExists()
+    }
+
+    @Test
+    fun theWatchRowIsAbsentInABuildThatServesNoWatch() {
+        render(showWatch = false)
+        compose.onNodeWithTag("settings_watch").assertDoesNotExist()
     }
 
     @Test

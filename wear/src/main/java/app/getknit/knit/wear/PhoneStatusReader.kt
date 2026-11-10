@@ -158,7 +158,6 @@ object PhoneStatusReader {
         val adapter: BluetoothAdapter =
             context.getSystemService(BluetoothManager::class.java)?.adapter?.takeIf { it.isEnabled } ?: return null
         val remembered = prefs(context).getString(KEY_ADDRESS, null)
-        val lastGood = cached(context)?.via
         val bonded =
             runCatching { adapter.bondedDevices.orEmpty() }
                 .getOrDefault(emptySet())
@@ -167,7 +166,7 @@ object PhoneStatusReader {
             (listOfNotNull(remembered?.let { runCatching { adapter.getRemoteDevice(it) }.getOrNull() }) + bonded)
                 .distinctBy { it.address }
         for (device in candidates) {
-            val routes = ReadRoutes.plan(leOnly = device.type == BluetoothDevice.DEVICE_TYPE_LE, lastGood = lastGood)
+            val routes = ReadRoutes.plan(leOnly = device.type == BluetoothDevice.DEVICE_TYPE_LE)
             for ((attempt, via) in routes.withIndex()) {
                 if (attempt > 0) delay(RETRY_MS)
                 val started = System.currentTimeMillis()
@@ -182,6 +181,10 @@ object PhoneStatusReader {
                     // Info, not debug: which transport a watch's bond carries is what the field data is for.
                     Log.i(TAG, "phone answered over ${via.label} (attempt ${attempt + 1} of ${routes.size})")
                     return Fetched(device.address, via, bytes)
+                }
+                if (via == Via.Classic && !ReadRoutes.afterClassicMiss(took)) {
+                    Log.i(TAG, "no status record on ${device.address} (Classic miss in $took ms); LE skipped")
+                    break
                 }
             }
         }

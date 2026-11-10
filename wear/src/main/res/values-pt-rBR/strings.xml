@@ -142,7 +142,7 @@
     <string name="nearby_last_12h">Por perto · últimas 12 h</string>
     <string name="chart_empty">Vai se formando conforme o relógio lê seu celular</string>
     <string name="busiest">Pico: %1$d às %2$s</string>
-    <string name="unreachable_hint">Mantenha o Bluetooth ligado, com o Knit funcionando no seu celular.</string>
+    <string name="unreachable_hint">Mantenha o Bluetooth ligado, com o Knit funcionando no seu celular e Configurações › Relógio ativado.</string>
     <string name="last_reading">Última leitura %1$s</string>
     <string name="paused_hint">Ela volta sozinha, ou pela notificação do Knit no seu celular.</string>
     <string name="off_hint">Inicie pelo Knit no seu celular.</string>

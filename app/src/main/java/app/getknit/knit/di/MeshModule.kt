@@ -652,9 +652,10 @@ val meshModule =
         single { LoraStatusRepository(get(), get()) }
         // The Wear OS status service (prototype, `BuildConfig.WEAR_STATUS`): defined only while lit, so a dark
         // build has nothing for `MeshService` to resolve — its `getOrNull` is the one seam. It reads the same
-        // repositories the header does, and nothing it serves is framed onto the mesh.
+        // repositories the header does, and nothing it serves is framed onto the mesh. It serves only while the
+        // user's Settings › Watch switch is on.
         if (BuildConfig.WEAR_STATUS) {
             single { WearStatusSource(get(), get(), get(), get(), get(), get<ForwardRepository>(), get()) }
-            single { WearStatusServer(androidContext(), get(), get<CoroutineScope>()) }
+            single { WearStatusServer(androidContext(), get(), get<CoroutineScope>(), get<SettingsStore>().wearStatusEnabled) }
         }
     }

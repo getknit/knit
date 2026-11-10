@@ -211,6 +211,19 @@ class SettingsStoreTest {
             assertFalse(store.linkPreviewsEnabled.first())
         }
 
+    // ADR 2026-09.wetm's seventh amendment: no watch reads the mesh status until the person turns Settings › Watch on.
+    // The debug unit tests build `WEAR_STATUS` on, so the on leg reads the stored value through the fold.
+    @Test
+    fun `the watch switch defaults off and round-trips on`() =
+        runTest {
+            val store = newStore()
+            assertFalse(store.wearStatusEnabled.first())
+            store.setWearStatusEnabled(true)
+            assertTrue(store.wearStatusEnabled.first())
+            store.setWearStatusEnabled(false)
+            assertFalse(store.wearStatusEnabled.first())
+        }
+
     @Test
     fun `typing indicators default on and round-trip off`() =
         runTest {

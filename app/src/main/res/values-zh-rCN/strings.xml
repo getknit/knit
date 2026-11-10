@@ -874,6 +874,9 @@
     <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
     <string name="settings_wifi_aware_subtitle_on">照片和文件可在附近的手机之间快速传输。附近有使用 Wi-Fi Aware 的手机时，这部手机的 WLAN 和 Bluetooth 音频可能会变慢。</string>
     <string name="settings_wifi_aware_subtitle_off">已关闭。Bluetooth 承载 Mesh 网络，消息仍能送达，但照片和文件需要更长时间。</string>
+    <string name="settings_watch_title">手表</string>
+    <string name="settings_watch_subtitle_on">通过 Bluetooth 与这部手机配对的设备（例如 Wear OS 手表）可以读取 Mesh 状态：Mesh 是否在运行、附近有多少人及通过哪些无线连接，以及这部手机代传和为他人保存了多少条消息。</string>
+    <string name="settings_watch_subtitle_off">已关闭。开启后，可在与这部手机配对的 Wear OS 手表上查看 Mesh 网络。</string>
     <string name="profile_details_message">发消息</string>
     <string name="profile_details_call">通话</string>
     <string name="profile_details_online">在线</string>

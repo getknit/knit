@@ -142,7 +142,7 @@
     <string name="nearby_last_12h">À proximité · dernières 12 h</string>
     <string name="chart_empty">Se remplit à mesure que la montre lit votre téléphone</string>
     <string name="busiest">Pic : %1$d à %2$s</string>
-    <string name="unreachable_hint">Laissez le Bluetooth activé, avec Knit en marche sur votre téléphone.</string>
+    <string name="unreachable_hint">Laissez le Bluetooth activé, avec Knit en marche sur votre téléphone et Paramètres › Montre activé.</string>
     <string name="last_reading">Dernier relevé %1$s</string>
     <string name="paused_hint">Il reprend de lui-même, ou depuis la notification de Knit sur votre téléphone.</string>
     <string name="off_hint">Démarrez-le depuis Knit sur votre téléphone.</string>

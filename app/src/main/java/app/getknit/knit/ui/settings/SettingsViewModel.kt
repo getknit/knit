@@ -211,6 +211,18 @@ class SettingsViewModel(
         viewModelScope.launch { lowPowerSwitch.set(value) }
     }
 
+    /**
+     * Whether a bonded Wear OS watch may read the mesh status (Settings › Watch, ADR 2026-09.wetm's seventh amendment).
+     * Off by default; the row shows only in a build that serves the watch (`BuildConfig.WEAR_STATUS`).
+     */
+    val watchOn: StateFlow<Boolean> =
+        settings.wearStatusEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    fun setWatchOn(value: Boolean) {
+        viewModelScope.launch { settings.setWearStatusEnabled(value) }
+    }
+
     fun setWifiAwareOn(value: Boolean) {
         val switch = awareSwitch ?: return
         viewModelScope.launch { switch.set(value) }

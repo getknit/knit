@@ -142,7 +142,7 @@
     <string name="nearby_last_12h">Cerca · últimas 12 h</string>
     <string name="chart_empty">Se completa a medida que el reloj lee tu teléfono</string>
     <string name="busiest">Máximo: %1$d a las %2$s</string>
-    <string name="unreachable_hint">Mantén el Bluetooth activado, con Knit funcionando en tu teléfono.</string>
+    <string name="unreachable_hint">Mantén el Bluetooth activado, con Knit funcionando en tu teléfono y Configuración › Reloj activado.</string>
     <string name="last_reading">Última lectura %1$s</string>
     <string name="paused_hint">La mesh se reanuda sola, o desde la notificación de Knit en tu teléfono.</string>
     <string name="off_hint">Inicia la mesh desde Knit en tu teléfono.</string>
