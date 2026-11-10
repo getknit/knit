@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -27,16 +28,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.AvatarTint
@@ -65,8 +69,13 @@ import java.text.BreakIterator
  * announced). When [onClick] is set the touch target grows to the 48dp minimum without enlarging
  * the visible circle, and [onClickLabel] describes the action (e.g. "view profile").
  *
- * A supporter badge is not drawn here: its mark follows the person's name ([PeerNameText]'s `badge`,
- * docs/SUPPORTER_BADGE.md §7), so the avatar's lower end stays free for a presence dot.
+ * [online] draws the presence dot at the circle's lower end, where a status dot sits in every messenger:
+ * [knitColors]' positive green in a ring of the surface colour, about a quarter of the avatar across. The caller
+ * owns the evidence, and every caller passes the same one, [app.getknit.knit.mesh.MeshController.neighbors]
+ * (a short-range radio sees the peer's own radio, `Reach.Direct`), the binary dot ADR 2026-09.2ajk keeps for
+ * lists. The state is spoken too: on the circle's own node when the avatar is tappable, so the button reads
+ * "…, Online", else on the dot, for the row around it to merge. A supporter badge is not drawn here: its mark
+ * follows the person's name ([PeerNameText]'s `badge`, docs/SUPPORTER_BADGE.md §7).
  */
 @Composable
 fun Avatar(
@@ -79,6 +88,7 @@ fun Avatar(
     contentDescription: String? = null,
     onClick: (() -> Unit)? = null,
     onClickLabel: String? = null,
+    online: Boolean = false,
 ) {
     val tint = MaterialTheme.knitColors.avatarTint(nodeId ?: name)
     // An avatar is a tap target with no container of its own, so a ripple alone is easy to miss on a
@@ -102,9 +112,61 @@ fun Avatar(
                 .then(press)
                 .size(size),
     ) {
-        AvatarCircle(avatarHash, name, size, textStyle, contentDescription, onClick, onClickLabel, interaction, tint)
+        val onlineLabel = if (online) stringResource(R.string.profile_details_online) else null
+        AvatarCircle(
+            avatarHash,
+            name,
+            size,
+            textStyle,
+            contentDescription,
+            onlineLabel.takeIf { onClick != null },
+            onClick,
+            onClickLabel,
+            interaction,
+            tint,
+        )
+        if (online) {
+            PresenceDot(avatarSize = size, description = onlineLabel.takeIf { onClick == null })
+        }
     }
 }
+
+/**
+ * The presence dot, centred on the circle's edge at the lower end (45°), which keeps it inside the avatar's square at
+ * every size: the dot is never wider than 0.29 of the avatar. Positive green in a ring of the surface colour, so it
+ * parts from a photo or a tint alike. `offset` follows the layout direction, so in a right-to-left layout it sits at
+ * the lower left, the lower end there. [description] is null when the tappable circle already says it.
+ */
+@Composable
+private fun PresenceDot(
+    avatarSize: Dp,
+    description: String?,
+) {
+    val dot = (avatarSize * DOT_FRACTION).coerceIn(MIN_DOT, MAX_DOT)
+    val centre = avatarSize * DOT_CENTRE
+    Box(
+        modifier =
+            Modifier
+                .offset(x = centre - dot / 2, y = centre - dot / 2)
+                .size(dot)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface)
+                .padding((dot * DOT_RING_FRACTION).coerceIn(MIN_DOT_RING, MAX_DOT_RING))
+                .clip(CircleShape)
+                .background(MaterialTheme.knitColors.positive)
+                .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier),
+    )
+}
+
+private const val DOT_FRACTION = 0.26f
+
+// The circle's edge at 45°, from the avatar's top-left corner: half the diameter plus the radius over √2.
+private const val DOT_CENTRE = 0.8536f
+private const val DOT_RING_FRACTION = 0.16f
+private val MIN_DOT = 10.dp
+private val MAX_DOT = 16.dp
+private val MIN_DOT_RING = 2.dp
+private val MAX_DOT_RING = 3.dp
 
 /** The clipped disc itself: the photo or the initial, with the tap and the accessible name. */
 @Composable
@@ -115,6 +177,7 @@ private fun AvatarCircle(
     size: Dp,
     textStyle: TextStyle,
     contentDescription: String?,
+    stateDescription: String?,
     onClick: (() -> Unit)?,
     onClickLabel: String?,
     interaction: MutableInteractionSource,
@@ -143,8 +206,11 @@ private fun AvatarCircle(
                         Modifier
                     },
                 ).then(
-                    if (contentDescription != null) {
-                        Modifier.semantics { this.contentDescription = contentDescription }
+                    if (contentDescription != null || stateDescription != null) {
+                        Modifier.semantics {
+                            contentDescription?.let { this.contentDescription = it }
+                            stateDescription?.let { this.stateDescription = it }
+                        }
                     } else {
                         Modifier
                     },
@@ -281,6 +347,23 @@ fun AvatarPalettePreview() =
             // Twelve consecutive one-letter keys land in twelve consecutive slots; "l" is the one at slot 0.
             for (key in ('l'..'w').map(Char::toString)) {
                 Avatar(avatarHash = null, name = key, nodeId = key, size = 40.dp)
+            }
+        }
+    }
+
+/** The presence dot at every size an avatar wears it: the DM header's 36, the lists' 48 and 52, the profile's 96. */
+@Preview(showBackground = true)
+@Preview(showBackground = true, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+fun AvatarOnlinePreview() =
+    KnitPreview {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier.padding(8.dp),
+        ) {
+            for ((size, key) in listOf(36.dp to "ada", 48.dp to "bo", 52.dp to "cy", 96.dp to "di")) {
+                Avatar(avatarHash = null, name = key, nodeId = key, size = size, online = true)
             }
         }
     }

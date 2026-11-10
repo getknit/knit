@@ -62,7 +62,6 @@ import app.getknit.knit.ui.components.skeletonBlockColor
 import app.getknit.knit.ui.components.skeletonPulseAlpha
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
-import app.getknit.knit.ui.theme.knitColors
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -283,6 +282,8 @@ private fun ContactRow(
             name = contact.displayName,
             nodeId = contact.nodeId,
             size = 48.dp,
+            // The dot on the avatar marks a contact a radio of ours sees right now (MeshController.neighbors).
+            online = contact.online,
         )
         Spacer(Modifier.width(12.dp))
         PeerNameText(
@@ -292,17 +293,7 @@ private fun ContactRow(
             modifier = Modifier.weight(1f),
             badge = peerBadge(contact.nodeId),
         )
-        // A filled dot marks a contact currently connected to the mesh.
-        if (contact.online) {
-            Box(
-                modifier =
-                    Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.knitColors.positive),
-            )
-            Spacer(Modifier.width(12.dp))
-        }
+        Spacer(Modifier.width(12.dp))
         Icon(
             imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
             // Decorative: the row's Checkbox role already announces the selection state.

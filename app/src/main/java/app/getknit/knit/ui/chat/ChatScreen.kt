@@ -364,6 +364,7 @@ fun ChatScreen(
     val showPublicConsent by viewModel.showPublicConsent.collectAsStateWithLifecycle()
     val stagedLocation by viewModel.stagedLocation.collectAsStateWithLifecycle()
     val meshCallFirst by viewModel.meshCallFirst.collectAsStateWithLifecycle()
+    val peerOnline by viewModel.peerOnline.collectAsStateWithLifecycle()
     val showLocationConsent by viewModel.showLocationConsent.collectAsStateWithLifecycle()
     val showTransferConsent by viewModel.showTransferConsent.collectAsStateWithLifecycle()
     val directSend by viewModel.directSend.collectAsStateWithLifecycle()
@@ -702,6 +703,7 @@ fun ChatScreen(
         onStartCall = viewModel::startCall,
         onStartMeshCall = viewModel::startMeshCall,
         meshCallFirst = meshCallFirst,
+        peerOnline = peerOnline,
         showTransferConsent = showTransferConsent,
         onAcceptTransferConsent = viewModel::acceptTransferConsent,
         onDismissTransferConsent = viewModel::dismissTransferConsent,
@@ -1024,6 +1026,8 @@ internal fun ChatScreenContent(
     // bar shows, the live call going to the overflow; else the other way round.
     onStartMeshCall: () -> Unit = {},
     meshCallFirst: Boolean = false,
+    // A DM's peer seen by a radio of ours right now ([ChatViewModel.peerOnline]): the header avatar's dot.
+    peerOnline: Boolean = false,
     showTransferConsent: TransferConsent? = null,
     onAcceptTransferConsent: () -> Unit = {},
     onDismissTransferConsent: () -> Unit = {},
@@ -1441,6 +1445,7 @@ internal fun ChatScreenContent(
                                         size = 36.dp,
                                         contentDescription = stringResource(R.string.chat_view_profile, state.title),
                                         onClick = { onOpenProfile(conversationId) },
+                                        online = peerOnline,
                                     )
                                     Spacer(Modifier.width(10.dp))
                                     PeerNameText(

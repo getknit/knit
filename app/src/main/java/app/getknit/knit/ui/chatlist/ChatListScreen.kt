@@ -142,6 +142,7 @@ fun ChatListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.collectAsStateWithLifecycle()
+    val onlineIds by viewModel.onlineIds.collectAsStateWithLifecycle()
     var showShareApp by remember { mutableStateOf(false) }
     // The clone banner's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
     var showSignOut by remember { mutableStateOf(false) }
@@ -180,6 +181,7 @@ fun ChatListScreen(
             onOpenWhatsNew()
         },
         onDismissWhatsNew = viewModel::dismissWhatsNew,
+        onlineIds = onlineIds,
     )
 
     if (showSignOut) {
@@ -263,6 +265,9 @@ internal fun ChatListScreenContent(
     whatsNew: WhatsNewEntry? = null,
     onOpenWhatsNew: () -> Unit = {},
     onDismissWhatsNew: () -> Unit = {},
+    // Who a radio of ours sees right now ([ChatListViewModel.onlineIds]): a DM row's avatar dot. Defaulted like
+    // [whatsNew], so the previews and tests that predate it read as nobody nearby.
+    onlineIds: Set<String> = emptySet(),
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -467,6 +472,8 @@ internal fun ChatListScreenContent(
                                 now = now,
                                 onClick = { onOpenConversation(row.id) },
                                 onDelete = onDeleteConversation,
+                                // A DM's conversation id is the peer's node id; a room's or a group's is no node.
+                                online = !row.isRoom && !row.isGroup && row.id in onlineIds,
                                 // Unlike the message list, placement IS animated here: the ViewModel sorts
                                 // by lastMessageAt, so a thread that receives a message genuinely travels up
                                 // the list, and watching it move is the clearest signal in the app that
@@ -577,6 +584,7 @@ internal fun ConversationListItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onDelete: (conversationId: String) -> Unit = {},
+    online: Boolean = false,
 ) {
     // Nearby and the Meshtastic room are cleared rather than removed: the history goes, Nearby's row stays,
     // and the Meshtastic row stays while a radio is bound. A commons is left from its relay row, so it gets a
@@ -631,8 +639,11 @@ internal fun ConversationListItem(
     // name, and the row's summary says it too, since clearAndSetSemantics drops the mark's own description.
     val badge = if (row.isRoom || row.isGroup) null else peerBadge(row.id)
     val spokenBadge = badge?.let { BadgeVisuals.markLabelFor(it) }?.let { stringResource(it) }
+    // The avatar's dot, said here for the same reason: the row's summary is all a screen reader hears of it.
+    val spokenOnline = if (online) stringResource(R.string.profile_details_online) else null
     val rowDescription =
-        listOfNotNull(row.title, spokenBadge, spokenMark, preview, spokenTime, spokenStatus, spokenUnread).joinToString(", ")
+        listOfNotNull(row.title, spokenBadge, spokenOnline, spokenMark, preview, spokenTime, spokenStatus, spokenUnread)
+            .joinToString(", ")
     val deleteLabel = stringResource(R.string.chat_list_delete_action)
 
     Box(modifier = modifier) {
@@ -664,7 +675,7 @@ internal fun ConversationListItem(
                     },
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            LeadingVisual(row)
+            LeadingVisual(row, online)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 PeerNameText(
@@ -840,10 +851,13 @@ internal fun ConversationListItem(
 
 /**
  * The circular leading glyph: the knit logo for the room, a [GroupAvatar] (the photo, else the members'
- * cluster) for a group, an [Avatar] for a DM.
+ * cluster) for a group, an [Avatar] for a DM, with its presence dot while [online].
  */
 @Composable
-private fun LeadingVisual(row: ConversationRow) {
+private fun LeadingVisual(
+    row: ConversationRow,
+    online: Boolean,
+) {
     val size = 52.dp
     when {
         row.isRoom -> {
@@ -856,7 +870,7 @@ private fun LeadingVisual(row: ConversationRow) {
 
         else -> {
             // A DM's conversation id is the peer's node id.
-            Avatar(avatarHash = row.avatarHash, name = row.title, nodeId = row.id, size = size)
+            Avatar(avatarHash = row.avatarHash, name = row.title, nodeId = row.id, size = size, online = online)
         }
     }
 }
@@ -879,6 +893,7 @@ fun ConversationListItemDmPreview() =
                 ),
             now = PREVIEW_NOW,
             onClick = {},
+            online = true,
         )
     }
 

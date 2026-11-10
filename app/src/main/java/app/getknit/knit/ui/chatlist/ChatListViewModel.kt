@@ -403,6 +403,17 @@ class ChatListViewModel(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState(isLoading = true))
 
     /**
+     * Who a short-range radio of ours sees right now ([MeshController.neighbors], `Reach.Direct`): a DM row's avatar
+     * dot, the same evidence as the Contacts dot. Its own flow, like [whatsNew]: the list's combine has no arity to
+     * spare, and a neighbour coming or going should not refold every row and re-count every badge.
+     */
+    val onlineIds: StateFlow<Set<String>> =
+        meshManager.neighbors
+            .map { peers -> peers.mapTo(HashSet()) { it.nodeId } }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /**
      * The announcement the list's card offers, or null ([WhatsNewPolicy]). Its own flow rather than a field of
      * [state]: it changes once in a release, and the list's combine has no arity to spare for it.
      */

@@ -1084,6 +1084,17 @@ class ChatViewModel(
         combine(autoMeshFirst, preferMeshCalls) { auto, preferred -> preferred || auto }
             .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * Whether a short-range radio of ours sees this DM's peer right now ([MeshController.neighbors], `Reach.Direct`,
+     * the Contacts dot's evidence): the header avatar's presence dot. Always false for a room or a group, whose id is
+     * no node's.
+     */
+    val peerOnline: StateFlow<Boolean> =
+        meshManager.neighbors
+            .map { peers -> peers.any { it.nodeId == conversationId } }
+            .distinctUntilChanged()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val events: SharedFlow<Int> = _events.asSharedFlow()
 

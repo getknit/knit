@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import app.getknit.knit.ui.components.AdaptiveRowPreview
 import app.getknit.knit.ui.components.AvatarInitialPreview
 import app.getknit.knit.ui.components.AvatarLargeEmojiPreview
+import app.getknit.knit.ui.components.AvatarOnlinePreview
 import app.getknit.knit.ui.components.AvatarPalettePreview
 import app.getknit.knit.ui.components.ButtonRowPreview
 import app.getknit.knit.ui.components.CharCounterPreview
@@ -53,6 +54,11 @@ fun AvatarLargeEmoji() = AvatarLargeEmojiPreview()
 @ComponentShots
 @Composable
 fun AvatarPalette() = AvatarPalettePreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun AvatarOnline() = AvatarOnlinePreview()
 
 @PreviewTest
 @ComponentShots
