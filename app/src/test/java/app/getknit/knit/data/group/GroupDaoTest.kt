@@ -1,5 +1,6 @@
 package app.getknit.knit.data.group
 
+import androidx.room3.useReaderConnection
 import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.blob.BlobEntity
 import kotlinx.coroutines.flow.first
@@ -35,6 +36,49 @@ class GroupDaoTest : RoomDbTest() {
         runTest {
             dao.upsert(grp("g1", photoHash = "p"))
             assertEquals("p", dao.findById("g1")!!.photoHash)
+        }
+
+    /**
+     * [GroupDao.upsert] is a hand-written `INSERT … ON CONFLICT DO UPDATE`, not Room's `@Upsert` (the same fix as
+     * `PeerDao.upsert`): a second write for the same groupId must overwrite every column of the row it found — a
+     * column left out of the SET list would keep its old value here — and update it where it sits, never delete
+     * and re-insert it.
+     */
+    @Test
+    fun `a second write for the same groupId overwrites every column of that row in place`() =
+        runTest {
+            dao.upsert(
+                GroupEntity(
+                    groupId = "g1",
+                    name = "",
+                    members = GroupMembersStore.encode(listOf("me", "a", "b")),
+                    createdBy = "me",
+                    createdAt = 1L,
+                ),
+            )
+            val rowid = rowidOf("g1")
+            val second =
+                GroupEntity(
+                    groupId = "g1",
+                    name = "Hikers",
+                    members = GroupMembersStore.encode(listOf("me", "a")),
+                    createdBy = "a",
+                    createdAt = 2L,
+                    nameUpdatedAt = 3L,
+                    left = true,
+                    departed = GroupMembersStore.encode(listOf("b")),
+                    photoHash = "decided",
+                    photoUpdatedAt = 4L,
+                    photoShownHash = "shown",
+                )
+
+            dao.upsert(second)
+
+            assertEquals(second, dao.findById("g1"))
+            assertEquals("updated where it sat, not deleted and re-inserted", rowid, rowidOf("g1"))
+            dao.upsert(second.copy(photoHash = null, photoShownHash = null))
+            assertEquals("a null column is written as null", second.copy(photoHash = null, photoShownHash = null), dao.findById("g1"))
+            assertEquals(1, dao.observeAll().first().size)
         }
 
     @Test
@@ -102,5 +146,14 @@ class GroupDaoTest : RoomDbTest() {
             dao.upsert(grp("g2", createdAt = 3L))
             dao.upsert(grp("g3", createdAt = 2L))
             assertEquals(listOf("g2", "g3", "g1"), dao.observeAll().first().map { it.groupId })
+        }
+
+    private suspend fun rowidOf(groupId: String): Long =
+        db.useReaderConnection { connection ->
+            connection.usePrepared("SELECT rowid FROM groups WHERE groupId = ?") { statement ->
+                statement.bindText(1, groupId)
+                check(statement.step()) { "no group row for $groupId" }
+                statement.getLong(0)
+            }
         }
 }

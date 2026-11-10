@@ -4,7 +4,6 @@ import androidx.room3.Dao
 import androidx.room3.Insert
 import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
-import androidx.room3.Upsert
 
 /**
  * Row-level operations for the group sender-key ratchet state (crypto scheme v2, group form). Thin by rule
@@ -25,8 +24,50 @@ interface GroupRatchetDao {
     @Query("SELECT DISTINCT groupId FROM group_send_chains")
     suspend fun sendChainGroupIds(): List<String>
 
-    @Upsert
-    suspend fun upsertSendChain(row: GroupSendChainEntity)
+    /**
+     * Writes [row], replacing every non-key column in place when (groupId, epoch) is already there. Callers keep
+     * passing one [GroupSendChainEntity]; this plain function (nothing Room processes) unpacks it onto
+     * [upsertSendChainRow].
+     *
+     * Spelled out rather than `@Upsert` on purpose, the same fix as [app.getknit.knit.data.draft.DraftDao.upsert]
+     * (work item 60), [app.getknit.knit.data.peer.PeerDao.upsert] and [app.getknit.knit.data.group.GroupDao.upsert]:
+     * Room's `@Upsert` is an INSERT it expects to fail on an existing key, then an UPDATE, and SQLCipher logs every
+     * failed statement at `E` before Room's catch runs — lab phones logged a "UNIQUE constraint failed: group_send_chains.groupId" line
+     * per sealed frame. `ON CONFLICT DO UPDATE` never issues a failing statement, and overwrites every non-key column
+     * exactly as `@Upsert` did. The parameters are flattened because Room's `:entity.column` bind syntax is refused
+     * by this processor at build time.
+     */
+    suspend fun upsertSendChain(row: GroupSendChainEntity) =
+        upsertSendChainRow(
+            groupId = row.groupId,
+            epoch = row.epoch,
+            seed = row.seed,
+            chainKey = row.chainKey,
+            count = row.count,
+            mintedAt = row.mintedAt,
+            export = row.export,
+            updatedAt = row.updatedAt,
+        )
+
+    /** The statement [upsertSendChain] actually runs, flattened — see its doc comment for why. */
+    @Suppress("LongParameterList") // one column per field of GroupSendChainEntity; see upsertSendChain
+    @Query(
+        "INSERT INTO group_send_chains (groupId, epoch, seed, chainKey, count, mintedAt, export, updatedAt) " +
+            "VALUES (:groupId, :epoch, :seed, :chainKey, :count, :mintedAt, :export, :updatedAt) " +
+            "ON CONFLICT(groupId, epoch) DO UPDATE SET " +
+            "seed = excluded.seed, chainKey = excluded.chainKey, count = excluded.count, " +
+            "mintedAt = excluded.mintedAt, export = excluded.export, updatedAt = excluded.updatedAt",
+    )
+    suspend fun upsertSendChainRow(
+        groupId: String,
+        epoch: Int,
+        seed: ByteArray,
+        chainKey: ByteArray,
+        count: Int,
+        mintedAt: Long,
+        export: ByteArray,
+        updatedAt: Long,
+    )
 
     @Query("DELETE FROM group_send_chains WHERE groupId = :groupId")
     suspend fun deleteSendChainsFor(groupId: String)
@@ -49,8 +90,47 @@ interface GroupRatchetDao {
         epoch: Int,
     ): List<GroupRecvChainEntity>
 
-    @Upsert
-    suspend fun upsertRecvChain(row: GroupRecvChainEntity)
+    /**
+     * Writes [row], replacing every non-key column in place when (groupId, senderId, epoch, mintedAt) is already
+     * there. Callers keep passing one [GroupRecvChainEntity]; this plain function (nothing Room processes) unpacks
+     * it onto [upsertRecvChainRow].
+     *
+     * Spelled out rather than `@Upsert` on purpose, the same fix as [app.getknit.knit.data.draft.DraftDao.upsert]
+     * (work item 60), [app.getknit.knit.data.peer.PeerDao.upsert] and [app.getknit.knit.data.group.GroupDao.upsert]:
+     * Room's `@Upsert` is an INSERT it expects to fail on an existing key, then an UPDATE, and SQLCipher logs every
+     * failed statement at `E` before Room's catch runs — lab phones logged a "UNIQUE constraint failed: group_recv_chains.groupId" line
+     * per opened frame. `ON CONFLICT DO UPDATE` never issues a failing statement, and overwrites every non-key column
+     * exactly as `@Upsert` did. The parameters are flattened because Room's `:entity.column` bind syntax is refused
+     * by this processor at build time.
+     */
+    suspend fun upsertRecvChain(row: GroupRecvChainEntity) =
+        upsertRecvChainRow(
+            groupId = row.groupId,
+            senderId = row.senderId,
+            epoch = row.epoch,
+            mintedAt = row.mintedAt,
+            chainKey = row.chainKey,
+            next = row.next,
+            lastUsedAt = row.lastUsedAt,
+        )
+
+    /** The statement [upsertRecvChain] actually runs, flattened — see its doc comment for why. */
+    @Suppress("LongParameterList") // one column per field of GroupRecvChainEntity; see upsertRecvChain
+    @Query(
+        "INSERT INTO group_recv_chains (groupId, senderId, epoch, mintedAt, chainKey, next, lastUsedAt) " +
+            "VALUES (:groupId, :senderId, :epoch, :mintedAt, :chainKey, :next, :lastUsedAt) " +
+            "ON CONFLICT(groupId, senderId, epoch, mintedAt) DO UPDATE SET " +
+            "chainKey = excluded.chainKey, next = excluded.next, lastUsedAt = excluded.lastUsedAt",
+    )
+    suspend fun upsertRecvChainRow(
+        groupId: String,
+        senderId: String,
+        epoch: Int,
+        mintedAt: Long,
+        chainKey: ByteArray,
+        next: Int,
+        lastUsedAt: Long,
+    )
 
     @Query("DELETE FROM group_recv_chains WHERE lastUsedAt < :cutoff")
     suspend fun deleteRecvChainsBefore(cutoff: Long)
@@ -114,8 +194,46 @@ interface GroupRatchetDao {
     @Query("SELECT * FROM group_key_sends WHERE groupId = :groupId")
     suspend fun keySends(groupId: String): List<GroupKeySendEntity>
 
-    @Upsert
-    suspend fun upsertKeySend(row: GroupKeySendEntity)
+    /**
+     * Writes [row], replacing every non-key column in place when (groupId, memberId) is already there. Callers keep
+     * passing one [GroupKeySendEntity]; this plain function (nothing Room processes) unpacks it onto
+     * [upsertKeySendRow].
+     *
+     * Spelled out rather than `@Upsert` on purpose, the same fix as [app.getknit.knit.data.draft.DraftDao.upsert]
+     * (work item 60), [app.getknit.knit.data.peer.PeerDao.upsert] and [app.getknit.knit.data.group.GroupDao.upsert]:
+     * Room's `@Upsert` is an INSERT it expects to fail on an existing key, then an UPDATE, and SQLCipher logs every
+     * failed statement at `E` before Room's catch runs — lab phones logged a "UNIQUE constraint failed: group_key_sends.groupId" line
+     * per seed send or ack. `ON CONFLICT DO UPDATE` never issues a failing statement, and overwrites every non-key column
+     * exactly as `@Upsert` did. The parameters are flattened because Room's `:entity.column` bind syntax is refused
+     * by this processor at build time.
+     */
+    suspend fun upsertKeySend(row: GroupKeySendEntity) =
+        upsertKeySendRow(
+            groupId = row.groupId,
+            memberId = row.memberId,
+            sentEpoch = row.sentEpoch,
+            sentAt = row.sentAt,
+            ackedEpoch = row.ackedEpoch,
+            ackedAt = row.ackedAt,
+        )
+
+    /** The statement [upsertKeySend] actually runs, flattened — see its doc comment for why. */
+    @Suppress("LongParameterList") // one column per field of GroupKeySendEntity; see upsertKeySend
+    @Query(
+        "INSERT INTO group_key_sends (groupId, memberId, sentEpoch, sentAt, ackedEpoch, ackedAt) " +
+            "VALUES (:groupId, :memberId, :sentEpoch, :sentAt, :ackedEpoch, :ackedAt) " +
+            "ON CONFLICT(groupId, memberId) DO UPDATE SET " +
+            "sentEpoch = excluded.sentEpoch, sentAt = excluded.sentAt, ackedEpoch = excluded.ackedEpoch, " +
+            "ackedAt = excluded.ackedAt",
+    )
+    suspend fun upsertKeySendRow(
+        groupId: String,
+        memberId: String,
+        sentEpoch: Int,
+        sentAt: Long,
+        ackedEpoch: Int,
+        ackedAt: Long,
+    )
 
     @Query("DELETE FROM group_key_sends WHERE groupId = :groupId AND memberId = :memberId")
     suspend fun deleteKeySend(

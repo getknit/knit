@@ -4,9 +4,9 @@ import androidx.room3.Dao
 import androidx.room3.Insert
 import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
-import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
 
+@Suppress("TooManyFunctions") // the groups table and its member clocks behind one DAO; upsert is two of these
 @Dao
 interface GroupDao {
     @Query("SELECT * FROM groups ORDER BY createdAt DESC")
@@ -24,8 +24,58 @@ interface GroupDao {
     @Query("SELECT * FROM groups WHERE left = 0")
     suspend fun allActive(): List<GroupEntity>
 
-    @Upsert
-    suspend fun upsert(group: GroupEntity)
+    /**
+     * Writes [group], replacing every column in place when the row is already there. Every caller keeps passing one
+     * [GroupEntity]; this plain function (nothing Room processes) unpacks it onto [upsertRow].
+     *
+     * Spelled out rather than `@Upsert` on purpose, the same fix as [app.getknit.knit.data.draft.DraftDao.upsert]
+     * (work item 60) and [app.getknit.knit.data.peer.PeerDao.upsert]: Room's `@Upsert` is an INSERT it expects to
+     * fail on an existing key, then an UPDATE, and SQLCipher logs every failed statement at `E` before Room's catch
+     * runs — and every inbound group frame re-upserts its group, so lab phones logged a "UNIQUE constraint failed:
+     * groups.groupId" line per frame. `ON CONFLICT DO UPDATE` never issues a failing statement. The parameters are
+     * flattened because Room's `:entity.column` bind syntax is refused by this processor at build time.
+     */
+    suspend fun upsert(group: GroupEntity) =
+        upsertRow(
+            groupId = group.groupId,
+            name = group.name,
+            members = group.members,
+            createdBy = group.createdBy,
+            createdAt = group.createdAt,
+            nameUpdatedAt = group.nameUpdatedAt,
+            left = group.left,
+            departed = group.departed,
+            photoHash = group.photoHash,
+            photoUpdatedAt = group.photoUpdatedAt,
+            photoShownHash = group.photoShownHash,
+        )
+
+    /** The statement [upsert] actually runs, flattened — see its doc comment for why. */
+    @Suppress("LongParameterList") // one column per field of GroupEntity; see the doc comment above
+    @Query(
+        "INSERT INTO groups (groupId, name, members, createdBy, createdAt, nameUpdatedAt, `left`, departed, " +
+            "photoHash, photoUpdatedAt, photoShownHash) " +
+            "VALUES (:groupId, :name, :members, :createdBy, :createdAt, :nameUpdatedAt, :left, :departed, " +
+            ":photoHash, :photoUpdatedAt, :photoShownHash) " +
+            "ON CONFLICT(groupId) DO UPDATE SET " +
+            "name = excluded.name, members = excluded.members, createdBy = excluded.createdBy, " +
+            "createdAt = excluded.createdAt, nameUpdatedAt = excluded.nameUpdatedAt, `left` = excluded.`left`, " +
+            "departed = excluded.departed, photoHash = excluded.photoHash, " +
+            "photoUpdatedAt = excluded.photoUpdatedAt, photoShownHash = excluded.photoShownHash",
+    )
+    suspend fun upsertRow(
+        groupId: String,
+        name: String,
+        members: String,
+        createdBy: String,
+        createdAt: Long,
+        nameUpdatedAt: Long,
+        left: Boolean,
+        departed: String,
+        photoHash: String?,
+        photoUpdatedAt: Long,
+        photoShownHash: String?,
+    )
 
     /**
      * How many groups reference [hash] as their photo, decided or shown — guards blob GC (a shared photo stays
