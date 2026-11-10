@@ -52,6 +52,10 @@ document:
 - A call from a chat to a nearby contact now becomes a mesh call when either phone has its Wi-Fi switched off
   and no internet. It used to ring on their phone and never connect. When only their Wi-Fi is off, their phone
   needs this version too.
+- With your Wi-Fi switched off and no internet, the call button in a chat now starts a mesh call to a contact
+  nearby. It used to start a regular call that rang on their phone but could never connect.
+- A picture or file sent to you over Bluetooth could wait up to a minute before it started downloading, for
+  example right after you restored Knit from a backup. It now starts as soon as its message arrives.
 
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 

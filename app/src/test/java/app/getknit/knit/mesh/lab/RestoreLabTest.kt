@@ -1,14 +1,21 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.mesh.ResetReseal
+import app.getknit.knit.mesh.protocol.BlobHaveContent
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -102,6 +109,78 @@ class RestoreLabTest {
             assertEquals("the re-sealed copy named the file", "quarterly-report.pdf", row.attachmentName)
             assertEquals("and gave its size", report.size.toLong(), row.attachmentSize)
             assertEquals("application/pdf", row.attachmentMime)
+        }
+
+    /**
+     * #291: a re-arm that read Alice's custody while Bob's original file DM sat there unopened, and no row named its
+     * hash, holds the hash fast-only (`MeshManager.unopenedForUs`). Bob's re-seal lands while that re-arm waits between
+     * its reads and its apply: the row is written and the small file wanted plain, its query on its way to Bob. The
+     * re-arm's stale verdict once re-held it — with no Wi-Fi Aware holder in reach nothing was asked, and with no tick in
+     * the lab the file never came. A want the delivery made after the re-arm's mark keeps its verdict.
+     */
+    @Test
+    fun aReArmThatReadTheUnopenedFrameNeverReHoldsTheResealsPlainWant() =
+        runBlocking {
+            // Alice queries before she asks (ADR 2026-10.6e5t): her plain want's first step is a query, so nothing is asked
+            // before the re-arm applies, and what the answer then finds is the want as the re-arm left it.
+            val alice = lab.node("alice", LabLimits(blobQuery = true)).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "before")) // Alice wrote in the DM: Bob's file is no message request of hers
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, conversation = thread)
+
+            alice.restoreFromBackup()
+            val report = "%PDF-1.7 the figures, well under the Bluetooth limit".toByteArray()
+            assertTrue(bob.sendFile(report, "figures.pdf", "application/pdf", text = "the figures", to = alice))
+            val id = bob.ownMessageId(bob.dmWith(alice), "the figures")
+            val hash = checkNotNull(bob.row(id)?.attachmentHash) { "bob's file DM names its sealed blob" }
+
+            // Alice's frames to Bob wait — her reset among them — so the digest exchange (which no hold parks) has Bob serve
+            // her the original he sealed under the session she lost, and he cannot re-seal it yet.
+            lab.link(alice, bob) { alice.transport.hold(bob.transport) }
+            lab.await(1) { if (id in alice.custodyIds()) 1 else 0 }
+            alice.transport.awaitInboundDrained()
+            assertNull("the original did not open", alice.row(id))
+            // And her reset is parked: the release below must carry it, or Bob never re-seals (the restore's hooks send it
+            // on their own coroutine, so it can park after the original lands).
+            lab.await(1) { alice.heldDmHeaders(alice, bob).count { (_, r) -> r.flags and RatchetHeader.FLAG_RESET != 0 } }
+            // Every re-arm already queued ends before this one, on the re-arm lock: the one parked below read this state.
+            alice.reoffer()
+
+            val parked = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            alice.manager.beforeRewantApplies = {
+                alice.manager.beforeRewantApplies = null
+                parked.complete(Unit)
+                release.await()
+            }
+            coroutineScope {
+                val tick = launch { alice.reoffer() } // reads the unopened frame and no row, then parks under the lock
+                parked.await()
+                // The reset crosses; Bob's re-seal opens, the row is written and wanted plain: its query to Bob parks.
+                alice.transport.release(bob.transport, keepHolding = true)
+                lab.await(1) { if (alice.row(id) != null && alice.queriesHeldFor(bob, hash)) 1 else 0 }
+                release.complete(Unit) // the re-arm applies what it read before the row
+                tick.join()
+            }
+            alice.transport.release(bob.transport)
+
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, conversation = thread)
+            val asks = alice.transport.blobAsks.filter { it.hash == hash }
+            assertEquals("asked once, plain: $asks", 1, asks.count { !it.fastOnly })
+            assertEquals("one copy", 1, bob.transport.files.count { it == "${alice.nodeId} ATTACHMENT $hash" })
+        }
+
+    /** Whether this node's pipe to [to] holds a `blobhave` naming [hash]: a plain want's query, parked on a held pipe. */
+    private fun LabNode.queriesHeldFor(
+        to: LabNode,
+        hash: String,
+    ): Boolean =
+        transport.held(to.transport).any { wire ->
+            val env = WireCodec.decodeEnvelope(wire.signed)
+            env?.type == FrameType.BLOB_HAVE && WireCodec.decodePayload<BlobHaveContent>(env.payload)?.hashes?.contains(hash) == true
         }
 
     /**

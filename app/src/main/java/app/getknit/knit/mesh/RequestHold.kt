@@ -66,6 +66,23 @@ object RequestHold {
     }
 
     /**
+     * Whether [frame] is a group's that [acceptance] does not accept yet, naming somebody besides [me] and its sender
+     * ([conversationOf] null for it even counting us a member): our copy is that party's carrier copy (#282's B3), judged
+     * by the carrier rules and never by our own rows or limit. `InboundPipeline.onCarriedFrame` pulls it plain by this, and
+     * the database re-arm's fast-only hold (`MeshManager.unopenedForUs`) does not count it as ours by the same rule, so the
+     * re-arm never re-holds that pull (#291).
+     */
+    suspend fun carriedForOthers(
+        frame: CarriedAttachment,
+        me: String,
+        acceptance: AcceptanceSnapshot,
+    ): Boolean {
+        val group = frame.groupId ?: return false
+        if (frame.senderId == me || conversationOf(frame.copy(member = true), me) != null) return false
+        return !acceptance.isAccepted(group, frame.senderId)
+    }
+
+    /**
      * Whether the carried attachment [frames] name is held before any row names it: every frame naming it is addressed
      * to us ([conversationOf]) from a conversation [accepted] refuses, asked with the frame's own sender, which counts as
      * one of a group's senders — as the delivery's read after its persist would count it. One frame we carry for somebody

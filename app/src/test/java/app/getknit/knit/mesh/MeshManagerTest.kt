@@ -5105,6 +5105,57 @@ class MeshManagerTest {
         }
 
     @Test
+    fun aRequestGroupFrameNamingAThirdMemberIsACarrierPullTheFastOnlyHoldLeavesPlain() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #291 (the blobs-reviewer's N1 on #282): a stranger's group naming a third member, not accepted, is that member's
+            // carrier copy, which `onCarriedFrame` pulls plain (`RequestHold.carriedForOthers`). Under a Bluetooth limit the
+            // re-arm's fast-only hold once counted it as ours and re-held that pull. Two controls stay held: the stranger's
+            // unopened DM to us (a message request), and an accepted group's unopened frame (ours, its size still sealed).
+            val rig = Rig(backgroundScope)
+            val stranger = "stranger-node"
+            val bob = "bob-node"
+            val me = rig.me.nodeId
+            val requestGroup = Conversations.groupIdFor(listOf(me, stranger, "carol"))
+            val acceptedGroup = Conversations.groupIdFor(listOf(me, bob, "carol"))
+            rig.bluetoothDownloadLimit.value = 1_000_000L
+            rig.forwardStore.carried =
+                listOf(
+                    CarriedAttachment(
+                        "third",
+                        recipientId = null,
+                        carriedAt = 0L,
+                        senderId = stranger,
+                        groupId = requestGroup,
+                        member = true,
+                        roster = setOf(me, stranger, "carol"),
+                    ),
+                    CarriedAttachment("request-dm", recipientId = me, carriedAt = 0L, senderId = stranger),
+                    CarriedAttachment(
+                        "ours-sealed",
+                        recipientId = null,
+                        carriedAt = 0L,
+                        senderId = bob,
+                        groupId = acceptedGroup,
+                        member = true,
+                        roster = setOf(me, bob, "carol"),
+                    ),
+                )
+            rig.transport.nearby.value = setOf(Peer(stranger), Peer(bob))
+            rig.stubProfileState(MutableStateFlow(0L))
+            coEvery { rig.groups.observeGroups() } returns flowOf(emptyList())
+            coEvery { rig.settings.acceptedConversations } returns MutableStateFlow(setOf(acceptedGroup)) // after the profile's stubs
+
+            val passes = rig.countReArms()
+            rig.manager.start()
+            // The ask is the behaviour under test, so the wait falls through to the assertion rather than timing out: a held
+            // carrier pull fails as `expected:<[third]> but was:<[]>`, naming the hash.
+            withContext(Dispatchers.Default) { withTimeoutOrNull(AWAIT_MS) { while (rig.askedHashes().isEmpty()) delay(POLL_MS) } }
+            rig.awaitStartupReArms(passes)
+            assertEquals("the carrier pull is asked; the request DM and our sealed frame are held", setOf("third"), rig.askedHashes())
+            rig.manager.stop()
+        }
+
+    @Test
     fun theReArmHoldsAMessageRequestsRowsAndItsFramesToUsAndAsksTheRest() =
         runTest(UnconfinedTestDispatcher()) {
             // #282: a stranger's row, and a custodied frame of theirs addressed to us that no row names yet, wait for the

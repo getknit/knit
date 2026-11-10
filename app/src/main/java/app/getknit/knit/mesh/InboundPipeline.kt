@@ -3061,8 +3061,10 @@ class InboundPipeline(
             return
         }
         // A request group's frame naming a third party is carried for them (#282's B3): a carrier's pull, never the user's
-        // download, so never left to a delivery that holds our own row of it.
-        val fastOnly = if (carriedForOthersInRequest(carried, me)) false else carriedFastOnly(env, content, hash, member) ?: return
+        // download, so never left to a delivery that holds our own row of it. The re-arm's fast-only hold reads the same
+        // rule (`MeshManager.unopenedForUs`, #291), so it never re-holds this pull.
+        val fastOnly =
+            if (RequestHold.carriedForOthers(carried, me, acceptance(me))) false else carriedFastOnly(env, content, hash, member) ?: return
         // A DM's carrier pulls it through for its custody window and no longer: frame-global, the same on every node (#195).
         val until = env.recipientId?.let { clampFuture(env.sentAt) + ForwardRepository.DEFAULT_TTL_MS }
         blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fastOnly, until = until)
@@ -3092,19 +3094,6 @@ class InboundPipeline(
         if (RequestHold.releasing(rows, accepted::contains).isNotEmpty()) return false
         noteRequestHeld(hash, frame.senderId)
         return true
-    }
-
-    /**
-     * Whether [frame] is a group's not accepted yet that names somebody besides us and its sender ([RequestHold.conversationOf]
-     * null for it): our copy is that party's carrier copy (#282's B3), judged by the carrier rules and not by our own row.
-     */
-    private suspend fun carriedForOthersInRequest(
-        frame: CarriedAttachment,
-        me: String,
-    ): Boolean {
-        val group = frame.groupId ?: return false
-        if (frame.senderId == me || RequestHold.conversationOf(frame.copy(member = true), me) != null) return false
-        return !acceptance(me).isAccepted(group, frame.senderId)
     }
 
     /**

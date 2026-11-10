@@ -3748,6 +3748,9 @@ class MeshManager(
      * switch to Never had just fetched, ADR 2026-10.js2p's review).
      */
     private suspend fun rewantMissingBlobsLocked() {
+        // Before every read (#291): a delivery wants its row's hash without this lock, re-deriving the flag and the deadline
+        // from every row, and one that lands after this mark keeps both against this pass's apply ([BlobExchange.wantAll]).
+        val readMark = blobExchange.rearmMark()
         val me = identity.nodeId()
         val limit = settings.bluetoothDownloadLimitBytes.first()
         // Custody first, the rows after (#141's finding 6): custody's read loads a room post's declared size only while no
@@ -3755,8 +3758,10 @@ class MeshManager(
         // landing between a row read and a custody read after it was judged by neither and wanted plain over Bluetooth.
         // Read in this order every row inserted before the last read is judged: by the row read, or by custody's size
         // when it landed after custody's read. A room post's row inserted after the row read is judged by the same
-        // declared size; a sealed frame's row after it is held until the next re-arm (`unopenedForUs`). A row deleted
-        // between the reads leaves a row-covered post with no size: it is held until the next re-arm loads it.
+        // declared size. A sealed frame's row inserted after custody's read is judged by its delivery, whose want lands
+        // after [readMark] and so keeps its verdict against this pass, which would hold it fast-only by the unopened frame
+        // (`unopenedForUs`, #291); the next re-arm reads the row. A row deleted between the reads leaves a row-covered post
+        // with no size: it is held until the next re-arm loads it.
         // Carrier-only custody blobs backfill only while under the byte budget (the same pull-time soft cap
         // onCarriedFrame applies), so a restart re-attempts pulls that a live-session over-budget skip left missing.
         val (carried, frames) =
@@ -3818,14 +3823,14 @@ class MeshManager(
             carried
                 .filterKeys { it !in releasingHashes && it !in held }
                 .forEach { (hash, author) -> carriedWant(hash, author, photos[hash], carriedUntil[hash], wanted, until, carriedPhotos) }
-            if (limit != null) fastOnly += unopenedForUs(carried.keys - ownHashes - photos.keys, frames, me, limit)
+            if (limit != null) fastOnly += unopenedForUs(carried.keys - ownHashes - photos.keys, frames, me, limit, acceptance)
         }
         // A group's decided photo not shown yet (ADR 2026-09.nxcq): the row is the durable want, so a pull lost
         // to a restart or the fetch TTL comes back here and not only on the group's next frame. A photo
         // screening refused keeps its verdict and is never asked for again while filtering is on.
         val groupPhotos = groupPhotosToFetch(acceptance)
         beforeRewantApplies?.invoke()
-        blobExchange.wantAll(wanted, fastOnly, until)
+        blobExchange.wantAll(wanted, fastOnly, until, readMark)
         // A group's photo is a photo (#282): wanted under the face ceiling, as its delivery wants it.
         groupPhotos.forEach { blobExchange.want(it, ceiling = FileIntake.MAX_AVATAR_BYTES) }
         // Not before the start's sweeps, as [rewantFaces]: an earlier session's refusals and holder marks are seeded then.
@@ -4005,18 +4010,25 @@ class MeshManager(
      * frame we carry for somebody else, or a room post declaring nothing or under the limit, keeps the pull plain, so a
      * stranger's frame naming a hash can lift the gate on our side and never impose it. A hash among [hashes] with no
      * frame left in [frames] was trimmed between custody's two reads (#141's finding 6): nothing says what it was, so it
-     * is held until the next re-arm, which no longer names it — js2p's "never plain on a guess".
+     * is held until the next re-arm, which no longer names it — js2p's "never plain on a guess". A group frame of a
+     * message request that names a third member is that member's carrier copy, not ours ([RequestHold.carriedForOthers]
+     * on [acceptance], the rule `InboundPipeline.onCarriedFrame` pulls it plain by), so it never holds the hash (#291).
      */
-    private fun unopenedForUs(
+    private suspend fun unopenedForUs(
         hashes: Set<String>,
         frames: List<CarriedAttachment>,
         me: String,
         limit: Long,
+        acceptance: AcceptanceSnapshot,
     ): Set<String> {
         if (hashes.isEmpty()) return emptySet()
         val byHash = frames.groupBy { it.hash }
         return hashes.filterTo(HashSet()) { hash ->
-            byHash[hash]?.all { it.recipientId == me || it.member || roomPostWaits(it, me, limit) } ?: true
+            byHash[hash]?.all {
+                it.recipientId == me ||
+                    (it.member && !RequestHold.carriedForOthers(it, me, acceptance)) ||
+                    roomPostWaits(it, me, limit)
+            } ?: true
         }
     }
 

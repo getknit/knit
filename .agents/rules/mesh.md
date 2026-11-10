@@ -285,6 +285,9 @@ free). Two invariants that are easy to break:
   tapped — Wi-Fi Aware only), so a swept or restarted want never asks over Bluetooth on a stale flag or stays held on one.
   It reads custody before the rows (js2p's 2026-10-19 amendment): custody's read loads a room post's declared size only
   while no row names the hash, so read after the rows it lost a row written between them, and the post went plain.
+  Before every read it takes `BlobExchange.rearmMark`, and a want of ours re-derived from every row since (a delivery,
+  the tap) keeps its flag and deadline against that pass's apply (js2p's 2026-11-10 amendment, #291): "the latest want
+  wins" is wrong for a pass whose reads predate the want. Order that by the exchange's sequence, never by a clock.
   A peer's photo is re-wanted the same way (ADR 2026-11.4ckq): every profile writer records the advertised hash on the
   row, and the re-arm wants each one not held, after the attachments, for a bounded set of peers and never in the last
   quarter of the want table. Its own person is asked alone while a radio links them, until a NONE, their link going or

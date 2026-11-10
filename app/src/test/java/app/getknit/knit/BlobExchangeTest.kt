@@ -1853,6 +1853,138 @@ class BlobExchangeTest {
         }
 
     @Test
+    fun aReArmThatReadBeforeADeliverysPlainWantLeavesItPlainAndItsDeadline() =
+        runTest(UnconfinedTestDispatcher()) {
+            // #291: a re-arm read custody while a DM to us sat there unopened, and no row, so it holds the hash fast-only.
+            // The delivery writes the row and wants it plain between the re-arm's reads and its apply. Applied over it,
+            // the stale verdict held the want with no Wi-Fi Aware holder in reach: no ask, until the next re-arm.
+            val r = FakeLoopTransport("r")
+            val author = FakeLoopTransport("author").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-rearm-mark").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { 0L },
+                    partials = partials(),
+                    holderQuery = BlobExchange.HolderQuery(enabled = true),
+                )
+            val queries = CopyOnWriteArrayList<String>()
+            backgroundScope.launch { author.inbound.collect { if (it.envelope.type == FrameType.BLOB_HAVE) queries += it.envelope.id } }
+            val toAuthor = backgroundScope.requestsArrivingAt(author)
+
+            val mark = exchange.rearmMark() // the re-arm's reads begin: no row names H yet
+            exchange.want("H", author = "author", until = 5_000L, untilKnown = true) // the delivery: under the limit, plain
+            assertEquals("the plain want queries the author", 1, queries.size)
+            exchange.wantAll(listOf("H" to "author"), fastOnly = setOf("H"), until = mapOf("H" to 9_000L), readMark = mark)
+            exchange.onHaveAnswer(
+                BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, 20_000L)), load = 0, re = queries.single()),
+                "author",
+            )
+            assertEquals(
+                "asked plain, by the delivery's deadline",
+                listOf(BlobReqContent("H", pull = BlobExchange.PULL_BUDGET, until = 5_000L)),
+                toAuthor,
+            )
+        }
+
+    /** An exchange on [r] querying its capable neighbours, at a fixed clock: #291's mark cases. */
+    private fun markExchange(
+        r: FakeLoopTransport,
+        dir: String,
+    ) = BlobExchange(
+        transport = r,
+        store = FakeBlobStore(Files.createTempDirectory(dir).toFile()),
+        selfId = { "r" },
+        onObtained = { _, _ -> },
+        now = { 0L },
+        partials = partials(),
+        holderQuery = BlobExchange.HolderQuery(enabled = true),
+    )
+
+    @Test
+    fun aCarriedWantAfterADeliveryClearsItsStampSoTheReArmAppliesOverIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The blobs-reviewer on #291: only a stamped verdict is kept. A delivery of our own over-limit row (fast-only,
+            // stamped), then a carried frame for somebody else naming the hash (plain, no rows read), then a re-arm whose
+            // mark came before both: the carried want set the flag last and is not protected, so the re-arm's fast-only
+            // verdict applies and nothing rides Bluetooth over the limit.
+            val r = FakeLoopTransport("r")
+            val author = FakeLoopTransport("author").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+            val exchange = markExchange(r, "blob-mark-carried")
+            val queries = CopyOnWriteArrayList<String>()
+            backgroundScope.launch { author.inbound.collect { if (it.envelope.type == FrameType.BLOB_HAVE) queries += it.envelope.id } }
+            val toAuthor = backgroundScope.requestsArrivingAt(author)
+
+            val mark = exchange.rearmMark()
+            exchange.want("H", author = "author", fastOnly = true, untilKnown = true) // the delivery: over the limit
+            exchange.want("H", author = "author", fastOnly = false) // a carried frame for somebody else: plain, unstamped
+            exchange.wantAll(listOf("H" to "author"), fastOnly = setOf("H"), readMark = mark)
+            exchange.onHaveAnswer(
+                BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, 20_000L)), load = 0, re = queries.single()),
+                "author",
+            )
+            assertEquals("the re-arm's fast-only verdict holds it: nobody asked", emptyList<BlobReqContent>(), toAuthor)
+        }
+
+    @Test
+    fun neitherANeighboursAskNorACarriedWantStampsAgainstTheReArm() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The security-reviewer on #291: a neighbour's ask is a stranger's input, and a carried frame's want read no rows;
+            // neither may leave a stamp that protects a verdict from the re-arm. The carried want comes first, since an own
+            // want after the ask would clear a stamp the ask left and hide it.
+            val r = FakeLoopTransport("r")
+            val author = FakeLoopTransport("author").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+            val exchange = markExchange(r, "blob-mark-peer")
+            val queries = CopyOnWriteArrayList<String>()
+            backgroundScope.launch { author.inbound.collect { if (it.envelope.type == FrameType.BLOB_HAVE) queries += it.envelope.id } }
+            val toAuthor = backgroundScope.requestsArrivingAt(author)
+
+            exchange.want("H", author = "author") // our own plain want
+            val mark = exchange.rearmMark()
+            exchange.want("H", author = "author", fastOnly = false, untilKnown = false) // a carried frame's want
+            exchange.want("H", asker = "x", fastOnly = false, pull = 2, untilKnown = true) // a neighbour's ask to pull it
+            exchange.wantAll(listOf("H" to "author"), fastOnly = setOf("H"), readMark = mark)
+            exchange.onHaveAnswer(
+                BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, 20_000L)), load = 0, re = queries.single()),
+                "author",
+            )
+            assertEquals("fast-only by the re-arm: nobody asked", emptyList<BlobReqContent>(), toAuthor)
+        }
+
+    @Test
+    fun aReArmWhoseReadsBeganAfterThePlainWantStillReDerivesIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The other side of #291's mark: a re-arm that read after the delivery saw its row, so its verdict stands — here
+            // fast-only (every row over the limit), with no Wi-Fi Aware holder: the author's HAVE is not asked.
+            val r = FakeLoopTransport("r")
+            val author = FakeLoopTransport("author").apply { advertises = Protocol.CAP_BLOB_HAVE }.also(r::connect)
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = FakeBlobStore(Files.createTempDirectory("blob-rearm-after").toFile()),
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { 0L },
+                    partials = partials(),
+                    holderQuery = BlobExchange.HolderQuery(enabled = true),
+                )
+            val queries = CopyOnWriteArrayList<String>()
+            backgroundScope.launch { author.inbound.collect { if (it.envelope.type == FrameType.BLOB_HAVE) queries += it.envelope.id } }
+            val toAuthor = backgroundScope.requestsArrivingAt(author)
+
+            exchange.want("H", author = "author", untilKnown = true)
+            val mark = exchange.rearmMark()
+            exchange.wantAll(listOf("H" to "author"), fastOnly = setOf("H"), readMark = mark)
+            exchange.onHaveAnswer(
+                BlobHasContent(listOf(BlobHasItem("H", BlobHasItem.HAVE, 20_000L)), load = 0, re = queries.single()),
+                "author",
+            )
+            assertEquals("held for Wi-Fi Aware: nobody asked", emptyList<BlobReqContent>(), toAuthor)
+        }
+
+    @Test
     fun aNonHoldersFlappingFastLinkNeverResetsTheBackoffOnAReachableHolder() =
         runTest(UnconfinedTestDispatcher()) {
             // Round 3 of the review: Wi-Fi Aware links flap on every custody sync. A neighbour's data path coming up is an

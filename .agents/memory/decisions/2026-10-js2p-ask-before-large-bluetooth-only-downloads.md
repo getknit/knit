@@ -126,7 +126,8 @@ and the post was wanted plain — the hold lifted and a `pull=3` ask went over B
 
 **Decided.** Custody is read first (`forwardStore.attachmentsNeedingFetch`, then `carriedFrames`), the rows after, and
 the wants are built as before, own rows first. That closes every insert before the last read; a room post inserted
-after it is judged by the same declared size; a sealed frame's row after it is held until the next re-arm. Two gaps
+after it is judged by the same declared size; a sealed frame's row after it is judged by its delivery's want, which
+the re-arm no longer overrides (amended 2026-11-10, #291, below). Two gaps
 the order cannot close are held rather than guessed: a room post a row covered when custody read it
 (`CarriedAttachment.rowCovered`, projected beside the CASE) whose row was gone by the rows' read — a room cap's sweep —
 and a carried hash whose frame was trimmed between custody's own two reads. While a limit is set both are fast-only
@@ -134,3 +135,52 @@ until the next re-arm, which reads them again. No wire, schema or convergence ch
 three local reads. Guards: `LargeAttachmentLabTest`'s two between-the-reads scenarios (the hook
 `MeshManager.betweenRewantReads`), `MeshManagerTest.aCarriedHashCustodyCouldNotJudgeBetweenTheReArmsReadsIsHeldUntilTheNext`,
 `ForwardDaoTest`'s row-covered case.
+
+## Amendment 2026-11-10: a re-arm keeps a want re-derived since its reads (#291)
+
+**Observed** (#291; `StrandedAttachmentLabTest` about 1 run in 200, `RestoreLabTest`'s re-seal case 1 in 3,000 under
+CPU load). The 2026-10-19 text held "a sealed frame's row after it" until the next re-arm, on the reasoning that no
+fetch had started. It had. A delivery writes its row and wants the hash without `rewantLock`, re-deriving the flag
+and the deadline from every row (`untilKnown`). When it landed between a re-arm's reads and its apply, the re-arm's
+`unopenedForUs` had counted the still-unopened frame in custody as ours, and `recordWant`'s merge ("the latest want of
+our own wins") turned the delivery's plain want fast-only again. With no Wi-Fi Aware holder `decide` held it: the
+author's HAVE was recorded and nothing was asked. On a phone the next re-arm, at most the 60 s tick, re-read the row.
+The lab has no tick, so it never re-read the row.
+
+**Decided.** The re-arm takes a read mark (`BlobExchange.rearmMark`) before its first read, the limit included, and
+passes it to `wantAll(…, readMark)`. A want of our own that re-derives from every row outside the re-arm (`want` with
+`untilKnown`: a delivery, the tap) takes a stamp from the same counter (`Want.rederivedSeq`). In the merge, a want
+stamped after the mark keeps its fast-only flag and its `until`. Its age and budget are refreshed as before. The next
+re-arm, whose reads see the row, re-derives both. The mark is a sequence held under the exchange's lock, not a time:
+`BlobExchange.now()` and the manager's clock need not be one clock, and two events can share a lab millisecond. A
+want stamped at or below the mark was recorded before the re-arm's reads began. Its row was written before that
+want, so the re-arm read the row and its verdict stands. A want stamped above the mark may have read a row the re-arm
+missed.
+
+Only a stamped verdict is ever kept. A later own want that does not stamp (a carried frame's, an avatar's) set the flag
+last, so it clears the stamp, and the re-arm's verdict applies over it. A neighbour's ask never stamps and never
+clears one: it moves no flag of ours. A carried frame's want (`onCarriedFrame`) takes no stamp and is not protected. It does not read every row: a frame
+carried for somebody else is wanted plain with no read, while a hash our own rows name over the limit is fast-only by
+the rows. Protecting it would let a carrier pull lift the user's limit on our own download for a pass, which is "plain
+on a guess". The cost of leaving it out is one re-arm's hold, up to the 60 s tick, on a carrier pull. It is not always
+a pull nobody watches: `carriedFastOnly` judges a frame addressed to us by our own rows once one exists. A second frame
+naming the hash (a reused attachment identity's) that lands between a re-arm's mark and its apply, after the
+delivery's stamp, clears that stamp. The re-arm then holds our own picture for that pass (#314).
+
+In the same pass, `unopenedForUs` no longer counts a message request's group frame that names a third member as ours.
+That frame is the third member's carrier copy, which `onCarriedFrame` pulls plain. Both sites now read one predicate,
+`RequestHold.carriedForOthers` (the blobs-reviewer's N1 on #282), so the re-arm no longer re-holds that pull until the
+frame opens.
+
+**Limits.** A delivery that read the old Bluetooth limit and recorded its want after the limit collector's re-arm took
+its mark keeps its stale verdict for one pass, up to the 60 s tick. A lowered limit lets one picture ride Bluetooth for
+that pass; a raised one holds it fast-only for that pass. Before this amendment a delivery recorded after the apply did
+the same, so the window grew from "after the apply" to "after the mark": bounded, and the same in kind. Accepted (both
+reviewers of #291). To close it later, carry the limit a want was judged by on the want, and keep its verdict only when
+that equals the re-arm's limit. Never move the stamp to the start of the delivery's read: the delivery's knowledge
+includes the row it writes after that read, and #291 reopens. The tap is sticky and is unaffected. No wire, schema or convergence change: an in-memory counter and a local merge rule. Guards:
+`BlobExchangeTest.aReArmThatReadBeforeADeliverysPlainWantLeavesItPlainAndItsDeadline` and its mirror
+`aReArmWhoseReadsBeganAfterThePlainWantStillReDerivesIt`, `aCarriedWantAfterADeliveryClearsItsStampSoTheReArmAppliesOverIt`,
+`neitherANeighboursAskNorACarriedWantStampsAgainstTheReArm`,
+`RestoreLabTest.aReArmThatReadTheUnopenedFrameNeverReHoldsTheResealsPlainWant` (the seam
+`MeshManager.beforeRewantApplies`), and `RequestHoldTest.aRequestGroupNamingAThirdMemberIsCarriedForOthersUntilItIsAccepted`.

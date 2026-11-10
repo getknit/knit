@@ -139,6 +139,27 @@ class RequestHoldTest {
         assertEquals(null, RequestHold.conversationOf(CarriedAttachment("h", null, 0L, stranger, pair2, member = true), me))
     }
 
+    /**
+     * #282's B3, shared by `InboundPipeline.onCarriedFrame` and the re-arm's fast-only hold (#291): a request group naming
+     * a third member is carried for that member; accepted, it is ours; a DM, a two-member group or our own frame is never
+     * somebody else's carrier copy by this rule.
+     */
+    @Test
+    fun aRequestGroupNamingAThirdMemberIsCarriedForOthersUntilItIsAccepted() =
+        runTest {
+            val third = CarriedAttachment("h", null, 0L, stranger, group, member = true, roster = setOf(me, stranger, contact))
+            assertTrue(RequestHold.carriedForOthers(third, me, snapshot()))
+            assertFalse("accepted", RequestHold.carriedForOthers(third, me, snapshot(accepted = setOf(group))))
+            assertFalse(
+                "a contact posted in it",
+                RequestHold.carriedForOthers(third, me, snapshot(accepted = setOf(contact), senders = listOf(contact))),
+            )
+            val two = CarriedAttachment("h", null, 0L, stranger, pair2, member = true, roster = setOf(me, stranger))
+            assertFalse("only us and its sender", RequestHold.carriedForOthers(two, me, snapshot()))
+            assertFalse("a DM", RequestHold.carriedForOthers(CarriedAttachment("h", me, 0L, senderId = stranger), me, snapshot()))
+            assertFalse("our own", RequestHold.carriedForOthers(third.copy(senderId = me), me, snapshot()))
+        }
+
     @Test
     fun aCarriedHashIsHeldOnlyWhenEveryFrameNamingItIsAHeldRequestsToUs() {
         val acceptedSender: (String, String) -> Boolean = { _, sender -> sender == contact }

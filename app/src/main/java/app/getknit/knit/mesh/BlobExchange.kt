@@ -93,7 +93,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * `blobreq` says so ([BlobReqContent.fastOnly]) and the holder never hands it to Bluetooth (`CompositeMeshTransport`).
  * With no such neighbour nothing is asked and nothing stamped: the want waits for one, a link-up or the tick stepping it
  * again. The flag is the latest local want's ([want], [wantAll]) — the database re-arm re-derives it every tick, and the
- * user's tap re-wants it plain, which steps at once — never a memo of its own.
+ * user's tap re-wants it plain, which steps at once — never a memo of its own. A re-arm reads before it applies, so it
+ * passes the mark it took before its first read ([rearmMark]), and a want of ours that re-derived the flag from every
+ * row since — a delivery, the tap — keeps its verdict and deadline against that re-arm (#291).
  *
  * A contact's direct Internet link is a fast route too (the maintainer's call, ADR 2026-10.js2p and a5yj): a neighbour
  * only such a link holds ([MeshTransport.fileRidesInternet]) is asked fast-only while this phone's network is unmetered
@@ -224,6 +226,10 @@ class BlobExchange(
                 (size > maxFetching).also { evicted -> if (evicted && eldest.value.ceiling != null) partials.cap(eldest.key, null) }
         }
 
+    // The last stamp a re-deriving want of our own took ([Want.rederivedSeq], #291): a count, not a clock, so a re-arm's
+    // mark ([rearmMark]) orders against it with no tie and whatever clock the caller reads. Guarded by [lock].
+    private var rederivedSeq = 0L
+
     // "hash|nodeId" -> when we last enqueued that blob to that peer. The bound on an unsigned request flood
     // for a blob we hold, and the cover for the composite's fast-link grace, when a serve is held for the
     // NDP and sits on no link yet. A copy already queued or streaming on the link is refused by
@@ -308,8 +314,9 @@ class BlobExchange(
      *
      * A want of our own (no [asker]) has [PULL_BUDGET]. Its deadline is [until] when [untilKnown] — the caller read every
      * row naming the hash, so a null there is "no deadline" — or when [until] names one; otherwise it keeps the one the
-     * re-arm set ([wantAll]). An [asker]'s carries the budget its ask allows ([budgetOf] of [pull]) and the ask's [until]
-     * (#195).
+     * re-arm set ([wantAll]). One with [untilKnown] re-derived its fast-only flag and deadline from every row too, so a
+     * re-arm whose reads began before it ([rearmMark]) leaves both as it set them (#291). An [asker]'s carries the budget
+     * its ask allows ([budgetOf] of [pull]) and the ask's [until] (#195).
      *
      * [ceiling] is set by a want made only for a profile photo (#234): the most bytes its stream may bring. Such a want of
      * a hash refused as a photo this session ([PartialBlobs.isRefused]) makes nothing, and one of a hash with holders
@@ -406,19 +413,33 @@ class BlobExchange(
     ) = forgetServed(hash, peer)
 
     /**
+     * The mark the database re-arm takes before its first read and hands to [wantAll] (#291): the stamp of the last want
+     * of ours that re-derived its fast-only flag and deadline from every row naming its hash ([want] with `untilKnown`). A
+     * want stamped after it read rows the re-arm may not have seen — a delivery that wrote its row between the re-arm's
+     * reads and its apply — so the re-arm leaves its flag and deadline alone.
+     */
+    fun rearmMark(): Long = synchronized(lock) { rederivedSeq }
+
+    /**
      * [want] for each of [wanted] (hash → author), stepped together so their queries share one frame per neighbour;
      * those in [fastOnly] are wanted fast-only, every other plain (ADR 2026-10.js2p), and those in [until] are pulled
      * through only until then ([Want.until], `PullThroughGate`, #195). The database re-arm
      * (`MeshManager.rewantMissingBlobs`) runs at every link-up, ahead of [reask], and is what re-derives both.
+     *
+     * [readMark] is the [rearmMark] the re-arm took before its reads. A want of ours re-derived since keeps its fast-only
+     * flag and deadline: it read rows these were derived without (#291: a DM's row written between the reads was held
+     * fast-only by its unopened frame in custody, with no Wi-Fi Aware holder to ask). Its age and budget are refreshed as
+     * for any want; the next re-arm, whose reads see that row, re-derives both. Null: no mark, nothing kept.
      */
     suspend fun wantAll(
         wanted: List<Pair<String, String?>>,
         fastOnly: Set<String> = emptySet(),
         until: Map<String, Long> = emptyMap(),
+        readMark: Long? = null,
     ) {
         if (wanted.isEmpty()) return
         val linked = linkedNow()
-        stepping { stepEach(wanted, linked, fastOnly, until) }
+        stepping { stepEach(wanted, linked, fastOnly, until, readMark ?: Long.MAX_VALUE) }
     }
 
     /** [wantAll]'s body: each of [wanted] recorded and stepped, the queries left for the caller to flush. */
@@ -427,6 +448,7 @@ class BlobExchange(
         linked: Linked,
         fastOnly: Set<String>,
         until: Map<String, Long>,
+        readMark: Long,
     ) {
         for ((hash, author) in wanted) {
             if (onTheWayOrHeld(hash)) continue
@@ -445,6 +467,7 @@ class BlobExchange(
                                 pullBudgets
                             },
                         rederived = true,
+                        readMark = readMark,
                     ),
             )
             step(hash, linked)
@@ -2695,19 +2718,44 @@ class BlobExchange(
             // Our own want says what we will take now (ADR 2026-10.js2p); a neighbour's ask leaves our fetch as it is.
             // The tap is sticky: a want that read its rows before the tap and lands after it never re-holds the fetch.
             if (approved) want.approved = true
-            if (asker == null) {
-                setFastOnly(want, fastOnly && !want.approved, nowMs)
-                // Our own want is a root, re-derived every time (#195): the whole budget, and the rows' deadline. A caller
-                // that read every row naming the hash — the re-arm, a delivery, the tap ([Reach.rederived]) — sets it, none
-                // included; one that did not (a carried frame, an avatar, a group photo) keeps it unless it names one, or a
-                // DM delivered past its window would echo for hours.
-                want.wantedAt = nowMs // mutated in place, so insertion order (the eviction order) is kept
-                want.budget = PULL_BUDGET
-                if (reach.rederived || reach.until != null) want.until = reach.until
-            }
+            if (asker == null) refreshOwn(want, fastOnly, reach, nowMs)
             if (want.author == null) want.author = author
             if (want.via == null) want.via = via
             asker?.let { noteAsker(want, it, reach, nowMs) }
+        }
+    }
+
+    /**
+     * [recordWant]'s merge of a want of our own into [w], already wanted: it says what we will take now (ADR 2026-10.js2p),
+     * [fastOnly] unless tapped, and it is a root, re-derived every time (#195): the whole budget, and the rows' deadline.
+     * Under [lock].
+     */
+    private fun refreshOwn(
+        w: Want,
+        fastOnly: Boolean,
+        reach: Reach,
+        nowMs: Long,
+    ) {
+        // A re-arm whose reads began before a delivery or the tap re-derived this want leaves the flag and the deadline as
+        // that want set them (#291): it read rows the re-arm may never have seen.
+        val keeps = reach.readMark != null && w.rederivedSeq > reach.readMark
+        if (!keeps) {
+            setFastOnly(w, fastOnly && !w.approved, nowMs)
+        } else if (w.fastOnly != (fastOnly && !w.approved)) {
+            log("blob keep ${w.hash8}…: a want since the re-arm's reads keeps it ${if (w.fastOnly) "fast-only" else "plain"}")
+        }
+        // A caller that read every row naming the hash — the re-arm, a delivery, the tap ([Reach.rederived]) — sets the
+        // deadline, none included; one that did not (a carried frame, an avatar, a group photo) keeps it unless it names
+        // one, or a DM delivered past its window would echo for hours.
+        w.wantedAt = nowMs // mutated in place, so insertion order (the eviction order) is kept
+        w.budget = PULL_BUDGET
+        if (!keeps && (reach.rederived || reach.until != null)) w.until = reach.until
+        // Only a stamped verdict is ever kept: a later own want that did not read every row (a carried frame, an avatar)
+        // set the flag last, so it clears the stamp and the re-arm's verdict applies over it, as the amendment says (#291).
+        // The re-arm leaves the stamp alone: the next one's mark is past it anyway.
+        when {
+            reach.stamps -> w.rederivedSeq = ++rederivedSeq
+            reach.readMark == null -> w.rederivedSeq = 0L
         }
     }
 
@@ -2729,6 +2777,8 @@ class BlobExchange(
             it.until = reach.until
             it.ceiling = ceiling
             it.ownWant = asker == null
+            // A delivery's or the tap's want: a re-arm whose reads began before it keeps its verdict (#291).
+            if (asker == null && reach.stamps) it.rederivedSeq = ++rederivedSeq
             // A plain want of ours is linkable from its record; a fast-only one waits for its first step's read
             // of the network ([noteLinkable]). A fresh want is plain, so this lifts nothing.
             setFastOnly(it, fastOnly, nowMs)
@@ -3069,6 +3119,11 @@ class BlobExchange(
         // asks made it, and our first want's ceiling is the one it takes ([mergeCeiling]).
         var ownWant = false
 
+        // The stamp of the last want of ours that re-derived the fast-only flag and deadline from every row outside the
+        // re-arm (a delivery, the tap), 0 for none or once a later own want that read no rows set the flag: a re-arm whose
+        // mark is below it keeps both ([refreshOwn], #291).
+        var rederivedSeq = 0L
+
         // Neighbours that linked in this cycle and have not been pulled since: pulled once at once ([pullNewcomers]).
         val freshLinks = HashSet<String>()
 
@@ -3306,7 +3361,13 @@ class BlobExchange(
         // one that does it moves only the fast-only flag (a face is plain) — its budget, deadline and age stay the want's
         // own, so the profile's own pull runs its course and then lapses with the fetch TTL like any want.
         val faceRearm: Boolean = false,
-    )
+        // The database re-arm's ([wantAll]): the [rearmMark] its reads began at. A want re-derived after it keeps its
+        // fast-only flag and deadline (#291). Null for every other want; a [rederived] one of those takes a fresh stamp.
+        val readMark: Long? = null,
+    ) {
+        /** Whether this want re-derives the fast-only flag and deadline from every row, outside the re-arm: stamped. */
+        val stamps: Boolean get() = rederived && readMark == null
+    }
 
     /** A query on its way: to whom, when, and which hashes it named. */
     private class SentQuery(

@@ -178,8 +178,10 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   declares over the limit; a post declaring nothing is never held. The re-arm reads custody before the rows, since
   custody's read loads that size only while no row names the hash, and holds what it cannot judge between its reads
   (`CarriedAttachment.rowCovered`, a frame trimmed between custody's two reads) until the next re-arm (js2p's
-  2026-10-19 amendment).
-  Lab: `LargeAttachmentLabTest`, `LinkDownloadLimitLabTest` (over a direct link), `AttachmentLabTest`'s two #132 cases; unit: `BlobExchangeTest`'s fast-only cases,
+  2026-10-19 amendment). It takes a read mark first (`BlobExchange.rearmMark`, passed to `wantAll`'s `readMark`): a want
+  of ours re-derived from every row since (a delivery, the tap: `Want.rederivedSeq`) keeps its flag and `until` against
+  that pass, and a carried frame's want is not protected (js2p's 2026-11-10 amendment, #291).
+  Lab: `LargeAttachmentLabTest`, `LinkDownloadLimitLabTest` (over a direct link), `AttachmentLabTest`'s two #132 cases, `RestoreLabTest`'s re-arm mark case (#291); unit: `BlobExchangeTest`'s fast-only cases,
   `CompositeMeshTransportTest`, `BluetoothFetchGateTest`.
 - **Before touching `RequestHold` / `AcceptanceSnapshot`, `AttachmentFetchRow.conversationId`,
   `CarriedAttachment.departed`, what `InboundPipeline.deliveredFetch` / `foldFetch` / `onCarriedFrame` /
@@ -187,7 +189,7 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `carriedVerdict`) want for a conversation nobody accepted, `MeshManager.requestHeld` / `echoGate` (`EchoGate`,
   `ECHO_GATE_MEMO`), `BlobRepository.requestOnlyBlobs` / `dropRequestOnly` (`keptFromSweeps`, `pinnedOutsideMessages`,
   `namedOnlyByRequests`), `BlobDao.requestBlobCandidates` / `countFetchingRows`, `MeshManager.dropRequestOnlyBlobs`,
-  `InboundPipeline.carriedForOthersInRequest`, the carrier budget's `carrierBytes`, `ForwardStore.carriedAttachmentsNaming`, `ScopeBlobs.accepted` / `held`, the
+  `RequestHold.carriedForOthers` (also read by `MeshManager.unopenedForUs`, #291), the carrier budget's `carrierBytes`, `ForwardStore.carriedAttachmentsNaming`, `ScopeBlobs.accepted` / `held`, the
   acceptance collector on `acceptedConversations` and the verified ids, or `MeshMetrics.Files.requestHolds` / `acceptanceRearms` / `carrierPullsOverBudget`, or `MeshLab.befriend`:** READ ADR
   2026-11.qu98 (with 009, 018, 2026-10.js2p, 2026-10.g24x). The hold covers only our own pull of a request's bytes for
   ourselves: an attachment is held while every row naming it is not ours, not tapped and in a conversation

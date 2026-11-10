@@ -157,8 +157,9 @@ interface ForwardDao {
      * Because the CASE reads `messages`, the re-arm reads this *before* the rows (`MeshManager.rewantMissingBlobsLocked`,
      * #141's finding 6): read after, a row written between the two reads was judged by neither and the post wanted plain.
      * That order closes every insert before the last read; a room post inserted after it is judged by the same declared
-     * size; a sealed frame's row after it is held until the next re-arm. A row deleted between the reads leaves a
-     * `rowCovered` post with no size, which the re-arm holds until the next one loads it.
+     * size; a sealed frame's row after it keeps its delivery's verdict, which the re-arm's read mark protects from the
+     * re-arm's stale hold (#291). A row deleted between the reads leaves a `rowCovered` post with no size, which the
+     * re-arm holds until the next one loads it.
      */
     @Query(
         "SELECT attachmentHash AS hash, recipientId, receivedAt, senderId, groupId, sentAt, " +
