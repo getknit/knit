@@ -570,6 +570,8 @@ both:   Connected ─path lost→ Reconnecting ─ICE ok→ Connected
 | **C-3.3-5** | Until a `RINGING` (or an `ANSWER`) comes back, a caller looks every 2 s at whether anything it can see reaches the peer, and says so on the call screen while nothing does. It withdraws with `CANCEL rsn=no_route` once nothing has for 15 s. |
 | **C-3.3-6** | A caller that something reaches (C-3.3-5) but that has no `RINGING` 8 s in says it is waiting for the peer's phone. With no `RINGING` at its ring-out, the call ends `no_route`, since nothing shows the peer's phone rang. |
 | **C-3.3-7** | A callee whose person switched off incoming calls of the offer's kind (live or walkie, the Calls screen's two switches) answers `DECLINE rsn=timeout` at once, which the caller shows as "No answer", and does not alert, prefetch TURN or record a missed call, busy or not. A glare offer (C-3.5-1) is still taken. ADR 2026-10.fcrd. |
+| **C-3.3-8** | A callee with no network at all (no default network, validated or not) that cannot join the offer's Wi-Fi Direct group (no usable `dw`, or §3.10's join refused: Wi-Fi off, no permission, the radio held) answers a live `OFFER` `DECLINE rsn=no_route` at once, after the busy and glare answers, and does not alert, prefetch TURN or record a missed call. A walkie `OFFER` is never declined for it. ADR 2026-11.mfbq. |
+| **C-3.3-9** | A caller whose live call was placed without a kind (C-3.11-3), toward a peer carrying `CAP_WALKIE`, that gets `DECLINE rsn=no_route` before an `ANSWER` re-places it at once as a walkie session (§3.11) under a new `id`, sending no `CANCEL` and writing no record for the live attempt. It does so once per call. A call placed live on purpose ends `no_route`. ADR 2026-11.mfbq. |
 
 > **What counts as reaching the peer (C-3.3-5).** Any one of these, read off state already in memory (`call/CallReach`,
 > `CallReachRule`), never on the inbound path:
@@ -814,7 +816,8 @@ its media (`REASON_MEDIA`).
 - **C-3.11-3** A call placed without a kind (`CallKind.AUTO`) is a walkie session only when the peer carries
   `CAP_WALKIE` and no live path looks possible. "Possible" means a validated Internet route here, or a Wi-Fi Direct
   leg (§3.10) this phone would offer a neighbour now, by C-3.10-1's own test (`CallDirect.canOffer`), so a phone
-  whose Wi-Fi is switched off places a walkie. Anything else is a live call.
+  whose Wi-Fi is switched off places a walkie. Anything else is a live call. The callee's radios are its own to
+  judge: one with no live path refuses the live offer (C-3.3-8), and the caller then places a walkie (C-3.3-9).
 
   The profile offers each kind as its own button beside Message, Call and Mesh call, toward a peer carrying that
   kind's bit (`CAP_CALL`, `CAP_WALKIE`); with both offered they share a row under Message.

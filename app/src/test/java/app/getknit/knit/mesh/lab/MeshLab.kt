@@ -16,6 +16,7 @@ import app.getknit.knit.badge.BadgeKeys
 import app.getknit.knit.badge.PeerBadges
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallSignals
+import app.getknit.knit.call.CallWalkie
 import app.getknit.knit.call.TurnServer
 import app.getknit.knit.call.TurnSource
 import app.getknit.knit.clampToUtf16
@@ -1738,11 +1739,20 @@ class LabNode internal constructor(
 
     /**
      * The call layer (docs/VOICE_CALLS.md §3), rebuilt by boot() as the debug build's DI builds it, minus the media
-     * ([LabCallMedia]), TURN, the Wi-Fi Direct leg and the walkie. Its tombstones go to the settings file, so a
-     * restart() carries them as a process death does (C-3.4-3).
+     * ([LabCallMedia]), TURN and the Wi-Fi Direct leg. The walkie runs only where [walkieCalls] says so. Its tombstones
+     * go to the settings file, so a restart() carries them as a process death does (C-3.4-3).
      */
     lateinit var calls: CallManager
         private set
+
+    /**
+     * Whether this node's call layer runs the walkie (§3.11), every peer taken to run one too and a live call to look
+     * possible (C-3.11-3), and whether it holds any network a live call could gather on (C-3.3-8). Off and on by
+     * default, so a scenario that sets neither calls as before. Read at each call, so a scenario sets them after boot.
+     */
+    @Volatile var walkieCalls = false
+
+    @Volatile var networked = true
 
     /**
      * Every line this boot's call layer logged: `call <id> from <peer>: …` is its decision oracle. Each boot starts a
@@ -1980,7 +1990,16 @@ class LabNode internal constructor(
                 selfId = { nodeId },
                 clock = now,
                 log = { callLines += it },
+                walkie =
+                    object : CallWalkie {
+                        override val enabled: Boolean get() = walkieCalls
+
+                        override suspend fun capable(peerId: String) = true
+
+                        override suspend fun liveLikely(peerId: String) = true
+                    },
                 tombs = CallTombStore(dataStore),
+                networked = { networked },
             )
         manager.start()
         // The session's collectors subscribe asynchronously; a frame sent before that is emitted into nobody.

@@ -138,6 +138,49 @@ class CallLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
         }
 
+    /**
+     * GitHub #63 (ADR 2026-11.mfbq): Bob's phone has no network and no Wi-Fi Direct, so Alice's call from the chat, which
+     * looked live to her, is refused `no_route` without ringing (C-3.3-8), and her phone places a mesh call instead
+     * (C-3.3-9). It rings, connects and ends as any mesh call, and the phases leave nothing in either thread.
+     */
+    @Test
+    fun aCallToANeighbourWithNoNetworkBecomesAMeshCall() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            trade(alice, bob, carriers = emptyList())
+            alice.walkieCalls = true
+            bob.walkieCalls = true
+            bob.networked = false
+
+            assertNull(alice.calls.start(bob.nodeId))
+            // Bob never alerts for the live offer: the first call he rings for is the walkie.
+            bob.awaitPhase(CallPhase.Alerting)
+            val ringing = checkNotNull(bob.calls.state.value)
+            assertTrue("bob rang for the live offer", ringing.walkie)
+            val declined = bob.callLog.single { it.endsWith("no network and no group to join; declined") }
+            val liveId = declined.removePrefix("call ").substringBefore(" ")
+            lab.await(1) {
+                val state = alice.calls.state.value
+                if (state?.id == ringing.id && state.phase == CallPhase.Ringing) 1 else 0
+            }
+            val rePlaced = "call $liveId: the peer has no live path"
+            assertTrue("alice's live call was not the one re-placed: ${alice.callLog}", alice.callLog.any { it.startsWith(rePlaced) })
+
+            assertTrue(bob.calls.answer(ringing.id))
+            alice.awaitPhase(CallPhase.Connected)
+            bob.awaitPhase(CallPhase.Connected)
+            alice.calls.hangUp()
+            bob.awaitPhase(CallPhase.Ended)
+            assertTrue("bob's mesh call was ended by alice's END", checkNotNull(bob.calls.state.value).endedByPeer)
+
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+            assertEquals(2, alice.decrypted(alice.dmWith(bob)).size)
+            assertEquals(2, bob.decrypted(bob.dmWith(alice)).size)
+        }
+
     /** Every distinct DM-form chat frame this node holds parked for [to], in send order. */
     private fun LabNode.dmsHeldFor(to: LabNode): List<WireEnvelope> =
         transport
