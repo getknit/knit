@@ -1,0 +1,8 @@
+Calls that connect with Wi-Fi off, and a call screen that shows whole messages
+
+A call from a chat to a nearby contact now goes through as a mesh call when either phone has Wi-Fi switched
+off and no internet. Before, it rang on their phone and never connected. If only their Wi-Fi is off, their
+phone needs 2.11.1 too.
+
+Also fixed: on shorter phones, the call screen could cut off the last message from someone with a long name.
+The picture above it now shrinks when it needs the room, so the message shows in full.

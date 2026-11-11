@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-08T22:26:45Z
+  updated: 2026-11-11T07:27:26Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -47,15 +47,20 @@ document:
   battery and radio time. It now leaves a link it holds alone.
 - Knit now waits until you accept a message request before it downloads the request's pictures and files.
   They arrive after you tap Accept, so a stranger's attachments no longer take up space on your phone first.
+- A picture or file sent to you over Bluetooth could wait up to a minute before it started downloading, for
+  example right after you restored Knit from a backup. It now starts as soon as its message arrives.
+
+## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
+
+> Calls that connect with Wi-Fi off, and a call screen that shows whole messages
+
+### Fixed
+
 - On shorter phones, the call screen could cut off the last message from someone with a long name. The
   picture above it now shrinks when it has to, so the message shows in full.
 - A call from a chat to a nearby contact now becomes a mesh call when either phone has its Wi-Fi switched off
   and no internet. It used to ring on their phone and never connect. When only their Wi-Fi is off, their phone
   needs this version too.
-- With your Wi-Fi switched off and no internet, the call button in a chat now starts a mesh call to a contact
-  nearby. It used to start a regular call that rang on their phone but could never connect.
-- A picture or file sent to you over Bluetooth could wait up to a minute before it started downloading, for
-  example right after you restored Knit from a backup. It now starts as soon as its message arrives.
 
 ## [2.11.0](https://github.com/getknit/knit/releases/tag/v2.11.0) — 2026-11-08T22:26:45Z
 
