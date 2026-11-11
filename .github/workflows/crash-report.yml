@@ -369,14 +369,18 @@ jobs:
               }
             }
 
-            if (report.truncated) {
+            // An attached crash file is the whole report, so it cures the cut as well as a paste does. Diagnostics
+            // shares it as `knit-crash-<version>-<stamp>.txt` and GitHub's attachment link carries that name.
+            if (report.truncated && !/knit-crash-/i.test(body)) {
               lines.push(
                 '### The trace is truncated',
                 '',
                 `@${issue.user.login} — the form carries an excerpt because a full trace does not fit in a link.`,
                 'The complete report was copied to your clipboard at the same time; pasting it into **Logs /',
                 'screenshots** would fill in the frames below the cut. If the clipboard has moved on since, the',
-                'report is still on your phone under **Diagnostics → Last crash**.',
+                'report is still on your phone: open **\u22EE menu \u203A Diagnostics \u203A Last crash**, tap **Share as a',
+                'file**, then edit this issue and drag the file into **Logs / screenshots**. Issues are public, so',
+                'read it over first.',
                 '',
               );
             }

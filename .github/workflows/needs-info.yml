@@ -145,6 +145,11 @@ jobs:
             const DEVICE = /\b(pixel|nexus|galaxy|sm-[a-z0-9]{3,}|moto|motorola|oneplus|nothing phone|fairphone|xperia|sony|xiaomi|redmi|poco|oppo|vivo|realme|honor|huawei|nokia|zenfone|asus|rog phone|shiftphone|teracube|blackview|umidigi|doogee|zte|lenovo|surface duo|hisense|tcl|infinix|tecno|itel|aquos|emulator|avd)\b/i;
             const VERSION_SHAPE = /\bv?\d+\.\d+(?:\.\d+)?(?:[-+][0-9a-z.]+)?\b/i;
             const SHA_SHAPE = /\b[0-9a-f]{7,40}\b/;
+            // A file shared from Diagnostics keeps the name Knit gave it (`CrashReports` / `FieldLogExport.fileName`:
+            // `knit-crash-<version>-<stamp>.txt`, `knit-fieldlog-<version>-<stamp>.log`), and GitHub writes an
+            // attachment as a link carrying that name, so the name survives a rename to `.txt` and usually a zip.
+            const CRASH_FILE = /knit-crash-/i;
+            const FIELDLOG_FILE = /knit-fieldlog-/i;
 
             const MIN_WORDS = 5;      // distinct words before a form answer counts as an answer
             const MIN_FOLLOWUP = 15;  // distinct prose words in the reporter's replies that cure the prose floors
@@ -163,12 +168,15 @@ jobs:
 
               // Hard evidence can arrive in a follow-up comment instead of a form edit.
               const evidence = (field) => field + '\n' + supplement;
+              // An attached file can land in any field, so its name is looked for across all of them.
+              const attached = [...sections.values(), supplement].join('\n');
               const prose = distinctWords(stripMachineText(supplement)) >= MIN_FOLLOWUP;
 
               const findings = [];
               const tn = titleNorm(title);
 
-              if (CRASHY.test([title, summary, actual].join('\n')) && !TRACE.test(evidence(logs))) {
+              const crashy = CRASHY.test([title, summary, actual].join('\n'));
+              if (crashy && !TRACE.test(evidence(logs)) && !CRASH_FILE.test(attached)) {
                 findings.push({
                   id: 'stack-trace',
                   heading: 'The crash stack trace',
@@ -176,14 +184,21 @@ jobs:
                     'This reads as a crash, but no trace was attached. On a crash the trace usually *is* the',
                     'diagnosis — without it there is nothing to look at but the symptom.',
                     '',
-                    'Reproduce the crash, then:',
+                    'Knit keeps one on your phone. Open Knit, then the chat list\u2019s **\u22EE menu \u203A Diagnostics**: if a',
+                    '**Last crash** row shows under **Reports and logs**, open it and tap **Share as a file**, then',
+                    'attach that file in a reply here (or tap **Copy** and paste it). Knit removed ids, names and message',
+                    'text from it first, but issues are public, so read it over before you post it. A freeze that',
+                    'Android closed is recorded there too, once Knit is opened again.',
+                    '',
+                    'No **Last crash** row? Some crashes cannot be captured from inside the app. With a computer and adb,',
+                    'reproduce the crash, then:',
                     '',
                     '```',
                     'adb logcat -b crash -d',
                     '```',
                     '',
-                    'Paste the block starting at `FATAL EXCEPTION`. No adb available? Any log-reader app that can',
-                    'export the crash buffer works, and a photo of the "Knit keeps stopping" dialog is better than nothing.',
+                    'Paste the block starting at `FATAL EXCEPTION`. Failing all that, a photo of the "Knit keeps',
+                    'stopping" dialog is better than nothing.',
                   ],
                 });
               }
@@ -270,7 +285,26 @@ jobs:
               return findings;
             }
 
-            function renderAsk(author, findings) {
+            // Optional, never a finding: it neither holds the label nor counts toward the ask, and it only rides
+            // along on an ask that is being posted anyway, so a complete report still hears nothing from this bot.
+            // Not for a crash, where the trace is the thing to ask for; not once a field log is attached.
+            function fieldLogTip({ title, sections, supplement }) {
+              const get = (k) => sections.get(k) || '';
+              const attached = [...sections.values(), supplement].join('\n');
+              if (CRASHY.test([title, get('summary'), get('what happened')].join('\n'))) return null;
+              if (FIELDLOG_FILE.test(attached)) return null;
+              return [
+                'Not required, but for phones not finding each other, links dropping, or messages, files or calls',
+                'arriving late or not at all, it is often the quickest way to an answer. In Knit, open the chat',
+                'list\u2019s **\u22EE menu \u203A Diagnostics \u203A Field log**, turn on **Keep a field log**, make the problem happen',
+                'again, then tap **Share as a file** and drag the file into a reply here. One from each phone involved',
+                'helps most. It holds no names, messages, contacts, phone ids or locations, but issues are public, so',
+                'read it over first. Older versions save it as `.jsonl`, which GitHub won\u2019t take: rename it to end',
+                'in `.txt`, or zip it.',
+              ];
+            }
+
+            function renderAsk(author, findings, tip) {
               const lines = [
                 MARKER,
                 `Thanks for the report, @${author}.`,
@@ -282,6 +316,7 @@ jobs:
               findings.forEach((f, i) => {
                 lines.push(`### ${i + 1}. ${f.heading}`, '', ...f.body, '');
               });
+              if (tip) lines.push('### Also worth attaching: a field log', '', ...tip, '');
               lines.push(
                 '---',
                 '',
@@ -391,7 +426,7 @@ jobs:
             const findings = evaluate({ title: issue.title || '', sections, supplement, releases });
 
             if (findings.length) {
-              const ask = renderAsk(issue.user.login, findings);
+              const ask = renderAsk(issue.user.login, findings, fieldLogTip({ title: issue.title || '', sections, supplement }));
               if (!existing) {
                 await github.rest.issues.createComment({ owner, repo, issue_number, body: ask });
               } else if (existing.body.trim() !== ask.trim()) {

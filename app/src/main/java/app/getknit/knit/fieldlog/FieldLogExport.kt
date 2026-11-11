@@ -65,10 +65,12 @@ class FieldLogExport(
         }
 
     /**
-     * The name the file goes out under, e.g. `knit-fieldlog-2.10.2-20261102-1432.jsonl`: [stage]'s file, and the
-     * attachment's name when Diagnostics sends the log into a chat as bytes (#287).
+     * The name the file goes out under, e.g. `knit-fieldlog-2.10.2-20261102-1432.log`: [stage]'s file, and the
+     * attachment's name when Diagnostics sends the log into a chat as bytes (#287). `.log`, not `.jsonl`, because
+     * GitHub refuses a `.jsonl` attachment and the bug form asks for this file (ADR 2026-10.a239's 2026-11-11
+     * amendment); the `knit-fieldlog-` stem is what `.github/workflows/needs-info.yml` looks for.
      */
-    fun fileName(): String = shareFileName(currentCrashEnvironment().versionName, clock(), stem = "knit-fieldlog", extension = "jsonl")
+    fun fileName(): String = shareFileName(currentCrashEnvironment().versionName, clock(), stem = "knit-fieldlog", extension = "log")
 
     /** ASCII `key: value` facts — the crash report's own header lines, so a reader sees the same device. */
     private fun device(): List<String> {

@@ -40,6 +40,8 @@ document:
   list, contacts, group members, the chat header and their profile.
 - A green dot on someone's photo now shows when your phone's radios can see them, in the chat list and the
   chat header too. In contacts and group members the dot moved from the end of the row onto the photo.
+- The field log now saves as a `.log` file, so you can attach it to a GitHub bug report without renaming it
+  first.
 
 ### Fixed
 

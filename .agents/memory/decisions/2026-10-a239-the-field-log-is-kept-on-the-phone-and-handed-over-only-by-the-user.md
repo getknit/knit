@@ -180,3 +180,18 @@ the doc says so.
 **What it costs.** A few lines a day, mostly the bucket moving between ACTIVE and WORKING_SET as the app is opened and
 left. Three reads per tick, every 5 minutes. Tests: `FieldEventSchemaTest`'s battery line, `BatteryEdgesTest`, and
 `scripts/test_fieldlog.py`'s `CheckTest`.
+
+## Amendment 2026-11-11 — the shared file is a `.log`
+
+**What was observed.** The bug form and its bots now ask reporters to attach the field log to a GitHub issue, and
+GitHub refuses a `.jsonl` attachment (its list takes `.txt`, `.log`, `.json` and `.zip`, not `.jsonl`). A reporter on a
+phone had to rename or zip the file before GitHub would take it, and many would stop there. The file was never strict
+JSON Lines anyway: its header is `key: value` lines.
+
+**What changed.** `FieldLogExport.fileName` names the shared file `knit-fieldlog-<version>-<stamp>.log`, for the share
+sheet and for Send to a chat alike. The content, the `text/plain` type and the `knit-fieldlog-` stem are unchanged;
+the stem is what `.github/workflows/needs-info.yml` recognises in an issue. The journal's own segments on the phone
+(`current.jsonl`, `prev.jsonl`) keep their names, since nothing outside the app sees them.
+
+**What it costs.** Logs from older builds still arrive as `.jsonl`, so the issue texts keep the rename-or-zip line for
+them, and `scripts/fieldlog.py` reads either name.

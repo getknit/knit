@@ -5,7 +5,7 @@
     python3 scripts/fieldlog.py summary LOG [LOG …] [--json]
     python3 scripts/fieldlog.py pair LOG LOG [LOG …]
 
-LOG is the `.jsonl` a user shared from Diagnostics → Field log. `check` reads every line against the schema
+LOG is the file a user shared from Diagnostics → Field log (`.log`; builds before 2026-11-11 named it `.jsonl`). `check` reads every line against the schema
 and exits non-zero on anything a phone should never have written (an unknown kind, a field outside its kind's
 set, a string where a number belongs, a node-id-shaped token). `summary` merges any number of logs, from any
 number of phones, and prints the tables the open radio questions ask for:

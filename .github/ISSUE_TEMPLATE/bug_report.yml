@@ -16,6 +16,24 @@ body:
           triaged, answered, or fixed on any timeline (see `CONTRIBUTING.md`).
         - **Do not report security vulnerabilities here.** See `SECURITY.md` for private disclosure —
           public disclosure before a fix exists puts users at risk.
+
+        ### Attach what Knit recorded
+
+        Knit keeps two records on your phone that make a report far easier to act on. Find both in the
+        chat list's **⋮ menu › Diagnostics**, under **Reports and logs**, and attach them in **Logs /
+        screenshots** below:
+
+        - **Last crash** — if Knit closed unexpectedly, or froze until Android closed it, open Knit again
+          and look for this row. Tap **Report on GitHub** to open this form already filled in, or **Share
+          as a file** and attach that file. Knit removed ids, names and message text before showing it to
+          you. No row means nothing could be captured; describe what you were doing instead.
+        - **Field log** — for phones not finding each other, links dropping, or messages, files or calls
+          arriving late or not at all. It records only while it's on, so turn on **Keep a field log**,
+          make the problem happen again, then tap **Share as a file**. One from each phone involved helps
+          most. It holds no names, messages, contacts, phone ids or locations. Older versions save it as
+          `.jsonl`, which GitHub won't take: rename it to end in `.txt`, or zip it.
+
+        GitHub issues are public: anyone can read what you attach, so read it over first.
   - type: textarea
     id: summary
     attributes:
@@ -86,8 +104,13 @@ body:
     attributes:
       label: Logs / screenshots
       description: |
-        `adb logcat` excerpts, screenshots, or a mesh-state dump if relevant. Debug builds expose a
-        headless bridge — e.g.
+        Drag files in here, or paste text. Most useful, from **⋮ menu › Diagnostics**: the **Last crash**
+        report (**Share as a file**), and a **Field log** from each phone involved, recorded while the
+        problem happened (**Share as a file**; rename an older version's `.jsonl` to `.txt`, which GitHub
+        accepts). Screenshots help too. Anyone can read what you attach here, so read it over first.
+
+        With a computer: `adb logcat` excerpts, or a mesh-state dump. Debug builds expose a headless
+        bridge — e.g.
         `adb shell am broadcast -a app.getknit.knit.debug.STATE -p app.getknit.knit`
         dumps self id, transport health, and reachable peers (see `.agents/context/debug-bridge.md`).
   - type: checkboxes

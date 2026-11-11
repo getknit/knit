@@ -29,8 +29,20 @@ needs-repro:
       Real mesh behavior usually needs two or more physical devices to show up at all, so a
       single-device report is often not reproducible by definition.
 
-      A `adb logcat` excerpt around the failure helps most. On a debug build, the headless bridge
-      dumps self id, transport health, and reachable peers:
+      What helps most is what Knit recorded on the phone. Both are in the chat list's
+      **⋮ menu › Diagnostics**, under **Reports and logs**:
+
+      - **Last crash**, if Knit closed or froze: open it, tap **Share as a file**, and attach the file
+        here. Knit removed ids, names and message text from it first.
+      - **Field log**, for anything else: turn on **Keep a field log**, make the problem happen again,
+        then tap **Share as a file**. One from each phone involved helps most. It holds no names,
+        messages, contacts, phone ids or locations. Older versions save it as `.jsonl`, which GitHub
+        won't take: rename it to end in `.txt`, or zip it.
+
+      Issues are public: anyone can read what you attach, so read it over first.
+
+      With a computer, an `adb logcat` excerpt around the failure helps too. On a debug build, the
+      headless bridge dumps self id, transport health, and reachable peers:
 
       ```
       adb shell am broadcast -a app.getknit.knit.debug.STATE -p app.getknit.knit
