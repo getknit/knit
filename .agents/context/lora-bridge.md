@@ -25,6 +25,7 @@ blob pulls never touch the ~1 kbps link — `send`/`sendFile`/`sendDigest` are n
 is `fastSend`. Only `fastFanout` rides it as a mesh frame, gated by `LoraFramePolicy`; our DMs ride as compact
 unicasts through `LoraDirectSink.offer` (ADR 2026-10.x9fa, "DMs" below), which deleted ADR 039's long-range fan-out
 seam (`MeshTransport.longRangeFanout`):
+<!-- doc-lint: allow longRangeFanout — the seam ADR 2026-10.x9fa deleted, named as history -->
 
 - **Whose (ADR 2026-10.rp3s).** The board is an endpoint: a frame rides only when `LoraFramePolicy.airs` says this
   phone's user wrote it. The composite re-calls the fan-out on every relay — plane-agnostic on purpose — and the admit

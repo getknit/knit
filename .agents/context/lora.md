@@ -31,13 +31,13 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   for the router's ten minutes, and a frame dropped unsent hands its slot back (#239). Inbound is unchanged: a heard
   frame still floods into the pocket over BLE/NAN. Tag `0x10` (the bridge's
   OFFER) is burned; it is dropped before decode under `loraRetiredCtl`, never as `UNKNOWN_TAG`.
-- **When touching `LoraMeshTransport`'s shape — `fastFanout` / `longRangeFanout`, `neighbors`, `shortRange`,
-  `LoraFramePolicy` (`isFresh`, `FRESH_MS`), `shouldLongRangeFanout`, `SettingsStore.loraDmEnabled`, or
+- **When touching `LoraMeshTransport`'s shape — `fastFanout`, `neighbors`, `shortRange`,
+  `LoraFramePolicy` (`isFresh`, `FRESH_MS`), `SettingsStore.loraDmEnabled`, or
   `BuildConfig.LORA_PLANE`:** READ ADR 038, ADR 2026-09.6gtm, ADR 2026-10.rp3s and ADR 2026-10.x9fa, then the "Shape"
   and "DMs" sections of `lora-bridge.md`. The plane is a fast-plane-only composite child (`neighbors` always empty,
   `send`/`sendFile`/`sendDigest`/`fastSend` no-ops), carrying its own user's one-packet room posts on `fastFanout` and
-  its DMs as compact unicasts through `LoraDirectSink.offer` — never a DM-form mesh frame (`longRangeFanout` is a no-op
-  until the seam is deleted), group-form chat, `typing`, `blobreq`, `keyreq`, a `profile` or a room reaction. The room
+  its DMs as compact unicasts through `LoraDirectSink.offer` — never a DM-form mesh frame (ADR 2026-10.x9fa deleted
+  the long-range fan-out seam), group-form chat, `typing`, `blobreq`, `keyreq`, a `profile` or a room reaction. The room
   post is not a wire change: `sig`/`signed` pass byte-exact. The flag is on everywhere since 2.5.0, `loraEnabled` still
   defaults false; `loraDmEnabled` gates our compact sends only, never what our board already acked.
   **Before touching a compact DM — `LoraDirectSink.offer`, `LoraDirectCrypto` / `LoraDirectOpen`, `LoraDirectInbox`,
@@ -97,7 +97,7 @@ Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-review
   `PUBLIC_CEILING`, `price`, `onBoard`, `dedicatedUnlocksDuty`), `LoraPacePolicy` (`FrameClass`, `enqueue`,
   `take`, `admitBest`, `onQueueStatus`, `onNak`), `OutboundFrame.supersedes` / `admissionSizes` / `price` /
   `shedRank`, `LoraAirtime.UNSIGNED`, `PacketPrice`, `SigningFacts`, `AirSlot`, `PacketKind`, `SignaturePolicy`,
-  `AirtimeSnapshot`, or `MeshTransport.FanoutHint`:** READ ADR 2026-10.ug4a, then
+  or `AirtimeSnapshot`:** READ ADR 2026-10.ug4a, then
   ADR 044 (its allowance and 2026-10-04 amendment; the rest is superseded), ADR 054 (the window), ADR 2026-09.xdm2,
   ADR 067, ADR 2026-10.rp3s and ADR 2026-10.x9fa, then "Pacing" in `lora-bridge.md`. One allowance =
   `min(region duty, 10 % politeness) × 0.5` of a 15-minute window (45 s at LongFast); the duty cycle is law (the
