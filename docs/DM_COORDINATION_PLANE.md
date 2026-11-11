@@ -39,6 +39,7 @@ same sealed `enc` payload. `fastSend`'s own contract says so: "the Wi-Fi Aware t
 fragments ≤ 3 messages toward capable peers, **which is what lets a sealed receipt ride**". If the envelope
 shape fitted the channel for a receipt, it fits for a message body.
 
+<!-- doc-lint: allow shouldLongRangeFanout — ADR 039's predicate, deleted by ADR 2026-10.x9fa -->
 **LoRa already does exactly this proposal.** `shouldLongRangeFanout` admits precisely the form
 `shouldFastFanout` excludes, for precisely this reason — a plane with no data path, where fan-out is the
 only path a frame can take (ADR 039). It is wired at *both* sites, origination and inbound re-fan. The NAN
@@ -70,6 +71,7 @@ internal fun shouldFastSend(env: RelayEnvelope): Boolean =
     env.type == FrameType.CHAT && env.recipientId != null && env.group == null
 ```
 
+<!-- doc-lint: allow shouldLongRangeFanout — ADR 039's predicate, deleted by ADR 2026-10.x9fa -->
 This is deliberately identical to `shouldLongRangeFanout`'s body. Keep them as two named predicates rather
 than one shared helper: they answer different questions about different planes and will drift apart the
 first time one plane's budget changes.
@@ -122,6 +124,7 @@ Everything else is already in place and needs no edit:
 
 ## Risks, and what to watch
 
+<!-- doc-lint: allow FanoutHint — ADR 054's shed hint, deleted by ADR 2026-10.x9fa -->
 **Channel pressure.** `maxQueuedTransmitMessages` is 8 and the plane is already carrying cues, ticks,
 receipts and broadcast chat. A chatty DM thread now competes with them. Mitigation: the size gate sheds
 anything large for free, and a `FanoutHint`-style shed order already exists for the scarce-medium case

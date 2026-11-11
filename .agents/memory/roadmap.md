@@ -315,6 +315,7 @@ doc). **Don't start a deferred item without explicit direction.**
   MVP shipped: `mesh/lora/` (pure, JVM-tested end-to-end over a fake board/air) + `mesh/bluetooth/meshtastic/`
   (the GATT client, device-verified only). Carries the Nearby-room broadcast subset (chat, reaction, ✓✓ tick,
   profile) and, since ADR 039 (2026-08-24), **sealed 1:1 DMs** — the whole DM form, receipts/reactions/ctl
+  <!-- doc-lint: allow longRangeFanout — ADR 039's seam, deleted by ADR 2026-10.x9fa, named as history -->
   included — via `MeshTransport.longRangeFanout`, with class-aware queue shedding, a 15-min freshness gate,
   a bounded re-offer of carried DMs to a peer first heard, and a default-on `loraDmEnabled` switch (the
   metadata-exposure control). Group chat/meta, typing and files stay refused. **Still owed:** the
