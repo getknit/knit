@@ -181,6 +181,18 @@ enum class DropReason {
     LORA_DIRECT_RATCHET_MISSED,
 
     /**
+     * A frame addressed to us (a DM to us, a post in a group we are in, a room post) whose id names a message row
+     * another sender holds (`InboundPipeline`'s receive gates and persists). That row is not this frame's: nothing is
+     * written, shown, pulled or acknowledged for it, and no `lora_direct_seen` mark is recorded; a DM's ratchet step and
+     * its inline acks still commit. Never reset-triggering: the frame is refused for what it names, not for anything
+     * its session holds, so nothing here reaches `onRatchetFailure` or its evidence. Counted on each arrival, re-serves
+     * included; never for a re-serve of a row its own sender holds, nor for a reset header or a ctl that opens, which
+     * write no row and take the ordinary decrypt path. A frame that fails to open is counted here whatever it would have
+     * been, a ctl among them, since its plaintext is unknown.
+     */
+    ROW_HELD_BY_OTHER_SENDER,
+
+    /**
      * A direct link's OFFER that opened but whose stamp is more than `Protocol.MAX_FUTURE_SKEW_MS` from this phone's
      * clock (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-2-4). Its offerer sees only a missing answer, so a count climbing
      * here is how a pair stuck dark by a drifted clock shows apart from a pair with no UDP path.

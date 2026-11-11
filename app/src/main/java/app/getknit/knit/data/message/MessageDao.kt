@@ -132,6 +132,14 @@ interface MessageDao {
     @Query("SELECT recipientId FROM messages WHERE id = :id")
     suspend fun recipientOf(id: String): String?
 
+    /**
+     * The [MessageEntity.senderId] of the stored message [id], or null when it isn't held. The receive gates read it
+     * rather than [exists]: a frame id is chosen by whoever sends the frame, so "do we hold this id" is answered by
+     * which sender holds it.
+     */
+    @Query("SELECT senderId FROM messages WHERE id = :id")
+    suspend fun senderOf(id: String): String?
+
     /** The conversation the stored message [id] belongs to, or null when it isn't held. */
     @Query("SELECT conversationId FROM messages WHERE id = :id")
     suspend fun conversationOf(id: String): String?

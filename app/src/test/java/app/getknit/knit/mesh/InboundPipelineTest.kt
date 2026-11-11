@@ -36,6 +36,7 @@ import app.getknit.knit.data.message.videoInfo
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.presencekey.PresenceKeyRepository
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
+import app.getknit.knit.data.ratchet.LoraDirectSeenEntity
 import app.getknit.knit.data.ratchet.LoraDirectSeenRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
@@ -526,6 +527,7 @@ class InboundPipelineTest {
             coEvery { peers.verifiedNodeIds() } answers { peerMap.values.filter { peer -> peer.verified }.map { peer -> peer.nodeId } }
             coEvery { peers.labelIndex() } answers { PeerLabels.index(peerMap.values.map { peer -> peer.nodeId to peer.name }) }
             coEvery { messages.exists(any()) } answers { msgMap.containsKey(firstArg<String>()) }
+            coEvery { messages.senderOf(any()) } answers { msgMap[firstArg<String>()]?.senderId }
             coEvery { messages.save(any()) } answers { msgMap[firstArg<MessageEntity>().id] = firstArg() }
             coEvery { messages.saveIfAbsent(any()) } answers {
                 msgMap.putIfAbsent(firstArg<MessageEntity>().id, firstArg()) == null
@@ -7973,12 +7975,12 @@ class InboundPipelineTest {
             val id = FrameId.new()
             val signed = author.dm(id, "hello", v3 = true)
             var interleaved = false
-            coEvery { rig.messages.exists(id) } coAnswers {
+            coEvery { rig.messages.senderOf(id) } coAnswers {
                 if (!interleaved) {
                     interleaved = true
                     rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "hello")))
                 }
-                rig.msgMap.containsKey(id)
+                rig.msgMap[id]?.senderId
             }
 
             rig.deliver(alice, signed)
@@ -8173,6 +8175,398 @@ class InboundPipelineTest {
             assertNull(rig.msgMap[id])
             assertNull(rig.seen(id))
             assertTrue("no ✓✓ to a blocked sender", rig.dmAcks.pending(alice.nodeId).isEmpty())
+        }
+
+    // --- a frame id another sender holds (the receive gates ask which sender holds the id) ---
+
+    /** A message row [sender] holds under [id], addressed to us, as its own delivery would have written it. */
+    private fun Rig.rowFrom(
+        sender: Party,
+        id: String,
+        body: String = "held",
+        conversationId: String = sender.nodeId,
+        recipientId: String? = self.nodeId,
+    ) {
+        msgMap[id] =
+            MessageEntity(
+                id = id,
+                senderId = sender.nodeId,
+                recipientId = recipientId,
+                conversationId = conversationId,
+                body = body,
+                sentAt = 1L,
+                received = false,
+            )
+    }
+
+    /** Answers the [nth] (1-based) read of [id]'s sender as "none held", landing [sender]'s row just after it. */
+    private fun Rig.landRowAfterRead(
+        id: String,
+        nth: Int,
+        sender: Party,
+        conversationId: String = sender.nodeId,
+    ) {
+        var reads = 0
+        coEvery { messages.senderOf(id) } answers {
+            reads++
+            if (reads == nth) {
+                rowFrom(sender, id, conversationId = conversationId)
+                null
+            } else {
+                msgMap[id]?.senderId
+            }
+        }
+    }
+
+    /** No ✓✓ of any form toward [author]: no receipt frame, no sealed receipt DM, no held, coalesced or ledgered one. */
+    private fun Rig.assertNoAckTo(
+        author: Party,
+        id: String,
+    ) {
+        assertTrue("no cleartext receipt", originated.none { it.type == FrameType.RECEIPT })
+        assertTrue("no sealed receipt", originated.none { it.type == FrameType.CHAT && it.recipientId == author.nodeId })
+        assertTrue("nothing held for a later seal", heldTicks.isEmpty())
+        assertTrue("nothing waiting for the board's tick", dmAcks.pending(author.nodeId).isEmpty())
+        assertTrue("no compact ✓✓", loraReceipts.isEmpty())
+        assertNull("nothing in the re-ack ledger", dmReAcks.entry(author.nodeId, id))
+    }
+
+    @Test
+    fun aSignedDmUnderAnIdAnotherSenderHoldsKeepsThatRowAndStillOpensItsSession() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(carol)
+            val id = FrameId.new()
+            rig.rowFrom(carol, id, body = "carol's")
+            val author = V2Author(alice, rig)
+            val first = author.dm(id, "hello", v3 = true)
+
+            rig.deliver(alice, first)
+
+            assertEquals("the row stays carol's", "carol's", rig.msgMap.getValue(id).body)
+            assertEquals(carol.nodeId, rig.msgMap.getValue(id).senderId)
+            rig.assertNoAckTo(alice, id)
+            assertNull("no mark", rig.seen(id))
+            assertEquals(1L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+            // The ratchet step still ran: alice's init was processed and the key consumed, and nothing was reset evidence.
+            val session = checkNotNull(rig.ratchetStore.session(alice.nodeId)) { "the init was never processed" }
+            assertTrue(session.confirmed && !session.weAreInitiator)
+            assertEquals(0L, rig.drops(DropReason.LORA_DIRECT_RATCHET_MISSED))
+            assertEquals(
+                0L,
+                rig.drops(DropReason.RATCHET_NO_SESSION) + rig.drops(DropReason.RATCHET_EPOCH_GONE) +
+                    rig.drops(DropReason.RATCHET_AEAD_FAIL) + rig.drops(DropReason.RATCHET_DUPLICATE),
+            )
+
+            // A re-serve of the same copy: refused again and never reset evidence, and the session goes on.
+            rig.deliver(alice, first)
+            val next = FrameId.new()
+            rig.deliver(alice, author.dm(next, "next", v3 = true))
+            assertEquals("carol's", rig.msgMap.getValue(id).body)
+            assertEquals("next", rig.msgMap[next]?.body)
+            assertNull(rig.dmReAcks.entry(alice.nodeId, id))
+            assertEquals("counted on each arrival", 2L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+            assertEquals(
+                "the re-serve's spent key is this gate's count, not a compact copy's",
+                0L,
+                rig.drops(DropReason.LORA_DIRECT_RATCHET_MISSED),
+            )
+            assertEquals(
+                0L,
+                rig.drops(DropReason.RATCHET_NO_SESSION) + rig.drops(DropReason.RATCHET_EPOCH_GONE) +
+                    rig.drops(DropReason.RATCHET_AEAD_FAIL) + rig.drops(DropReason.RATCHET_DUPLICATE),
+            )
+        }
+
+    /** A control frame writes no row, so a row another sender holds under its id does not decide it: a seed is adopted. */
+    @Test
+    fun aSeedUnderAnIdAnotherSenderHoldsIsStillAdopted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(carol)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            val id = FrameId.new()
+            rig.rowFrom(carol, id, body = "carol's")
+
+            val seed = GroupKeyPayload(group.id, keys = listOf(author.seed()))
+            rig.deliver(alice, V2Author(alice, rig).dm(id, "", ctl = MessageContent.CTL_GROUP_KEY, gk = seed))
+
+            assertEquals("the seed was adopted", 1, rig.groupRatchetStore.recvChains(group.id, alice.nodeId, 1).size)
+            assertEquals("carol's", rig.msgMap.getValue(id).body)
+            assertEquals(0L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+            val next = FrameId.new()
+            rig.deliver(alice, author.groupFrame(group, next, "after the seed"))
+            assertEquals("after the seed", rig.msgMap[next]?.body)
+        }
+
+    /**
+     * Another sender's row with this sender's own mark beside it (a phone upgrading from a build that let the pair form):
+     * the row decides, so neither the compact re-air nor the signed copy is acknowledged, and the mark is left alone.
+     */
+    @Test
+    fun anotherSendersRowDecidesOverThisSendersMarkOnBothDoors() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinLoraPeer(alice)
+            rig.pin(carol)
+            val id = FrameId.new()
+            rig.rowFrom(carol, id, body = "carol's")
+            rig.db.loraDirectSeenDao().insertIfAbsent(LoraDirectSeenEntity(id, alice.nodeId, 1L, ratchetDone = false))
+            val signed = V2Author(alice, rig).dm(id, "hello", v3 = true)
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "hello")))
+            rig.assertNoAckTo(alice, id)
+            assertEquals(0L, rig.metrics.lora().loraTickDeferred)
+
+            rig.deliver(alice, signed)
+            rig.assertNoAckTo(alice, id)
+            assertEquals("carol's", rig.msgMap.getValue(id).body)
+            assertFalse("the mark is not this copy's to touch", checkNotNull(rig.seen(id)).ratchetDone)
+            assertTrue("the step still ran", checkNotNull(rig.ratchetStore.session(alice.nodeId)).confirmed)
+            assertEquals(2L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** The compact door answers only for this sender's row, or with no row this sender's mark; its inline acks still apply. */
+    @Test
+    fun aCompactDmUnderAnotherSendersRowOrMarkDrawsNoAck() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinLoraPeer(alice)
+            rig.pin(carol)
+            val mine = FrameId.new()
+            rig.msgMap[mine] =
+                MessageEntity(
+                    id = mine,
+                    senderId = rig.self.nodeId,
+                    recipientId = alice.nodeId,
+                    conversationId = alice.nodeId,
+                    body = "q",
+                    sentAt = 1L,
+                )
+            val held = FrameId.new()
+            rig.rowFrom(carol, held, body = "carol's")
+            val marked = FrameId.new()
+            rig.db.loraDirectSeenDao().insertIfAbsent(LoraDirectSeenEntity(marked, carol.nodeId, 1L, ratchetDone = true))
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, held, MessageContent(body = "hello", acks = listOf(mine))))
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, marked, MessageContent(body = "hello")))
+
+            rig.assertNoAckTo(alice, held)
+            assertNull(rig.dmReAcks.entry(alice.nodeId, marked))
+            assertEquals("carol's", rig.msgMap.getValue(held).body)
+            assertNull("no mark beside carol's row", rig.seen(held))
+            assertNull("a mark with no row stays a deleted message", rig.msgMap[marked])
+            assertEquals(carol.nodeId, checkNotNull(rig.seen(marked)).peerId)
+            assertEquals("alice's inline ack still applied", setOf(mine to alice.nodeId), rig.receiptMap.keys)
+            assertEquals(2L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** Another sender's row landing between the compact door's gate and its write: no mark, no row, no ✓✓; acks apply. */
+    @Test
+    fun aCompactWriteFindingAnotherSendersRowWritesNoMarkAndStillAppliesItsAcks() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinLoraPeer(alice)
+            rig.pin(carol)
+            val mine = FrameId.new()
+            rig.msgMap[mine] =
+                MessageEntity(
+                    id = mine,
+                    senderId = rig.self.nodeId,
+                    recipientId = alice.nodeId,
+                    conversationId = alice.nodeId,
+                    body = "q",
+                    sentAt = 1L,
+                )
+            val id = FrameId.new()
+            // The gate's read and deliverChat's both see no row; carol's lands before the write.
+            rig.landRowAfterRead(id, nth = 2, sender = carol)
+
+            rig.pipeline.deliverLoraDirect(openedFrom(alice, id, MessageContent(body = "hello", acks = listOf(mine))))
+
+            assertEquals(carol.nodeId, rig.msgMap.getValue(id).senderId)
+            assertNull("no mark", rig.seen(id))
+            assertEquals(setOf(mine to alice.nodeId), rig.receiptMap.keys)
+            rig.assertNoAckTo(alice, id)
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals(1L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** Another sender's row landing inside the DM commit: it is not replaced, and the ratchet step still commits. */
+    @Test
+    fun aDmCommitFindingAnotherSendersRowKeepsItAndCommitsTheStep() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(carol)
+            val id = FrameId.new()
+            // The gate's read and deliverChat's both see no row; carol's lands before the commit.
+            rig.landRowAfterRead(id, nth = 2, sender = carol)
+
+            rig.deliver(alice, V2Author(alice, rig).dm(id, "hello", v3 = true))
+
+            assertEquals("not replaced", carol.nodeId, rig.msgMap.getValue(id).senderId)
+            assertEquals("held", rig.msgMap.getValue(id).body)
+            assertNull("no mark", rig.seen(id))
+            rig.assertNoAckTo(alice, id)
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertTrue("the step committed", checkNotNull(rig.ratchetStore.session(alice.nodeId)).confirmed)
+            assertEquals(1L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** The group commit's twin: another sender's row landing inside it is kept, and the chain step still commits. */
+    @Test
+    fun aGroupCommitFindingAnotherSendersRowKeepsItAndCommitsTheStep() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(carol)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            rig.deliver(
+                alice,
+                V2Author(
+                    alice,
+                    rig,
+                ).dm(FrameId.new(), "", ctl = MessageContent.CTL_GROUP_KEY, gk = GroupKeyPayload(group.id, keys = listOf(author.seed()))),
+            )
+            val escalated = mutableListOf<Pair<String, List<String>>>()
+            rig.canSealTick = { true }
+            rig.originateTickHook = { authorId, ids ->
+                escalated += authorId to ids
+                true
+            }
+            val id = FrameId.new()
+            rig.landRowAfterRead(id, nth = 2, sender = carol)
+
+            rig.deliver(alice, author.groupFrame(group, id, "hello group"))
+            assertEquals("not replaced", carol.nodeId, rig.msgMap.getValue(id).senderId)
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+
+            rig.deliver(alice, author.groupFrame(group, FrameId.new(), "next"))
+            assertTrue("index 0 committed, not left skipped", rig.groupRatchetStore.skippedKeys(group.id, alice.nodeId, 1, 0).isEmpty())
+            rig.ackNowMs += AckSync.TICK_BATCH_DEBOUNCE_MS + 1
+            rig.ackSync.retryPending()
+            assertFalse("no tick for the refused id", escalated.any { (_, ids) -> id in ids })
+            assertEquals(1L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** A room post under an id another sender holds: no row is written, nothing is pulled, and no tick goes. */
+    @Test
+    fun aRoomPostUnderAnIdAnotherSenderHoldsIsNotWrittenPulledOrTicked() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pin(alice)
+            rig.pinRatchetCapable(carol, RatchetCrypto.generateKeyPair().pub)
+            val quoted = FrameId.new()
+            rig.rowFrom(alice, quoted, body = "original")
+            val id = FrameId.new()
+            rig.rowFrom(alice, id, body = "alice's")
+            val post =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = id,
+                    senderId = carol.nodeId,
+                    sentAt = 5L,
+                    payload =
+                        WireCodec.encodePayload(
+                            ChatContent(
+                                body = "a post",
+                                attachmentHash = "h".repeat(64),
+                                attachmentMime = "image/jpeg",
+                                replyTo = ReplyRef(messageId = quoted, authorId = alice.nodeId, author = "Alice", snippet = "original"),
+                            ),
+                        ),
+                )
+
+            rig.deliver(carol, post)
+
+            assertEquals("alice's", rig.msgMap.getValue(id).body)
+            assertEquals(alice.nodeId, rig.msgMap.getValue(id).senderId)
+            assertFalse("no pull", rig.wants("h".repeat(64)))
+            coVerify(exactly = 0) { rig.messages.saveIfAbsent(any()) }
+            assertEquals(1L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+
+            // The commons door is a room door too: no tick, batched or escalated.
+            val escalated = mutableListOf<Pair<String, List<String>>>()
+            rig.canSealTick = { true }
+            rig.originateTickHook = { authorId, ids ->
+                escalated += authorId to ids
+                true
+            }
+            rig.pipeline.deliverCommonsPost(commonsEnv(carol, id, "a post"), ChatContent(body = "a post"), room)
+            rig.ackNowMs += AckSync.TICK_BATCH_DEBOUNCE_MS + 1
+            rig.ackSync.retryPending()
+            assertTrue(escalated.isEmpty())
+            assertEquals("alice's", rig.msgMap.getValue(id).body)
+            assertEquals(2L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+
+            // A re-serve of a row its own sender holds is no refusal.
+            val fresh = rig.broadcastChat(alice, FrameId.new(), "fresh")
+            rig.deliver(alice, fresh)
+            rig.deliver(alice, fresh)
+            assertEquals(2L, rig.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** A sealed reaction reaches only the conversation it was sealed in; a target not held yet is still kept. */
+    @Test
+    fun aSealedReactionAppliesOnlyInsideTheConversationItWasSealedIn() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(carol)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            val dm = V2Author(alice, rig)
+            rig.deliver(
+                alice,
+                dm.dm(FrameId.new(), "", ctl = MessageContent.CTL_GROUP_KEY, gk = GroupKeyPayload(group.id, keys = listOf(author.seed()))),
+            )
+            val inCarolsDm = FrameId.new()
+            rig.rowFrom(carol, inCarolsDm)
+            val inGroup = FrameId.new()
+            rig.rowFrom(carol, inGroup, conversationId = group.id, recipientId = null)
+            val inAlicesDm = FrameId.new()
+            rig.rowFrom(alice, inAlicesDm)
+            val notHeld = FrameId.new()
+
+            fun groupReaction(target: String) =
+                author.groupFrame(group, FrameId.new(), "", ctl = MessageContent.CTL_REACTION, rp = ReactionPayload(target, "👍"))
+
+            fun dmReaction(target: String) = dm.dm(FrameId.new(), "", ctl = MessageContent.CTL_REACTION, rp = ReactionPayload(target, "👍"))
+
+            rig.deliver(alice, groupReaction(inCarolsDm))
+            rig.deliver(alice, dmReaction(inGroup))
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+
+            rig.deliver(alice, groupReaction(inGroup))
+            rig.deliver(alice, dmReaction(inAlicesDm))
+            rig.deliver(alice, dmReaction(notHeld))
+            coVerify { rig.reactions.apply(match { it.messageId == inGroup }) }
+            coVerify { rig.reactions.apply(match { it.messageId == inAlicesDm }) }
+            coVerify { rig.reactions.apply(match { it.messageId == notHeld }) }
+            coVerify(exactly = 3) { rig.reactions.apply(any()) }
         }
 
     @Test

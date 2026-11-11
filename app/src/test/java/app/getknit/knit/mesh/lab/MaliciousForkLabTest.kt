@@ -5,6 +5,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.CarrierPullPolicy
 import app.getknit.knit.mesh.DropReason
@@ -17,6 +18,7 @@ import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -39,6 +41,7 @@ import kotlin.random.Random
  * case is one frame no build sends, and what the mesh must not do with it. Every case ends in `assertConverged`.
  */
 @RunWith(RobolectricTestRunner::class)
+@Suppress("LargeClass") // one scenario per frame no build sends, and they share the fixtures below
 class MaliciousForkLabTest : StrandedLabBase() {
     @get:Rule
     val chaos = LabChaos.rule()
@@ -54,10 +57,10 @@ class MaliciousForkLabTest : StrandedLabBase() {
     }
 
     /**
-     * The author chooses a frame's id, so a DM's receipt is keyed by author and id together (#300). Bob's DM to Alice is
-     * delivered and ticked; a compact DM from Mallory under the same id then takes its own tick through the coalescer,
-     * and Bob's copy comes back past Alice's seen window. Bob's one receipt still answers it: Mallory's tick moved neither
-     * its era nor its floor, so Alice seals exactly one for each author and nothing more for Bob.
+     * A DM's receipt belongs to its author and id together (#300). Alice holds Bob's DM, ticked; a compact DM from
+     * Mallory under the same id draws no tick (#301), and when Bob's copy is served again Alice's one receipt still
+     * answers it: she seals exactly one, for Bob. This case proves the end-to-end property;
+     * `DmReAckLedgerTest.twoAuthorsOfOneIdShareNeitherAClaimNorAnEntry` guards the author-and-id key.
      */
     @Test
     fun aCompactDmUnderAnotherAuthorsIdLeavesThatAuthorsReceiptAlone() =
@@ -89,22 +92,270 @@ class MaliciousForkLabTest : StrandedLabBase() {
             lab.unlink(bob, mallory)
             val deferred = alice.metrics.lora().loraTickDeferred
             mallory.airCompactDm(alice, dm, "mine")
-            lab.await(1) { (alice.metrics.lora().loraTickDeferred - deferred).toInt() }
+            lab.await(1) { alice.drops(DropReason.ROW_HELD_BY_OTHER_SENDER).toInt() }
             lab.clock.advance(TICK_HOLD_MS + 1)
             alice.heal()
-            assertEquals("mallory's tick is hers alone", before + 2, sealed())
+            assertEquals("mallory's copy is held for no tick", deferred, alice.metrics.lora().loraTickDeferred)
+            assertEquals("and draws none", before + 1, sealed())
 
             lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 1)
             val skipped = alice.metrics.receipts().receiptsReAckSkipped
             bob.reServe(dm)
             lab.await(1) { (alice.metrics.receipts().receiptsReAckSkipped - skipped).toInt() }
             // Counted as seals, not custody rows: alice's sealed profile to bob at the heal is a chat frame too.
-            assertEquals("bob's receipt still answers his copy\n${lab.report(listOf(alice, bob, mallory))}", before + 2, sealed())
+            assertEquals("bob's receipt still answers his copy\n${lab.report(listOf(alice, bob, mallory))}", before + 1, sealed())
 
             lab.link(alice, mallory)
             lab.link(bob, mallory)
             lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory), conversation = thread)
         }
+
+    /**
+     * Bob holds a row from Mallory under the id of Alice's DM when Alice's copy arrives (#301): Alice's DM shows no ✓✓,
+     * and the pair's session stays one. Mallory advertises `CAP_RATCHET`.
+     */
+    @Test
+    fun aDmUnderAnIdAnotherSenderAlreadyHoldsIsNotTickedForItsAuthor() =
+        runBlocking {
+            val air = MeshLab.quickAir()
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val mallory = lab.node("mallory", air = air).apply { setDisplayName("Mallory") }
+            val bob = lab.node("bob", air = air).apply { setDisplayName("Bob") }
+            lab.linkAll(alice to mallory, mallory to bob)
+            lab.awaitAcquainted(alice, mallory, bob)
+            lab.await(1) { mallory.boardReadyFor(bob) }
+            lab.await(1) { bob.boardReadyFor(mallory) }
+            for ((a, b) in listOf(alice to bob, mallory to bob)) {
+                assertTrue(a.sendDm(b, "hello"))
+                lab.await(1) { if (b.session(a)?.confirmed == true) 1 else 0 }
+                assertTrue(b.sendDm(a, "hi"))
+                lab.await(1) { if (a.session(b)?.confirmed == true) 1 else 0 }
+            }
+
+            lab.unlink(mallory, bob)
+            assertTrue(alice.sendDm(bob, "for bob"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            lab.await(1) { if (dm in mallory.custodyIds()) 1 else 0 }
+            mallory.airCompactDm(bob, dm, "mine")
+            lab.await(1) { if (bob.row(dm)?.senderId == mallory.nodeId) 1 else 0 }
+
+            lab.link(mallory, bob)
+            lab.await(1) { (bob.drops(DropReason.ROW_HELD_BY_OTHER_SENDER) + alice.receiptPlanes(dm).size).toInt() }
+            // A later DM's tick is the barrier: Bob answered it after he handled the signed copy, over the same line.
+            assertTrue(alice.sendDm(bob, "later"))
+            val later = alice.ownMessageId(alice.dmWith(bob), "later")
+            lab.await(1) { if (bob.nodeId in alice.receiptPlanes(later)) 1 else 0 }
+            assertFalse(
+                "alice's DM shows bob's ✓✓ though bob never opened it\n${lab.report(listOf(alice, bob, mallory))}",
+                bob.nodeId in alice.receiptPlanes(dm),
+            )
+            assertEquals("the row stays mallory's", mallory.nodeId, bob.row(dm)?.senderId)
+            assertEquals(1L, bob.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+            lab.assertConverged(listOf(alice, bob), atLeast = 0, carriers = listOf(mallory)) { Conversations.NEARBY }
+        }
+
+    /**
+     * A group post under the id of a DM Bob holds (#301): the DM row stays Alice's, and Bob ticks the post for nobody.
+     * Bob's tick for Mallory's next post is the barrier that shows his ticks still reach her.
+     */
+    @Test
+    fun aDmRowStaysItsAuthorsWhenAGroupPostArrivesUnderItsId() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+            lab.linkAll(alice to bob, bob to mallory)
+            lab.awaitAcquainted(alice, bob, mallory)
+            val groupId = mallory.createGroup(bob)
+            assertTrue(mallory.sendGroup(groupId, "founded"))
+            lab.await(1) { bob.rowsIn(groupId).size }
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            assertTrue(alice.sendDm(bob, "for bob"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory), conversation = thread)
+
+            lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 1)
+            val roster = checkNotNull(mallory.group(groupId)).toGroupInfo()
+            // Mallory keeps the post as her client would, so a tick for it would show on her side.
+            mallory.messages.saveIfAbsent(
+                MessageEntity(id = dm, senderId = mallory.nodeId, conversationId = groupId, body = "mine", sentAt = lab.clock.now()),
+            )
+            mallory.floodSigned(
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = dm,
+                    senderId = mallory.nodeId,
+                    sentAt = lab.clock.now(),
+                    group = roster,
+                    payload = WireCodec.encodePayload(ChatContent(enc = LabSybil.sealedNoise(Random(301)))),
+                ),
+            )
+            lab.await(1) {
+                val ticked = if (bob.nodeId in mallory.receiptPlanes(dm)) 1 else 0
+                bob.drops(DropReason.ROW_HELD_BY_OTHER_SENDER).toInt() + ticked
+            }
+            assertTrue(mallory.sendGroup(groupId, "after"))
+            val after = mallory.ownMessageId(groupId, "after")
+            lab.await(1) { if (bob.nodeId in mallory.receiptPlanes(after)) 1 else 0 }
+            assertFalse(
+                "bob ticked the post under alice's id\n${lab.report(listOf(alice, bob, mallory))}",
+                bob.nodeId in mallory.receiptPlanes(dm),
+            )
+            assertEquals(alice.nodeId, bob.row(dm)?.senderId)
+            assertEquals("for bob", bob.row(dm)?.body)
+            // Bob never shows the post, so Mallory's copy of it leaves the group's oracle.
+            mallory.messages.delete(dm)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory), conversation = thread)
+            lab.assertConverged(listOf(mallory, bob), atLeast = 2, carriers = listOf(alice)) { groupId }
+        }
+
+    /**
+     * Another sender holds a row under the id of Alice's seed for her group with Bob when the seed reaches him (#301). A
+     * control frame writes no row, so the row does not decide it: Bob adopts the seed and reads the group's next post
+     * without asking Alice for her key again.
+     */
+    @Test
+    fun aSeedWhoseIdAnotherSenderHoldsIsStillAdopted() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            mallory.transport.hold(bob.transport)
+            val custodied = alice.custodyIdsFrom(alice)
+            val groupId = alice.createGroup(bob)
+            assertTrue(alice.sendGroup(groupId, "post"))
+            val post = alice.ownMessageId(groupId, "post")
+            // The seed leaves on its own path beside the post. Alice custodies it, and no presence key, as she sends it.
+            val ctls = suspend { (alice.custodyIdsFrom(alice) - custodied).filter { id -> alice.row(id) == null } }
+            lab.await(1) { ctls().size }
+            val seeds = ctls()
+            lab.await(seeds.size + 1) { heldIds(mallory, bob).count { id -> id in seeds || id == post } }
+
+            takeIds(mallory, bob, seeds)
+            val adopted = bob.metrics.groups().groupSeedsAdopted
+            serveOnly(mallory, bob, seeds)
+            lab.await(1) { (bob.metrics.groups().groupSeedsAdopted - adopted).toInt() }
+            serveOnly(mallory, bob, listOf(post))
+            lab.await(1) { if (bob.decrypted(groupId).any { (_, body) -> body == "post" }) 1 else 0 }
+            assertEquals("bob never had to ask for the key again", 0L, bob.metrics.groups().groupKeyRequestsSent)
+
+            mallory.transport.release(bob.transport)
+            relink(mallory, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory)) { groupId }
+        }
+
+    /**
+     * Another sender holds a row under the id of every frame of Alice's session reset when they reach Bob (#301). A reset
+     * writes no row, so the row does not decide it: Bob takes the reset, the pair holds one root, and his seeds reach her,
+     * so she reads his group's next post.
+     */
+    @Test
+    fun aResetWhoseIdAnotherSenderHoldsIsStillTaken() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            val groupId = bob.createGroup(alice)
+            assertTrue(bob.sendGroup(groupId, "founded"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory)) { groupId }
+
+            mallory.transport.hold(bob.transport)
+            val before = checkNotNull(bob.session(alice)).rootHash
+            assertNull(alice.resetSession(bob))
+            lab.await(1) { if (heldResetsTo(mallory, alice, bob).isNotEmpty()) 1 else 0 }
+            val reset = heldResetsTo(mallory, alice, bob)
+            takeIds(mallory, bob, reset)
+            serveOnly(mallory, bob, reset)
+            lab.await(1) {
+                val bobs = bob.session(alice)?.rootHash
+                if (bobs != null && bobs != before && bobs == alice.session(bob)?.rootHash) 1 else 0
+            }
+
+            mallory.transport.release(bob.transport)
+            assertTrue(bob.sendGroup(groupId, "after the reset"))
+            relink(mallory, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(mallory)) { n ->
+                if (n === alice) n.dmWith(bob) else n.dmWith(alice)
+            }
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(mallory)) { groupId }
+            assertEquals("a reset is no row's to refuse", 0L, bob.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
+        }
+
+    /** Alice, Mallory and Bob on a line, acquainted, with a confirmed DM session between Alice and Bob. */
+    private suspend fun line(): Triple<LabNode, LabNode, LabNode> {
+        val alice = lab.node("alice").apply { setDisplayName("Alice") }
+        val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        lab.linkAll(alice to mallory, mallory to bob)
+        lab.awaitAcquainted(alice, mallory, bob)
+        assertTrue(alice.sendDm(bob, "hello"))
+        lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
+        assertTrue(bob.sendDm(alice, "hi"))
+        lab.await(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 }
+        return Triple(alice, mallory, bob)
+    }
+
+    /** The ids parked on [from]'s pipe to [to], in send order. */
+    private fun heldIds(
+        from: LabNode,
+        to: LabNode,
+    ): List<String> {
+        val held = from.transport.held(to.transport)
+        return held.mapNotNull { frame -> WireCodec.decodeEnvelope(frame.signed)?.id }
+    }
+
+    /** [author]'s parked DM-form frames to [to] whose ratchet header carries a session reset. */
+    private fun heldResetsTo(
+        from: LabNode,
+        author: LabNode,
+        to: LabNode,
+    ): List<String> {
+        val held = from.transport.held(to.transport).mapNotNull { frame -> WireCodec.decodeEnvelope(frame.signed) }
+        val resets =
+            held.filter { env ->
+                val r = WireCodec.decodePayload<ChatContent>(env.payload)?.enc?.r
+                env.senderId == author.nodeId && env.recipientId == to.nodeId && r != null && r.flags and RatchetHeader.FLAG_RESET != 0
+            }
+        return resets.map { env -> env.id }
+    }
+
+    /**
+     * Has [from] post to the room under each of [ids] and lets only those posts through its parked pipe to [to], which
+     * stays parked, so [to] holds a row from [from] under each while the frames first sent under them stay in [from]'s
+     * custody. Then moves the clock past `SeenSet.DEFAULT_TTL_MS`.
+     */
+    private suspend fun takeIds(
+        from: LabNode,
+        to: LabNode,
+        ids: List<String>,
+    ) {
+        ids.forEachIndexed { i, id -> from.floodRoomPostUnder(id, "post $i") }
+        from.transport.release(to.transport, keepHolding = true) { held ->
+            held.filter { frame -> WireCodec.decodeEnvelope(frame.signed)?.senderId == from.nodeId }
+        }
+        lab.await(ids.size) { ids.count { id -> to.row(id)?.senderId == from.nodeId } }
+        lab.clock.advance(SeenSet.DEFAULT_TTL_MS + 1)
+    }
+
+    /** Re-serves [ids] from [from]'s custody and lets exactly those through its parked pipe to [to], which stays parked. */
+    private suspend fun serveOnly(
+        from: LabNode,
+        to: LabNode,
+        ids: List<String>,
+    ) {
+        ids.forEach { id -> from.reServe(id) }
+        from.transport.release(to.transport, keepHolding = true) { held ->
+            held.filter { frame ->
+                val env = WireCodec.decodeEnvelope(frame.signed)
+                env != null && env.id in ids && env.senderId != from.nodeId
+            }
+        }
+    }
+
+    /** Drops and restores the link between [a] and [b], so the link-up's digest exchange heals what a scenario dropped. */
+    private suspend fun relink(
+        a: LabNode,
+        b: LabNode,
+    ) {
+        lab.unlink(a, b)
+        lab.link(a, b)
+    }
 
     /**
      * A blob request marked for relay, with the whole pull budget: honoured, it would have Bob pull Carol's picture

@@ -116,6 +116,9 @@ class MessageRepository(
 
     suspend fun conversationOf(id: String): String? = dao.conversationOf(id)
 
+    /** The sender of message [id], or null when it isn't held: which sender a receive gate finds under an id. */
+    suspend fun senderOf(id: String): String? = dao.senderOf(id)
+
     /**
      * Flips message [id]'s delivery tick, noting the plane the receipt arrived on ([via]). Idempotent, and
      * the plane is written only by the receipt that first flips the tick — see [MessageDao.markReceived].

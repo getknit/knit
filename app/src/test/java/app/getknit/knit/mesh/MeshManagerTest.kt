@@ -603,6 +603,10 @@ class MeshManagerTest {
             coEvery { messages.save(any()) } answers { saved += firstArg<MessageEntity>() }
             // Nothing is held for the quote check (ADR 2026-10.gpa3): a relaxed mock would answer a made-up row.
             coEvery { messages.find(any()) } returns null
+            // Nor for the receive gates' sender read: a relaxed mock's "" would read as another sender holding every id.
+            coEvery { messages.senderOf(any()) } returns null
+            // And for the sealed reaction's conversation read: "" would place every target in no conversation of ours.
+            coEvery { messages.conversationOf(any()) } returns null
             coEvery { messages.repliesAwaiting(any(), any(), any()) } returns emptyList()
             coEvery { messages.unsettledQuotes(any(), any()) } returns emptyList()
             coEvery { peers.find(any()) } returns null // default: no recipient key is known

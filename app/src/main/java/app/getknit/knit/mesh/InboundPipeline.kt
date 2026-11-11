@@ -1238,7 +1238,9 @@ class InboundPipeline(
      * [DropReason.LORA_DIRECT_REFUSED]:
      * - **a message** (`ctl` null): refused and acked if `lora_direct_seen` holds its id (delivered, or delivered and
      *   deleted — a replay inside the window must not bring a row back) or the row exists (its signed copy came first:
-     *   this re-ack is how a lost compact ✓✓ is retried). Otherwise [deliverChat] — moderation, the quote judge, the
+     *   this re-ack is how a lost compact ✓✓ is retried), from this sender: the row's sender decides when there is a
+     *   row, the mark's when there is none, and another sender's is not this frame's (no row, no mark, no ✓✓; the
+     *   inline acks still apply). Otherwise [deliverChat] — moderation, the quote judge, the
      *   notification, the attachment's pull — with a persist that writes the row, its mark and its inline acks in one
      *   transaction, then the ✓✓ through [acknowledge] on [DeliveryPlane.LoRa] (the coalescer, ADR 054).
      * - **a `CTL_RECEIPT`**: [applySealedReceipt] per id, whose `recipientOf(ackId) == sender` guard is the pair's own.
@@ -1322,8 +1324,18 @@ class InboundPipeline(
         me: String,
         plane: DeliveryPlane,
     ) {
-        if (loraSeen.find(env.id) != null || messages.exists(env.id)) {
+        // Which sender holds this id: the row's when there is one (read first, as `alreadyDelivered` reads it), the
+        // mark's only when there is none (a mark with no row is a deleted message, and stays deleted). Only this
+        // sender's own row or mark draws the re-ack (the compact ✓✓'s retry); another sender's is not this frame's.
+        val holder = messages.senderOf(env.id) ?: loraSeen.find(env.id)?.peerId
+        if (holder == env.senderId) {
             acknowledge(env, me, plane)
+            return
+        }
+        if (holder != null) {
+            // The inline acks are this sender's, authenticated by the pair seal and idempotent: they still apply.
+            metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
+            db.withWriteTransaction { applyInlineAcks(env, plain, plane) }
             return
         }
         deliverChat(
@@ -1335,12 +1347,20 @@ class InboundPipeline(
             plain,
             persist = { row ->
                 db.withWriteTransaction {
-                    if (loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = false)) {
+                    // Asked again inside the write: a signed copy may have committed since the gate. The same rule
+                    // decides; another sender's row or mark takes neither a row nor a mark from this copy.
+                    val inside = messages.senderOf(env.id) ?: loraSeen.find(env.id)?.peerId
+                    val ours = inside == null || inside == env.senderId
+                    if (ours && loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = false)) {
                         messages.saveIfAbsent(row)
-                        applyInlineAcks(env, plain, plane)
                     }
+                    // The pair seal authenticated these whatever the id names, and they are idempotent: applied here,
+                    // since no other copy of this frame will bring them.
+                    applyInlineAcks(env, plain, plane)
+                    ours
                 }
             },
+            persistDecides = true,
         )
     }
 
@@ -1527,6 +1547,9 @@ class InboundPipeline(
      * message (it stays deleted, Q2), or a compact copy's or a sibling signed copy's commit that landed in between, and
      * each takes [loraDirectCopyTaken].
      * Nothing seen leaves the decrypt path, whose persist checks for the compact row inside its commit.
+     *
+     * The row read is of its sender, and a row another sender holds is decided on it before the mark can take the copy
+     * ([heldByOtherSender]): that row is not this frame's, whatever a mark beside it says.
      */
     private suspend fun alreadyDelivered(
         env: RelayEnvelope,
@@ -1534,12 +1557,45 @@ class InboundPipeline(
         me: String,
         plane: DeliveryPlane,
     ): Boolean {
-        val held = messages.exists(env.id)
+        val holder = messages.senderOf(env.id)
+        if (holder != null && holder != env.senderId) return heldByOtherSender(env, enc, me, plane)
+        val held = holder != null
         if (env.group == null && loraDirectCopyTaken(env, enc, me, plane)) return true
         if (!held) return false
         // No mark: a v1 copy, or a row from before the marks. Its receipt's own first seal may have minted our init (a
         // v1 first contact), and a re-seal past the floor rides that init rather than wait on an answer (NB1).
         acknowledge(env, me, plane, reDelivery = true, rideOwnFirstContact = true)
+        return true
+    }
+
+    /**
+     * A signed frame whose id names a row another sender holds ([alreadyDelivered]): true when it was taken here. That row
+     * is not this frame's, so nothing is written, shown or acknowledged for it, and no mark is recorded. A v2/v3 DM to us
+     * still takes its ratchet step ([ratchetOnly] with `heldId`, leaving any mark alone): left unopened, its key would sit
+     * as a skipped key and an X3DH init it carries would go unprocessed. A step that fails is counted here alone and never
+     * reaches [onRatchetFailure]: the refusal is about the id, not the session.
+     *
+     * A control frame never writes a row, so a row does not decide it: a header carrying `FLAG_RESET`, and a frame whose
+     * peeked plaintext is a ctl, answer false and take the ordinary decrypt path, where a reset is opened or held at its
+     * floor (ADR 2026-09.qerd, ADR 2026-11.sfms), a seed is parked or adopted, and a re-serve ends as a duplicate. A reset
+     * is never stepped here: past this gate unopened, it would leave the incidental floor to stand in for it (#85/#86).
+     */
+    private suspend fun heldByOtherSender(
+        env: RelayEnvelope,
+        enc: EncEnvelope,
+        me: String,
+        plane: DeliveryPlane,
+    ): Boolean {
+        if (env.group == null && env.recipientId == me && EncEnvelope.isDmRatchetVersion(enc.v)) {
+            if (enc.r?.let { it.flags and RatchetHeader.FLAG_RESET != 0 } == true) return false
+            val taken =
+                runCatchingUnlessCancelled { ratchetOnly(env, enc, me, plane, heldId = true) }.getOrElse {
+                    Log.w(TAG, "held-id step ${env.id.take(ID_CHARS)}: ${it.javaClass.simpleName}")
+                    true
+                }
+            if (!taken) return false
+        }
+        metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
         return true
     }
 
@@ -1585,6 +1641,10 @@ class InboundPipeline(
      * [onRatchetFailure]: the message itself already landed, and a peer whose session we cannot follow shows it again on
      * the next ordinary frame, where the heuristic's evidence rules apply. [IntroSync.onPeerFrameOpened] still runs after
      * the commit (ADR 2026-09.pz9g): an init answered here is answered once.
+     *
+     * With [heldId] it is [heldByOtherSender]'s step: the mark under this id, if any, is not this frame's to touch, a miss
+     * is that gate's count and not [DropReason.LORA_DIRECT_RATCHET_MISSED] (a compact copy's), and a plaintext that is a
+     * ctl is not stepped at all — false, so the caller sends it down the ordinary decrypt path. True otherwise.
      */
     @Suppress("ReturnCount") // the same gate ladder as decryptAndDeliverV2
     private suspend fun ratchetOnly(
@@ -1592,38 +1652,52 @@ class InboundPipeline(
         enc: EncEnvelope,
         me: String,
         plane: DeliveryPlane,
-    ) {
+        heldId: Boolean = false,
+    ): Boolean {
+        val missed: (Any?) -> Unit = { why -> ratchetOnlyMissed(env.id, heldId, why) }
         val wireHeader = enc.r
         val peerIkPub = pinnedDhKey(env.senderId)
         if (wireHeader == null || !nonceShapeValid(enc) || peerIkPub == null) {
-            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
-            return
+            missed(null)
+            return true
         }
         val nonce = enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }
         val aad = MessageCrypto.header(env.id, env.senderId, env.sentAt, env.recipientId.orEmpty())
         val now = System.currentTimeMillis()
         val peek = ratchet.peekOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt)
         if (peek !is RatchetEngine.OpenOutcome.Opened) {
-            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
-            Log.w(TAG, "lora direct ratchet-only ${env.id}: $peek")
-            return
+            missed(peek)
+            return true
         }
         val plain = decodePlaintext(enc, peek.plaintext)
+        if (heldId && plain?.ctl != null) return false
         val committed =
             db.withWriteTransaction {
                 ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, env.sentAt) {
-                    loraSeen.markRatchetDone(env.id)
+                    if (!heldId) loraSeen.markRatchetDone(env.id)
                     if (plain != null && plain.ctl == null) applyInlineAcks(env, plain, plane)
                 }
             }
-        if (!committed) {
-            // The peek opened and the re-open under the lock did not: the session moved in between. Counted and logged
-            // like any other missed ratchet-only step, never fed to the reset heuristic; it used to pass in silence, the
-            // one exit of this step that left no trace (a KNIT_LAB_BOARDS restore pair ended with no session and none).
-            metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
-            Log.w(TAG, "lora direct ratchet-only ${env.id}: the commit refused what the peek opened")
-        }
+        // The peek opened and the re-open under the lock did not: the session moved in between. Counted and logged
+        // like any other missed ratchet-only step, never fed to the reset heuristic; it used to pass in silence, the
+        // one exit of this step that left no trace (a KNIT_LAB_BOARDS restore pair ended with no session and none).
+        if (!committed) missed("the commit refused what the peek opened")
         if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
+        return true
+    }
+
+    /**
+     * A [ratchetOnly] step that did not run: a compact copy's miss is [DropReason.LORA_DIRECT_RATCHET_MISSED]; a held id's
+     * is [heldByOtherSender]'s own count. Logged with [why] when there is one, the id cut to [ID_CHARS].
+     */
+    private fun ratchetOnlyMissed(
+        frameId: String,
+        heldId: Boolean,
+        why: Any?,
+    ) {
+        if (!heldId) metrics.onDropped(DropReason.LORA_DIRECT_RATCHET_MISSED)
+        val step = if (heldId) "held-id step" else "lora direct ratchet-only"
+        if (why != null) Log.w(TAG, "$step ${frameId.take(ID_CHARS)}: $why")
     }
 
     /** The decrypted [MessageContent] substituted into the cleartext [ChatContent] shell for delivery. */
@@ -1670,15 +1744,11 @@ class InboundPipeline(
     ) {
         val wireHeader = enc.r
         // v2/v3 are DM-only; a group-addressed or header-less envelope is malformed by construction.
-        if (wireHeader == null || env.group != null) {
+        if (wireHeader == null || env.group != null || !nonceShapeValid(enc)) {
             metrics.onDropped(DropReason.RATCHET_BAD_HEADER)
             return
         }
         val v3 = enc.v == EncEnvelope.VERSION_DM_V3
-        if (!nonceShapeValid(enc)) {
-            metrics.onDropped(DropReason.RATCHET_BAD_HEADER)
-            return
-        }
         val nonce = enc.nonce.takeIf { !v3 }
         val peerIkPub = pinnedDhKey(env.senderId)
         if (peerIkPub == null) {
@@ -1731,6 +1801,7 @@ class InboundPipeline(
             plain,
             via = source?.fromNodeId,
             persist = persistWithInlineAcks(env, plain, plane, commit, markSeen = true),
+            persistDecides = true,
         )
     }
 
@@ -1741,6 +1812,11 @@ class InboundPipeline(
      * the ratchet step done, as [ratchetOnly] would have. With [markSeen], a first arrival is marked done at once — every
      * signed DM from a pinned peer, whatever the capability we hold for them says: a stale profile must not let a compact
      * copy their board re-airs later bring back a row deleted since (one row for 48 h each).
+     *
+     * A row another sender holds under this id, found inside the commit (it landed after the gate), is not this frame's:
+     * the ratchet step and the inline acks still commit, and neither the row (`save` is an upsert, and would replace
+     * it) nor a mark is written. The hook then answers false, and [deliverChat] stops short of everything that follows a
+     * persist.
      */
     private fun persistWithInlineAcks(
         env: RelayEnvelope,
@@ -1748,18 +1824,24 @@ class InboundPipeline(
         plane: DeliveryPlane,
         commit: suspend (suspend (RatchetSessions.OpenedUnder) -> Unit) -> Boolean,
         markSeen: Boolean = false,
-    ): suspend (MessageEntity) -> Unit =
+    ): suspend (MessageEntity) -> Boolean =
         { row ->
+            var ours = true
             commit {
-                val compactFirst = loraSeen.find(env.id)?.takeIf { seen -> seen.peerId == env.senderId } != null
-                if (compactFirst) {
-                    loraSeen.markRatchetDone(env.id)
-                } else {
-                    messages.save(row)
-                    if (markSeen) loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = true)
+                val holder = messages.senderOf(env.id)
+                ours = holder == null || holder == env.senderId
+                if (ours) {
+                    val compactFirst = loraSeen.find(env.id)?.takeIf { seen -> seen.peerId == env.senderId } != null
+                    if (compactFirst) {
+                        loraSeen.markRatchetDone(env.id)
+                    } else {
+                        messages.save(row)
+                        if (markSeen) loraSeen.recordIfAbsent(env.id, env.senderId, clock(), ratchetDone = true)
+                    }
                 }
                 applyInlineAcks(env, plain, plane)
             }
+            ours
         }
 
     /**
@@ -2291,6 +2373,12 @@ class InboundPipeline(
             metrics.onDropped(DropReason.REACTION_REFUSED)
             return null
         }
+        // It reaches the posts of the conversation it was sealed in only, as a commons reaction reaches its room's
+        // ([applyCommonsReaction]): a group-form reaction that group's, a DM one the thread with its sender. A target held
+        // in another thread is an id from elsewhere and is dropped; one not held yet is kept, as on every reaction path.
+        val sealedIn = Conversations.idFor(env.senderId, env.recipientId, selfId = env.recipientId.orEmpty(), groupId = env.group?.id)
+        val target = messages.conversationOf(rp.messageId)
+        if (target != null && target != sealedIn) return null
         val row = ReactionEntity(rp.messageId, env.senderId, rp.emoji, clampFuture(env.sentAt))
         return row.takeIf { reactions.apply(it) }
     }
@@ -2504,7 +2592,18 @@ class InboundPipeline(
             plane,
             plain,
             via = via,
-            persist = { row -> commit { messages.save(row) } },
+            // The same refusal as the DM commit's ([persistWithInlineAcks]): `save` is an upsert, so a row another sender
+            // holds under this id, landed since the gate, keeps it; the chain step still commits.
+            persist = { row ->
+                var ours = true
+                commit {
+                    val holder = messages.senderOf(row.id)
+                    ours = holder == null || holder == env.senderId
+                    if (ours) messages.save(row)
+                }
+                ours
+            },
+            persistDecides = true,
         )
     }
 
@@ -3889,17 +3988,18 @@ class InboundPipeline(
      * is held, else its words are screened, since they show in the bubble. After the insert, whichever of a reply and
      * its original commits second settles the quote — this row's own, if its original raced in since the check, and
      * those of the replies that were waiting on it. Read back, so the caller's notification hides a reply whose
-     * quoted words are flagged on this phone.
+     * quoted words are flagged on this phone. Null when [persist] found the id held by another sender: nothing was
+     * written for this frame, so nothing is settled for it.
      */
     private suspend fun persistQuoted(
         built: MessageEntity,
         isNew: Boolean,
         me: String,
         conversationId: String,
-        persist: suspend (MessageEntity) -> Unit,
-    ): MessageEntity {
+        persist: suspend (MessageEntity) -> Boolean,
+    ): MessageEntity? {
         val row = if (isNew && built.senderId != me && built.replyToId != null) quoteOnArrival(built, conversationId) else built
-        persist(row)
+        if (!persist(row)) return null
         return (if (isNew) quotes.settleAfterInsert(row.id, me) else null) ?: row
     }
 
@@ -3951,8 +4051,9 @@ class InboundPipeline(
         // the same signed bytes, so it can never carry anything new, while a blind upsert would rewrite the
         // arrival plane, wipe the voice-note metadata setVoiceMeta added after the insert, and — for one of
         // OUR room posts looping back after the SeenSet lapsed — reset its ✓✓ to ✓. The v2 ratchet path
-        // substitutes a hook that commits the ratchet delta + the row in one transaction (exists-gated first).
-        persist: suspend (MessageEntity) -> Unit = { messages.saveIfAbsent(it) },
+        // substitutes a hook that commits the ratchet delta + the row in one transaction (exists-gated first). Every
+        // hook answers whether the id is this sender's after it ran: false when another sender's row holds it.
+        persist: suspend (MessageEntity) -> Boolean = { saveIfAbsentFromItsSender(it) },
         // Who said it on the radio channel, when this is a heard Meshtastic post — carried straight onto the
         // row. Null on every ordinary delivery, and the discriminator the whole heard shape hangs off.
         origin: MeshPostOrigin? = null,
@@ -3960,14 +4061,25 @@ class InboundPipeline(
         // send one to — its Meshtastic speaker has no Knit identity, and the row's senderId is this phone by
         // convention. Never widen this; a Knit message always earns its ✓✓.
         ack: Boolean = true,
+        // True for a [persist] hook that must run even when another sender holds the id, because it commits what this
+        // frame still owes — the DM ratchet step and its inline acks, or a compact copy's inline acks. Such a hook
+        // refuses the row itself, inside its write; every other door stops at the check before the row is built.
+        persistDecides: Boolean = false,
     ) {
+        // Which sender holds this id. A row another sender holds is not this frame's: nothing is built, written, shown,
+        // pulled or acknowledged for it. A re-serve of a row its own sender holds goes on as before.
+        val holder = messages.senderOf(env.id)
+        if (!persistDecides && heldByAnother(holder, env.senderId)) {
+            metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
+            return
+        }
         // A real message from this sender supersedes any "typing" indicator for them in this thread — clear it
         // now (idempotent, and a no-op if they weren't shown as typing). Runs on re-delivery too, harmlessly.
         typingTracker.onMessageFrom(conversationId, env.senderId)
         // First-ever delivery? Store-and-forward can re-serve a DM we already hold (after the 10-min
         // SeenSet window, or after a restart that empties it); notifying again would replay old messages.
         // The save below leaves an existing row untouched, so only the notification needs gating.
-        val isNew = !messages.exists(env.id)
+        val isNew = holder == null
         val hash = content.attachmentHash
         // A commons post's attachment lives on the room's relay alone (spec §7.4): its key and name ride cleartext
         // inside the room's seal, and the room's own pass fetches its bytes — never the radios.
@@ -4026,7 +4138,12 @@ class InboundPipeline(
                 bodyLang = DeclaredLangs.fromWire(content.lang, content.reads).lang,
                 authorReads = DeclaredLangs.fromWire(content.lang, content.reads).reads,
             ).withReply(admitReply(content.replyTo))
+        // Null when another sender's row landed between the read above and the persist: the same refusal, after it.
         val stored = persistQuoted(built.withVideo(video), isNew, me, conversationId, persist)
+        if (stored == null) {
+            metrics.onDropped(DropReason.ROW_HELD_BY_OTHER_SENDER)
+            return
+        }
         screenPoster(stored, fresh = isNew, own = env.senderId == me)
         val hidden = stored.hiddenByFilter(settings.contentFilteringEnabled.first())
         if (hash != null) pullOrDescribe(hash, attachmentKey, content.attachmentMime, env, via, fetch, radio = !commons)
@@ -4037,25 +4154,55 @@ class InboundPipeline(
         // above and still acks below — only the interruption is withheld (the Message Requests gate). Custody
         // and relay run outside this dispatch path (before it / after it returns), so mesh convergence is
         // untouched; this is a purely local presentation decision.
-        if (isNew) {
-            val (shown, fileName) = notificationSubject(content, sealed, video)
-            if (isAccepted(conversationId, me)) {
-                if (env.senderId != me && content.mentions.mention(me)) {
-                    notifyMention(env, shown, conversationId, fileName, hidden)
-                } else {
-                    notifyIncoming(env, shown, conversationId, fileName, hidden, origin)
-                }
-            } else if (env.senderId != me) {
-                // A stranger's first DM/group: no per-message alert — just refresh the coalesced
-                // "message request received" heads-up. A purely local presentation decision, like the accepted path.
-                notifyPendingRequests(me)
-            }
-        }
+        if (isNew) notifyDelivered(env, content, sealed, video, me, conversationId, hidden, origin)
         // Ack every delivery this far, a concurrent copy that lost the commit race included (the pre-decrypt
         // exists-gate answers the later re-deliveries, bounded per era). A cleartext receipt doubles as the
         // vaccine that purges this DM from any carrier that missed the first ack; a sealed one purges nothing
         // (ADR 018), and sealDmReceipt files it in the re-ack ledger for the exists-gate to read.
         if (ack) acknowledge(env, me, plane)
+    }
+
+    /** Whether [holder], the sender of the row under a frame's id, is somebody other than the frame's [senderId]. */
+    private fun heldByAnother(
+        holder: String?,
+        senderId: String,
+    ): Boolean = holder != null && holder != senderId
+
+    /**
+     * [deliverChat]'s default persist: inserts [row] only if no row holds its id, and answers whether the id is its
+     * sender's afterwards — true for an insert and for the same sender's row (a lost race, still acked), false for
+     * another sender's.
+     */
+    private suspend fun saveIfAbsentFromItsSender(row: MessageEntity): Boolean =
+        messages.saveIfAbsent(row) || !heldByAnother(messages.senderOf(row.id), row.senderId)
+
+    /**
+     * [deliverChat]'s notification for a first delivery: the Mentions channel for a message that @-mentions us, the
+     * per-context channel otherwise, and for a stranger's request only the coalesced "message request received" heads-up.
+     */
+    @Suppress("LongParameterList") // the delivery's facts, threaded once from deliverChat
+    private suspend fun notifyDelivered(
+        env: RelayEnvelope,
+        content: ChatContent,
+        sealed: MessageContent?,
+        video: VideoInfo?,
+        me: String,
+        conversationId: String,
+        hidden: Boolean,
+        origin: MeshPostOrigin?,
+    ) {
+        val (shown, fileName) = notificationSubject(content, sealed, video)
+        if (isAccepted(conversationId, me)) {
+            if (env.senderId != me && content.mentions.mention(me)) {
+                notifyMention(env, shown, conversationId, fileName, hidden)
+            } else {
+                notifyIncoming(env, shown, conversationId, fileName, hidden, origin)
+            }
+        } else if (env.senderId != me) {
+            // A stranger's first DM/group: no per-message alert — just refresh the coalesced
+            // "message request received" heads-up. A purely local presentation decision, like the accepted path.
+            notifyPendingRequests(me)
+        }
     }
 
     /**
