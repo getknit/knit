@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-11-08T22:26:45Z
+  updated: 2026-11-11T07:27:26Z
   coverage: partial
   canonical: https://whatsnew.fyi/product/knit
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.11.1](https://github.com/getknit/knit/releases/tag/v2.11.1) — 2026-11-11T07:27:26Z
+
+> Calls that connect with Wi-Fi off, and a call screen that shows whole messages
 
 ### Fixed
 
