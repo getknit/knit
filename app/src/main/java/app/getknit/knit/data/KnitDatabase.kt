@@ -70,7 +70,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 32
+internal const val KNIT_DB_SCHEMA_VERSION = 33
 
 @Database(
     entities = [
@@ -279,9 +279,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 32
     // v32: two presence-key tables (ADR 2026-11.xp6d, #285): `own_presence_keys`, this phone's previous, current and next
     //     key with each one's audience and the advertiser's mark, and `peer_presence_keys`, the keys contacts handed it;
     //     and `link_owed_resets`, a restore's session resets owed over a link to contacts no flooded reset covers.
-    //     All local only, never in a backup; empty on arrival. And `messages.sealedConfirmed`: on our own DM, whether
-    //     every copy of it was sealed inside a session already confirmed with its recipient. Local only, carried in a
-    //     backup with the row; false on existing rows. Migrated by KnitMigrations.MIGRATION_31_32.
+    //     All local only, never in a backup; empty on arrival. Migrated by KnitMigrations.MIGRATION_31_32.
+    // v33: `messages.sealedConfirmed`: on our own DM, whether every copy of it was sealed inside a session already
+    //     confirmed with its recipient. Local only, carried in a backup with the row; false on existing rows. Its own
+    //     version because lab phones already held v32; fold it into the next release's bump. Migrated by
+    //     KnitMigrations.MIGRATION_32_33.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

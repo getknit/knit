@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 32,
-    "identityHash": "cff8dc3567dca5df62246f184ca47632",
+    "identityHash": "29f70e32e5dd2bef2802abde2117777a",
     "entities": [
       {
         "tableName": "messages",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `senderId` TEXT NOT NULL, `recipientId` TEXT, `conversationId` TEXT NOT NULL, `body` TEXT NOT NULL, `sentAt` INTEGER NOT NULL, `received` INTEGER NOT NULL, `receivedVia` INTEGER NOT NULL, `arrivedAt` INTEGER, `mentions` TEXT NOT NULL, `attachmentHash` TEXT, `attachmentMime` TEXT, `attachmentKey` TEXT, `replyToId` TEXT, `replyToAuthorId` TEXT, `replyToAuthor` TEXT, `replyToSnippet` TEXT, `replyToHasAttachment` INTEGER NOT NULL, `voiceDurationMs` INTEGER, `voicePeaks` TEXT, `attachmentName` TEXT, `attachmentSize` INTEGER, `moderation` INTEGER NOT NULL, `pendingKey` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `originNode` INTEGER, `originName` TEXT, `originChannel` TEXT, `originHops` INTEGER, `originSnrDeci` INTEGER, `originViaMqtt` INTEGER NOT NULL, `originPeerId` TEXT, `originSigned` INTEGER NOT NULL, `attachmentAnimated` INTEGER NOT NULL, `attachmentPlainHash` TEXT, `attachmentSourceHash` TEXT, `replyCheck` INTEGER NOT NULL, `replyToFlagged` INTEGER NOT NULL, `attachmentFetchApproved` INTEGER NOT NULL, `videoDurationMs` INTEGER, `videoWidth` INTEGER, `videoHeight` INTEGER, `videoPoster` TEXT, `videoPosterFlagged` INTEGER NOT NULL, `voiceTranscript` TEXT, `styles` TEXT, `translation` TEXT, `translationFrom` TEXT, `translationTo` TEXT, `translationFlagged` INTEGER NOT NULL, `translationGuessed` INTEGER NOT NULL, `bodyLang` TEXT, `authorReads` TEXT, `draftTranslatedFrom` TEXT, `sealedConfirmed` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `senderId` TEXT NOT NULL, `recipientId` TEXT, `conversationId` TEXT NOT NULL, `body` TEXT NOT NULL, `sentAt` INTEGER NOT NULL, `received` INTEGER NOT NULL, `receivedVia` INTEGER NOT NULL, `arrivedAt` INTEGER, `mentions` TEXT NOT NULL, `attachmentHash` TEXT, `attachmentMime` TEXT, `attachmentKey` TEXT, `replyToId` TEXT, `replyToAuthorId` TEXT, `replyToAuthor` TEXT, `replyToSnippet` TEXT, `replyToHasAttachment` INTEGER NOT NULL, `voiceDurationMs` INTEGER, `voicePeaks` TEXT, `attachmentName` TEXT, `attachmentSize` INTEGER, `moderation` INTEGER NOT NULL, `pendingKey` INTEGER NOT NULL, `kind` INTEGER NOT NULL, `originNode` INTEGER, `originName` TEXT, `originChannel` TEXT, `originHops` INTEGER, `originSnrDeci` INTEGER, `originViaMqtt` INTEGER NOT NULL, `originPeerId` TEXT, `originSigned` INTEGER NOT NULL, `attachmentAnimated` INTEGER NOT NULL, `attachmentPlainHash` TEXT, `attachmentSourceHash` TEXT, `replyCheck` INTEGER NOT NULL, `replyToFlagged` INTEGER NOT NULL, `attachmentFetchApproved` INTEGER NOT NULL, `videoDurationMs` INTEGER, `videoWidth` INTEGER, `videoHeight` INTEGER, `videoPoster` TEXT, `videoPosterFlagged` INTEGER NOT NULL, `voiceTranscript` TEXT, `styles` TEXT, `translation` TEXT, `translationFrom` TEXT, `translationTo` TEXT, `translationFlagged` INTEGER NOT NULL, `translationGuessed` INTEGER NOT NULL, `bodyLang` TEXT, `authorReads` TEXT, `draftTranslatedFrom` TEXT, PRIMARY KEY(`id`))",
         "fields": [
           {
             "fieldPath": "id",
@@ -298,12 +298,6 @@
             "fieldPath": "draftTranslatedFrom",
             "columnName": "draftTranslatedFrom",
             "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "sealedConfirmed",
-            "columnName": "sealedConfirmed",
-            "affinity": "INTEGER",
-            "notNull": true
           }
         ],
         "primaryKey": {
@@ -2208,7 +2202,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'cff8dc3567dca5df62246f184ca47632')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '29f70e32e5dd2bef2802abde2117777a')"
     ]
   }
 }

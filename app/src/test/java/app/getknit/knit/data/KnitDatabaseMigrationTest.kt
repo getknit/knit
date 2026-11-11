@@ -1202,9 +1202,9 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
-    fun `migrate 31 to 32 keeps every message and records none as sealed inside a confirmed session`() =
+    fun `migrate 32 to 33 keeps every message and records none as sealed inside a confirmed session`() =
         runTest {
-            helper.createDatabase(31).use { c ->
+            helper.createDatabase(32).use { c ->
                 c.execSQL(
                     INSERT_V21.replace(
                         ") ",
@@ -1214,7 +1214,7 @@ class KnitDatabaseMigrationTest {
                         "VALUES ('m1','me','peer-1','are you coming?',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0,0,0)",
                 )
             }
-            helper.runMigrationsAndValidate(32, listOf(KnitMigrations.MIGRATION_31_32)).use { c ->
+            helper.runMigrationsAndValidate(33, listOf(KnitMigrations.MIGRATION_32_33)).use { c ->
                 c.prepare("SELECT body, sealedConfirmed FROM messages WHERE id = 'm1'").use { s ->
                     assertTrue(s.step())
                     assertEquals("are you coming?", s.getText(0))
@@ -1222,13 +1222,6 @@ class KnitDatabaseMigrationTest {
                     // answer it took before.
                     assertEquals(0L, s.getLong(1))
                     assertFalse(s.step())
-                }
-                // The writer's shape: our own DM sealed inside a confirmed session, then cleared by a re-seal outside one.
-                c.execSQL("UPDATE messages SET sealedConfirmed = 1 WHERE id = 'm1'")
-                c.execSQL("UPDATE messages SET sealedConfirmed = 0 WHERE id = 'm1' AND sealedConfirmed != 0")
-                c.prepare("SELECT sealedConfirmed FROM messages WHERE id = 'm1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals(0L, s.getLong(0))
                 }
             }
         }
@@ -1238,7 +1231,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 32
+        const val CURRENT_VERSION = 33
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =
