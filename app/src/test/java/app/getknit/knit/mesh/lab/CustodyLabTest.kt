@@ -1,12 +1,18 @@
 package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.DropReason
+import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.ReceiptContent
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -152,6 +158,87 @@ class CustodyLabTest {
             assertTrue(bob.sendDm(alice, "a sealed reply"))
             val thread = { n: LabNode -> n.dmWith(if (n === alice) bob else alice) }
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave), conversation = thread)
+        }
+
+    /**
+     * A first contact whose ✓✓ lands late (#301). Bob knows Alice from a contact card alone when her first DM reaches him,
+     * and his ✓✓ for it is held until his first sealed frame has confirmed Alice's session: her DM still shows it.
+     */
+    @Test
+    fun aCleartextReceiptForAFirstContactLandingAfterTheSessionConfirmedStillTicksIt() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            bob.answerWithCleartextReceipts(alice)
+            bob.transport.hold(alice.transport)
+
+            assertTrue(alice.sendDm(bob, "first words"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "first words")
+            assertFalse("a first contact carries alice's init", alice.row(dm)?.sealedConfirmed == true)
+            lab.await(1) { if (cleartextReceiptsFor(bob, alice, dm).isNotEmpty()) 1 else 0 }
+
+            val receipts = cleartextReceiptsFor(bob, alice, dm)
+            bob.answerWithCleartextReceipts(alice, cleartext = false)
+            assertTrue(bob.sendDm(alice, "a sealed reply"))
+            // lab-lint: allow filtered-release-then-oracle — the receipts it leaves out are sent again below, once the
+            // session has confirmed.
+            bob.transport.release(alice.transport, keepHolding = true) { held -> held.filter { frame -> frame !in receipts } }
+            lab.await(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 }
+            assertTrue("no ✓✓ yet", bob.nodeId !in alice.receiptPlanes(dm))
+
+            receipts.forEach { frame -> bob.transport.send(frame, Peer(alice.nodeId)) }
+            bob.transport.release(alice.transport)
+            lab.awaitReceipt(alice, dm, bob)
+            assertEquals(0L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { n -> n.dmWith(if (n === alice) bob else alice) }
+        }
+
+    /**
+     * An accepted cost of #301, pinned so it stays a lost ✓✓ and never a false one. Bob knows Alice from a contact card
+     * alone (his pin of her carries no `CAP_RATCHET`) when her group's seed reaches him, and his ack of the seed confirms
+     * her session. Her next DM is sealed inside that session, and the receipt Bob sends for it before her profile reaches
+     * him does not tick it. The group's posts and ticks still converge.
+     */
+    @Test
+    fun aDmSentAfterASeedAckFromACardOnlyContactShowsNoTickFromItsReceipt() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            bob.answerWithCleartextReceipts(alice)
+
+            val groupId = alice.createGroup(bob)
+            assertTrue(alice.sendGroup(groupId, "founded"))
+            lab.await(1) { if (bob.decrypted(groupId).any { (_, body) -> body == "founded" }) 1 else 0 }
+            lab.await(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 }
+
+            assertTrue(alice.sendDm(bob, "after the seed"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "after the seed")
+            assertTrue("sealed inside the confirmed session", alice.row(dm)?.sealedConfirmed == true)
+            lab.await(1) {
+                val ticked = if (bob.nodeId in alice.receiptPlanes(dm)) 1 else 0
+                ticked + alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER).toInt()
+            }
+            assertFalse("alice's DM shows a ✓✓", bob.nodeId in alice.receiptPlanes(dm))
+            assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+
+            bob.answerWithCleartextReceipts(alice, cleartext = false)
+            assertTrue(bob.sendGroup(groupId, "a reply"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { groupId }
+        }
+
+    /** The receipt frames parked on [from]'s pipe to [to] that name [id]. */
+    private fun cleartextReceiptsFor(
+        from: LabNode,
+        to: LabNode,
+        id: String,
+    ): List<WireEnvelope> =
+        from.transport.held(to.transport).filter { frame ->
+            val env = WireCodec.decodeEnvelope(frame.signed)
+            env?.type == FrameType.RECEIPT && WireCodec.decodePayload<ReceiptContent>(env.payload)?.ackId == id
         }
 
     /**

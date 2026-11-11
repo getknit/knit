@@ -303,6 +303,15 @@ data class MessageEntity(
      * **local only**: never framed, sealed or carried in custody.
      */
     val draftTranslatedFrom: String? = null,
+    /**
+     * On a DM this phone sent: every copy sealed under this id was sealed inside a ratchet session already confirmed with
+     * its recipient. A peer that answered that session sealed held our `CAP_RATCHET` and keys then, so it answers this DM
+     * sealed too, and a cleartext receipt or reaction naming it is not that peer's answer (`InboundPipeline.handleReceipt`
+     * / `handleReaction`, while the recipient's pin still carries the bit). Written by the seal that sent it, from the
+     * session that seal ran under; a re-seal under the same id can clear it and never sets it. False on every other row,
+     * and on every DM sent before v32. **Local only**.
+     */
+    val sealedConfirmed: Boolean = false,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

@@ -533,6 +533,7 @@ class InboundPipelineTest {
                 msgMap.putIfAbsent(firstArg<MessageEntity>().id, firstArg()) == null
             }
             coEvery { messages.recipientOf(any()) } answers { msgMap[firstArg<String>()]?.recipientId }
+            coEvery { messages.sealedConfirmedOf(any()) } answers { msgMap[firstArg<String>()]?.sealedConfirmed }
             // The quote check's reads and its guarded write (ADR 2026-10.gpa3), over the same fake map.
             coEvery { messages.find(any()) } answers { msgMap[firstArg<String>()] }
             // What BluetoothFetchGate folds a want's verdict over (ADR 2026-10.js2p), over the same fake map.
@@ -8569,6 +8570,188 @@ class InboundPipelineTest {
             coVerify(exactly = 3) { rig.reactions.apply(any()) }
         }
 
+    // --- a DM sealed inside a confirmed session: its recipient answers it sealed (#301) ---
+
+    /**
+     * Our own DM [id] to [to], held as [MessageEntity.sealedConfirmed] says, and its signed copy in our own custody, so a
+     * test can see whether a receipt's carrier half ran.
+     */
+    private suspend fun Rig.ownDm(
+        id: String,
+        to: Party,
+        sealedConfirmed: Boolean,
+    ) {
+        msgMap[id] =
+            MessageEntity(
+                id = id,
+                senderId = self.nodeId,
+                recipientId = to.nodeId,
+                conversationId = to.nodeId,
+                body = "for you",
+                sentAt = 5L,
+                sealedConfirmed = sealedConfirmed,
+            )
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = self.nodeId,
+                sentAt = 5L,
+                recipientId = to.nodeId,
+                payload =
+                    WireCodec.encodePayload(
+                        ChatContent(enc = EncEnvelope(v = 2, nonce = ByteArray(0), ct = ByteArray(1), keys = emptyList())),
+                    ),
+            )
+        val wire = self.sign(env)
+        forwardStore.store(CarriedFrame(env, wire.sig, wire.signed), ForwardStore.ORIGIN_SELF, nowMs)
+        backAuthoredByMessages()
+    }
+
+    @Test
+    fun aCleartextReceiptForADmSealedInsideAConfirmedSessionDoesNotTickItAndStillRunsTheCarrierHalf() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.ownDm("dm-out", alice, sealedConfirmed = true)
+            val receipt = rig.receipt(alice, ackId = "dm-out")
+            val bytes = alice.sign(receipt)
+
+            rig.pipeline.onDeliver(bytes, receipt, alice.nodeId)
+
+            coVerify(exactly = 0) { rig.receipts.record(any(), any(), any(), any()) }
+            assertEquals(1L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            assertFalse("the carrier half ran: our copy is purged", rig.forwardStore.has("dm-out"))
+
+            // The same signed bytes again, once our copy is gone: still no tick, counted again.
+            rig.pipeline.onDeliver(bytes, receipt, party().nodeId)
+            coVerify(exactly = 0) { rig.receipts.record(any(), any(), any(), any()) }
+            assertEquals(2L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+        }
+
+    @Test
+    fun aCleartextReceiptTicksADmSealedOutsideAConfirmedSessionOrToAPeerThatNoLongerSeals() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pin(bob) // a pin without CAP_RATCHET: an older build, or a peer whose ratchet is switched off
+            rig.ownDm("first-contact", alice, sealedConfirmed = false)
+            rig.ownDm("to-bob", bob, sealedConfirmed = true)
+
+            rig.deliver(alice, rig.receipt(alice, ackId = "first-contact"))
+            rig.deliver(bob, rig.receipt(bob, ackId = "to-bob"))
+
+            coVerify(exactly = 1) { rig.receipts.record("first-contact", alice.nodeId, any(), any()) }
+            coVerify(exactly = 1) { rig.receipts.record("to-bob", bob.nodeId, any(), any()) }
+            assertEquals(0L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+        }
+
+    @Test
+    fun aSealedReceiptTicksADmSealedInsideAConfirmedSession() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.ownDm("dm-out", alice, sealedConfirmed = true)
+
+            rig.deliver(alice, V2Author(alice, rig).dm(FrameId.new(), "", ctl = MessageContent.CTL_RECEIPT, ack = "dm-out"))
+
+            coVerify(exactly = 1) { rig.receipts.record("dm-out", alice.nodeId, any(), any()) }
+            assertEquals(0L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+        }
+
+    @Test
+    fun aCleartextReactionFromTheRecipientOfADmSealedInsideAConfirmedSessionIsNotAppliedNorNotified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.ownDm("dm-out", alice, sealedConfirmed = true)
+            coEvery { rig.reactions.apply(any()) } returns true
+
+            rig.deliver(alice, rig.reaction(alice, messageId = "dm-out", emoji = "👍"))
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals(1L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            assertEquals("the recipient is in the thread", 0L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+
+            // Its sealed form is that peer's answer, and lands.
+            rig.deliver(
+                alice,
+                V2Author(alice, rig).dm(FrameId.new(), "", ctl = MessageContent.CTL_REACTION, rp = ReactionPayload("dm-out", "👍")),
+            )
+            coVerify(exactly = 1) { rig.reactions.apply(match { it.messageId == "dm-out" && it.reactorNodeId == alice.nodeId }) }
+        }
+
+    @Test
+    fun aCleartextReactionFromOutsideTheThreadIsNotApplied() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pin(alice)
+            rig.pin(carol)
+            rig.ownDm("dm-out", alice, sealedConfirmed = false)
+            val group = rig.seedRatchetGroup(alice)
+            rig.ownMessage("gmine", conversationId = group.id)
+
+            rig.deliver(carol, rig.reaction(carol, messageId = "dm-out", emoji = "👍"))
+            rig.deliver(carol, rig.reaction(carol, messageId = "gmine", emoji = "👍"))
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            assertEquals("no answer of the recipient's to refuse", 0L, rig.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            assertEquals(2L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+            // A reaction to a message this phone does not hold is kept, and not counted.
+            rig.deliver(carol, rig.reaction(carol, messageId = "not-held", emoji = "👍"))
+            coVerify(exactly = 1) { rig.reactions.apply(match { it.messageId == "not-held" && it.reactorNodeId == carol.nodeId }) }
+            assertEquals(2L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+        }
+
+    @Test
+    fun aRoomReactionAndAGroupMembersReactionStillApply() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pin(alice)
+            rig.pin(carol)
+            rig.ownMessage("room-post", conversationId = Conversations.NEARBY)
+            val group = rig.seedRatchetGroup(alice)
+            rig.ownMessage("gmine", conversationId = group.id)
+
+            rig.deliver(carol, rig.reaction(carol, messageId = "room-post", emoji = "👍"))
+            rig.deliver(alice, rig.reaction(alice, messageId = "gmine", emoji = "🔥"))
+
+            coVerify(exactly = 1) { rig.reactions.apply(match { it.messageId == "room-post" && it.reactorNodeId == carol.nodeId }) }
+            coVerify(exactly = 1) { rig.reactions.apply(match { it.messageId == "gmine" && it.reactorNodeId == alice.nodeId }) }
+            assertEquals(0L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
+        }
+
+    /**
+     * The answer seal's declined arm never falls back to the cleartext receipt: a DM to us off the board from an author we
+     * hold no session with draws a held ✓✓, and no frame of either form.
+     */
+    @Test
+    fun aDeclinedAnswerHoldsTheTickAndSendsNoCleartextReceipt() =
+        runTest {
+            // No coalescer, so the board's ✓✓ is answered at once rather than held for a batch.
+            val rig = Rig(backgroundScope, withDmAcks = false)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "v1-off-board", body = "from the hills"), kind = TransportKind.LoRa)
+
+            assertEquals("from the hills", rig.msgMap["v1-off-board"]?.body)
+            assertTrue("no cleartext receipt", rig.originated.none { it.type == FrameType.RECEIPT })
+            assertTrue("no sealed receipt", rig.originated.none { it.type == FrameType.CHAT && it.recipientId == alice.nodeId })
+            assertEquals(listOf(alice.nodeId to "v1-off-board"), rig.heldTicks)
+        }
+
     @Test
     fun aV2EnvelopeWithoutItsHeaderIsBadHeaderNotACrash() =
         runTest {
@@ -12714,7 +12897,9 @@ class InboundPipelineTest {
             rig.deliver(bob, rig.reaction(bob, messageId = "mine", emoji = "👍"))
             rig.deliver(bob, rig.reaction(bob, messageId = "gmine", emoji = "👍"))
 
-            coVerify(exactly = 2) { rig.reactions.apply(any()) }
+            // Nor is it written (#301): a held target takes a reaction only from someone in its thread.
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+            assertEquals(2L, rig.drops(DropReason.REACTION_OUTSIDE_THREAD))
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
         }
 

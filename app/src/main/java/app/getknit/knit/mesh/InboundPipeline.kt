@@ -818,6 +818,11 @@ class InboundPipeline(
      * message we don't hold makes [MessageRepository.markReceived] a harmless no-op. [plane] is the plane
      * this receipt arrived on, recorded with the tick it flips, alongside the acker [ackerFor] attributes
      * it to (null = tick only, no per-recipient row).
+     *
+     * A DM of ours its recipient answers sealed ([answersSealed]) takes no tick from this cleartext form (#301), counted
+     * as [DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER]; the sealed receipt ([applySealedReceipt]) still ticks it. The
+     * carrier half, [ForwardSync.onAck], runs either way: every carrier applies that rule alike and none of them can read
+     * the row's bit (ADR 006).
      */
     private suspend fun handleReceipt(
         env: RelayEnvelope,
@@ -825,10 +830,37 @@ class InboundPipeline(
     ) {
         val ackId = decodeCounted<ReceiptContent>(env.payload)?.ackId ?: return
         val recipientOfAcked = messages.recipientOf(ackId)
-        if (recipientOfAcked == null || recipientOfAcked == env.senderId) {
+        if (recipientOfAcked != null && recipientOfAcked == env.senderId && answersSealed(ackId, recipientOfAcked)) {
+            metrics.onDropped(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER)
+        } else if (recipientOfAcked == null || recipientOfAcked == env.senderId) {
             receipts.record(ackId, ackerFor(env, ackId, recipientOfAcked), plane, clock())
         }
         forwardSync.onAck(ackId, env.senderId)
+    }
+
+    /**
+     * Whether [recipientId] answers our DM [dmId] only in its sealed form (#301): the DM was sealed, every copy of it, inside
+     * a session [recipientId] had already confirmed ([MessageEntity.sealedConfirmed], which only our own DMs carry), and
+     * our pin of them still carries `CAP_RATCHET`. A peer that sealed to us in that session held our `CAP_RATCHET` and keys
+     * when it did, and seals its receipts and reactions to a peer that advertises the bit
+     * (`sealDmReceipt`, `MeshManager.sealDmReaction`), so its cleartext answer to this DM is not one. The pin read is what
+     * turns the rule off for a peer that stops sealing: one whose ratchet is switched off, or an older build. Read on the
+     * delivery path, outside any transaction, and never the session: the bit was recorded by the seal itself.
+     *
+     * Its honest misses, each a ✓✓ or a reaction lost and never a false one: the peer's own seal failing under the session
+     * (an X25519 refusal, or a new epoch due with no base); a session of ours confirmed by a seed ack (`ackGroupSeed`)
+     * from a peer that knows us from a contact card alone, which seals without reading `CAP_RATCHET` and answers our later
+     * DMs in the cleartext form; and pin lag, a peer that drops `CAP_RATCHET` whose cleartext answer lands before its new
+     * profile. A first contact made from a contact card is no miss: our first DMs to it carry our init, so their bit is
+     * false and its cleartext receipt still ticks them.
+     */
+    private suspend fun answersSealed(
+        dmId: String,
+        recipientId: String,
+    ): Boolean {
+        if (messages.sealedConfirmedOf(dmId) != true) return false
+        val peer = peers.find(recipientId) ?: return false
+        return (peer.capabilities ?: 0L) and Protocol.CAP_RATCHET != 0L
     }
 
     /**
@@ -1084,6 +1116,11 @@ class InboundPipeline(
      * [DropReason.REACTION_REFUSED]; never truncated (that splits a sequence into tofu) and never read as
      * a retraction (garbage would erase a valid reaction). Custody and relay already happened upstream. A write
      * that changed what the reactor shows notifies, after it, when the message is ours ([noticeReaction]).
+     *
+     * A held target takes it only from someone in its thread ([reactsIn], else [DropReason.REACTION_OUTSIDE_THREAD]), and
+     * our own DM whose recipient answers it
+     * sealed ([answersSealed]) never takes this cleartext form (#301), counted as
+     * [DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER]. Neither writes or notifies.
      */
     private suspend fun handleReaction(env: RelayEnvelope) {
         // Blocked sender: drop the reaction (the router still relays it onward to other peers).
@@ -1092,6 +1129,17 @@ class InboundPipeline(
         if (content.emoji != null && !isValidReactionEmoji(content.emoji)) {
             metrics.onDropped(DropReason.REACTION_REFUSED)
             return
+        }
+        val target = messages.find(content.messageId)
+        if (target != null) {
+            if (!reactsIn(env.senderId, target.conversationId)) {
+                metrics.onDropped(DropReason.REACTION_OUTSIDE_THREAD)
+                return
+            }
+            if (target.recipientId == env.senderId && answersSealed(target.id, env.senderId)) {
+                metrics.onDropped(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER)
+                return
+            }
         }
         val row =
             ReactionEntity(
@@ -2379,6 +2427,10 @@ class InboundPipeline(
         val sealedIn = Conversations.idFor(env.senderId, env.recipientId, selfId = env.recipientId.orEmpty(), groupId = env.group?.id)
         val target = messages.conversationOf(rp.messageId)
         if (target != null && target != sealedIn) return null
+        if (target != null && !reactsIn(env.senderId, target)) {
+            metrics.onDropped(DropReason.REACTION_OUTSIDE_THREAD)
+            return null
+        }
         val row = ReactionEntity(rp.messageId, env.senderId, rp.emoji, clampFuture(env.sentAt))
         return row.takeIf { reactions.apply(it) }
     }
@@ -4788,6 +4840,34 @@ class InboundPipeline(
                 )
             }
         notifyWithBody(env, target.conversationId, labels.reaction.format(Locale.getDefault(), emoji, snippet), key = key)
+    }
+
+    /**
+     * Whether a reaction from [reactor] may land on a post held in [conversationId] (#301): ours, the DM's peer, anyone on
+     * the group's founding roster (members and departed: a reaction a member made before leaving, delivered after the
+     * leave, is still theirs), anyone in a room. `ReactionDao.observeForConversation` and `observeForMessage` draw by the
+     * same rule, so an orphan that lands before its target shows only when this would have let it in. Wider than
+     * [readsThread] by the departed alone.
+     */
+    private suspend fun reactsIn(
+        reactor: String,
+        conversationId: String,
+    ): Boolean {
+        if (reactor == identity.nodeId()) return true
+        return when (Conversations.kindFor(conversationId)) {
+            ConversationKind.DM -> {
+                reactor == conversationId
+            }
+
+            ConversationKind.GROUP -> {
+                val group = groups.find(conversationId) ?: return false
+                reactor in GroupMembersStore.decode(group.members) || reactor in GroupMembersStore.decode(group.departed)
+            }
+
+            else -> {
+                true
+            }
+        }
     }
 
     /** Whether [nodeId] reads [conversationId]: the DM's peer, a member on the group's roster, anyone in a room. */

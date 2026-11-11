@@ -2608,6 +2608,55 @@ class MeshManagerTest {
             )
         }
 
+    /**
+     * #301: a DM's row says whether every copy of it was sealed inside a session its recipient had confirmed. The first
+     * contact's DM carries our init, so it is false; one sealed once the peer answered is true. A re-seal under the
+     * confirmed session leaves both as they are, never raising the first, and one under a fresh init of ours (a reset
+     * still unanswered) clears the second before it floods.
+     */
+    @Test
+    fun aDmRecordsWhetherItWasSealedInsideAConfirmedSessionAndAReSealOnlyClearsIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val prekey = RatchetCrypto.generateKeyPair()
+            rig.pinRatchetCapable(rig.bob, prekey.pub)
+            assertTrue(rig.manager.sendChat("first contact", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+            val first = rig.saved.last()
+            assertFalse("the first contact carries our init", first.sealedConfirmed)
+
+            rig.answered(rig.bob)
+            assertTrue(rig.manager.sendChat("answered", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+            val second = rig.saved.last()
+            assertTrue("sealed inside the session bob confirmed", second.sealedConfirmed)
+
+            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(first, second)
+            rig.manager.resealRecentDmsTo(rig.bob.nodeId)
+            advanceUntilIdle()
+            coVerify(exactly = 0) { rig.messages.clearSealedConfirmed(any()) }
+            assertEquals("a re-seal never writes the row whole", 2, rig.saved.size)
+
+            // Our own fresh init, unanswered: what a reset leaves us holding until the peer answers it.
+            val init =
+                RatchetEngine().initiate(
+                    rig.bob.nodeId,
+                    ByteArray(32) {
+                        1
+                    },
+                    rig.bob.bundle.dhPublicKey(),
+                    RatchetEngine.PeerPrekey(1, prekey.pub),
+                    rig.now,
+                )
+            RatchetRepository(rig.db.ratchetDao(), clock = { rig.now }).commitSend(init.session, init.epoch)
+            val sent = rig.transport.sent.size
+            rig.manager.resealRecentDmsTo(rig.bob.nodeId)
+            advanceUntilIdle()
+            assertTrue("re-sealed", rig.transport.sent.size > sent)
+            coVerify(exactly = 1) { rig.messages.clearSealedConfirmed(second.id) }
+            coVerify(exactly = 0) { rig.messages.clearSealedConfirmed(first.id) }
+        }
+
     /** The second pass honours a block that landed after the reset, as the first pass does. */
     @Test
     fun aResetsSecondResealSkipsAPeerBlockedSince() =

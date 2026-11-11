@@ -140,6 +140,17 @@ interface MessageDao {
     @Query("SELECT senderId FROM messages WHERE id = :id")
     suspend fun senderOf(id: String): String?
 
+    /**
+     * Whether our own DM [id] was sealed, every copy of it, inside a session already confirmed with its recipient
+     * ([MessageEntity.sealedConfirmed]); null when it isn't held.
+     */
+    @Query("SELECT sealedConfirmed FROM messages WHERE id = :id")
+    suspend fun sealedConfirmedOf(id: String): Boolean?
+
+    /** Clears [MessageEntity.sealedConfirmed] on [id]: a copy of it was just sealed outside a confirmed session. */
+    @Query("UPDATE messages SET sealedConfirmed = 0 WHERE id = :id AND sealedConfirmed != 0")
+    suspend fun clearSealedConfirmed(id: String)
+
     /** The conversation the stored message [id] belongs to, or null when it isn't held. */
     @Query("SELECT conversationId FROM messages WHERE id = :id")
     suspend fun conversationOf(id: String): String?

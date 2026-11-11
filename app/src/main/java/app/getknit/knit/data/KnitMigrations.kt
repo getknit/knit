@@ -740,7 +740,9 @@ object KnitMigrations {
     /**
      * v31 → v32 (ADR 2026-11.xp6d, #285): two empty presence-key tables, `own_presence_keys` and `peer_presence_keys`, and
      * `link_owed_resets`. No build before this held a presence key, so there is nothing to fill. All are local only, never
-     * in a backup. The
+     * in a backup. And `messages.sealedConfirmed` (#301): whether every copy of one of our own DMs was sealed inside a
+     * session already confirmed with its recipient. False on every existing row, since no build before this recorded it,
+     * which leaves those DMs as they were. Local only, carried in a backup with its row. The
      * SQL must stay byte-equivalent to what Room generates for `app/schemas/**/32.json`.
      */
     val MIGRATION_31_32 =
@@ -760,6 +762,7 @@ object KnitMigrations {
                     "CREATE TABLE IF NOT EXISTS `link_owed_resets` (`nodeId` TEXT NOT NULL, `wire` BLOB, `rootTag` INTEGER, " +
                         "`owedSince` INTEGER NOT NULL, PRIMARY KEY(`nodeId`))",
                 )
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `sealedConfirmed` INTEGER NOT NULL DEFAULT 0")
             }
         }
 

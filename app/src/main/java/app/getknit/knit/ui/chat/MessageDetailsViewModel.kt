@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -207,10 +208,12 @@ class MessageDetailsViewModel(
         val directory: PeerDirectory,
     )
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val base: Flow<Base> =
         combine(
             sightings,
-            reactions.observeReactionsFor(messageId),
+            // Only reactors in the thread are listed, so the query needs our own id (#301).
+            myNodeId.filterNotNull().flatMapLatest { me -> reactions.observeReactionsFor(messageId, me) },
             peers.observeDirectory(),
             combine(myNodeId, linkHolders, ::Pair),
             settings.contentFilteringEnabled,

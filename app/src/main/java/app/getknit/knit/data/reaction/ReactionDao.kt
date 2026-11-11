@@ -16,20 +16,49 @@ interface ReactionDao {
      * tombstone filter as [observeAll]; the join is what narrows it, since a reaction row names only its
      * message. A chat screen used to collect [observeAll] and then group the whole table by message id on
      * every emission, so a reaction in some other conversation rebuilt this one's rows.
+     *
+     * Only a reactor in the thread is drawn (#301), by the rule a reaction is applied under
+     * (`InboundPipeline.reactsIn`): [me], the DM's peer (whose id is the thread's), anyone on a group's founding roster
+     * (members or departed), anyone in a room ([rooms], or a commons by [commonsGlob]). A reaction stored before its
+     * target landed was never checked, so this is where one from outside the thread stays out. The roster LIKE is exact
+     * for the reason [observeNewestOnOwnMessages] gives.
      */
     @Query(
         "SELECT r.* FROM reactions r JOIN messages m ON m.id = r.messageId " +
-            "WHERE m.conversationId = :conversationId AND r.emoji IS NOT NULL ORDER BY r.updatedAt ASC",
+            "WHERE m.conversationId = :conversationId AND r.emoji IS NOT NULL " +
+            "AND (r.reactorNodeId = :me OR m.conversationId = r.reactorNodeId OR m.conversationId IN (:rooms) " +
+            "OR m.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g WHERE g.groupId = m.conversationId " +
+            "AND (g.members LIKE '%\"' || r.reactorNodeId || '\"%' OR g.departed LIKE '%\"' || r.reactorNodeId || '\"%'))) " +
+            "ORDER BY r.updatedAt ASC",
     )
-    fun observeForConversation(conversationId: String): Flow<List<ReactionEntity>>
+    fun observeForConversation(
+        conversationId: String,
+        me: String,
+        rooms: Collection<String>,
+        commonsGlob: String,
+    ): Flow<List<ReactionEntity>>
 
     /**
      * Live reactions on one message, oldest first — the per-reactor rows the message-details screen
      * lists by name. Same tombstone filter as [observeAll] (a retraction is `emoji IS NULL`, not a
-     * deleted row), narrowed by the existing `messageId` index.
+     * deleted row), narrowed by the existing `messageId` index, and the same reactor rule as
+     * [observeForConversation] (#301): only someone in the message's thread is listed, so a reaction from outside it
+     * that landed before the message never shows. The join means a message not held lists nobody.
      */
-    @Query("SELECT * FROM reactions WHERE messageId = :messageId AND emoji IS NOT NULL ORDER BY updatedAt ASC")
-    fun observeForMessage(messageId: String): Flow<List<ReactionEntity>>
+    @Query(
+        "SELECT r.* FROM reactions r JOIN messages m ON m.id = r.messageId " +
+            "WHERE r.messageId = :messageId AND r.emoji IS NOT NULL " +
+            "AND (r.reactorNodeId = :me OR m.conversationId = r.reactorNodeId OR m.conversationId IN (:rooms) " +
+            "OR m.conversationId GLOB :commonsGlob OR EXISTS (SELECT 1 FROM groups AS g WHERE g.groupId = m.conversationId " +
+            "AND (g.members LIKE '%\"' || r.reactorNodeId || '\"%' OR g.departed LIKE '%\"' || r.reactorNodeId || '\"%'))) " +
+            "ORDER BY r.updatedAt ASC",
+    )
+    fun observeForMessage(
+        messageId: String,
+        me: String,
+        rooms: Collection<String>,
+        commonsGlob: String,
+    ): Flow<List<ReactionEntity>>
 
     /** The stored last-writer-wins clock for this reactor on this message, or null if none yet. */
     @Query("SELECT updatedAt FROM reactions WHERE messageId = :messageId AND reactorNodeId = :reactorNodeId")

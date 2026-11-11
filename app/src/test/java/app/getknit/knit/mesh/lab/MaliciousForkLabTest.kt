@@ -19,6 +19,8 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RatchetHeader
+import app.getknit.knit.mesh.protocol.ReactionContent
+import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -276,6 +278,204 @@ class MaliciousForkLabTest : StrandedLabBase() {
             lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(mallory)) { groupId }
             assertEquals("a reset is no row's to refuse", 0L, bob.drops(DropReason.ROW_HELD_BY_OTHER_SENDER))
         }
+
+    /**
+     * A room post under the id of Alice's DM to Bob reaches Bob first (#301): no answer Bob makes to it ticks Alice's DM,
+     * and his own ✓✓ ticks it once her DM lands.
+     */
+    @Test
+    fun aTickForAPostUnderTheIdOfAliceDmLeavesTheDmUnticked() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            // Before Bob's pipe to Mallory parks, or his ✓✓ for the line's first DM waits behind it.
+            bothTicked(alice, bob)
+            bob.answerWithCleartextReceipts(mallory)
+            bob.transport.hold(mallory.transport)
+            val dm = postFirstUnder(alice, mallory, bob)
+            lab.await(1) { if (ticksFor(bob, mallory, dm).isNotEmpty()) 1 else 0 }
+            val tick = ticksFor(bob, mallory, dm).first()
+            assertFalse("bob's tick for a post goes to its author alone", tick.relay)
+
+            mallory.flood(WireEnvelope(ttl = DEFAULT_TTL, relay = true, sig = tick.sig, signed = tick.signed))
+            awaitHandled(alice) { bob.nodeId in alice.receiptPlanes(dm) }
+            assertFalse(
+                "alice's DM shows bob's ✓✓ for mallory's post\n${lab.report(listOf(alice, bob, mallory))}",
+                bob.nodeId in alice.receiptPlanes(dm),
+            )
+            assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            // Mallory still holds Alice's DM in custody; Alice's own copy is gone.
+            bobTakesTheDm(alice, mallory, bob, dm, server = mallory)
+        }
+
+    /**
+     * A DM to Bob under the id of Alice's DM to him reaches Bob first (#301): no answer Bob makes to it ticks Alice's DM,
+     * and a later DM's ✓✓ shows his answers still reach her.
+     */
+    @Test
+    fun aCleartextReceiptForADmUnderTheIdOfAliceDmLeavesItUnticked() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            bothTicked(alice, bob)
+            bob.answerWithCleartextReceipts(mallory)
+            mallory.transport.hold(bob.transport)
+            assertTrue(alice.sendDm(bob, "for bob"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            lab.await(1) { if (dm in heldIds(mallory, bob)) 1 else 0 }
+            assertTrue("sealed inside the confirmed session", alice.row(dm)?.sealedConfirmed == true)
+
+            mallory.floodDmUnder(bob, dm, "mine")
+            // lab-lint: allow filtered-release-then-oracle — what it leaves out is Alice's copy, which must not reach Bob
+            // first; `relink` below heals the rest before the oracle.
+            mallory.transport.release(bob.transport, keepHolding = true) { held ->
+                held.filter { frame -> WireCodec.decodeEnvelope(frame.signed)?.senderId == mallory.nodeId }
+            }
+            lab.await(1) { if (bob.row(dm)?.senderId == mallory.nodeId) 1 else 0 }
+            awaitHandled(alice) { bob.nodeId in alice.receiptPlanes(dm) }
+            assertFalse(
+                "alice's DM shows bob's ✓✓ for mallory's DM\n${lab.report(listOf(alice, bob, mallory))}",
+                bob.nodeId in alice.receiptPlanes(dm),
+            )
+            assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+
+            mallory.transport.release(bob.transport)
+            bob.answerWithCleartextReceipts(mallory, cleartext = false)
+            assertTrue(alice.sendDm(bob, "later"))
+            val later = alice.ownMessageId(alice.dmWith(bob), "later")
+            lab.awaitReceipt(alice, later, bob)
+            assertFalse(bob.nodeId in alice.receiptPlanes(dm))
+            relink(mallory, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 0, carriers = listOf(mallory)) { Conversations.NEARBY }
+        }
+
+    /**
+     * A room post under the id of Alice's DM to Bob reaches Bob first, and he reacts to it (#301): Alice's DM shows no
+     * reaction and she is not told of one. His own ✓✓ ticks her DM once it lands.
+     */
+    @Test
+    fun aReactionToAPostUnderTheIdOfAliceDmLeavesTheDmAlone() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            val dm = postFirstUnder(alice, mallory, bob)
+            bob.react(Conversations.NEARBY, dm, "👍")
+            awaitHandled(alice) { alice.reactions(dm).isNotEmpty() }
+            assertTrue("alice's DM shows bob's reaction to mallory's post: ${alice.reactions(dm)}", alice.reactions(dm).isEmpty())
+            assertFalse("alice was told of it", alice.reactionNotified(dm, bob))
+            assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+            bobTakesTheDm(alice, mallory, bob, dm, server = alice)
+        }
+
+    /**
+     * A reaction from Mallory names Alice's DM to Bob (#301): neither shows it. Her reaction to Alice's room post, behind
+     * it on the same line, lands, so both were handled.
+     */
+    @Test
+    fun aReactionFromOutsideADmShowsOnNeitherSide() =
+        runBlocking {
+            val (alice, mallory, bob) = line()
+            assertTrue(alice.sendDm(bob, "for bob"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(mallory), conversation = thread)
+            assertTrue(alice.sendRoom("in the room"))
+            val post = alice.ownMessageId(Conversations.NEARBY, "in the room")
+            lab.await(1) { if (mallory.row(post) != null) 1 else 0 }
+
+            mallory.floodSigned(
+                RelayEnvelope(
+                    type = FrameType.REACTION,
+                    id = FrameId.new(),
+                    senderId = mallory.nodeId,
+                    sentAt = lab.clock.now(),
+                    payload = WireCodec.encodePayload(ReactionContent(messageId = dm, emoji = "👍")),
+                ),
+            )
+            mallory.react(Conversations.NEARBY, post, "👍")
+            lab.await(2) { listOf(alice, bob).count { n -> mallory.nodeId in n.reactions(post).map { (who, _) -> who } } }
+            assertTrue("alice's DM shows mallory's reaction: ${alice.reactions(dm)}", alice.reactions(dm).isEmpty())
+            assertTrue("bob's copy shows it: ${bob.reactions(dm)}", bob.reactions(dm).isEmpty())
+            assertFalse(alice.reactionNotified(dm, mallory))
+            // Mallory keeps none of her own frames here; the link-ups' digests hand them back to her.
+            relink(alice, mallory)
+            relink(mallory, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(mallory), conversation = thread)
+        }
+
+    /**
+     * Alice's DM to Bob, parked on Mallory's pipe to him, while a room post of Mallory's under its id reaches him first, so
+     * the row Bob holds under the id is Mallory's. The pipe stays parked; the clock is past the seen window. Returns the id.
+     */
+    private suspend fun postFirstUnder(
+        alice: LabNode,
+        mallory: LabNode,
+        bob: LabNode,
+    ): String {
+        bothTicked(alice, bob)
+        mallory.transport.hold(bob.transport)
+        assertTrue(alice.sendDm(bob, "for bob"))
+        val dm = alice.ownMessageId(alice.dmWith(bob), "for bob")
+        lab.await(1) { if (dm in heldIds(mallory, bob)) 1 else 0 }
+        assertTrue("sealed inside the confirmed session", alice.row(dm)?.sealedConfirmed == true)
+        takeIds(mallory, bob, listOf(dm))
+        return dm
+    }
+
+    /**
+     * Waits for [line]'s two DMs to show each other's ✓✓, so nothing of theirs is still crossing Mallory when a scenario
+     * parks her pipe to Bob and lets only some of it through.
+     */
+    private suspend fun bothTicked(
+        alice: LabNode,
+        bob: LabNode,
+    ) {
+        lab.awaitReceipt(alice, alice.ownMessageId(alice.dmWith(bob), "hello"), bob)
+        lab.awaitReceipt(bob, bob.ownMessageId(bob.dmWith(alice), "hi"), alice)
+    }
+
+    /** The receipt frames parked on [from]'s pipe to [to] that name [id]. */
+    private fun ticksFor(
+        from: LabNode,
+        to: LabNode,
+        id: String,
+    ): List<WireEnvelope> =
+        from.transport.held(to.transport).filter { frame ->
+            val env = WireCodec.decodeEnvelope(frame.signed)
+            env?.type == FrameType.RECEIPT && WireCodec.decodePayload<ReceiptContent>(env.payload)?.ackId == id
+        }
+
+    /** Waits until [node] either did what [took] reads or refused it, so a check of the first is not a race. */
+    private suspend fun awaitHandled(
+        node: LabNode,
+        took: suspend () -> Boolean,
+    ) {
+        lab.await(1) { if (took() || node.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER) > 0) 1 else 0 }
+    }
+
+    /**
+     * Bob deletes the post he holds under [dm], the parked pipes open, [server] serves Alice's DM from its custody, and it
+     * lands on Bob and draws his sealed ✓✓. Every store then holds a different frame under the id, or none, until
+     * custody's day is up, so the clock goes past it and each sweeps before the oracle.
+     */
+    private suspend fun bobTakesTheDm(
+        alice: LabNode,
+        mallory: LabNode,
+        bob: LabNode,
+        dm: String,
+        server: LabNode,
+    ) {
+        bob.deleteLocally(dm)
+        mallory.transport.release(bob.transport)
+        bob.transport.release(mallory.transport)
+        server.reServe(dm)
+        lab.awaitReceipt(alice, dm, bob)
+        assertEquals("the DM bob opened", "for bob", bob.row(dm)?.body)
+        lab.clock.advance(ForwardRepository.DEFAULT_TTL_MS + MINUTE_MS)
+        listOf(alice, mallory, bob).forEach { n -> n.sweepExpired() }
+        relink(mallory, bob)
+        relink(alice, mallory)
+        val thread = { n: LabNode -> if (n === alice) n.dmWith(bob) else n.dmWith(alice) }
+        lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(mallory), conversation = thread)
+        assertEquals(1L, alice.drops(DropReason.CLEARTEXT_ANSWER_FROM_SEALING_PEER))
+    }
 
     /** Alice, Mallory and Bob on a line, acquainted, with a confirmed DM session between Alice and Bob. */
     private suspend fun line(): Triple<LabNode, LabNode, LabNode> {

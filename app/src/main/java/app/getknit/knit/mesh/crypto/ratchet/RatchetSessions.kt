@@ -357,10 +357,15 @@ class RatchetSessions(
      * session names that session's root. The tag is the era a caller files the frame under (the sealed receipt's
      * re-ack ledger, ADR 2026-10.8hn6); the root itself never leaves the facade. Compare it with [rootTagFor], never with
      * a [sessionFor] read after the seal: a reset adopted on the other delivery plane can commit in between.
+     *
+     * [confirmed] is whether the session this seal ran under was already confirmed — one the peer started, or ours once
+     * it answered — so the frame carries no init. Read in the same critical section for the same reason: the sender
+     * records it on its own DM's row (`MessageEntity.sealedConfirmed`, #301), and a later read can see another era.
      */
     class TaggedSeal(
         val envelope: EncEnvelope,
         val rootTag: Long,
+        val confirmed: Boolean,
     )
 
     /** [sealDm], returning the root tag of the session the seal committed alongside the envelope ([TaggedSeal]). */
@@ -510,7 +515,7 @@ class RatchetSessions(
                     ),
             )
         // Read from the seal itself, inside the lock that committed it (ADR 2026-10.8hn6): never from a later sessionFor.
-        return TaggedSeal(envelope, RatchetCrypto.rootTag(sealed.session.root))
+        return TaggedSeal(envelope, RatchetCrypto.rootTag(sealed.session.root), confirmed = session.confirmed)
     }
 
     /**

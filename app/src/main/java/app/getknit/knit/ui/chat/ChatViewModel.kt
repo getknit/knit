@@ -1360,10 +1360,12 @@ class ChatViewModel(
             radioReached,
         ) { window, senders, reached -> Triple(window, senders, reached) }
 
+    // Only reactors in the thread are drawn, so the query needs our own id (#301).
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val messagesWithReactions =
         combine(
             windowWithSenders,
-            reactions.observeReactionsIn(conversationId),
+            myNodeId.filterNotNull().flatMapLatest { me -> reactions.observeReactionsIn(conversationId, me) },
             settings.blockedNodeIds,
             blobState,
             groupDelivery,

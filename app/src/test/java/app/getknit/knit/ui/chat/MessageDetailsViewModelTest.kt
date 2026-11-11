@@ -79,7 +79,7 @@ class MessageDetailsViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         coEvery { identity.nodeId() } returns "me"
         every { messages.observeMessage(MSG) } returns messageFlow
-        every { reactions.observeReactionsFor(MSG) } returns reactionsFlow
+        every { reactions.observeReactionsFor(MSG, "me") } returns reactionsFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { receipts.observeForMessage(MSG) } returns receiptsFlow
         every { groups.observeGroups() } returns groupsFlow

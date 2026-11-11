@@ -2,6 +2,8 @@ package app.getknit.knit
 
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.RoomDbTest
+import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.ui.group
@@ -91,6 +93,53 @@ class ReactionRepositoryTest : RoomDbTest() {
             assertEquals("m-b", head.target.id)
             assertEquals("bob", head.reactorNodeId)
             assertEquals("❤️", head.emoji)
+        }
+
+    /**
+     * #301: a thread's reactions are drawn only from someone in it — us, the DM's peer, a group's members and departed,
+     * anyone in a room — so a reaction stored before its target landed, by someone outside the thread, never shows.
+     */
+    @Test
+    fun aThreadsReactionsAreOnlyThoseOfSomeoneInIt() =
+        runTest {
+            val repo = repo()
+            db.groupDao().upsert(
+                group(groupId = "g-1", members = listOf(ME, "bob")).copy(departed = GroupMembersStore.encode(listOf("dan"))),
+            )
+            db.messageDao().upsert(
+                MessageEntity(id = "dm", senderId = ME, recipientId = "alice", conversationId = "alice", body = "dm", sentAt = 1L),
+            )
+            db.messageDao().upsert(MessageEntity(id = "gm", senderId = ME, conversationId = "g-1", body = "gm", sentAt = 1L))
+            db.messageDao().upsert(MessageEntity(id = "room", senderId = "carol", body = "room", sentAt = 1L))
+            listOf("dm", "gm", "room").forEach { id ->
+                listOf(ME, "alice", "bob", "dan", "mallory").forEachIndexed { i, who ->
+                    repo.apply(
+                        ReactionEntity(
+                            id,
+                            who,
+                            "👍",
+                            updatedAt =
+                                i + 1L,
+                        ),
+                    )
+                }
+            }
+
+            fun reactors(conversationId: String) =
+                suspend {
+                    repo
+                        .observeReactionsIn(conversationId, ME)
+                        .first()
+                        .map { it.messageId to it.reactorNodeId }
+                        .toSet()
+                }
+
+            assertEquals(setOf("dm" to ME, "dm" to "alice"), reactors("alice")())
+            assertEquals(setOf("gm" to ME, "gm" to "bob", "gm" to "dan"), reactors("g-1")())
+            assertEquals(
+                listOf(ME, "alice", "bob", "dan", "mallory").map { "room" to it }.toSet(),
+                reactors(Conversations.NEARBY)(),
+            )
         }
 
     @Test

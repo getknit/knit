@@ -116,6 +116,12 @@ class MessageRepository(
 
     suspend fun conversationOf(id: String): String? = dao.conversationOf(id)
 
+    /** [MessageDao.sealedConfirmedOf]: whether our own DM [id] was sealed only inside a confirmed session; null when not held. */
+    suspend fun sealedConfirmedOf(id: String): Boolean? = dao.sealedConfirmedOf(id)
+
+    /** [MessageDao.clearSealedConfirmed]: a copy of our DM [id] was just sealed outside a confirmed session. */
+    suspend fun clearSealedConfirmed(id: String) = dao.clearSealedConfirmed(id)
+
     /** The sender of message [id], or null when it isn't held: which sender a receive gate finds under an id. */
     suspend fun senderOf(id: String): String? = dao.senderOf(id)
 

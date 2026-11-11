@@ -97,7 +97,7 @@ class BlePairMessagingTest : BlePairTest() {
             val ours = awaitRow(peer, DM_TIMEOUT_MS, "our message to react to") { it.senderId == self && it.body == target }
             runCatching {
                 withTimeout(DM_TIMEOUT_MS) {
-                    reactions.observeReactionsFor(ours.id).first { list ->
+                    reactions.observeReactionsFor(ours.id, self).first { list ->
                         list.any { it.reactorNodeId == peer && it.emoji == REACTION }
                     }
                 }

@@ -203,7 +203,7 @@ class ChatViewModelTest {
         coEvery { drafts.load(any()) } returns Draft.EMPTY
         coEvery { identity.nodeId() } returns "me"
         stubThread(Conversations.NEARBY)
-        every { reactions.observeReactionsIn(any()) } returns reactionsFlow
+        every { reactions.observeReactionsIn(any(), "me") } returns reactionsFlow
         every { settings.blockedNodeIds } returns blockedFlow
         every { settings.recentReactions } returns recentsFlow
         // Keyed by the window's hashes in production; the test map simply holds every hash a test names.

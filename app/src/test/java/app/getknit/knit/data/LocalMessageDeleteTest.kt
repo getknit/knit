@@ -65,9 +65,9 @@ class LocalMessageDeleteTest : RoomDbTest() {
     private suspend fun reactionsOn(id: String) =
         db
             .reactionDao()
-            .observeForMessage(id)
+            .observeAll()
             .first()
-            .size
+            .count { r -> r.messageId == id }
 
     private suspend fun receiptsFor(id: String) =
         db

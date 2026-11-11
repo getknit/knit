@@ -153,10 +153,13 @@ import app.getknit.knit.moderation.ImageVerdict
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.moderation.TextVerdict
 import app.getknit.knit.normalizeSingleLine
+import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.notifications.reactionNotificationKey
 import app.getknit.knit.ui.contacts.contactStanding
 import app.getknit.knit.ui.contacts.observeContactSignals
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineDispatcher
@@ -2638,6 +2641,43 @@ class LabNode internal constructor(
         transport.send(WireEnvelope(sig = messageCrypto.signRaw(signed), signed = signed), null)
     }
 
+    /** Floods over this node's links a DM to [to] under [id], sealed in the v1 wrap to [to]'s pinned key; nothing is stored. */
+    suspend fun floodDmUnder(
+        to: LabNode,
+        id: String,
+        text: String,
+    ) {
+        val bundle =
+            checkNotNull(
+                peers.find(to.nodeId)?.pubKey?.let { key ->
+                    PublicKeyBundle.decode(key)
+                },
+            ) { "$name has no pin for ${to.name}" }
+        val sentAt = now()
+        val header = MessageCrypto.header(id, nodeId, sentAt, to.nodeId)
+        val enc = checkNotNull(messageCrypto.seal(MessageContent(body = text).encode(), header, mapOf(to.nodeId to bundle)))
+        floodSigned(
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = nodeId,
+                sentAt = sentAt,
+                recipientId = to.nodeId,
+                payload = WireCodec.encodePayload(ChatContent(enc = enc)),
+            ),
+        )
+    }
+
+    /** Whether this boot notified a reaction by [reactor] to [messageId] (its line's key, `reactionNotificationKey`). */
+    fun reactionNotified(
+        messageId: String,
+        reactor: LabNode,
+    ): Boolean {
+        val posted = mutableListOf<NotifMessage>()
+        coVerify(atLeast = 0) { notifier.notify(capture(posted), any(), any(), any(), any()) }
+        return posted.any { line -> line.key == reactionNotificationKey(messageId, reactor.nodeId) }
+    }
+
     /** Floods [frame] over this node's links as it stands, signed by whoever signed it (a [LabSybil]): a fork's radio. */
     suspend fun flood(frame: WireEnvelope) = transport.send(frame, null)
 
@@ -3614,11 +3654,15 @@ class LabNode internal constructor(
         liveBefore: Int = 0,
     ): Int = if (loraTx(live) > liveBefore || loraTx("reoffer:$id") > 0 || loraTx("reprobe:$id") > 0) 1 else 0
 
-    /** Who reacted with what on [messageId], as (reactor, emoji). A retraction is a tombstone and is not listed. */
+    /**
+     * Who reacted with what on [messageId], as (reactor, emoji): the stored rows, before any screen's reactor filter. A
+     * retraction is a tombstone and is not listed.
+     */
     suspend fun reactions(messageId: String): Set<Pair<String, String>> =
         reactionStore
-            .observeReactionsFor(messageId)
+            .observeReactions()
             .first()
+            .filter { r -> r.messageId == messageId }
             .mapNotNull { r -> r.emoji?.let { r.reactorNodeId to it } }
             .toSet()
 

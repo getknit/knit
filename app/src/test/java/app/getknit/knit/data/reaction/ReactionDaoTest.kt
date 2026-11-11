@@ -45,12 +45,13 @@ class ReactionDaoTest : RoomDbTest() {
     @Test
     fun `observeForMessage returns only that message's live reactions, oldest first`() =
         runTest {
+            db.messageDao().upsert(MessageEntity(id = "m1", senderId = "s", body = "", sentAt = 1L)) // a room post
             dao.upsert(ReactionEntity("m1", "u2", emoji = "❤️", updatedAt = 20L))
             dao.upsert(ReactionEntity("m1", "u1", emoji = "👍", updatedAt = 10L))
             dao.upsert(ReactionEntity("m1", "u3", emoji = null, updatedAt = 30L)) // retracted → hidden
             dao.upsert(ReactionEntity("m2", "u1", emoji = "😂", updatedAt = 15L)) // another message → excluded
 
-            val rows = dao.observeForMessage("m1").first()
+            val rows = forMessage("m1")
 
             assertEquals(listOf("u1", "u2"), rows.map { it.reactorNodeId })
             assertEquals(listOf("👍", "❤️"), rows.map { it.emoji })
@@ -60,8 +61,25 @@ class ReactionDaoTest : RoomDbTest() {
     fun `observeForMessage is empty for a message no one has reacted to`() =
         runTest {
             dao.upsert(ReactionEntity("m1", "u1", emoji = "👍", updatedAt = 1L))
-            assertTrue(dao.observeForMessage("m_none").first().isEmpty())
+            assertTrue(forMessage("m_none").isEmpty())
         }
+
+    @Test
+    fun `observeForMessage leaves out a reactor from outside the thread whose reaction landed before the message`() =
+        runTest {
+            // The reaction lands first, an orphan; then the DM it names.
+            dao.upsert(ReactionEntity("dm", "stranger", emoji = "👍", updatedAt = 1L))
+            dao.upsert(ReactionEntity("dm", "alice", emoji = "❤️", updatedAt = 2L))
+            dao.upsert(ReactionEntity("dm", ME, emoji = "😂", updatedAt = 3L))
+            db.messageDao().upsert(
+                MessageEntity(id = "dm", senderId = ME, recipientId = "alice", conversationId = "alice", body = "", sentAt = 1L),
+            )
+
+            assertEquals(listOf("alice", ME), forMessage("dm").map { it.reactorNodeId })
+        }
+
+    private suspend fun forMessage(id: String) =
+        dao.observeForMessage(id, ME, listOf(Conversations.NEARBY, Conversations.MESHTASTIC), Conversations.COMMONS_PREFIX + "*").first()
 
     @Test
     fun `upsert replaces on the composite key (messageId, reactorNodeId)`() =

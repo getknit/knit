@@ -18,11 +18,23 @@ class ReactionRepository(
 ) {
     fun observeReactions(): Flow<List<ReactionEntity>> = dao.observeAll()
 
-    /** Live reactions on one thread's messages, oldest first — the chat screen's arm. */
-    fun observeReactionsIn(conversationId: String): Flow<List<ReactionEntity>> = dao.observeForConversation(conversationId)
+    /**
+     * Live reactions on one thread's messages, oldest first — the chat screen's arm. Only reactors in the thread, [me]
+     * among them ([ReactionDao.observeForConversation]).
+     */
+    fun observeReactionsIn(
+        conversationId: String,
+        me: String,
+    ): Flow<List<ReactionEntity>> = dao.observeForConversation(conversationId, me, ROOMS, Conversations.COMMONS_PREFIX + "*")
 
-    /** Live reactions on a single message, oldest first — who reacted, with what (message details). */
-    fun observeReactionsFor(messageId: String): Flow<List<ReactionEntity>> = dao.observeForMessage(messageId)
+    /**
+     * Live reactions on a single message, oldest first — who reacted, with what (message details). Only reactors in its
+     * thread, [me] among them ([ReactionDao.observeForMessage]).
+     */
+    fun observeReactionsFor(
+        messageId: String,
+        me: String,
+    ): Flow<List<ReactionEntity>> = dao.observeForMessage(messageId, me, ROOMS, Conversations.COMMONS_PREFIX + "*")
 
     /**
      * Per thread, the newest live reaction someone who reads it made to a message [me] wrote, keyed by
@@ -37,7 +49,7 @@ class ReactionRepository(
             .observeNewestOnOwnMessages(
                 me,
                 blocked,
-                rooms = listOf(Conversations.NEARBY, Conversations.MESHTASTIC),
+                rooms = ROOMS,
                 commonsGlob = Conversations.COMMONS_PREFIX + "*",
             ).map { rows ->
                 rows
@@ -86,6 +98,9 @@ class ReactionRepository(
     suspend fun deleteOrphans(now: Long) = dao.deleteOrphansOlderThan(now - ORPHAN_GRACE_MILLIS)
 
     private companion object {
+        // The rooms every reaction query lets anyone react in; a commons is matched by its prefix beside them.
+        val ROOMS = listOf(Conversations.NEARBY, Conversations.MESHTASTIC)
+
         // A day comfortably exceeds any realistic out-of-order gap between a message and its reactions,
         // while still reclaiming rows left behind by a deleted message or conversation.
         const val ORPHAN_GRACE_MILLIS = 24L * 60 * 60 * 1000

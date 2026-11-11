@@ -193,6 +193,25 @@ enum class DropReason {
     ROW_HELD_BY_OTHER_SENDER,
 
     /**
+     * A cleartext receipt or reaction naming one of our own DMs, from that DM's recipient, where the DM was sealed only
+     * inside a session the recipient had already confirmed (`MessageEntity.sealedConfirmed`) and our pin of them still
+     * carries `CAP_RATCHET` (#301): such a peer answers that DM sealed. Nothing ticks and nothing is applied or notified;
+     * a receipt's `ForwardSync.onAck` still runs, so custody's liveness stays the same on every node (ADR 006). Never
+     * reset-triggering: a cleartext frame touches no session. Counted on each arrival, re-serves included. An honest pair
+     * counts it only on `InboundPipeline.answersSealed`'s named misses: the peer's seal failing under the session, a
+     * session of ours confirmed by a card-only peer's seed ack, and pin lag after a peer drops `CAP_RATCHET`.
+     */
+    CLEARTEXT_ANSWER_FROM_SEALING_PEER,
+
+    /**
+     * A reaction, cleartext or sealed, naming a message row we hold in a thread its reactor is not in
+     * (`InboundPipeline.reactsIn`, #301): not the DM's peer, not on the group's founding roster, not us. Nothing is
+     * applied or notified. Counted only for a held row, so a reaction to a message this phone only carries is never
+     * counted. Never reset-triggering: a sealed one's chain step still commits, and the frame is refused for what it names.
+     */
+    REACTION_OUTSIDE_THREAD,
+
+    /**
      * A direct link's OFFER that opened but whose stamp is more than `Protocol.MAX_FUTURE_SKEW_MS` from this phone's
      * clock (ADR 2026-10.a5yj, `docs/DIRECT_LINKS.md` L-2-4). Its offerer sees only a missing answer, so a count climbing
      * here is how a pair stuck dark by a drifted clock shows apart from a pair with no UDP path.

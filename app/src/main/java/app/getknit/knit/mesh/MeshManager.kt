@@ -2057,7 +2057,8 @@ class MeshManager(
         val inlineAcks =
             inlineAcksFor(recipientId, group, text, spans, langs, replying = replyTo != null, attached = attachment != null)
         val inlineIds = inlineAcks.ids
-        val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
+        val seal = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
+        val envelope = seal?.envelope
         if (inlineIds.isNotEmpty() && recipientId != null) {
             val carried = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v)
             if (carried) {
@@ -2075,7 +2076,8 @@ class MeshManager(
         // Persist our own plaintext copy regardless, so the sender always sees their message. A DM whose
         // recipient key isn't known yet is flagged pendingKey so handleProfile can retransmit it when the
         // recipient's profile (carrying the key) finally arrives (groups stay unsent, as before).
-        messages.save(row.copy(pendingKey = envelope == null && group == null))
+        // A DM sealed inside a session its recipient already confirmed says so on its row (#301): that peer answers it sealed.
+        messages.save(row.copy(pendingKey = envelope == null && group == null, sealedConfirmed = seal?.confirmed == true))
         if (envelope == null) {
             // No recipient's key is known yet — nothing can decrypt this. Saved locally above; a DM is
             // marked pendingKey and retransmitted on key arrival, a group message stays unsent.
@@ -2144,6 +2146,16 @@ class MeshManager(
         )
 
     /**
+     * What [sealEnvelopeFor] sealed, and whether it was a DM sealed inside a ratchet session its recipient had already
+     * confirmed ([RatchetSessions.TaggedSeal.confirmed], read under the seal's own lock). False for every other form: a
+     * group, a v1 wrap, a first contact or our own unanswered reset.
+     */
+    private class ChatSeal(
+        val envelope: EncEnvelope,
+        val confirmed: Boolean,
+    )
+
+    /**
      * The seal chokepoint for every encrypted chat (compose-time [sendChat] and flush-time
      * [flushPendingFor]). A DM to a ratchet-capable peer — pinned profile advertising
      * [Protocol.CAP_RATCHET], both on one signed frame with any prekey — goes **v2** (the epoch-ratchet
@@ -2162,28 +2174,40 @@ class MeshManager(
         content: MessageContent,
         // Receipts to carry inline (ADR 054) — v2 DM arm only; every other form seals [content] as given.
         inlineAcks: List<String> = emptyList(),
-    ): EncEnvelope? {
+    ): ChatSeal? {
         val thread = group?.id ?: recipientId.orEmpty()
         val aad = MessageCrypto.header(id, me, sentAt, thread)
         if (group == null && recipientId != null && recipientId != me) {
-            val peer = peers.find(recipientId)
-            val bundle = peer?.pubKey?.let { PublicKeyBundle.decode(it) }
-            val capable = bundle != null && (peer.capabilities ?: 0L) and Protocol.CAP_RATCHET != 0L
-            if (capable) {
-                val (plaintext, scheme) = content.copy(acks = inlineAcks.takeIf { it.isNotEmpty() }).sealBytes(peer.readsCryptoV3())
-                val sealed = ratchet.sealDm(recipientId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, clock(), scheme)
-                if (sealed != null) {
-                    metrics.onDmSealedV2()
-                    if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
-                    return sealed
-                }
-                metrics.onDmSealedV1Fallback()
-            }
+            sealDmRatchet(recipientId, content.copy(acks = inlineAcks.takeIf { it.isNotEmpty() }), aad)?.let { return it }
         }
         if (group != null && recipientId == null) {
-            sealGroupRatchet(group, me, content, aad)?.let { return it }
+            sealGroupRatchet(group, me, content, aad)?.let { return ChatSeal(it, confirmed = false) }
         }
-        return messageCrypto.seal(content.encode(), aad, recipientBundles(recipientId, group, me))
+        return messageCrypto.seal(content.encode(), aad, recipientBundles(recipientId, group, me))?.let { ChatSeal(it, confirmed = false) }
+    }
+
+    /**
+     * [sealEnvelopeFor]'s DM ratchet arm: v2 (v3 where the peer reads it) under the session with [recipientId], created on
+     * first use, with whether that session was already confirmed. Null — the caller takes the v1 wrap — for a peer whose
+     * pin lacks a bundle or [Protocol.CAP_RATCHET], or when the seal itself cannot run.
+     */
+    private suspend fun sealDmRatchet(
+        recipientId: String,
+        content: MessageContent,
+        aad: ByteArray,
+    ): ChatSeal? {
+        val peer = peers.find(recipientId)
+        val bundle = peer?.pubKey?.let { PublicKeyBundle.decode(it) }
+        if (bundle == null || (peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return null
+        val (plaintext, scheme) = content.sealBytes(peer.readsCryptoV3())
+        val sealed = ratchet.sealDmTagged(recipientId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), plaintext, aad, clock(), scheme)
+        if (sealed == null) {
+            metrics.onDmSealedV1Fallback()
+            return null
+        }
+        metrics.onDmSealedV2()
+        if (scheme == EncEnvelope.VERSION_DM_V3) metrics.onDmSealedV3()
+        return ChatSeal(sealed.envelope, sealed.confirmed)
     }
 
     /**
@@ -6228,6 +6252,12 @@ class MeshManager(
      * whatever session state exists NOW (v2 when the peer is ratchet-capable, else v1), and floods it
      * under the ORIGINAL id/sentAt (so receivers dedup and the AEAD header matches). False when nobody
      * addressable holds a key yet.
+     *
+     * The row's [MessageEntity.sealedConfirmed] says every copy under the id was sealed inside a confirmed session, so a
+     * copy sealed outside one — under our reset's init, after a restore, or as a v1 fallback — clears it before it
+     * floods, and a copy sealed inside one never sets it: the peer may already be answering an earlier copy it opened
+     * before it held our bit. A row that never flew (pendingKey) was saved false and stays so: with no key pinned there was
+     * no session, so its first copy here carries our init.
      */
     private suspend fun resealAndFlood(
         row: MessageEntity,
@@ -6236,9 +6266,11 @@ class MeshManager(
     ): Boolean {
         // The one builder sendChat seals through too, so a re-seal carries every sealed field the first send did
         // (a file's name and size were dropped here once — #131).
-        val envelope =
+        val seal =
             sealEnvelopeFor(row.id, me, row.sentAt, recipientId, group = null, content = row.sealedContent())
                 ?: return false
+        val envelope = seal.envelope
+        if (!seal.confirmed && row.sealedConfirmed) messages.clearSealedConfirmed(row.id)
         originateSigned(
             chatEnvelope(
                 row.id,
