@@ -16,7 +16,8 @@ class MessagePageDaoTest : RoomDbTest() {
             // b and c share sentAt 2, and the second page ends between them: the cursor (2, "c") sits inside the tie, so
             // only the id half of the cursor brings b back. A `sentAt <` cursor alone would drop it.
             listOf("a" to 1L, "b" to 2L, "c" to 2L, "d" to 3L, "e" to 4L, "f" to 5L).forEach { (id, at) -> dao.upsert(row(id, THREAD, at)) }
-            dao.upsert(row("other", Conversations.NEARBY, 2L))
+            // Another thread's row inside the tie, sorting below the cursor's id: only the thread filter keeps it out.
+            dao.upsert(row("0other", Conversations.NEARBY, 2L))
 
             val first = dao.newestIn(THREAD, 2)
             assertEquals(listOf("f", "e"), first.map { it.id })
