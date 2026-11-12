@@ -21,7 +21,7 @@ internal class UsbSealException(
  *
  * ```
  * ss      = X25519(own e, peer e)                     fresh ephemerals for every `open`; a low-order point is refused
- * k(dir)  = HKDF-SHA256(ikm = psk ‖ ss, salt = eH ‖ eP, info = "knit/usb/v2/seal/h2p" | "knit/usb/v2/seal/p2h" ‖ handle, 32)
+ * k(dir)  = HKDF-SHA256(ikm = psk ‖ ss, salt = eH ‖ eP, info = "knit/usb/v1/seal/h2p" | "knit/usb/v1/seal/p2h" ‖ handle, 32)
  * frame   = u32be(0x8000_0000 | n + 16) ‖ AES-256-GCM(k, nonce = 0⁴ ‖ u64be counter, plain n, aad = those 4 bytes) ‖ tag
  *           1 ≤ n ≤ 65,520; the counter is the frames this side has sealed, from 0, and never rides the wire
  * ```
@@ -48,8 +48,8 @@ internal object UsbSeal {
     /** The first counter a side may not seal: it ends the session instead. */
     const val MAX_COUNTER = LinkSeal.MAX_COUNTER
 
-    const val LABEL_H2P = "knit/usb/v2/seal/h2p"
-    const val LABEL_P2H = "knit/usb/v2/seal/p2h"
+    const val LABEL_H2P = "knit/usb/v1/seal/h2p"
+    const val LABEL_P2H = "knit/usb/v1/seal/p2h"
 
     private const val HKDF_MAC = "HMACSHA256"
     private const val TRANSFORM = "AES/GCM/NoPadding"

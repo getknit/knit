@@ -8,14 +8,14 @@ import javax.crypto.spec.PBEKeySpec
 
 /**
  * Pairing a computer with this phone over USB control (`docs/USB_CONTROL.md`, *Pairing*). Pure: the JDK's PBKDF2 and
- * Tink's HKDF, no Android, so the vectors (`vectors/usb-control-v2.json`) pin it on the JVM and knit-cli checks the same
+ * Tink's HKDF, no Android, so the vectors (`vectors/usb-control-v1.json`) pin it on the JVM and knit-cli checks the same
  * bytes.
  *
  * ```
  * code   = 10 Crockford base32 characters (50 random bits), shown "7KQFM 2XD9R", typed on the computer
  * ss     = X25519(own e, peer e)                                  the pair exchange's ephemerals (UsbSeal.sharedSecret)
  * c      = PBKDF2-HMAC-SHA256(code ASCII, salt = eH ‖ eP, 200,000 iterations, 32)
- * okm    = HKDF-SHA256(ikm = ss, salt = c, info = "knit/usb/v2/pair" ‖ eH ‖ eP ‖ u32be(len client) ‖ client, 112)
+ * okm    = HKDF-SHA256(ikm = ss, salt = c, info = "knit/usb/v1/pair" ‖ eH ‖ eP ‖ u32be(len client) ‖ client, 112)
  *        = confirmHost (32) ‖ confirmPhone (32) ‖ psk (32) ‖ handle (16)
  * ```
  *
@@ -42,7 +42,7 @@ internal object UsbPairingCrypto {
     /** Crockford's base32: no I, L, O or U, so what the phone shows can't be misread as another symbol. */
     const val ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-    const val LABEL = "knit/usb/v2/pair"
+    const val LABEL = "knit/usb/v1/pair"
 
     private const val HKDF_MAC = "HMACSHA256"
     private const val PBKDF2 = "PBKDF2WithHmacSHA256"

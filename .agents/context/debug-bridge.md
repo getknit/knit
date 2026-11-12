@@ -646,7 +646,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   install. Run it on every lab phone in one pass, or a peer's custody walks the old traffic back in. Take a
   `BACKUP` first if the history might be wanted.
 - `…debug.USBCTL --es op enable|disable|open|close|state|pairings|forget` — the **USB control's** switch
-  (`exp/usb-control`, `usbcontrol/UsbControlServer`, protocol v2 in `docs/USB_CONTROL.md`): knit-cli drives the app
+  (`exp/usb-control`, `usbcontrol/UsbControlServer`, protocol v1 in `docs/USB_CONTROL.md`): knit-cli drives the app
   over an Android Open Accessory stream, no adb, and only once paired (`knit pair`, a code on the phone's own screen).
   Off until `enable` (it persists, and starts the change log the repositories report to); `open` picks up a knit-cli
   accessory that attached while it was off. `pairings` lists the paired computers (`paired.pairings[]`: an 8-character

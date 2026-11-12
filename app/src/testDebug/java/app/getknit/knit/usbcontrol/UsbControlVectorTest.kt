@@ -19,7 +19,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
- * USB control's pairing and session known answers (`vectors/usb-control-v2.json`, `docs/USB_CONTROL.md`): one pair
+ * USB control's pairing and session known answers (`vectors/usb-control-v1.json`, `docs/USB_CONTROL.md`): one pair
  * exchange with fixed ephemerals and a fixed code, its stretch, info and the four outputs; one session under the
  * pairing it left, both direction keys, the first frames each way and a padded one; and the frames each side must
  * refuse. knit-cli's tests read a copy of the same file. Rebuilt and compared on every run; `KNIT_WRITE_VECTORS=1`
@@ -195,7 +195,7 @@ class UsbControlVectorTest {
     private companion object {
         fun scalar(start: Int) = ByteArray(32) { (start + it).toByte() }
 
-        const val FILE = "usb-control-v2.json"
+        const val FILE = "usb-control-v1.json"
         const val CODE = "7KQFM2XD9R"
         const val WRONG_CODE = "7KQFM2XD9S"
         const val CLIENT = "knit-cli 0.3.0 on vectors"
@@ -209,9 +209,9 @@ class UsbControlVectorTest {
         const val ABOUT =
             "USB control pairing and sessions (docs/USB_CONTROL.md; experimental, debug builds only). Pair: ss = X25519(scalar, " +
                 "peer's public key); c = PBKDF2-HMAC-SHA256(code ASCII, salt = eH || eP, 200000 iterations, 32); okm = " +
-                "HKDF-SHA256(ikm = ss, salt = c, info = 'knit/usb/v2/pair' || eH || eP || u32be(len client) || client, 112) = " +
+                "HKDF-SHA256(ikm = ss, salt = c, info = 'knit/usb/v1/pair' || eH || eP || u32be(len client) || client, 112) = " +
                 "confirmHost (32) || confirmPhone (32) || psk (32) || handle (16). Session: kH2P/kP2H = HKDF-SHA256(ikm = psk || " +
-                "ss, salt = eH || eP, info = 'knit/usb/v2/seal/h2p' or '.../p2h' || handle, 32). Frame = u32be(0x80000000 | " +
+                "ss, salt = eH || eP, info = 'knit/usb/v1/seal/h2p' or '.../p2h' || handle, 32). Frame = u32be(0x80000000 | " +
                 "n + 16) || AES-256-GCM(k, nonce = 4 zero bytes || u64be counter, plaintext n, aad = the 4 header bytes) with " +
                 "its tag; each direction counts from 0. A plaintext whose frame would be a multiple of 64 bytes gets one " +
                 "trailing space before it is sealed. Scalars are raw (X25519 clamps them)."

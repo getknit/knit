@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The phone's end of the USB control (debug builds only): serves [UsbControlSession] over an Android Open Accessory
- * stream from knit-cli, protocol v2 (`docs/USB_CONTROL.md`). Off until the bridge's `USBCTL --es op enable` turns it
+ * stream from knit-cli, protocol v1 (`docs/USB_CONTROL.md`). Off until the bridge's `USBCTL --es op enable` turns it
  * on; with it off, an attached accessory is left alone and `open` can pick it up later. One accessory at a time.
  *
  * **Paired computers only.** Before a session a link serves the clear `pair`, `pair.confirm` and `open` and nothing

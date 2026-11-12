@@ -1,4 +1,4 @@
-# USB control protocol v2
+# USB control protocol v1
 
 > **Experimental, debug builds only** (`exp/usb-control`). The host client is `knit-cli` (a separate repository). The
 > server is off until the debug bridge's `USBCTL --es op enable` switches it on, and then it serves only a computer
@@ -8,7 +8,7 @@
 A workstation drives Knit on a phone plugged in over USB, with no adb: it reads chats, contacts and threads, sends,
 reacts, marks read and handles message requests, and follows what changes through an event feed. This document is
 the contract a desktop client is written against. The phone's side is `app/src/debug/java/app/getknit/knit/usbcontrol/`;
-`vectors/usb-control-v2.json` pins the pairing and the seal byte for byte.
+`vectors/usb-control-v1.json` pins the pairing and the seal byte for byte.
 
 ## What pairing guards
 
@@ -52,9 +52,9 @@ Before a session the phone serves three clear ops and nothing else; any other an
 left queued in the link until its own come back. Byte fields are standard base64.
 
 ```
-pair         {v: 2, nonce, client, e}          → {nonce, e, expiresInMs}
+pair         {v: 1, nonce, client, e}          → {nonce, e, expiresInMs}
 pair.confirm {nonce, confirm}                  → {nonce, confirm}
-open         {v: 2, nonce, handles: [≤ 8], e}  → {nonce, handle, e}
+open         {v: 1, nonce, handles: [≤ 8], e}  → {nonce, handle, e}
 ```
 
 1. The computer sends `pair` with a fresh X25519 key share `eH` and the name the phone will show (`client`, 1 to 64
@@ -69,7 +69,7 @@ open         {v: 2, nonce, handles: [≤ 8], e}  → {nonce, handle, e}
 code   = 10 Crockford base32 characters (50 random bits), shown "7KQFM 2XD9R"; typing reads O as 0, I and L as 1
 ss     = X25519(own e, peer e)                                  a low-order point or an all-zero ss is refused
 c      = PBKDF2-HMAC-SHA256(code ASCII, salt = eH ‖ eP, 200,000 iterations, 32)
-okm    = HKDF-SHA256(ikm = ss, salt = c, info = "knit/usb/v2/pair" ‖ eH ‖ eP ‖ u32be(len client) ‖ client, 112)
+okm    = HKDF-SHA256(ikm = ss, salt = c, info = "knit/usb/v1/pair" ‖ eH ‖ eP ‖ u32be(len client) ‖ client, 112)
        = confirmHost (32) ‖ confirmPhone (32) ‖ psk (32) ‖ handle (16)
 ```
 
@@ -96,7 +96,7 @@ never paired learns none of them), and a fresh key share. The phone answers the 
 on, both ways, every frame is sealed:
 
 ```
-k(dir)  = HKDF-SHA256(ikm = psk ‖ ss, salt = eH ‖ eP, info = "knit/usb/v2/seal/h2p" | "knit/usb/v2/seal/p2h" ‖ handle, 32)
+k(dir)  = HKDF-SHA256(ikm = psk ‖ ss, salt = eH ‖ eP, info = "knit/usb/v1/seal/h2p" | "knit/usb/v1/seal/p2h" ‖ handle, 32)
 nonce   = 4 zero bytes ‖ u64be(counter)                         each direction counts its own frames from 0
 ```
 
@@ -109,7 +109,7 @@ nonce   = 4 zero bytes ‖ u64be(counter)                         each direction
   clear frame arrives. That last one is the next client run after one that left without a bye: the phone serves the
   clear frame. The phone tells the computer in the clear with `{"event":"error","code":"session_ended","error":…}`
   where it can; a client that reads a clear frame mid-session treats it as the end.
-- Inside the session the requests, replies, objects and events below are those of the ops (still `hello {v: 1}`).
+- Inside the session come the requests, replies, objects and events below; the first is `hello {v: 1}`.
 - Every change to the phone's pairings (pairing, the last-used time an `open` records, a forget) is one read and write
   under one lock, so a computer forgotten while it opens stays forgotten.
 

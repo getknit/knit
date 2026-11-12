@@ -272,7 +272,7 @@ internal class UsbDoor(
     private fun full(): Nothing = fail(Codes.PAIRINGS_FULL, "the phone holds $MAX_PAIRINGS computers: forget one")
 
     companion object {
-        const val VERSION = 2
+        const val VERSION = 1
         const val OP_PAIR = "pair"
         const val OP_CONFIRM = "pair.confirm"
         const val OP_OPEN = "open"

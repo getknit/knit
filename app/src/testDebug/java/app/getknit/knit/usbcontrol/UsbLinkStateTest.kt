@@ -71,7 +71,7 @@ class UsbLinkStateTest {
                                 buildJsonObject {
                                     put("id", 1)
                                     put("op", "open")
-                                    put("v", 2)
+                                    put("v", UsbDoor.VERSION)
                                     put("nonce", "n")
                                     put("handles", buildJsonArray { add(JsonPrimitive(b64(handle))) })
                                     put("e", b64(eH))
