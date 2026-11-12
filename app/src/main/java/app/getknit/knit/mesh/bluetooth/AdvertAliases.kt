@@ -19,7 +19,8 @@ import java.util.PriorityQueue
  *    most [Config.previousKeyMaxMs] (one key generation), since a tag carries no key generation and an idle phone can
  *    air an old-key tag for hours. A tag whose slot is outside the window (a sender's clock off by more than that) does
  *    not resolve; the phone links as a stranger and the link proves it ("Clocks").
- * 4. **Link claims** ([onDialed], [onTagNext]): a tag a proven link told us is its own.
+ * 4. **Link claims** ([onDialed], [onTagNext]): a tag a proven link told us is its own. A claim whose link has ended
+ *    yields its claimant to a hint on the tag naming the same id ([claimAnswer]).
  * 5. **Hints** ([onAnswered]): a tag a dialer's HELLO told us is its own, for presence and RSSI only (below).
  *
  * Every key check is the table's lookup, so it always runs: there is no budget, no deferral and no cache.
@@ -35,7 +36,10 @@ import java.util.PriorityQueue
  *    linger) past the link's end, so a peer whose link drops still resolves for that long. A phone asleep longer can
  *    air the same tag for hours; past the claim's life it resolves only by key or a new link. The life is not
  *    stretched to cover that: it also bounds how long a linked stranger can follow the phone by its tag. A claim never
- *    comes from a link's end;
+ *    comes from a link's end. While an ended link's claim stands and a held link's hint names the claim's id for the
+ *    same tag (the peer dialed back in, telling it), the claim answers with that link as its claimant ([claimAnswer];
+ *    knit-ios ADR 2026-11.sv5t's amendment of 2026-11-11, ADR 2026-11.89gg's of 2026-11-12). Both are proven statements of
+ *    that one id: a claim comes only from the id's own proven link or our proven dial, a hint only from its proven HELLO;
  *  - a dialer believes the responder's HELLO `t` only when it equals the `a` it dialed, or a tag that responder
  *    announced and we hold pending ([onDialed]); a different `t` after a tag dial is a rotation edge, held pending as
  *    an announced tag; a tag dial whose proven id differs from a key's answer records nothing;
@@ -46,8 +50,9 @@ import java.util.PriorityQueue
  *    already linked to; it refuses with no reply and resends its current tag over the held link (ADR 2026-11.xp6d's
  *    responder row). That resend arrives as [onTagNext], is held pending, and becomes the link's claim when the tag is
  *    heard, which does suppress the dial: the resend is what heals it, at the cost of one refused dial per such
- *    rotation. A forged hint (a linked Mallory naming Alice's tag) leaves my dial to that tag standing; it reaches
- *    Alice and proves her id, and [onDialProved] voids the liar's hint and claims. A hint goes with its link;
+ *    rotation. A forged hint (a linked Mallory naming Alice's tag) leaves my dial to that tag standing within the slot
+ *    (past a slot edge, a GATT-read target the hint attributes waits up to rule 4's lag, [GattTargets.withheld]); it
+ *    reaches Alice and proves her id, and [onDialProved] voids the liar's hint and claims. A hint goes with its link;
  *  - an announced tag ([onTagNext]) is held pending, resolving nothing, until it is first heard; then it is the link's
  *    claim. **A link sends at most one `TAG_NEXT` per [Config.tagNextMinIntervalMs]** (an honest phone sends one per
  *    rotation, 600 s or more apart, and a resend when it refuses a dial): a second inside the window is
@@ -61,10 +66,12 @@ import java.util.PriorityQueue
  * **What an answer may do.** A clear advert's answer may suppress a dial while its id holds a link, a key's while the id
  * holds a proven one. A claim may only while its claimant's link ([Resolution.Resolved.claimant]) is held: past the
  * link's end, a new link from the same id included, it still names the peer for presence, but a dial
- * [AdvertOrder.iDial] calls for goes ahead, and its proof settles the claim ([onDialed]). A hint never may, and neither
- * may an unresolved answer. The wiring reads this against its live links when it decides a dial. Beside the answer, and
- * whatever it says, the wiring skips one dial more: to the very tag and address its own proven dial reached, while that
- * link is held ([DialKeys.dialHeld], the amendment of 2026-11-06). Nothing said on a link can bring that about.
+ * [AdvertOrder.iDial] calls for goes ahead, and its proof settles the claim ([onDialed]); except that a new link whose
+ * HELLO told the same tag again takes the ended claim's place as its claimant (the yield above), and holds the dial off
+ * while it is held. A hint never may, and neither may an unresolved answer. The wiring reads this against its live
+ * links when it decides a dial. Beside the answer, and whatever it says, the wiring skips one dial more: to the very
+ * tag and address its own proven dial reached, while that link is held ([DialKeys.dialHeld], the amendment of
+ * 2026-11-06). Nothing said on a link can bring that about.
  *
  * **Wiring: a sighting's history.** Until a form resolves, the wiring keys what it learns of the sighting (its dwell,
  * its admission sighting, its cold sightings) on the advertised form; once it resolves, that history carries over to
@@ -73,10 +80,15 @@ import java.util.PriorityQueue
  * **Residual.** A linked attacker can still name an unlinked *stranger's* tag, which no key of ours contradicts. As a
  * responder's hint it costs nothing (above). As a claim it suppresses our dial to that stranger while the attacker's
  * link is held, up to one stranger per attacker link; once that link ends our dial goes ahead and its proof voids the
- * attacker. [nextSpotCheck] offers at most one claimed tag per [Config.spotCheckIntervalMs] for a verification dial
- * inside that window, and [onSpotCheck] voids the claimant when the tag's device proves another id; a refusal with no
- * reply is consistent with an honest claim. The hook is kept but not wired (ADR 2026-11.xp6d's wiring): the hint rule
- * covers the responder case.
+ * attacker, unless the attacker dials back in telling the stranger's tag: the yield then holds our dial to it off for
+ * as long as that new link is held, and no longer once it ends (knit-ios ADR 2026-11.sv5t's "forged hint", which it
+ * accepted the same day). A `TAG_NEXT` naming the tag on the new link already reached as far (the rate limit is per
+ * link, and a same-id announcement promotes to that link's claim when heard), so the yield widens nothing an attacker
+ * could not do. It cannot hold off a dial to an id other than the claim's own: the claim and the hint name one id.
+ * [nextSpotCheck] offers at most one claimed tag per [Config.spotCheckIntervalMs] for a verification dial inside that
+ * window, and [onSpotCheck] voids the claimant when the tag's device proves another id; a refusal with no reply is
+ * consistent with an honest claim. The hook is kept but not wired (ADR 2026-11.xp6d's wiring): the hint rule covers the
+ * responder case.
  *
  * **A replayed tag.** A tag is a function of its slot, so anyone who heard it can re-air it while its slot stays in the
  * window. A tag dial that proves an id other than the one a key resolved the tag to ([Counters.keyProofMismatches])
@@ -588,12 +600,15 @@ internal class AdvertAliases<L : Any>(
     /** The contact whose expected tags list [tag], or null. */
     private fun keyAnswer(tag: String): String? = table.lookup(tag, nowMs())?.nodeId
 
-    /** A claim's answer, else a hint's when every hint for [tag] names one id; null when neither answers. */
+    /**
+     * A claim's answer ([claimAnswer], counted as a claim's whether or not it yielded), else a hint's when every hint for
+     * [tag] names one id; null when neither answers.
+     */
     private fun linkAnswer(tag: String): Resolution? {
-        val claim = claims[tag]
-        if (claim != null) {
+        val claimed = claimAnswer(tag)
+        if (claimed != null) {
             resolvedByClaim++
-            return Resolution.Resolved(claim.nodeId, Source.Claim, claimant = claim.link)
+            return claimed
         }
         val hinted =
             hints.values
@@ -603,6 +618,30 @@ internal class AdvertAliases<L : Any>(
                 .singleOrNull() ?: return null
         resolvedByHint++
         return Resolution.Resolved(hinted, Source.Hint)
+    }
+
+    /**
+     * What [tag]'s claim answers: its own link as the claimant while that link is held; once it has ended, the link of
+     * the hint on [tag] that names the claim's own id, if one is held, else the ended link still. Null without a claim.
+     *
+     * The yield (knit-ios `claimAnswer`, its ADR 2026-11.sv5t amended 2026-11-11; ADR 2026-11.89gg's amendment of
+     * 2026-11-12): a blinding peer whose link dropped and that dials back in tells the same tag, and its new link is the
+     * one held under its id, which the ended claim's [BlePresenceTracker.Suppressor.Claim] never matches, so every
+     * sighting of the tag promoted a dial to a peer already linked until the claim lapsed (a Pixel 3 tag-dialing a
+     * linked iPhone, each dial refused). The answer stays [Source.Claim], with the hint's link as its claimant, so
+     * [BlindSightings] and [DialPlan.suppressed] hold the dial off exactly while that link is held, and no new
+     * suppressor exists. The hint is chosen by the claim's id, never by how many hints the tag holds, so another id's
+     * hint changes nothing; a plain hint, with no claim on the tag, still suppresses nothing.
+     */
+    private fun claimAnswer(tag: String): Resolution.Resolved? {
+        val claim = claims[tag] ?: return null
+        val ownHint =
+            if (claim.link in heldLinks) {
+                null
+            } else {
+                hints.entries.firstOrNull { (_, hint) -> hint.first == tag && hint.second.nodeId == claim.nodeId }?.key
+            }
+        return Resolution.Resolved(claim.nodeId, Source.Claim, claimant = ownHint ?: claim.link)
     }
 
     /** [onDialProved]'s work once the proof stands: liars voided, their void lifted, a proven rival contested. */

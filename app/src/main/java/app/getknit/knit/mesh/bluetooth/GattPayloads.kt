@@ -114,6 +114,9 @@ internal class GattPayloads(
         val untilWall: Long = Long.MAX_VALUE,
     ) {
         fun pastEdge(wall: Long): Boolean = payload.blinded && (wall >= untilWall || wall < readAtWall)
+
+        /** The slot a blinded payload was read in, null for a clear one: what `GattTargets.withheld` reads. */
+        val readSlot: Long? get() = if (payload.blinded) BlindTag.slotOf(readAtWall) else null
     }
 
     /** What an advert at a read address found: the payload to sight it by, or that a blinded one passed its edge. */
@@ -121,6 +124,8 @@ internal class GattPayloads(
         val payload: BleAdvertPayload.Parsed?,
         /** A blinded payload was forgotten past its slot's edge (rule 4): the advert is due a read instead. */
         val pastEdge: Boolean = false,
+        /** The slot [payload] was read in, when it is blinded ([readSlot]). */
+        val readSlot: Long? = null,
     )
 
     private val payloads = lru<Held>()
@@ -167,6 +172,13 @@ internal class GattPayloads(
     fun payload(of: String): BleAdvertPayload.Parsed? = payloads[of]?.payload
 
     /**
+     * The wall-clock slot [of]'s blinded payload was read in, null for a clear payload or none: a dial target built from
+     * it is stale in any other slot while its id holds a proven link (`GattTargets.withheld`).
+     */
+    @Synchronized
+    fun readSlot(of: String): Long? = payloads[of]?.readSlot
+
+    /**
      * An advert from [address] was heard: its payload, if a read found one, now counted as heard. A blinded payload past
      * its slot's edge (rule 4) is forgotten here instead, unless [address] is in [spared] (a link, a dial or the read
      * holds it, as [forgetPastEdge] spares one), so a payload past its deadline is never served and the advert is read.
@@ -182,7 +194,7 @@ internal class GattPayloads(
             return Heard(null, pastEdge = true)
         }
         held.heardAt = scanClock
-        return Heard(held.payload)
+        return Heard(held.payload, readSlot = held.readSlot)
     }
 
     /**

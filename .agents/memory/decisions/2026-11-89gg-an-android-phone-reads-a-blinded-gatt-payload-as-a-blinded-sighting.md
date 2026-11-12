@@ -157,3 +157,70 @@ resolves the iPhone by key over GATT; the Pixel 3, which the iPhone holds but do
 handle until a link proves; both link in both dial orders across two slot edges with no redial while linked and no legacy
 refusal; each blinded read is refunded once its link proves; rule 4 forgets each address once per slot, 35 to 65 s past
 the edge; and every `bt ring` after a rotation is matched by `ble rung by` on the iPhone, with no `bt doorbell absent`.
+
+## Amendment 2026-11-12 — an ended claim yields to its own id's hint, and a stale read gives no dial target
+
+The paired trial (its stranger-no-redial-while-linked step) failed. The Pixel 3, which resolves the blinding iPhone by
+claim rather than by key, tag-dialed it three times while it held a proven link to it, and the iPhone refused each. The
+Pixel 3's claim on the iPhone's tag belonged to a link that had since ended. The iPhone dialed back in, and its proven
+HELLO told the same tag, which the new link held as a hint. The ended claim answered first, since
+`AdvertAliases.linkAnswer` prefers a claim to a hint, and its `Suppressor.Claim` named the ended link, which
+`DialPlan.suppressed` never matches. Our own rotation at the slot edge turned `AdvertOrder.iDial` toward us, and from
+then on the cached GATT payload kept sighting the iPhone's stale tag, each sighting promoting a dial. It stopped only when
+rule 4 re-read the payload 38 s past the edge and heard the tag the iPhone had announced over the new link. A lone hint
+(a dialer's HELLO and no claim) reaches the same window, because an Android hint suppresses nothing. The maintainer
+chose both rules below on 2026-11-12. Contract §5 states the yield as law on both platforms and rule (a) on Android only.
+
+- **An ended claim yields to its own id's hint.** This is knit-ios `claimAnswer`, from knit-ios ADR 2026-11.sv5t's
+  amendment of 2026-11-11.
+  - A claim whose link has ended yields its claimant to a hint on the same tag that names the claim's own id, while
+    that hint's link is held. The hint is chosen by id, never by how many hints the tag holds.
+  - The answer stays `Source.Claim`, counted as a claim, with the hint's link as `claimant`. The existing
+    `Suppressor.Claim` then holds the dial off exactly while that link is the one held under the id. iOS answers the
+    yield as a hint, which its own hint suppressor holds off; the effect is the same.
+  - A claim whose own link is held, another id's hint and a hint on another tag change nothing. A plain hint, with no
+    claim, still suppresses nothing: Android doesn't port iOS's hint suppressor, so ADR 2026-11.xp6d's hint rule stands.
+  - Android has no decide-time re-read of the resolver (iOS's `standing`). The suppressor is fixed at the sighting and
+    read against the held links when the dial is decided, so the first sighting after the hint carries the yield.
+  - `bt gatt blinded … (claim)` keeps its word.
+  - This amends ADR 2026-11.xp6d's "a claimant that relinks suppresses nothing" for a relink that tells the claimed tag.
+- **The residual the yield accepts,** sv5t's "forged hint". The maintainer accepted it on 2026-11-12.
+  - Both statements are proven ones of the same id, so the yield never holds off a dial to any other id.
+  - But a Sybil whose proven link announced or told a stranger's tag, on a link since ended, and that dials back in
+    telling it, holds off our dial to that tag while its new link is held, and no longer once that link ends. That dial
+    goes to the stranger, whose proof would void the Sybil's claim.
+  - A `TAG_NEXT` on the new link already reached as far. The rate limit is per link, and a same-id announcement becomes
+    that link's claim when heard. So the yield gives a liar no reach it lacked.
+- **(a) A stale read gives no dial target** (Android only).
+  - Past a slot edge, a blinded sighting whose GATT payload was read in an earlier slot gives no dial target while its
+    resolved id holds a live, proven link. It still counts for presence. Any slot other than the read's own counts as
+    stale, so a wall clock set back below the read's slot counts too.
+  - A GATT-read target at the address of a held proven link gives no dial target either, whatever its tag resolves to.
+    Rule 4 spares that address and the reader never re-reads it, so its cached tag can outlive the peer's rotation and
+    stop resolving to the linked id, and a dial there would meet only the held link's own peer.
+  - The payload's read slot (`GattPayloads.readSlot`) rides the dial target (`HeardDevice.gattReadSlot`), and
+    `GattTargets` decides when the dial is decided, on the wall clock, `links[id]?.proven` and the held proven links'
+    addresses (`dialAccepted`, which `dialTarget` and `initiateTo` take). A suppressor stamped at the sighting alone
+    would miss the trial's first dial, which left 0.5 s after our own rotation on a sighting from before the edge.
+  - It covers a claim's, a yield's and a hint's answer alike. The floor scan's promotion work and the boost trigger skip a
+    withheld target as well, so a linked peer's stale payload doesn't keep the scan boosted.
+  - It ends at rule 4's forget and the re-read (a payload read in the current slot dials by the ordinary rules), or when
+    the link ends. An unlinked iPhone is still dialed at its stale tag, which its responder honours as the form it
+    dialed.
+  - **Who pays, and how much.** The gainer is always an id that already holds a proven link here. When that id is a
+    Sybil whose hint or ended claim attributes a stranger's stale GATT tag to itself, the dial withheld is our dial to
+    the stranger's device, whose proof would void the lie. At an address rule 4 forgets, that lasts at most rule 4's lag
+    per edge: the 35 s slack and up to 30 s of jitter, about 65 s. Within the read's own slot the dial goes as before,
+    so ADR 2026-11.xp6d's "a forged hint costs nothing" still holds there. At a held proven link's own address the hold
+    lasts the link's life, by design.
+  - **What it leaves.** A dial decided inside the read's own slot that leaves after the edge passes the rule by
+    construction; the responder's RefuseHeld row refuses it, and rule 4's re-read ends the window.
+- **What keeps it true:**
+  - `ClaimYieldTest` takes the trial's sequence through `BlindSightings.attribute` and `DialPlan.ordinaryCandidates`. It
+    shows the yield holding the dial off, the dial going again once the new link ends, the controls, and the Sybil's two
+    halves. Its reproduction, the Sybil's hold-off and the other-id control fail on the code before the yield.
+  - `StaleGattTargetTest` covers the trial's lone-hint and dead-claim cases (linked, the edge turning the order, no
+    dial), which both fail with the rule disabled, the target at a held proven link's own address, a clock set back, the
+    forger's bound, the unlinked case, which is dialed, the release at the re-read, and the read slot's plumbing through
+    `GattPayloads`.
+  - Owed: the trial's stranger-no-redial-while-linked step again, with the Pixel 3 and the iPhone, judged strictly.

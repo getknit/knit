@@ -403,6 +403,10 @@ class BluetoothMeshTransport internal constructor(
         val device: BluetoothDevice,
         val form: AdvertOrder.Form,
         val linkSeal: Boolean,
+        // The wall-clock slot a blinded GATT payload was read in, null for any other sighting: in any other slot a target
+        // this builds gives no dial while its id holds a proven link, nor ever at a held proven link's own address
+        // (GattTargets.withheld, read when the dial is decided).
+        val gattReadSlot: Long? = null,
     ) {
         val advertised: String get() = form.advertised
     }
@@ -549,6 +553,8 @@ class BluetoothMeshTransport internal constructor(
         val viaGatt: Boolean = false,
         // The read's own sighting, whose resolution is logged once (`bt gatt blinded …`); never a cached advert's.
         val readEnd: Boolean = false,
+        // The slot its GATT payload was read in ([HeardDevice.gattReadSlot]); null for a service-data advert.
+        val gattReadSlot: Long? = null,
     )
 
     // The L2CAP responder's servers: the one the advert names, and while blinding the one a rotation just replaced, still
@@ -3151,8 +3157,10 @@ class BluetoothMeshTransport internal constructor(
         val now = elapsed()
         val sighted = presence.snapshots(now)
         val backoff = activeBackoff(now, sighted)
+        // A withheld GATT target is no promotion work either: it gives no dial (GattTargets.withheld).
+        val dialable = sighted.filterNot(::staleTarget)
         val candidates =
-            DialPlan.scanCandidates(mine(), sighted, links.keys, backoff, PROMOTE_RSSI_FLOOR, dialHeld(), provenLinks(), links::get)
+            DialPlan.scanCandidates(mine(), dialable, links.keys, backoff, PROMOTE_RSSI_FLOOR, dialHeld(), provenLinks(), links::get)
         val demand =
             ScanDemandPolicy.decide(
                 linkCount = links.size,
@@ -3216,12 +3224,18 @@ class BluetoothMeshTransport internal constructor(
         if (heard.pastEdge) Log.i(TAG, BtLines.gattForget(address, BtLines.GATT_FORGET_EDGE))
         val read = heard.payload
         when {
-            read == null -> maybeReadGatt(result.device, result.rssi, at)
+            read == null -> {
+                maybeReadGatt(result.device, result.rssi, at)
+            }
 
             // A blinded payload is a form, never a key (ADR 2026-11.89gg): it takes the blind path, as a blinded advert does.
-            read.blinded -> offerGattBlind(read, result.device, result.rssi, at, radioGeneration.get(), readEnd = false)
+            read.blinded -> {
+                offerGattBlind(read, result.device, result.rssi, at, radioGeneration.get(), readEnd = false, heard.readSlot)
+            }
 
-            else -> sight(read, result.device, result.rssi, viaGatt = true)
+            else -> {
+                sight(read, result.device, result.rssi, viaGatt = true)
+            }
         }
     }
 
@@ -3253,8 +3267,10 @@ class BluetoothMeshTransport internal constructor(
         at: Long,
         generation: Int,
         readEnd: Boolean,
+        readSlot: Long?,
     ) {
-        val item = BlindSighting(parsed, device, rssi, coded = false, at, generation, viaGatt = true, readEnd = readEnd)
+        val item =
+            BlindSighting(parsed, device, rssi, coded = false, at, generation, viaGatt = true, readEnd = readEnd, gattReadSlot = readSlot)
         queueBlind(parsed.nodeId + if (readEnd) GATT_READ_SLOT else GATT_SLOT, item)
     }
 
@@ -3335,6 +3351,7 @@ class BluetoothMeshTransport internal constructor(
             item.rssi,
             item.coded,
             viaGatt = item.viaGatt,
+            gattReadSlot = item.gattReadSlot,
             key = attribution.key,
             suppressor = attribution.suppressor,
             at = item.at,
@@ -3433,6 +3450,7 @@ class BluetoothMeshTransport internal constructor(
         rssi: Int,
         coded: Boolean = false,
         viaGatt: Boolean = false,
+        gattReadSlot: Long? = null,
         key: String = parsed.nodeId,
         suppressor: BlePresenceTracker.Suppressor = BlePresenceTracker.Suppressor.Linked,
         at: Long = elapsed(),
@@ -3445,7 +3463,7 @@ class BluetoothMeshTransport internal constructor(
         if (coded) metrics.onBleCodedSighting()
         if (devices) {
             if (viaGatt) gattSighted.add(key) else gattSighted.remove(key)
-            val heard = HeardDevice(device, form, parsed.linkSeal)
+            val heard = HeardDevice(device, form, parsed.linkSeal, gattReadSlot)
             if (coded) {
                 // Its Coded set's address is not its presence advert's: kept apart, so a dial picks the PHY it opens on.
                 codedDeviceFor[key] = heard
@@ -3495,7 +3513,7 @@ class BluetoothMeshTransport internal constructor(
         healSignal.trySend(Unit) // connectLoop: react to every sighting to drive promotion
         // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
         // is what keeps a settled clique scanning continuously — gating here is what lets the floor engage.
-        if (reach && isBoostTrigger(form, key, suppressor, device.address)) scanWake.trySend(Unit)
+        if (reach && isBoostTrigger(form, key, suppressor, device.address, gattReadSlot)) scanWake.trySend(Unit)
     }
 
     /**
@@ -3536,7 +3554,7 @@ class BluetoothMeshTransport internal constructor(
                         if (payload.blinded) {
                             // Never the tag: the worker's `bt gatt blinded` line says what it resolved to.
                             Log.i(TAG, BtLines.gattReadBlinded(address, payload.psm))
-                            offerGattBlind(payload, device, rssi, at, generation, readEnd = true)
+                            offerGattBlind(payload, device, rssi, at, generation, readEnd = true, gattPayloads.readSlot(address))
                         } else {
                             Log.i(TAG, "bt gatt read $address → ${payload.nodeId} (psm ${payload.psm})")
                             sight(payload, device, rssi, viaGatt = true)
@@ -3583,16 +3601,18 @@ class BluetoothMeshTransport internal constructor(
 
     /** A just-sighted peer worth boosting the scan for: one we'd initiate to ([AdvertOrder.iDial] on its advertised
      *  [form]), not held off by a link its answer's [suppressor] counts, above the RSSI floor (so it can
-     *  actually promote), off connect backoff by its dial key, and not the tag and [address] a held dial of ours reached.
-     *  Mirrors the [floorScan] candidate gate. */
+     *  actually promote), off connect backoff by its dial key, not the tag and [address] a held dial of ours reached,
+     *  and not a withheld GATT target ([gattReadSlot], [staleGatt]). Mirrors the [floorScan] candidate gate. */
     private fun isBoostTrigger(
         form: AdvertOrder.Form,
         key: String,
         suppressor: BlePresenceTracker.Suppressor,
         address: String,
+        gattReadSlot: Long?,
     ): Boolean {
         if (!::localNodeId.isInitialized) return false
         if (form.blinded && heardAtHeldDial(form, address)) return false
+        if (staleGatt(key, gattReadSlot, address)) return false
         val forms = mine()
         // Before the RSSI read, which takes the presence lock: a scan result for a linked or an order-exempt peer stops here.
         val linked = links.keys
@@ -3703,9 +3723,43 @@ class BluetoothMeshTransport internal constructor(
      * Coded set as a Coded dial too, even before its lag ripens (#148). Null when neither address is known.
      */
     private fun dialTarget(snap: BlePresenceTracker.Snapshot): Pair<BluetoothDevice, Boolean>? =
-        dialHeard(snap)?.let { (heard, viaCoded) -> heard.device to viaCoded }
+        dialAccepted(snap)?.let { (heard, viaCoded) -> heard.device to viaCoded }
 
-    /** [dialTarget] with what was heard at that address: its device and the advert's own seal flag (#286). */
+    /**
+     * [dialHeard], unless that target is a withheld GATT one ([staleTarget]): the one seam every dial path takes its
+     * target through ([ordinaryCandidates], [lonelyCandidates], the read's yield in [driveConnections], [initiateTo]),
+     * read at decide time.
+     */
+    private fun dialAccepted(snap: BlePresenceTracker.Snapshot): Pair<HeardDevice, Boolean>? =
+        dialHeard(snap)?.takeIf { (heard, _) -> !staleGatt(snap.nodeId, heard.gattReadSlot, heard.device.address) }
+
+    /** Whether [snap]'s target is a withheld GATT one ([GattTargets.withheld]). */
+    private fun staleTarget(snap: BlePresenceTracker.Snapshot): Boolean =
+        dialHeard(snap)?.let { (heard, _) -> staleGatt(snap.nodeId, heard.gattReadSlot, heard.device.address) } == true
+
+    /**
+     * [GattTargets.withheld] for a target attributed to [key], read in [readSlot] and heard at [address], on the wall
+     * clock and the links now: [key]'s own proven link, and [address] against every held proven link's. Nothing wakes a
+     * dial when it comes due: the rule only withholds one, and what lifts it (the re-read's sighting, the link's end)
+     * signals the connect loop itself.
+     */
+    private fun staleGatt(
+        key: String,
+        readSlot: Long?,
+        address: String,
+    ): Boolean =
+        readSlot != null && // before the clock and link reads: every other target stops here
+            GattTargets.withheld(
+                readSlot,
+                BlindTag.slotOf(System.currentTimeMillis()),
+                provenLinked = links[key]?.proven == true,
+                atProvenLinkAddress = linkAddresses.entries.any { (link, at) -> at == address && link.proven },
+            )
+
+    /**
+     * What was heard at the address a dial to [snap] would go to: its device and the advert's own seal flag (#286). The
+     * dial key reads it raw; a dial takes it through [dialAccepted].
+     */
     private fun dialHeard(snap: BlePresenceTracker.Snapshot): Pair<HeardDevice, Boolean>? =
         DialPlan.target(codedOn() && CodedPhyPolicy.dialCoded(snap.codedLagMs), heardAs(deviceFor, snap), heardAs(codedDeviceFor, snap))
 
@@ -3717,7 +3771,7 @@ class BluetoothMeshTransport internal constructor(
 
     /** [snap]'s dial key ([DialKeys.dialKey]) at the address a dial would go to now. */
     private fun dialKeyOf(snap: BlePresenceTracker.Snapshot): String =
-        DialKeys.dialKey(snap, formKeys::keyFor, if (snap.blinded) dialTarget(snap)?.first?.address else null)
+        DialKeys.dialKey(snap, formKeys::keyFor, if (snap.blinded) dialHeard(snap)?.first?.device?.address else null)
 
     /** Counts a Coded dial, and returns the `via=` the initiating line carries while the experiment runs. */
     private fun noteDial(viaCoded: Boolean): String {
@@ -3843,7 +3897,7 @@ class BluetoothMeshTransport internal constructor(
         kind: DialPlan.DialKind,
     ) {
         val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == key } ?: return
-        val target = dialHeard(snap) ?: return
+        val target = dialAccepted(snap) ?: return
         val (heard, viaCoded) = target
         val device = heard.device
         // The flags byte of the advert heard at this very address (contract §2), never the other PHY's.

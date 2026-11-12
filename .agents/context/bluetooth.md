@@ -258,7 +258,10 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   read address. A blinded charge is refunded only by a proven link whose `t` or dialed tag is the charged tag. A doorbell
   missing within 10 s of the link's open is retried, never absent; nothing waits on `onServiceChanged`, which never fires
   toward an iPhone (the stack subscribes to Service Changed only after an LE pairing). Who dials is `AdvertOrder.iDial` on
-  forms, with no GATT rule. Tests: `GattPayloadsTest`, `BleGattPayloadReaderTest`, `DoorbellPolicyTest`,
+  forms; the one GATT rule beside it is a withheld read's (`GattTargets.withheld`, `GattPayloads.readSlot`,
+  `HeardDevice.gattReadSlot`, the transport's `dialAccepted` / `staleGatt`): a target built from a blinded payload gives no
+  dial at a held proven link's address (spared by rule 4, so never re-read), nor, read in another slot than now's, while
+  its id holds a proven link; read at decide time, the second ending at rule 4's re-read (`StaleGattTargetTest`). Tests: `GattPayloadsTest`, `BleGattPayloadReaderTest`, `DoorbellPolicyTest`,
   `BlindGattReadTest` (the lines and `announced`), `SealedLinkHandshakeTest` (an iPhone's plain HELLO admitted).
 - **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
   `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow` /
@@ -281,7 +284,8 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   `stale` flag (start a new key generation) when the mark is past the window's lead; the announced tag is `reserve`d
   and aired with `take`, and the mark's store throws rather than answers null on error. When to rotate is the
   wiring's, on the confined worker. A claim suppresses a dial
-  only while its claimant's own link is held (not a later link from the same id), and an unresolved answer never does; the one
+  only while its claimant's own link is held (not a later link from the same id, unless that link's HELLO told the same tag: an
+  ended claim then yields its claimant to that hint, ADR 2026-11.89gg's amendment of 2026-11-12, `ClaimYieldTest`), and an unresolved answer never does; the one
   exception is no answer's: a tag and address our own held proven dial reached is not dialed again (`DialKeys.dialHeld`, below). The claim tables are capped (unproven voids and
   ended links' announcements evicted first) and expire off a deadline queue; every claim rule is in `AdvertAliases`'
   KDoc, and its counters never carry a key or a tag. Tests: `AdvertOrderTest`, `AdvertAliasesTest`, `ExpectedTagTableTest`, `TagScheduleTest`.

@@ -48,7 +48,13 @@ class BlePresenceTracker(
         /**
          * Only the claimant's own [link], while it is the one held under the peer's id: a claim's answer (ADR
          * 2026-11.xp6d, "a claim suppresses our dial only while its claimant's link is held"). A new link from the same
-         * id is not it, so a liar who relinks cannot keep blocking the dial whose proof would void its lie.
+         * id is not it, so a liar who relinks cannot keep blocking the dial whose proof would void its lie, with one
+         * exception: once the claim's link has ended, a new link whose proven HELLO told the same tag for the same id
+         * is the claimant `AdvertAliases` answers with (its `claimAnswer`, knit-ios ADR 2026-11.sv5t's amendment of
+         * 2026-11-11, ADR 2026-11.89gg's of 2026-11-12), and that link holds the dial off while it is held. So a Sybil
+         * that claimed a stranger's tag and relinks telling it holds off our dial to the stranger, the one whose proof
+         * would void it, for as long as the new link is held, and not after (sv5t's "forged hint" residual; a
+         * `TAG_NEXT` on the new link already reached as far). It never holds off a dial to an id other than its own.
          */
         data class Claim(
             val link: Any,

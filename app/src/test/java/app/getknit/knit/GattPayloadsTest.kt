@@ -509,9 +509,11 @@ class GattPayloadsTest {
     fun anAdvertPastTheEdgeIsNotSightedByTheOldTagButReadAgain() {
         val r = blindReads()
         readBlinded(r)
-        assertEquals(GattPayloads.Heard(blinded), r.heard(phone))
+        // It carries the slot it was read in, which a dial target built from it is judged by (GattTargets.withheld).
+        val readIn = GattPayloads.Heard(blinded, readSlot = BlindTag.slotOf(wall))
+        assertEquals(readIn, r.heard(phone))
         wall = edge + 65_000
-        assertEquals("a linked address keeps it", GattPayloads.Heard(blinded), r.heard(phone, spared = setOf(phone)))
+        assertEquals("a linked address keeps it", readIn, r.heard(phone, spared = setOf(phone)))
         assertEquals(GattPayloads.Heard(null, pastEdge = true), r.heard(phone))
         assertNull(r.payload(of = phone))
         assertEquals("forgotten once", GattPayloads.Heard(null), r.heard(phone))

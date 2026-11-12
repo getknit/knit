@@ -20,7 +20,9 @@ package app.getknit.knit.mesh.bluetooth
  *   one of our own dials proved carried the history already, when the transport recorded it at the dial's proof.
  *   It suppresses a dial only while its claimant's own link is the one held under the id
  *   ([BlePresenceTracker.Suppressor.Claim]), read when the dial is decided: a new link from the same id does not, so a
- *   liar who relinks cannot keep blocking the dial whose proof voids it.
+ *   liar who relinks cannot keep blocking the dial whose proof voids it, unless that link's HELLO told the same tag:
+ *   then `AdvertAliases` answers the ended claim with that link as its claimant, and it holds off while held (the
+ *   yield, ADR 2026-11.89gg's amendment of 2026-11-12, and its residual in the Suppressor's KDoc).
  * - **A hint** feeds presence and RSSI (and the address a dial would need), never the Aware candidates, the side
  *   channel's audience or the boost trigger, and never suppresses a dial: the dial [AdvertOrder.iDial] calls for still
  *   happens, and its proof is what voids a liar.
@@ -28,7 +30,9 @@ package app.getknit.knit.mesh.bluetooth
  *
  * "Suppressing a dial" here is what an answer may do. Whatever it says, a tag at the address our own held proven dial
  * reached is not dialed again ([DialKeys.dialHeld], ADR 2026-11.xp6d's amendment of 2026-11-06): that rests on our dial, not
- * on any answer.
+ * on any answer. Nor is a target built from a blinded GATT payload at a held proven link's address, or read in another
+ * slot while its id holds a proven link ([GattTargets.withheld], read at decide time): that rests on the read's slot and
+ * address, for every answer alike, an unresolved one included.
  */
 internal object BlindSightings {
     private val PROVEN = BlePresenceTracker.Suppressor.Proven
