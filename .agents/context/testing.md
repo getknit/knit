@@ -1275,7 +1275,12 @@ logcat and that side's bridge log and btsnoop.
   sighted=true"), so the pair never links. `KNIT_PAIR_DIALER=b scripts/ble-pair-test.sh all` mints fresh identity
   pairs (`pm clear`) until side b holds the larger id, up to 12 tries, then runs. With `KNIT_PAIR_KEEP` it refuses a
   pair the wrong way round instead of minting. It fixes only a one-sided fault, which the btsnoop tally above tells
-  apart. On 2026-11-11 both sides' dials failed at the controller for an hour: dongle A had 0 successful Enhanced
-  Connection Completes out of 5 dials, B had 1 out of 6. Three runs never linked, the last one with b dialing.
+  apart.
+- **A pair that never links from one checkout: try a clean worktree before blaming the rig.** On 2026-11-11, eight runs
+  from the main checkout never formed an ACL in either direction (dials dead at the 12 s watchdog or in
+  `BluetoothSocketException`), whichever side dialed. In the same hour `scripts/dongle-dial.py` connected 6 of 6
+  each way, and the same commits built and run from a fresh `git worktree` linked in 14 to 38 s, 8 of 8 on both
+  sides. A fresh uv cache for the bridge did not fix the main checkout. The cause is still unknown, so run the pair
+  from `git worktree add --detach <dir> <commit>`, with `local.properties` copied, until it is found.
 - **`ctl dial-phys 0x01`** limits a dial's initiating PHYs (an experiment knob: 1M-only dials relinked no better).
 
