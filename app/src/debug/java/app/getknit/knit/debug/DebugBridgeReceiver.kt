@@ -96,7 +96,6 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.MeshStartGate
-import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bluetooth.AdvertDiag
@@ -184,6 +183,7 @@ import app.getknit.knit.ui.chat.ChatWindow
 import app.getknit.knit.ui.chat.quoteLabels
 import app.getknit.knit.ui.invite.prepareKnitApk
 import app.getknit.knit.ui.translate.TranslateModelStore
+import app.getknit.knit.usbcontrol.UsbControlBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -438,6 +438,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   (its next start comes up paused). [ACTION_STATE] reports `meshPausedUntil` / `meshPaused`.
  * - [ACTION_RESETDB] — empties the database for a fresh lab run, keeping the identity, the profile (the own
  *   avatar's blob put back) and the settings; refused unless paused, and the process dies after the reply.
+ * - [ACTION_USBCTL] — the USB control spike's switch (`usbcontrol/UsbControlBridge`): `--es op
+ *   enable|disable|open|close|state`; the reply's `usb` is the accessory server's state.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
  * (`am broadcast` prints `Broadcast completed: result=0, data="…"`) and also logged under the [TAG] tag
@@ -559,6 +561,10 @@ class DebugBridgeReceiver :
 
                         ACTION_TRANSLATE -> {
                             TranslateBridge.handle(context, intent)
+                        }
+
+                        ACTION_USBCTL -> {
+                            UsbControlBridge.handle(context, intent)
                         }
 
                         ACTION_DEMOCALL -> {
@@ -845,49 +851,13 @@ class DebugBridgeReceiver :
                     DeclaredLangs(raw.substringBefore(':').ifEmpty { null }, raw.substringAfter(':', "").ifEmpty { null })
                 }
             }
-        // Route exactly as ChatViewModel.send does, resolving the thread kind from its id.
-        val sent =
-            when (Conversations.kindFor(conv)) {
-                ConversationKind.NEARBY -> {
-                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo, styles = styles, declared = declared)
-                }
-
-                ConversationKind.DM -> {
-                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo, styles = styles, declared = declared)
-                }
-
-                ConversationKind.GROUP -> {
-                    groups.find(conv)?.let {
-                        mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo, styles = styles, declared = declared)
-                    }
-                }
-
-                // A commons post goes to the relay that runs the room, never a radio (§7.4).
-                ConversationKind.COMMONS -> {
-                    mesh.sendCommons(conv, text, emptyList(), replyTo, styles = styles, declared = declared)
-                }
-
-                // The Meshtastic room posts through this phone's own board, and the outcome says why not.
-                ConversationKind.MESHTASTIC -> {
-                    return when (val outcome = mesh.sendPublicPost(text)) {
-                        PublicPostOutcome.Queued -> {
-                            reply("ok", "queued on the board for $conv")
-                        }
-
-                        PublicPostOutcome.Blocked -> {
-                            reply("blocked", "blocked by on-device content filter")
-                        }
-
-                        is PublicPostOutcome.Refused -> {
-                            reply("refused", "the board refused it: ${outcome.reason}").put("reason", outcome.reason.name)
-                        }
-                    }.put("conversation", conv)
-                }
-            }
-        return when (sent) {
-            null -> reply("error", "unknown group (not joined on this device): $conv")
-            true -> reply("ok", "sent to $conv")
-            false -> reply("blocked", "blocked by on-device content filter")
+        // Route exactly as ChatViewModel.send does, resolving the thread kind from its id (shared with the USB spike).
+        return when (val outcome = DebugSend.send(mesh, groups, conv, text, replyTo, styles, declared)) {
+            DebugSend.Outcome.Sent -> reply("ok", "sent to $conv")
+            DebugSend.Outcome.Queued -> reply("ok", "queued on the board for $conv")
+            DebugSend.Outcome.Blocked -> reply("blocked", "blocked by on-device content filter")
+            DebugSend.Outcome.UnknownGroup -> reply("error", "unknown group (not joined on this device): $conv")
+            is DebugSend.Outcome.Refused -> reply("refused", "the board refused it: ${outcome.reason}").put("reason", outcome.reason.name)
         }.put("conversation", conv)
             .put(
                 "declared",
@@ -4769,6 +4739,7 @@ class DebugBridgeReceiver :
         const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"
         const val ACTION_PURGE = "app.getknit.knit.debug.PURGE"
         const val ACTION_RESETDB = "app.getknit.knit.debug.RESETDB"
+        const val ACTION_USBCTL = "app.getknit.knit.debug.USBCTL"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_MINUTES = "minutes"

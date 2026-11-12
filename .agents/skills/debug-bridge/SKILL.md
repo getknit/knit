@@ -111,7 +111,7 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
   (direct Internet links with a contact, the a5yj spike), `WEAR` (Settings › Watch and whether the watch status
   server is up), `STT`
   (the walkie transcript's model and lines), `TRANSLATE` (the offline translation spike's models and bench;
-  `-Ptranslate=true` builds only).
+  `-Ptranslate=true` builds only), `USBCTL` (the USB control spike's switch: knit-cli over Android Open Accessory).
 - **Identity, crypto, data:** `INTRO` (contact cards), `RATCHET`, `BACKUP`.
 - **Fault injection and trials:** `NANFAIL`, `NANSTORM`, `NANREFUSE`, `NANICM`, `NANDIAL`, `NANINIT`,
   `NANMSG`, `NANDORM` (Wi-Fi Aware dormancy: hold awake, force dormant, the duty interval), `MODEL`. Each has a negative control in its bullet; run it too.

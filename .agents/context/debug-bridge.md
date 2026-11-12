@@ -645,6 +645,11 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   the hash kept, or null), and the next start comes up paused — `RESUME`, then start the service as after an
   install. Run it on every lab phone in one pass, or a peer's custody walks the old traffic back in. Take a
   `BACKUP` first if the history might be wanted.
+- `…debug.USBCTL --es op enable|disable|open|close|state` — the **USB control spike's** switch (`exp/usb-control`,
+  `usbcontrol/UsbControlServer`): knit-cli drives the app over an Android Open Accessory stream, no adb. Off until
+  `enable` (it persists); `open` picks up a knit-cli accessory that attached while it was off. The reply's `usb`
+  carries `enabled`, `open`, `lastClose` and, while a host is connected, `link` (client, subscribed, frame and byte
+  counts). Logs under tag `KnitUsb`.
 - `…debug.NANFAIL` / `…debug.NANSTORM` — reproduce **getknit/Knit#9** (ADR 052 + 055) on hardware that does
   not have the bug. `NANFAIL --ei count N` arms N Wi-Fi Aware attaches to take their failure path without
   reaching `mgr.attach` (0 disarms) — the stand-in for a vendor HAL with no STA+NAN interface combination.

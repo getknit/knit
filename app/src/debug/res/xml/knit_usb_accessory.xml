@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The USB control spike's accessory (debug only): knit-cli's AOA identity strings. Must match
+     UsbControlServer.MANUFACTURER / MODEL and knit-cli's aoa.py. -->
+<resources>
+    <usb-accessory
+        manufacturer="getknit"
+        model="knit-cli" />
+</resources>

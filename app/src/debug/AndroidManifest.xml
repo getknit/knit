@@ -12,7 +12,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- The USB control spike (exp/usb-control): knit-cli drives the app over an Android Open Accessory stream.
+         Not required, so a device without accessory support still installs the debug build. -->
+    <uses-feature
+        android:name="android.hardware.usb.accessory"
+        android:required="false" />
+
     <application android:usesCleartextTraffic="true">
+        <!-- Android launches this when knit-cli switches the phone into accessory mode and the user accepts the
+             prompt; the launch is the accessory grant. Exported because the system starts it from the intent
+             filter, so any app can launch it: UsbControlServer reads the extra only as a name and opens the
+             accessory the system holds as attached, with Knit's grant for it, or nothing. -->
+        <activity
+            android:name="app.getknit.knit.usbcontrol.UsbAccessoryActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/knit_usb_accessory" />
+        </activity>
         <receiver
             android:name="app.getknit.knit.debug.DebugBridgeReceiver"
             android:exported="true"
@@ -75,6 +98,7 @@
                 <action android:name="app.getknit.knit.debug.BACKUP" />
                 <action android:name="app.getknit.knit.debug.PURGE" />
                 <action android:name="app.getknit.knit.debug.RESETDB" />
+                <action android:name="app.getknit.knit.debug.USBCTL" />
             </intent-filter>
         </receiver>
     </application>
