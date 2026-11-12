@@ -38,6 +38,19 @@ import kotlinx.coroutines.withTimeoutOrNull
  * a response, which is the only kind a suspended app can take without holding the link up) is not asked again on this
  * link, and its client is closed at once; the open CoC keeps the ACL up without it.
  *
+ * **The doorbell is searched for in every `0xFE30` service** ([DoorbellPolicy.characteristicIn]): a blinding iPhone
+ * serves it in a service of its own (D, added first at each bring-up and never rotated) beside the payload's (P,
+ * replaced at each rotation), so `getService(UUID)` could answer P (knit-ios ADR 2026-11.prsp, ADR 2026-11.89gg). And a
+ * lookup that finds none within [DoorbellPolicy.DOORBELL_SETTLE_MS] of the link's open ([openedAt], `elapsedRealtime`)
+ * is a retry, never an absence ([DoorbellPolicy.missing]): the peer's server may still be coming up. A retry drops the
+ * client without counting a failure (no [DoorbellPolicy.LOOKUP_RETRY_MS] wait, nothing toward
+ * [DoorbellPolicy.MAX_FAILED_LOOKUPS]), so the next lookup registers a fresh client and discovers again: AOSP keeps one
+ * GATT database per server per connection and clears it only when the last client on that address goes, and no Service
+ * Changed may reach this phone, so a kept client would rediscover the same partial database. (Another app's client on
+ * that address still pins it; nothing here can see one.) The next lookup is a ring's, or one at the bound itself
+ * ([settleLookupAt]), so a link whose first lookup found nothing still gets its BALANCED ask (#102) without waiting for
+ * a frame. Past the bound `absent` stands for the link's life. Nothing here waits on `onServiceChanged`.
+ *
  * **Each lookup that finds the doorbell also asks for [BluetoothGatt.CONNECTION_PRIORITY_BALANCED]** (#102). An iPhone
  * that dialed us is the link's central and runs it at a 720 ms supervision timeout, which drops the link at the first
  * 0.72 s without a good packet. The stack's own update for the discovery asks for 5 s and gets it, then asks for the
@@ -64,6 +77,8 @@ internal class BleDoorbell(
     private val isLive: () -> Boolean,
     private val onRang: () -> Unit,
     private val now: () -> Long,
+    // When the link's L2CAP channel opened, on [now]'s clock: the doorbell settle bound counts from here (ADR 2026-11.89gg).
+    private val openedAt: Long,
     // A lookup's client attached to the link's ACL (binder thread): that attach arms the ACL to idle out when the link's
     // channel closes, as the transport's link-up arm does for every other link (#142, ADR 2026-10.b8yf).
     private val onAttached: () -> Unit = {},
@@ -80,6 +95,10 @@ internal class BleDoorbell(
 
     // When the client's BALANCED ask is checked again (DoorbellPolicy.Balanced.onSettle), null when none is owed.
     private var settleAt: Long? = null
+
+    // When the one lookup a settling retry owes runs (the link's open plus DoorbellPolicy.DOORBELL_SETTLE_MS), null when
+    // none is owed: a ring before it looks first, and this one then finds the doorbell held or the absence standing.
+    private var settleLookupAt: Long? = null
 
     fun start() {
         job = scope.launch(Dispatchers.IO) { loop() }
@@ -99,17 +118,25 @@ internal class BleDoorbell(
         try {
             lookUp() // at link-up, for the connection priority it asks for; it rings nothing
             while (currentCoroutineContext().isActive) {
-                val due = listOfNotNull(schedule.dueAt, settleAt).minOrNull()
+                val due = listOfNotNull(schedule.dueAt, settleAt, settleLookupAt).minOrNull()
                 val poked =
                     if (due == null) {
                         pokes.receive()
                         true
                     } else {
-                        // stretches: the trailing ring (≤ 5 s; a ring buys ~9 s, dqvb) and the 2 s BALANCED settle.
+                        // stretches: the trailing ring (≤ 5 s; a ring buys ~9 s, dqvb), the 2 s BALANCED settle and the
+                        // doorbell settle lookup (≤ 10 s from the link's open, 89gg): a settle lookup run late reads the
+                        // elapsed clock, so it finds the doorbell or the absence it would have, and any ring looks first.
                         withTimeoutOrNull((due - now()).coerceAtLeast(0L)) { pokes.receive() } != null
                     }
                 val t = now()
                 settleAt?.let { if (t >= it) settle() }
+                settleLookupAt?.let {
+                    if (t >= it) {
+                        settleLookupAt = null
+                        lookUp()
+                    }
+                }
                 if (if (poked) schedule.afterFrame(t) else schedule.onDue(t)) ring()
             }
         } finally {
@@ -148,11 +175,10 @@ internal class BleDoorbell(
             null -> {
                 val ch = c.doorbell()
                 if (ch == null) {
-                    absent = true
-                    dropClient()
-                    Log.i(TAG, "bt doorbell absent $nodeId")
+                    noDoorbell()
                 } else {
                     doorbell = ch
+                    settleLookupAt = null
                     Log.i(TAG, "bt doorbell found $nodeId (${device.address})")
                     askForBalanced(c)
                 }
@@ -164,6 +190,27 @@ internal class BleDoorbell(
                 lookups.failed(now())
                 Log.i(TAG, "bt doorbell lookup failed $nodeId ($phase)")
                 null
+            }
+        }
+    }
+
+    /**
+     * A lookup's discovery answered with no doorbell: inside the settle bound a retry (the client dropped, no failure
+     * counted, one lookup owed at the bound), past it an absence for the link's life ([DoorbellPolicy.missing]).
+     */
+    private fun noDoorbell() {
+        dropClient()
+        val t = now()
+        when (DoorbellPolicy.missing(failed = false, settlingSince = openedAt, now = t)) {
+            DoorbellPolicy.Missing.RETRY -> {
+                settleLookupAt = openedAt + DoorbellPolicy.DOORBELL_SETTLE_MS
+                Log.i(TAG, "bt doorbell settling $nodeId (${t - openedAt}ms since link up)")
+            }
+
+            DoorbellPolicy.Missing.ABSENT -> {
+                absent = true
+                settleLookupAt = null
+                Log.i(TAG, "bt doorbell absent $nodeId")
             }
         }
     }
@@ -261,12 +308,16 @@ internal class BleDoorbell(
             return null
         }
 
-        /** The doorbell among the discovered services, if the peer serves one that takes a write without response. */
+        /**
+         * The doorbell among the discovered services, if the peer serves one that takes a write without response, in
+         * whichever `0xFE30` service holds it (a blinding iPhone's D, a clear one's combined service).
+         */
         fun doorbell(): BluetoothGattCharacteristic? =
-            gatt
-                ?.getService(DoorbellPolicy.SERVICE_UUID)
-                ?.getCharacteristic(DoorbellPolicy.DOORBELL_UUID)
-                ?.takeIf { it.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0 }
+            DoorbellPolicy.characteristicIn(
+                runCatching { gatt?.services }.getOrNull().orEmpty(),
+                { it.uuid },
+                { it.getCharacteristic(DoorbellPolicy.DOORBELL_UUID) },
+            ) { it.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0 }
 
         fun close() {
             val g = gatt ?: return

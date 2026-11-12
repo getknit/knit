@@ -13,11 +13,16 @@ import kotlinx.coroutines.CompletableDeferred
 
 /**
  * Reads the [BleAdvertPayload] a peer serves over GATT (companion change A3): the value of [DoorbellPolicy.PAYLOAD_UUID]
- * in the `0xFE30` service, which a foreground iPhone lists in its advert in place of the service data it cannot
+ * in a `0xFE30` service, which a foreground iPhone lists in its advert in place of the service data it cannot
  * advertise (knit-ios ADR 2026-09.xzpt). [GattPayloads] decides whom to read and when; this does one read.
  *
- * `connectGatt(TRANSPORT_LE)` → attach → `discoverServices` → the payload characteristic, looked up by UUID since the
- * doorbell shares the service → `readCharacteristic` → [BleAdvertPayload.parse]. There is no ACL to the peer yet, so
+ * `connectGatt(TRANSPORT_LE)` → attach → `discoverServices` → the payload characteristic, searched for in every `0xFE30`
+ * service ([DoorbellPolicy.characteristicIn]): a clear iPhone serves it beside the doorbell in one, a blinding one in a
+ * service of its own beside the doorbell's (knit-ios ADR 2026-11.prsp) → `readCharacteristic` → [BleAdvertPayload.parse].
+ * A blinded value (a tag in bytes 1–16, ADR 2026-11.89gg) is a payload like a clear one, and the transport sights it as
+ * a blinded form; one whose tag lacks the prefix is a stranger of its own phase ([PHASE_MALFORMED_BLINDED]), as
+ * [BleAdvertPayload.parse] drops a malformed blinded advert. Each read discovers afresh on a client of its own, so no
+ * handle found before a rotation is ever reused. There is no ACL to the peer yet, so
  * unlike [BleDoorbell]'s 2 s attach the read *is* a dial, and the whole of it gets [timeoutMs]. No `requestMtu`: the
  * value is 24 bytes, and at the default MTU of 23 the stack fetches its last two with a Read Blob on its own (asking
  * for an MTU races the SMP handshake on a Pixel — `MeshtasticGatt`'s settle). The client is closed after every read,
@@ -78,15 +83,17 @@ internal class BleGattPayloadReader(
             if (!connected.await()) return failed("connect")
             phase = "discover"
             if (runCatching { gatt?.discoverServices() }.getOrNull() != true || !discovered.await()) return failed("discover")
-            val service = gatt?.getService(DoorbellPolicy.SERVICE_UUID) ?: return stranger("service")
-            val ch = service.getCharacteristic(DoorbellPolicy.PAYLOAD_UUID) ?: return stranger("characteristic")
+            val services = runCatching { gatt?.services }.getOrNull().orEmpty()
+            if (!DoorbellPolicy.servesKnit(services) { it.uuid }) return stranger("service")
+            val ch =
+                DoorbellPolicy.characteristicIn(services, { it.uuid }, { it.getCharacteristic(DoorbellPolicy.PAYLOAD_UUID) })
+                    ?: return stranger("characteristic")
             phase = "read"
             if (runCatching { gatt?.readCharacteristic(ch) }.getOrNull() != true) return failed("read")
             val bytes = value.await() ?: return failed("read")
+            // A blinded value whose tag lacks the prefix: counted apart (BleBlindDrop.GATT_BLINDED), as an advert's is.
+            if (BleAdvertPayload.isMalformedBlinded(bytes)) return stranger(PHASE_MALFORMED_BLINDED)
             val payload = BleAdvertPayload.parse(bytes) ?: return stranger("value")
-            // No port serves a blinded payload (ADR 2026-11.xp6d), and its tag would never match a HELLO's id, so the
-            // payload would be forgotten and re-read at every dial, spending the read budget (#154).
-            if (payload.blinded) return stranger(PHASE_BLINDED)
             return Result(GattPayloads.Outcome.Read(payload))
         }
 
@@ -155,7 +162,11 @@ internal class BleGattPayloadReader(
     companion object {
         private const val ARBITER_TAG = "gatt-read"
 
-        /** The phase of a [GattPayloads.Outcome.Stranger] whose payload was blinded (ADR 2026-11.xp6d): counted apart. */
-        const val PHASE_BLINDED = "blinded"
+        /**
+         * The phase of a [GattPayloads.Outcome.Stranger] whose value said [BleAdvertPayload.FLAG_BLINDED] with bytes 1–16
+         * lacking the tag prefix ([BleAdvertPayload.isMalformedBlinded]): counted apart, as `GATT_BLINDED` (ADR 2026-11.89gg).
+         * A well-formed blinded value is a payload, never a stranger.
+         */
+        const val PHASE_MALFORMED_BLINDED = "malformed-blinded"
     }
 }

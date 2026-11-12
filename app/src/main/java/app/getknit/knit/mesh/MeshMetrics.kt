@@ -278,7 +278,11 @@ enum class BleBlindDrop {
     /** A `FLAG_BLINDED` advert whose bytes 1–16 lack the tag prefix: malformed, dropped on the scan thread. */
     MALFORMED_ADVERT,
 
-    /** A `FLAG_BLINDED` GATT payload: no port serves one, and its tag would be forgotten and re-read at every dial. */
+    /**
+     * A malformed blinded GATT value: `FLAG_BLINDED` with bytes 1–16 lacking the tag prefix, a stranger as the advert's
+     * twin above is dropped. A well-formed one is a blinded sighting since ADR 2026-11.89gg, never counted here; the key
+     * keeps its name, which the field log, the debug bridge and Diagnostics carry.
+     */
     GATT_BLINDED,
 
     /** A `TAG_NEXT` from an unproven link, or one whose HELLO lacked `CAP_BLIND_ADVERT`. */

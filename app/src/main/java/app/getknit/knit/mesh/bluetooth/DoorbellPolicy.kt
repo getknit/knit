@@ -33,12 +33,22 @@ internal object DoorbellPolicy {
      * The payload: a read-only characteristic in [SERVICE_UUID] whose value is the peer's 24-byte [BleAdvertPayload]
      * with the digest cue zeroed. [BleGattPayloadReader] reads it to find a peer that advertises only the UUID
      * (companion change A3). Minted by the iOS port (knit-ios ADR 2026-09.xzpt) and cross-platform law — never
-     * change it. Looked up by UUID, since the doorbell shares the service.
+     * change it. Looked up by UUID in every [SERVICE_UUID] service ([characteristicIn]): a clear iPhone serves it
+     * beside the doorbell in one service, a blinding one in a service of its own (knit-ios ADR 2026-11.prsp).
      */
     val PAYLOAD_UUID: UUID = UUID.fromString("848eedcd-a2e3-4fb2-86f9-e2c80821a497")
 
     /** The least time between two rings of one link. A ring keeps an iPhone running about 9 s (iOS 27). */
     const val RING_INTERVAL_MS = 5_000L
+
+    /**
+     * How long after the link's open a lookup that finds no doorbell is a retry, not an absence ([missing]): a blinding
+     * iPhone adds its doorbell's service first at each bring-up and replaces its payload's beside it at every rotation,
+     * so a lookup can run while its server is still coming up (knit-ios ADR 2026-11.prsp's `doorbellSettleMilliseconds`,
+     * ADR 2026-11.89gg). Counted on `elapsedRealtime` from the link's open alone: Android hears a services change only
+     * from API 31, and only when the peer indicates it, so nothing here waits on `onServiceChanged`.
+     */
+    const val DOORBELL_SETTLE_MS = 10_000L
 
     /** How long after a failed lookup the next may start, and how many may fail on one link before it stops asking. */
     const val LOOKUP_RETRY_MS = 60_000L
@@ -71,6 +81,58 @@ internal object DoorbellPolicy {
      * a receiver's progress report and an asker's cancel (ADR 2026-10.nsr7). A frame whose type could not be read rings.
      */
     fun rings(type: String?): Boolean = type == null || type !in UPKEEP
+
+    /**
+     * The first characteristic [characteristicOf] finds, and [accepts], in any of [services] whose UUID ([uuidOf]) is
+     * [SERVICE_UUID]; null when none holds one. A filter over every service, never `getService(UUID)`, which answers the
+     * first `0xFE30` service alone: a blinding iPhone serves two, the doorbell's (D, added first, never rotated) and the
+     * payload's (P, replaced at each rotation), and for a moment of a rotation three (knit-ios ADR 2026-11.prsp's
+     * `GattSweep`, ADR 2026-11.89gg). Generic, so it is a JVM test without Android types.
+     */
+    fun <S, C : Any> characteristicIn(
+        services: Iterable<S>,
+        uuidOf: (S) -> UUID?,
+        characteristicOf: (S) -> C?,
+        accepts: (C) -> Boolean = { true },
+    ): C? =
+        services
+            .asSequence()
+            .filter { uuidOf(it) == SERVICE_UUID }
+            .mapNotNull(characteristicOf)
+            .firstOrNull(accepts)
+
+    /** Whether any of [services] is a [SERVICE_UUID] service: the reader's `service` stranger phase is its absence. */
+    fun <S> servesKnit(
+        services: Iterable<S>,
+        uuidOf: (S) -> UUID?,
+    ): Boolean = services.any { uuidOf(it) == SERVICE_UUID }
+
+    /** What a lookup that found no doorbell leaves behind ([missing]). */
+    enum class Missing {
+        /** Nothing: the doorbell may still be coming, and the next ring (or the settle lookup) looks again. */
+        RETRY,
+
+        /** The peer serves no doorbell, and no ring on this link looks again. */
+        ABSENT,
+    }
+
+    /**
+     * A lookup ended at [now] without a doorbell, having [failed] (an error, not an answer) or not, on a link open since
+     * [settlingSince] (null when unknown, which counts as settled). Inside [DOORBELL_SETTLE_MS] of the open it is a
+     * [Missing.RETRY]; past it [Missing.ABSENT] stands for the link's life. The iOS port's `DoorbellLookup.missing`, line
+     * for line ([BleDoorbell] takes a failed discovery down its own path, `Lookups.failed`, as before).
+     */
+    fun missing(
+        failed: Boolean,
+        settlingSince: Long?,
+        now: Long,
+    ): Missing =
+        when {
+            failed -> Missing.RETRY
+            settlingSince == null -> Missing.ABSENT
+            now - settlingSince < DOORBELL_SETTLE_MS -> Missing.RETRY
+            else -> Missing.ABSENT
+        }
 
     private val UPKEEP =
         setOf(
@@ -177,7 +239,8 @@ internal object DoorbellPolicy {
     /**
      * How often one link may look its doorbell up again after a lookup failed (a timeout, the GATT client
      * dropped, or none free to register): once every [LOOKUP_RETRY_MS], and not after [MAX_FAILED_LOOKUPS]
-     * failures. A lookup that found the doorbell, or found none, costs nothing here. Not thread-safe, like [Schedule].
+     * failures. A lookup that found the doorbell, or found none (a [Missing.RETRY] inside the settle bound included),
+     * costs nothing here. Not thread-safe, like [Schedule].
      */
     class Lookups(
         private val retryMs: Long = LOOKUP_RETRY_MS,

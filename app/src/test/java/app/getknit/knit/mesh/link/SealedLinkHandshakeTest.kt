@@ -569,6 +569,23 @@ class SealedLinkHandshakeTest {
     }
 
     @Test
+    fun anIphonesPlainHelloWithoutTheSealBitIsAdmitted() {
+        // A blinding iPhone (ADR 2026-11.89gg) proves, reads tags and rings, but does not seal: §7 refuses only a plain
+        // HELLO that carries CAP_LINK_SEAL, so its plain dial is answered, proven.
+        val iphoneCaps = Protocol.CAP_DOORBELL or Protocol.CAP_LINK_PROOF or Protocol.CAP_BLIND_ADVERT
+        val iphoneD = helloWithCaps(alice.nodeId, iphoneCaps, nonceA)
+        val alicesProof = alice.prover.proof(LinkProof.Role.DIALER, iphoneD, helloR)
+        val records = record(LinkFraming.Type.HELLO, iphoneD) + record(LinkFraming.Type.PROOF, alicesProof)
+        val link = StreamLink(records, ByteArrayOutputStream())
+        val opening = LinkHandshake.receiveOpening(link) as LinkHandshake.Opening.Plain
+        assertFalse(LinkHandshake.refusesPlain(opening.hello))
+        assertEquals(
+            LinkHandshake.AnswerOutcome.Linked(proven = true, link = link),
+            LinkHandshake.answerPlain(link, bob.prover, opening.hello, nonceB),
+        )
+    }
+
+    @Test
     fun aV210PeerLinksPlainAndUnprovenBothWays() {
         val dialed =
             LinkHandshake.dialPlain(

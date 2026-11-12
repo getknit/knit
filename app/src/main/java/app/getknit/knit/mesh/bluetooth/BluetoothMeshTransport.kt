@@ -305,8 +305,9 @@ class BluetoothMeshTransport internal constructor(
     private val elapsedWait = ElapsedWait(::elapsed)
 
     // Whose GATT payload to read and what each read found (companion change A3), and the reader; [gattReads] counts
-    // the reads begun, for the debug state line. [gattJob] is the read in progress, cancelled with the radio.
-    private val gattPayloads = GattPayloads()
+    // the reads begun, for the debug state line. [gattJob] is the read in progress, cancelled with the radio. Rule 4's
+    // jitter is seeded at random here, so the readers of one blinding writer spread their re-reads (ADR 2026-11.89gg).
+    private val gattPayloads = GattPayloads(jitterSeed = SecureRandom().nextLong())
     private val gattReader = BleGattPayloadReader(appContext, arbiter, elapsedWait)
     private val gattReads = AtomicInteger()
 
@@ -540,9 +541,14 @@ class BluetoothMeshTransport internal constructor(
         val device: BluetoothDevice,
         val rssi: Int,
         val coded: Boolean,
-        // Capture time on the elapsed clock (`ScanResult.timestampNanos`), and the radio generation it was heard in.
+        // Capture time on the elapsed clock (`ScanResult.timestampNanos`), and the radio generation it was heard in. A
+        // GATT sighting's is the advert that started (or, cached, that met) the read, never the read's end.
         val at: Long,
         val generation: Int,
+        // A blinded GATT payload's sighting (ADR 2026-11.89gg): [sight]'s `viaGatt`, so [gattSighted] holds its key.
+        val viaGatt: Boolean = false,
+        // The read's own sighting, whose resolution is logged once (`bt gatt blinded …`); never a cached advert's.
+        val readEnd: Boolean = false,
     )
 
     // The L2CAP responder's servers: the one the advert names, and while blinding the one a rotation just replaced, still
@@ -3048,12 +3054,17 @@ class BluetoothMeshTransport internal constructor(
         far: List<String>,
     ): String = ScanPlan.codedWindowsWhy(alone, hunt, far) { chase.deadlines.keys.filter { codedCapable.containsKey(it) } }
 
-    /** A window of [ms] ran on [phys]: GATT-payload quiet time, unless it was Coded-only — which cannot hear an iPhone. */
+    /**
+     * A window of [ms] ran on [phys]: GATT-payload quiet time, unless it was Coded-only — which cannot hear an iPhone. Rule
+     * 4 (a blinded payload past its slot's edge) runs whatever the PHY: it reads the wall clock, not quiet time.
+     */
     private fun noteQuietScan(
         phys: ScanPhys,
         ms: Long,
     ) {
-        if (gattPeers && phys != ScanPhys.CODED) forgetQuietGattPayloads(ms)
+        if (!gattPeers) return
+        if (phys != ScanPhys.CODED) forgetQuietGattPayloads(ms)
+        forgetPastEdgeGattPayloads()
     }
 
     /** The transport stopped: a debug scan hold ends with it (`bt scan hold off (stop)`), and the last gap is forgotten. */
@@ -3196,8 +3207,22 @@ class BluetoothMeshTransport internal constructor(
             return
         }
         if (!gattPeers || record.serviceUuids?.contains(BleConstants.SERVICE_UUID) != true) return
-        val read = gattPayloads.heard(result.device.address)
-        if (read != null) sight(read, result.device, result.rssi, viaGatt = true) else maybeReadGatt(result.device, result.rssi)
+        val address = result.device.address
+        val at = result.timestampNanos / NANOS_PER_MS
+        // Rule 4 is checked here too, so no advert is sighted by a blinded payload past its slot's edge; spared only
+        // where a link, a dial or the read holds the address (a linked iPhone is never re-read: DialPlan.mayReadGatt).
+        val spared = if (gattPayloads.payload(of = address)?.blinded == true) gattSpared() else emptySet()
+        val heard = gattPayloads.heard(address, spared)
+        if (heard.pastEdge) Log.i(TAG, BtLines.gattForget(address, BtLines.GATT_FORGET_EDGE))
+        val read = heard.payload
+        when {
+            read == null -> maybeReadGatt(result.device, result.rssi, at)
+
+            // A blinded payload is a form, never a key (ADR 2026-11.89gg): it takes the blind path, as a blinded advert does.
+            read.blinded -> offerGattBlind(read, result.device, result.rssi, at, radioGeneration.get(), readEnd = false)
+
+            else -> sight(read, result.device, result.rssi, viaGatt = true)
+        }
     }
 
     /**
@@ -3211,7 +3236,34 @@ class BluetoothMeshTransport internal constructor(
     ) {
         val item = BlindSighting(parsed, result.device, result.rssi, coded, result.timestampNanos / NANOS_PER_MS, radioGeneration.get())
         // One slot per tag and PHY: a peer heard on both keeps its Coded hearing while the worker is busy.
-        when (blindQueue.offer(if (coded) parsed.nodeId + CODED_SLOT else parsed.nodeId, item)) {
+        queueBlind(if (coded) parsed.nodeId + CODED_SLOT else parsed.nodeId, item)
+    }
+
+    /**
+     * Queues a blinded GATT payload's sighting for the worker (ADR 2026-11.89gg): the same path a blinded advert takes, at
+     * the read's address, stamped [at] by the advert that started the read (or, cached, by this advert) and tagged with
+     * the radio [generation] the read began in. Its own slots: a cached advert's sighting never conflates the read's
+     * own ([readEnd]), whose resolution is logged once. Any thread (the scan's main thread, a read's IO thread).
+     */
+    @Suppress("LongParameterList") // one sighting's facts
+    private fun offerGattBlind(
+        parsed: BleAdvertPayload.Parsed,
+        device: BluetoothDevice,
+        rssi: Int,
+        at: Long,
+        generation: Int,
+        readEnd: Boolean,
+    ) {
+        val item = BlindSighting(parsed, device, rssi, coded = false, at, generation, viaGatt = true, readEnd = readEnd)
+        queueBlind(parsed.nodeId + if (readEnd) GATT_READ_SLOT else GATT_SLOT, item)
+    }
+
+    /** Offers [item] to [blindQueue] under [slot], starting the worker's drain when it is the first. */
+    private fun queueBlind(
+        slot: String,
+        item: BlindSighting,
+    ) {
+        when (blindQueue.offer(slot, item)) {
             BlindQueue.Offer.START -> {
                 scope.launch(worker) { drainBlind() }
             }
@@ -3250,10 +3302,16 @@ class BluetoothMeshTransport internal constructor(
         val resolution = aliases.resolve(item.parsed.form)
         val formKey = formKeys.keyFor(tag)
         val replayed = replays.replayed(tag, item.device.address)
-        val attribution =
-            BlindSightings.attribute(resolution, formKey, replayed) ?: return metrics.onBleBlindDropped(
-                if (resolution == AdvertAliases.Resolution.Own) BleBlindDrop.OWN_ADVERT else BleBlindDrop.REPLAYED_ADVERT,
-            )
+        val attribution = BlindSightings.attribute(resolution, formKey, replayed)
+        // A GATT read's own sighting says once how it resolved (ADR 2026-11.89gg): an id or a handle, never the tag.
+        if (item.readEnd) {
+            val how = BtLines.gattResolved(resolution, replayed)
+            Log.i(TAG, BtLines.gattBlinded(item.device.address, attribution?.key ?: formKey, how))
+        }
+        if (attribution == null) {
+            val drop = if (resolution == AdvertAliases.Resolution.Own) BleBlindDrop.OWN_ADVERT else BleBlindDrop.REPLAYED_ADVERT
+            return metrics.onBleBlindDropped(drop)
+        }
         when (attribution.history) {
             BlindSightings.History.CARRY -> {
                 rekeyForm(tag, attribution.key, carry = true, attribution.suppressor)
@@ -3276,6 +3334,7 @@ class BluetoothMeshTransport internal constructor(
             item.device,
             item.rssi,
             item.coded,
+            viaGatt = item.viaGatt,
             key = attribution.key,
             suppressor = attribution.suppressor,
             at = item.at,
@@ -3326,8 +3385,9 @@ class BluetoothMeshTransport internal constructor(
     /**
      * Moves what [tag]'s handle holds to [id] when it first resolves by a key or by our own dial's proof ([carry]): its
      * dwell, admission sighting and RSSI (presence), its addresses and its Coded hearing. Otherwise (a claim, a hint)
-     * drops them: the id is attributed from now on, never backwards. Either way the handle's Aware candidacy, side
-     * channel flag and tally go: the id's own sightings note them. A cold hunt or fast window held for the handle ends by
+     * drops them: the id is attributed from now on, never backwards. A carry moves the handle's GATT mark too
+     * ([gattSighted]). Either way the handle's Aware candidacy, side channel flag and tally go: the id's own sightings
+     * note them. A cold hunt or fast window held for the handle ends by
      * its own hold. On the worker, in the same task as the resolution, never at the next sighting.
      */
     private fun rekeyForm(
@@ -3343,13 +3403,16 @@ class BluetoothMeshTransport internal constructor(
             deviceFor.remove(from)?.let { deviceFor.putIfAbsent(id, it) }
             codedDeviceFor.remove(from)?.let { codedDeviceFor.putIfAbsent(id, it) }
             codedCapable.remove(from)?.let { at -> codedCapable.merge(id, at, ::maxOf) }
+            // The GATT mark moves with the addresses (ADR 2026-11.89gg): a late GATT sighting (stamped at the advert that
+            // started its read) adds no mark of its own, and the id's doorbell trust reads it (doorbellTrusted).
+            if (gattSighted.remove(from)) gattSighted.add(id)
         } else {
             presence.forget(from)
             deviceFor.remove(from)
             codedDeviceFor.remove(from)
             codedCapable.remove(from)
+            gattSighted.remove(from)
         }
-        gattSighted.remove(from)
         codedTallies.remove(from)
         awareCandidates.forget(from)
         sideCapable.forget(from)
@@ -3439,10 +3502,15 @@ class BluetoothMeshTransport internal constructor(
      * Reads [device]'s GATT payload when [GattPayloads] says one is due, and sights the peer it names. Never an address
      * a link holds, and never while a dial is in flight or another connect holds the arbiter: the read is a connection
      * the controller must make, as a dial is. The read is launched, never run on the scan callback's main thread.
+     *
+     * A blinded payload (ADR 2026-11.89gg) is a blinded sighting at this address, through the blind path's worker, stamped
+     * [at] (the elapsed capture stamp of the advert that started the read: a read takes up to 12 s, and the stamp feeds
+     * [linkStamps]) and with the radio generation the read began in, so a read across an adapter off sights nothing.
      */
     private fun maybeReadGatt(
         device: BluetoothDevice,
         rssi: Int,
+        at: Long,
     ) {
         val address = device.address
         if (!::localNodeId.isInitialized) return
@@ -3452,6 +3520,7 @@ class BluetoothMeshTransport internal constructor(
         if (!gattPayloads.begin(address, now)) return
         gattReads.incrementAndGet()
         Log.d(TAG, "bt gatt reading $address")
+        val generation = radioGeneration.get()
         gattJob =
             scope.launch(Dispatchers.IO) {
                 // Whatever the read threw, it ends as a failure: an unfinished read would hold [GattPayloads] for good.
@@ -3463,8 +3532,15 @@ class BluetoothMeshTransport internal constructor(
                 gattPayloads.finish(address, result.outcome, elapsed())
                 when (val outcome = result.outcome) {
                     is GattPayloads.Outcome.Read -> {
-                        Log.i(TAG, "bt gatt read $address → ${outcome.payload.nodeId} (psm ${outcome.payload.psm})")
-                        sight(outcome.payload, device, rssi, viaGatt = true)
+                        val payload = outcome.payload
+                        if (payload.blinded) {
+                            // Never the tag: the worker's `bt gatt blinded` line says what it resolved to.
+                            Log.i(TAG, BtLines.gattReadBlinded(address, payload.psm))
+                            offerGattBlind(payload, device, rssi, at, generation, readEnd = true)
+                        } else {
+                            Log.i(TAG, "bt gatt read $address → ${payload.nodeId} (psm ${payload.psm})")
+                            sight(payload, device, rssi, viaGatt = true)
+                        }
                     }
 
                     GattPayloads.Outcome.Failed -> {
@@ -3473,7 +3549,9 @@ class BluetoothMeshTransport internal constructor(
 
                     GattPayloads.Outcome.Stranger -> {
                         Log.i(TAG, "bt gatt read $address stranger (${result.phase})")
-                        if (result.phase == BleGattPayloadReader.PHASE_BLINDED) metrics.onBleBlindDropped(BleBlindDrop.GATT_BLINDED)
+                        if (result.phase == BleGattPayloadReader.PHASE_MALFORMED_BLINDED) {
+                            metrics.onBleBlindDropped(BleBlindDrop.GATT_BLINDED)
+                        }
                     }
                 }
                 wake() // the arbiter is free again, and a dial held back for the read may go
@@ -3776,14 +3854,15 @@ class BluetoothMeshTransport internal constructor(
         if (!beginConnect(dialKey, DialPlan.InFlight(kind, key, device.address, linkedAtStart = links.containsKey(key)))) return
         val rssi = snap.smoothedRssi.toInt()
         Log.i(TAG, BtLines.initiating(key, psm, rssi, audioMonitor.state.value, links.size, noteDial(viaCoded)))
-        // A tag dial forgets no GATT payload and arms its channel unnamed: the reply's id is unproven (`LinkHandshake.dialTagPlain`).
-        val gattDevice = device.takeIf { !form.blinded }
+        // A tag dial arms its channel unnamed: the reply's id is unproven (`LinkHandshake.dialTagPlain`). It forgets the GATT
+        // payload it was dialed from when it fails before its channel opens, as a clear dial does (rule 1, ADR
+        // 2026-11.89gg): a blinding iPhone that restarted listens on a new PSM.
         val named = key.takeIf { !form.blinded }
         scope.launch(Dispatchers.IO) {
             val startedAt = elapsed()
             val socket =
                 runCatching { device.createInsecureL2capChannel(psm) }
-                    .getOrElse { t -> return@launch failConnect(dialKey, ConnectFailClassifier.classify(t), startedAt, t, gattDevice) }
+                    .getOrElse { t -> return@launch failConnect(dialKey, ConnectFailClassifier.classify(t), startedAt, t, device) }
             // Time-box the blocking connect(): on stall, give up this peer's inFlight slot at the timeout so the
             // scan (paused while any connect is in flight) resumes promptly — instead of after connect() finally
             // unwinds. Closing the socket is best-effort only: on some stacks (the API-30 device's Qualcomm
@@ -3799,7 +3878,7 @@ class BluetoothMeshTransport internal constructor(
                     elapsedWait.sleep(timeoutMs)
                     if (settled.compareAndSet(false, true)) {
                         val cause = TimeoutException("connect watchdog ${timeoutMs}ms")
-                        failConnect(dialKey, ConnectFailReason.TIMEOUT, startedAt, cause, gattDevice)
+                        failConnect(dialKey, ConnectFailReason.TIMEOUT, startedAt, cause, device)
                     }
                     runCatching { socket.close() } // may block until the native connect unwinds; the slot is already freed
                 }
@@ -3813,7 +3892,7 @@ class BluetoothMeshTransport internal constructor(
             watchdog.cancel()
             if (connectErr != null) {
                 runCatching { socket.close() }
-                failConnect(dialKey, ConnectFailClassifier.classify(connectErr), startedAt, connectErr, gattDevice)
+                failConnect(dialKey, ConnectFailClassifier.classify(connectErr), startedAt, connectErr, device)
                 return@launch armUnlinked(device, named) // only if its ACL came up: a refused channel
             }
             val link = BluetoothSocketLink(socket)
@@ -3829,7 +3908,8 @@ class BluetoothMeshTransport internal constructor(
             if (refusal != null || dialed !is LinkHandshake.DialOutcome.Linked) {
                 link.close()
                 countSeal(LinkSealPolicy.dialCount(dialed))
-                if (gattDevice != null) forgetUnsealedPayload(gattDevice.address, key, sealed, dialed)
+                // Clear payloads only: GattPayloads.forgetUnsealed keeps a blinded one (a tag dial's, keyed by its handle).
+                forgetUnsealedPayload(device.address, key, sealed, dialed)
                 failConnect(dialKey, ConnectFailReason.HANDSHAKE, startedAt, refusal ?: IllegalStateException("handshake"))
                 return@launch armUnlinked(device, named) // a channel that never became a link: a refusal, a failed proof (#142)
             }
@@ -4015,6 +4095,9 @@ class BluetoothMeshTransport internal constructor(
         attributed: String,
         address: String,
     ) {
+        // Rule 2 now the reply is believed, with the tag it announced read before onDialed may settle it (knit-ios
+        // `provedTagDial`, ADR 2026-11.89gg). An unproven reply never gets here, and forgets nothing.
+        gattHelloNamedOnWorker(address, provenId, told)
         val mismatches = aliases.keyProofMismatchCount
         // A link that already ended stores nothing: its proof still settles the tag's rivals, and a replay is still marked.
         val outcome =
@@ -4055,7 +4138,7 @@ class BluetoothMeshTransport internal constructor(
 
             is LinkHandshake.DialOutcome.WrongPeer -> {
                 // A reply naming another node: a new node took the address our payload came from. No reply keeps it.
-                forgetGattPayloadIfOther(device.address, dialed.reply.nodeId)
+                gattHelloNamed(device.address, dialed.reply.nodeId, dialed.reply.told)
                 IllegalStateException("hello reply ${dialed.reply.nodeId} != expected $nodeId")
             }
 
@@ -4079,6 +4162,9 @@ class BluetoothMeshTransport internal constructor(
                     claims.refused(nodeId, PLANE, "unproven reply")
                     IllegalStateException("unproven reply claims a proof-capable id")
                 } else {
+                    // A blinded payload is held here only if a re-read since the sighting found the peer blinding: rule 2
+                    // judges it by the reply's `t` (ADR 2026-11.89gg). A clear one naming the id dialed stays.
+                    gattHelloNamed(device.address, nodeId, dialed.reply.told)
                     null
                 }
             }
@@ -4210,6 +4296,11 @@ class BluetoothMeshTransport internal constructor(
             }
         }
         val clientNodeId = hello.wire.nodeId
+        // A dialer at an address whose payload names another node took that address: forget the payload before the
+        // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
+        // Every HELLO heard there, before any refusal (knit-ios `handleHello`); a blinded payload is judged by the HELLO's
+        // `t` on the worker (ADR 2026-11.89gg).
+        gattHelloNamed(device.address, clientNodeId, hello.wire.told)
         if (hello.malformedOffer) {
             // A HELLO that offers a proof with no nonce to sign over: a failed proof, closed with no reply, no backoff.
             claims.proofFailed(clientNodeId, PLANE, "no nonce")
@@ -4224,9 +4315,6 @@ class BluetoothMeshTransport internal constructor(
             armUnlinked(device, clientNodeId)
             return
         }
-        // A dialer at an address whose payload names another node took that address: forget the payload before the
-        // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
-        forgetGattPayloadIfOther(device.address, clientNodeId)
         val first = judge(hello, honoured = BleAdmissionPolicy.honours(hello.offersProof, proven = false, late = false))
         if (first.verdict.refuses) {
             Log.i(TAG, "bt refused client $clientNodeId (${first.fields})")
@@ -4538,7 +4626,9 @@ class BluetoothMeshTransport internal constructor(
         device?.let {
             linkAddresses[framed] = it.address
             linkDevices[framed] = it
-            confirmGattPayload(it.address, nodeId)
+            // The tag evidence is explicit: the tag our dial went to, or the accepted dialer's proven `t` ([form] as passed,
+            // never the presence fallback below), so a blinded charge is refunded only by a link that showed its tag.
+            confirmGattPayload(it.address, nodeId, form?.takeIf { f -> f.blinded }?.advertised, proven)
         }
         (form ?: presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.form)?.let { linkForms[framed] = it }
         // The dial path passes both, the accept path neither. Before `links.put`: its `wake()` must find the key.
@@ -4594,6 +4684,7 @@ class BluetoothMeshTransport internal constructor(
                     isLive = { links[nodeId] === framed },
                     onRang = { rings.incrementAndGet() },
                     now = SystemClock::elapsedRealtime,
+                    openedAt = elapsed(), // the doorbell settle bound counts from the link's open (ADR 2026-11.89gg)
                     onAttached = { orphans.onDoorbellAttached(device.address, elapsed()) },
                 ).also { it.start() }
         } else if (device != null) {
@@ -5013,7 +5104,7 @@ class BluetoothMeshTransport internal constructor(
 
     /**
      * Forgets [address]'s GATT payload and any wait before its next read, so its next advert reads it afresh (the
-     * contract's payload lifetime). Logged only when a payload went: `bt gatt forget <addr> (dial|hello <id>|quiet|seal)`.
+     * contract's payload lifetime). Logged only when a payload went: `bt gatt forget <addr> (dial|hello <id>|quiet|seal|edge)`.
      * Nothing here touches the read budget (#154): the re-read it makes due is charged when it ends.
      */
     private fun forgetGattPayload(
@@ -5026,23 +5117,63 @@ class BluetoothMeshTransport internal constructor(
 
     /**
      * A link's HELLO at [address] named [nodeId], so a payload read there naming that node is vouched for: the read's
-     * budget charge is refunded, once (#154). The payload is unauthenticated, and only a link vouches for it.
+     * budget charge is refunded, once (#154). The payload is unauthenticated, and only a link vouches for it. A blinded
+     * read's charge only on a [proven] link whose [tag] (the tag dialed, or the proven `t`) is the one read (ADR
+     * 2026-11.89gg), logged at info in a shape `interop.py`'s `GATT_CONFIRMED` does not match.
      */
     private fun confirmGattPayload(
         address: String,
         nodeId: String,
+        tag: String?,
+        proven: Boolean,
     ) {
-        if (gattPeers && gattPayloads.confirmed(address, nodeId, elapsed())) Log.d(TAG, "bt gatt confirmed $address → $nodeId")
+        if (!gattPeers) return
+        when (gattPayloads.confirmed(address, nodeId, tag, proven, elapsed())) {
+            GattPayloads.Refund.ID -> {
+                Log.d(TAG, "bt gatt confirmed $address → $nodeId")
+            }
+
+            GattPayloads.Refund.TAG -> {
+                Log.i(TAG, BtLines.gattConfirmedTag(address, nodeId))
+            }
+
+            null -> {}
+        }
     }
 
-    /** Rule 2: a HELLO on a link to [address] named [nodeId], and the payload held for the address names another. */
-    private fun forgetGattPayloadIfOther(
+    /**
+     * Rule 2: a HELLO on a link to [address] named [nodeId] and told [told] (its `t`). A clear payload held there naming
+     * another node is forgotten here, at once, so a dialer is never judged by the ghost it names. A blinded one is judged
+     * on [worker], which alone reads [aliases] for the tag [nodeId] announced, and re-reads the payload there: it moves no
+     * presence, so its forget need not precede the verdict ([gattHelloNamedOnWorker]). Any thread; never under [lock].
+     */
+    private fun gattHelloNamed(
         address: String?,
         nodeId: String,
+        told: String?,
     ) {
         if (!gattPeers || address == null) return
         val held = gattPayloads.payload(of = address) ?: return
-        if (held.nodeId != nodeId) forgetGattPayload(address, "hello $nodeId")
+        if (held.blinded) {
+            scope.launch(worker) { gattHelloNamedOnWorker(address, nodeId, told) }
+        } else if (gattPayloads.helloNamed(nodeId, told, announced = null, address)) {
+            Log.i(TAG, BtLines.gattForget(address, "hello $nodeId"))
+        }
+    }
+
+    /**
+     * Rule 2 on the worker (ADR 2026-11.89gg): [GattPayloads.helloNamed] with the tag [nodeId] announced to us and we hold
+     * pending ([AdvertAliases.announced]). The `hello <id>` names the HELLO's id, never a tag.
+     */
+    private fun gattHelloNamedOnWorker(
+        address: String,
+        nodeId: String,
+        told: String?,
+    ) {
+        if (!gattPeers) return
+        if (gattPayloads.helloNamed(nodeId, told, aliases.announced(by = nodeId), address)) {
+            Log.i(TAG, BtLines.gattForget(address, "hello $nodeId"))
+        }
     }
 
     /**
@@ -5052,6 +5183,18 @@ class BluetoothMeshTransport internal constructor(
     private fun forgetQuietGattPayloads(ms: Long) {
         gattPayloads.scanned(ms, linkAddresses.values.toSet()).forEach { Log.i(TAG, "bt gatt forget $it (quiet)") }
     }
+
+    /**
+     * Rule 4 (ADR 2026-11.89gg, knit-ios ADR 2026-11.prsp): a blinded payload past its slot's edge, 35 to 65 s on, is
+     * forgotten unless a link, a dial or the read holds its address ([gattSpared]), so each address costs at most one read
+     * per slot. Wall clock: a sleep that crosses the edge forgets at the first window after it.
+     */
+    private fun forgetPastEdgeGattPayloads() {
+        gattPayloads.forgetPastEdge(gattSpared()).forEach { Log.i(TAG, BtLines.gattForget(it, BtLines.GATT_FORGET_EDGE)) }
+    }
+
+    /** The addresses rule 4 spares: those a link holds and those a dial is in flight to ([GattPayloads] spares the read's). */
+    private fun gattSpared(): Set<String> = linkAddresses.values.toSet() + dialingAddresses()
 
     /** The radio went down with every link: nothing is backing off, and no link has anything earned. Holds [lock]. */
     private fun clearBackoffsLocked() {
@@ -5628,6 +5771,10 @@ class BluetoothMeshTransport internal constructor(
 
         // What a Coded sighting's slot in [blindQueue] adds to its tag (never part of a 26-char form).
         private const val CODED_SLOT = "/coded"
+
+        // A blinded GATT payload's queue slots (ADR 2026-11.89gg): a cached advert's, and the read's own (logged once).
+        private const val GATT_SLOT = "/gatt"
+        private const val GATT_READ_SLOT = "/gatt-read"
 
         // `ScanResult.timestampNanos` to the elapsed clock's milliseconds.
         private const val NANOS_PER_MS = 1_000_000L

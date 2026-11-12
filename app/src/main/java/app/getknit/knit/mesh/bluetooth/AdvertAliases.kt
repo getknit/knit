@@ -498,6 +498,16 @@ internal class AdvertAliases<L : Any>(
     ): Boolean = pending[tag]?.link == link || claims[tag]?.link == link || keyAnswer(tag) == provenId
 
     /**
+     * The tag [nodeId] announced to us (`TAG_NEXT`, over any link) and we still hold pending, or null: GATT rule 2 keeps a
+     * blinded payload naming it (knit-ios `AdvertAliases.announced(by:)`, ADR 2026-11.89gg). Read before [onDialed], which
+     * may settle the entry. On the worker, as every other entry point.
+     */
+    fun announced(by: String): String? {
+        expire(nowMs())
+        return pending.entries.firstOrNull { it.value.nodeId == by }?.key
+    }
+
+    /**
      * [link] ended: its hint goes, being unproven past the link. Its claim and any announced tag, which never lapse while
      * the link is held, live one [Config.claimLifetimeMs] from now. The wiring calls it for every link it named in a
      * handshake event, or that link's entries never lapse.

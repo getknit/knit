@@ -529,9 +529,21 @@ characteristic `848eedcd-a2e3-4fb2-86f9-e2c80821a497` (`DoorbellPolicy.PAYLOAD_U
   budget full, sorting above us, a quiet forget) or one at the edge of range. A cancel is free and no forget is charged. While the
   connect loop has a dial it can make (`GattPayloads.yieldTo`, `DialPlan.dialWaiting`), no new read starts, so a
   dial waits for at most the one read in flight.
-- **A payload lives until one of three rules forgets its address** (the contract's payload lifetime): a dial to it
-  fails before its channel opens (never on HANDSHAKE); a HELLO on a link to it, accepted or the reply to ours, names
-  another node; or it goes 60 s of scanning unheard with no link up (`GattPayloads.scanned`, fed each scan window).
+- **A payload lives until one of four rules forgets its address** (the contract's payload lifetime): a dial to it
+  fails before its channel opens (never on HANDSHAKE; a tag dial too since ADR 2026-11.89gg); a HELLO on a link to it,
+  accepted or the reply to ours, names another node (`GattPayloads.helloNamed`); it goes 60 s of scanning unheard with
+  no link up (`GattPayloads.scanned`, fed each scan window); or, for a blinded payload, the wall clock passes 35–65 s
+  beyond the first slot edge after its read (`forgetPastEdge`, checked at each scan window and at each advert served
+  from it; a linked, dialed or read address is spared).
+- **A blinded payload is a blinded sighting** (ADR 2026-11.89gg, companion change A11 of knit-ios ADR 2026-11.prsp): a
+  blinding iPhone's payload carries `FLAG_BLINDED` and a tag. The read, and every later advert at its address, goes
+  through `blindQueue` and `readBlind` like a blinded advert (own tag, key, announced tag, claim, hint, else a handle),
+  stamped at the advert that started the read, with `viaGatt` kept so `doorbellTrusted` holds. A HELLO forgets it
+  unless its `t` or the node's announced tag is the payload's tag (the check hops to the worker; a tag dial's runs once
+  its proof verified). A proven link whose `t` or dialed tag is the charged tag refunds its read. The reader and the
+  doorbell lookup search every `0xFE30` service, since a blinding iPhone serves the doorbell and the payload apart, and
+  a doorbell missing within 10 s of the link's open is retried, never absent. A malformed blinded value is a stranger,
+  counted as `BleBlindDrop.GATT_BLINDED`. No release iPhone serves one (`docs/NEXT_WIRE_BREAK.md` item 13).
 - **`BleGattPayloadReader` is a dial**: `connectGatt(TRANSPORT_LE)` → discover → read → parse, 12 s in all on the
   elapsed clock (pj9w, #127), under `BleConnectArbiter("gatt-read")`, client always closed, no `requestMtu` (the
   Read Blob fetches 24 B at MTU 23).
@@ -547,9 +559,12 @@ during iOS's PSM-change service swap is a 10-minute stranger, kept line for line
 cannot be sighted, and one below a flagged phone waits for a dial that can't come (free until iOS gains background
 discovery) — once linked, though, it keeps its link and its re-dial gets in (AND-3, above); an identity change at an address that never goes quiet, new node below a flagged phone and old above,
 keeps the old sighting until the address rotates or goes quiet. Oracle: `bt gatt read <addr> → <id>` /
-`failed (<phase>)` / `stranger (<phase>)` and `bt gatt forget <addr> (dial|hello <id>|quiet)` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=`/`gattBudget=` on `bt state`, `bt gatt budget spent (…)` / `bt gatt budget free` per
-edge, `bt gatt confirmed <addr> → <id>` at debug. Tests:
-`GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`; the reader is device-verified only.
+`failed (<phase>)` / `stranger (<phase>)` and `bt gatt forget <addr> (dial|hello <id>|quiet|seal|edge)` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=`/`gattBudget=` on `bt state`, `bt gatt budget spent (…)` / `bt gatt budget free` per
+edge, `bt gatt confirmed <addr> → <id>` at debug. A blinded read logs `bt gatt read <addr> blinded (psm <n>)`, then on
+the worker `bt gatt blinded <addr> → <id|~handle> (key|claim|hint|handle|own|replayed|malformed|clear)`, and its refund
+`bt gatt confirmed <addr> (tag) → <id>`, all at info, none printing a tag, none matching `interop.py`'s clear-read or
+refund regexes. Tests: `GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`, `BleGattPayloadReaderTest`
+(Robolectric over a mocked client); the reader's radio side is device-verified only.
 
 A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or
 `…debug.BLECAP` (`SettingsStore.debugBleLinkCap`, read as null in release). Only while a cap is set does the

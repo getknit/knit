@@ -9,6 +9,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.UUID
 
 /** Unit tests for [DoorbellPolicy] — which links ring, which frames, and when (ADR 2026-09.dqvb). */
 class DoorbellPolicyTest {
@@ -154,5 +155,82 @@ class DoorbellPolicyTest {
         assertTrue(stuck.onParams(720))
         assertFalse(stuck.onParams(5_000, succeeded = false))
         assertTrue("a failure is not the 5 s, so the settle check still asks", stuck.onSettle())
+    }
+
+    // --- Two 0xFE30 services, and a lookup that finds nothing while the peer's server settles (ADR 2026-11.89gg) ---
+
+    /** A service as the search sees it: its UUID and the characteristics (UUID → properties) it holds. */
+    private data class Service(
+        val uuid: UUID,
+        val characteristics: Map<UUID, Int>,
+    )
+
+    private data class Found(
+        val service: Service,
+        val properties: Int,
+    )
+
+    private val other = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
+    private val writeNoResponse = 0x04 // BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
+
+    private fun find(
+        services: List<Service>,
+        uuid: UUID,
+        accepts: (Found) -> Boolean = { true },
+    ): Found? = DoorbellPolicy.characteristicIn(services, Service::uuid, { s -> s.characteristics[uuid]?.let { Found(s, it) } }, accepts)
+
+    @Test
+    fun aBlindingIphonesPayloadAndDoorbellAreFoundInTheirOwnServices() {
+        // knit-ios ADR 2026-11.prsp: D (the doorbell alone) added first, P (the payload alone) beside it.
+        val d = Service(DoorbellPolicy.SERVICE_UUID, mapOf(DoorbellPolicy.DOORBELL_UUID to writeNoResponse))
+        val p = Service(DoorbellPolicy.SERVICE_UUID, mapOf(DoorbellPolicy.PAYLOAD_UUID to 0x02))
+        assertEquals(p, find(listOf(d, p), DoorbellPolicy.PAYLOAD_UUID)?.service)
+        assertEquals(d, find(listOf(p, d), DoorbellPolicy.DOORBELL_UUID) { it.properties and writeNoResponse != 0 }?.service)
+        assertTrue(DoorbellPolicy.servesKnit(listOf(d, p), Service::uuid))
+    }
+
+    @Test
+    fun aClearIphonesCombinedServiceStillServesBoth() {
+        val both = mapOf(DoorbellPolicy.DOORBELL_UUID to writeNoResponse, DoorbellPolicy.PAYLOAD_UUID to 0x02)
+        val combined = Service(DoorbellPolicy.SERVICE_UUID, both)
+        assertEquals(combined, find(listOf(combined), DoorbellPolicy.PAYLOAD_UUID)?.service)
+        assertEquals(combined, find(listOf(combined), DoorbellPolicy.DOORBELL_UUID)?.service)
+    }
+
+    @Test
+    fun onlyAKnitServiceIsSearchedAndTheDoorbellMustTakeAWriteWithoutResponse() {
+        val stranger = Service(other, mapOf(DoorbellPolicy.PAYLOAD_UUID to 0x02, DoorbellPolicy.DOORBELL_UUID to writeNoResponse))
+        assertNull(find(listOf(stranger), DoorbellPolicy.PAYLOAD_UUID))
+        assertFalse(DoorbellPolicy.servesKnit(listOf(stranger), Service::uuid))
+        val writeOnly = Service(DoorbellPolicy.SERVICE_UUID, mapOf(DoorbellPolicy.DOORBELL_UUID to 0x08))
+        val good = Service(DoorbellPolicy.SERVICE_UUID, mapOf(DoorbellPolicy.DOORBELL_UUID to writeNoResponse))
+        val wnr: (Found) -> Boolean = { it.properties and writeNoResponse != 0 }
+        assertNull(find(listOf(stranger, writeOnly), DoorbellPolicy.DOORBELL_UUID, wnr))
+        val found = find(listOf(writeOnly, good), DoorbellPolicy.DOORBELL_UUID, wnr)
+        assertEquals("whichever service holds the one that takes it", good, found?.service)
+    }
+
+    @Test
+    fun theSettleBoundIsTenSeconds() {
+        assertEquals(10_000L, DoorbellPolicy.DOORBELL_SETTLE_MS)
+    }
+
+    @Test
+    fun nothingFoundWhileSettlingIsRetried() {
+        assertEquals(DoorbellPolicy.Missing.RETRY, DoorbellPolicy.missing(failed = false, settlingSince = 5_000, now = 5_000))
+        assertEquals(DoorbellPolicy.Missing.RETRY, DoorbellPolicy.missing(failed = false, settlingSince = 5_000, now = 14_999))
+    }
+
+    @Test
+    fun nothingFoundPastTheBoundIsAbsent() {
+        assertEquals(DoorbellPolicy.Missing.ABSENT, DoorbellPolicy.missing(failed = false, settlingSince = 5_000, now = 15_000))
+        val unknown = DoorbellPolicy.missing(failed = false, settlingSince = null, now = 0)
+        assertEquals("nothing to settle", DoorbellPolicy.Missing.ABSENT, unknown)
+    }
+
+    @Test
+    fun aFailureIsAlwaysRetried() {
+        assertEquals(DoorbellPolicy.Missing.RETRY, DoorbellPolicy.missing(failed = true, settlingSince = null, now = 0))
+        assertEquals(DoorbellPolicy.Missing.RETRY, DoorbellPolicy.missing(failed = true, settlingSince = 0, now = 1_000_000))
     }
 }

@@ -471,7 +471,7 @@ class IosEmittedVectorTest {
         assertEquals("$where: content v", MessageContent.VERSION, c.v)
         assertEquals(
             "$where: a field the vector does not describe",
-            MessageContent(body = c.body, ctl = c.ctl, gk = c.gk, ack = c.ack, rp = c.rp, pr = c.pr, acks = c.acks),
+            MessageContent(body = c.body, ctl = c.ctl, gk = c.gk, ack = c.ack, rp = c.rp, pr = c.pr, acks = c.acks, pk = c.pk),
             c,
         )
         return buildJsonObject {
@@ -487,8 +487,22 @@ class IosEmittedVectorTest {
             }
             c.pr?.let { put("pr", profileJson(it)) }
             c.gk?.let { put("gk", groupKeyJson(it)) }
+            c.pk?.let { put("pk", presenceKeyJson(it)) }
         }
     }
+
+    /**
+     * A ctl 11's keys as the file lays them out (companion change A11): the keys in hex, and the filler as its length
+     * alone, since its bytes mean nothing ([PresenceKeyPayload.pad]) and only the padded whole is the vector's claim.
+     */
+    private fun presenceKeyJson(pk: PresenceKeyPayload): JsonObject =
+        buildJsonObject {
+            put("generation", pk.generation)
+            put("key", pk.key.toHex())
+            pk.nextGeneration?.let { put("nextGeneration", it) }
+            pk.nextKey?.let { put("nextKey", it.toHex()) }
+            pk.pad?.let { put("padBytes", it.size) }
+        }
 
     private fun profileJson(pr: ProfilePayload): JsonObject =
         buildJsonObject {

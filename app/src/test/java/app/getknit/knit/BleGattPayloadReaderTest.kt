@@ -33,6 +33,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.UUID
 
 /**
  * [BleGattPayloadReader]'s give-up (#127): the read holds [BleConnectArbiter], so the scan and every dial wait on it,
@@ -123,8 +124,23 @@ class BleGattPayloadReaderTest {
     // --- The read's phases: a payload found, a stranger, a failure (the verdict GattPayloads forgets by) ---
 
     private val characteristic = mockk<BluetoothGattCharacteristic>(relaxed = true)
-    private val service =
-        mockk<BluetoothGattService>().also { every { it.getCharacteristic(DoorbellPolicy.PAYLOAD_UUID) } returns characteristic }
+    private val service = service(DoorbellPolicy.SERVICE_UUID, payload = characteristic)
+
+    /** A discovered service of [uuid] holding [payload] as its payload characteristic, or none. */
+    private fun service(
+        uuid: UUID,
+        payload: BluetoothGattCharacteristic? = null,
+    ) = mockk<BluetoothGattService>().also {
+        every { it.uuid } returns uuid
+        every { it.getCharacteristic(any()) } returns null
+        every { it.getCharacteristic(DoorbellPolicy.PAYLOAD_UUID) } returns payload
+    }
+
+    /** What discovery found: the reader searches every service, never `getService`, which answers the first 0xFE30 alone. */
+    private fun serves(vararg services: BluetoothGattService) {
+        every { gatt.services } returns services.toList()
+    }
+
     private val payload = BleAdvertPayload.encode(NodeId.derive("iphone"), capabilities = 0L, digestVersion = 7L, psm = 0x0081)
 
     /** Runs a read the stack answers as [stack] says, from the connect on, and returns how it ended. */
@@ -154,7 +170,7 @@ class BleGattPayloadReaderTest {
 
     @Test
     fun aGoodReadFindsThePayload() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
         val result =
             readWith {
@@ -177,16 +193,38 @@ class BleGattPayloadReaderTest {
 
     @Test
     fun aDeviceWithoutTheServiceOrItsCharacteristicIsAStranger() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns null
+        serves()
         assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "service"), readWith { discovered(it) })
-        val bare = mockk<BluetoothGattService>().also { every { it.getCharacteristic(any()) } returns null }
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns bare
+        serves(service(DoorbellPolicy.SERVICE_UUID))
         assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "characteristic"), readWith { discovered(it) })
     }
 
     @Test
+    fun thePayloadIsFoundInTheSecondOfTwoKnitServices() {
+        // A blinding iPhone (knit-ios ADR 2026-11.prsp): D, the doorbell alone, added first; P, the payload alone, beside it.
+        serves(service(DoorbellPolicy.SERVICE_UUID), service)
+        every { gatt.readCharacteristic(characteristic) } returns true
+        val result =
+            readWith {
+                discovered(it)
+                it.onCharacteristicRead(gatt, characteristic, payload, BluetoothGatt.GATT_SUCCESS)
+            }
+        assertEquals(GattPayloads.Outcome.Read(BleAdvertPayload.parse(payload)!!), result!!.outcome)
+    }
+
+    @Test
+    fun aPayloadCharacteristicOutsideAKnitServiceIsIgnored() {
+        val elsewhere = mockk<BluetoothGattCharacteristic>(relaxed = true)
+        serves(service(UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb"), payload = elsewhere))
+        assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "service"), readWith { discovered(it) })
+        serves(service(UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb"), payload = elsewhere), service(DoorbellPolicy.SERVICE_UUID))
+        assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "characteristic"), readWith { discovered(it) })
+        verify(exactly = 0) { gatt.readCharacteristic(elsewhere) }
+    }
+
+    @Test
     fun aRefusedOrFailedReadIsAFailure() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns false
         assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Failed, "read"), readWith { discovered(it) })
         every { gatt.readCharacteristic(characteristic) } returns true
@@ -201,7 +239,7 @@ class BleGattPayloadReaderTest {
 
     @Test
     fun aValueThatIsNotAPayloadIsAStranger() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
         val result =
             readWith {
@@ -211,24 +249,45 @@ class BleGattPayloadReaderTest {
         assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, "value"), result)
     }
 
-    @Test
-    fun aBlindedPayloadIsAStrangerOfItsOwnPhase() {
-        // ADR 2026-11.xp6d: no port serves a blinded payload, and its tag would be forgotten and re-read at every dial.
-        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, ByteArray(NodeId.BYTES), slot = 1, restart = 0))
-        val blinded = BleAdvertPayload.advert(tag, 0L, 0L, 0x83, sideLive = false, gattPeers = false, aware = false, blinded = true)
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+    /** Reads [value] from the payload characteristic of the one combined 0xFE30 service a clear iPhone serves. */
+    private fun readValue(value: ByteArray): BleGattPayloadReader.Result? {
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
-        val result =
-            readWith {
-                discovered(it)
-                it.onCharacteristicRead(gatt, characteristic, blinded, BluetoothGatt.GATT_SUCCESS)
-            }
-        assertEquals(BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, BleGattPayloadReader.PHASE_BLINDED), result)
+        return readWith {
+            discovered(it)
+            it.onCharacteristicRead(gatt, characteristic, value, BluetoothGatt.GATT_SUCCESS)
+        }
+    }
+
+    @Test
+    fun aBlindedPayloadIsRead() {
+        // ADR 2026-11.89gg: a blinding iPhone's payload (FLAG_BLINDED | FLAG_DIALS_GATT_PEERS, a tag, the cue zero) is a
+        // blinded form the transport sights as a blinded advert, never a stranger.
+        val tag = NodeId.fromBytes(BlindTag.tag(ByteArray(BlindTag.KEY_BYTES) { 7 }, ByteArray(NodeId.BYTES), slot = 1, restart = 0))
+        val blinded = BleAdvertPayload.advert(tag, 0L, 0L, 0x83, sideLive = false, gattPeers = true, aware = false, blinded = true)
+        val result = readValue(blinded)
+        val read = result!!.outcome as GattPayloads.Outcome.Read
+        assertTrue(read.payload.blinded)
+        assertEquals(tag, read.payload.nodeId)
+        assertNull(result.phase)
+    }
+
+    @Test
+    fun aMalformedBlindedValueIsAStrangerOfItsOwnPhase() {
+        // FLAG_BLINDED over bytes that lack the tag prefix: a stranger, as BleAdvertPayload.parse drops the advert, counted
+        // apart (BleBlindDrop.GATT_BLINDED).
+        val iphone = NodeId.derive("iphone")
+        val malformed = BleAdvertPayload.advert(iphone, 0L, 0L, 0x83, sideLive = false, gattPeers = true, aware = false, blinded = true)
+        assertTrue(BleAdvertPayload.isMalformedBlinded(malformed))
+        assertEquals(
+            BleGattPayloadReader.Result(GattPayloads.Outcome.Stranger, BleGattPayloadReader.PHASE_MALFORMED_BLINDED),
+            readValue(malformed),
+        )
     }
 
     @Test
     fun aDisconnectMidReadFailsTheStepStillWaiting() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
         val result =
             readWith {
@@ -242,7 +301,7 @@ class BleGattPayloadReaderTest {
     @Config(sdk = [32])
     @Suppress("DEPRECATION") // the pre-33 callback this case pins
     fun beforeAndroid13TheValueComesFromTheCharacteristic() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
         every { characteristic.value } returns payload
         val result =
@@ -256,7 +315,7 @@ class BleGattPayloadReaderTest {
     @Test
     @Suppress("DEPRECATION") // the pre-33 callback, which 13 and later also call
     fun fromAndroid13ThePre33CallbackIsIgnored() {
-        every { gatt.getService(DoorbellPolicy.SERVICE_UUID) } returns service
+        serves(service)
         every { gatt.readCharacteristic(characteristic) } returns true
         every { characteristic.value } returns payload
         val result =

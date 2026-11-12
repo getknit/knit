@@ -461,8 +461,15 @@ not, the break can do all of it at once, and the transition half below simply ne
 - **The link PHY driver stays on real ids.** `CodedPhyPolicy.drives` picks which end steps a live link's PHY from the
   ids both HELLOs prove; only the pre-link roles move to `AdvertOrder`, before and after the break.
 - **iPhone.** knit-ios serves a tag from its GATT payload characteristic (`DoorbellPolicy.PAYLOAD_UUID`) and reads
-  Android's. `GattPayloads.confirmed` and `forgetGattPayloadIfOther` compare a payload's id with the HELLO's, so they
-  move to the alias table.
+  Android's. For an A11 reader (ADR 2026-11.89gg, companion change A11 of knit-ios ADR 2026-11.prsp) that move is done,
+  additively: a blinded payload is a blinded sighting resolved through `AdvertAliases`, `GattPayloads.confirmed` refunds a
+  blinded charge by tag, and `GattPayloads.helloNamed` compares a blinded payload with the HELLO's `t` or announced
+  tag. The rest waits for this item's decision, since v2.11.1 and older know no `FLAG_BLINDED`. Their reader takes
+  `getService(0xFE30)`'s first service, which under the blinding iPhone's split layout is the doorbell's alone, so they
+  read it as a stranger every ten minutes; were the payload's service to sort first they would read the tag as a node id
+  no HELLO matches, and their doorbell lookup would miss the doorbell. So **no release iPhone serves a blinded payload**
+  until the break retires those builds, and the payload's clear-id compare (`GattPayloads.confirmed`'s id match, rule 2's
+  id compare) goes with them.
 - **The handshake.** Already done: #286 landed additively (ADR 2026-11.8mhs), so between two builds carrying
   `CAP_LINK_SEAL` the HELLO's `t` and `a` fields and the `TAG_NEXT` record ride inside the seal, and a passive listener
   no longer learns the id from the HELLO. Links with older builds stay plain until the break retires them.

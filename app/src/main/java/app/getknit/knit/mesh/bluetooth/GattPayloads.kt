@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.bluetooth
 
+import app.getknit.knit.mesh.crypto.BlindTag
+
 /**
  * Whose GATT payload the Bluetooth transport reads, when, and what each read found (companion change A3). A peer
  * whose advert carries only the `0xFE30` UUID — a foreground iPhone, which cannot advertise service data — serves its
@@ -12,6 +14,13 @@ package app.getknit.knit.mesh.bluetooth
  *   (a new node took the address), or it went [Configuration.quietMs] of scanning unheard with no link up ([scanned]:
  *   a node that left, whose address another may take up later). Before the last two rules (the contract's payload
  *   lifetime, revised after the first device gate) a new node at a reused address was sighted as the old one for good.
+ *   A **blinded** payload ([BleAdvertPayload.Parsed.blinded], a blinding iPhone's, ADR 2026-11.89gg) names a tag, not a
+ *   node: the HELLO rule compares it with the HELLO's `t` and the tag that node announced, never with an id
+ *   ([helloNamed]), and a fourth rule forgets it past its slot's edge ([forgetPastEdge]): a blinding writer rotates its
+ *   tag there, and in the foreground, where its address is never quiet, the old tag would otherwise be kept until iOS
+ *   rotates the address. Knit-ios ADR 2026-11.prsp's rule 4, line for line: 35 to 65 s past the first edge after the
+ *   read (an announced rotation's 30 s lead plus 5 s for a writer's clock, then a per-read jitter), so each address
+ *   costs at most one read per slot and no reader re-reads the old tag in the 30 s it may still air.
  * - **One at a time.** Every read is a connection the controller must make, and a second waits for the first.
  * - **Tried again later.** A read that fails waits [Configuration.retryMs]. A peer that answers but serves no payload
  *   waits [Configuration.strangerRetryMs]: `0xFE30` is not Knit's alone, and a stranger's device should not be
@@ -28,19 +37,25 @@ package app.getknit.knit.mesh.bluetooth
  *   elapsed clock. Every read that ends is charged, whatever it found: the payload is unauthenticated, so a payload
  *   read proves nothing (a rotating forger serving a valid payload that names an id above every real one is never
  *   dialed). Only a link vouches for it: a HELLO on a link at the address naming the payload's node refunds that
- *   read's charge ([confirmed]), once. An honest iPhone that links costs nothing net; a charge nothing refunds ages
- *   out of the window. A cancelled read is free. And while the transport has a dial to make ([yieldTo]), no new read
- *   starts: the dial waits at most for the read already in flight, never for a second.
+ *   read's charge ([confirmed]), once; a blinded read's charge only a **proven** link whose HELLO `t` or dialed tag is
+ *   the charged tag (ADR 2026-11.89gg), never by comparing a tag with an id. An honest iPhone that links costs nothing
+ *   net; a charge nothing refunds ages out of the window. A cancelled read is free. And while the transport has a dial
+ *   to make ([yieldTo]), no new read starts: the dial waits at most for the read already in flight, never for a second.
  * - **A payload without the seal flag is forgotten once after a plain dial drew no reply** ([forgetUnsealed], #286
  *   contract §7 revision 1, ADR 2026-11.8mhs): the peer may have upgraded since the read, and a §7 refusal reaches the
  *   dialer as no reply. Once per payload: a re-read naming the same node, PSM and flags is not forgotten again, so a peer
  *   that really does not seal costs one re-read, not one per dial. iOS checks its own forget rules for the same case.
+ *   Never a blinded payload: a tag dial's silence says nothing of a seal flag the contract's §7 pins to a clear read.
  *
  * Pure and thread-safe (the scan callback runs on the main thread, a read ends on the transport's scope, a failed
  * dial on an IO thread), so the rules are a JVM test ([app.getknit.knit.GattPayloadsTest]).
  */
 internal class GattPayloads(
     val configuration: Configuration = Configuration(),
+    // The wall clock a blinded payload's slot edge is read on (rule 4), and the seed of its per-read jitter: the transport
+    // draws one at random when it is made, so the readers of one writer spread their re-reads (knit-ios ADR 2026-11.prsp).
+    private val wallMs: () -> Long = System::currentTimeMillis,
+    jitterSeed: Long = 0L,
 ) {
     /** The reads' tunables. */
     data class Configuration(
@@ -58,6 +73,10 @@ internal class GattPayloads(
         val budgetReads: Int = BUDGET_READS,
         /** The window [budgetReads] is counted over, on the elapsed clock. */
         val budgetWindowMs: Long = BUDGET_WINDOW_MS,
+        /** How long past its slot's edge a blinded payload is kept at least (rule 4). */
+        val blindedEdgeSlackMs: Long = BLINDED_EDGE_SLACK_MS,
+        /** The spread of a blinded payload's forget past that, drawn per read (rule 4). */
+        val blindedEdgeJitterMs: Long = BLINDED_EDGE_JITTER_MS,
     )
 
     /** How a read ended. */
@@ -85,10 +104,23 @@ internal class GattPayloads(
     var current: Read? = null
         private set
 
-    // A payload and the scan-clock time its address was last heard (an advert, the read itself, or a link up).
+    // A payload and the scan-clock time its address was last heard (an advert, the read itself, or a link up). A blinded
+    // one also carries its span on the wall clock (rule 4): when it was read, and when it is forgotten. Forgetting the
+    // payload takes the span with it.
     private class Held(
         val payload: BleAdvertPayload.Parsed,
         var heardAt: Long,
+        val readAtWall: Long = 0L,
+        val untilWall: Long = Long.MAX_VALUE,
+    ) {
+        fun pastEdge(wall: Long): Boolean = payload.blinded && (wall >= untilWall || wall < readAtWall)
+    }
+
+    /** What an advert at a read address found: the payload to sight it by, or that a blinded one passed its edge. */
+    data class Heard(
+        val payload: BleAdvertPayload.Parsed?,
+        /** A blinded payload was forgotten past its slot's edge (rule 4): the advert is due a read instead. */
+        val pastEdge: Boolean = false,
     )
 
     private val payloads = lru<Held>()
@@ -101,13 +133,24 @@ internal class GattPayloads(
     private var scanClock = 0L
     private val retryAt = lru<Long>()
 
-    // A read's charge: when it ended, the address it read, and the node its payload named (null for a failure or a
-    // stranger, which nothing refunds).
+    // A read's charge: when it ended, the address it read, and the form its payload named (null for a failure or a
+    // stranger, which nothing refunds): a node id, or a tag when [blinded]. An id can share bytes with a tag (the tag
+    // prefix is not an id's to avoid), so the two are never compared ([confirmed]).
     private class Charge(
         val at: Long,
         val address: String,
-        val nodeId: String?,
+        val named: String?,
+        val blinded: Boolean,
     )
+
+    /** Which of [confirmed]'s two rules refunded a read. */
+    enum class Refund {
+        /** A clear payload's charge: the HELLO named its node. */
+        ID,
+
+        /** A blinded payload's charge: a proven link told or was dialed by its tag (ADR 2026-11.89gg). */
+        TAG,
+    }
 
     // The charges still inside the budget's window. A link refunds one, its address's latest read naming its node: the
     // re-reads before it (a failed dial forgets the payload) stay charged until they age out.
@@ -116,17 +159,31 @@ internal class GattPayloads(
     // Whether the transport has a dial to make: no new read starts until it has gone.
     private var dialWaiting = false
 
+    // Rule 4's jitter: SplitMix64 from the seed, one draw per blinded read, as the iOS port's.
+    private var jitterState = jitterSeed
+
     /** The payload [address] served, if a read found one. */
     @Synchronized
     fun payload(of: String): BleAdvertPayload.Parsed? = payloads[of]?.payload
 
-    /** An advert from [address] was heard: its payload, if a read found one, now counted as heard. */
+    /**
+     * An advert from [address] was heard: its payload, if a read found one, now counted as heard. A blinded payload past
+     * its slot's edge (rule 4) is forgotten here instead, unless [address] is in [spared] (a link, a dial or the read
+     * holds it, as [forgetPastEdge] spares one), so a payload past its deadline is never served and the advert is read.
+     */
     @Synchronized
-    fun heard(address: String): BleAdvertPayload.Parsed? =
-        payloads[address]?.let {
-            it.heardAt = scanClock
-            it.payload
+    fun heard(
+        address: String,
+        spared: Collection<String> = emptySet(),
+    ): Heard {
+        val held = payloads[address] ?: return Heard(null)
+        if (held.pastEdge(wallMs()) && address !in spared && address != current?.address) {
+            forget(address)
+            return Heard(null, pastEdge = true)
         }
+        held.heardAt = scanClock
+        return Heard(held.payload)
+    }
 
     /**
      * The scan ran [ms] more. Every address in [linked] counts as heard (a link up keeps its payload), and the payloads
@@ -184,7 +241,11 @@ internal class GattPayloads(
         return true
     }
 
-    /** The read of [address] ended. An outcome for any other address answers a read already given up on, and is ignored. */
+    /**
+     * The read of [address] ended, at [now] on the elapsed clock. An outcome for any other address answers a read already
+     * given up on, and is ignored. A blinded payload's span is stamped on the wall clock (rule 4): read now, forgotten
+     * [Configuration.blindedEdgeSlackMs] plus a jitter past the first slot edge after now.
+     */
     @Synchronized
     fun finish(
         address: String,
@@ -193,28 +254,86 @@ internal class GattPayloads(
     ) {
         if (current?.address != address) return
         current = null
-        charged.addLast(Charge(now, address, (outcome as? Outcome.Read)?.payload?.nodeId))
+        val read = (outcome as? Outcome.Read)?.payload
+        charged.addLast(Charge(now, address, read?.nodeId, blinded = read?.blinded == true))
         when (outcome) {
-            is Outcome.Read -> payloads[address] = Held(outcome.payload, scanClock)
+            is Outcome.Read -> payloads[address] = held(outcome.payload)
             Outcome.Failed -> retryAt[address] = now + configuration.retryMs
             Outcome.Stranger -> retryAt[address] = now + configuration.strangerRetryMs
         }
     }
 
+    private fun held(payload: BleAdvertPayload.Parsed): Held {
+        if (!payload.blinded) return Held(payload, scanClock)
+        val wall = wallMs()
+        val edge = (BlindTag.slotOf(wall) + 1) * BlindTag.SLOT_MS
+        return Held(payload, scanClock, readAtWall = wall, untilWall = edge + configuration.blindedEdgeSlackMs + jitter())
+    }
+
     /**
-     * A link's HELLO at [address] named [nodeId]: a read of the address whose payload named that node is vouched for,
-     * and its charge is refunded. Once per charge (the charge goes), and a no-op once it has aged out of the window or
-     * when the HELLO names another node. Answers whether a charge was refunded.
+     * A link at [address] registered, its HELLO naming [nodeId]: a read of the address is vouched for, and its charge is
+     * refunded, once (the charge goes); a no-op once it has aged out of the window. Two rules, never mixed:
+     *  - a clear payload's charge, when it named [nodeId] ([Refund.ID]);
+     *  - a blinded payload's, only on a [proven] link and when [tag] is the charged tag ([Refund.TAG]): [tag] is the
+     *    caller's explicit evidence, the tag our dial went to or the proven HELLO's `t`, never a form read back from
+     *    presence. A tag is never compared with an id, nor an id with a tag.
+     * Answers which rule refunded a charge, or null.
      */
     @Synchronized
     fun confirmed(
         address: String,
         nodeId: String,
+        tag: String? = null,
+        proven: Boolean = false,
         now: Long,
-    ): Boolean {
+    ): Refund? {
         prune(now)
-        val charge = charged.lastOrNull { it.address == address && it.nodeId == nodeId } ?: return false
-        return charged.remove(charge)
+        val charge =
+            charged.lastOrNull {
+                it.address == address && if (it.blinded) proven && tag != null && it.named == tag else it.named == nodeId
+            } ?: return null
+        charged.remove(charge)
+        return if (charge.blinded) Refund.TAG else Refund.ID
+    }
+
+    /**
+     * Rule 2: the HELLO on a link to [address] named [nodeId] and told [told] (its `t`), and [announced] is the tag that
+     * node announced to us (`TAG_NEXT`, [AdvertAliases.announced]) and we hold. A clear payload there naming another node is
+     * forgotten; a blinded one whose tag is neither [told] nor [announced] too: the node rotated since the read, or airs
+     * its id now (knit-ios `GattPayloads.helloNamed`, ADR 2026-11.prsp). A blinded payload's tag is never compared with
+     * [nodeId]. Answers whether a payload went.
+     */
+    @Synchronized
+    fun helloNamed(
+        nodeId: String,
+        told: String?,
+        announced: String?,
+        address: String,
+    ): Boolean {
+        val held = payloads[address]?.payload ?: return false
+        val names = if (held.blinded) held.nodeId == told || held.nodeId == announced else held.nodeId == nodeId
+        if (names) return false
+        forget(address)
+        return true
+    }
+
+    /**
+     * Rule 4: forgets every blinded payload whose slot edge, with its slack and jitter, has passed at [wall], or that was
+     * read at a later wall time than [wall] (the clock went back), and answers those addresses, sorted. An address in
+     * [spared] keeps its payload, as does the one being read: a link holds it (its own claims attribute the tag it names,
+     * and no address a link holds is read, `DialPlan.mayReadGatt`, so dropping it would end its GATT sightings for the
+     * link's life), or a dial is in flight to it. The forget then comes at the first check after it ends.
+     */
+    @Synchronized
+    fun forgetPastEdge(
+        spared: Collection<String>,
+        wall: Long = wallMs(),
+    ): List<String> {
+        val reading = current?.address
+        val past = payloads.entries.filter { (address, held) -> held.pastEdge(wall) && address !in spared && address != reading }
+        val forgotten = past.map { it.key }.sorted()
+        forgotten.forEach(::forget)
+        return forgotten
     }
 
     /**
@@ -247,12 +366,24 @@ internal class GattPayloads(
     @Synchronized
     fun forgetUnsealed(address: String): Boolean {
         val held = payloads[address]?.payload ?: return false
-        if (held.linkSeal) return false
+        // A blinded payload is a tag dial's: §7's no-reply forget is the clear contract's alone (ADR 2026-11.89gg).
+        if (held.linkSeal || held.blinded) return false
         val same = held.copy(digestCue = 0)
         if (unsealedForgotten[address] == same) return false
         unsealedForgotten[address] = same
         forget(address)
         return true
+    }
+
+    // A draw in [0, blindedEdgeJitterMs) (SplitMix64: Steele, Lea and Flood, 2014), as the iOS port draws it.
+    private fun jitter(): Long {
+        val span = configuration.blindedEdgeJitterMs.coerceAtLeast(1L)
+        jitterState += SPLITMIX_GAMMA
+        var mixed = jitterState
+        mixed = (mixed xor (mixed ushr SPLITMIX_SHIFT_1)) * SPLITMIX_MUL_1
+        mixed = (mixed xor (mixed ushr SPLITMIX_SHIFT_2)) * SPLITMIX_MUL_2
+        mixed = mixed xor (mixed ushr SPLITMIX_SHIFT_3)
+        return java.lang.Long.remainderUnsigned(mixed, span)
     }
 
     // Drops the charges older than the budget's window. A filter, not a pop from the front: the elapsed time a read's
@@ -275,6 +406,25 @@ internal class GattPayloads(
         const val MAX_ADDRESSES = 64
         const val BUDGET_READS = 12
         const val BUDGET_WINDOW_MS = 600_000L
+
+        /** How far behind a writer's clock may run and still have rotated before rule 4 reads it again. */
+        const val WRITER_CLOCK_SLACK_MS = 5_000L
+
+        /**
+         * Rule 4's slack: an announced rotation lands at the later of the edge and its announcement plus
+         * [AdvertRotation.MIN_LEAD_MS], so a forget any sooner would read the old tag again and keep it a whole slot; and
+         * [WRITER_CLOCK_SLACK_MS] more.
+         */
+        const val BLINDED_EDGE_SLACK_MS = AdvertRotation.MIN_LEAD_MS + WRITER_CLOCK_SLACK_MS
+        const val BLINDED_EDGE_JITTER_MS = 30_000L
+
+        // SplitMix64's increment, mixing multipliers and shifts (the iOS port's `GattPayloads.jitter`).
+        private const val SPLITMIX_GAMMA = -0x61c8864680b583ebL // 0x9E3779B97F4A7C15
+        private const val SPLITMIX_MUL_1 = -0x40a7b892e31b1a47L // 0xBF58476D1CE4E5B9
+        private const val SPLITMIX_MUL_2 = -0x6b2fb644ecceee15L // 0x94D049BB133111EB
+        private const val SPLITMIX_SHIFT_1 = 30
+        private const val SPLITMIX_SHIFT_2 = 27
+        private const val SPLITMIX_SHIFT_3 = 31
 
         private const val INITIAL_CAPACITY = 16
         private const val LOAD_FACTOR = 0.75f

@@ -239,11 +239,27 @@ Bluetooth-adjacent routing that lives in another subsystem's file under `.agents
   a payload read included, because the payload is unauthenticated; only a link's HELLO at the address naming the
   payload's node refunds it, once (`GattPayloads.confirmed` in `registerLink`); a cancel is free and no forget is
   charged; and no new read while the connect loop has a dial it can make, `DialPlan.dialWaiting` over promoted peers
-  with an address). A payload lives until one of the contract's three rules forgets it: a
-  dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
-  or 60 s of scanning unheard with no link up; and, since #286, once when a plain dial made from a payload without the
-  seal flag drew no reply (`GattPayloads.forgetUnsealed`, ADR 2026-11.8mhs). The flag is set only while the reader runs — one build switch gates filter, reader and flag, on in
-  release since 2026-10-08, the trial still owed. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
+  with an address). A payload lives until one of four rules forgets it: a dial failing before its channel opens
+  (never on HANDSHAKE; a tag dial too), a HELLO on a link to the address naming another node (`GattPayloads.helloNamed`),
+  60 s of scanning unheard with no link up, and for a blinded payload its slot's edge (`forgetPastEdge`); and, since
+  #286, once when a plain dial made from a clear payload without the seal flag drew no reply
+  (`GattPayloads.forgetUnsealed`, ADR 2026-11.8mhs; never a blinded one). The flag is set only while the reader runs —
+  one build switch gates filter, reader and flag, on in release since 2026-10-08, the trial still owed. A1 (shzv) stays
+  whole: it is the fallback that makes a clear flag safe.
+- **When touching a blinded GATT payload** (`BleGattPayloadReader`'s blinded branch, `GattPayloads.helloNamed` /
+  `forgetPastEdge` / `heard` / `confirmed`'s `Refund.TAG`, `AdvertAliases.announced`, `DoorbellPolicy.characteristicIn` /
+  `missing` / `DOORBELL_SETTLE_MS`, `BleDoorbell`'s settle lookup, `BtLines.gattReadBlinded` / `gattBlinded` /
+  `gattConfirmedTag`, `BleBlindDrop.GATT_BLINDED`): READ ADR 2026-11.89gg (companion change A11 of knit-ios ADR
+  2026-11.prsp, which leads). A blinding iPhone serves two `0xFE30` services (the doorbell's alone, never rotated, and
+  the payload's, replaced at each rotation), so every lookup searches every `0xFE30` service. A blinded read is a
+  blinded sighting through `blindQueue` / `readBlind`, stamped at the advert that started it, keeping `viaGatt`. Rule 2
+  compares a blinded payload with the HELLO's `t` or the node's announced tag, on the worker, never with an id; rule 4
+  forgets it 35–65 s past the first slot edge after the read (wall clock, per-read jitter), sparing a linked, dialed or
+  read address. A blinded charge is refunded only by a proven link whose `t` or dialed tag is the charged tag. A doorbell
+  missing within 10 s of the link's open is retried, never absent; nothing waits on `onServiceChanged`, which never fires
+  toward an iPhone (the stack subscribes to Service Changed only after an LE pairing). Who dials is `AdvertOrder.iDial` on
+  forms, with no GATT rule. Tests: `GattPayloadsTest`, `BleGattPayloadReaderTest`, `DoorbellPolicyTest`,
+  `BlindGattReadTest` (the lines and `announced`), `SealedLinkHandshakeTest` (an iPhone's plain HELLO admitted).
 - **When touching `AdvertOrder`, `AdvertAliases`, `ExpectedTagTable`, `TagSchedule`, `BlindTag`,
   `BleAdvertPayload.FLAG_BLINDED`, `LinkFraming.Type.TAG_NEXT`, `BleAdmissionPolicy.outOfOrder` / `heldLinkRow` /
   `honours`, `DialPlan.DialKind` / `InFlight`, `DialKeys`, `DialTargets`, `CodedPhyPolicy.dialsBack` /

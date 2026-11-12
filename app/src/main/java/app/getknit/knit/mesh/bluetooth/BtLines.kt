@@ -77,5 +77,67 @@ internal object BtLines {
         rssi: Int,
     ): String = "bt coded advert fast (cold $key, for ${grantMs}ms rssi=$rssi)"
 
+    // --- A blinded GATT payload (ADR 2026-11.89gg). None of these prints a tag, nor pairs one with an id; each avoids
+    // `interop.py`'s clear-read (`GATT_READ_END`, `bt gatt read (\S+) → <id>`) and refund (`GATT_CONFIRMED`) shapes.
+
+    /** `bt gatt forget`'s reason for rule 4: a blinded payload past its slot's edge. */
+    const val GATT_FORGET_EDGE = "edge"
+
+    /** A GATT payload forgotten at [address] for [reason] (`dial`, `hello <id>`, `quiet`, `seal`, [GATT_FORGET_EDGE]). */
+    fun gattForget(
+        address: String,
+        reason: String,
+    ): String = "bt gatt forget $address ($reason)"
+
+    /** A read at [address] ended with a blinded payload: the address and PSM only, the tag never. */
+    fun gattReadBlinded(
+        address: String,
+        psm: Int,
+    ): String = "bt gatt read $address blinded (psm $psm)"
+
+    /**
+     * How a read's blinded sighting at [address] resolved, on the worker, once per read: [key] is the resolved id or the
+     * form's handle, [how] one of [gattResolved]'s words.
+     */
+    fun gattBlinded(
+        address: String,
+        key: String,
+        how: String,
+    ): String = "bt gatt blinded $address → $key ($how)"
+
+    /** [gattBlinded]'s word for [resolution]: `key`, `claim`, `hint`, `handle`, `own`, `replayed` (a key's, voided) or `malformed`. */
+    fun gattResolved(
+        resolution: AdvertAliases.Resolution,
+        replayed: Boolean,
+    ): String =
+        when (resolution) {
+            is AdvertAliases.Resolution.Resolved -> {
+                when (resolution.source) {
+                    AdvertAliases.Source.Key -> if (replayed) "replayed" else "key"
+                    AdvertAliases.Source.Claim -> "claim"
+                    AdvertAliases.Source.Hint -> "hint"
+                    AdvertAliases.Source.Clear -> "clear"
+                }
+            }
+
+            AdvertAliases.Resolution.Unresolved -> {
+                "handle"
+            }
+
+            AdvertAliases.Resolution.Own -> {
+                "own"
+            }
+
+            AdvertAliases.Resolution.Malformed -> {
+                "malformed"
+            }
+        }
+
+    /** A blinded read's charge at [address] refunded by a proven link to [provenId] that showed its tag. */
+    fun gattConfirmedTag(
+        address: String,
+        provenId: String,
+    ): String = "bt gatt confirmed $address (tag) → $provenId"
+
     private const val FIELD_FORM = "~tag"
 }
