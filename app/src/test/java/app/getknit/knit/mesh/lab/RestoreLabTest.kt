@@ -28,7 +28,8 @@ import org.robolectric.RobolectricTestRunner
  * is the state the restore leaves — identity, contacts and history intact, custody and both ratchets
  * emptied, the restore mark set — and what these cases pin is the mesh's side of it: `MeshManager.finishRestore`
  * runs once, the peers it resets re-seal what the restored node never acked, and the conversation carries
- * on under a new session without anybody typing anything.
+ * on under a new session without anybody typing anything. The re-seal behind a relay's dedup window is the same for a
+ * reset forced with no restore, so that case lives here too.
  */
 @RunWith(RobolectricTestRunner::class)
 class RestoreLabTest {
@@ -238,6 +239,66 @@ class RestoreLabTest {
         }
 
     /**
+     * A reset's recovery behind a relay, with nothing else ever sent under the DM's id. On a line Alice–Carol–Bob, Bob's
+     * DM crosses Carol and is lost on her way to Alice, every copy of it (her custody's re-serves included). Alice resets.
+     * Bob takes the reset and re-seals the DM under it at once, under the same id, so Carol's router drops that re-seal as
+     * an id seen inside its window. Past the window the second pass (`ResetReseal.SECOND_PASS_MS`, the 60 s tick driven
+     * by hand) re-seals it again, Carol relays it, and Alice ends with the DM.
+     */
+    @Test
+    fun aDmLostBehindARelayReachesTheNodeThatResetOnTheSecondPass() =
+        runBlocking {
+            // No boards: the relay is the only way between Alice and Bob.
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", board = false).apply { setDisplayName("Carol") }
+            val thread = { node: LabNode -> node.dmWith(if (node === alice) bob else alice) }
+            lab.linkAll(alice to carol, carol to bob)
+            lab.awaitAcquainted(alice, bob, carol)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { if (bob.session(alice)?.confirmed == true) 1 else 0 }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol), conversation = thread)
+
+            carol.transport.hold(alice.transport)
+            assertTrue(bob.sendDm(alice, "lost on the way"))
+            val dm = bob.ownMessageId(bob.dmWith(alice), "lost on the way")
+            lab.await(1) { carol.transport.held(alice.transport).count { frame -> frameId(frame) == dm } }
+            val original =
+                carol.transport
+                    .held(alice.transport)
+                    .first { frame -> frameId(frame) == dm }
+                    .signed
+            carol.transport.lossy(alice.transport) { frame -> frame.signed.contentEquals(original) }
+            // lab-lint: allow filtered-release-then-oracle — the DM comes back as its second-pass re-seal, driven by
+            // `bob.reoffer()` below.
+            carol.transport.release(alice.transport) { batch -> batch.filterNot { frame -> frame.signed.contentEquals(original) } }
+
+            val dedupedBefore =
+                carol.metrics
+                    .snapshot()
+                    .frames.framesDeduped
+            assertNull("alice's reset went out", alice.resetSession(bob))
+            // Bob's first re-seal under the reset reaches Carol, a second copy of the id on that pipe, and her router has
+            // handled it inside her window: as a copy of an id she has seen, not a frame to relay.
+            lab.await(1) { if (bob.copiesTo(carol, dm) >= 2) 1 else 0 }
+            carol.transport.awaitInboundDrained()
+            assertTrue(
+                "carol's router took the first re-seal as a copy of an id it had seen",
+                carol.metrics
+                    .snapshot()
+                    .frames.framesDeduped > dedupedBefore,
+            )
+            val early = alice.decrypted(thread(alice)).map { (_, body) -> body }
+            assertTrue("alice holds the DM before the second pass: $early", "lost on the way" !in early)
+
+            lab.clock.advance(ResetReseal.SECOND_PASS_MS)
+            bob.reoffer()
+            lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(carol), conversation = thread)
+            assertEquals("bob never reset back", 0L, bob.session(alice)?.lastResetSentAt)
+        }
+
+    /**
      * #189 through custody, board-less (ADR 2026-10.4mjm, rule C). Alice and Bob each write first while Carol, between
      * them, holds both ways; the race's winner (the smaller id) reads the loser's init first, so its intro answer is
      * sealed on its own unanswered init and Carol custodies it. The pair converges on the winner's root. Past the skew
@@ -382,6 +443,9 @@ class RestoreLabTest {
         lab.await(ids.size) { ids.count { it in carol.custodyIds() } }
         return ids
     }
+
+    /** The frame id [frame] carries, or null for a frame that does not decode. */
+    private fun frameId(frame: WireEnvelope): String? = WireCodec.decodeEnvelope(frame.signed)?.id
 
     /** Frames [this] handed [to] under [id], each a distinct write (a pipe carries one copy per signature). */
     private fun LabNode.copiesTo(

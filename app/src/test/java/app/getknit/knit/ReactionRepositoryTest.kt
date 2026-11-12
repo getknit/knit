@@ -142,6 +142,50 @@ class ReactionRepositoryTest : RoomDbTest() {
             )
         }
 
+    /**
+     * #301's room arms: a commons (matched by [Conversations.COMMONS_PREFIX]) and the Meshtastic room let anyone react,
+     * in the chat and on the details screen alike. The DM beside them is the control: the same reactor, not its peer,
+     * stays out of it.
+     */
+    @Test
+    fun aCommonsPostAndAMeshtasticPostShowAnyonesReactionAndADmStillOnlyItsPeers() =
+        runTest {
+            val repo = repo()
+            val commons = Conversations.commonsIdFor("5c09e1")
+            db.messageDao().upsert(MessageEntity(id = "commons", senderId = "carol", conversationId = commons, body = "c", sentAt = 1L))
+            db.messageDao().upsert(
+                MessageEntity(id = "mesh", senderId = ME, conversationId = Conversations.MESHTASTIC, body = "m", sentAt = 1L),
+            )
+            db.messageDao().upsert(
+                MessageEntity(id = "dm", senderId = ME, recipientId = "alice", conversationId = "alice", body = "dm", sentAt = 1L),
+            )
+            listOf("commons", "mesh", "dm").forEach { id ->
+                listOf(ME, "alice", "zed").forEachIndexed { i, who -> repo.apply(ReactionEntity(id, who, "👍", updatedAt = i + 1L)) }
+            }
+
+            suspend fun inThread(conversationId: String) =
+                repo
+                    .observeReactionsIn(conversationId, ME)
+                    .first()
+                    .map { it.reactorNodeId }
+                    .toSet()
+
+            suspend fun onMessage(id: String) =
+                repo
+                    .observeReactionsFor(id, ME)
+                    .first()
+                    .map { it.reactorNodeId }
+                    .toSet()
+
+            val everyone = setOf(ME, "alice", "zed")
+            assertEquals("the commons thread", everyone, inThread(commons))
+            assertEquals("the commons post's details", everyone, onMessage("commons"))
+            assertEquals("the Meshtastic thread", everyone, inThread(Conversations.MESHTASTIC))
+            assertEquals("the Meshtastic post's details", everyone, onMessage("mesh"))
+            assertEquals("the DM thread", setOf(ME, "alice"), inThread("alice"))
+            assertEquals("the DM's details", setOf(ME, "alice"), onMessage("dm"))
+        }
+
     @Test
     fun observeExcludesRetractedReactions() =
         runTest {

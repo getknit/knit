@@ -4,6 +4,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -200,20 +201,36 @@ class CustodyLabTest {
      * alone (his pin of her carries no `CAP_RATCHET`) when her group's seed reaches him, and his ack of the seed confirms
      * her session. Her next DM is sealed inside that session, and the receipt Bob sends for it before her profile reaches
      * him does not tick it. The group's posts and ticks still converge.
+     *
+     * Bob's way to Alice is held until his seed ack is parked on it, so the scenario shows that ack is the one sealed DM
+     * of his that reaches her before her session confirms: unconfirmed while it waits, confirmed with her outbox showing
+     * the seed acked once it alone of his sealed DMs has crossed.
      */
     @Test
     fun aDmSentAfterASeedAckFromACardOnlyContactShowsNoTickFromItsReceipt() =
         runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            // No boards, whatever the run: the held link must be Bob's only way to Alice.
+            val alice = lab.node("alice", board = false).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", board = false).apply { setDisplayName("Bob") }
             lab.link(alice, bob)
             lab.awaitAcquainted(alice, bob)
             bob.answerWithCleartextReceipts(alice)
 
             val groupId = alice.createGroup(bob)
+            bob.transport.hold(alice.transport)
             assertTrue(alice.sendGroup(groupId, "founded"))
             lab.await(1) { if (bob.decrypted(groupId).any { (_, body) -> body == "founded" }) 1 else 0 }
-            lab.await(1) { if (alice.session(bob)?.confirmed == true) 1 else 0 }
+            lab.await(1) { if (sealedDmsHeld(bob.transport.held(alice.transport), bob, alice).isNotEmpty()) 1 else 0 }
+            val parked = bob.transport.held(alice.transport)
+            assertEquals("bob's sealed DMs to alice before her session confirms", 1, sealedDmsHeld(parked, bob, alice).size)
+            assertFalse("alice confirmed with bob's way to her held", alice.session(bob)?.confirmed == true)
+            assertEquals("alice's outbox saw bob's seed ack early", 0, seedAckedBy(alice, groupId, bob))
+
+            bob.transport.releaseFirst(alice.transport, parked.size)
+            // The ack lands on her outbox after the commit that confirms her session, so it is the one awaited.
+            lab.await(1) { if (seedAckedBy(alice, groupId, bob) > 0) 1 else 0 }
+            assertTrue("alice unconfirmed after bob's seed ack", alice.session(bob)?.confirmed == true)
+            bob.transport.release(alice.transport)
 
             assertTrue(alice.sendDm(bob, "after the seed"))
             val dm = alice.ownMessageId(alice.dmWith(bob), "after the seed")
@@ -229,6 +246,29 @@ class CustodyLabTest {
             assertTrue(bob.sendGroup(groupId, "a reply"))
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { groupId }
         }
+
+    /** The DM-form sealed frames among [frames] that [from] addressed to [to]: no group header, a ciphertext. */
+    private fun sealedDmsHeld(
+        frames: List<WireEnvelope>,
+        from: LabNode,
+        to: LabNode,
+    ): List<WireEnvelope> =
+        frames.filter { frame ->
+            val env = WireCodec.decodeEnvelope(frame.signed)
+            val enc = env?.takeIf { e -> e.type == FrameType.CHAT }?.let { e -> WireCodec.decodePayload<ChatContent>(e.payload)?.enc }
+            env != null && env.senderId == from.nodeId && env.recipientId == to.nodeId && env.group == null && enc != null
+        }
+
+    /** The epoch [member] has acknowledged of [author]'s seed for [groupId], as [author]'s outbox records it (0: none). */
+    private suspend fun seedAckedBy(
+        author: LabNode,
+        groupId: String,
+        member: LabNode,
+    ): Int =
+        author.db
+            .groupRatchetDao()
+            .keySend(groupId, member.nodeId)
+            ?.ackedEpoch ?: 0
 
     /** The receipt frames parked on [from]'s pipe to [to] that name [id]. */
     private fun cleartextReceiptsFor(
