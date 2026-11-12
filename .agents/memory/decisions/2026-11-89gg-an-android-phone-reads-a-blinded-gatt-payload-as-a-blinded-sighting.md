@@ -95,14 +95,15 @@ That is why the iPhone's blinding stays off by default even in debug builds.
   indication is enabled, and `BluetoothGattCallback.onServiceChanged` never fires toward an iPhone. That matches the
   Pixel 9's snoop of 2026-11-12: no ATT Write Request across 23 connections (knit-ios `linux-peer.md:2263-2271`).
 - **Log lines** (at info, built in `BtLines`, never a whole tag nor a tag beside an id; the trial greps them):
-  - `bt gatt read <address> blinded (psm <n>)` at a blinded read's end, which matches neither `interop.py`'s
-    `GATT_READ_END` nor its `bt gatt read (\S+) → <id>`;
+  - `bt gatt read <address> blinded (psm <n>)` at a blinded read's end, which `interop.py`'s `GATT_READ_END` books as a
+    charge with no node (its A11 `(blinded) \(` branch) and its `bt gatt read (\S+) → <id>` never matches;
   - `bt gatt blinded <address> → <id|~handle> (<how>)` on the worker, once per read, `<how>` one of `key`, `claim`,
     `hint`, `handle`, `own`, `replayed` (a key's answer the proof voided), `malformed`, or `clear`, which a blinded
     form never reaches;
   - `bt gatt forget <address> (edge)` for rule 4;
   - `bt gatt confirmed <address> (tag) → <id>` for a blinded refund, which `GATT_CONFIRMED` (`^bt gatt confirmed (\S+)
-    → `) does not match, so the harness's clear-charge model never deletes a charge on it;
+    → `) does not match, so the harness's clear-charge model never deletes a charge on it; its `GATT_CONFIRMED_TAG`
+    refunds the latest blinded charge at that address;
   - `bt doorbell settling <id> (<n>ms since link up)` for a lookup inside the settle bound.
 
   The clear `bt gatt read <address> → <id>`, `failed (` and `stranger (` lines, `bt gatt forget`, `bt doorbell found`,

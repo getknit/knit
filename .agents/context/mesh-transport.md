@@ -562,8 +562,8 @@ keeps the old sighting until the address rotates or goes quiet. Oracle: `bt gatt
 `failed (<phase>)` / `stranger (<phase>)` and `bt gatt forget <addr> (dial|hello <id>|quiet|seal|edge)` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=`/`gattBudget=` on `bt state`, `bt gatt budget spent (…)` / `bt gatt budget free` per
 edge, `bt gatt confirmed <addr> → <id>` at debug. A blinded read logs `bt gatt read <addr> blinded (psm <n>)`, then on
 the worker `bt gatt blinded <addr> → <id|~handle> (key|claim|hint|handle|own|replayed|malformed|clear)`, and its refund
-`bt gatt confirmed <addr> (tag) → <id>`, all at info, none printing a tag, none matching `interop.py`'s clear-read or
-refund regexes. Tests: `GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`, `BleGattPayloadReaderTest`
+`bt gatt confirmed <addr> (tag) → <id>`, all at info, none printing a tag; `interop.py` books the read as a charge with
+no node and the refund through its own `GATT_CONFIRMED_TAG`, never as a clear read or refund (`BlindGattReadTest`). Tests: `GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`, `BleGattPayloadReaderTest`
 (Robolectric over a mocked client); the reader's radio side is device-verified only.
 
 A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or

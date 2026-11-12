@@ -16,7 +16,7 @@ import org.junit.Test
 
 /**
  * The reader's side of a blinded GATT payload (ADR 2026-11.89gg) beyond [app.getknit.knit.mesh.bluetooth.GattPayloads]:
- * the `bt gatt …` lines it adds show no tag and match none of knit-ios `interop.py`'s clear shapes, and rule 2 finds the
+ * the `bt gatt …` lines it adds show no tag and knit-ios `interop.py` books them as blinded, never clear, and rule 2 finds the
  * tag a node announced by its id ([AdvertAliases.announced], knit-ios `AdvertAliases.announced(by:)`).
  */
 class BlindGattReadTest {
@@ -42,15 +42,26 @@ class BlindGattReadTest {
     }
 
     @Test
-    fun theBlindedGattLinesMatchNoneOfTheIosHarnessesClearReadOrRefundShapes() {
-        // knit-ios `interop.py`'s GATT_READ_END, `_gatt_reads`' id capture and GATT_CONFIRMED, verbatim: a blinded read or
-        // refund must not be booked as a clear one (its `_charged_reads` deletes a charge by address and id).
-        val readEnd = Regex("^bt gatt read (\\S+) (?:→ ([a-z2-7]{26})|failed \\(|stranger \\()")
+    fun theBlindedGattLinesAreBookedByTheIosHarnessAsBlindedNeverAsClear() {
+        // knit-ios `interop.py`'s GATT_READ_END, `_gatt_reads`' id capture, GATT_CONFIRMED and GATT_CONFIRMED_TAG, verbatim
+        // (its A11 harness fix): a blinded read is charged with no node, and a blinded refund takes only a blinded charge, so
+        // neither is ever booked as a clear one (`_charged_reads` deletes a clear charge by address and id).
+        val readEnd = Regex("^bt gatt read (\\S+) (?:→ ([a-z2-7]{26})|failed \\(|stranger \\(|(blinded) \\()")
         val clearRead = Regex("bt gatt read (\\S+) → ([a-z2-7]{26})")
         val confirmed = Regex("^bt gatt confirmed (\\S+) → ([a-z2-7]{26})")
-        lines(FormKeys().keyFor(tag)).forEach { line ->
-            listOf(readEnd, clearRead, confirmed).forEach { assertFalse("$it ~ $line", it.containsMatchIn(line)) }
+        val confirmedTag = Regex("^bt gatt confirmed (\\S+) \\(tag\\) → ([a-z2-7]{26})")
+        val handle = FormKeys().keyFor(tag)
+        lines(handle).forEach { line ->
+            listOf(clearRead, confirmed).forEach { assertFalse("$it ~ $line", it.containsMatchIn(line)) }
         }
+        val blindedRead = checkNotNull(readEnd.find(BtLines.gattReadBlinded(address, 0x83))) { "the blinded read ends a read" }
+        assertEquals(address, blindedRead.groupValues[1])
+        assertEquals("charged with no node", "", blindedRead.groupValues[2])
+        assertEquals("blinded", blindedRead.groupValues[3])
+        val refund = checkNotNull(confirmedTag.find(BtLines.gattConfirmedTag(address, id))) { "the blinded refund" }
+        assertEquals(listOf(address, id), refund.groupValues.drop(1))
+        (lines(handle) - BtLines.gattReadBlinded(address, 0x83)).forEach { assertFalse(it, readEnd.containsMatchIn(it)) }
+        assertFalse("a clear refund is not a tag's", confirmedTag.containsMatchIn("bt gatt confirmed $address → $id"))
         // The clear lines keep their shapes.
         assertTrue(readEnd.containsMatchIn("bt gatt read $address → $id (psm 131)"))
         assertTrue(confirmed.containsMatchIn("bt gatt confirmed $address → $id"))
