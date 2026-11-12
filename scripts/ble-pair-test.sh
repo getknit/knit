@@ -23,6 +23,9 @@
 # that side's bridge log and btsnoop — and prints the test's own `BlePair` lines (link and relink times).
 # Env: KNIT_PAIR_NO_BUILD=1 installs the APKs already built instead of building first;
 #      KNIT_PAIR_KEEP=1 keeps both identities and their history for a `run` instead of starting clean;
+#      KNIT_PAIR_DIALER=a|b makes that side the dialer: `run` mints fresh identities until it holds the larger node id
+#      (the classic order: the larger id dials), for the days one dongle's dials fail (testing.md); with
+#      KNIT_PAIR_KEEP it refuses a pair the other way round instead of minting;
 #      KNIT_PAIR_BLIND=1 runs both adverts blinded (the debug default, cleared to it first) instead of switching the
 #      blind switch off for the classic order and back to the default after;
 #      KNIT_HCI_HEADLESS= (empty) shows the windows; KNIT_HCI_AVD picks the AVD both boot (Knit_BLE_Pair);
@@ -163,6 +166,12 @@ runner_of() {
   on "$1" shell pm list instrumentation | sed -n "s/^instrumentation:\([^ ]*\) (target=$PKG)\$/\1/p" | head -1
 }
 
+# Whether node id $1 sorts above $2 the way BlePairTest.isSmaller's String compare does (code units, so byte order).
+id_above() { (LC_ALL=C; [[ "$1" > "$2" ]]); }
+
+# How many fresh identity pairs `run` mints to give KNIT_PAIR_DIALER the larger id; each try is a coin toss.
+DIALER_MINTS=12
+
 cmd_run() {
   local side stamp dir pids=() verdict=0
   stamp=$(date +%Y%m%d-%H%M%S)
@@ -170,10 +179,22 @@ cmd_run() {
   mkdir -p "$dir"; ln -sfn "$dir" "$OUT/latest"
 
   declare -A ids
+  local dialer=${KNIT_PAIR_DIALER:-} mints=0
+  case $dialer in "" | a | b) ;; *) die "KNIT_PAIR_DIALER is a or b, not $dialer" ;; esac
+  while :; do
+    for side in "${SIDES[@]}"; do
+      prepare "$side"
+      ids[$side]=$(node_id "$side")
+      [ -n "${ids[$side]}" ] || die "no node id from $(serial_of "$side") (is Knit installed? install first)"
+    done
+    [ -z "$dialer" ] || [ "${ids[a]}" = "${ids[b]}" ] || id_above "${ids[$dialer]}" "${ids[$(other "$dialer")]}" && break
+    [ -z "${KNIT_PAIR_KEEP:-}" ] ||
+      die "KNIT_PAIR_DIALER=$dialer, but side $dialer holds the smaller id and KNIT_PAIR_KEEP keeps it (drop one)"
+    mints=$((mints + 1))
+    [ "$mints" -lt "$DIALER_MINTS" ] || die "$DIALER_MINTS fresh identity pairs and side $dialer never held the larger id"
+    say "side $dialer holds the smaller id ${ids[$dialer]}; minting fresh identities ($mints)"
+  done
   for side in "${SIDES[@]}"; do
-    prepare "$side"
-    ids[$side]=$(node_id "$side")
-    [ -n "${ids[$side]}" ] || die "no node id from $(serial_of "$side") (is Knit installed? install first)"
     if [ -n "${KNIT_PAIR_BLIND:-}" ]; then
       blind_switch "$side" "clear true" null
     else
@@ -183,7 +204,7 @@ cmd_run() {
     [ -n "$(runner_of "$side")" ] || die "no instrumentation for $PKG on $(serial_of "$side") (install first)"
   done
   [ "${ids[a]}" != "${ids[b]}" ] || die "both emulators hold the same identity ${ids[a]} (drop KNIT_PAIR_KEEP)"
-  say "run $stamp: a ${ids[a]} on $(serial_of a), b ${ids[b]} on $(serial_of b) (logs: $dir)"
+  say "run $stamp: a ${ids[a]} on $(serial_of a), b ${ids[b]} on $(serial_of b)${dialer:+, $dialer dials} (logs: $dir)"
 
   for side in "${SIDES[@]}"; do
     on "$side" logcat -c || true

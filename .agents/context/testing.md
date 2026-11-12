@@ -1269,5 +1269,13 @@ logcat and that side's bridge log and btsnoop.
   dials from its capture (`btmon -r build/hci-bridge/latest-<d>/hci.btsnoop`, an Extended Create Connection then
   an Enhanced Connection Complete with `Success` or `0x02`). The host's own Bluetooth streaming audio to a speaker
   beside the dongles was going during the worst stretch too; turning it off alone did not help.
+- **When only one side's dials fail, give the other side the dials: `KNIT_PAIR_DIALER=a|b`.** With the blind switch
+  off, the larger node id dials, and every `run` mints fresh ids, so which dongle dials is a coin toss. A side holding
+  the larger id while its own dials time out also refuses the other side's working dials ("bt refused client …
+  sighted=true"), so the pair never links. `KNIT_PAIR_DIALER=b scripts/ble-pair-test.sh all` mints fresh identity
+  pairs (`pm clear`) until side b holds the larger id, up to 12 tries, then runs. With `KNIT_PAIR_KEEP` it refuses a
+  pair the wrong way round instead of minting. It fixes only a one-sided fault, which the btsnoop tally above tells
+  apart. On 2026-11-11 both sides' dials failed at the controller for an hour: dongle A had 0 successful Enhanced
+  Connection Completes out of 5 dials, B had 1 out of 6. Three runs never linked, the last one with b dialing.
 - **`ctl dial-phys 0x01`** limits a dial's initiating PHYs (an experiment knob: 1M-only dials relinked no better).
 
