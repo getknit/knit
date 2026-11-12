@@ -1,0 +1,79 @@
+{
+  "about": "USB control pairing and sessions (docs/USB_CONTROL.md; experimental, debug builds only). Pair: ss = X25519(scalar, peer's public key); c = PBKDF2-HMAC-SHA256(code ASCII, salt = eH || eP, 200000 iterations, 32); okm = HKDF-SHA256(ikm = ss, salt = c, info = 'knit/usb/v2/pair' || eH || eP || u32be(len client) || client, 112) = confirmHost (32) || confirmPhone (32) || psk (32) || handle (16). Session: kH2P/kP2H = HKDF-SHA256(ikm = psk || ss, salt = eH || eP, info = 'knit/usb/v2/seal/h2p' or '.../p2h' || handle, 32). Frame = u32be(0x80000000 | n + 16) || AES-256-GCM(k, nonce = 4 zero bytes || u64be counter, plaintext n, aad = the 4 header bytes) with its tag; each direction counts from 0. A plaintext whose frame would be a multiple of 64 bytes gets one trailing space before it is sealed. Scalars are raw (X25519 clamps them).",
+  "pair": {
+    "hostScalar": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "phoneScalar": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+    "eH": "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a",
+    "eP": "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f",
+    "ss": "d6fb939511b2381bc8599b4b8edc5968829450dfd7a87aebe78a703cd04cd54e",
+    "code": "7KQFM2XD9R",
+    "codeShown": "7KQFM 2XD9R",
+    "client": "knit-cli 0.3.0 on vectors",
+    "stretched": "c587e0a5f52b63538ad6302f9b59e5bdb9c1f3e81bb588785315f7ad212fb442",
+    "info": "6b6e69742f7573622f76322f7061697279a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f000000196b6e69742d636c6920302e332e30206f6e20766563746f7273",
+    "confirmHost": "1ec1ac1bbf7954784b2c70acff3ed90ff62255e8a494c4fd940b6f548cbe09c5",
+    "confirmPhone": "2251d536908834d0c85f2cf130c966d576564fc9fa9f35f83208f078dd10f107",
+    "psk": "310edaa0fa4cbc2caff3d75d520008a8d01795395d1eba73a733ccaba69e35f8",
+    "handle": "1789a67e020eb3658de1639bd9788b19",
+    "wrongCode": "7KQFM2XD9S",
+    "wrongCodeConfirmHost": "feb6273ffc687e9b7da822d0916cfe85c2b2242b2bf7510b3977ae7bcb9d96d9"
+  },
+  "session": {
+    "hostScalar": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "phoneScalar": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "eH": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+    "eP": "605a725d2a4adfeeb1a29e17edd621c1b7593ee8cdbc44ac6c4ab6e2f805d23c",
+    "ss": "c6dea8dd115ef27b7e0953539b2b19e59b7abf3ffd57985ec76de86ec31d1b42",
+    "keyH2P": "6e7e5f5909b3d0c363133d0fc31de4d2a660146a94cdffb938f6b5a5cbfb0c15",
+    "keyP2H": "fa610bc8f9c90d2186726a64a57ac5b0543b4b0ce6f59e8b2fbc9e9f0cd09436",
+    "frames": {
+      "hostHello": {
+        "counter": 0,
+        "plaintext": "{\"id\":1,\"op\":\"hello\",\"v\":1,\"nonce\":\"vector\",\"client\":\"knit-cli\"}",
+        "frame": "80000050032a41c15a7ff0112819be8cf5ebe7fe38ecaaf9611d1b25be7b76206e3a58dffb5926ea94fabc297229c78d5576f60b269d622daa51772ff341acefd133fde0af1b32020fefa41015382799dc4489b9"
+      },
+      "hostStatus": {
+        "counter": 1,
+        "plaintext": "{\"id\":2,\"op\":\"status\"}",
+        "frame": "8000002664d7be4f062df34a1336dc4d948bc37c0a0511054bff3c8b1b9addf4509263401d170afa1828"
+      },
+      "hostPadded": {
+        "counter": 2,
+        "plaintext": "{\"id\":3,\"op\":\"raw\",\"pad\":\"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\"}",
+        "frame": "800001fdec3061f455da04eead01ad3536db6c8d521f786619df5d46ba437cb3678cbaa5a0b712abd1b9432049271639b001ac24a739db85f6dbb799f1c03a59429a0e63f813fcf37bcd5378bf407663094d657ec3ba349f7f64e7b4b7f39cc541eec5808d24bda3663df84d9c7fbfa21efbdd96d7404a8cc0c3b4f56b04ffee0de2a14aa53f4a01ce0e85923d0570324fbcd61ba59ec2a8877dee8946faf68b69eb45de4ff44392a2e4f8e3135f9c684c95341ef1e40e601c410529372ae0b17eb225e3b21ab187ff41c64d74611edc0a5b19b9b4049a5da26a2993dbc547d848f093a87b65b44384e05d7838f69c9797f039e3bc1d6d16c70dd18abb702d23d04c9c2b08f5e6badb6561892ce57b858fbe1e28135914af3e585f88b45dd68a3145567400c4916f7aa85a68ed3376907a9ac3a32e5ea39c7a3292ef2f3a80cd0ce2bab3758ce6ae7c237beaf00ba145101be306574895c1e5dc71986784b4300ec2ee02c461101ece8d4aac832d3586c2fa3a6ce74d5cc7b192015395c755e2d1e87543b1dfd35f23d81c6a6caf81bb72bcb6828cf2cf6e93aee96f68cf7dc9d79abb965ea6c0bd8ea829048bf474aea9f0cae489850880c38fff2975b9aa527f71edb535eca601f2f58379963622d82dceadaa7b12876a006eb46c8b04360924c81ef9723c83da05027d41c1b589a0f5c446f4d7aa1c3166d9bb502296a623f6"
+      },
+      "phoneReply": {
+        "counter": 0,
+        "plaintext": "{\"id\":1,\"ok\":true}",
+        "frame": "8000002255f77c752306290a4ab618f626f2298d2c8b4b8d00dd9ee4da1d968287c6d5672697"
+      }
+    },
+    "rejects": {
+      "flippedBit": {
+        "frame": "80000050032a41c15a7ff0112819be8cf5ebe7fe38ecaaf9611d1b25be7b76206e3a58dffb5926ea94fabc297229c78d5576f60b269d622daa51772ff341acefd133fde0af1b32020fefa41015382799dc4489b8",
+        "openWith": "h2p",
+        "atCounter": 0,
+        "why": "the last tag byte flipped"
+      },
+      "skippedCounter": {
+        "frame": "8000002664d7be4f062df34a1336dc4d948bc37c0a0511054bff3c8b1b9addf4509263401d170afa1828",
+        "openWith": "h2p",
+        "atCounter": 0,
+        "why": "frame 1 opened where frame 0 is due"
+      },
+      "wrongDirection": {
+        "frame": "80000050032a41c15a7ff0112819be8cf5ebe7fe38ecaaf9611d1b25be7b76206e3a58dffb5926ea94fabc297229c78d5576f60b269d622daa51772ff341acefd133fde0af1b32020fefa41015382799dc4489b9",
+        "openWith": "p2h",
+        "atCounter": 0,
+        "why": "a host frame opened under the phone's own key"
+      },
+      "wrongPsk": {
+        "frame": "800000500f3b565792a901224fa6b1aa88cfc63d14db1c53f9d754523550e9ed6804df4377bf0281462e5ebd82e5af38dfd167596a54261c1574c950db76fdb3c686934d1a97a7f4cf8ede8895e3ac3bf66acfff",
+        "openWith": "h2p",
+        "atCounter": 0,
+        "why": "sealed under a psk one bit off"
+      },
+      "lowOrderKeyShare": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

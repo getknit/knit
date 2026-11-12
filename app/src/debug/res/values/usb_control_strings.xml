@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB control pairing (exp/usb-control): debug builds only, never shipped, so English only. -->
+<resources>
+    <string name="usbctl_pair_title" translatable="false">Pair a computer</string>
+    <string name="usbctl_pair_none" translatable="false">No computer is asking to pair. Run `knit pair` on your computer with the phone plugged in.</string>
+    <string name="usbctl_pair_asking" translatable="false">A computer calling itself “%1$s” wants to read your chats and send as you over this cable.</string>
+    <string name="usbctl_pair_show" translatable="false">Show code</string>
+    <string name="usbctl_pair_warning" translatable="false">Type this only into your own computer, where you ran `knit pair`. Expires in %1$d s.</string>
+    <string name="usbctl_pair_cancel" translatable="false">Cancel</string>
+    <string name="usbctl_paired_title" translatable="false">Paired computers</string>
+    <string name="usbctl_paired_unavailable" translatable="false">The phone can’t read its pairings right now.</string>
+    <string name="usbctl_paired_empty" translatable="false">None yet.</string>
+    <string name="usbctl_paired_last_used" translatable="false">Last used %1$s</string>
+    <string name="usbctl_paired_forget" translatable="false">Forget</string>
+    <string name="usbctl_notice_channel" translatable="false">Pair a computer (debug)</string>
+    <string name="usbctl_notice_public" translatable="false">A computer wants to pair with Knit</string>
+    <string name="usbctl_notice_title" translatable="false">Pair a computer with Knit?</string>
+    <string name="usbctl_notice_text" translatable="false">A computer calling itself “%1$s” wants to pair. Tap to see the code.</string>
+</resources>

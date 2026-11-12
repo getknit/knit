@@ -4,9 +4,10 @@ import java.io.IOException
 import java.nio.ByteBuffer
 
 /**
- * The USB control spike's framing: a big-endian u32 length, then that many bytes of UTF-8 JSON, 1 to [MAX_FRAME]
- * bytes. The `[len:4][payload]` shape is `mesh/link/LinkFraming`'s, copied rather than shared because that one is
- * the mesh's own door; knit-cli's `frames.py` speaks the same bytes.
+ * The USB control spike's framing: a big-endian u32 length, then that many bytes, 1 to [MAX_FRAME]: UTF-8 JSON in a
+ * clear frame, or a [UsbSeal] frame (the length's top bit set) inside a paired session. The `[len:4][payload]` shape is
+ * `mesh/link/LinkFraming`'s, copied rather than shared because that one is the mesh's own door; knit-cli's `frames.py`
+ * speaks the same bytes.
  *
  * One rule USB adds: a frame whose whole size is a multiple of [PACKET_ALIGN] gets one trailing space in its JSON.
  * A bulk transfer ends at a short packet, and neither side sends a zero-length one after an exact multiple of the
@@ -28,12 +29,39 @@ internal object UsbControlFrames {
         body.copyInto(out, HEADER)
         return out
     }
+
+    /**
+     * [json] as a sealed frame from [sealer], padded inside the seal by the same rule: a trailing space when the whole
+     * frame (header, plaintext, tag) would end on a packet boundary. [IOException] past [UsbSeal.MAX_PLAINTEXT].
+     */
+    fun encodeSealed(
+        sealer: UsbSeal.Sealer,
+        json: String,
+    ): ByteArray {
+        var plain = json.encodeToByteArray()
+        if ((HEADER + plain.size + UsbSeal.TAG_BYTES) % PACKET_ALIGN == 0) plain += ' '.code.toByte()
+        if (plain.size !in 1..UsbSeal.MAX_PLAINTEXT) {
+            throw IOException("sealed frame of ${plain.size} bytes is outside 1..${UsbSeal.MAX_PLAINTEXT}")
+        }
+        return sealer.seal(plain)
+    }
+}
+
+/**
+ * One frame as it came off the cable: a clear frame's [bytes] are its JSON body; a sealed one's are the whole frame,
+ * header first, since the header is the seal's AAD.
+ */
+internal class RawFrame(
+    val sealed: Boolean,
+    val bytes: ByteArray,
+) {
+    fun text(): String = bytes.decodeToString()
 }
 
 /**
  * Reassembles frames from reads of any size: a read may hold half a header, several frames, or a frame and the
- * start of the next. A length outside 1..[max] throws [IOException]; the stream can't be trusted past that point,
- * so the caller reports it and calls [reset].
+ * start of the next. A length outside 1..[max] (the sealed bit aside) throws [IOException]; the stream can't be
+ * trusted past that point, so the caller reports it and calls [reset].
  */
 internal class UsbControlDeframer(
     private val max: Int = UsbControlFrames.MAX_FRAME,
@@ -48,18 +76,22 @@ internal class UsbControlDeframer(
         bytes: ByteArray,
         offset: Int = 0,
         count: Int = bytes.size - offset,
-    ): List<String> {
+    ): List<RawFrame> {
         ensure(len + count)
         bytes.copyInto(buf, len, offset, offset + count)
         len += count
-        val frames = mutableListOf<String>()
+        val frames = mutableListOf<RawFrame>()
         var start = 0
         while (len - start >= UsbControlFrames.HEADER) {
-            val n = ByteBuffer.wrap(buf, start, UsbControlFrames.HEADER).int
-            if (n !in 1..max) throw IOException("frame length $n is outside 1..$max")
+            val word = ByteBuffer.wrap(buf, start, UsbControlFrames.HEADER).int
+            val sealed = UsbSeal.isSealed(word)
+            val n = word and UsbSeal.SEALED_BIT.inv()
+            val least = if (sealed) UsbSeal.TAG_BYTES + 1 else 1
+            if (n !in least..max) throw IOException("frame length $n is outside $least..$max")
             if (len - start - UsbControlFrames.HEADER < n) break
-            frames += buf.decodeToString(start + UsbControlFrames.HEADER, start + UsbControlFrames.HEADER + n)
-            start += UsbControlFrames.HEADER + n
+            val end = start + UsbControlFrames.HEADER + n
+            frames += RawFrame(sealed, buf.copyOfRange(if (sealed) start else start + UsbControlFrames.HEADER, end))
+            start = end
         }
         if (start > 0) {
             buf.copyInto(buf, 0, start, len)

@@ -1,6 +1,7 @@
 package app.getknit.knit.usbcontrol
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -25,11 +26,8 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
+import org.json.JSONArray
 import org.json.JSONObject
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.get
@@ -43,9 +41,13 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The phone's end of the USB control (debug builds only): serves [UsbControlSession] over an Android Open Accessory
- * stream from knit-cli, protocol v1 (`docs/USB_CONTROL.md`). Off until the bridge's `USBCTL --es op enable` turns it
- * on; with it off, an attached accessory is left alone and `open` can pick it up later. Android's own "Open Knit?"
- * prompt is the only gate: no pairing, no host key. One accessory at a time.
+ * stream from knit-cli, protocol v2 (`docs/USB_CONTROL.md`). Off until the bridge's `USBCTL --es op enable` turns it
+ * on; with it off, an attached accessory is left alone and `open` can pick it up later. One accessory at a time.
+ *
+ * **Paired computers only.** Before a session a link serves the clear `pair`, `pair.confirm` and `open` and nothing
+ * else ([UsbDoor]); a computer pairs with a code the phone shows ([UsbPairActivity]), and its sessions are sealed
+ * ([UsbSeal]) under the key the pairing left on both ends ([KeystorePairingStore]). Android's "Open Knit?" prompt still
+ * comes first, but it no longer stands guard: "Use by default" lets any host that claims knit-cli through it.
  *
  * It also owns the [changeLog] the repositories report their writes to, kept only while USB control is on.
  *
@@ -86,6 +88,64 @@ internal object UsbControlServer : KoinComponent {
     @Volatile private var lastError: String? = null
 
     fun enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
+
+    @Volatile private var store: PairingStore? = null
+
+    @Volatile private var pendingPairs: PendingPairs? = null
+
+    /** The paired computers: one store for the process. */
+    fun pairings(context: Context): PairingStore =
+        store ?: synchronized(lock) { store ?: KeystorePairingStore(context.applicationContext).also { store = it } }
+
+    /** The pair exchange waiting on the phone, shared by the link that asked and [UsbPairActivity]; the notice follows it. */
+    fun pending(context: Context): PendingPairs {
+        pendingPairs?.let { return it }
+        val app = context.applicationContext
+        return synchronized(lock) {
+            pendingPairs ?: PendingPairs(System::currentTimeMillis) { UsbPairNotice.update(app, it) }.also { pendingPairs = it }
+        }
+    }
+
+    /**
+     * Forgets the paired computers whose handle starts with [prefix] (every one for `all`), and ends a session under
+     * one. The count forgotten, or null when the store can't be read or rewritten (nothing is forgotten then).
+     */
+    fun forget(
+        context: Context,
+        prefix: String,
+    ): Int? {
+        val matches = { p: Pairing -> prefix == FORGET_ALL || (prefix.isNotEmpty() && p.handleText.startsWith(prefix)) }
+        val done =
+            pairings(context).update { held -> if (held.none(matches)) null else held.filterNot(matches) } as? Updated.Done ?: return null
+        val gone = done.before.filter(matches)
+        if (gone.isEmpty()) return 0
+        synchronized(lock) { link?.forgotten(gone.map { it.handle }) }
+        note("forgot ${gone.size} paired computer(s)")
+        return gone.size
+    }
+
+    /** The paired computers as the bridge and the screen list them: never a key. */
+    fun pairingsJson(context: Context): JSONObject {
+        val list = JSONArray()
+        when (val stored = pairings(context).read()) {
+            Stored.Unavailable -> {
+                return JSONObject().put("unavailable", true)
+            }
+
+            is Stored.Ok -> {
+                stored.pairings.forEach {
+                    list.put(
+                        JSONObject()
+                            .put("handle", it.handleText.take(HANDLE_PREFIX))
+                            .put("name", it.name)
+                            .put("pairedAt", it.pairedAt)
+                            .put("lastUsedAt", it.lastUsedAt),
+                    )
+                }
+            }
+        }
+        return JSONObject().put("pairings", list)
+    }
 
     /** The repositories' change sink (`di/DataChangeWiring`): the [changeLog], recording from now if USB control is on. */
     fun changeSink(context: Context): DataChangeSink {
@@ -154,6 +214,8 @@ internal object UsbControlServer : KoinComponent {
                 .put("log", "${cursor.epoch}:${cursor.seq}")
                 .put("lastClose", lastClose ?: JSONObject.NULL)
                 .put("lastError", lastError ?: JSONObject.NULL)
+                .put("pairings", (pairings(context).read() as? Stored.Ok)?.pairings?.size ?: JSONObject.NULL)
+                .put("pairPending", pending(context).live() != null)
                 .also { json -> l?.let { json.put("link", it.stateJson()) } }
         }
 
@@ -209,18 +271,26 @@ internal object UsbControlServer : KoinComponent {
 
     private fun note(message: String): String = message.also { Log.i(TAG, it) }
 
-    /** What the read loop hands the worker. */
+    /** What the read loop hands the worker, and the server's own word for it. */
     private sealed interface Inbound {
         class Frame(
-            val text: String,
+            val raw: RawFrame,
         ) : Inbound
 
         class Framing(
             val reason: String,
         ) : Inbound
+
+        /** These pairings were forgotten on the phone: a session under one of them ends. */
+        class Forgotten(
+            val handles: List<ByteArray>,
+        ) : Inbound
     }
 
-    /** One opened accessory: its streams, its session, its change feed and the two loops that serve them. */
+    /**
+     * One opened accessory: its streams, its [door] (the clear side: pairing, opening, the lock gate) and the [state]
+     * that serves a paired computer's session behind it, its change feed and the two loops that serve them.
+     */
     private class Link(
         val generation: Long,
         val accessory: UsbAccessory,
@@ -230,19 +300,30 @@ internal object UsbControlServer : KoinComponent {
     ) {
         private val api = AppUsbControlApi()
         private val feed = ChangeFeed(changeLog, api, System::currentTimeMillis)
-        private val session =
-            UsbControlSession(
-                api,
-                object : FeedControl {
-                    override fun subscribe(since: ChangeCursor?): SubscribeResult = feed.start(since)
+        private val feedControl =
+            object : FeedControl {
+                override fun subscribe(since: ChangeCursor?): SubscribeResult = feed.start(since)
 
-                    override fun unsubscribe() = feed.stop()
-                },
-                ledger,
+                override fun unsubscribe() = feed.stop()
+            }
+        private val keyguard = app.getSystemService(KeyguardManager::class.java)
+        val door =
+            UsbDoor(
+                store = pairings(app),
+                pending = pending(app),
+                enabled = { enabled(app) },
+                deviceLocked = { keyguard.isDeviceLocked },
+                now = System::currentTimeMillis,
             )
+        private val state =
+            UsbLinkState(door, newSession = { UsbControlSession(api, feedControl, ledger) }, onSessionEnd = { reason ->
+                feed.stop()
+                Log.i(TAG, "usb control session ended (generation $generation): $reason")
+            })
         private val input = FileInputStream(pfd.fileDescriptor)
         private val output = FileOutputStream(pfd.fileDescriptor)
         private val inbound = Channel<Inbound>(REQUEST_BUFFER)
+        private val control = Channel<Inbound>(Channel.UNLIMITED)
         private val statusSignal = Channel<Unit>(Channel.CONFLATED)
         private val jobs = mutableListOf<Job>()
         private val openedAt = System.currentTimeMillis()
@@ -254,22 +335,33 @@ internal object UsbControlServer : KoinComponent {
 
         @Volatile private var closed = false
 
-        private val detach =
+        private val receiver =
             object : BroadcastReceiver() {
                 override fun onReceive(
                     context: Context,
                     intent: Intent,
                 ) {
-                    val gone = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_ACCESSORY, UsbAccessory::class.java)
-                    if (gone == null || gone == accessory) down(this@Link, "detached")
+                    when (intent.action) {
+                        Intent.ACTION_USER_PRESENT -> {
+                            door.userPresent()
+                        }
+
+                        UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
+                            val gone = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_ACCESSORY, UsbAccessory::class.java)
+                            if (gone == null || gone == accessory) down(this@Link, "detached")
+                        }
+                    }
                 }
             }
 
         fun start() {
             ContextCompat.registerReceiver(
                 app,
-                detach,
-                IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED),
+                receiver,
+                IntentFilter().apply {
+                    addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+                    addAction(Intent.ACTION_USER_PRESENT)
+                },
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
             jobs += scope.launch(Dispatchers.IO) { readLoop() }
@@ -279,18 +371,26 @@ internal object UsbControlServer : KoinComponent {
 
         fun shutdown() {
             closed = true
-            runCatching { app.unregisterReceiver(detach) }
+            runCatching { app.unregisterReceiver(receiver) }
             inbound.close()
+            control.close()
             jobs.forEach { it.cancel() }
             runCatching { pfd.close() }
+        }
+
+        /** Hands the worker the handles just forgotten, so a session under one of them ends. */
+        fun forgotten(handles: List<ByteArray>) {
+            control.trySend(Inbound.Forgotten(handles))
         }
 
         fun stateJson(): JSONObject =
             JSONObject()
                 .put("generation", generation)
                 .put("accessory", "${accessory.manufacturer}/${accessory.model} ${accessory.version} ${accessory.serial}")
-                .put("client", session.client ?: JSONObject.NULL)
-                .put("subscribed", session.subscribed)
+                .put("sealed", state.sessionUp)
+                .put("unlockedSinceAttach", door.unlocked)
+                .put("client", state.client ?: JSONObject.NULL)
+                .put("lastSessionEnd", state.lastSessionEnd ?: JSONObject.NULL)
                 .put("openedAt", openedAt)
                 .put("framesIn", framesIn.get())
                 .put("framesOut", framesOut.get())
@@ -342,7 +442,7 @@ internal object UsbControlServer : KoinComponent {
             }
         }
 
-        /** Requests first, then the change feed: each frame built and written before the next is taken. */
+        /** The server's word first, then requests, then the change feed: each frame built and written before the next. */
         @OptIn(ExperimentalCoroutinesApi::class)
         private suspend fun workLoop() {
             val logSignal = changeLog.listen()
@@ -350,27 +450,14 @@ internal object UsbControlServer : KoinComponent {
                 while (!closed) {
                     val due = feed.nextDueAt()
                     select {
+                        control.onReceive { serve(it) }
                         inbound.onReceive { serve(it) }
                         if (feed.active) {
                             logSignal.onReceive { feed.pull() }
                             statusSignal.onReceive { feed.touch(ChangeKey.Status) }
                         }
                         if (due != null) {
-                            onTimeout((due - System.currentTimeMillis()).coerceAtLeast(0)) {
-                                feed.runDue().forEach { event ->
-                                    // An object over the cap goes as its stub (FrameBudget.stub), as a list reply's
-                                    // would; an event that is still over it is dropped rather than taking the link down.
-                                    val bytes =
-                                        runCatching { UsbControlFrames.encode(event.toString()) }.getOrNull()
-                                            ?: runCatching { UsbControlFrames.encode(stubbed(event).toString()) }.getOrNull()
-                                    if (bytes == null) {
-                                        Log.w(TAG, "usb control event over the frame cap, dropped")
-                                    } else {
-                                        write(bytes)
-                                        eventsOut.incrementAndGet()
-                                    }
-                                }
-                            }
+                            onTimeout((due - System.currentTimeMillis()).coerceAtLeast(0)) { sendDue() }
                         }
                     }
                 }
@@ -380,16 +467,32 @@ internal object UsbControlServer : KoinComponent {
                 down(this, "write: ${e.message}")
             } finally {
                 changeLog.unlisten(logSignal)
+                state.close()
+            }
+        }
+
+        private suspend fun sendDue() {
+            for (event in feed.runDue()) {
+                // An object over the cap goes as its stub (FrameBudget.stub), as a list reply's would; an event that
+                // is still over it is dropped rather than taking the session down.
+                val bytes = state.event(event) ?: state.event(stubbed(event))
+                if (bytes == null) {
+                    if (state.sessionUp) Log.w(TAG, "usb control event over the frame cap, dropped")
+                } else {
+                    write(bytes)
+                    eventsOut.incrementAndGet()
+                }
             }
         }
 
         private suspend fun serve(item: Inbound) {
-            val reply =
+            val out =
                 when (item) {
-                    is Inbound.Frame -> session.handle(item.text)
-                    is Inbound.Framing -> UsbControlSession.framingError(item.reason)
+                    is Inbound.Frame -> state.frame(item.raw)
+                    is Inbound.Framing -> state.framing(item.reason)
+                    is Inbound.Forgotten -> state.forgotten(item.handles)
                 }
-            write(frameOf(reply, reply["id"] ?: JsonNull))
+            out.forEach(::write)
         }
 
         private fun write(bytes: ByteArray) {
@@ -400,27 +503,12 @@ internal object UsbControlServer : KoinComponent {
 
         private fun stubbed(event: JsonObject): JsonObject =
             JsonObject(event.mapValues { (key, value) -> if (key != "event" && value is JsonObject) FrameBudget.stub(value) else value })
-
-        /** A reply as a frame, or, past the cap, an error asking for less. */
-        private fun frameOf(
-            reply: JsonObject,
-            id: JsonElement,
-        ): ByteArray =
-            try {
-                UsbControlFrames.encode(reply.toString())
-            } catch (e: IOException) {
-                Log.w(TAG, "usb control reply refused", e)
-                UsbControlFrames.encode(
-                    buildJsonObject {
-                        put("id", id)
-                        put("ok", false)
-                        put("code", Codes.INTERNAL)
-                        put("error", "reply over the ${UsbControlFrames.MAX_FRAME}-byte frame cap; ask for less")
-                    }.toString(),
-                )
-            }
     }
 
+    const val FORGET_ALL = "all"
+
+    /** How much of a handle the bridge and the screen show: enough to tell two apart, and to forget one by. */
+    const val HANDLE_PREFIX = 8
     private const val READ_BUFFER = 16 * 1024
     private const val REQUEST_BUFFER = 8
     private const val EPOCH_BYTES = 8

@@ -122,4 +122,19 @@ internal object Codes {
     const val RATE_LIMITED = "rate_limited"
     const val INTERNAL = "internal"
     const val FRAMING = "framing"
+
+    // Before a session (`UsbDoor`): pairing and opening.
+    const val SESSION_FIRST = "session_first"
+    const val OFF = "off"
+    const val LOCKED = "locked"
+    const val NOT_PAIRED = "not_paired"
+    const val PAIR_BUSY = "pair_busy"
+    const val PAIR_LIMIT = "pair_limit"
+    const val PAIRINGS_FULL = "pairings_full"
+    const val BAD_CODE = "bad_code"
+    const val EXPIRED = "expired"
+    const val STORE_UNAVAILABLE = "store_unavailable"
+
+    /** A session the phone ended: a frame that did not open, a clear frame, or this computer forgotten. */
+    const val SESSION_ENDED = "session_ended"
 }

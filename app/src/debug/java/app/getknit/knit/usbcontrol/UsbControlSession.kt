@@ -17,7 +17,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /**
- * One host's session over the accessory stream: protocol v1 (`docs/USB_CONTROL.md`). A request is `{"id":…,"op":…}`
+ * One paired computer's session, inside its sealed frames: the v1 ops (`docs/USB_CONTROL.md`). A request is `{"id":…,"op":…}`
  * and gets exactly one reply, `{"id":…,"ok":true,…}` or `{"id":…,"ok":false,"code":…,"error":…}`, with the id echoed
  * as sent. Nothing but `hello` is served before a hello; a hello resets the session (a new run on the same cable sends
  * one), so [subscribed] drops until the host asks again. The caller owns the event feed and follows [subscribed].
@@ -39,6 +39,10 @@ internal class UsbControlSession(
         private set
 
     private var hello = false
+
+    /** The host said `bye`: the server ends the sealed session once the reply is written. */
+    var ended: Boolean = false
+        private set
 
     @Suppress("TooGenericExceptionCaught") // one request's fault answers that request; the session goes on
     suspend fun handle(frame: String): JsonObject {
@@ -198,6 +202,7 @@ internal class UsbControlSession(
     private fun serveBye(): Map<String, JsonElement> {
         dropSubscription()
         hello = false
+        ended = true
         client = null
         return emptyMap()
     }
@@ -255,28 +260,6 @@ internal class UsbControlSession(
 
     private fun JsonObject.need(key: String): String = string(key)?.takeIf { it.isNotEmpty() } ?: refuse("missing $key")
 
-    private fun success(
-        id: JsonElement,
-        body: Map<String, JsonElement>,
-    ): JsonObject =
-        buildJsonObject {
-            put("id", id)
-            put("ok", true)
-            body.forEach { (k, v) -> if (k != "id" && k != "ok") put(k, v) }
-        }
-
-    private fun failure(
-        id: JsonElement,
-        error: UsbControlError,
-    ): JsonObject =
-        buildJsonObject {
-            put("id", id)
-            put("ok", false)
-            put("code", error.code)
-            put("error", error.message.orEmpty())
-            error.extra.forEach { (k, v) -> if (k !in RESERVED) put(k, v) }
-        }
-
     companion object {
         const val VERSION = 1
         const val OP_HELLO = "hello"
@@ -332,6 +315,28 @@ internal class UsbControlSession(
             buildJsonObject {
                 put("epoch", cursor.epoch)
                 put("seq", cursor.seq)
+            }
+
+        internal fun success(
+            id: JsonElement,
+            body: Map<String, JsonElement>,
+        ): JsonObject =
+            buildJsonObject {
+                put("id", id)
+                put("ok", true)
+                body.forEach { (k, v) -> if (k != "id" && k != "ok") put(k, v) }
+            }
+
+        internal fun failure(
+            id: JsonElement,
+            error: UsbControlError,
+        ): JsonObject =
+            buildJsonObject {
+                put("id", id)
+                put("ok", false)
+                put("code", error.code)
+                put("error", error.message.orEmpty())
+                error.extra.forEach { (k, v) -> if (k !in RESERVED) put(k, v) }
             }
 
         /** The event the server sends when a frame can't be read; it drops what it held and reads on. */

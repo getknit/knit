@@ -36,6 +36,13 @@
                 android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
                 android:resource="@xml/knit_usb_accessory" />
         </activity>
+        <!-- Pairing a computer for USB control: opened only from its own notification. Not exported, and not shown
+             over the keyguard, so the code it shows needs the phone unlocked. -->
+        <activity
+            android:name="app.getknit.knit.usbcontrol.UsbPairActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity="" />
         <receiver
             android:name="app.getknit.knit.debug.DebugBridgeReceiver"
             android:exported="true"

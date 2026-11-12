@@ -645,12 +645,17 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   the hash kept, or null), and the next start comes up paused — `RESUME`, then start the service as after an
   install. Run it on every lab phone in one pass, or a peer's custody walks the old traffic back in. Take a
   `BACKUP` first if the history might be wanted.
-- `…debug.USBCTL --es op enable|disable|open|close|state` — the **USB control's** switch (`exp/usb-control`,
-  `usbcontrol/UsbControlServer`, protocol v1 in `docs/USB_CONTROL.md`): knit-cli drives the app over an Android Open
-  Accessory stream, no adb. Off until `enable` (it persists, and starts the change log the repositories report to);
-  `open` picks up a knit-cli accessory that attached while it was off. The reply's `usb` carries `enabled`, `open`,
-  `recording`, `log` (`epoch:seq`), `lastClose` and, while a host is connected, `link` (client, subscribed, frame,
-  byte and event counts). Logs under tag `KnitUsb`.
+- `…debug.USBCTL --es op enable|disable|open|close|state|pairings|forget` — the **USB control's** switch
+  (`exp/usb-control`, `usbcontrol/UsbControlServer`, protocol v2 in `docs/USB_CONTROL.md`): knit-cli drives the app
+  over an Android Open Accessory stream, no adb, and only once paired (`knit pair`, a code on the phone's own screen).
+  Off until `enable` (it persists, and starts the change log the repositories report to); `open` picks up a knit-cli
+  accessory that attached while it was off. `pairings` lists the paired computers (`paired.pairings[]`: an 8-character
+  handle prefix, `name`, `pairedAt`, `lastUsedAt`, never a key); `forget --es handle <prefix of 4+|all>` forgets them
+  and ends a session under one. The bridge never shows a pairing code: a trial reads it off `UsbPairActivity` with
+  `uiautomator dump` (the window is `FLAG_SECURE`, so a screenshot shows nothing). The reply's `usb` carries `enabled`,
+  `open`, `recording`, `log` (`epoch:seq`), `lastClose`, `pairings` (a count), `pairPending` and, while a host is
+  connected, `link` (`sealed`, `unlockedSinceAttach`, `lastSessionEnd`, client, frame, byte and event counts). Logs
+  under tag `KnitUsb`.
 - `…debug.NANFAIL` / `…debug.NANSTORM` — reproduce **getknit/Knit#9** (ADR 052 + 055) on hardware that does
   not have the bug. `NANFAIL --ei count N` arms N Wi-Fi Aware attaches to take their failure path without
   reaching `mgr.attach` (0 disarms) — the stand-in for a vendor HAL with no STA+NAN interface combination.
