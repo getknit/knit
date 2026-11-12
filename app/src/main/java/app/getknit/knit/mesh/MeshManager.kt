@@ -3673,7 +3673,7 @@ class MeshManager(
     /** On startup, sweep orphaned blobs/reactions/pins/receipts and re-request attachment blobs we're still missing. */
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
-            reactions.deleteOrphans(clock()) // reclaim reactions left by deleted messages
+            reactions.deleteOrphans(clock(), identity.nodeId()) // reclaim reactions left by deleted messages, or off-roster
             pins.deleteOrphans(settings.blockedNodeIds.first()) // ...pins left by them, or on a since-blocked sender's
             receipts.deleteOrphans() // ...and per-recipient delivery rows left by a deleted thread or a retention trim
             sweepExpired() // carried DMs whose TTL elapsed while we were down (the in-memory sets are usually empty)

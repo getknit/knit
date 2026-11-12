@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.VectorParty
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -101,6 +102,25 @@ class LabSybil(
                 senderId = nodeId,
                 sentAt = sentAt,
                 payload = WireCodec.encodePayload(ChatContent(body = body)),
+            ),
+        )
+
+    /**
+     * A cleartext reaction of [emoji] on [messageId] stamped [sentAt]: the form a room reaction and an unsealable one
+     * flood in, naming only an id, so anyone who saw the id on the air can send one.
+     */
+    fun reaction(
+        messageId: String,
+        emoji: String,
+        sentAt: Long,
+    ): WireEnvelope =
+        signed(
+            RelayEnvelope(
+                type = FrameType.REACTION,
+                id = FrameId.new(),
+                senderId = nodeId,
+                sentAt = sentAt,
+                payload = WireCodec.encodePayload(ReactionContent(messageId, emoji)),
             ),
         )
 

@@ -2672,10 +2672,16 @@ class LabNode internal constructor(
     fun reactionNotified(
         messageId: String,
         reactor: LabNode,
+    ): Boolean = reactionNotified(messageId, reactor.nodeId)
+
+    /** [reactionNotified] for a reactor with no stack of its own, a [LabSybil]. */
+    fun reactionNotified(
+        messageId: String,
+        reactorId: String,
     ): Boolean {
         val posted = mutableListOf<NotifMessage>()
         coVerify(atLeast = 0) { notifier.notify(capture(posted), any(), any(), any(), any()) }
-        return posted.any { line -> line.key == reactionNotificationKey(messageId, reactor.nodeId) }
+        return posted.any { line -> line.key == reactionNotificationKey(messageId, reactorId) }
     }
 
     /** Floods [frame] over this node's links as it stands, signed by whoever signed it (a [LabSybil]): a fork's radio. */
@@ -3661,6 +3667,21 @@ class LabNode internal constructor(
     suspend fun reactions(messageId: String): Set<Pair<String, String>> =
         reactionStore
             .observeReactions()
+            .first()
+            .filter { r -> r.messageId == messageId }
+            .mapNotNull { r -> r.emoji?.let { r.reactorNodeId to it } }
+            .toSet()
+
+    /**
+     * Who reacted with what on [messageId] as the chat screen draws [conversationId]: [reactions] after the thread's
+     * reactor filter (`ReactionRepository.observeReactionsIn`), so a row stored from outside the thread is not listed.
+     */
+    suspend fun shownReactions(
+        conversationId: String,
+        messageId: String,
+    ): Set<Pair<String, String>> =
+        reactionStore
+            .observeReactionsIn(conversationId, nodeId)
             .first()
             .filter { r -> r.messageId == messageId }
             .mapNotNull { r -> r.emoji?.let { r.reactorNodeId to it } }

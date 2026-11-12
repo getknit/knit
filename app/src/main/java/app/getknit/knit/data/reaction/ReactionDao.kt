@@ -142,4 +142,24 @@ interface ReactionDao {
             "messageId NOT IN (SELECT id FROM messages)",
     )
     suspend fun deleteOrphansOlderThan(olderThan: Long)
+
+    /**
+     * Reclaims reactions older than [olderThan] on a held group post from a reactor on neither the group's members nor its
+     * departed (#301). Arrival refuses one of those on a post we hold (`InboundPipeline.reactsIn`), but one that arrived
+     * before its post was stored unchecked, as every early reaction is, and the display never draws it. Without this,
+     * identities minted to react ahead of a group's posts would keep their rows as long as the posts. A group's roster is
+     * its founding set, fixed by its id, so no honest reactor is ever off it. Our own reactions ([me]) are never reaped,
+     * and a post whose group row we no longer hold is left to [deleteForMessage]. The roster LIKE is exact for the
+     * reason [observeNewestOnOwnMessages] gives.
+     */
+    @Query(
+        "DELETE FROM reactions WHERE updatedAt < :olderThan AND reactorNodeId != :me AND EXISTS (" +
+            "SELECT 1 FROM messages AS m JOIN groups AS g ON g.groupId = m.conversationId WHERE m.id = reactions.messageId " +
+            "AND g.members NOT LIKE '%\"' || reactions.reactorNodeId || '\"%' " +
+            "AND g.departed NOT LIKE '%\"' || reactions.reactorNodeId || '\"%')",
+    )
+    suspend fun deleteOffRosterOlderThan(
+        olderThan: Long,
+        me: String,
+    )
 }

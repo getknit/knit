@@ -25,6 +25,7 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.sha256Hex
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -398,6 +399,55 @@ class MaliciousForkLabTest : StrandedLabBase() {
             relink(alice, mallory)
             relink(mallory, bob)
             lab.assertConverged(listOf(alice, bob), atLeast = 3, carriers = listOf(mallory), conversation = thread)
+        }
+
+    /**
+     * Identities Mallory mints for free react in the clear to a group's posts, naming ids anyone hears on the air. On a
+     * post a member holds, each member refuses them: nothing is stored, drawn, notified or put on the chat list. One that
+     * reaches Bob before the post it names is stored unchecked, as every early reaction is. Once the post lands Bob draws
+     * only Carol's honest reaction, and the startup sweep reclaims the rest after its grace, keeping hers.
+     */
+    @Suppress("LongMethod") // one scenario: the held post, then the early one, the sweep and the oracle
+    @Test
+    fun reactionsFromIdentitiesOutsideAGroupShowNowhereAndTheEarlyOnesAreReclaimed() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val mallory = lab.node("mallory").apply { setDisplayName("Mallory") }
+            lab.linkAll(alice to bob, alice to carol, mallory to bob)
+            lab.awaitAcquainted(alice, bob, carol, mallory)
+            val groupId = alice.createGroup(bob, carol)
+            assertTrue(alice.sendGroup(groupId, "held"))
+            val held = alice.ownMessageId(groupId, "held")
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
+            val sybils = (1..SYBIL_REACTORS).map { LabSybil(seed = 9_300 + it, name = "sybil $it") }
+            sybils.forEach { mallory.flood(it.profile(lab.clock.now())) }
+            lab.await(SYBIL_REACTORS * 3) { listOf(alice, bob, carol).sumOf { n -> sybils.count { s -> n.pinned(s.nodeId) != null } } }
+
+            sybils.forEach { mallory.flood(it.reaction(held, "👎", lab.clock.now())) }
+            lab.await(SYBIL_REACTORS * 3) { listOf(alice, bob, carol).sumOf { it.drops(DropReason.REACTION_OUTSIDE_THREAD) }.toInt() }
+            listOf(alice, bob, carol).forEach { n -> assertEquals(n.name, emptySet<Pair<String, String>>(), n.reactions(held)) }
+            assertTrue(sybils.none { alice.reactionNotified(held, it.nodeId) })
+            assertNull("the chat list's reaction line", alice.reactionStore.observeNewestOnOwn(alice.nodeId, emptyList()).first()[groupId])
+
+            // Before its post: Bob hears the reactions while Alice's pipe to him is parked, and no one else has the post.
+            alice.transport.hold(bob.transport)
+            assertTrue(alice.sendGroup(groupId, "early"))
+            val early = alice.ownMessageId(groupId, "early")
+            lab.await(1) { if (carol.row(early) != null) 1 else 0 }
+            carol.react(groupId, early, "🎉")
+            sybils.forEach { mallory.flood(it.reaction(early, "👎", lab.clock.now())) }
+            lab.await(SYBIL_REACTORS) { bob.reactions(early).size }
+            assertNull("bob has no copy of the post yet", bob.row(early))
+            alice.transport.release(bob.transport)
+            lab.await(1) { if (bob.shownReactions(groupId, early) == setOf(carol.nodeId to "🎉")) 1 else 0 }
+            assertEquals("stored, not drawn", SYBIL_REACTORS + 1, bob.reactions(early).size)
+
+            bob.reactionStore.deleteOrphans(lab.clock.now() + DAY_MS + MINUTE_MS, bob.nodeId)
+            assertEquals(setOf(carol.nodeId to "🎉"), bob.reactions(early))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 2) { groupId }
+            listOf(alice, bob, carol).forEach { n -> assertEquals(n.name, setOf(carol.nodeId to "🎉"), n.shownReactions(groupId, early)) }
         }
 
     /**
@@ -1141,5 +1191,9 @@ class MaliciousForkLabTest : StrandedLabBase() {
 
         // The profile cap, scaled down like BYTE_CAP: an honest lab profile is a few hundred bytes.
         const val PROFILE_CAP = 2_048
+        const val SYBIL_REACTORS = 3
+
+        // The reaction sweep's grace (`ReactionRepository.ORPHAN_GRACE_MILLIS`).
+        const val DAY_MS = 24 * 60 * MINUTE_MS
     }
 }

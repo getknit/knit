@@ -94,8 +94,16 @@ class ReactionRepository(
      * table has no FK cascade. Mirrors [BlobRepository.deleteOrphans]; run once on startup. Orphans
      * younger than [ORPHAN_GRACE_MILLIS] are kept so a reaction that arrived just ahead of its message
      * (out-of-order mesh delivery) isn't reaped — see [app.getknit.knit.data.reaction.ReactionEntity].
+     * With the same grace it also reclaims reactions on a group post from someone off its roster
+     * ([ReactionDao.deleteOffRosterOlderThan]): stored unchecked because they arrived before the post, and never drawn.
      */
-    suspend fun deleteOrphans(now: Long) = dao.deleteOrphansOlderThan(now - ORPHAN_GRACE_MILLIS)
+    suspend fun deleteOrphans(
+        now: Long,
+        me: String,
+    ) {
+        dao.deleteOrphansOlderThan(now - ORPHAN_GRACE_MILLIS)
+        dao.deleteOffRosterOlderThan(now - ORPHAN_GRACE_MILLIS, me)
+    }
 
     private companion object {
         // The rooms every reaction query lets anyone react in; a commons is matched by its prefix beside them.

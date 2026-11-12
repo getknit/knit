@@ -215,7 +215,7 @@ class ReactionRepositoryTest : RoomDbTest() {
             repo.apply(ReactionEntity("fresh-orphan", "alice", "👍", updatedAt = now - 1000))
             repo.apply(ReactionEntity("kept-msg", "alice", "👍", updatedAt = now - 5 * day))
 
-            repo.deleteOrphans(now)
+            repo.deleteOrphans(now, ME)
 
             val live =
                 repo
