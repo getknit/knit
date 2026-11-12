@@ -1926,6 +1926,7 @@ class MeshManager(
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
         draftTranslatedFrom: String?,
+        frameId: String?,
     ): Boolean {
         val isRoom = recipientId == null && group == null
         // Whoever built it, a frame carries only what the wire does not imply: English by an English reader costs 0.
@@ -1934,7 +1935,7 @@ class MeshManager(
         // Indexed by the caller against exactly this text (it rebases across its own trim): normalised, never shifted.
         val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
-        val id = FrameId.new()
+        val id = mintedOrNew(frameId)
         val sentAt = clock()
         val conversationId = Conversations.idFor(me, recipientId, me, group?.id)
 
@@ -3335,6 +3336,12 @@ class MeshManager(
                 payload = WireCodec.encodePayload(GroupLeaveContent(groupId)),
             ),
         )
+    }
+
+    /** The caller's own freshly minted [frameId] (`MeshController.sendChat`), or a new one; never a malformed id. */
+    private fun mintedOrNew(frameId: String?): String {
+        require(frameId == null || FrameId.toBytesOrNull(frameId) != null) { "not a canonical frame id" }
+        return frameId ?: FrameId.new()
     }
 
     /**
@@ -5695,12 +5702,13 @@ class MeshManager(
         styles: List<StyleSpan>,
         declared: DeclaredLangs,
         draftTranslatedFrom: String?,
+        frameId: String?,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
         val langs = declared.normalized()
         val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
-        val id = FrameId.new()
+        val id = mintedOrNew(frameId)
         val sentAt = clock()
         // Sealed to its own key as a group's attachment is, the key riding cleartext inside the room's seal: the
         // blob's address is then the ciphertext's, which nobody outside the room can compute or ask the radios for.

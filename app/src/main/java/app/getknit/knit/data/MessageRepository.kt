@@ -1,5 +1,7 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.data.changes.DataChange
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.message.AttachmentFetchRow
 import app.getknit.knit.data.message.AttachmentIdentityRow
 import app.getknit.knit.data.message.CommonsAttachmentRow
@@ -36,6 +38,8 @@ class MessageRepository(
     private val maxPerPendingThread: Int = DEFAULT_MAX_PER_PENDING_THREAD,
     private val pendingThreadMaxAgeMs: Long = DEFAULT_PENDING_THREAD_MAX_AGE_MS,
     private val maxPendingThreads: Int = DEFAULT_MAX_PENDING_THREADS,
+    // Told the id of each row a write here touches, after the write (`DataChange`); a no-op outside a debug build.
+    private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
     /**
      * The newest [limit] messages in a thread, oldest first — the chat screen's window. Reversing here keeps
@@ -46,6 +50,23 @@ class MessageRepository(
         conversationId: String,
         limit: Int,
     ): Flow<List<MessageEntity>> = dao.observeNewestForConversation(conversationId, limit).map { it.asReversed() }
+
+    /**
+     * One page of a thread, **newest first**: the newest [limit] rows, or with a cursor the [limit] rows just older
+     * than the row at ([beforeSentAt], [beforeId]) — see [MessageDao.olderThan]. For a reader outside the app that
+     * pages back through a whole thread (the debug USB control's `history`); the chat screen grows its window instead.
+     */
+    suspend fun page(
+        conversationId: String,
+        beforeSentAt: Long?,
+        beforeId: String?,
+        limit: Int,
+    ): List<MessageEntity> =
+        if (beforeSentAt == null || beforeId == null) {
+            dao.newestIn(conversationId, limit)
+        } else {
+            dao.olderThan(conversationId, beforeSentAt, beforeId, limit)
+        }
 
     /**
      * Ordinary messages whose body matches the typed query [raw], newest first and at most [limit], in the
@@ -78,14 +99,21 @@ class MessageRepository(
     /** One message by id, null once it is deleted — backs the message-details screen. */
     fun observeMessage(id: String): Flow<MessageEntity?> = dao.observeById(id)
 
-    suspend fun save(message: MessageEntity) = dao.upsert(message)
+    suspend fun save(message: MessageEntity) {
+        dao.upsert(message)
+        changes.emit(DataChange.Message(message.id, message.conversationId))
+    }
 
     /**
      * Writes [message] only if no row with its id exists yet; true when it was inserted. The inbound
      * delivery write — first-write-wins, so a custody re-serve of a message we already hold never rewrites
      * the row (its arrival plane included).
      */
-    suspend fun saveIfAbsent(message: MessageEntity): Boolean = dao.insertIfAbsent(message) != -1L
+    suspend fun saveIfAbsent(message: MessageEntity): Boolean {
+        val inserted = dao.insertIfAbsent(message) != -1L
+        if (inserted) changes.emit(DataChange.Message(message.id, message.conversationId))
+        return inserted
+    }
 
     suspend fun exists(id: String): Boolean = dao.exists(id)
 
@@ -103,7 +131,11 @@ class MessageRepository(
     suspend fun applyQuoteVerdict(
         id: String,
         settlement: QuoteSettlement,
-    ): Boolean = dao.applyQuoteVerdict(id, settlement.check, settlement.snippet, settlement.hasAttachment, settlement.flagged) > 0
+    ): Boolean {
+        val written = dao.applyQuoteVerdict(id, settlement.check, settlement.snippet, settlement.hasAttachment, settlement.flagged) > 0
+        if (written) changes.emit(DataChange.Message(id, null))
+        return written
+    }
 
     /** Up to [limit] unjudged replies by someone other than [me] whose original is held — the start-up backlog. */
     suspend fun unsettledQuotes(
@@ -133,7 +165,10 @@ class MessageRepository(
     suspend fun markReceived(
         id: String,
         via: DeliveryPlane,
-    ) = dao.markReceived(id, via.code)
+    ) {
+        dao.markReceived(id, via.code)
+        changes.emit(DataChange.Message(id, null))
+    }
 
     /** Outgoing DMs to [recipientId] that are still awaiting the recipient's key before they can be sent. */
     suspend fun pendingForRecipient(recipientId: String): List<MessageEntity> = dao.pendingForRecipient(recipientId)
@@ -173,13 +208,24 @@ class MessageRepository(
     ): List<OwnPost> = dao.ownGroupPostsBetween(me, Conversations.GROUP_ID_PREFIX + "%", since, until)
 
     /** Clears the pending-key flag once a stuck DM has finally been sealed and flooded. */
-    suspend fun clearPending(id: String) = dao.clearPending(id)
+    suspend fun clearPending(id: String) {
+        dao.clearPending(id)
+        changes.emit(DataChange.Message(id, null))
+    }
 
     /** Deletes a single message from this device only. */
-    suspend fun delete(id: String) = dao.deleteById(id)
+    suspend fun delete(id: String) {
+        // The thread is read first only for a reader of the change, which can no longer look it up afterwards.
+        val conversation = if (changes === DataChangeSink.NONE) null else dao.conversationOf(id)
+        dao.deleteById(id)
+        changes.emit(DataChange.Message(id, conversation))
+    }
 
     /** Deletes all messages in a thread from this device only (used when leaving a group). */
-    suspend fun deleteByConversation(conversationId: String) = dao.deleteByConversation(conversationId)
+    suspend fun deleteByConversation(conversationId: String) {
+        dao.deleteByConversation(conversationId)
+        changes.emit(DataChange.ThreadTrimmed(conversationId))
+    }
 
     /** Number of messages still referencing [hash] (0 once an attachment's last message is gone). */
     suspend fun countByAttachmentHash(hash: String): Int = dao.countByAttachmentHash(hash)
@@ -201,7 +247,10 @@ class MessageRepository(
     ) = dao.setVoiceMeta(hash, durationMs, peaks)
 
     /** Marks message [id]'s video poster explicit (ADR 2026-10.hmfe). */
-    suspend fun markPosterFlagged(id: String) = dao.markPosterFlagged(id)
+    suspend fun markPosterFlagged(id: String) {
+        dao.markPosterFlagged(id)
+        changes.emit(DataChange.Message(id, null))
+    }
 
     /** A held video's own duration and upright size, over the sender's claim, on every row naming [hash] as a video. */
     suspend fun setVideoMeta(
@@ -397,13 +446,7 @@ class MessageRepository(
         val activity = dao.conversationActivity()
         val rooms = ROOMS + activity.map { it.conversationId }.filter { Conversations.isPublicRoom(it) }
         for (room in rooms) {
-            dao.deleteOlderThan(room, now - nearbyMaxAgeMs)
-            for (sender in dao.sendersOverIn(room, roomMaxPerStranger)) {
-                if (sender !in knownSenders) dao.deleteOldestBySenderInConversation(room, sender, roomMaxPerStranger)
-            }
-            val over = dao.countIn(room) - nearbyMaxMessages
-            if (over > 0) dao.deleteOldestFromStrangersIn(room, knownSenders, over)
-            dao.deleteOldestInConversation(room, nearbyMaxMessages) // the last resort: over cap on known senders alone
+            if (trimRoom(room, now, knownSenders) > 0) changes.emit(DataChange.ThreadTrimmed(room))
         }
 
         val pending = mutableListOf<ConversationActivity>()
@@ -414,9 +457,10 @@ class MessageRepository(
 
             if (conv.lastSentAt < now - pendingThreadMaxAgeMs) {
                 dao.deleteByConversation(id) // a stale request thread — drop it wholesale
+                changes.emit(DataChange.ThreadTrimmed(id))
             } else {
-                if (conv.count > maxPerPendingThread) {
-                    dao.deleteOldestInConversation(id, maxPerPendingThread)
+                if (conv.count > maxPerPendingThread && dao.deleteOldestInConversation(id, maxPerPendingThread) > 0) {
+                    changes.emit(DataChange.ThreadTrimmed(id))
                 }
                 pending += conv
             }
@@ -425,8 +469,27 @@ class MessageRepository(
             pending
                 .sortedByDescending { it.lastSentAt }
                 .drop(maxPendingThreads)
-                .forEach { dao.deleteByConversation(it.conversationId) }
+                .forEach {
+                    dao.deleteByConversation(it.conversationId)
+                    changes.emit(DataChange.ThreadTrimmed(it.conversationId))
+                }
         }
+    }
+
+    /** [sweepRetention]'s room rule for one room (age, then per stranger, then count); how many rows it deleted. */
+    private suspend fun trimRoom(
+        room: String,
+        now: Long,
+        knownSenders: Set<String>,
+    ): Int {
+        var trimmed = dao.deleteOlderThan(room, now - nearbyMaxAgeMs)
+        for (sender in dao.sendersOverIn(room, roomMaxPerStranger)) {
+            if (sender !in knownSenders) trimmed += dao.deleteOldestBySenderInConversation(room, sender, roomMaxPerStranger)
+        }
+        val over = dao.countIn(room) - nearbyMaxMessages
+        if (over > 0) trimmed += dao.deleteOldestFromStrangersIn(room, knownSenders, over)
+        trimmed += dao.deleteOldestInConversation(room, nearbyMaxMessages) // the last resort: over cap on known senders alone
+        return trimmed
     }
 
     private companion object {

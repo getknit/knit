@@ -38,6 +38,7 @@ import app.getknit.knit.data.QuoteVerifier
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.backup.BackupWriter
 import app.getknit.knit.data.backup.RestoreStager
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.AndroidDeviceKeystore
 import app.getknit.knit.data.crypto.DatabaseKey
@@ -320,7 +321,10 @@ val appModule =
         single { get<KnitDatabase>().metPeerDao() }
         single { get<KnitDatabase>().savedFileDao() }
         single { get<KnitDatabase>().attachmentHolderDao() }
-        single { MessageRepository(get()) }
+        // Where the repositories below report what they wrote (data/changes): the debug build's USB control change log,
+        // nothing in release (di/DataChangeWiring in each variant).
+        single<DataChangeSink> { dataChangeSink(androidContext()) }
+        single { MessageRepository(get(), changes = get()) }
         // Judges an inbound reply's quote against the original it names (ADR 2026-10.gpa3), labelling a rebuilt
         // quote in the reader's own strings; one backlog batch is one write transaction.
         single {
@@ -343,7 +347,7 @@ val appModule =
                     ticks = LabelFade.hourly(),
                     transact = { block -> db.withWriteTransaction { block() } },
                 )
-            PeerRepository(get(), get<SettingsStore>(), get<Identity>(), fade = fade)
+            PeerRepository(get(), get<SettingsStore>(), get<Identity>(), fade = fade, changes = get())
         }
         // Crash reports. The capture-side CrashStore is built by hand in KnitApplication.onCreate BEFORE
         // startKoin, so a crash inside startup itself is still captured; this is the reader side over the
@@ -367,7 +371,7 @@ val appModule =
                     ),
             )
         }
-        single { ReactionRepository(get(), get()) }
+        single { ReactionRepository(get(), get(), changes = get()) }
         single { PinRepository(get(), get()) }
         // Delete-for-me: one message's row, reactions, pin, receipt rows and unreferenced blob. The chat and the debug
         // bridge's PURGE share it, so what a deleted message leaves behind cannot differ between them.
@@ -378,7 +382,7 @@ val appModule =
         // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db,
         // savedFileDao.
         single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-        single { GroupRepository(get(), get(), get(), get(), get()) }
+        single { GroupRepository(get(), get(), get(), get(), get(), changes = get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
         // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync, and the
         // MeshMetrics (from meshModule too) its group gate counts refusals on (ADR 2026-10.7mqm),

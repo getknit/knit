@@ -1,6 +1,8 @@
 package app.getknit.knit.data
 
 import androidx.room3.withWriteTransaction
+import app.getknit.knit.data.changes.DataChange
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMemberClockEntity
@@ -22,6 +24,8 @@ class GroupRepository(
     // a departure obliges a re-mint, and leaving/deleting drops the root with the rest of the group's key
     // state. Nullable so rigs that don't exercise the plane construct unchanged.
     private val groupRoots: GroupRootStore? = null,
+    // Told each group whose row or thread a write here changed (`DataChange`); a no-op outside a debug build.
+    private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
     fun observeGroups(): Flow<List<GroupEntity>> = dao.observeAll()
 
@@ -32,7 +36,10 @@ class GroupRepository(
 
     suspend fun find(groupId: String): GroupEntity? = dao.findById(groupId)
 
-    suspend fun upsert(group: GroupEntity) = dao.upsert(group)
+    suspend fun upsert(group: GroupEntity) {
+        dao.upsert(group)
+        changes.emit(DataChange.Conversation(group.groupId))
+    }
 
     /** Every group we still hold (leave-tombstoned rows excluded). */
     suspend fun active(): List<GroupEntity> = dao.allActive()
@@ -109,43 +116,47 @@ class GroupRepository(
         groupId: String,
         leaverId: String,
         leftAt: Long,
-    ): Boolean =
-        db.withWriteTransaction {
-            val group = dao.findById(groupId) ?: return@withWriteTransaction false
-            if (group.left) return@withWriteTransaction false
-            val members = GroupMembersStore.decode(group.members)
-            if (leaverId !in members) return@withWriteTransaction false
-            val clocks = dao.clocksOf(groupId, leaverId) ?: GroupMemberClockEntity(groupId, leaverId)
-            if (leftAt <= clocks.rejoinedAt) return@withWriteTransaction false
-            val departed = GroupMembersStore.decode(group.departed)
-            dao.upsert(
-                group.copy(
-                    members = GroupMembersStore.encode(members - leaverId),
-                    departed = GroupMembersStore.encode((departed + leaverId).distinct()),
-                ),
-            )
-            // Leave-rekey (docs/GROUP_FORWARD_SECRECY.md #6.1), atomic with the roster shrink: retire our
-            // send chains — every key gone, the newest number kept — so the next send mints a fresh epoch
-            // numbered past it, distributed to the REMAINING members only (the leaver reads nothing sealed
-            // after this commits), and drop the leaver's outbox row. Reusing the number let a receiver that
-            // met the re-mint's seed first drop the earlier one as stale (#167, ADR 2026-10.xgwj).
-            // Their recv chains drain via the 48h sweep — their pre-leave frames may still re-serve.
-            groupRatchet.retireSendChains(groupId)
-            groupRatchet.deleteKeySend(groupId, leaverId)
-            // The spool plane's rotation hook (docs/SPOOL_PROTOCOL.md §3.2), atomic with the same roster
-            // shrink: record that a re-mint is OWED. The mint itself happens on the heal pass, not here —
-            // splitting the obligation from the act is what makes rotation survive a crash between them,
-            // and it is what lets the mint grace cover a deterministic re-minter who never comes back.
-            groupRoots?.markRemintDue(groupId, leftAt)
-            // The leaver's scope config goes with their membership, in the same transaction (docs/SPOOL_PROTOCOL.md
-            // §5, `ScopeConfigPolicy`): a phone that heard the leave first refuses that config when it lands, so one
-            // that heard the config first must drop it here, or the two read different winners for good — nothing
-            // re-sends a config. Rows are per issuer, so every other member's stands.
-            db.scopeConfigDao().deleteIssuer(groupId, leaverId)
-            dao.putClocks(clocks.copy(leftAt = leftAt))
-            messages.save(StatusNotices.memberLeft(groupId, leaverId, leftAt))
-            true
-        }
+    ): Boolean {
+        val recorded =
+            db.withWriteTransaction {
+                val group = dao.findById(groupId) ?: return@withWriteTransaction false
+                if (group.left) return@withWriteTransaction false
+                val members = GroupMembersStore.decode(group.members)
+                if (leaverId !in members) return@withWriteTransaction false
+                val clocks = dao.clocksOf(groupId, leaverId) ?: GroupMemberClockEntity(groupId, leaverId)
+                if (leftAt <= clocks.rejoinedAt) return@withWriteTransaction false
+                val departed = GroupMembersStore.decode(group.departed)
+                dao.upsert(
+                    group.copy(
+                        members = GroupMembersStore.encode(members - leaverId),
+                        departed = GroupMembersStore.encode((departed + leaverId).distinct()),
+                    ),
+                )
+                // Leave-rekey (docs/GROUP_FORWARD_SECRECY.md #6.1), atomic with the roster shrink: retire our
+                // send chains — every key gone, the newest number kept — so the next send mints a fresh epoch
+                // numbered past it, distributed to the REMAINING members only (the leaver reads nothing sealed
+                // after this commits), and drop the leaver's outbox row. Reusing the number let a receiver that
+                // met the re-mint's seed first drop the earlier one as stale (#167, ADR 2026-10.xgwj).
+                // Their recv chains drain via the 48h sweep — their pre-leave frames may still re-serve.
+                groupRatchet.retireSendChains(groupId)
+                groupRatchet.deleteKeySend(groupId, leaverId)
+                // The spool plane's rotation hook (docs/SPOOL_PROTOCOL.md §3.2), atomic with the same roster
+                // shrink: record that a re-mint is OWED. The mint itself happens on the heal pass, not here —
+                // splitting the obligation from the act is what makes rotation survive a crash between them,
+                // and it is what lets the mint grace cover a deterministic re-minter who never comes back.
+                groupRoots?.markRemintDue(groupId, leftAt)
+                // The leaver's scope config goes with their membership, in the same transaction (docs/SPOOL_PROTOCOL.md
+                // §5, `ScopeConfigPolicy`): a phone that heard the leave first refuses that config when it lands, so one
+                // that heard the config first must drop it here, or the two read different winners for good — nothing
+                // re-sends a config. Rows are per issuer, so every other member's stands.
+                db.scopeConfigDao().deleteIssuer(groupId, leaverId)
+                dao.putClocks(clocks.copy(leftAt = leftAt))
+                messages.save(StatusNotices.memberLeft(groupId, leaverId, leftAt))
+                true
+            }
+        if (recorded) changes.emit(DataChange.Conversation(groupId))
+        return recorded
+    }
 
     /**
      * The mirror of [recordDeparture], for a founding member who left and re-added themselves with their
@@ -170,6 +181,7 @@ class GroupRepository(
             dao.putClocks(clocks.copy(rejoinedAt = rejoinedAt))
             messages.save(StatusNotices.memberRejoined(groupId, memberId, rejoinedAt))
         }
+        changes.emit(DataChange.Conversation(groupId))
     }
 
     /**
@@ -196,6 +208,7 @@ class GroupRepository(
             groupRatchet.purgeGroup(groupId)
             groupRoots?.purge(groupId)
         }
+        changes.emit(DataChange.Conversation(groupId))
     }
 
     /**
@@ -216,5 +229,6 @@ class GroupRepository(
             groupRatchet.purgeGroup(groupId)
             groupRoots?.purge(groupId)
         }
+        changes.emit(DataChange.Conversation(groupId))
     }
 }

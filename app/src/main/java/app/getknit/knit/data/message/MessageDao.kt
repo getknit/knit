@@ -38,6 +38,34 @@ interface MessageDao {
         limit: Int,
     ): Flow<List<MessageEntity>>
 
+    /** [observeNewestForConversation] read once: the newest [limit] rows of a thread, newest first. */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "ORDER BY sentAt DESC, id DESC LIMIT :limit",
+    )
+    suspend fun newestIn(
+        conversationId: String,
+        limit: Int,
+    ): List<MessageEntity>
+
+    /**
+     * The [limit] rows of a thread just older than the row at ([sentAt], [id]) in the window's own order, newest
+     * first: the next page back from a reader that already holds everything from that row on. The same
+     * `(sentAt, id)` order as [observeNewestForConversation], served by the same index, so consecutive pages never
+     * overlap and never skip a row that shares a `sentAt` with the cursor.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "AND (sentAt < :sentAt OR (sentAt = :sentAt AND id < :id)) " +
+            "ORDER BY sentAt DESC, id DESC LIMIT :limit",
+    )
+    suspend fun olderThan(
+        conversationId: String,
+        sentAt: Long,
+        id: String,
+        limit: Int,
+    ): List<MessageEntity>
+
     /**
      * How many messages sit at or newer than [id] in its thread — the window size that just reaches it, so
      * tapping a reply quote can pull an older message into the window in one round trip rather than paging
@@ -211,7 +239,7 @@ interface MessageDao {
 
     /** Removes every message in a thread (used when leaving a group, so the thread vanishes). */
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
-    suspend fun deleteByConversation(conversationId: String)
+    suspend fun deleteByConversation(conversationId: String): Int
 
     /** How many messages still reference [hash] — guards deleting a shared, content-addressed blob. */
     @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash")
@@ -779,14 +807,14 @@ interface MessageDao {
     suspend fun deleteOldestInConversation(
         conversationId: String,
         keep: Int,
-    )
+    ): Int
 
     /** Deletes messages in [conversationId] older than [cutoff] (frame-global sentAt). */
     @Query("DELETE FROM messages WHERE conversationId = :conversationId AND sentAt < :cutoff")
     suspend fun deleteOlderThan(
         conversationId: String,
         cutoff: Long,
-    )
+    ): Int
 
     /** Senders holding more than [keep] rows in [conversationId] — the room sweep's per-sender candidates. */
     @Query("SELECT senderId FROM messages WHERE conversationId = :conversationId GROUP BY senderId HAVING COUNT(*) > :keep")
@@ -805,7 +833,7 @@ interface MessageDao {
         conversationId: String,
         senderId: String,
         keep: Int,
-    )
+    ): Int
 
     /** Row count of [conversationId], notices included — the room sweep's over-cap arithmetic. */
     @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId")
@@ -824,7 +852,7 @@ interface MessageDao {
         conversationId: String,
         keepFrom: Set<String>,
         limit: Int,
-    )
+    ): Int
 
     /**
      * How long each message from someone else took to get here, since [since] (our arrival clock): the field

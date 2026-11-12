@@ -12,13 +12,18 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.core.content.edit
+import app.getknit.knit.data.changes.DataChangeSink
+import app.getknit.knit.data.commons.CommonsRepository
+import app.getknit.knit.data.settings.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -27,25 +32,30 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.json.JSONObject
 import org.koin.core.component.KoinComponent
+import org.koin.core.component.get
 import org.koin.core.component.inject
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.SecureRandom
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The phone's end of the USB control spike (debug builds only): serves [UsbControlSession] over an Android Open
- * Accessory stream from knit-cli. Off until the bridge's `USBCTL --es op enable` turns it on; with it off, an attached
- * accessory is left alone and `open` can pick it up later. Android's own "Open Knit?" prompt is the only gate: no
- * pairing, no host key. One accessory at a time.
+ * The phone's end of the USB control (debug builds only): serves [UsbControlSession] over an Android Open Accessory
+ * stream from knit-cli, protocol v1 (`docs/USB_CONTROL.md`). Off until the bridge's `USBCTL --es op enable` turns it
+ * on; with it off, an attached accessory is left alone and `open` can pick it up later. Android's own "Open Knit?"
+ * prompt is the only gate: no pairing, no host key. One accessory at a time.
  *
- * The streams follow `gmrs/GmrsRadio`: a read loop on IO feeding a deframer, one writer draining a small reply queue
- * ahead of an event queue that drops its oldest, and a generation check so a link that went down can't close its
- * successor. A host that stops reading costs one IO thread blocked in the driver's write and nothing more: events
- * are dropped, and once the reply queue is full the read loop waits, so the host's own writes stall. The next host
- * run reads the queued frames (its hello drops them) and the writer goes on; nothing times the link out, since a
- * closed accessory can't be reopened without a replug. A read blocked in the accessory driver doesn't return on
- * close; the detach broadcast or the next read ends it.
+ * It also owns the [changeLog] the repositories report their writes to, kept only while USB control is on.
+ *
+ * **One worker per link.** The read loop only deframes, into a request queue of [REQUEST_BUFFER]. One worker takes a
+ * request first, else the change feed's due work, builds the frame and writes it before taking the next: so for any
+ * object a later frame never carries older state than an earlier one. A host that stops reading blocks the worker in
+ * the driver's write; the request queue fills, the read loop waits, and the host's own writes stall. The next host run
+ * reads the queued frames (its hello drops them) and the worker goes on; nothing times the link out, since a closed
+ * accessory can't be reopened without a replug. A read blocked in the accessory driver doesn't return on close; the
+ * detach broadcast or the next read ends it.
  */
 internal object UsbControlServer : KoinComponent {
     const val TAG = "KnitUsb"
@@ -56,12 +66,20 @@ internal object UsbControlServer : KoinComponent {
 
     private val scope: CoroutineScope by inject()
     private val lock = Any()
+    private val random = SecureRandom()
+
+    /** The sends every link has made, by `clientMsgId`, and the budget they share: it outlives a link on purpose. */
+    private val ledger = SendLedger(System::currentTimeMillis)
+
+    /** Every write the repositories report, numbered, while USB control is on: what each session's feed reads. */
+    val changeLog = ChangeLog { ByteArray(EPOCH_BYTES).also(random::nextBytes).joinToString("") { "%02x".format(Locale.ROOT, it) } }
 
     // Holds the application context only (Link.app), which lives as long as the process.
     @SuppressLint("StaticFieldLeak")
     private var link: Link? = null
 
     private var generation = 0L
+    private var watch: Job? = null
 
     @Volatile private var lastClose: String? = null
 
@@ -69,12 +87,25 @@ internal object UsbControlServer : KoinComponent {
 
     fun enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
 
+    /** The repositories' change sink (`di/DataChangeWiring`): the [changeLog], recording from now if USB control is on. */
+    fun changeSink(context: Context): DataChangeSink {
+        changeLog.setRecording(enabled(context))
+        return changeLog.sink
+    }
+
     fun setEnabled(
         context: Context,
         on: Boolean,
     ) {
         prefs(context).edit { putBoolean(KEY_ENABLED, on) }
-        if (!on) close("disabled")
+        changeLog.setRecording(on)
+        if (!on) {
+            close("disabled")
+            synchronized(lock) {
+                watch?.cancel()
+                watch = null
+            }
+        }
     }
 
     /**
@@ -114,10 +145,13 @@ internal object UsbControlServer : KoinComponent {
     fun state(context: Context): JSONObject =
         synchronized(lock) {
             val l = link
+            val cursor = changeLog.latest()
             JSONObject()
                 .put("enabled", enabled(context))
                 .put("open", l != null)
                 .put("generation", generation)
+                .put("recording", changeLog.recording)
+                .put("log", "${cursor.epoch}:${cursor.seq}")
                 .put("lastClose", lastClose ?: JSONObject.NULL)
                 .put("lastError", lastError ?: JSONObject.NULL)
                 .also { json -> l?.let { json.put("link", it.stateJson()) } }
@@ -140,11 +174,18 @@ internal object UsbControlServer : KoinComponent {
                     lastError = "openAccessory: ${e.javaClass.simpleName}: ${e.message}"
                     null
                 } ?: return note("openAccessory gave nothing (${lastError ?: "busy: a stuck write may hold it; replug"})")
+            startWatchLocked()
             val l = Link(++generation, accessory, pfd, app, scope)
             link = l
             l.start()
             return note("open (generation ${l.generation}, ${accessory.description} ${accessory.version})")
         }
+    }
+
+    /** The settings half of the change log, from the first link on: before one, no session has a cursor to keep. */
+    private fun startWatchLocked() {
+        if (watch != null || !changeLog.recording) return
+        watch = ChangeWatch.launch(scope, get<SettingsStore>(), get<CommonsRepository>(), changeLog)
     }
 
     private fun down(
@@ -168,7 +209,18 @@ internal object UsbControlServer : KoinComponent {
 
     private fun note(message: String): String = message.also { Log.i(TAG, it) }
 
-    /** One opened accessory: its streams, its session and the loops that serve it. */
+    /** What the read loop hands the worker. */
+    private sealed interface Inbound {
+        class Frame(
+            val text: String,
+        ) : Inbound
+
+        class Framing(
+            val reason: String,
+        ) : Inbound
+    }
+
+    /** One opened accessory: its streams, its session, its change feed and the two loops that serve them. */
     private class Link(
         val generation: Long,
         val accessory: UsbAccessory,
@@ -177,20 +229,28 @@ internal object UsbControlServer : KoinComponent {
         private val scope: CoroutineScope,
     ) {
         private val api = AppUsbControlApi()
-        private val session = UsbControlSession(api)
+        private val feed = ChangeFeed(changeLog, api, System::currentTimeMillis)
+        private val session =
+            UsbControlSession(
+                api,
+                object : FeedControl {
+                    override fun subscribe(since: ChangeCursor?): SubscribeResult = feed.start(since)
+
+                    override fun unsubscribe() = feed.stop()
+                },
+                ledger,
+            )
         private val input = FileInputStream(pfd.fileDescriptor)
         private val output = FileOutputStream(pfd.fileDescriptor)
-        private val replies = Channel<ByteArray>(REPLY_BUFFER)
-        private val events = Channel<ByteArray>(EVENT_BUFFER, BufferOverflow.DROP_OLDEST)
+        private val inbound = Channel<Inbound>(REQUEST_BUFFER)
+        private val statusSignal = Channel<Unit>(Channel.CONFLATED)
         private val jobs = mutableListOf<Job>()
         private val openedAt = System.currentTimeMillis()
         private val framesIn = AtomicLong()
         private val framesOut = AtomicLong()
         private val bytesIn = AtomicLong()
         private val bytesOut = AtomicLong()
-        private val eventsQueued = AtomicLong()
-
-        @Volatile private var eventJob: Job? = null
+        private val eventsOut = AtomicLong()
 
         @Volatile private var closed = false
 
@@ -213,15 +273,14 @@ internal object UsbControlServer : KoinComponent {
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
             jobs += scope.launch(Dispatchers.IO) { readLoop() }
-            jobs += scope.launch(Dispatchers.IO) { writeLoop() }
+            jobs += scope.launch(Dispatchers.IO) { workLoop() }
+            jobs += scope.launch { api.statusChanges().collect { statusSignal.trySend(Unit) } }
         }
 
         fun shutdown() {
             closed = true
             runCatching { app.unregisterReceiver(detach) }
-            eventJob?.cancel()
-            replies.close()
-            events.close()
+            inbound.close()
             jobs.forEach { it.cancel() }
             runCatching { pfd.close() }
         }
@@ -237,7 +296,7 @@ internal object UsbControlServer : KoinComponent {
                 .put("framesOut", framesOut.get())
                 .put("bytesIn", bytesIn.get())
                 .put("bytesOut", bytesOut.get())
-                .put("eventsQueued", eventsQueued.get())
+                .put("eventsOut", eventsOut.get())
 
         private suspend fun readLoop() {
             val deframer = UsbControlDeframer()
@@ -248,7 +307,7 @@ internal object UsbControlServer : KoinComponent {
                     while (n >= 0 && !closed) {
                         if (n > 0) {
                             bytesIn.addAndGet(n.toLong())
-                            serve(deframer, buf, n)
+                            deframe(deframer, buf, n)
                         }
                         n = input.read(buf)
                     }
@@ -261,7 +320,7 @@ internal object UsbControlServer : KoinComponent {
             down(this, reason)
         }
 
-        private suspend fun serve(
+        private suspend fun deframe(
             deframer: UsbControlDeframer,
             buf: ByteArray,
             n: Int,
@@ -272,55 +331,75 @@ internal object UsbControlServer : KoinComponent {
                 } catch (e: IOException) {
                     Log.w(TAG, "usb control framing: ${e.message}")
                     deframer.reset()
-                    replies.send(UsbControlFrames.encode(UsbControlSession.framingError(e.message.orEmpty()).toString()))
+                    inbound.send(Inbound.Framing(e.message.orEmpty()))
                     return
                 }
             for (frame in frames) {
                 framesIn.incrementAndGet()
-                val reply = session.handle(frame)
-                // Suspends while the writer is stuck behind a host that stopped reading: the read loop stops taking
+                // Suspends while the worker is stuck behind a host that stopped reading: the read loop stops taking
                 // requests, so the host's own writes stall instead of this queue growing.
-                replies.send(frameOf(reply, reply["id"] ?: JsonNull))
-                followSubscription()
+                inbound.send(Inbound.Frame(frame))
             }
         }
 
-        private fun followSubscription() {
-            if (session.subscribed && eventJob == null) {
-                eventJob =
-                    scope.launch {
-                        api.messageEvents().collect { event ->
-                            val bytes = runCatching { UsbControlFrames.encode(event.toString()) }.getOrNull()
-                            if (bytes == null) {
-                                Log.w(TAG, "usb control event over the frame cap, dropped")
-                            } else if (events.trySend(bytes).isSuccess) {
-                                eventsQueued.incrementAndGet()
+        /** Requests first, then the change feed: each frame built and written before the next is taken. */
+        @OptIn(ExperimentalCoroutinesApi::class)
+        private suspend fun workLoop() {
+            val logSignal = changeLog.listen()
+            try {
+                while (!closed) {
+                    val due = feed.nextDueAt()
+                    select {
+                        inbound.onReceive { serve(it) }
+                        if (feed.active) {
+                            logSignal.onReceive { feed.pull() }
+                            statusSignal.onReceive { feed.touch(ChangeKey.Status) }
+                        }
+                        if (due != null) {
+                            onTimeout((due - System.currentTimeMillis()).coerceAtLeast(0)) {
+                                feed.runDue().forEach { event ->
+                                    // An object over the cap goes as its stub (FrameBudget.stub), as a list reply's
+                                    // would; an event that is still over it is dropped rather than taking the link down.
+                                    val bytes =
+                                        runCatching { UsbControlFrames.encode(event.toString()) }.getOrNull()
+                                            ?: runCatching { UsbControlFrames.encode(stubbed(event).toString()) }.getOrNull()
+                                    if (bytes == null) {
+                                        Log.w(TAG, "usb control event over the frame cap, dropped")
+                                    } else {
+                                        write(bytes)
+                                        eventsOut.incrementAndGet()
+                                    }
+                                }
                             }
                         }
                     }
-            } else if (!session.subscribed) {
-                eventJob?.cancel()
-                eventJob = null
+                }
+            } catch (_: ClosedReceiveChannelException) {
+                // Shut down: the read loop or the detach has already said why.
+            } catch (e: IOException) {
+                down(this, "write: ${e.message}")
+            } finally {
+                changeLog.unlisten(logSignal)
             }
         }
 
-        private suspend fun writeLoop() {
-            try {
-                while (!closed) {
-                    // Replies first: select prefers its first clause. Both queues close together at shutdown.
-                    val bytes =
-                        select<ByteArray?> {
-                            replies.onReceiveCatching { it.getOrNull() }
-                            events.onReceiveCatching { it.getOrNull() }
-                        } ?: return
-                    output.write(bytes)
-                    framesOut.incrementAndGet()
-                    bytesOut.addAndGet(bytes.size.toLong())
+        private suspend fun serve(item: Inbound) {
+            val reply =
+                when (item) {
+                    is Inbound.Frame -> session.handle(item.text)
+                    is Inbound.Framing -> UsbControlSession.framingError(item.reason)
                 }
-            } catch (e: IOException) {
-                down(this, "write: ${e.message}")
-            }
+            write(frameOf(reply, reply["id"] ?: JsonNull))
         }
+
+        private fun write(bytes: ByteArray) {
+            output.write(bytes)
+            framesOut.incrementAndGet()
+            bytesOut.addAndGet(bytes.size.toLong())
+        }
+
+        private fun stubbed(event: JsonObject): JsonObject =
+            JsonObject(event.mapValues { (key, value) -> if (key != "event" && value is JsonObject) FrameBudget.stub(value) else value })
 
         /** A reply as a frame, or, past the cap, an error asking for less. */
         private fun frameOf(
@@ -335,6 +414,7 @@ internal object UsbControlServer : KoinComponent {
                     buildJsonObject {
                         put("id", id)
                         put("ok", false)
+                        put("code", Codes.INTERNAL)
                         put("error", "reply over the ${UsbControlFrames.MAX_FRAME}-byte frame cap; ask for less")
                     }.toString(),
                 )
@@ -342,6 +422,6 @@ internal object UsbControlServer : KoinComponent {
     }
 
     private const val READ_BUFFER = 16 * 1024
-    private const val REPLY_BUFFER = 8
-    private const val EVENT_BUFFER = 64
+    private const val REQUEST_BUFFER = 8
+    private const val EPOCH_BYTES = 8
 }

@@ -904,6 +904,28 @@ class MeshManagerTest {
         }
 
     @Test
+    fun aCallerMintedFrameIdIsTheStoredRowsIdOnEveryPath() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The debug USB control mints the id so it can answer it; the row (and its frame) must carry exactly that.
+            val rig = Rig(backgroundScope)
+            rig.pin(rig.bob)
+            val group = GroupInfo(id = "g-1", members = listOf(rig.me.nodeId, rig.bob.nodeId), createdBy = rig.me.nodeId)
+            val ids = List(3) { FrameId.new() }
+
+            assertTrue(rig.manager.sendChat("room", frameId = ids[0]))
+            assertTrue(rig.manager.sendChat("dm", recipientId = rig.bob.nodeId, frameId = ids[1]))
+            assertTrue(rig.manager.sendChat("group", group = group, frameId = ids[2]))
+            advanceUntilIdle()
+
+            assertEquals(ids, rig.saved.map { it.id })
+            assertTrue(
+                "a malformed id is refused before anything is stored",
+                runCatching { rig.manager.sendChat("x", frameId = "not-an-id") }.exceptionOrNull() is IllegalArgumentException,
+            )
+            assertEquals(3, rig.saved.size)
+        }
+
+    @Test
     fun aSharedPositionIsTakenOutOfTheTextBeforeAnyModeratorSeesIt() =
         runTest(UnconfinedTestDispatcher()) {
             // The room's lexical pass maps leet digits to letters, so a run of coordinates can spell a blocked

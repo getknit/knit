@@ -1,6 +1,8 @@
 package app.getknit.knit.data
 
 import androidx.room3.withWriteTransaction
+import app.getknit.knit.data.changes.DataChange
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
@@ -15,6 +17,8 @@ import kotlinx.coroutines.flow.map
 class ReactionRepository(
     private val dao: ReactionDao,
     private val db: KnitDatabase,
+    // Told each message whose reactions a write here changed (`DataChange`); a no-op outside a debug build.
+    private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
     fun observeReactions(): Flow<List<ReactionEntity>> = dao.observeAll()
 
@@ -72,13 +76,17 @@ class ReactionRepository(
      * — can't read the same `current` and clobber a newer write out of `updatedAt` order (the send
      * and receive paths run on different coroutines, so this is not hypothetical).
      */
-    suspend fun apply(reaction: ReactionEntity): Boolean =
-        db.withWriteTransaction {
-            val current = dao.find(reaction.messageId, reaction.reactorNodeId)
-            if (current != null && reaction.updatedAt <= current.updatedAt) return@withWriteTransaction false
-            dao.upsert(reaction)
-            current?.emoji != reaction.emoji
-        }
+    suspend fun apply(reaction: ReactionEntity): Boolean {
+        val changed =
+            db.withWriteTransaction {
+                val current = dao.find(reaction.messageId, reaction.reactorNodeId)
+                if (current != null && reaction.updatedAt <= current.updatedAt) return@withWriteTransaction false
+                dao.upsert(reaction)
+                current?.emoji != reaction.emoji
+            }
+        if (changed) changes.emit(DataChange.Message(reaction.messageId, null))
+        return changed
+    }
 
     /** The reactor's current emoji on a message (null if none/retracted) — used for toggle decisions. */
     suspend fun currentEmoji(

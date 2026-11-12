@@ -204,6 +204,10 @@ interface MeshController {
      * implied (ADR 2026-10.t2h6's 2026-10-29 amendment): cleartext on a room post, sealed with the rest otherwise.
      * [draftTranslatedFrom] is the language the draft was in when [text] is the composer's translation of it: kept on
      * our own row for the reader's language (the 2026-11-02 amendment), never on the wire.
+     *
+     * [frameId] is the message's id when the caller minted it ([app.getknit.knit.mesh.protocol.FrameId.new]) so it
+     * knows the row it will read back — the debug USB control's `send` — and is minted here when null. It must be a
+     * canonical frame id this phone minted for this send, never one a peer or a host chose.
      */
     suspend fun sendChat(
         text: String,
@@ -215,6 +219,7 @@ interface MeshController {
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
         draftTranslatedFrom: String? = null,
+        frameId: String? = null,
     ): Boolean
 
     /**
@@ -245,6 +250,7 @@ interface MeshController {
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
         draftTranslatedFrom: String? = null,
+        frameId: String? = null,
     ): Boolean = false
 
     /**

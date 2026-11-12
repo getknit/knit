@@ -1,5 +1,7 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.data.changes.DataChange
+import app.getknit.knit.data.changes.DataChangeSink
 import app.getknit.knit.data.peer.PeerAdvertised
 import app.getknit.knit.data.peer.PeerBadgeEntity
 import app.getknit.knit.data.peer.PeerDao
@@ -34,6 +36,8 @@ class PeerRepository(
     private val identity: IdentitySource,
     private val maxPeers: Int = DEFAULT_MAX_PEERS,
     private val fade: LabelFade? = null,
+    // Told each peer whose row a write here changed (`DataChange`); a no-op outside a debug build.
+    private val changes: DataChangeSink = DataChangeSink.NONE,
 ) {
     // The `lastSeenAt` stamps [noteSeen] collected since the last [flushSeen], the newest per sender.
     private val heard = ConcurrentHashMap<String, Long>()
@@ -146,7 +150,10 @@ class PeerRepository(
     /** The contact whose latest profile names LoRa board [node], newest claim first; null for a stranger's radio. */
     suspend fun findByLoraNode(node: Long): PeerEntity? = dao.findByLoraNode(node)
 
-    suspend fun upsert(peer: PeerEntity) = dao.upsert(peer)
+    suspend fun upsert(peer: PeerEntity) {
+        dao.upsert(peer)
+        changes.emit(DataChange.Peer(peer.nodeId))
+    }
 
     /**
      * Keeps [wire] — a `profile` frame [nodeId]'s key was just pinned from — as the proof of that key this phone
@@ -193,7 +200,12 @@ class PeerRepository(
      * peer keeps its pin and shows its monogram until it advertises another photo.
      */
     suspend fun clearAvatarsLongerThan(max: Long): List<String> =
-        dao.avatarsLongerThan(max).also { if (it.isNotEmpty()) dao.clearAvatars(it) }
+        dao.avatarsLongerThan(max).also { cleared ->
+            if (cleared.isNotEmpty()) {
+                dao.clearAvatars(cleared)
+                changes.emit(DataChange.Peers)
+            }
+        }
 
     /** The peers advertising the photo [hash] who do not show it yet (ADR 2026-11.4ckq): what a landing blob settles. */
     suspend fun awaitingAvatar(hash: String): List<PeerEntity> = dao.awaitingAvatar(hash)
@@ -212,7 +224,7 @@ class PeerRepository(
     ): List<PeerAdvertised> = dao.facesNeedingFetch(anchors, blocked, filtering, heardSince, limit)
 
     /** Clears every face naming a blob no longer held (#256); returns how many rows changed. */
-    suspend fun clearDanglingFaces(): Int = dao.clearDanglingFaces()
+    suspend fun clearDanglingFaces(): Int = dao.clearDanglingFaces().also { if (it > 0) changes.emit(DataChange.Peers) }
 
     /** The peers whose advertised photo is unknown and whose profile frame is held: the start-up pass's rows. */
     suspend fun advertisedUnknown(): List<String> = dao.advertisedUnknown()
@@ -237,7 +249,10 @@ class PeerRepository(
     suspend fun setVerified(
         nodeId: String,
         verified: Boolean,
-    ) = dao.setVerified(nodeId, verified)
+    ) {
+        dao.setVerified(nodeId, verified)
+        changes.emit(DataChange.Peer(nodeId))
+    }
 
     /** Node ids the user has out-of-band verified — exempt from [sweepCap] and the message-request queue. */
     suspend fun verifiedNodeIds(): List<String> = dao.verifiedNodeIds()
@@ -286,6 +301,7 @@ class PeerRepository(
         dao.deleteOrphanBadges()
         dao.deleteOrphanPresenceKeys() // so does any presence key the peer handed us
         dao.deleteOrphanLinkOwedResets() // and a restore's reset owed to them over a link
+        changes.emit(DataChange.Peers)
         return evicted
     }
 

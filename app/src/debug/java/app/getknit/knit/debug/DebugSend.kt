@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.protocol.DeclaredLangs
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.StyleSpan
 
@@ -45,26 +46,54 @@ internal object DebugSend {
         replyTo: ReplyRef? = null,
         styles: List<StyleSpan> = emptyList(),
         declared: DeclaredLangs = DeclaredLangs.NONE,
+        mentions: List<Mention> = emptyList(),
+        // The message's id when the caller minted it (FrameId.new) to read its row back; the Meshtastic room mints its own.
+        frameId: String? = null,
     ): Outcome {
         val sent =
             when (Conversations.kindFor(conversation)) {
                 ConversationKind.NEARBY -> {
-                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo, styles = styles, declared = declared)
+                    mesh.sendChat(
+                        text,
+                        mentions = mentions,
+                        recipientId = null,
+                        group = null,
+                        replyTo = replyTo,
+                        styles = styles,
+                        declared = declared,
+                        frameId = frameId,
+                    )
                 }
 
                 ConversationKind.DM -> {
-                    mesh.sendChat(text, recipientId = conversation, replyTo = replyTo, styles = styles, declared = declared)
+                    mesh.sendChat(
+                        text,
+                        mentions = mentions,
+                        recipientId = conversation,
+                        replyTo = replyTo,
+                        styles = styles,
+                        declared = declared,
+                        frameId = frameId,
+                    )
                 }
 
                 ConversationKind.GROUP -> {
                     groups.find(conversation)?.let {
-                        mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo, styles = styles, declared = declared)
+                        mesh.sendChat(
+                            text,
+                            mentions = mentions,
+                            group = it.toGroupInfo(),
+                            replyTo = replyTo,
+                            styles = styles,
+                            declared = declared,
+                            frameId = frameId,
+                        )
                     }
                 }
 
                 // A commons post goes to the relay that runs the room, never a radio (§7.4).
                 ConversationKind.COMMONS -> {
-                    mesh.sendCommons(conversation, text, emptyList(), replyTo, styles = styles, declared = declared)
+                    mesh.sendCommons(conversation, text, mentions, replyTo, styles = styles, declared = declared, frameId = frameId)
                 }
 
                 // The Meshtastic room posts through this phone's own board, and the outcome says why not.

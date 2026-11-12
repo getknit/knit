@@ -1174,10 +1174,10 @@ class DebugBridgeReceiver :
         // without it every bridge reaction is broadcast-shaped and rides the cleartext frame, which
         // would make a sealed-reaction smoke test pass vacuously.
         val conv = messages.conversationOf(messageId)
-        val group = conv?.takeIf { Conversations.kindFor(it) == ConversationKind.GROUP }?.let { groups.find(it)?.toGroupInfo() }
-        val recipientId = conv?.takeIf { group == null && Conversations.kindFor(it) == ConversationKind.DM }
-        mesh.sendReaction(messageId, emoji, recipientId, group)
-        return reply("ok", "reacted $emoji to $messageId").put("conversation", conv ?: "unknown")
+        return when (DebugReact.react(mesh, messages, groups, messageId, emoji, allowUnknown = true)) {
+            DebugReact.Outcome.Sent -> reply("ok", "reacted $emoji to $messageId").put("conversation", conv ?: "unknown")
+            DebugReact.Outcome.NoMessage, DebugReact.Outcome.Refused -> reply("refused", "no reaction can go to $conv")
+        }
     }
 
     /**
